@@ -70270,6 +70270,99 @@ pub(crate) mod tests {
         );
     }
 
+    /// S3-28c (b): a STOP raised while the helper of instruction `k` runs in a
+    /// maximal 32-instruction native block is observed at exactly boundary `k`:
+    /// instructions `1..=k` are committed (RIP, RAX, flags, retirement, budget),
+    /// no helper of instruction `k + 1` runs. The uninterrupted block is the
+    /// control (32 retired, `BlockComplete`).
+    #[test]
+    fn s3_28c_stop_during_instruction_k_of_a_32_instruction_block_exits_at_boundary_k() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7A40;
+        let mut bytes = Vec::new();
+        for _ in 0..32 {
+            bytes.extend_from_slice(&[0x48, 0x03, 0xC1]); // ADD RAX, RCX
+        }
+        let initial_rax = u64::MAX - 5;
+        let initial_flags = 0x202_u64;
+        let expect_after = |count: usize| {
+            let mut rax = initial_rax;
+            let mut flags = initial_flags;
+            for _ in 0..count {
+                flags = od_isa::integer_flags::updated_arithmetic_flags(
+                    od_isa::integer_flags::ArithmeticFlagOperation::Add,
+                    rax,
+                    1,
+                    flags,
+                );
+                rax = rax.wrapping_add(1);
+            }
+            (rax, flags)
+        };
+        // k = 0 is the control without STOP.
+        for k in [0_usize, 1, 2, 16, 31, 32] {
+            RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+            RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
+            RUNTIME_HELPER_STOP_ON_CALL.store(k, Ordering::Relaxed);
+            let stop = AtomicU8::new(0);
+            RUNTIME_HELPER_STOP_BYTE
+                .store((&stop as *const AtomicU8).cast_mut(), Ordering::Release);
+            let block = unsafe {
+                emit_runtime_block_for_code_with_helper(&bytes, base_rip, 2, runtime_test_helper)
+            };
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut state = od_isa::LongModeState::default();
+            state.rip = base_rip;
+            state.rflags = initial_flags;
+            state.gpr[0] = initial_rax;
+            state.gpr[1] = 1;
+            let mut context = RuntimeContextV1 {
+                state: &mut state,
+                initial_budget: 40,
+                stop_rip_enabled: 0,
+                reserved: 0,
+                stop_rip: 0,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: the test helper follows the block emitter's scalar ABI;
+            // the STOP byte is a live stack AtomicU8 cleared below.
+            let raw = unsafe { entry(&mut context) };
+            RUNTIME_HELPER_STOP_BYTE.store(std::ptr::null_mut(), Ordering::Release);
+            RUNTIME_HELPER_STOP_ON_CALL.store(0, Ordering::Relaxed);
+            let calls = RUNTIME_HELPER_CALLS.load(Ordering::Relaxed);
+            let (retired, remaining) = (context.retired_instructions, context.remaining_budget);
+
+            if k == 0 {
+                assert_eq!(raw, RuntimeExitTag::BlockComplete as u32);
+                assert_eq!(stop.load(Ordering::Acquire), 0, "control raises no STOP");
+                assert_eq!((retired, remaining, calls), (32, 8, 32));
+            } else if k == 32 {
+                // STOP raised by the last instruction: the block has no further
+                // boundary of its own, it completes with all 32 retired and the
+                // flag stays set for the dispatcher (control_exit before the
+                // next lookup; see the cached/NOP-fallback dispatch tests).
+                assert_eq!(raw, RuntimeExitTag::BlockComplete as u32);
+                assert_eq!(stop.load(Ordering::Acquire), 1);
+                assert_eq!((retired, remaining, calls), (32, 8, 32));
+            } else {
+                assert_eq!(raw, RuntimeExitTag::StopRequested as u32, "k={k}");
+                assert_eq!(stop.load(Ordering::Acquire), 1);
+                assert_eq!(calls, k, "no helper of instruction k+1 runs (k={k})");
+                assert_eq!(retired, k as u64, "k={k}");
+                assert_eq!(remaining, 40 - k as u64, "k={k}");
+            }
+            let committed = if k == 0 { 32 } else { k };
+            let (rax, flags) = expect_after(committed);
+            assert_eq!(state.rip, base_rip + 3 * committed as u64, "k={k}");
+            assert_eq!(state.gpr[0], rax, "k={k}");
+            assert_eq!(state.gpr[1], 1);
+            assert_eq!(state.rflags, flags, "k={k}");
+        }
+    }
+
     #[test]
     fn runtime_jcc_commits_selected_rip_and_retirement_together() {
         let _guard = jit_test_lock();
