@@ -71747,6 +71747,712 @@ pub(crate) mod tests {
         }
     }
 
+    /// S3-25d: one deterministic one-vCPU lifecycle stress at arena capacity 1
+    /// and 2. Per round: publish/execute/churn through `MultiEntryBlockCache`,
+    /// STOP and EventPending before entry, publish a V3 active-code artifact,
+    /// injected helper fault, committed STOP, active-block invalidation, stale
+    /// handle probes, handle dropped under the arena borrow, cache clear, drop
+    /// of the backend with live handles and reopen. Every execution is
+    /// compared with the interpreter; the end state must be fully free.
+    #[test]
+    fn s3_25d_small_capacity_lifecycle_stress_matches_interpreter_and_frees_everything() {
+        use od_isa::LongModeState;
+        use od_isa::execute::StepOutcome;
+        use od_isa::memory::ArchitecturalFault;
+
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+
+        const ENTRY: u64 = 0x1000;
+        const SENTINEL: u64 = 0xCAFE_BABE_1234_5678;
+        const OLD_RCX: u64 = 0xA5A5_5A5A_F0F0_0F0F;
+        const ROUNDS: usize = 8;
+        type Cache = od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>;
+
+        #[derive(Default)]
+        struct Stats {
+            steps: usize,
+            native_executions: usize,
+            interpreter_comparisons: usize,
+            live_generation_checks: usize,
+            stale_attempts: usize,
+            stale_rejections: usize,
+            invalidated_entries: usize,
+            deferred_releases: usize,
+            faults: usize,
+            stops: usize,
+            events: usize,
+            reopens: usize,
+            publications: usize,
+        }
+
+        fn next(seed: &mut u64) -> u64 {
+            *seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *seed >> 11
+        }
+        fn program(imm: u64) -> Vec<u8> {
+            let mut bytes = vec![0x48, 0xBA];
+            bytes.extend_from_slice(&imm.to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x89, 0x03]);
+            bytes.extend_from_slice(&[0x48, 0xB9]);
+            bytes.extend_from_slice(&SENTINEL.to_le_bytes());
+            bytes
+        }
+        fn make_owner(program: &[u8]) -> TrackedCodeFixture {
+            let mut owner =
+                TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+            owner.backings[0].bytes[..program.len()].copy_from_slice(program);
+            owner.active_source_rip = ENTRY + 10;
+            owner.active_source = (0, 10, 3);
+            owner
+        }
+        fn v3_state(rax: u64, rbx: u64) -> LongModeState {
+            let mut state = LongModeState {
+                cr3: None,
+                rip: ENTRY,
+                rflags: 0xA55,
+                ..LongModeState::default()
+            };
+            state.gpr[0] = rax;
+            state.gpr[1] = OLD_RCX;
+            state.gpr[3] = rbx;
+            state
+        }
+        fn forge(handle: &PublishedArenaActiveCodeV3) -> PublishedArenaActiveCodeV3 {
+            PublishedArenaActiveCodeV3 {
+                _block: PublishedArenaBlock {
+                    arena: handle._block.arena.clone(),
+                    owner_id: handle._block.owner_id.clone(),
+                    slot_index: handle._block.slot_index,
+                    generation: handle._block.generation,
+                },
+            }
+        }
+        fn advance(state: &mut LongModeState, owner: &mut TrackedCodeFixture) {
+            assert_eq!(
+                od_isa::execute::step(state, owner, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+        }
+        fn store_step(state: &mut LongModeState, owner: &mut TrackedCodeFixture) {
+            owner.begin_interpreter_write_scope(ENTRY + 10, 3);
+            advance(state, owner);
+            let _ = owner.finish_guest_write();
+            owner.end_interpreter_write_scope();
+        }
+        fn pool(arena: &PublishedArenaBackend, cache: &Cache) {
+            assert_eq!(
+                arena.available_slots() + cache.resident_entries(),
+                arena.capacity()
+            );
+            assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+        }
+        fn assert_live(arena: &PublishedArenaBackend, handle: &PublishedArenaActiveCodeV3) {
+            let inner = arena.arena.borrow();
+            let slot = &inner.slots[handle._block.slot_index];
+            assert_eq!(slot.generation, handle._block.generation);
+            assert!(slot.active_code_metadata_v3.is_some());
+            assert_eq!(slot.pending_release.get(), 0);
+        }
+        fn cached_run(
+            owner: &mut TrackedCodeFixture,
+            rip: u64,
+            state: LongModeState,
+            cache: &mut Cache,
+            arena: &mut PublishedArenaBackend,
+            stats: &mut Stats,
+        ) -> LongModeState {
+            let (result, native) =
+                run_tracked_code_block_with_state(owner, rip, state.clone(), cache, arena);
+            assert_eq!(result.retired_instructions, 1);
+            let mut expected = state;
+            advance(&mut expected, owner);
+            assert_eq!(native, expected, "cached native run matches interpreter");
+            stats.native_executions += 1;
+            stats.interpreter_comparisons += 1;
+            native
+        }
+        fn run_v3(
+            active: &PublishedArenaActiveCodeV3,
+            arena: &PublishedArenaBackend,
+            state: &mut LongModeState,
+            owner: &mut TrackedCodeFixture,
+            budget: u64,
+            stop: &AtomicU8,
+            cache: &mut Cache,
+            stats: &mut Stats,
+        ) -> ActiveCodeExecutionResultV3 {
+            assert_live(arena, active);
+            stats.live_generation_checks += 1;
+            let mut invalidated = 0;
+            let result = active
+                .execute_tracked_v3(
+                    state,
+                    owner,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    stop,
+                    |change| invalidated += cache.invalidate(change),
+                )
+                .unwrap();
+            stats.native_executions += 1;
+            stats.invalidated_entries += invalidated;
+            // The notification count is reported through the cache itself.
+            result
+        }
+        fn new_cache(entries: usize) -> Cache {
+            od_jit::dispatch::MultiEntryBlockCache::new(
+                entries,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap()
+        }
+        fn publish_v3(
+            arena: &mut PublishedArenaBackend,
+            owner: &TrackedCodeFixture,
+            stats: &mut Stats,
+        ) -> PublishedArenaActiveCodeV3 {
+            let bytes = owner.view(ENTRY, 23).0.to_vec();
+            let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+                CodeView::new(ENTRY, &bytes).unwrap(),
+                ENTRY,
+            )
+            .unwrap();
+            let handle = arena.publish_active_code_block_v3(&compiled).unwrap();
+            stats.publications += 1;
+            handle
+        }
+
+        let mut stats = Stats::default();
+        let mut seed = 0x5EED_3025_D00D_u64;
+        let mut expected_deferred = 0;
+
+        for capacity in [1_usize, 2] {
+            for round in 0..ROUNDS {
+                // Open (or reopen after the previous round's backend drop).
+                let mut arena = PublishedArenaBackend::new(capacity).unwrap();
+                stats.steps += 1;
+                if round != 0 || capacity != 1 {
+                    stats.reopens += 1;
+                }
+                assert_eq!(arena.capacity(), capacity);
+                assert_eq!(arena.available_slots(), capacity);
+                assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                let program_bytes = program(next(&mut seed));
+                let mut owner = make_owner(&program_bytes);
+                let mut reference = make_owner(&program_bytes);
+
+                // Phase 1: cached-block churn, invalidation of inactive entries,
+                // STOP and EventPending before entry.
+                let mut cache = new_cache(capacity);
+                for step in 0..8 {
+                    let pick = if step == 0 { 2 } else { next(&mut seed) % 5 };
+                    match pick {
+                        0..=2 => {
+                            let rip = [0x2000_u64, 0x3000, 0x4000][pick as usize];
+                            let state = LongModeState {
+                                rip,
+                                ..LongModeState::default()
+                            };
+                            cached_run(&mut owner, rip, state, &mut cache, &mut arena, &mut stats);
+                        }
+                        3 => {
+                            // Guest write into the aliased backing: resident
+                            // aliases are released at once after return.
+                            let value = next(&mut seed);
+                            let (_, removed) = owner
+                                .control_write(0x2002, &value.to_le_bytes(), &mut cache)
+                                .unwrap();
+                            stats.invalidated_entries += removed;
+                        }
+                        _ => {
+                            let rip = 0x4000;
+                            let (bytes, _) = owner.view(rip, 10);
+                            let code = CodeView::new(rip, bytes).unwrap();
+                            let decoded = od_isa::decode(bytes).unwrap();
+                            let admission =
+                                AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded)
+                                    .unwrap();
+                            let dependencies = owner.dependencies(rip, bytes.len());
+                            let mut state = LongModeState {
+                                rip,
+                                ..LongModeState::default()
+                            };
+                            let before = state.clone();
+                            let counters = cache.counters();
+                            let resident = cache.resident_entries();
+                            let event = AtomicBool::new(true);
+                            let pending = od_jit::dispatch::run_multi_cached_controlled(
+                                code,
+                                &admission,
+                                cached_test_context(),
+                                &dependencies,
+                                &mut state,
+                                1,
+                                od_jit::dispatch::DispatchControl {
+                                    stop_rip: None,
+                                    stop_requested: &AtomicU8::new(0),
+                                    event_requested: Some(&event),
+                                },
+                                &mut cache,
+                                &mut arena,
+                            )
+                            .unwrap();
+                            assert_eq!(pending.exit, od_jit::dispatch::DispatchExit::EventPending);
+                            stats.events += 1;
+                            let stopped = od_jit::dispatch::run_multi_cached_controlled(
+                                code,
+                                &admission,
+                                cached_test_context(),
+                                &dependencies,
+                                &mut state,
+                                1,
+                                od_jit::dispatch::DispatchControl {
+                                    stop_rip: None,
+                                    stop_requested: &AtomicU8::new(1),
+                                    event_requested: None,
+                                },
+                                &mut cache,
+                                &mut arena,
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                stopped.exit,
+                                od_jit::dispatch::DispatchExit::Runtime(
+                                    RuntimeExitTag::StopRequested
+                                )
+                            );
+                            stats.stops += 1;
+                            assert_eq!(state, before);
+                            assert_eq!(cache.counters(), counters);
+                            assert_eq!(cache.resident_entries(), resident);
+                        }
+                    }
+                    stats.steps += 1;
+                    pool(&arena, &cache);
+                }
+                cache.clear();
+                stats.steps += 1;
+                assert_eq!(arena.available_slots(), capacity);
+                assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                drop(cache);
+
+                // Phase 2: active-code (V3) lifecycle next to a cached prefix.
+                // Phase 1 guest writes hit only `owner`, so offset its count.
+                let write_skew = owner.write_count - reference.write_count;
+                let mut v3_cache = new_cache(1);
+                for sub in 0..3 {
+                    let variant = (round * 3 + sub) % 4;
+                    let mut active = Some(publish_v3(&mut arena, &owner, &mut stats));
+                    stats.steps += 1;
+                    let forged = forge(active.as_ref().unwrap());
+                    assert_eq!(arena.available_slots(), capacity - 1);
+
+                    if variant == 3 {
+                        // Unrelated destination: the whole artifact completes.
+                        // At capacity 2 a neighbour handle is dropped while the
+                        // native call holds the arena borrow (S4-15f).
+                        let observed = Rc::new(Cell::new(None));
+                        let victim = if capacity == 2 {
+                            let victim = Rc::new(RefCell::new(Some(
+                                arena
+                                    .publish_memory_store_v2(&s4_15f_store_block())
+                                    .unwrap(),
+                            )));
+                            assert_eq!(arena.available_slots(), 0);
+                            let hook_victim = victim.clone();
+                            let inner = arena.arena.clone();
+                            let hook_observed = observed.clone();
+                            owner.drop_in_preflight = Some(Box::new(move || {
+                                let slot_index =
+                                    hook_victim.borrow().as_ref().unwrap()._block.slot_index;
+                                let dropped = hook_victim.borrow_mut().take();
+                                drop(dropped);
+                                let state = inner.borrow();
+                                hook_observed.set(Some((
+                                    state.free_slots.len(),
+                                    state.pending_release_count(),
+                                    state.slots[slot_index].direct_memory_metadata_v2.is_some(),
+                                )));
+                            }));
+                            Some(victim)
+                        } else {
+                            None
+                        };
+                        for run in 0..2 {
+                            let rax = next(&mut seed);
+                            let mut state = v3_state(rax, 0x4000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            store_step(&mut expected, &mut reference);
+                            advance(&mut expected, &mut reference);
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &AtomicU8::new(0),
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::Complete);
+                            assert_eq!(result.remaining_budget, 0);
+                            assert_eq!(result.retired_instructions, 3);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 23);
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(owner.backings[2], reference.backings[2]);
+                            stats.steps += 1;
+                            if run == 0
+                                && let Some(victim) = &victim
+                            {
+                                assert!(victim.borrow().is_none());
+                                assert_eq!(
+                                    observed.get(),
+                                    Some((0, 1, true)),
+                                    "victim slot intact until the native call returns"
+                                );
+                                assert_eq!(arena.available_slots(), 1, "released after return");
+                                assert_eq!(arena.arena.borrow().pending_release_count(), 1);
+                                stats.deferred_releases += 1;
+                                expected_deferred += 1;
+                            }
+                        }
+                        if capacity == 2 {
+                            // The next publication applies the deferred release.
+                            let state = LongModeState {
+                                rip: ENTRY,
+                                ..LongModeState::default()
+                            };
+                            cached_run(
+                                &mut owner,
+                                ENTRY,
+                                state,
+                                &mut v3_cache,
+                                &mut arena,
+                                &mut stats,
+                            );
+                            stats.steps += 1;
+                            assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                            assert_eq!(arena.available_slots(), 0);
+                        }
+                    } else {
+                        if capacity == 2 {
+                            let state = LongModeState {
+                                rip: ENTRY,
+                                ..LongModeState::default()
+                            };
+                            cached_run(
+                                &mut owner,
+                                ENTRY,
+                                state,
+                                &mut v3_cache,
+                                &mut arena,
+                                &mut stats,
+                            );
+                            stats.steps += 1;
+                            assert_eq!(arena.available_slots(), 0);
+                        }
+                        if variant == 2 {
+                            // Helper fault after the committed prefix.
+                            let fault = ArchitecturalFault {
+                                vector: 14,
+                                error_code: Some(7),
+                                linear_address: Some(0x2000),
+                            };
+                            owner.architectural_write_fault = Some(fault.clone());
+                            reference.architectural_write_fault = Some(fault.clone());
+                            let mut state = v3_state(next(&mut seed), 0x2000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            assert_eq!(
+                                od_isa::execute::step(
+                                    &mut expected,
+                                    &mut reference,
+                                    AccessContext::default()
+                                ),
+                                Ok(StepOutcome::Fault(fault.clone()))
+                            );
+                            let _ = reference.finish_guest_write();
+                            let resident = v3_cache.resident_entries();
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &AtomicU8::new(0),
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            stats.faults += 1;
+                            stats.steps += 1;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::GuestFault(fault));
+                            assert_eq!(result.remaining_budget, 2);
+                            assert_eq!(result.retired_instructions, 1);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 10);
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(v3_cache.resident_entries(), resident, "no invalidation");
+                            assert_eq!(arena.available_slots(), capacity - 1 - resident);
+                        }
+
+                        if variant == 1 {
+                            // STOP raised by the helper during a committed store
+                            // to an unrelated page: observed after return, the
+                            // tail stays unexecuted and the artifact stays valid.
+                            let stop = Arc::new(AtomicU8::new(0));
+                            owner.request_stop_on_write = true;
+                            owner.stop_byte = Some(stop.clone());
+                            let rax = next(&mut seed);
+                            let mut state = v3_state(rax, 0x2000);
+                            let mut expected = state.clone();
+                            advance(&mut expected, &mut reference);
+                            store_step(&mut expected, &mut reference);
+                            let resident = v3_cache.resident_entries();
+                            let result = run_v3(
+                                active.as_ref().unwrap(),
+                                &arena,
+                                &mut state,
+                                &mut owner,
+                                3,
+                                &stop,
+                                &mut v3_cache,
+                                &mut stats,
+                            );
+                            stats.interpreter_comparisons += 1;
+                            stats.stops += 1;
+                            stats.steps += 1;
+                            owner.request_stop_on_write = false;
+                            owner.stop_byte = None;
+                            assert_eq!(result.exit, ActiveCodeExecutionExitV3::StopRequested);
+                            assert_eq!(result.remaining_budget, 1);
+                            assert_eq!(result.retired_instructions, 2);
+                            assert_eq!(state, expected);
+                            assert_eq!(state.rip, ENTRY + 13);
+                            assert_eq!(state.gpr[1], OLD_RCX, "tail not executed");
+                            assert_eq!(owner.write_count, reference.write_count + write_skew);
+                            assert_eq!(owner.backings[0], reference.backings[0]);
+                            assert_eq!(
+                                owner.backings[1].bytes[..8],
+                                reference.backings[1].bytes[..8]
+                            );
+                            assert_eq!(owner.backings[1].bytes[..8], rax.to_le_bytes());
+                            assert_eq!(v3_cache.resident_entries(), resident);
+                            assert_eq!(arena.available_slots(), capacity - 1 - resident);
+                            stop.store(0, Ordering::Release);
+                        }
+
+                        // Active-block invalidation: the store rewrites the
+                        // completed prefix of the running artifact.
+                        let rax = next(&mut seed);
+                        let mut state = v3_state(rax, ENTRY + 2);
+                        let mut expected = state.clone();
+                        advance(&mut expected, &mut reference);
+                        store_step(&mut expected, &mut reference);
+                        let resident = v3_cache.resident_entries();
+                        let invalidated_before = stats.invalidated_entries;
+                        let result = run_v3(
+                            active.as_ref().unwrap(),
+                            &arena,
+                            &mut state,
+                            &mut owner,
+                            3,
+                            &AtomicU8::new(0),
+                            &mut v3_cache,
+                            &mut stats,
+                        );
+                        stats.interpreter_comparisons += 1;
+                        stats.steps += 1;
+                        assert_eq!(result.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+                        assert_eq!(result.remaining_budget, 1);
+                        assert_eq!(result.retired_instructions, 2);
+                        assert_eq!(state, expected);
+                        assert_eq!(state.rip, ENTRY + 13);
+                        assert_eq!(state.gpr[1], OLD_RCX, "tail not executed");
+                        assert_eq!(owner.write_count, reference.write_count + write_skew);
+                        assert_eq!(owner.backings[0], reference.backings[0]);
+                        assert_eq!(&owner.backings[0].bytes[2..10], &rax.to_le_bytes());
+                        assert_eq!(stats.invalidated_entries - invalidated_before, resident);
+                        assert_eq!(v3_cache.resident_entries(), 0);
+                        assert_eq!(arena.available_slots(), capacity - 1);
+
+                        // Stale artifact: rejected before any CPU/RAM effect.
+                        let mut probe = state.clone();
+                        probe.rip = ENTRY;
+                        let probe_before = probe.clone();
+                        let backings_before = owner.backings.clone();
+                        let writes_before = owner.write_count;
+                        stats.stale_attempts += 1;
+                        assert_eq!(
+                            active.as_ref().unwrap().execute_tracked_v3(
+                                &mut probe,
+                                &mut owner,
+                                AccessContext::default(),
+                                3,
+                                None,
+                                &AtomicU8::new(0),
+                                |_| panic!("stale artifact cannot notify"),
+                            ),
+                            Err(ActiveCodeExecutionErrorV3::Preflight(
+                                TrackedCodeStorePreflightError::ActiveSourceMismatch
+                            ))
+                        );
+                        stats.stale_rejections += 1;
+                        assert_eq!(probe, probe_before);
+                        assert_eq!(owner.backings, backings_before);
+                        assert_eq!(owner.write_count, writes_before);
+                        stats.steps += 1;
+
+                        // Fresh tail from current bytes, without replaying the store.
+                        if capacity == 1 {
+                            drop(active.take());
+                            assert_eq!(arena.available_slots(), 1);
+                        }
+                        let tail = cached_run(
+                            &mut owner,
+                            ENTRY + 13,
+                            state.clone(),
+                            &mut v3_cache,
+                            &mut arena,
+                            &mut stats,
+                        );
+                        stats.steps += 1;
+                        assert_eq!(tail.gpr[1], SENTINEL);
+                        assert_eq!(tail.rip, ENTRY + 23);
+                        assert_eq!(owner.write_count, reference.write_count + write_skew);
+                    }
+
+                    // Release the artifact, then probe the forged old handle.
+                    drop(active.take());
+                    stats.steps += 1;
+                    assert_eq!(
+                        arena.available_slots(),
+                        capacity - v3_cache.resident_entries()
+                    );
+                    let slot_reused = {
+                        let inner = arena.arena.borrow();
+                        inner.slots[forged._block.slot_index].generation != forged._block.generation
+                    };
+                    let mut probe = v3_state(0, ENTRY + 2);
+                    let probe_before = probe.clone();
+                    let writes_before = owner.write_count;
+                    stats.stale_attempts += 1;
+                    let pc_map = forged.pc_map();
+                    let executed = forged.execute_tracked_v3(
+                        &mut probe,
+                        &mut owner,
+                        AccessContext::default(),
+                        3,
+                        None,
+                        &AtomicU8::new(0),
+                        |_| panic!("released artifact cannot notify"),
+                    );
+                    if slot_reused {
+                        assert_eq!(pc_map, Err(ActiveCodeExecutionErrorV3::InvalidHandle));
+                        assert_eq!(executed, Err(ActiveCodeExecutionErrorV3::InvalidHandle));
+                    } else {
+                        assert_eq!(pc_map, Err(ActiveCodeExecutionErrorV3::InvalidMetadata));
+                        assert_eq!(executed, Err(ActiveCodeExecutionErrorV3::InvalidMetadata));
+                    }
+                    stats.stale_rejections += 1;
+                    assert_eq!(probe, probe_before);
+                    assert_eq!(owner.write_count, writes_before);
+                    let available = arena.available_slots();
+                    drop(forged);
+                    assert_eq!(arena.available_slots(), available, "stale drop is a no-op");
+
+                    v3_cache.clear();
+                    stats.steps += 1;
+                    assert_eq!(arena.available_slots(), capacity);
+                    assert_eq!(arena.arena.borrow().pending_release_count(), 0);
+                }
+
+                // Phase 3: drop the backend while handles are live, then reopen.
+                let live = publish_v3(&mut arena, &owner, &mut stats);
+                if capacity == 2 {
+                    let state = LongModeState {
+                        rip: ENTRY,
+                        ..LongModeState::default()
+                    };
+                    cached_run(
+                        &mut owner,
+                        ENTRY,
+                        state,
+                        &mut v3_cache,
+                        &mut arena,
+                        &mut stats,
+                    );
+                }
+                drop(arena);
+                stats.steps += 1;
+                assert_eq!(
+                    PublishedArenaBackend::new(capacity).err(),
+                    Some(PublishedArenaError::MappingAlreadyLive)
+                );
+                drop(v3_cache);
+                if capacity == 2 {
+                    assert_eq!(
+                        PublishedArenaBackend::new(capacity).err(),
+                        Some(PublishedArenaError::MappingAlreadyLive),
+                        "the live V3 handle keeps the mapping"
+                    );
+                }
+                drop(live);
+                stats.steps += 1;
+                let reopened = PublishedArenaBackend::new(capacity).unwrap();
+                assert_eq!(reopened.available_slots(), capacity);
+                assert_eq!(reopened.arena.borrow().pending_release_count(), 0);
+                drop(reopened);
+                stats.steps += 1;
+            }
+        }
+
+        eprintln!(
+            "s3_25d: steps={} native={} compared={} live_checks={} stale={}/{} invalidated={} \
+             deferred={} faults={} stops={} events={} reopens={} publications={}",
+            stats.steps,
+            stats.native_executions,
+            stats.interpreter_comparisons,
+            stats.live_generation_checks,
+            stats.stale_rejections,
+            stats.stale_attempts,
+            stats.invalidated_entries,
+            stats.deferred_releases,
+            stats.faults,
+            stats.stops,
+            stats.events,
+            stats.reopens,
+            stats.publications,
+        );
+        assert!(stats.steps >= 300, "several hundred steps: {}", stats.steps);
+        assert_eq!(stats.native_executions, stats.interpreter_comparisons);
+        assert_eq!(stats.stale_attempts, stats.stale_rejections);
+        assert!(stats.stale_rejections > 0);
+        assert_eq!(stats.deferred_releases, expected_deferred);
+        assert!(stats.deferred_releases > 0);
+        assert!(stats.faults > 0 && stats.stops > 0 && stats.events > 0);
+        assert!(stats.invalidated_entries > 0);
+        assert_eq!(stats.reopens, 2 * ROUNDS - 1);
+
+        // Final: every mapping and slot is free again after the last drop.
+        let last = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(last.available_slots(), 2);
+        assert_eq!(last.arena.borrow().pending_release_count(), 0);
+        assert_eq!(last.arena.borrow().free_slots.len(), 2);
+    }
+
     #[test]
     fn tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit() {
         let _guard = jit_test_lock();

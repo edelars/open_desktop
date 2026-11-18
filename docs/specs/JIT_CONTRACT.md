@@ -2452,6 +2452,161 @@ does not implement concurrent/reentrant eviction, active native retirement
 beyond this V3 artifact, a deferred queue, SMP reclamation, or complete S3-25.
 See the [S3-25b report](../reports/STAGE_3_S3-25b_2026-10-27.md).
 
+### S3-25c: block lifecycle for one vCPU (normative)
+
+This section is normative for the one-vCPU, synchronous profile only. It states
+one lifecycle scheme and maps both implementations onto it; it adds no code
+path. Reports: [S3-25cd report](../reports/STAGE_3_S3-25cd_2026-11-18.md).
+
+**States.** A compiled block is in exactly one of four states:
+
+1. **Unavailable for new entries.** No lookup can return it: it was removed from
+   the lookup structure, or its key is stale (the backing/page generation or the
+   fetched bytes no longer match). The block may still be physically owned.
+2. **Active execution.** A native call of the block is in progress. The block,
+   its metadata and its slot are borrowed for the whole call and for decoding
+   its result; nothing can remove, replace or reuse them from inside the call.
+3. **Referenced.** Not executing and not reachable from lookup, but something
+   still holds it: an `Rc` handle to the arena slot, or a PC-map copy bound to
+   the slot generation. There are no references through block links (no block
+   linking exists; S3-31 is open), so a block is referenced only by handles
+   and generation-bound PC-map copies.
+4. **Physically freed.** The arena slot is returned to the free stack, or the
+   production MAP_JIT region is unmapped. In the fixture arena this state is
+   reached only at a mutating arena access (see "Safe point"), never under an
+   arena borrow. The arena mapping itself is unmapped only after the last handle
+   to the arena has dropped.
+
+Two steps are kept apart. (a) *Destroying the last reference* (dropping the
+handle) can happen at any moment, including from an owner callback while the
+arena is borrowed; in the fixture arena that step only *records* the release
+(`pending_release`). (b) *State 4* (the slot returned) happens only at the next
+mutating arena access: `drain_pending_releases` at the start of `publish_*` or
+in a handle drop that finds the arena free, never under a borrow.
+`pending_release` and `drain_pending_releases` are a mechanism of the fixture
+arena only (`MultiEntryBlockCache` + `PublishedArenaBackend`).
+`PagedFetchedLoadSession` has no such path: the session takes `&mut self` and
+has no external handles.
+
+**Safe point.** A transition between states 1-4 that the cache, backend or
+session performs itself (removal, clear, replacement, reset, retirement) is
+allowed only at the safe point "after the native call returned and its
+result/counters were checked, before the next lookup". Mechanism: the execution
+entries take `&mut` on the cache/backend/session, so none of these can be called
+while a block executes. Destroying the last handle is not such a transition and
+is not bound to the safe point (step (a) above): a handle that drops while the
+arena is shared-borrowed (an owner callback during the native call or during
+preflight) only records its release in the slot's `pending_release` cell; the
+slot is returned (state 4) at the next mutable access (`drain_pending_releases`
+in `publish_*` or in a later drop), never under the borrow. Reaching state 4 may
+therefore be delayed past the safe point (to the next publication or drop), but
+a block in state 1 or later is never entered.
+
+**Reuse and stale handles.** Every publication into a slot raises the slot
+generation (`checked_add`, `GenerationExhausted` on overflow). A handle or
+PC-map copy of an older generation is rejected before any CPU or memory
+effect; a handle whose slot was freed but not yet reused finds no metadata. The
+error name depends on the handle type: a V1 cached handle gives `StaleHandle`
+for both a reused and a freed slot; a V2 `pc_map()` copy gives `StaleHandle` or
+`InvalidBlockMetadata`; at execution V2 and V3 handles give `InvalidHandle`
+(older generation) or `InvalidMetadata` (freed, not reused). Releasing a free
+slot, a duplicate release and a release of a stale generation are no-ops, so a
+slot is never on the free stack twice. Result: no cache entry, PC-map or handle
+leads into a reused slot.
+
+**Normative implementation.** `PagedFetchedLoadSession` (production owner,
+S4-15/S4-16) is the normative implementation. The fixture
+`MultiEntryBlockCache` + `PublishedArenaBackend` is a bounded model of the same
+scheme with several slots and typed handles; its evidence covers the arena
+mechanisms (generation, `pending_release`, lease) and does not by itself prove
+properties of the production session. The two realize the states as follows.
+
+| State / transition | Fixture: `MultiEntryBlockCache` + `PublishedArenaBackend` | Production: `PagedFetchedLoadSession` |
+| --- | --- | --- |
+| 1 Unavailable | `MultiEntryBlockCache::invalidate`, `clear`, `evict_oldest` (via `prepare_install`), `reset_for_execution_context`, removal after executor error; stale key never found by `find`. A typed V3 artifact is not in the cache: after `CodeInvalidated` its handle stays alive with the current generation, and unavailability for new entries is enforced by `validate_active_code_source_v3` returning `Preflight(ActiveSourceMismatch)` before the native entry (tests `active_code_v3_invalidates_exact_not_yet_executed_tail_immediate`, `active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse`); the slot is freed only when the owner drops the handle. | Reuse check in `execute_form`/`execute_forms` (not `retired`, same linear base, physical page, page generation, bytes) fails: the session sets `admitted = None` before compiling; `retire_after_code_invalidation` marks the block `retired` after its own store reported `CodeInvalidated`. |
+| 2 Active | `PublishedArenaBackend::execute_cached_block`, `PublishedArenaMemoryStore::execute_tracked_code_store_v2`, `PublishedArenaActiveCodeV3::execute_tracked_v3` hold `arena.borrow()` through the call and result decoding; the dispatcher holds the cache entry. | `execute` (load only) and `execute_with_store` go through `execute_form`; `execute_forms` and `execute_or_interpret` are the other entries. All take `&mut self`; the admitted block is alive until the call returns. |
+| 2 to 1 or 3 (safe point) | After the native return and result decoding, the notification (`CodeInvalidation`) is applied after the arena borrow was dropped (`execute_tracked_code_store_v2`, `execute_tracked_v3`); for cached entries `MultiEntryBlockCache::invalidate` then runs; for a V3 artifact the handle stays in state 3 and re-entry is rejected by `ActiveSourceMismatch` (row 1); STOP/EventPending leave the entry resident. | `retire_after_code_invalidation` runs after the call returned; nothing is released there. |
+| 1 to 3 (outliving handle) | A typed handle or PC-map copy outlives the cache entry (`pc_map()` retained across artifact drop, invalidation and clear). | None: the session owns its block alone; there is no external handle. |
+| 3 to 4 (physical free) | `Drop for PublishedArenaBlock` calls `ArenaInner::release_slot` (arena free) or only records the release in `pending_release` (arena borrowed; no state 4 yet); `drain_pending_releases` returns the slot on the next `publish_*` and on the next drop; the mapping is unmapped after the last handle. | `PagedFetchedLoadSession::reset`, the stale-block drop in `execute_form`/`execute_forms`, or dropping the session drops `PublishedCode`: munmap and the process-wide lease (`map_jit_region_live()`). A block with `retired` set is freed at the next entry that reaches the reuse check; an entry that aborts earlier (context, CR3, operand range, fetch error; in `execute_forms` the range is checked before the reuse check) leaves the block owned, but it cannot be entered because of `retired`. |
+| 4 to reuse | New publication: slot generation + 1; old handles rejected by generation. | New admission maps a fresh region; the retired one is already gone or is dropped before it. |
+
+**Tests per transition.** All names exist in the code.
+
+- 1 (fixture): od-jit `dispatch::tests`
+  `s3_54_dependency_invalidation_and_context_reset_prevent_stale_hits`,
+  `backing_write_notification_invalidates_aliases_but_not_unrelated_backings`,
+  `multi_entry_cache_reuses_sixteen_keys_and_evicts_exact_fifo_victim`,
+  `post_publish_stale_candidate_is_dropped_before_entry_or_execution`; od-host
+  `arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two`,
+  `tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit`.
+- 1 (production): `tests/system/stage4_memory_fault.rs`
+  `s4_15f_generation_invalidation_replaces_the_block_without_leaking_the_region`,
+  `s4_16i_after_the_exit_the_old_bytes_never_run_and_new_bytes_are_admitted`,
+  `s4_16i_the_retired_block_stays_owned_until_the_next_admission_reset_or_drop`.
+- 2 (fixture): od-jit `cached_stop_and_executor_error_release_only_at_safe_return_boundaries`
+  (live handle during execute); od-host
+  `s4_15f_handle_dropped_by_the_owner_during_a_native_call_is_freed_after_return`
+  (the owner hook fires in `preflight_code_store`, under the arena borrow but
+  before the native code is entered; the release is recorded and the slot
+  returns at the next mutable access).
+  2 (production): `s4_16i_store_into_the_executing_code_page_commits_and_exits_like_the_interpreter`,
+  `s4_16i_store_fault_on_the_executing_page_precedes_the_write_and_keeps_the_block`.
+- 2 to 1/3: od-host `active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry`,
+  `active_code_v3_guards_faults_aliases_and_committed_stop_are_precise`,
+  `active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic`;
+  production `s4_15f_the_block_stays_owned_after_its_execution_until_reset_or_drop`.
+- 1 to 3: od-host `active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse`,
+  `direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse`.
+- 3 to 4: od-host `s4_15f_arena_release_is_exact_and_a_duplicate_release_is_a_no_op`,
+  `s4_15f_handle_dropped_under_a_borrow_is_deferred_not_leaked`,
+  `arena_lease_outlives_backend_until_last_handle_and_can_reopen`; production
+  `s4_15f_reset_between_two_entries_readmits_and_equals_the_interpreter`,
+  `s4_15f_free_slots_return_to_the_initial_count_after_reset_and_after_drop`,
+  `s4_15f_repeated_reset_and_late_drop_never_release_another_sessions_region`.
+- 4 to reuse (stale generation rejected): od-host
+  `direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse`,
+  `active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse`.
+- All transitions together at capacity 1 and 2 (S3-25d): od-host
+  `s3_25d_small_capacity_lifecycle_stress_matches_interpreter_and_frees_everything`
+  (about 530 steps: publish, execute, active-block invalidation, STOP and
+  EventPending, injected helper fault, deferred release under a native call,
+  stale-handle probes, cache clear, backend drop with live handles, reopen; each
+  native execution compared with the interpreter; the end state has all slots
+  free and `pending_release_count() == 0`). Comparison scope: in the cached
+  runs the CPU state and `retired_instructions` are compared (exit is not; the
+  interpreter continues on the same owner after the native run, which is sound
+  because those blocks are register-only moves and `run_multi_cached` borrows
+  the owner); in the V3 runs `backings[0]` (bytes and version) and `backings[2]`
+  (variant 3) are compared fully, `backings[1]` (variant 1) only in
+  `bytes[..8]`, without its version. Stale attempts of the last run (84) split
+  into 48 forged handles of an old generation (`InvalidHandle` if the slot was
+  reused, `InvalidMetadata` if it was freed) and 36 handles with the live
+  generation rejected by the source check (`Preflight(ActiveSourceMismatch)`);
+  `StaleHandle` does not occur in the stress.
+
+**Rule for any future linking or backward transition (a rule, not a premise).**
+A direct link between blocks, or any transition from one block into another
+that bypasses lookup (return-address reuse, backward jump, chained entry), MUST
+check the target's slot generation and key/page generation at the transition, or
+else be unlinked at the same safe point at which its target leaves state 1.
+Without that check the delay before a retired target is detected is unbounded
+(S6-40 item 3). This holds today only because no such links exist; S3-31
+(direct block links) must satisfy this rule before it can close.
+
+**Limits.** Evidence is for one vCPU only. It holds for the current block
+profile (at most 32 instructions per block, no linking, memory blocks with at
+most two memory sites). There is no cross-thread release or retirement with a
+grace period; SMP is future work. Writers other than the session (NVMe DMA,
+display, loader/delivery paths not wired to the session) are outside this
+section; for them safety rests on the key check at the next lookup (S4-16h).
+Self-modifying code in shared multi-instruction blocks containing a store stays
+with S3-24 (open); S3-25c/d cover only the single-instruction store exit of the
+production session (S4-16i) and the exact V3 fixture artifact (S3-24a/b). The
+S3-25d stress checks only the fixture arena and only on macOS aarch64; on other
+platforms the test returns at once and passes without checks. The production
+evidence is `s4_15f_*` / `s4_16i_*` (`tests/system/stage4_memory_fault.rs`,
+macOS aarch64). No performance claim is made.
+
 An S3-18d1 benchmark-only partial adds `od-bench dispatch-cache` on native
 Apple Silicon. It compares the uncached publisher, one-entry cache over a
 16-slot arena, FIFO(16), and opt-in LRU(16); the existing multi-entry
