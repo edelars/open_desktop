@@ -14,7 +14,7 @@
 | Собственный CoW disk image | `crates/od-storage/src/` | **CoW v1 — нормативен (принято владельцем 2026-11-06)**: layout и правила — §9; реализация [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); S9-40 (throughput, чтение, WA, recovery, память) остаётся незавершённым и не отменяется этим решением |
 | Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен, формат не принят (S9-40); production `ParentResolver` нет |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
-| UEFI variable store artifact | семантика — `firmware/uefi/src/`, persistence — `od-storage` | **TBD S9-26**; firmware отсутствует |
+| UEFI variable store artifact | семантика — `firmware/uefi/src/`, persistence — `od-storage` | **TBD S9-26**; variable store отсутствует (этап 7, S7-09/S7-10) |
 | vTPM persistent state | state — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | **TBD S9-27**; vTPM отсутствует |
 
 Вне документа:

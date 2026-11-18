@@ -245,7 +245,7 @@
 | S9-23 | `blocked` | Контракт полного VM checkpoint: нужны S9-02 и S9-16 (выполнены); ISSUE-056 и компоненты этапов 4–8 |
 | S9-24 | `blocked` | Нет единого владельца CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); нужны компоненты этапа 4 |
 | S9-25 | `blocked` | Нужны реальные устройства, время и I/O state из этапов 5–8 |
-| S9-26 | `blocked` | UEFI firmware отсутствует (этап 6/8) |
+| S9-26 | `blocked` | Нет UEFI variables store; владелец — этап 7 (S7-09, S7-10, S7-33; [план](../plans/STAGE_7.md)); исправлено по [ISSUE-086](../KNOWN_ISSUES.md#issue-086-s9-26-wrong-uefi-stage-reference) |
 | S9-27 | `blocked` | vTPM отсутствует |
 | S9-28…S9-35 | `blocked` | Требуют компонентов этапов 4–8 и результатов S9-13, S9-24…27 |
 | S9-36…S9-38 | `blocked` | Цепочка от S9-35 |
