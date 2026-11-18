@@ -50,6 +50,19 @@
 //! extensible: S6-42 adds `stop_all` and `split_owner` to the reread, the order
 //! (flag, byte; take byte down, reread flags) does not change.
 //!
+//! # S6-42c: the guest side of the boundary (opt-in)
+//!
+//! [`run_paged_host_loop_shared_set`] is the same loop with a [`PagedHostSetEnv`]: the interpreter
+//! step is one instruction of the CPL0 profile set (`od_machine::run_host_set_step`: the profile of
+//! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, `#PF` and `#GP(0)` delivered through
+//! the guest IDT, the split `LOCK` behind the gate of the run) and, before every step, the loop
+//! asks the interrupt boundary of the vCPU's own Local APIC (`od_machine::host_deliver_pending_irq`:
+//! a delivery retires nothing and is followed by the next iteration's checks). A guest fault the
+//! native path reports is not an exit in this mode: the instruction ran nothing, so the interpreter
+//! step takes it again, raises the same fault and delivers it (a guest fault the IDT cannot take is
+//! the `GuestFault` exit, as before). Without the environment (the loops above) nothing of this
+//! exists and the loop is byte for byte what it was.
+//!
 //! # Not covered
 //!
 //! One vCPU, one thread, no `Send`/`Sync` for the session or its handles. The JIT
@@ -63,6 +76,7 @@ use std::time::{Duration, Instant};
 use crate::{
     MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadSession,
 };
+use od_isa::execute::Cpl0ProfileSet;
 
 /// The request flags of one vCPU loop, as one value read after the STOP byte was
 /// taken down.
@@ -291,6 +305,17 @@ pub enum PagedHostLoopExit {
     InvalidRflagsDefined {
         value: u64,
     },
+    /// S6-42c (set mode only): a vector waiting in the vCPU's Local APIC could not be delivered
+    /// (no IDT, a gate or stack that faults, a refused state). The text names the vector and the
+    /// reason; the state is what the failed delivery left.
+    IrqDeliveryFailed(String),
+    /// S6-42c (set mode only): the interpreter step could not be resumed from (an integration
+    /// error of the CPL0 set); the text is the mapping error.
+    InterpreterIntegration(String),
+    /// S6-42c (set mode only): the instruction wrote a timer register of the vCPU's Local APIC, so
+    /// the deadline of the clock owner the call was budgeted for may be stale; the call ends after
+    /// the instruction (as the set quantum of the interpreter ends).
+    DeviceBoundary,
 }
 
 /// Counters and exit of one call of [`run_paged_host_loop`].
@@ -322,6 +347,13 @@ pub struct PagedHostLoopReport {
     pub retired_at_stop_byte: Option<u64>,
     /// The `#PF` record of a `GuestFault` exit.
     pub page_fault: Option<od_isa::memory::PageFaultRecord>,
+    /// S6-42c (set mode): external interrupts delivered to the guest through its IDT.
+    pub irqs_delivered: u64,
+    /// S6-42c (set mode): guest `#PF`/`#GP(0)` delivered through its IDT by the interpreter step.
+    pub exceptions_delivered: u64,
+    /// S6-42c (set mode): native steps that reported a guest fault, redone by the interpreter step
+    /// (which raised and delivered it). Nothing of such a step was retired.
+    pub jit_faults_redone: u64,
 }
 
 impl PagedHostLoopReport {
@@ -339,6 +371,9 @@ impl PagedHostLoopReport {
             stop_byte_observations: 0,
             retired_at_stop_byte: None,
             page_fault: None,
+            irqs_delivered: 0,
+            exceptions_delivered: 0,
+            jit_faults_redone: 0,
         }
     }
 
@@ -420,18 +455,35 @@ pub(crate) fn run_paged_host_loop_with_hook(
 /// tracked fetch and the data operand reach RAM through the shared reference
 /// (`PhysicalMemory` by `&self`), and the interpreter fallback takes the device lock for one port
 /// access at a time. The loop itself holds no lock of the bus between two steps.
-pub(crate) enum LoopBusRef<'a> {
+pub(crate) enum LoopBusRef<'a, 's> {
     Exclusive(&'a mut od_machine::MachineBus),
     Shared(&'a od_machine::MachineBus, usize),
+    /// S6-42c: `Shared` with the guest side of the boundary (see [`PagedHostSetEnv`]).
+    SharedSet(&'a od_machine::MachineBus, usize, PagedHostSetEnv<'a, 's>),
 }
 
-impl LoopBusRef<'_> {
+impl LoopBusRef<'_, '_> {
     fn machine(&self) -> &od_machine::MachineBus {
         match self {
             Self::Exclusive(bus) => bus,
-            Self::Shared(bus, _) => bus,
+            Self::Shared(bus, _) | Self::SharedSet(bus, _, _) => bus,
         }
     }
+}
+
+/// What the loop of a vCPU thread needs to deliver interrupts and exceptions to the guest and to run
+/// its interpreter step as the CPL0 profile set (S6-42c).
+pub struct PagedHostSetEnv<'a, 's> {
+    /// The Local APIC of the vCPU (`od_machine::HostQuantumCall::lapic`).
+    pub lapic: &'a od_machine::LocalApicHandle,
+    /// The gate of the split `LOCK` of the thread (`od_machine::HostQuantumCall::gate`).
+    pub gate: od_machine::HostSplitGate<'a>,
+    /// The CPL0 profile set of the interpreter step. It must not own CR3 (the vCPU's `state.cr3`
+    /// stays empty, as the native path requires; the root is `PagedHostLoopConfig::cr3`).
+    pub set: &'a Cpl0ProfileSet<'s>,
+    /// The REP rule of the interrupt boundary: the previous call ended inside a partial `REP`, so
+    /// no interrupt is delivered at the first boundary. Kept by the caller across calls.
+    pub skip_first_boundary: &'a mut bool,
 }
 
 /// [`run_paged_host_loop`] for a vCPU thread of the parallel mode (S6-42b): the same loop over
@@ -467,12 +519,43 @@ pub fn run_paged_host_loop_shared(
     )
 }
 
+/// [`run_paged_host_loop_shared`] with the guest side of the boundary (S6-42c, see the module
+/// documentation): interrupts of the vCPU's Local APIC delivered through the guest IDT before every
+/// step, the interpreter step the CPL0 profile set of `env`, guest faults delivered, the split
+/// `LOCK` behind the gate. Nothing else differs.
+pub fn run_paged_host_loop_shared_set(
+    session: &mut PagedFetchedLoadSession,
+    control: &PagedHostLoopControl,
+    config: PagedHostLoopConfig,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    vcpu: usize,
+    env: PagedHostSetEnv<'_, '_>,
+    rflags_defined: &mut u64,
+    incoming_budget: u64,
+    committed_write: impl FnMut(od_machine::GuestPhysicalRange),
+    stop: impl FnMut() -> bool,
+) -> PagedHostLoopReport {
+    run_paged_host_loop_core(
+        session,
+        control,
+        config,
+        state,
+        LoopBusRef::SharedSet(bus, vcpu, env),
+        rflags_defined,
+        incoming_budget,
+        committed_write,
+        |_, _| {},
+        stop,
+    )
+}
+
 fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
     config: PagedHostLoopConfig,
     state: &mut od_isa::LongModeState,
-    mut bus: LoopBusRef<'_>,
+    mut bus: LoopBusRef<'_, '_>,
     rflags_defined: &mut u64,
     incoming_budget: u64,
     mut committed_write: impl FnMut(od_machine::GuestPhysicalRange),
@@ -511,6 +594,31 @@ fn run_paged_host_loop_core(
         if requests.event {
             report.exit = PagedHostLoopExit::EventPending;
             return report;
+        }
+        // S6-42c: the interrupt boundary of the vCPU's own Local APIC, before the step (and before
+        // the native attempt). A delivery retires nothing; the next iteration checks again.
+        if let LoopBusRef::SharedSet(machine, vcpu, env) = &mut bus {
+            let _ = vcpu;
+            match od_machine::host_deliver_pending_irq(
+                state,
+                machine,
+                env.lapic,
+                config.cr3,
+                config.efer,
+                config.access_context,
+                env.skip_first_boundary,
+                &mut committed_write,
+            ) {
+                od_machine::HostIrqBoundary::None => {}
+                od_machine::HostIrqBoundary::Delivered => {
+                    report.irqs_delivered += 1;
+                    continue;
+                }
+                od_machine::HostIrqBoundary::Failed(text) => {
+                    report.exit = PagedHostLoopExit::IrqDeliveryFailed(text);
+                    return report;
+                }
+            }
         }
         before_step(control, steps_started);
         steps_started += 1;
@@ -567,9 +675,17 @@ fn run_paged_host_loop_core(
                             continue;
                         }
                         MemoryOperationExecutionExitV2::GuestFault(fault) => {
-                            report.page_fault = jit.execution.page_fault.clone();
-                            report.exit = PagedHostLoopExit::GuestFault(fault.clone());
-                            return report;
+                            if matches!(bus, LoopBusRef::SharedSet(..)) {
+                                // S6-42c: nothing of the instruction retired; the interpreter
+                                // step below takes it again, raises the same fault and delivers
+                                // it through the guest IDT (a fault the IDT cannot take is the
+                                // `GuestFault` exit of that step).
+                                report.jit_faults_redone += 1;
+                            } else {
+                                report.page_fault = jit.execution.page_fault.clone();
+                                report.exit = PagedHostLoopExit::GuestFault(fault.clone());
+                                return report;
+                            }
                         }
                         // A single-instruction block never ends this way.
                         MemoryOperationExecutionExitV2::BudgetExhausted
@@ -592,6 +708,8 @@ fn run_paged_host_loop_core(
 
         // Exactly one step of the shared interpreter.
         report.jit_refusals += 1;
+        // S6-42c: what the CPL0-set step adds to the probe report (set mode only).
+        let mut set_step: Option<(bool, u64, bool)> = None;
         let quantum = match &mut bus {
             LoopBusRef::Exclusive(bus) => od_machine::run_paged_probe(
                 state,
@@ -616,6 +734,37 @@ fn run_paged_host_loop_core(
                 || false,
                 &mut committed_write,
             ),
+            LoopBusRef::SharedSet(bus, vcpu, env) => {
+                match od_machine::run_host_set_step(
+                    state,
+                    bus,
+                    od_machine::HostCpl0Step {
+                        vcpu: *vcpu,
+                        lapic: env.lapic,
+                        gate: env.gate,
+                        cr3: config.cr3,
+                        efer: config.efer,
+                        context: config.access_context,
+                        rflags_defined: *rflags_defined,
+                    },
+                    env.set,
+                    &mut committed_write,
+                ) {
+                    Ok(step) => {
+                        *env.skip_first_boundary = step.partial_rep;
+                        set_step = Some((
+                            step.partial_rep,
+                            step.delivered_exceptions,
+                            step.timer_register_written,
+                        ));
+                        step.report
+                    }
+                    Err(text) => {
+                        report.exit = PagedHostLoopExit::InterpreterIntegration(text);
+                        return report;
+                    }
+                }
+            }
         };
         *rflags_defined = quantum.rflags_defined;
         let retired = quantum.instructions_executed;
@@ -628,6 +777,9 @@ fn run_paged_host_loop_core(
         report.retired_interpreter += retired;
         report.remaining_budget -= retired;
         report.steps_interpreter += retired;
+        if let Some((_, delivered, _)) = set_step {
+            report.exceptions_delivered += delivered;
+        }
         match quantum.exit {
             od_machine::PagedProbeExit::BudgetExhausted => {
                 if retired != 1 {
@@ -636,7 +788,14 @@ fn run_paged_host_loop_core(
                     );
                     return report;
                 }
+                if matches!(set_step, Some((_, _, true))) {
+                    report.exit = PagedHostLoopExit::DeviceBoundary;
+                    return report;
+                }
             }
+            // S6-42c: a REP that made progress without finishing: the call goes on at the same
+            // instruction (the next boundary takes no interrupt, see `skip_first_boundary`).
+            od_machine::PagedProbeExit::Stopped if matches!(set_step, Some((true, _, _))) => {}
             od_machine::PagedProbeExit::Fault(fault) => {
                 report.page_fault = quantum.page_fault;
                 report.exit = PagedHostLoopExit::GuestFault(fault);
@@ -1800,6 +1959,8 @@ mod tests {
     mod s6_42;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_42b;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s6_42c;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_43a;
 }

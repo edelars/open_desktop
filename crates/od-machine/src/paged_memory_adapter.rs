@@ -3531,7 +3531,7 @@ const RFLAGS_IF: u64 = 1 << 9;
 /// read); 4) otherwise `deliver_external_interrupt_cpl0_set`: `Delivered` acknowledges the
 /// vector and counts `irqs_delivered`; a refusal of IF or shadow (not expected after 3) counts
 /// like 3; any other refusal, and `Aborted`, end the run as `IrqDeliveryFailed`, never silently.
-enum IrqBoundaryOutcome {
+pub(crate) enum IrqBoundaryOutcome {
     None,
     Delivered,
     Failed(
@@ -3543,7 +3543,7 @@ enum IrqBoundaryOutcome {
     ),
 }
 
-fn deliver_pending_irq(
+pub(crate) fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
     memory: &crate::PhysicalMemory,

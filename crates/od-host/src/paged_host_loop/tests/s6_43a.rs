@@ -279,6 +279,8 @@ impl Stepper for Quantum<'_, '_> {
                 bus: self.call.bus,
                 budget: 1,
                 stop: &mut *self.call.stop,
+                lapic: self.call.lapic,
+                gate: self.call.gate,
             })
             .map_err(str::to_owned)?;
         if result.retired != 1 || result.exit != HostQuantumExit::Running {
@@ -956,6 +958,7 @@ fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
             budget: u64::MAX,
             end_when_idle: false,
         },
+        &quantum.nmi_roots(),
         &|call| drive(&shared, &quantum, call),
         &|_| quantum.thread_exit(),
         |control| {

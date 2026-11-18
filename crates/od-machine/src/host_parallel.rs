@@ -25,17 +25,38 @@
 //! barrier): the stop is acknowledged on the safe point after the quantum returned, never inside
 //! a native call. A host quantum that returns [`HostQuantumExit::Halted`] or
 //! [`HostQuantumExit::Shutdown`] puts its vCPU in that activity; the thread then sleeps as the
-//! interpreter's does. Not here (S6-42c): interrupt delivery into the host quantum, the STOP byte
-//! of native blocks (a one-instruction block has the loop's poll between every two instructions),
-//! the NVMe doorbell and the PM stop request.
+//! interpreter's does.
+//!
+//! S6-42c: the call also hands the quantum what the guest-visible side of an instruction boundary
+//! needs. [`HostQuantumCall::lapic`] is the Local APIC of the vCPU and [`HostQuantumCall::gate`] the
+//! gate of the split `LOCK` (S6-34 step 8). Two functions use them: [`host_deliver_pending_irq`]
+//! delivers a vector waiting in the vCPU's own Local APIC through the guest IDT (the same
+//! Local APIC source and delivery as the CPL0-set loop), and
+//! [`run_host_set_step`] runs ONE instruction of the CPL0 profile set over `&MachineBus` with the
+//! gate, delivering a guest `#PF` or `#GP(0)` through the guest IDT as the set loop does. The base
+//! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
+//! Not here (S6-42d): the interrupt source of the board for the boot processor (PIC, PIT), the
+//! COM1 transmit pump and the device ticks of the interpreter quantum, the NVMe doorbell and the PM
+//! stop request, the STOP byte of native blocks.
 
-use crate::firmware_board::FirmwareBoardError;
+use crate::bus::SplitLockGate;
+use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
+use crate::irq_source::{IrqBoundaryHook, IrqCounters};
+use crate::lapic_irq_source::LapicIrqSource;
+use crate::paged_memory_adapter::{
+    IrqBoundaryOutcome, LoopBus, PagedCpl0SetExit, deliver_pending_irq, run_cpl0_set_loop,
+};
 use crate::parallel_run::{
     ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, ParallelStopError,
-    QuantumCall, ThreadExitFn, run_threads_with,
+    QuantumCall, run_threads_rooted,
 };
 use crate::smp_scheduler::Executed;
-use crate::{FirmwareBoardConfig, LoadedFirmwareBoard, MachineBus, PciEcam};
+use crate::{
+    FirmwareBoardConfig, GuestPhysicalRange, LoadedFirmwareBoard, LocalApicHandle,
+    Long64ProbeConfig, MachineBus, PagedProbeQuantumReport, PciEcam,
+};
+use od_isa::execute::{Cpl0ProfileSet, RunExit};
+use od_isa::memory::AccessContext;
 use od_isa::{CpuActivity, LongModeState};
 use std::time::Duration;
 
@@ -60,6 +81,30 @@ impl Default for HostParallelConfig {
     }
 }
 
+/// The gate of the split `LOCK` of the run (S6-34 step 8, MEMORY_MODEL.md D8), opaque to the host
+/// quantum: it only hands the gate back to [`run_host_set_step`]. A locked operand that is not
+/// naturally aligned makes the executing vCPU stop every other one around the operation; without a
+/// gate ([`Self::none`]) such an operand is a refusal (`MisalignedAtomic`) and an error of the run.
+#[derive(Clone, Copy)]
+pub struct HostSplitGate<'a>(Option<&'a dyn SplitLockGate>);
+
+impl HostSplitGate<'static> {
+    /// No gate: a guest split `LOCK` is refused (what the host run did before S6-42c).
+    pub const fn none() -> Self {
+        Self(None)
+    }
+}
+
+impl std::fmt::Debug for HostSplitGate<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "HostSplitGate(gate)"
+        } else {
+            "HostSplitGate(none)"
+        })
+    }
+}
+
 /// What one call of the host quantum is handed: the vCPU of the calling thread.
 pub struct HostQuantumCall<'a> {
     /// Index of the vCPU (equal to its APIC ID).
@@ -73,6 +118,10 @@ pub struct HostQuantumCall<'a> {
     /// The run's stop poll: the end of the run, a `stop_all` request or another vCPU's split
     /// `LOCK`. Only atomics. The quantum polls it between instructions and returns when it is true.
     pub stop: &'a mut dyn FnMut() -> bool,
+    /// The Local APIC of this vCPU (S6-42c): the source of the vectors the quantum delivers.
+    pub lapic: &'a LocalApicHandle,
+    /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
+    pub gate: HostSplitGate<'a>,
 }
 
 /// Why a call of the host quantum returned.
@@ -134,6 +183,10 @@ pub struct HostParallelReport {
     /// run returns.
     pub threads_started: usize,
     pub threads_exited: usize,
+    /// NMIs each vCPU's thread delivered through vector 2 at its boundaries (S6-42c).
+    pub nmi_delivered: Vec<u64>,
+    /// Split `LOCK` operations each vCPU executed behind the gate (S6-42c).
+    pub split_locks: Vec<u64>,
 }
 
 /// The proof of a stop of every vCPU.
@@ -180,6 +233,12 @@ impl HostParallelControl<'_, '_> {
 
     pub fn vcpu_count(&self) -> usize {
         self.inner.vcpu_count()
+    }
+
+    /// The Local APIC of vCPU `cpu` (S6-42c): the controller posts vectors to it
+    /// (`request_fixed_edge`) and looks at its IRR and ISR.
+    pub fn lapic(&self, cpu: usize) -> Option<LocalApicHandle> {
+        self.inner.lapic(cpu)
     }
 
     /// End the run: every thread ends at its next boundary.
@@ -236,9 +295,16 @@ impl HostParallelControl<'_, '_> {
 /// caller's thread as the controller (see [`crate::parallel_run::run_threads`]: the board is put
 /// in [`crate::ExecutionMode::Parallel`] for the run and back afterwards, and every thread is
 /// joined before this returns).
+///
+/// `nmi_roots[cpu]` is the page-table root through which an NMI is delivered to vCPU `cpu` when its
+/// state carries no CR3 of its own (a host quantum keeps `state.cr3` empty and walks the root of its
+/// own configuration, so the root is named here too). A vCPU without a root (`None`, or past the end
+/// of the slice) that has an NMI to take at a boundary fails the run with an explicit error; the
+/// board's own root is never used (S6-42c).
 pub fn run_host_threads<R>(
     board: &mut LoadedFirmwareBoard,
     config: HostParallelConfig,
+    nmi_roots: &[Option<u64>],
     run: &HostQuantumFn<'_>,
     on_thread_exit: &HostThreadExitFn<'_>,
     controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
@@ -256,6 +322,8 @@ pub fn run_host_threads<R>(
             bus: call.env.bus,
             budget: call.budget,
             stop: call.stop,
+            lapic: call.lapic,
+            gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
         match result.exit {
@@ -269,12 +337,13 @@ pub fn run_host_threads<R>(
             device_ns: 0,
         })
     };
-    let (report, value) = run_threads_with(
+    let (report, value) = run_threads_rooted(
         board,
         config,
         true,
         &quantum,
         Some(on_thread_exit),
+        Some(nmi_roots),
         |control| controller(&HostParallelControl { inner: control }),
     )?;
     Ok((host_report(report), value))
@@ -297,14 +366,14 @@ fn host_report(report: ParallelReport) -> HostParallelReport {
         calls: report.cpus.iter().map(|cpu| cpu.calls).collect(),
         threads_started: report.threads_started,
         threads_exited: report.threads_exited,
+        nmi_delivered: report.cpus.iter().map(|cpu| cpu.nmi_delivered).collect(),
+        split_locks: report.cpus.iter().map(|cpu| cpu.split_locks).collect(),
     }
 }
 
-/// The page-table root the board reports for its own use. The host quantum walks the tables of the
-/// state it is given, but the delivery of a pending NMI (`deliver_pending_nmi_of` in the thread's
-/// loop) goes through this root for a vCPU without a CR3, so the address is read when an NMI is
-/// delivered: no NMI is delivered in the tests of S6-42b, and the NMI path of the host run is open
-/// (S6-42c).
+/// The page-table root of the board's own boot (`into_linux_board`). The board is built with it,
+/// but a host run never walks it: a host quantum walks the root of its own configuration, and the
+/// delivery of an NMI uses the root named for the vCPU in `run_host_threads` (S6-42c).
 const HOST_BOARD_ROOT: u64 = 0x1000;
 
 /// A board for a host thread run: `vcpu_count` vCPUs, Linux profile with the Local APIC windows
@@ -344,6 +413,171 @@ pub fn host_install_vcpu(
         }
         None => false,
     }
+}
+
+/// What [`host_deliver_pending_irq`] did at one instruction boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostIrqBoundary {
+    /// Nothing was delivered: no vector is eligible, RFLAGS.IF is clear, or the STI shadow holds.
+    None,
+    /// A vector was delivered through the guest IDT (the frame is on the guest stack, the state is
+    /// in the handler, the vector moved from IRR to ISR). Nothing retired.
+    Delivered,
+    /// The vector could not be delivered (no IDT, a gate or a stack that faults, a refused state):
+    /// an error of the run, never a quiet drop. The text names the vector and the reason.
+    Failed(String),
+}
+
+/// The interrupt boundary of a host quantum (S6-42c), one instruction boundary of vCPU `lapic`'s
+/// processor: the vector waiting in the vCPU's own Local APIC (the highest IRR vector above PPR,
+/// what the Local APIC source of the set loop reports) is delivered through the
+/// guest IDT by the delivery the CPL0-set loop uses, then acknowledged in that Local APIC only.
+/// `skip_first_boundary` is the caller's cell of the REP rule (a call that ended inside a partial
+/// `REP` does not deliver at its first boundary): it is cleared here as the set loop clears it.
+/// The page tables are those of `cr3`/`efer` (the host quantum's own configuration); `state.cr3`
+/// stays what the caller keeps it. The board's source (PIC, PIT) is not offered: only what waits in
+/// the Local APIC (an IPI, the Local APIC timer, an IOAPIC line routed to it).
+pub fn host_deliver_pending_irq(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    lapic: &LocalApicHandle,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    skip_first_boundary: &mut bool,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> HostIrqBoundary {
+    use crate::irq_source::BoardIrqSource;
+    let mut source = LapicIrqSource::new(lapic.clone());
+    // The cheap question first: the paging configuration is built only when something can be
+    // delivered (or the REP rule has a flag to clear).
+    if !*skip_first_boundary && source.pending_vector().is_none() {
+        return HostIrqBoundary::None;
+    }
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
+        Ok(paging) => paging,
+        Err(error) => {
+            return HostIrqBoundary::Failed(format!("paging configuration refused: {error:?}"));
+        }
+    };
+    let mut counters = IrqCounters::default();
+    let mut hook = IrqBoundaryHook {
+        source: &mut source,
+        counters: &mut counters,
+        delivered_mirror: None,
+        skip_first_boundary: *skip_first_boundary,
+    };
+    let outcome = deliver_pending_irq(
+        &mut hook,
+        state,
+        bus.physical_memory(),
+        &paging,
+        context,
+        &mut committed_write,
+        None,
+    );
+    *skip_first_boundary = hook.skip_first_boundary;
+    match outcome {
+        IrqBoundaryOutcome::None => HostIrqBoundary::None,
+        IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,
+        IrqBoundaryOutcome::Failed((exit, page_fault, memory_error)) => HostIrqBoundary::Failed(
+            format!("{exit:?}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"),
+        ),
+    }
+}
+
+/// What [`run_host_set_step`] needs of the vCPU and the run besides the state and the bus.
+pub struct HostCpl0Step<'a> {
+    /// Index of the vCPU (its MMIO accesses reach its own Local APIC).
+    pub vcpu: usize,
+    /// The Local APIC of the vCPU (the timer-register write count is read from it).
+    pub lapic: &'a LocalApicHandle,
+    /// The gate of the split `LOCK` of the thread; [`HostSplitGate::none`] refuses a split operand.
+    pub gate: HostSplitGate<'a>,
+    pub cr3: u64,
+    pub efer: u64,
+    pub context: AccessContext,
+    /// The interpreter's definedness mask of the flags, read and returned across steps.
+    pub rflags_defined: u64,
+}
+
+/// What [`run_host_set_step`] reports.
+#[derive(Debug, Eq, PartialEq)]
+pub struct HostSetStepReport {
+    /// The step as the base probe reports it: the exit (a `Fault` is a `#PF`/`#GP` the guest IDT did
+    /// not take: no IDT, or a delivery that failed; the record is in `page_fault`), the instructions
+    /// retired (at most 1; a delivery of an exception retires nothing and is followed, in the same
+    /// call, by the handler's first instruction), the flags mask and the walker's records.
+    pub report: PagedProbeQuantumReport,
+    /// The call ended inside a `REP` that made progress: the next boundary is inside it and takes no
+    /// interrupt (`skip_first_boundary`).
+    pub partial_rep: bool,
+    /// `#PF` and `#GP(0)` exceptions delivered through the guest IDT in this step.
+    pub delivered_exceptions: u64,
+    /// The guest wrote a timer register of its Local APIC (`0x320`, `0x380`, `0x3E0`): the deadline
+    /// the call was budgeted for may be stale, so the caller ends its call (as the set quantum does).
+    pub timer_register_written: bool,
+}
+
+/// One instruction of vCPU `step.vcpu` through the CPL0 profile set `set` over `&MachineBus`
+/// (S6-42c): the set loop of the interpreter quantum ([`run_cpl0_set_loop`] over the shared bus,
+/// budget one, no interrupt hook: the caller delivers at its own boundary with
+/// [`host_deliver_pending_irq`]), with the gate of the split `LOCK` of `step.gate` and with the
+/// delivery of a guest `#PF` or `#GP(0)` through the guest IDT when one is loaded, exactly as the
+/// loop does. `state.cr3` must be empty (the root is `step.cr3`) unless the set owns CR3. `Err`: an
+/// exit the board does not know how to resume from (an integration error of the set).
+pub fn run_host_set_step(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    step: HostCpl0Step<'_>,
+    set: &Cpl0ProfileSet<'_>,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<HostSetStepReport, String> {
+    let timer_writes = step.lapic.timer_register_writes();
+    let report = run_cpl0_set_loop(
+        state,
+        LoopBus::Shared(bus),
+        step.gate.0,
+        step.vcpu,
+        step.cr3,
+        step.efer,
+        step.context,
+        1,
+        step.rflags_defined,
+        set,
+        None,
+        || false,
+        committed_write,
+        false,
+        None,
+        None,
+        None,
+        None,
+    );
+    let partial_rep = matches!(
+        report.exit,
+        PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
+    );
+    let timer_register_written = step.lapic.timer_register_writes() != timer_writes;
+    let (exit, _) = set_exit_to_probe_exit(report.exit)
+        .map_err(|error| format!("host CPL0 step: {error:?}"))?;
+    Ok(HostSetStepReport {
+        report: PagedProbeQuantumReport {
+            exit,
+            instructions_executed: report.instructions_executed,
+            rflags_defined: report.rflags_defined,
+            page_fault: report.page_fault,
+            memory_error: report.memory_error,
+            translation_context_changes: report.translation_context_changes,
+        },
+        partial_rep,
+        delivered_exceptions: report.delivered_exceptions,
+        timer_register_written,
+    })
 }
 
 #[cfg(test)]
@@ -489,5 +723,51 @@ mod tests {
         );
         assert_eq!(report.exit, PagedProbeExit::Stopped);
         assert_eq!(report.instructions_executed, 2);
+    }
+
+    /// S6-42c: an NMI waiting for a vCPU that has no CR3 of its own and no root named for the NMI
+    /// is an explicit error of the run; the board's own root (0x1000, never written here) is not
+    /// read. With a root named for it the walk is attempted (and fails on the empty IDT, an error
+    /// of another kind), which shows the root is the one used.
+    #[test]
+    fn an_nmi_needs_a_root_named_for_the_vcpu() {
+        let run = |roots: &[Option<u64>]| {
+            let mut board = board_with_program();
+            assert!(host_install_vcpu(&mut board, 0, state()));
+            let quantum = |_: HostQuantumCall<'_>| -> Result<HostQuantumResult, &'static str> {
+                Ok(HostQuantumResult {
+                    retired: 1,
+                    exit: HostQuantumExit::Running,
+                })
+            };
+            let (report, ()) = run_host_threads(
+                &mut board,
+                HostParallelConfig {
+                    quantum: 4,
+                    budget: u64::MAX,
+                    end_when_idle: false,
+                },
+                roots,
+                &quantum,
+                &|_| {},
+                |control| {
+                    control.lapic(0).unwrap().write_icr(0, 0, 0x0400).unwrap();
+                    assert!(control.wait_finished(Duration::from_secs(30)));
+                },
+            )
+            .unwrap();
+            report
+        };
+        let HostParallelFinish::Error { cpu: 0, message } = run(&[]).finished else {
+            panic!("an NMI without a root must fail the run");
+        };
+        assert!(message.contains("no page-table root"), "{message}");
+        let HostParallelFinish::Error { cpu: 0, message } = run(&[Some(0x1000)]).finished else {
+            panic!("an NMI through an empty IDT must fail the run");
+        };
+        assert!(
+            !message.contains("no page-table root"),
+            "a named root is walked: {message}"
+        );
     }
 }
