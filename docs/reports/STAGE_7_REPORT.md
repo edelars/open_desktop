@@ -5175,3 +5175,37 @@ and zero doctests). The paged machine quantum suite passes 110/110. The
 workspace all-targets offline check passes with existing warnings.
 Scoped rustfmt and diff checks pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-495 — exact CMP AX,0x40
+
+Four focused accumulator CMP tests cover both the qword and word
+encodings with imm8 0x40. The word vectors use nonzero upper bits in
+RAX and check equality, unsigned borrow, signed overflow, parity,
+definedness and preservation of all GPRs. The tests also cover the
+final-immediate fetch page fault, neighboring forms and CPL3 MOV probe
+isolation. The existing EAX immediate compare tests pass 4/4 and the
+other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue495.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,349 | `0x201935` | `66 83 F8 40`, CMP AX,0x40 |
+| 10,350 | `0x201939` | `74 15`, JZ rel8 +0x15 (ISSUE-496) |
+
+Both boundary runs report BudgetExhausted and empty COM1. At budget
+20000 the runner executes CMP and exits 5 at JZ with 10,350 retired
+instructions. Unsupported opcode 116 is the decimal value of JZ opcode
+`0x74`. The previous stop reported 131 for CMP opcode `0x83` after the
+`0x66` operand-size prefix. At `0x201939`, JZ has fall-through
+`0x20193b` and taken target `0x201939 + 2 + 0x15 = 0x201950`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,579/7/15
+and zero doctests). The paged machine quantum suite passes 110/110. The
+workspace all-targets offline check passes with existing warnings.
+Scoped rustfmt and diff checks pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

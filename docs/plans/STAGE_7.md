@@ -3159,3 +3159,15 @@ stops after 10,349 retired instructions at RIP `0x201935` on
 `66 83 F8 40` (CMP AX,0x40, ISSUE-495). It reports Unsupported opcode
 131 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-495 — exact CMP AX,0x40 (`66 83 F8 40`)
+
+Base `PagedCpl0ProbeV1` admits the exact word register compare. It
+defines the arithmetic flags from AX minus sign-extended imm8 0x40,
+preserves all GPRs and advances RIP by four. Tests cover word-width
+flags, definedness, final-immediate fetch faults and profile isolation.
+The previously admitted qword and dword forms remain supported. With
+budget 20000 the runner stops after 10,350 retired instructions at RIP
+`0x201939` on `74 15` (JZ rel8 +0x15, ISSUE-496), reporting Unsupported
+opcode 116 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

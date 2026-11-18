@@ -30168,3 +30168,14 @@ noncanonical taken target raises #GP(0). That fault and a displacement
 fetch fault commit no CPU state or retirement. The other CPL0 probes
 and the paged CPL3 MOV probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-495 — bounded CMP AX,0x40
+
+The base paged CPL0 profile admits exact `66 83 F8 40` in Long64.
+Subtraction of sign-extended imm8 0x40 from AX defines CF, PF, AF, ZF,
+SF and OF at word width. RIP advances four bytes. All GPRs, memory
+contents, other flags and their definedness are preserved. A
+final-immediate fetch fault commits no CPU state or retirement. The
+other CPL0 probes refuse the encoding with opcode `0x83`. The paged
+CPL3 MOV probe stops at the first byte `0x66`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -26769,7 +26769,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             };
         }
         // S7-04: exact `83 F8 01` and `83 F8 09` compare EAX with sign-extended imm8.
-        // Exact `48 83 F8 40` compares RAX with sign-extended imm8 0x40.
+        // Exact `48 83 F8 40` and `66 83 F8 40` compare RAX and AX with imm8 0x40.
         // CMP updates subtraction flags at the matched width and preserves the accumulator.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
@@ -26785,12 +26785,18 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && instruction.prefixes == Prefixes::default())
                 || (immediate == 0x40
                     && instruction.length == 4
-                    && instruction.operand_size == OperandSize::Qword
-                    && instruction.prefixes
-                        == (Prefixes {
-                            rex: Some(0x48),
-                            ..Prefixes::default()
-                        }))) =>
+                    && ((instruction.operand_size == OperandSize::Qword
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(0x48),
+                                ..Prefixes::default()
+                            }))
+                        || (instruction.operand_size == OperandSize::Word
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    operand_override: true,
+                                    ..Prefixes::default()
+                                }))))) =>
         {
             let lhs = state.read(destination);
             let (_, flags) = arithmetic_result(

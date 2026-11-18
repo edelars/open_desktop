@@ -5970,7 +5970,15 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата обнаружения:** 2026-11-18, firmware runner after ISSUE-494.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201935`.
+- **Статус:** устранена точечным допуском.
+- **Результат:** base `PagedCpl0ProbeV1` admits exact `66 83 F8 40`, defines the arithmetic flags from AX minus sign-extended imm8 0x40, preserves all GPRs and advances RIP by four. The exact qword and dword accumulator comparisons remain supported.
+- **Проверка:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` with budget 20000, the runner retires 10,350 instructions and stops at RIP `0x201939` on `74 15` (Unsupported opcode 116, empty COM1). See [Stage 7 report](reports/STAGE_7_REPORT.md#issue-495--exact-cmp-ax0x40). Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-496 — S7-04: exact JZ rel8 +0x15 frontier (`74 15`)
+
+- **Дата обнаружения:** 2026-11-18, firmware runner after ISSUE-495.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201939`.
 - **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `66 83 F8 40` (CMP AX,0x40).
-- **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` after 10,349 retired instructions at RIP `0x201935`. COM1 is empty. Bytes at the link-base shadow are `66 83 F8 40`.
-- **Следующий шаг:** admit only the exact word compare and check word flags, the final-immediate fetch fault and profile isolation.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `74 15` (JZ rel8 +0x15).
+- **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 116 }` after 10,350 retired instructions at RIP `0x201939`. COM1 is empty. Bytes at the link-base shadow are `74 15`.
+- **Следующий шаг:** admit only the exact short JZ and check ZF, the taken target, displacement fetch faults and profile isolation.
