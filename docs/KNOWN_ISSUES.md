@@ -3774,14 +3774,16 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Повторная проверка, 2026-11-18:** in the `codex` linked worktree at `3476780`, 22 Stage 3 report links pointed to 21 absent files. All 21 were restored byte-for-byte from the main checkout. After restoring the remaining local evidence required by the checker, `python3 tools/check_layout.py` passed. See the [Stage 3 layout evidence](reports/STAGE_3_REPORT.md#layout-acceptance).
 - **Граница:** `work/` is Git-ignored. These artifacts are local to the checkouts where they have been restored. A fresh checkout needs the original files at the linked paths or a portable bundle curated into `docs/reports/data/stage3/` under the project's evidence policy.
 
-### ISSUE-058 — VMHost control race smoke fails on HEAD (Stage 10 session)
+<a id="issue-058"></a>
+
+### ISSUE-058 (закрыто) — VMHost control race smoke fails on initial HELLO
 
 - **Дата обнаружения:** 2026-11-06, при проверке регрессии S10-06 и S10-07.
 - **Компонент:** `tests/system/vmhost_control_race_smoke.py` с `apps/vmhost` и `apps/macos` launcher; не связан с дисплейным транспортом этапа 10.
-- **Статус:** открыта. Воспроизводится на HEAD ветки `feat/s9-stage` без правок этапа 10 (два прогона у каждого варианта).
-- **Суть и последствия:** скрипт завершается с `unsupported version: VMHost sent a response after rejecting the frame`. Причина не исследована; возможная регрессия control v1 или ошибка теста. Обычный путь VMHost по остальным `vmhost_*` smoke-скриптам проходит.
-- **Основание:** запуски S10-06 и S10-07 на release-сборке; отдельный прогон на чистом HEAD.
-- **Следующий шаг:** определить, какой из двух сторон (тест или VMHost) отклоняется от протокола control v1, и исправить соответствующую сторону; до этого не считать `vmhost_control_race_smoke.py` зелёным.
+- **Статус:** закрыта 2026-11-18.
+- **Суть и последствия:** входная проверка `unsupported version` отправляла HELLO версии `1`. На начальном handshake версия `1` поддерживается и получает READY, что ломало отрицательную проверку.
+- **Основание:** воспроизведено в `stage3-20261118-224716-656d4a10a0` на release VMHost. Та же подписанная сборка прошла smoke после замены поля на `65535`. Отдельный STOP с версией `1` после согласования V0 по-прежнему проверяет смену версии в активном соединении.
+- **Проверка:** `vmhost-process` прошёл 40 из 40 шагов. SHA-256 фикстуры входит во входной манифест. См. [отчёт этапа](reports/STAGE_3_REPORT.md#full-vmhost-process-selector-2026-11-18).
 
 ### ISSUE-059 — VMHost isolation smoke is intermittently red
 

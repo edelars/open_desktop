@@ -4828,6 +4828,14 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 [sys.executable, code_mismatch_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"],
             )
             manifest_inputs = harness.input_manifest()["vmhost_process"]["inputs"]
+            race_fixture = "tests/fixtures/control/control_v0_scenarios.json"
+            self.assertEqual(
+                manifest_inputs.count({
+                    "path": race_fixture,
+                    "sha256": harness.sha256_file(harness.ROOT / race_fixture),
+                }),
+                1,
+            )
             mismatch_source = {
                 "path": code_mismatch_path,
                 "sha256": harness.sha256_file(harness.ROOT / code_mismatch_path),

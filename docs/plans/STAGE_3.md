@@ -4034,6 +4034,12 @@ Summary, manifest, logs and generated artifacts are preserved in
 
 **Готово:** реальный VMHost исполняет принятый JIT slice и корректно завершает/очищает его. Это не означает готовность GUI или release distribution.
 
+Повтор процессного набора 18 ноября 2026 года прошёл 40 из 40 выбранных
+шагов, включая control race, изоляцию процессов и generated-fault smoke.
+Исправлена отрицательная HELLO-фикстура [ISSUE-058](../KNOWN_ISSUES.md#issue-058).
+Таймаут [ISSUE-044](../KNOWN_ISSUES.md#issue-044) в этом прогоне не встретился.
+Команда и границы прогона приведены в [отчёте этапа](../reports/STAGE_3_REPORT.md#full-vmhost-process-selector-2026-11-18).
+
 #### S3-38a. Register-only S0-09 integration through the existing V0 ABI
 
 The current `od_fragment_execute` C ABI routes immutable, create-time validated

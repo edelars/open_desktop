@@ -910,6 +910,32 @@ The full VMHost process selector, physical x86, Mac mini, performance,
 owner-backed and Stage 2 suites have status `not_run` in this summary.
 Final S3-41 acceptance remains open.
 
+### Full VMHost process selector, 2026-11-18
+
+The initial process run at `30306ed` reproduced
+[ISSUE-058](../KNOWN_ISSUES.md#issue-058). It stopped at
+`process_control_race` after 23 passing steps. The negative HELLO fixture
+used version 1, which VMHost supports during the initial handshake. The
+fixture now sends version 65,535. The signed baseline binary passed the
+control smoke with the corrected fixture. The Stage 3 process manifest
+records the SHA-256 of that input.
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` then passed
+40 of 40 selected steps in `stage3-20261118-225053-e0017f44c9`. The
+`vmhost_process_only` result includes signed V0/V1 control, independent
+processes, app-bundle verification and generated-fault smoke. The other
+344 steps retained `not_run`. [ISSUE-044](../KNOWN_ISSUES.md#issue-044)
+remains open after this successful fault-smoke observation.
+
+The run used `30306ed` with the harness/fixture fix and the two S3-01
+documentation drafts. The worktree fingerprint was unchanged throughout
+(`9de3d442a51c3ab03b089193ba94036f081c703aa550bbd49a4681a7976104d6`).
+The input manifest digest is
+`0c074efab92952cd2b68786ee1e6f862715488cfc3410b97f26f9bd535ea5008`.
+The summary digest is
+`51971a6c12b831191dd9970341687116a34560c4e2875d0267dd25262dcc2c36`.
+Both files are under the run ID in `work/stage3-harness/`.
+
 ### Optional real-artifact replay or reduction
 
 Replay (`OD_S3_34DN_REPLAY_ARTIFACT`) and reduction

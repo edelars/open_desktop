@@ -1780,6 +1780,7 @@ PROCESS_SOURCE_PATHS = (
     "apps/macos/Sources/launcher.swift",
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
+    "tests/fixtures/control/control_v0_scenarios.json",
     "tests/system/vmhost_control_v1_same_code_smoke.py",
     "tests/system/vmhost_control_v1_code_mismatch_smoke.py",
     "tests/system/vmhost_control_v1_frames_smoke.py",
