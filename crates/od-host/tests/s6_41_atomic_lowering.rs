@@ -17,6 +17,7 @@
 //! 3. Ordering: message passing (MP) and store buffering (SB) on generated code, with the parallel
 //!    lowering of the accesses and with plain accesses plus the parallel lowering of the fences.
 //!    The uncontrolled variants are printed, never asserted: ARM allows their weak outcomes.
+//!    The opt-in S6-41e probe requires a weak SB outcome with NOP in place of the compiled MFENCE.
 //!
 //! Generated code is called through `PublishedCode`; the host has one `MAP_JIT` region, so every
 //! test takes `JIT_LOCK` and publishes one buffer at a time.
@@ -38,6 +39,7 @@ use od_jit::arm64::atomic_sequence::{SequenceEnv, emit_atomic_program};
 use od_jit::arm64::memory_order::{HostOperands, MemoryOrderMode, lower_memory_effect};
 use od_jit::arm64::{AddressBase, Encoder, WReg, XReg, XRegOrZero};
 use od_jit::atomic_adapter::lower_atomic_instruction;
+use od_jit::atomic_block::compile_atomic_block;
 use od_jit::ir::{
     AtomicFlagsKind, AtomicRmwKind, FenceKind, GuestGpr, IntWidth, Operation, Program, TempId,
 };
@@ -683,13 +685,16 @@ fn mp_reader(image: &mut Image, name: &str, shape: Shape) {
 }
 
 /// SB thread `fn(mine: x0, other: x1) -> other value`: mine = 1; [fence Full]; load other.
-fn sb_thread(image: &mut Image, name: &str, shape: Shape) {
+/// Returns the byte offset where the fence is emitted.
+fn sb_thread(image: &mut Image, name: &str, shape: Shape) -> usize {
     image.begin(name);
     one(image);
     store(image, shape.accesses, 0);
+    let fence_offset = image.encoder.position() * 4;
     fence(image, shape.fences, FenceKind::Full);
     load(image, shape.accesses, 1, 3);
     ret_with(image, 3);
+    fence_offset
 }
 
 #[repr(align(128))]
@@ -768,6 +773,68 @@ fn race(
         }
         start.store(u64::MAX, Ordering::Release);
     });
+}
+
+#[test]
+#[ignore = "hardware sensitivity run: requires observing relaxed ARM64 store buffering"]
+fn s6_41e_compiled_mfence_prevents_store_buffering() {
+    let _guard = JIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    const ROUNDS: u64 = 2_000_000;
+    const DMB_ISH: u32 = 0xd503_3bbf;
+    const NOP: u32 = 0xd503_201f;
+
+    let block = compile_atomic_block(&adapted(&[0x0f, 0xae, 0xf0]), MemoryOrderMode::Parallel)
+        .expect("compile the guest MFENCE through the V4 path");
+    let [instruction] = block.layout.instructions.as_slice() else {
+        panic!("expected one guest instruction in the block");
+    };
+    assert!(instruction.helper_call_word.is_none());
+    let fence_word = block.words[instruction.effects_start];
+    // Only this position-independent instruction can be run outside the V4 ABI.
+    assert_eq!(fence_word, DMB_ISH);
+
+    let mut image = Image::new();
+    let offset = sb_thread(
+        &mut image,
+        "sb",
+        Shape {
+            accesses: MemoryOrderMode::Interleaved,
+            fences: MemoryOrderMode::Parallel,
+        },
+    );
+    let (mut bytes, entries) = image.finish();
+    let fence_bytes = offset..offset + 4;
+    assert_eq!(bytes[fence_bytes.clone()], DMB_ISH.to_le_bytes());
+    let mine = Cell(AtomicU32::new(0));
+    let other = Cell(AtomicU32::new(0));
+    let mine_ptr = mine.0.as_ptr();
+    let other_ptr = other.0.as_ptr();
+    for (variant, word) in [("MFENCE", fence_word), ("NOP", NOP)] {
+        bytes[fence_bytes.clone()].copy_from_slice(&word.to_le_bytes());
+        let code = PublishedCode::publish(&bytes).unwrap();
+        let sb = pair_fn(entry(&code, &entries, "sb"));
+        let mut histogram = [0u64; 4];
+        race(
+            ROUNDS,
+            sb,
+            (mine_ptr, other_ptr),
+            sb,
+            (other_ptr, mine_ptr),
+            [&mine, &other],
+            |main, worker| histogram[(main * 2 + worker) as usize] += 1,
+        );
+        eprintln!("s6_41e compiled MFENCE SB [{variant}]: rounds={ROUNDS} outcomes={histogram:?}");
+        if word == NOP {
+            assert!(
+                histogram[0] > 0,
+                "inconclusive: the NOP control must observe (0,0)"
+            );
+        } else {
+            assert_eq!(histogram[0], 0, "compiled MFENCE admitted (0,0)");
+        }
+    }
 }
 
 #[test]
