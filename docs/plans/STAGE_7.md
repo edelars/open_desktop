@@ -2887,3 +2887,14 @@ retires 10,314 instructions and stops at RIP `0x201432` on
 `B8 06 00 00 00` (MOV EAX,6, ISSUE-472). It reports Unsupported opcode 184
 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-472 — exact MOV EAX,6 (`B8 06 00 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed dword write. The result
+is RAX=6 by zero extension. RIP advances by five bytes while flags and
+definedness are preserved. Tests cover zero extension, the final immediate
+fetch fault, neighboring encodings and profile isolation. With budget 20000
+the runner retires 10,315 instructions and stops at RIP `0x201437` on
+`80 7C 24 0E 01` (CMP byte ptr [RSP+0xe],1, ISSUE-473). It reports
+Unsupported opcode 128 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
