@@ -1,0 +1,7 @@
+before 1 exit 0 stderr_len 66 load 2.50 3.14 3.85
+after 1 exit 0 stderr_len 66 load 2.95 3.26 3.70
+before 2 exit 0 stderr_len 66 load 2.48 2.94 3.46
+after 2 exit 0 stderr_len 66 load 6.82 4.64 4.01
+before 3 exit 0 stderr_len 66 load 2.86 3.89 3.84
+after 3 exit 0 stderr_len 66 load 4.08 4.03 3.91
+ALLDONE

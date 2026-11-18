@@ -15,7 +15,7 @@
 //! - Page-table writes: an entry watches the physical frames of the tables on its path. Every
 //!   committed RAM write reaches [`FetchTranslationCache::note_write`] (it is wired into the
 //!   `committed_write` callback of the adapter, which is the single notification of
-//!   `PhysicalMemory::write_bytes`); a write that touches a watched frame (a guest store, or an
+//!   `PhysicalMemory::store_bytes`); a write that touches a watched frame (a guest store, or an
 //!   accessed/dirty commit of another walk) drops every entry. Entries are created only when the
 //!   frame and its tables are plain RAM, whose writes always notify.
 //! - Context: the key holds the paging snapshot (CR0/CR3/CR4/EFER) and the access context
@@ -847,6 +847,69 @@ mod tests {
         }
     }
 
+    /// S6-30b: a write to a watched table frame reaches the cache by both routes the contract
+    /// names, with the real memory behind them. The writer's own `committed_write` callback
+    /// drives `note_write` (the in-loop route); a write by another vCPU that never calls this
+    /// cache's `note_write` is seen through the atomic page generation at the next check (the
+    /// cross-thread route: `code_page_generation` is an `Acquire` load of what the store raised
+    /// with `Release`). Generations are raised by `store_*` (the single commit path).
+    #[test]
+    fn a_write_to_a_table_frame_drops_the_entry_by_callback_and_by_generation() {
+        let mut memory = memory();
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let table = GuestPhysicalAddress::new(0x3008);
+        let ctx = key(0x1000, PrivilegeLevel::Ring0);
+        let generation_of = |page: u64| {
+            memory
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let insert = |cache: &FetchTranslationCache| {
+            cache.insert(
+                CODE_VA,
+                &paging(0x1000),
+                ring0,
+                frame(&memory, 0x8000),
+                TABLES,
+            )
+        };
+        // In-loop route: the callback of the new store feeds `note_write`.
+        let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::WriteWatch);
+        insert(&cache);
+        memory.store_u64(table, 7, |r| cache.note_write(r)).unwrap();
+        assert_eq!(cache.lookup(CODE_VA, &paging(0x1000), ring0), None);
+        assert_eq!(cache.stats().write_flushes, 1);
+        // Cross-thread route: nobody tells this cache; the generation of the frame moved.
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            let cache = FetchTranslationCache::persistent(policy);
+            insert(&cache);
+            cache.seal(ctx, &generation_of);
+            cache.revalidate(ctx, &generation_of);
+            assert!(cache.lookup(CODE_VA, &paging(0x1000), ring0).is_some());
+            // A write to a frame no entry watches (the code frame) keeps it.
+            memory
+                .store_u64(GuestPhysicalAddress::new(0x8000), 1, |_| {})
+                .unwrap();
+            cache.revalidate(ctx, &generation_of);
+            assert!(cache.lookup(CODE_VA, &paging(0x1000), ring0).is_some());
+            // The other vCPU writes a table frame, once through the new store.
+            std::thread::scope(|scope| {
+                scope.spawn(|| memory.store_u64(table, 9, |_| {}).unwrap());
+            });
+            cache.revalidate(ctx, &generation_of);
+            assert_eq!(
+                cache.lookup(CODE_VA, &paging(0x1000), ring0),
+                None,
+                "{policy:?}"
+            );
+            assert_eq!(cache.stats().host_flushes, 1, "{policy:?}");
+        }
+    }
+
     /// A frame whose generation cannot be read is sealed as unknown and the next check flushes.
     #[test]
     fn a_table_frame_of_unknown_generation_is_not_trusted() {
@@ -1050,16 +1113,16 @@ mod tests {
 
     #[test]
     fn only_plain_ram_gets_a_frame_handle_and_it_reads_the_same_bytes() {
-        let mut memory = memory();
+        let memory = memory();
         memory
-            .write_u8(GuestPhysicalAddress::new(0x8abc), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x8abc), 0x5a, |_| {})
             .unwrap();
         let ram = frame(&memory, 0x8000);
         assert_eq!(memory.read_ram_frame_u8(ram, 0xabc), Some(0x5a));
         assert_eq!(memory.read_ram_frame_u8(ram, 0xabd), Some(0));
         assert_eq!(
             memory.read_ram_frame_u8(ram, 0xabc),
-            memory.read_u8(GuestPhysicalAddress::new(0x8abc)).ok()
+            memory.load_u8(GuestPhysicalAddress::new(0x8abc)).ok()
         );
         // ROM, a hole and a base that is not frame aligned: no handle.
         for base in [0x1_0000, 0x2_0000, 0x8001] {
@@ -1125,10 +1188,10 @@ mod tests {
     /// CR3 and another privilege do not hit.
     #[test]
     fn a_2m_entry_serves_every_page_of_its_leaf_with_the_offset_of_the_request() {
-        let mut memory = big_memory();
+        let memory = big_memory();
         for offset in [0u64, 0x1, 0x1000, 0x1234, 0x1f_f000, 0x1f_ffff] {
             memory
-                .write_u8(
+                .store_u8(
                     GuestPhysicalAddress::new(0x20_0000 + offset),
                     (offset % 251) as u8 + 1,
                     |_| {},
@@ -1152,7 +1215,7 @@ mod tests {
             assert_eq!(
                 memory.read_ram_frame_u8(frame, LEAF_VA + offset),
                 memory
-                    .read_u8(GuestPhysicalAddress::new(0x20_0000 + offset))
+                    .load_u8(GuestPhysicalAddress::new(0x20_0000 + offset))
                     .ok(),
                 "offset {offset:#x}"
             );

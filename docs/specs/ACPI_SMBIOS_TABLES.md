@@ -171,16 +171,16 @@ RSDP, XSDT, FADT, FACS, MADT; DSDT с PNP0C02; E820 запись для ECAM; р
 
 Регион ACPI платы — `[0xE_0000, 0xF_0000)`: часть для таблиц (E820 ACPI reclaim) `[0xE_0000, 0xE_F000)` и часть NVS `[0xE_F000, 0xF_0000)` для FACS. Blob: заголовок 0x60 байт (magic `ODACPIB1`, `version` 2, `manifest_hash`, `load_base`, `payload_offset`/`payload_len`, `rsdp_address`, `table_count`, `total_len`, `facs_offset`/`facs_len`/`facs_address`), каталог по 16 байт на таблицу (сигнатура, смещение в payload, длина, reserved 0), payload и 64 байта FACS в конце файла.
 
-Раскладка payload (загружается как есть на `load_base` = `0xE_0000`; значения — для эталонного blob `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`, в нём 5 таблиц, `payload_len` 0x340):
+Раскладка payload (загружается как есть на `load_base` = `0xE_0000`; значения — для эталонного 1104-byte blob `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`, в нём 5 таблиц, `payload_len` 0x360):
 
 | Таблица | Адрес (GPA) | Смещение в payload | Длина |
 |---|---|---|---|
 | RSDP revision 2 | `0xE_0000` | 0x000 (слот 0x40, остаток нулевой) | 36 |
-| DSDT (с `\_S5`) | `0xE_0040` | 0x040 | 245 |
-| MADT (`APIC`) | `0xE_0140` | 0x140 | 84 |
-| FADT (`FACP`, revision 6) | `0xE_01A0` | 0x1A0 | 276 |
-| MCFG (есть при окне ECAM) | `0xE_02C0` | 0x2C0 | 60 |
-| XSDT | `0xE_0300` | 0x300 | 60 |
+| DSDT (с `\_S5` и `CPU0`) | `0xE_0040` | 0x040 | 273 |
+| MADT (`APIC`) | `0xE_0160` | 0x160 | 84 |
+| FADT (`FACP`, revision 6) | `0xE_01C0` | 0x1C0 | 276 |
+| MCFG (есть при окне ECAM) | `0xE_02E0` | 0x2E0 | 60 |
+| XSDT | `0xE_0320` | 0x320 | 60 |
 | FACS | `0xE_F000` | вне payload (`facs_offset`, NVS) | 64 |
 
 Порядок таблиц и адреса следуют из кода сборки (16-выравнивание, зазоры нулевые); при другой конфигурации платы (нет ECAM) MCFG отсутствует, и адреса следующих таблиц сдвигаются. XSDT перечисляет FADT, MADT, MCFG (DSDT и FACS в нём нет); RSDP даёт адрес XSDT и нулевой `RsdtAddress`; FADT указывает на DSDT (`DSDT`/`X_DSDT`) и FACS (`FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`, оба `0xE_F000`). FACS не имеет контрольной суммы и не входит в каталог. Открытые вопросы по FADT/FACS и упаковщику — [ISSUE-100…103](../KNOWN_ISSUES.md).

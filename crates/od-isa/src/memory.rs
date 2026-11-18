@@ -195,6 +195,15 @@ pub enum MemoryError {
     Backend(String),
 }
 
+/// The kind of a guest fence instruction (S6-32): `MFENCE` is `Full`, `SFENCE` is `Store`,
+/// `LFENCE` is `Load`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FenceKind {
+    Full,
+    Store,
+    Load,
+}
+
 /// Addresses are guest linear u64 values; slice lengths specify the access width.
 /// `AccessContext::privilege` is CPL, while page permission checks must use
 /// `AccessContext::page_privilege()` (implicit descriptor-table reads and
@@ -332,8 +341,10 @@ pub trait GuestMemory {
     /// The default implementation is the serial one for the interleaving mode (one host thread,
     /// the vCPU never switches inside an instruction): an ordinary read followed by an ordinary
     /// write. It is correct only because the scheduler runs whole instructions; a backend that
-    /// shares RAM between host threads (S6-30/S6-31) must override it with a host atomic
-    /// operation, and no instruction code changes.
+    /// shares RAM between host threads must override it with a host atomic operation, and no
+    /// instruction code changes. S6-31: `od-machine`'s `PagedMovMemoryAdapter` does (a
+    /// compare-exchange loop on the RAM cell; the three specializations are single host
+    /// operations); this default stays for the private single-threaded backends.
     fn atomic_rmw_integer(
         &mut self,
         address: u64,
@@ -360,6 +371,22 @@ pub trait GuestMemory {
     /// modify guest RAM or CPU state, authorize MMIO, define instruction-stream
     /// serialization, or prove SMP ordering by itself.
     fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError>;
+
+    /// S6-32: the fence of the CPL0 profile set (`MFENCE`, `SFENCE`, `LFENCE`), one call per
+    /// retired fence instruction, with the kind of the instruction. The interpreter knows nothing
+    /// about execution modes: the memory decides. The default is a no-op, which is correct for a
+    /// backend that runs all processors on one host thread (the interleaving mode: no host
+    /// barrier is placed); a backend that shares RAM between host threads overrides it with the
+    /// host fence its contract names (`od-machine`'s `PagedMovMemoryAdapter`: a host fence in the
+    /// parallel mode, nothing in the interleaving mode). The call changes no guest RAM and no CPU
+    /// state; an error is reported like any memory error, and the fence is then not retired. It
+    /// is separate from [`GuestMemory::mfence`] (the S2-21g completion hook used outside the CPL0
+    /// set), which keeps its meaning. Every wrapper around a `GuestMemory` must forward this call
+    /// (as it forwards `FetchCapture`): a wrapper that forgot it silently swallows the fence,
+    /// because the default is a no-op.
+    fn fence(&mut self, _kind: FenceKind) -> Result<(), MemoryError> {
+        Ok(())
+    }
 
     fn read_integer(
         &mut self,

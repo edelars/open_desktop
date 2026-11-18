@@ -1,7 +1,50 @@
 use std::fmt;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 
+use crate::AccessWidth;
 use crate::ram_storage::RamStorage;
+
+/// S6-32: the host order of every ordinary RAM load and store (scalar, split into bytes, bulk
+/// copy, frame byte): parallel `SeqCst` (the choice of S6-06, MEMORY_MODEL.md "Выбор по замеру"),
+/// interleaving `Relaxed` (no barrier: one host thread runs every vCPU and every writer). Locked
+/// operations and generations keep their own orders in both modes. The macro runs `$body` with
+/// `$order` bound to that order: one branch on the mode, a constant order in each arm. A
+/// runtime-valued `Ordering` passed to an atomic access costs a second branch per access (a first
+/// version did that and `page_walk_compare` showed it, see the S6-32 report); with the constant
+/// the compiler emits a plain load or store.
+macro_rules! by_mode {
+    ($mode:expr, $order:ident => $body:expr) => {
+        match $mode {
+            ExecutionMode::Parallel => {
+                let $order = Ordering::SeqCst;
+                $body
+            }
+            ExecutionMode::Interleaved => {
+                let $order = Ordering::Relaxed;
+                $body
+            }
+        }
+    };
+}
+
+/// The execution mode of the machine (S6-32), the one switch (`PhysicalMemory::set_execution_mode`,
+/// reached through the board). The interpreter (`od-isa`) does not know it. The mode orders the
+/// ordinary scalar accesses and the bulk copies (each host access of a copy), and sets the host
+/// fence of the guest fences.
+///
+/// - `Interleaved` (the default and the only mode that runs a machine today): every vCPU and every
+///   RAM writer runs on one host thread and switches only on instruction/event boundaries. Ordinary
+///   scalar RAM accesses are `Relaxed` (no barrier) and the guest fences place no host fence.
+/// - `Parallel` (S6-34 starts vCPU threads; until then it is selectable and single-threaded
+///   runs are byte-identical to the interleaving mode): ordinary scalar RAM accesses are `SeqCst`
+///   (the choice of S6-06) and the guest fences place a host fence (`MFENCE` `SeqCst`, `SFENCE`
+///   `Release`, `LFENCE` `Acquire`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExecutionMode {
+    #[default]
+    Interleaved,
+    Parallel,
+}
 
 /// A guest physical byte address. It is deliberately distinct from host pointers.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -218,6 +261,15 @@ pub enum MemoryAccessError {
     AccessCrossesRegion(GuestPhysicalRange),
     UnreadableRegion(MemoryRegionKind),
     ReadOnlyRegion(MemoryRegionKind),
+    /// S6-31: a locked (atomic) operation of `width` bytes at an address that is not naturally
+    /// aligned to its width. It is refused and counted ([`PhysicalMemory::split_lock_refusals`]);
+    /// it is never executed non-atomically (the split-lock path, including the pair of 16-byte
+    /// operations for an operand inside one aligned 16-byte block, is not implemented: see
+    /// `MACHINE_CONTRACT.md`, S6-31).
+    MisalignedAtomic {
+        address: GuestPhysicalAddress,
+        width: u8,
+    },
 }
 
 impl fmt::Display for MemoryAccessError {
@@ -231,7 +283,10 @@ impl std::error::Error for MemoryAccessError {}
 struct Region {
     spec: MemoryRegionSpec,
     backing: Option<RamStorage>,
-    page_generations: Vec<u64>,
+    /// S6-30b: one atomic counter per 4 KiB page the region touches (RAM only). Raised with
+    /// `Release` after the data of a write has been stored, read with `Acquire` (see
+    /// [`PhysicalMemory::code_page_generation`]); every access is through `&self`.
+    page_generations: Vec<AtomicU64>,
 }
 
 /// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`),
@@ -251,8 +306,47 @@ impl RamFrame {
 }
 
 /// The sole owner of production RAM backing in this crate.
+///
+/// S6-30c: every access (`load_*`, `store_*`, `compare_replace_u64`) takes `&self`; there is no
+/// method that hands out `&mut` to RAM bytes, and the old `&mut self` path (`read_*`/`write_*`)
+/// is gone. A vCPU adapter holds a shared reference, so any number of adapters share one memory.
+/// The surface is pinned by the doctests below (a call through a shared reference compiles, the
+/// removed names do not exist):
+///
+/// ```
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn through_a_shared_reference(memory: &PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.store_u64(at, 1, |_| {});
+///     let _ = memory.compare_replace_u64(at, 1, 2, |_| {});
+///     let _ = memory.load_u64(at);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn removed(memory: &PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.read_u8(at);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use od_machine::{GuestPhysicalAddress, PhysicalMemory};
+/// fn removed(memory: &mut PhysicalMemory, at: GuestPhysicalAddress) {
+///     let _ = memory.write_bytes(at, &[1], |_| {});
+/// }
+/// ```
 pub struct PhysicalMemory {
     regions: Vec<Region>,
+    /// S6-32: the machine's execution mode. It chooses the host memory order of ordinary scalar
+    /// accesses and of bulk copies, and the host fence of the guest fences. Set once, before the memory is shared (`&mut self`), so
+    /// no access reads it through an atomic. The default is [`ExecutionMode::Interleaved`].
+    mode: ExecutionMode,
+    /// S6-32: host fences issued by [`Self::fence`] in the parallel mode (the interleaving mode
+    /// issues none). Measurement and tests only.
+    host_fences: AtomicU64,
+    /// S6-31: locked operations refused because the operand was not naturally aligned (the
+    /// split-lock path of S6-34 does not exist yet). Counted, never executed non-atomically.
+    split_lock_refusals: AtomicU64,
 }
 
 impl PhysicalMemory {
@@ -333,7 +427,7 @@ impl PhysicalMemory {
                             bytes: generation_bytes,
                         }
                     })?;
-                    generations.resize(page_count, 1);
+                    generations.resize_with(page_count, || AtomicU64::new(1));
                     (Some(bytes), generations)
                 }
             } else {
@@ -345,9 +439,58 @@ impl PhysicalMemory {
                 page_generations,
             });
         }
-        Ok(Self { regions })
+        Ok(Self {
+            regions,
+            mode: ExecutionMode::default(),
+            host_fences: AtomicU64::new(0),
+            split_lock_refusals: AtomicU64::new(0),
+        })
     }
 
+    /// S6-32: the execution mode of this memory (see [`ExecutionMode`]).
+    pub fn execution_mode(&self) -> ExecutionMode {
+        self.mode
+    }
+
+    /// S6-32: the one switch of the execution mode on the memory side. The machine sets it while
+    /// it still owns the memory exclusively (`&mut self`), before any vCPU adapter shares it; the
+    /// interpreter never sees it. Switching changes only the host memory order of ordinary
+    /// scalar accesses and the host fence of the guest fences: results of a single-threaded run
+    /// are identical in both modes.
+    pub fn set_execution_mode(&mut self, mode: ExecutionMode) {
+        self.mode = mode;
+    }
+
+    /// S6-32: the host side of a guest fence instruction. Parallel: a host fence of the kind
+    /// (`MFENCE` is `SeqCst`, `SFENCE` is `Release`, `LFENCE` is `Acquire`; ordinary accesses are
+    /// already `SeqCst`, so the fences add nothing the model needs, and are kept because the
+    /// contract names them and no barrier is removed because a test passes). Interleaving: no
+    /// operation. Changes no guest RAM.
+    pub fn fence(&self, kind: od_isa::FenceKind) {
+        if self.mode == ExecutionMode::Parallel {
+            self.host_fences.fetch_add(1, Ordering::Relaxed);
+            fence(match kind {
+                od_isa::FenceKind::Full => Ordering::SeqCst,
+                od_isa::FenceKind::Store => Ordering::Release,
+                od_isa::FenceKind::Load => Ordering::Acquire,
+            });
+        }
+    }
+
+    /// S6-32: how many host fences [`Self::fence`] issued (always zero in the interleaving mode).
+    pub fn host_fences_issued(&self) -> u64 {
+        self.host_fences.load(Ordering::Relaxed)
+    }
+
+    /// The generation of the RAM page holding `address` (starts at 1; raised once per committed
+    /// write that touches the page). S6-30b: an `Acquire` load. A writer stores the data first
+    /// and raises the counter afterwards with `Release`, so a reader that sees a generation also
+    /// sees every byte stored before the raise. A reader that caches something derived from
+    /// RAM bytes must therefore read the generation **before** it reads the bytes and store that
+    /// value with the cached data: a write that lands in between then leaves the cached
+    /// generation older than the page, and the next check discards the entry (a spurious
+    /// refresh, never a stale hit). Reading the generation after the bytes would allow the
+    /// opposite, unsafe pairing (old bytes with a new generation).
     pub fn code_page_generation(
         &self,
         address: GuestPhysicalAddress,
@@ -362,37 +505,54 @@ impl PhysicalMemory {
         region
             .page_generations
             .get(page_index)
-            .copied()
+            .map(|generation| generation.load(Ordering::Acquire))
             .ok_or(MemoryAccessError::AddressOverflow)
     }
 
-    pub fn read_bytes(
+    /// The one commit transaction under every RAM write (`store_*`): locate and validate
+    /// (`EmptyRange` before the region search, then the region errors), check that no
+    /// page generation would overflow, run `write` on the storage, raise the generation of every
+    /// touched page (S6-30b: one `fetch_add(1, Release)` per page, after the data), and only then
+    /// call `committed_write` once with the written range. A rejected write changes nothing and
+    /// notifies nothing; a `Framebuffer` write has no generations and no callback. The RAM
+    /// bytes are reached only through `&self` and atomic accesses (S6-30c: there is no `&mut`
+    /// path to them any more).
+    ///
+    /// The overflow check and the raise are separate atomic steps: concurrent writers to one page
+    /// cannot make them inexact in practice (a `u64` counter would need 2^64 writes to that one
+    /// page), and the serial paths cannot interleave.
+    fn commit_write(
         &self,
         address: GuestPhysicalAddress,
-        output: &mut [u8],
+        len: u64,
+        write: impl FnOnce(&RamStorage, usize),
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let len = checked_access_len(output.len())?;
-        let (region, offset) = self.locate(address, len)?;
-        let backing = region
-            .backing
-            .as_ref()
-            .ok_or(MemoryAccessError::UnreadableRegion(region.spec.kind))?;
-        backing.copy_out(offset, output);
-        Ok(())
+        self.commit_write_with(
+            address,
+            len,
+            |storage, offset| {
+                write(storage, offset);
+                ((), true)
+            },
+            committed_write,
+        )
     }
 
-    /// All scalar and loader writes go through this method. For RAM the
-    /// callback runs exactly once, after the complete write has committed.
-    /// Writes to a `Framebuffer` region commit without invoking the callback.
-    pub fn write_bytes(
-        &mut self,
+    /// [`Self::commit_write`] for an operation that reports whether it changed memory (S6-31): `op`
+    /// returns its result and `true` when it wrote. Validation, the generation overflow check, the
+    /// order (data, then `Release` raise of every touched page, then one callback) and the
+    /// Framebuffer rule are those of `commit_write`; when `op` reports no write (a compare that
+    /// did not match) the generations are not raised and the callback does not run.
+    fn commit_write_with<R>(
+        &self,
         address: GuestPhysicalAddress,
-        input: &[u8],
+        len: u64,
+        op: impl FnOnce(&RamStorage, usize) -> (R, bool),
         mut committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        let len = checked_access_len(input.len())?;
+    ) -> Result<R, MemoryAccessError> {
         let (region_index, offset) = self.locate_index(address, len)?;
-        let region = &mut self.regions[region_index];
+        let region = &self.regions[region_index];
         // ROM has read backing but the guest and ordinary loaders never write it.
         if region.backing.is_none() || region.spec.kind == MemoryRegionKind::Rom {
             return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
@@ -403,8 +563,7 @@ impl PhysicalMemory {
                 .backing
                 .as_ref()
                 .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-            backing.copy_in(offset, input);
-            return Ok(());
+            return Ok(op(backing, offset).0);
         }
         let first_page = address.get() >> 12;
         let last_page = ((u128::from(address.get()) + u128::from(len) - 1) >> 12) as u64;
@@ -418,11 +577,11 @@ impl PhysicalMemory {
             .ok_or(MemoryAccessError::AddressOverflow)?;
         let generations = region
             .page_generations
-            .get_mut(first_generation..end_generation)
+            .get(first_generation..end_generation)
             .ok_or(MemoryAccessError::AddressOverflow)?;
         if generations
             .iter()
-            .any(|generation| generation.checked_add(1).is_none())
+            .any(|generation| generation.load(Ordering::Relaxed) == u64::MAX)
         {
             return Err(MemoryAccessError::CodeGenerationExhausted);
         }
@@ -430,20 +589,26 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        backing.copy_in(offset, input);
+        let (result, wrote) = op(backing, offset);
+        if !wrote {
+            return Ok(result);
+        }
+        // Publish: a reader that `Acquire`-loads the raised value sees the data written above.
         for generation in generations {
-            *generation += 1;
+            let previous = generation.fetch_add(1, Ordering::Release);
+            debug_assert_ne!(previous, u64::MAX, "page generation wrapped to 0");
         }
         let committed = GuestPhysicalRange {
             start: address,
             len,
         };
         committed_write(committed);
-        Ok(())
+        Ok(result)
     }
 
     /// Machine-side one-time fill of a ROM region (the firmware image at power
-    /// on). This is the only ROM writer; `write_bytes` keeps rejecting ROM.
+    /// on). This is the only ROM writer; `store_bytes` keeps rejecting ROM. It is a loader step that
+    /// runs before the memory is shared, so it keeps `&mut self`.
     pub(crate) fn load_rom_bytes(
         &mut self,
         address: GuestPhysicalAddress,
@@ -459,7 +624,7 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
-        backing.copy_in(offset, input);
+        backing.copy_in(offset, input, Ordering::Relaxed);
         Ok(())
     }
 
@@ -475,101 +640,203 @@ impl PhysicalMemory {
         if region.spec.kind != MemoryRegionKind::Framebuffer {
             return Err(MemoryAccessError::UnreadableRegion(region.spec.kind));
         }
-        self.read_bytes(address, output)
+        self.load_bytes(address, output)
     }
 
-    pub fn read_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
-        let mut bytes = [0; 1];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(bytes[0])
-    }
-
-    pub fn read_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
-        let mut bytes = [0; 2];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u16::from_le_bytes(bytes))
-    }
-
-    pub fn read_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
-        let mut bytes = [0; 4];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u32::from_le_bytes(bytes))
-    }
-
-    pub fn read_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
-        let mut bytes = [0; 8];
-        self.read_bytes(address, &mut bytes)?;
-        Ok(u64::from_le_bytes(bytes))
-    }
-
-    pub fn write_u8(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u8,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &[value], committed_write)
-    }
-
-    pub fn write_u16(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u16,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
-    }
-
-    pub fn write_u32(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u32,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
-    }
-
-    pub fn write_u64(
-        &mut self,
-        address: GuestPhysicalAddress,
-        value: u64,
-        committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<(), MemoryAccessError> {
-        self.write_bytes(address, &value.to_le_bytes(), committed_write)
-    }
-
-    /// S6-25: compare-and-replace of one 8-byte value, the single backend
-    /// operation under every page-table accessed/dirty update (and the place S6-31 replaces
-    /// with a host atomic compare-exchange). It reads the 8 bytes; when they equal `expected`
-    /// it writes `replacement` through [`Self::write_u64`] (the callback runs once, after the
-    /// commit) and returns `Ok(Ok(()))`; otherwise it writes nothing, runs no callback and
-    /// returns `Ok(Err(observed))`. Region errors are those of the read and of the write, and
-    /// memory is unchanged on every error. Interleaving mode runs one whole instruction at a
-    /// time, so the read and the write cannot be separated by another vCPU; a backend shared
-    /// between host threads must make them one operation. Precondition: `address` is aligned
-    /// to 8 for the future host compare-exchange (S6-31); callers pass aligned addresses (a 4K
-    /// table base plus index * 8), checked by a debug assertion.
+    /// S6-25, S6-31: compare-and-replace of one 8-byte value, the single backend operation under
+    /// every page-table accessed/dirty update (the walk of `page_walk`, `compare_replace_table_entry`).
+    /// S6-31: it is one host compare-exchange (`AtomicU64::compare_exchange`, `SeqCst`) on the
+    /// cell, with no preceding read: when the 8 bytes equal `expected` the cell now holds
+    /// `replacement`, the generation of the page is raised and the callback runs once, and the
+    /// result is `Ok(Ok(()))`; otherwise nothing is written, no callback runs and the result is
+    /// `Ok(Err(observed))` (the value the compare saw, so the caller can recompute or retry).
+    /// Region errors are those of a write (`Unmapped`, `AccessCrossesRegion`, `ReadOnlyRegion`
+    /// for ROM and holes, `CodeGenerationExhausted`) and are reported before the compare; memory
+    /// is unchanged on every error. An address that is not 8-aligned is refused with
+    /// `MisalignedAtomic` (counted); table entries are 8-aligned by construction (4 KiB base plus
+    /// index * 8).
     pub fn compare_replace_u64(
-        &mut self,
+        &self,
         address: GuestPhysicalAddress,
         expected: u64,
         replacement: u64,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<Result<(), u64>, MemoryAccessError> {
-        debug_assert!(
-            address.0 % 8 == 0,
-            "compare_replace_u64 needs an 8-aligned address"
-        );
-        let observed = self.read_u64(address)?;
-        if observed != expected {
-            return Ok(Err(observed));
+        self.locked_operation(
+            address,
+            AccessWidth::Qword,
+            |storage, offset| match storage.atomic_compare_exchange(
+                offset,
+                8,
+                expected,
+                replacement,
+            ) {
+                Ok(_) => (Ok(()), true),
+                Err(observed) => (Err(observed), false),
+            },
+            committed_write,
+        )
+    }
+
+    /// S6-31: how many locked operations were refused because the operand was not naturally
+    /// aligned to its width (the split-lock case: a pair of 16-byte operations for an operand
+    /// inside one aligned 16-byte block is not implemented, and stopping all vCPUs is S6-34).
+    /// The count only grows.
+    pub fn split_lock_refusals(&self) -> u64 {
+        self.split_lock_refusals.load(Ordering::Relaxed)
+    }
+
+    /// S6-31: counts one refused misaligned locked operation. An adapter that refuses the operand
+    /// before it translates the address (a linear address is not a physical one) calls this
+    /// directly; the physical operations call [`Self::refuse_misaligned_lock`].
+    pub(crate) fn count_split_lock_refusal(&self) {
+        self.split_lock_refusals.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// S6-31: counts one refused misaligned locked operation and returns the matching error.
+    fn refuse_misaligned_lock(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> MemoryAccessError {
+        self.count_split_lock_refusal();
+        MemoryAccessError::MisalignedAtomic {
+            address,
+            width: width.bytes(),
         }
-        self.write_u64(address, replacement, committed_write)?;
-        Ok(Ok(()))
+    }
+
+    /// The common shape of every locked operation (S6-31): refuse a misaligned operand (counted),
+    /// then run `op` on the aligned host cell inside the commit transaction. `op` returns its
+    /// result and whether it wrote.
+    fn locked_operation<R>(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        op: impl FnOnce(&RamStorage, usize) -> (R, bool),
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<R, MemoryAccessError> {
+        let bytes = u64::from(width.bytes());
+        if address.get() % bytes != 0 {
+            return Err(self.refuse_misaligned_lock(address, width));
+        }
+        self.commit_write_with(address, bytes, op, committed_write)
+    }
+
+    /// S6-31: atomic compare-exchange of `width` bytes at a naturally aligned `address`: one host
+    /// `compare_exchange` (`SeqCst`; `CASAL*` on aarch64 with LSE). Returns the old value,
+    /// zero-extended. `expected` and `replacement` are truncated to the width. Like the x86
+    /// `CMPXCHG`, the operation counts as a write even when the compare fails (the generation of
+    /// the page is raised and the callback runs once): the serial path of S6-20 wrote the old
+    /// value back, and the observers (code caches) see the same notifications. Errors as in
+    /// [`Self::compare_replace_u64`]; memory is unchanged on every error.
+    pub fn atomic_compare_exchange(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        expected: u64,
+        replacement: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| {
+                let old =
+                    match storage.atomic_compare_exchange(offset, bytes, expected, replacement) {
+                        Ok(old) | Err(old) => old,
+                    };
+                (old, true)
+            },
+            committed_write,
+        )
+    }
+
+    /// S6-31: atomic exchange (`SWPAL*`): stores `value` (truncated to the width) and returns the
+    /// old value. Alignment, notification and errors as in [`Self::atomic_compare_exchange`].
+    pub fn atomic_swap(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        value: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| (storage.atomic_swap(offset, bytes, value), true),
+            committed_write,
+        )
+    }
+
+    /// S6-31: atomic wrapping addition (`LDADDAL*`): adds `addend` (truncated to the width) and
+    /// returns the old value. Alignment, notification and errors as in
+    /// [`Self::atomic_compare_exchange`].
+    pub fn atomic_fetch_add(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        addend: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| (storage.atomic_fetch_add(offset, bytes, addend), true),
+            committed_write,
+        )
+    }
+
+    /// S6-31: the general locked read-modify-write behind `GuestMemory::atomic_rmw_integer` (the
+    /// forms `AND`, `OR`, `BTS`, `BTR`, `XADD`, `CMPXCHG`... pass a pure function of the old
+    /// value): a loop of host compare-exchanges (`SeqCst`) that stores `update(old)` (truncated
+    /// to the width) only over the value `update` was computed from, and returns that old value.
+    /// `update` may run more than once (once per lost compare); only the value of the successful
+    /// attempt is stored. The result is always stored, even when equal to the old value (the
+    /// write of a failed `CMPXCHG`); the compare-exchange of such a store still compares, so a
+    /// concurrent change is never overwritten. Alignment, notification and errors as in
+    /// [`Self::atomic_compare_exchange`].
+    pub fn atomic_rmw(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        update: &mut dyn FnMut(u64) -> u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, MemoryAccessError> {
+        let bytes = usize::from(width.bytes());
+        let mask = if bytes == 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * bytes)) - 1
+        };
+        self.locked_operation(
+            address,
+            width,
+            |storage, offset| {
+                let mut old = match bytes {
+                    1 => u64::from(storage.load_u8(offset, Ordering::SeqCst)),
+                    2 => u64::from(storage.load_u16(offset, Ordering::SeqCst)),
+                    4 => u64::from(storage.load_u32(offset, Ordering::SeqCst)),
+                    _ => storage.load_u64(offset, Ordering::SeqCst),
+                };
+                loop {
+                    let new = update(old) & mask;
+                    match storage.atomic_compare_exchange(offset, bytes, old, new) {
+                        Ok(_) => return (old, true),
+                        Err(observed) => old = observed,
+                    }
+                }
+            },
+            committed_write,
+        )
     }
 
     /// S6-30a: the region storage a read of `len` bytes at `address` goes to, with the offset in
-    /// it. Same checks and errors, in the same order, as [`Self::read_bytes`].
+    /// it. Checks: `EmptyRange`/`AddressOverflow` of the length, then the region search, then
+    /// the readable kind.
     fn readable_storage(
         &self,
         address: GuestPhysicalAddress,
@@ -581,26 +848,6 @@ impl PhysicalMemory {
             .backing
             .as_ref()
             .ok_or(MemoryAccessError::UnreadableRegion(region.spec.kind))?;
-        Ok((backing, offset))
-    }
-
-    /// S6-30a: the region storage a write of `len` bytes at `address` goes to. Same checks and
-    /// errors, in the same order, as [`Self::write_bytes`] up to the page-generation check
-    /// (`CodeGenerationExhausted`), which belongs to S6-30b.
-    fn writable_storage(
-        &self,
-        address: GuestPhysicalAddress,
-        len: usize,
-    ) -> Result<(&RamStorage, usize), MemoryAccessError> {
-        let len = checked_access_len(len)?;
-        let (region, offset) = self.locate(address, len)?;
-        if region.backing.is_none() || region.spec.kind == MemoryRegionKind::Rom {
-            return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
-        }
-        let backing = region
-            .backing
-            .as_ref()
-            .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
         Ok((backing, offset))
     }
 
@@ -660,7 +907,8 @@ impl PhysicalMemory {
         let at = frame
             .offset
             .checked_add(usize::try_from(in_frame & mask).ok()?)?;
-        region.backing.as_ref()?.try_load_u8(at)
+        let storage = region.backing.as_ref()?;
+        by_mode!(self.mode, order => storage.try_load_u8(at, order))
     }
 
     pub(crate) fn locate_region_kind(
@@ -710,100 +958,124 @@ impl PhysicalMemory {
     }
 }
 
-/// S6-30a: shared-reference access functions next to the old `&self`/`&mut self` API.
+/// The access functions (S6-30a; the only RAM access path since S6-30c). All take `&self`, so a
+/// vCPU adapter holds a shared reference to the memory and any number of adapters share it.
 ///
 /// Loads and stores of 1, 2, 4 and 8 bytes at a naturally aligned address are one host atomic
-/// access of that width (`SeqCst`, the choice of S6-06; the order itself is revisited in S6-32);
+/// access of that width (S6-32: `SeqCst` in the parallel mode, the choice of S6-06, and `Relaxed`
+/// in the interleaving mode, see [`ExecutionMode`]; the default memory is in the latter);
 /// a misaligned access is split into ascending one-byte accesses (MEMORY_MODEL.md, "Атомарность
-/// и разделённые доступы"). `load_bytes`/`store_bytes` are bulk copies: not atomic as a whole,
-/// not ordered, and another thread can see any prefix of one (relaxed accesses of up to 8
-/// bytes, ascending; see `ram_storage`). The locating rules, region kinds and errors are those
-/// of `read_bytes`/`write_bytes`; the results are bit-identical to them.
+/// и разделённые доступы"). `load_bytes`/`store_bytes` are bulk copies: the copy as a whole is
+/// not atomic, and another thread can see any prefix of one. The order of each host access of a
+/// bulk copy is the order of the ordinary accesses of the mode (S6-32: `SeqCst` in the parallel
+/// mode, `Relaxed` in the interleaving mode); an aligned copy of 1, 2, 4 or 8 bytes is ONE host
+/// access of that width (`chunk_width`, normative); otherwise ascending accesses of up to 8
+/// bytes (see `ram_storage`).
 ///
-/// The stores do **not** raise page generations and do **not** notify committed writes: the
-/// generation counters are still plain integers behind `&mut self` (S6-30b makes them atomic
-/// and adds the notification). Nothing in production calls these functions until S6-30c
-/// switches the adapters; they must not be used to write guest RAM that a code cache watches.
-#[allow(dead_code)]
+/// S6-30b: the stores take a `committed_write` callback and go through one commit transaction
+/// (`commit_write`): validation and errors, the data is stored first, then every touched page
+/// generation is raised atomically (`Release`), then the callback runs once; ROM and a rejected
+/// write change and notify nothing, a `Framebuffer` write has no generation and no callback.
 impl PhysicalMemory {
-    pub(crate) fn load_bytes(
+    pub fn load_bytes(
         &self,
         address: GuestPhysicalAddress,
         output: &mut [u8],
     ) -> Result<(), MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, output.len())?;
-        storage.copy_out(offset, output);
+        by_mode!(self.mode, order => storage.copy_out(offset, output, order));
         Ok(())
     }
 
-    pub(crate) fn store_bytes(
+    pub fn store_bytes(
         &self,
         address: GuestPhysicalAddress,
         input: &[u8],
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, input.len())?;
-        storage.copy_in(offset, input);
-        Ok(())
+        let len = checked_access_len(input.len())?;
+        by_mode!(self.mode, order => self.commit_write(
+            address,
+            len,
+            |storage, offset| storage.copy_in(offset, input, order),
+            committed_write,
+        ))
     }
 
-    pub(crate) fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
+    pub fn load_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 1)?;
-        Ok(storage.load_u8(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u8(offset, order)))
     }
 
-    pub(crate) fn load_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
+    pub fn load_u16(&self, address: GuestPhysicalAddress) -> Result<u16, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 2)?;
-        Ok(storage.load_u16(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u16(offset, order)))
     }
 
-    pub(crate) fn load_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
+    pub fn load_u32(&self, address: GuestPhysicalAddress) -> Result<u32, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 4)?;
-        Ok(storage.load_u32(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u32(offset, order)))
     }
 
-    pub(crate) fn load_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
+    pub fn load_u64(&self, address: GuestPhysicalAddress) -> Result<u64, MemoryAccessError> {
         let (storage, offset) = self.readable_storage(address, 8)?;
-        Ok(storage.load_u64(offset, Ordering::SeqCst))
+        Ok(by_mode!(self.mode, order => storage.load_u64(offset, order)))
     }
 
-    pub(crate) fn store_u8(
+    pub fn store_u8(
         &self,
         address: GuestPhysicalAddress,
         value: u8,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 1)?;
-        storage.store_u8(offset, value, Ordering::SeqCst);
-        Ok(())
+        by_mode!(self.mode, order => self.commit_write(
+            address,
+            1,
+            |storage, offset| storage.store_u8(offset, value, order),
+            committed_write,
+        ))
     }
 
-    pub(crate) fn store_u16(
+    pub fn store_u16(
         &self,
         address: GuestPhysicalAddress,
         value: u16,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 2)?;
-        storage.store_u16(offset, value, Ordering::SeqCst);
-        Ok(())
+        by_mode!(self.mode, order => self.commit_write(
+            address,
+            2,
+            |storage, offset| storage.store_u16(offset, value, order),
+            committed_write,
+        ))
     }
 
-    pub(crate) fn store_u32(
+    pub fn store_u32(
         &self,
         address: GuestPhysicalAddress,
         value: u32,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 4)?;
-        storage.store_u32(offset, value, Ordering::SeqCst);
-        Ok(())
+        by_mode!(self.mode, order => self.commit_write(
+            address,
+            4,
+            |storage, offset| storage.store_u32(offset, value, order),
+            committed_write,
+        ))
     }
 
-    pub(crate) fn store_u64(
+    pub fn store_u64(
         &self,
         address: GuestPhysicalAddress,
         value: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<(), MemoryAccessError> {
-        let (storage, offset) = self.writable_storage(address, 8)?;
-        storage.store_u64(offset, value, Ordering::SeqCst);
-        Ok(())
+        by_mode!(self.mode, order => self.commit_write(
+            address,
+            8,
+            |storage, offset| storage.store_u64(offset, value, order),
+            committed_write,
+        ))
     }
 }
 
@@ -868,12 +1140,12 @@ mod tests {
             )],
         )
         .unwrap();
-        let mut top_byte = PhysicalMemory::new(&top_byte_map, RamLimits::new(1)).unwrap();
+        let top_byte = PhysicalMemory::new(&top_byte_map, RamLimits::new(1)).unwrap();
         top_byte
-            .write_u8(GuestPhysicalAddress::new(u64::MAX), 0x5a, |_| {})
+            .store_u8(GuestPhysicalAddress::new(u64::MAX), 0x5a, |_| {})
             .unwrap();
         assert_eq!(
-            top_byte.read_u8(GuestPhysicalAddress::new(u64::MAX)),
+            top_byte.load_u8(GuestPhysicalAddress::new(u64::MAX)),
             Ok(0x5a)
         );
     }
@@ -882,12 +1154,12 @@ mod tests {
     /// 8 bytes equal `expected`; otherwise it returns the observed value and changes nothing.
     #[test]
     fn compare_replace_u64_replaces_only_a_matching_value() {
-        let mut ram = memory(&[
+        let ram = memory(&[
             (0, 0x2000, MemoryRegionKind::Ram),
             (0x2000, 0x1000, MemoryRegionKind::Rom),
         ]);
         let at = GuestPhysicalAddress::new(0x100);
-        ram.write_u64(at, 7, |_| {}).unwrap();
+        ram.store_u64(at, 7, |_| {}).unwrap();
         let generation = ram.code_page_generation(at).unwrap();
         let mut log = Vec::new();
         assert_eq!(
@@ -895,14 +1167,14 @@ mod tests {
             Ok(Err(7))
         );
         assert!(log.is_empty());
-        assert_eq!(ram.read_u64(at), Ok(7));
+        assert_eq!(ram.load_u64(at), Ok(7));
         assert_eq!(ram.code_page_generation(at), Ok(generation));
         assert_eq!(
             ram.compare_replace_u64(at, 7, 9, |r| log.push(r)),
             Ok(Ok(()))
         );
         assert_eq!(log, [range(0x100, 8)]);
-        assert_eq!(ram.read_u64(at), Ok(9));
+        assert_eq!(ram.load_u64(at), Ok(9));
         assert_eq!(ram.code_page_generation(at), Ok(generation + 1));
         // Errors leave memory unchanged and notify nothing.
         let rom = GuestPhysicalAddress::new(0x2000);
@@ -940,39 +1212,39 @@ mod tests {
 
     #[test]
     fn accesses_check_boundaries_holes_rom_and_reserved_regions() {
-        let mut memory = memory(&[
+        let memory = memory(&[
             (0x1000, 0x1000, MemoryRegionKind::Ram),
             (0x3000, 0x1000, MemoryRegionKind::Rom),
             (0x5000, 0x1000, MemoryRegionKind::Reserved),
         ]);
         memory
-            .write_u32(GuestPhysicalAddress::new(0x1ffc), 0x1234_5678, |_| {})
+            .store_u32(GuestPhysicalAddress::new(0x1ffc), 0x1234_5678, |_| {})
             .unwrap();
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(0x1ffc)).unwrap(),
+            memory.load_u32(GuestPhysicalAddress::new(0x1ffc)).unwrap(),
             0x1234_5678
         );
         assert!(matches!(
-            memory.read_u8(GuestPhysicalAddress::new(0x2000)),
+            memory.load_u8(GuestPhysicalAddress::new(0x2000)),
             Err(MemoryAccessError::Unmapped(_))
         ));
         // S7-03: ROM has read backing (zeroed until the loader fills it).
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x3000)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x3000)).unwrap(),
             0
         );
         assert!(matches!(
-            memory.write_u8(GuestPhysicalAddress::new(0x3000), 1, |_| {}),
+            memory.store_u8(GuestPhysicalAddress::new(0x3000), 1, |_| {}),
             Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
         ));
         assert!(matches!(
-            memory.write_u8(GuestPhysicalAddress::new(0x5000), 1, |_| {}),
+            memory.store_u8(GuestPhysicalAddress::new(0x5000), 1, |_| {}),
             Err(MemoryAccessError::ReadOnlyRegion(
                 MemoryRegionKind::Reserved
             ))
         ));
         assert!(matches!(
-            memory.read_u16(GuestPhysicalAddress::new(u64::MAX)),
+            memory.load_u16(GuestPhysicalAddress::new(u64::MAX)),
             Err(MemoryAccessError::AddressOverflow)
         ));
     }
@@ -987,18 +1259,18 @@ mod tests {
             .load_rom_bytes(GuestPhysicalAddress::new(0x3010), &[1, 2, 3, 4])
             .unwrap();
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            memory.load_u32(GuestPhysicalAddress::new(0x3010)).unwrap(),
             0x0403_0201
         );
         // Guest-visible writes never reach ROM and never invoke the callback.
         let mut commits = 0;
         assert_eq!(
-            memory.write_u8(GuestPhysicalAddress::new(0x3010), 9, |_| commits += 1),
+            memory.store_u8(GuestPhysicalAddress::new(0x3010), 9, |_| commits += 1),
             Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
         );
         assert_eq!(commits, 0);
         assert_eq!(
-            memory.read_u8(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            memory.load_u8(GuestPhysicalAddress::new(0x3010)).unwrap(),
             1
         );
         // No page generations: ROM is never tracked code.
@@ -1019,31 +1291,31 @@ mod tests {
 
     #[test]
     fn committed_write_notification_is_single_and_never_fires_on_rejection() {
-        let mut memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
         let mut commits = Vec::new();
         memory
-            .write_u16(GuestPhysicalAddress::new(0x1002), 0xa1b2, |range| {
+            .store_u16(GuestPhysicalAddress::new(0x1002), 0xa1b2, |range| {
                 commits.push(range)
             })
             .unwrap();
         assert_eq!(commits, vec![range(0x1002, 2)]);
         assert!(
             memory
-                .write_u8(GuestPhysicalAddress::new(0x3000), 1, |range| commits
+                .store_u8(GuestPhysicalAddress::new(0x3000), 1, |range| commits
                     .push(range))
                 .is_err()
         );
         assert_eq!(commits, vec![range(0x1002, 2)]);
         assert!(
             memory
-                .read_bytes(GuestPhysicalAddress::new(0x1002), &mut [])
+                .load_bytes(GuestPhysicalAddress::new(0x1002), &mut [])
                 .is_err()
         );
     }
 
     #[test]
     fn committed_writes_advance_only_the_physical_pages_they_touch() {
-        let mut memory = memory(&[(0x1000, 0x3000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0x1000, 0x3000, MemoryRegionKind::Ram)]);
         let first = GuestPhysicalAddress::new(0x1000);
         let second = GuestPhysicalAddress::new(0x2000);
         let third = GuestPhysicalAddress::new(0x3000);
@@ -1052,7 +1324,7 @@ mod tests {
         assert_eq!(memory.code_page_generation(third), Ok(1));
 
         memory
-            .write_u8(GuestPhysicalAddress::new(0x1010), 0x90, |_| {})
+            .store_u8(GuestPhysicalAddress::new(0x1010), 0x90, |_| {})
             .unwrap();
         assert_eq!(memory.code_page_generation(first), Ok(2));
         assert_eq!(memory.code_page_generation(second), Ok(1));
@@ -1060,13 +1332,13 @@ mod tests {
 
         assert!(
             memory
-                .write_bytes(GuestPhysicalAddress::new(0x3fff), &[1, 2], |_| {})
+                .store_bytes(GuestPhysicalAddress::new(0x3fff), &[1, 2], |_| {})
                 .is_err()
         );
         assert_eq!(memory.code_page_generation(third), Ok(1));
 
         memory
-            .write_bytes(GuestPhysicalAddress::new(0x1fff), &[1, 2], |_| {})
+            .store_bytes(GuestPhysicalAddress::new(0x1fff), &[1, 2], |_| {})
             .unwrap();
         assert_eq!(memory.code_page_generation(first), Ok(3));
         assert_eq!(memory.code_page_generation(second), Ok(2));
@@ -1075,13 +1347,13 @@ mod tests {
 
     #[test]
     fn write_crossing_adjacent_ram_regions_is_atomic_and_unnotified() {
-        let mut memory = memory(&[
+        let memory = memory(&[
             (0x1000, 2, MemoryRegionKind::Ram),
             (0x1002, 2, MemoryRegionKind::Ram),
         ]);
         let mut commits = Vec::new();
         assert!(matches!(
-            memory.write_bytes(GuestPhysicalAddress::new(0x1000), &[1, 2, 3, 4], |range| {
+            memory.store_bytes(GuestPhysicalAddress::new(0x1000), &[1, 2, 3, 4], |range| {
                 commits.push(range)
             }),
             Err(MemoryAccessError::AccessCrossesRegion(_))
@@ -1090,10 +1362,10 @@ mod tests {
         let mut first = [0xff; 2];
         let mut second = [0xff; 2];
         memory
-            .read_bytes(GuestPhysicalAddress::new(0x1000), &mut first)
+            .load_bytes(GuestPhysicalAddress::new(0x1000), &mut first)
             .unwrap();
         memory
-            .read_bytes(GuestPhysicalAddress::new(0x1002), &mut second)
+            .load_bytes(GuestPhysicalAddress::new(0x1002), &mut second)
             .unwrap();
         assert_eq!(first, [0; 2]);
         assert_eq!(second, [0; 2]);
@@ -1111,10 +1383,10 @@ mod tests {
         )
         .unwrap();
         // The RAM budget covers the RAM region only (0x1000), not the 0x4000 bytes of pixels.
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x1000)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(0x1000)).unwrap();
         let mut commits = Vec::new();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(FB_START + 0x3ffc),
                 &[1, 2, 3, 4],
                 |r| commits.push(r),
@@ -1122,19 +1394,19 @@ mod tests {
             .unwrap();
         assert!(commits.is_empty());
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            memory.load_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
             Ok(0x0403_0201)
         );
         // Zero-filled at power-on.
-        assert_eq!(memory.read_u64(GuestPhysicalAddress::new(FB_START)), Ok(0));
+        assert_eq!(memory.load_u64(GuestPhysicalAddress::new(FB_START)), Ok(0));
         // RAM in the same memory still notifies exactly once.
         memory
-            .write_u8(GuestPhysicalAddress::new(0x1000), 7, |r| commits.push(r))
+            .store_u8(GuestPhysicalAddress::new(0x1000), 7, |r| commits.push(r))
             .unwrap();
         assert_eq!(commits, vec![range(0x1000, 1)]);
         // Crossing the end of the region is rejected without a partial write.
         assert!(matches!(
-            memory.write_bytes(
+            memory.store_bytes(
                 GuestPhysicalAddress::new(FB_START + 0x3ffe),
                 &[9; 4],
                 |_| {}
@@ -1142,7 +1414,7 @@ mod tests {
             Err(MemoryAccessError::AccessCrossesRegion(_))
         ));
         assert_eq!(
-            memory.read_u16(GuestPhysicalAddress::new(FB_START + 0x3ffe)),
+            memory.load_u16(GuestPhysicalAddress::new(FB_START + 0x3ffe)),
             Ok(0x0403)
         );
         // Frame copy-out is available only for Framebuffer regions.
@@ -1168,7 +1440,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x2000)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(0x2000)).unwrap();
         let ram0 = GuestPhysicalAddress::new(0x1000);
         let ram1 = GuestPhysicalAddress::new(0x2000);
         assert_eq!(memory.code_page_generation(ram0), Ok(1));
@@ -1194,14 +1466,14 @@ mod tests {
             (0x3ffc, &[6, 7, 8, 9][..]),
         ] {
             memory
-                .write_bytes(GuestPhysicalAddress::new(FB_START + offset), bytes, |r| {
+                .store_bytes(GuestPhysicalAddress::new(FB_START + offset), bytes, |r| {
                     commits.push(r)
                 })
                 .unwrap();
         }
         assert!(commits.is_empty());
         assert_eq!(
-            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            memory.load_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
             Ok(0x0908_0706)
         );
         assert_eq!(memory.code_page_generation(ram0), Ok(1));
@@ -1209,7 +1481,7 @@ mod tests {
 
         // RAM writes still bump exactly the touched generations and notify once.
         memory
-            .write_bytes(GuestPhysicalAddress::new(0x1ffe), &[1, 2, 3, 4], |r| {
+            .store_bytes(GuestPhysicalAddress::new(0x1ffe), &[1, 2, 3, 4], |r| {
                 commits.push(r)
             })
             .unwrap();
@@ -1222,15 +1494,15 @@ mod tests {
     fn guest_pages_and_host_sized_chunks_are_ordinary_ram_bytes() {
         // This region straddles a deterministic 16 KiB boundary; no host page
         // size is queried or assumed by the implementation.
-        let mut memory = memory(&[(0, 0x9000, MemoryRegionKind::Ram)]);
+        let memory = memory(&[(0, 0x9000, MemoryRegionKind::Ram)]);
         let bytes: Vec<u8> = (0..0x30).map(|value| value as u8).collect();
         let start = GuestPhysicalAddress::new(0x3ff0);
         let mut commits = Vec::new();
         memory
-            .write_bytes(start, &bytes, |range| commits.push(range))
+            .store_bytes(start, &bytes, |range| commits.push(range))
             .unwrap();
         let mut read_back = vec![0; bytes.len()];
-        memory.read_bytes(start, &mut read_back).unwrap();
+        memory.load_bytes(start, &mut read_back).unwrap();
         assert_eq!(read_back, bytes);
         assert_eq!(commits, vec![range(0x3ff0, 0x30)]);
     }
@@ -1254,7 +1526,7 @@ mod tests {
 
     fn dump(memory: &PhysicalMemory) -> Vec<Result<u8, MemoryAccessError>> {
         (PROBE_START..PROBE_END)
-            .map(|at| memory.read_u8(GuestPhysicalAddress::new(at)))
+            .map(|at| memory.load_u8(GuestPhysicalAddress::new(at)))
             .collect()
     }
 
@@ -1308,193 +1580,226 @@ mod tests {
         }
     }
 
-    /// Old API on one memory and the new functions on another give the same results, the same
-    /// errors and, in the end, the same bytes, over random operations that hit edges, holes, ROM,
-    /// Reserved, Framebuffer, adjacent regions and every width and alignment. A third copy of the
-    /// bytes is a plain `Vec<u8>` model, so equality does not rest on the two paths sharing one
-    /// storage: each success of the new API is applied to the model, each successful load is
-    /// compared with it, and the model equals the final dump.
+    /// Independent reference of the region rules (written from the map of
+    /// `storage_test_memory`, not from `PhysicalMemory`): the error, in the order of the checks, of
+    /// an access of `len` bytes at `at`, or `Ok` with the kind of the region it lands in.
+    fn reference_access(
+        at: u64,
+        len: u64,
+        write: bool,
+    ) -> Result<MemoryRegionKind, MemoryAccessError> {
+        const MAP: [(u64, u64, MemoryRegionKind); 5] = [
+            (0x1003, 0x1ffd, MemoryRegionKind::Ram),
+            (0x3000, 0x805, MemoryRegionKind::Ram),
+            (0x4000, 0x100, MemoryRegionKind::Rom),
+            (0x5000, 0x100, MemoryRegionKind::Reserved),
+            (0x6000, 0x1000, MemoryRegionKind::Framebuffer),
+        ];
+        if len == 0 {
+            return Err(MemoryAccessError::EmptyRange);
+        }
+        if u128::from(at) + u128::from(len) > 1u128 << 64 {
+            return Err(MemoryAccessError::AddressOverflow);
+        }
+        let Some(&(start, size, kind)) = MAP
+            .iter()
+            .find(|&&(start, size, _)| at >= start && at < start + size)
+        else {
+            return Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(at)));
+        };
+        if at + len > start + size {
+            return Err(MemoryAccessError::AccessCrossesRegion(range(at, len)));
+        }
+        match (kind, write) {
+            (MemoryRegionKind::Reserved, false) => Err(MemoryAccessError::UnreadableRegion(kind)),
+            (MemoryRegionKind::Rom | MemoryRegionKind::Reserved, true) => {
+                Err(MemoryAccessError::ReadOnlyRegion(kind))
+            }
+            _ => Ok(kind),
+        }
+    }
+
+    /// Pages of the two RAM regions of `storage_test_memory`, one probe address each.
+    const GENERATION_PROBES: [u64; 3] = [0x1003, 0x2000, 0x3000];
+
+    /// The access functions against two independent references: the region rules
+    /// (`reference_access`: errors, in their order) and a plain `Vec<u8>` model of the whole probe
+    /// window (every successful store is applied to it, every successful load must equal it, the
+    /// final dump must equal it). Also checked on every step: the notifications (none on a
+    /// rejection or a Framebuffer store, otherwise exactly one range of the written bytes) and the
+    /// generation of every RAM page. Random operations hit edges, holes, ROM, Reserved,
+    /// Framebuffer, adjacent regions and every width and alignment.
     #[test]
-    fn new_access_functions_match_the_old_api_byte_for_byte() {
+    fn access_functions_match_the_region_rules_and_a_byte_model() {
         for seed in [
             0x9e37_79b9_7f4a_7c15u64,
             0x1234_5678_9abc_def1,
             0xdead_beef_cafe_f00d,
         ] {
             let mut rng = XorShift(seed);
-            let mut old = storage_test_memory();
-            let new = storage_test_memory();
+            let memory = storage_test_memory();
             let mut model = ByteModel::new();
-            let mut new_reads = 0u32;
+            let mut generations = [1u64; 3];
+            let mut loads = 0u32;
             for step in 0..20_000u32 {
                 let at = random_address(&mut rng);
                 let value = rng.next();
-                match rng.next() % 12 {
-                    0 => {
-                        let result = new.store_u8(at, value as u8);
-                        assert_eq!(
-                            old.write_u8(at, value as u8, |_| {}),
-                            result,
-                            "step {step} store_u8 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u8).to_le_bytes());
-                        }
-                    }
-                    1 => {
-                        let result = new.store_u16(at, value as u16);
-                        assert_eq!(
-                            old.write_u16(at, value as u16, |_| {}),
-                            result,
-                            "step {step} store_u16 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u16).to_le_bytes());
-                        }
-                    }
-                    2 => {
-                        let result = new.store_u32(at, value as u32);
-                        assert_eq!(
-                            old.write_u32(at, value as u32, |_| {}),
-                            result,
-                            "step {step} store_u32 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &(value as u32).to_le_bytes());
-                        }
-                    }
-                    3 => {
-                        let result = new.store_u64(at, value);
-                        assert_eq!(
-                            old.write_u64(at, value, |_| {}),
-                            result,
-                            "step {step} store_u64 {at:?}"
-                        );
-                        if result.is_ok() {
-                            model.store(at, &value.to_le_bytes());
-                        }
-                    }
+                let mut commits = Vec::new();
+                // `Some(bytes)` for a store, `None` for a load.
+                let (len, store): (usize, Option<Vec<u8>>) = match rng.next() % 12 {
+                    0 => (1, Some((value as u8).to_le_bytes().to_vec())),
+                    1 => (2, Some((value as u16).to_le_bytes().to_vec())),
+                    2 => (4, Some((value as u32).to_le_bytes().to_vec())),
+                    3 => (8, Some(value.to_le_bytes().to_vec())),
                     4 => {
                         let len = (rng.next() % 26) as usize; // 0 is the empty-range error
-                        let data: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
-                        let result = new.store_bytes(at, &data);
+                        (len, Some((0..len).map(|_| rng.next() as u8).collect()))
+                    }
+                    5 => (1, None),
+                    6 => (2, None),
+                    7 => (4, None),
+                    8 => (8, None),
+                    _ => ((rng.next() % 26) as usize, None),
+                };
+                let expected = reference_access(at.0, len as u64, store.is_some());
+                match store {
+                    Some(bytes) => {
+                        let result = match (len, bytes.len()) {
+                            (1, 1) if step % 3 != 1 => {
+                                memory.store_u8(at, bytes[0], |r| commits.push(r))
+                            }
+                            (2, 2) => memory.store_u16(
+                                at,
+                                u16::from_le_bytes([bytes[0], bytes[1]]),
+                                |r| commits.push(r),
+                            ),
+                            (4, 4) => memory.store_u32(
+                                at,
+                                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                                |r| commits.push(r),
+                            ),
+                            (8, 8) => memory.store_u64(
+                                at,
+                                u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                                |r| commits.push(r),
+                            ),
+                            _ => memory.store_bytes(at, &bytes, |r| commits.push(r)),
+                        };
                         assert_eq!(
-                            old.write_bytes(at, &data, |_| {}),
                             result,
-                            "step {step} store_bytes {at:?} len {len}"
+                            expected.clone().map(|_| ()),
+                            "step {step} store {at:?} len {len}"
                         );
-                        if result.is_ok() {
-                            model.store(at, &data);
+                        if let Ok(kind) = expected {
+                            model.store(at, &bytes);
+                            if kind == MemoryRegionKind::Ram {
+                                assert_eq!(
+                                    commits,
+                                    vec![range(at.0, len as u64)],
+                                    "step {step} notification"
+                                );
+                                for page in at.0 >> 12..=(at.0 + len as u64 - 1) >> 12 {
+                                    generations[page as usize - 1] += 1;
+                                }
+                            } else {
+                                assert!(commits.is_empty(), "step {step} Framebuffer notified");
+                            }
+                        } else {
+                            assert!(commits.is_empty(), "step {step} rejected store notified");
                         }
                     }
-                    5 => {
-                        let result = new.load_u8(at);
-                        assert_eq!(old.read_u8(at), result, "step {step} load_u8 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(&[read], model.bytes(at, 1), "step {step} model u8");
+                    None => {
+                        let mut buffer = vec![0xeeu8; len];
+                        let result = match len {
+                            1 if step % 3 != 1 => memory.load_u8(at).map(|v| vec![v]),
+                            2 => memory.load_u16(at).map(|v| v.to_le_bytes().to_vec()),
+                            4 => memory.load_u32(at).map(|v| v.to_le_bytes().to_vec()),
+                            8 => memory.load_u64(at).map(|v| v.to_le_bytes().to_vec()),
+                            _ => memory.load_bytes(at, &mut buffer).map(|()| buffer.clone()),
+                        };
+                        match (result, expected) {
+                            (Ok(bytes), Ok(_)) => {
+                                assert_eq!(
+                                    bytes,
+                                    model.bytes(at, len),
+                                    "step {step} load {at:?} len {len}"
+                                );
+                                loads += 1;
+                            }
+                            (Err(error), Err(reference)) => {
+                                assert_eq!(error, reference, "step {step} load {at:?} len {len}")
+                            }
+                            (got, want) => panic!("step {step} load {at:?}: {got:?} vs {want:?}"),
                         }
                     }
-                    6 => {
-                        let result = new.load_u16(at);
-                        assert_eq!(old.read_u16(at), result, "step {step} load_u16 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 2),
-                                "step {step} model u16"
-                            );
-                        }
-                    }
-                    7 => {
-                        let result = new.load_u32(at);
-                        assert_eq!(old.read_u32(at), result, "step {step} load_u32 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 4),
-                                "step {step} model u32"
-                            );
-                        }
-                    }
-                    8 => {
-                        let result = new.load_u64(at);
-                        assert_eq!(old.read_u64(at), result, "step {step} load_u64 {at:?}");
-                        if let Ok(read) = result {
-                            assert_eq!(
-                                read.to_le_bytes(),
-                                model.bytes(at, 8),
-                                "step {step} model u64"
-                            );
-                        }
-                    }
-                    _ => {
-                        let len = (rng.next() % 26) as usize;
-                        let mut from_old = vec![0xeeu8; len];
-                        let mut from_new = vec![0xeeu8; len];
-                        let result = new.load_bytes(at, &mut from_new);
+                }
+                if step % 64 == 0 {
+                    for (probe, expected) in GENERATION_PROBES.iter().zip(generations) {
                         assert_eq!(
-                            old.read_bytes(at, &mut from_old),
-                            result,
-                            "step {step} load_bytes {at:?} len {len}"
+                            memory.code_page_generation(GuestPhysicalAddress::new(*probe)),
+                            Ok(expected),
+                            "step {step} generation of {probe:#x}"
                         );
-                        assert_eq!(from_old, from_new, "step {step} bytes {at:?} len {len}");
-                        if result.is_ok() {
-                            assert_eq!(from_new, model.bytes(at, len), "step {step} model bytes");
-                        }
-                        new_reads += 1;
                     }
                 }
             }
-            assert!(new_reads > 1000);
-            assert_eq!(dump(&old), dump(&new), "seed {seed:#x}");
-            // Every readable byte of the final dump equals the model; unreadable ones are errors.
-            for (index, byte) in dump(&new).into_iter().enumerate() {
-                if let Ok(byte) = byte {
-                    assert_eq!(byte, model.0[index], "seed {seed:#x} byte {index:#x}");
+            assert!(loads > 1000);
+            // Every byte of the final dump: an error exactly where the rules give one, otherwise
+            // the model.
+            for (index, byte) in dump(&memory).into_iter().enumerate() {
+                let at = PROBE_START + index as u64;
+                match reference_access(at, 1, false) {
+                    Ok(_) => assert_eq!(byte, Ok(model.0[index]), "seed {seed:#x} byte {at:#x}"),
+                    Err(error) => assert_eq!(byte, Err(error), "seed {seed:#x} byte {at:#x}"),
                 }
             }
-            // The stores of S6-30a do not raise generations (S6-30b); the old ones do.
-            let ram = GuestPhysicalAddress::new(0x2000);
-            assert_eq!(new.code_page_generation(ram), Ok(1));
-            assert!(old.code_page_generation(ram).unwrap() > 1);
+            for (probe, expected) in GENERATION_PROBES.iter().zip(generations) {
+                assert_eq!(
+                    memory.code_page_generation(GuestPhysicalAddress::new(*probe)),
+                    Ok(expected),
+                    "seed {seed:#x} final generation of {probe:#x}"
+                );
+            }
+            assert!(generations.iter().all(|&g| g > 1));
         }
     }
 
-    /// Both orders of mixing: the same random writes through old and new paths into one
-    /// memory each, read back through the other API, see the same bytes.
+    /// Two shared references to one memory see each other's stores at once (no `&mut` is needed
+    /// anywhere), whichever width writes and whichever reads.
     #[test]
-    fn old_and_new_paths_share_one_storage() {
-        let mut mixed = storage_test_memory();
-        let mut reference = storage_test_memory();
+    fn stores_through_one_shared_reference_are_seen_through_another() {
+        let memory = storage_test_memory();
+        let (first, second) = (&memory, &memory);
         let mut rng = XorShift(0x0123_4567_89ab_cdef);
         for _ in 0..5_000 {
             let at = random_address(&mut rng);
             let value = rng.next();
             let width = [1usize, 2, 4, 8][(rng.next() % 4) as usize];
             let bytes = &value.to_le_bytes()[..width];
-            let expected = reference.write_bytes(at, bytes, |_| {});
-            let through_new = rng.next() % 2 == 0;
-            let got = if through_new {
-                mixed.store_bytes(at, bytes)
+            let (writer, reader) = if rng.next() % 2 == 0 {
+                (first, second)
             } else {
-                mixed.write_bytes(at, bytes, |_| {})
+                (second, first)
             };
-            assert_eq!(got, expected);
-            let mut a = vec![0u8; width];
-            let mut b = vec![0u8; width];
-            let ra = if through_new {
-                mixed.read_bytes(at, &mut a)
-            } else {
-                mixed.load_bytes(at, &mut a)
-            };
-            assert_eq!(ra, reference.read_bytes(at, &mut b));
-            assert_eq!(a, b);
+            let stored = writer.store_bytes(at, bytes, |_| {});
+            assert_eq!(
+                stored,
+                reference_access(at.0, width as u64, true).map(|_| ())
+            );
+            let mut back = vec![0u8; width];
+            let loaded = reader.load_bytes(at, &mut back);
+            assert_eq!(
+                loaded,
+                reference_access(at.0, width as u64, false).map(|_| ())
+            );
+            if stored.is_ok() {
+                assert_eq!(back, bytes);
+            }
         }
-        assert_eq!(dump(&mixed), dump(&reference));
     }
 
     #[test]
-    fn new_functions_keep_the_boundary_errors_of_the_old_ones() {
+    fn boundary_errors_follow_the_region_rules() {
         let memory = storage_test_memory();
         // Region end, adjacent RAM regions, hole, region start, top of the address space.
         for at in [
@@ -1506,91 +1811,66 @@ mod tests {
             0x4fff,
             0x40ff,
             0x50ff,
-            u64::MAX,
-            u64::MAX - 3,
-        ] {
-            let at = GuestPhysicalAddress::new(at);
-            let mut one = [0u8; 1];
-            let mut eight = [0u8; 8];
-            assert_eq!(memory.read_u8(at), memory.load_u8(at));
-            assert_eq!(memory.read_u16(at), memory.load_u16(at));
-            assert_eq!(memory.read_u32(at), memory.load_u32(at));
-            assert_eq!(memory.read_u64(at), memory.load_u64(at));
-            assert_eq!(
-                memory.read_bytes(at, &mut one),
-                memory.load_bytes(at, &mut one)
-            );
-            assert_eq!(
-                memory.read_bytes(at, &mut eight),
-                memory.load_bytes(at, &mut eight)
-            );
-            assert_eq!(
-                memory.read_bytes(at, &mut []),
-                memory.load_bytes(at, &mut [])
-            );
-        }
-        let mut old = storage_test_memory();
-        for at in [
-            0x2fff_u64,
-            0x3804,
-            0x40ff,
-            0x4000,
-            0x50ff,
             0x6ff9,
             0x7000,
             u64::MAX,
+            u64::MAX - 3,
         ] {
-            let at = GuestPhysicalAddress::new(at);
-            assert_eq!(old.write_u8(at, 1, |_| {}), memory.store_u8(at, 1));
-            assert_eq!(old.write_u16(at, 1, |_| {}), memory.store_u16(at, 1));
-            assert_eq!(old.write_u32(at, 1, |_| {}), memory.store_u32(at, 1));
-            assert_eq!(old.write_u64(at, 1, |_| {}), memory.store_u64(at, 1));
-            assert_eq!(
-                old.write_bytes(at, &[], |_| {}),
-                memory.store_bytes(at, &[])
-            );
+            let address = GuestPhysicalAddress::new(at);
+            let load = |len: u64| reference_access(at, len, false).map(|_| ());
+            let store = |len: u64| reference_access(at, len, true).map(|_| ());
+            assert_eq!(memory.load_u8(address).map(|_| ()), load(1), "{at:#x}");
+            assert_eq!(memory.load_u16(address).map(|_| ()), load(2), "{at:#x}");
+            assert_eq!(memory.load_u32(address).map(|_| ()), load(4), "{at:#x}");
+            assert_eq!(memory.load_u64(address).map(|_| ()), load(8), "{at:#x}");
+            assert_eq!(memory.load_bytes(address, &mut [0u8; 8]), load(8));
+            assert_eq!(memory.load_bytes(address, &mut []), load(0));
+            assert_eq!(memory.store_u8(address, 1, |_| {}), store(1), "{at:#x}");
+            assert_eq!(memory.store_u16(address, 1, |_| {}), store(2), "{at:#x}");
+            assert_eq!(memory.store_u32(address, 1, |_| {}), store(4), "{at:#x}");
+            assert_eq!(memory.store_u64(address, 1, |_| {}), store(8), "{at:#x}");
+            assert_eq!(memory.store_bytes(address, &[], |_| {}), store(0));
         }
     }
 
     #[test]
-    fn rejected_new_stores_leave_memory_unchanged() {
+    fn rejected_stores_leave_memory_unchanged() {
         let memory = storage_test_memory();
         let before = dump(&memory);
         // ROM, Reserved, hole, crossing from RAM into the gap after it, empty range.
         for at in [0x4000_u64, 0x50f8, 0x0f00, 0x3804] {
             assert!(
                 memory
-                    .store_u64(GuestPhysicalAddress::new(at), u64::MAX)
+                    .store_u64(GuestPhysicalAddress::new(at), u64::MAX, |_| {})
                     .is_err()
             );
         }
         assert_eq!(
-            memory.store_bytes(GuestPhysicalAddress::new(0x2000), &[]),
+            memory.store_bytes(GuestPhysicalAddress::new(0x2000), &[], |_| {}),
             Err(MemoryAccessError::EmptyRange)
         );
         assert_eq!(dump(&memory), before);
     }
 
     #[test]
-    fn framebuffer_is_writable_by_new_stores_without_generations() {
+    fn framebuffer_is_writable_by_stores_without_generations() {
         let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x6ff8);
-        memory.store_u64(at, 0x0102_0304_0506_0708).unwrap();
+        memory.store_u64(at, 0x0102_0304_0506_0708, |_| {}).unwrap();
         assert_eq!(memory.load_u64(at), Ok(0x0102_0304_0506_0708));
         assert_eq!(memory.read_framebuffer_bytes(at, &mut [0u8; 8]), Ok(()));
         assert_eq!(
-            memory.store_u16(GuestPhysicalAddress::new(0x6fff), 1),
+            memory.store_u16(GuestPhysicalAddress::new(0x6fff), 1, |_| {}),
             Err(MemoryAccessError::AccessCrossesRegion(range(0x6fff, 2)))
         );
     }
 
-    /// An aligned 1/2/4/8-byte access is a single host access of that width, on the old API
-    /// (through `read_bytes`/`write_bytes`) and the new one, also in a region whose start is
-    /// not 8-aligned; a misaligned access is split into ascending bytes.
+    /// An aligned 1/2/4/8-byte access is a single host access of that width, also in a region
+    /// whose start is not 8-aligned; a misaligned access is split into ascending bytes.
     #[test]
-    fn aligned_accesses_are_single_host_accesses_on_both_paths() {
+    fn aligned_accesses_are_single_host_accesses() {
         use crate::ram_storage::traced;
-        let mut memory = storage_test_memory();
+        let memory = storage_test_memory();
         // Region 0x1003: offset = address - 0x1003.
         let base = 0x1003u64;
         for (width, address) in [
@@ -1604,56 +1884,42 @@ mod tests {
             let at = GuestPhysicalAddress::new(address);
             let offset = (address - base) as usize;
             let expect = vec![(offset, width as usize)];
-            let ((), old_write) = traced(|| match width {
-                1 => memory.write_u8(at, 1, |_| {}).unwrap(),
-                2 => memory.write_u16(at, 1, |_| {}).unwrap(),
-                4 => memory.write_u32(at, 1, |_| {}).unwrap(),
-                _ => memory.write_u64(at, 1, |_| {}).unwrap(),
+            let ((), write) = traced(|| match width {
+                1 => memory.store_u8(at, 2, |_| {}).unwrap(),
+                2 => memory.store_u16(at, 2, |_| {}).unwrap(),
+                4 => memory.store_u32(at, 2, |_| {}).unwrap(),
+                _ => memory.store_u64(at, 2, |_| {}).unwrap(),
             });
-            let ((), old_read) = traced(|| match width {
-                1 => drop(memory.read_u8(at).unwrap()),
-                2 => drop(memory.read_u16(at).unwrap()),
-                4 => drop(memory.read_u32(at).unwrap()),
-                _ => drop(memory.read_u64(at).unwrap()),
-            });
-            let ((), new_write) = traced(|| match width {
-                1 => memory.store_u8(at, 2).unwrap(),
-                2 => memory.store_u16(at, 2).unwrap(),
-                4 => memory.store_u32(at, 2).unwrap(),
-                _ => memory.store_u64(at, 2).unwrap(),
-            });
-            let ((), new_read) = traced(|| match width {
+            let ((), read) = traced(|| match width {
                 1 => drop(memory.load_u8(at).unwrap()),
                 2 => drop(memory.load_u16(at).unwrap()),
                 4 => drop(memory.load_u32(at).unwrap()),
                 _ => drop(memory.load_u64(at).unwrap()),
             });
-            assert_eq!(old_write, expect, "old write width {width} at {address:#x}");
-            assert_eq!(old_read, expect, "old read width {width} at {address:#x}");
-            assert_eq!(new_write, expect, "new store width {width} at {address:#x}");
-            assert_eq!(new_read, expect, "new load width {width} at {address:#x}");
+            assert_eq!(write, expect, "store width {width} at {address:#x}");
+            assert_eq!(read, expect, "load width {width} at {address:#x}");
         }
         // Misaligned dword: ascending bytes.
         let at = GuestPhysicalAddress::new(0x1011);
-        let (_, log) = traced(|| memory.store_u32(at, 9).unwrap());
+        let (_, log) = traced(|| memory.store_u32(at, 9, |_| {}).unwrap());
         assert_eq!(
             log,
             (0..4).map(|i| (0x1011 - 0x1003 + i, 1)).collect::<Vec<_>>()
         );
     }
 
-    /// S6-25: the compare-and-replace stays correct on the new storage and is made of single
-    /// aligned 8-byte accesses (a read and, on a match, a write), also in a region with
-    /// an odd start.
+    /// S6-25, S6-31: the compare-and-replace is ONE host compare-exchange of 8 bytes (S6-25: a
+    /// read and a write; the change is the point of S6-31), on a match and on a mismatch alike, also
+    /// in a region with an odd start.
     #[test]
-    fn compare_replace_u64_is_two_single_accesses_on_the_new_storage() {
+    fn compare_replace_u64_is_one_host_compare_exchange_on_the_new_storage() {
         use crate::ram_storage::traced;
-        let mut memory = storage_test_memory();
+        let memory = storage_test_memory();
         let at = GuestPhysicalAddress::new(0x1008); // aligned guest address, region start 0x1003
-        memory.store_u64(at, 5).unwrap();
+        memory.store_u64(at, 5, |_| {}).unwrap();
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 6, |_| {}));
         assert_eq!(result, Ok(Ok(())));
-        assert_eq!(log, vec![(5, 8), (5, 8)]);
+        assert_eq!(log, vec![(5, 8)]);
         let (result, log) = traced(|| memory.compare_replace_u64(at, 5, 7, |_| {}));
         assert_eq!(result, Ok(Err(6)));
         assert_eq!(log, vec![(5, 8)]);
@@ -1664,7 +1930,8 @@ mod tests {
     fn physical_memory_can_be_shared_between_threads_by_reference() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PhysicalMemory>();
-        let memory = storage_test_memory();
+        let mut memory = storage_test_memory();
+        memory.set_execution_mode(ExecutionMode::Parallel);
         let words = [0x1008u64, 0x1010, 0x1ff8];
         std::thread::scope(|scope| {
             for thread in 0..4u8 {
@@ -1674,7 +1941,9 @@ mod tests {
                         let fill = (round as u8).wrapping_mul(3).wrapping_add(thread) | 1;
                         let at = GuestPhysicalAddress::new(words[round as usize % words.len()]);
                         if thread % 2 == 0 {
-                            memory.store_u64(at, u64::from_ne_bytes([fill; 8])).unwrap();
+                            memory
+                                .store_u64(at, u64::from_ne_bytes([fill; 8]), |_| {})
+                                .unwrap();
                         } else {
                             let bytes = memory.load_u64(at).unwrap().to_ne_bytes();
                             assert!(bytes.iter().all(|&byte| byte == bytes[0]), "torn {bytes:?}");
@@ -1683,5 +1952,717 @@ mod tests {
                 });
             }
         });
+    }
+
+    // ---- S6-30b: atomic page generations and the commit notification ----
+
+    /// The callback of a store runs once, after the data is stored and after the generation of
+    /// every touched page has been raised (a store crossing a page boundary raises both).
+    #[test]
+    fn the_store_notifies_once_after_the_generations_are_raised() {
+        let memory = storage_test_memory();
+        let in_page = GuestPhysicalAddress::new(0x1010);
+        let across = GuestPhysicalAddress::new(0x1ffc); // 4 bytes, then the next page (0x2000)
+        let generation = |at: u64| memory.code_page_generation(GuestPhysicalAddress::new(at));
+        let (g1, g2) = (generation(0x1010).unwrap(), generation(0x2000).unwrap());
+        let mut seen = Vec::new();
+        memory
+            .store_u32(in_page, 0xdead_beef, |r| {
+                seen.push((r, generation(0x1010), memory.load_u32(in_page)))
+            })
+            .unwrap();
+        assert_eq!(seen, vec![(range(0x1010, 4), Ok(g1 + 1), Ok(0xdead_beef))]);
+        let mut seen = Vec::new();
+        memory
+            .store_u64(across, 7, |r| {
+                seen.push((r, generation(0x1010), generation(0x2000)))
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![(range(0x1ffc, 8), Ok(g1 + 2), Ok(g2 + 1))],
+            "both touched pages are raised before the callback, once each"
+        );
+        // A rejected store (hole, ROM, empty) raises nothing and does not call back.
+        let mut calls = 0;
+        for at in [0x0f00u64, 0x4000, 0x3804] {
+            assert!(
+                memory
+                    .store_u16(GuestPhysicalAddress::new(at), 1, |_| calls += 1)
+                    .is_err()
+            );
+        }
+        assert!(memory.store_bytes(in_page, &[], |_| calls += 1).is_err());
+        assert_eq!(calls, 0);
+        assert_eq!(
+            (generation(0x1010), generation(0x2000)),
+            (Ok(g1 + 2), Ok(g2 + 1))
+        );
+    }
+
+    /// A page generation at the top of `u64` rejects the write before any byte is stored, and a
+    /// write that does not touch that page is unaffected.
+    #[test]
+    fn an_exhausted_generation_rejects_the_write() {
+        let memory = storage_test_memory();
+        memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
+        let at = GuestPhysicalAddress::new(0x1010);
+        assert_eq!(
+            memory.store_u32(at, 1, |_| panic!("no callback")),
+            Err(MemoryAccessError::CodeGenerationExhausted)
+        );
+        assert_eq!(memory.load_u32(at), Ok(0));
+        assert_eq!(
+            memory.store_u32(GuestPhysicalAddress::new(0x2010), 1, |_| {}),
+            Ok(())
+        );
+    }
+
+    /// Four writer threads each own one page and all raise one shared page, through `&self`.
+    /// The final generation of every page is exact (no lost increment), each owner sees its page
+    /// advance by exactly one per store, and an observer thread sees every page monotone. Data and
+    /// generation are tied by `Release`/`Acquire`: the writer stores the word `n`, then raises the
+    /// generation to `1 + n`, so a reader that loads generation `g` and then the word never sees
+    /// a word below `g - 1`.
+    #[test]
+    fn page_generations_are_exact_and_monotone_under_concurrent_writes() {
+        use std::sync::atomic::AtomicBool;
+        const WRITERS: u64 = 4;
+        const ROUNDS: u64 = 5_000;
+        // Pages 0x1000..=0x4000 are private, 0x5000 is shared.
+        let mut memory = memory(&[(0x1000, 0x5000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
+        let private = |index: u64| GuestPhysicalAddress::new(0x1000 + index * 0x1000 + 8);
+        let shared = |index: u64| GuestPhysicalAddress::new(0x5000 + index);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let observer = scope.spawn(|| {
+                let mut last = [1u64; (WRITERS + 1) as usize];
+                let mut sweeps = 0u64;
+                while !done.load(Ordering::Acquire) || sweeps == 0 {
+                    for index in 0..WRITERS {
+                        let at = private(index);
+                        let seen = memory.code_page_generation(at).unwrap();
+                        let word = memory.load_u64(at).unwrap();
+                        assert!(seen >= last[index as usize], "page {index} went backwards");
+                        assert!(
+                            word + 1 >= seen,
+                            "page {index}: generation {seen}, word {word}"
+                        );
+                        last[index as usize] = seen;
+                    }
+                    let seen = memory.code_page_generation(shared(0)).unwrap();
+                    assert!(seen >= last[WRITERS as usize], "shared page went backwards");
+                    last[WRITERS as usize] = seen;
+                    sweeps += 1;
+                }
+            });
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|index| {
+                    let memory = &memory;
+                    scope.spawn(move || {
+                        for round in 1..=ROUNDS {
+                            memory.store_u64(private(index), round, |_| {}).unwrap();
+                            // Only the owner writes this page: one raise per store, exactly.
+                            assert_eq!(memory.code_page_generation(private(index)), Ok(1 + round));
+                            memory.store_u8(shared(index), round as u8, |_| {}).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            done.store(true, Ordering::Release);
+            observer.join().unwrap();
+        });
+        for index in 0..WRITERS {
+            assert_eq!(memory.code_page_generation(private(index)), Ok(1 + ROUNDS));
+        }
+        assert_eq!(
+            memory.code_page_generation(shared(0)),
+            Ok(1 + WRITERS * ROUNDS),
+            "shared page: no lost increment"
+        );
+    }
+
+    fn width_of(bytes: usize) -> AccessWidth {
+        match bytes {
+            1 => AccessWidth::Byte,
+            2 => AccessWidth::Word,
+            4 => AccessWidth::Dword,
+            _ => AccessWidth::Qword,
+        }
+    }
+
+    fn width_mask(bytes: usize) -> u64 {
+        if bytes == 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * bytes)) - 1
+        }
+    }
+
+    /// S6-31: the locked operations on random aligned operands of every width, in two RAM regions
+    /// with different host leads, against a byte model: old value returned zero-extended, the new
+    /// value wrapped at the width, neighbours untouched, ONE notification and ONE generation
+    /// raise per operation (also for a compare that does not match: the CMPXCHG write), ONE host
+    /// access for swap, add and compare-exchange.
+    #[test]
+    fn locked_operations_follow_a_byte_model_and_notify_once() {
+        use crate::ram_storage::traced;
+        let memory = storage_test_memory();
+        let mut model: std::collections::BTreeMap<u64, u8> = std::collections::BTreeMap::new();
+        let mut rng = XorShift(0x5eed_0031);
+        let mut count = 0u64;
+        for _ in 0..30_000 {
+            let bytes = [1usize, 2, 4, 8][(rng.next() % 4) as usize];
+            let (base, span) = if rng.next() % 2 == 0 {
+                (0x1008u64, 0x1000u64)
+            } else {
+                (0x3000u64, 0x800u64)
+            };
+            let at = base + (rng.next() % (span / bytes as u64)) * bytes as u64;
+            let address = GuestPhysicalAddress::new(at);
+            let width = width_of(bytes);
+            let mask = width_mask(bytes);
+            let mut old = 0u64;
+            for i in 0..bytes {
+                old |= u64::from(*model.get(&(at + i as u64)).unwrap_or(&0)) << (8 * i);
+            }
+            let operand = rng.next();
+            let generation = memory.code_page_generation(address).unwrap();
+            let mut notes = Vec::new();
+            let (kind, new, got, log) = match rng.next() % 4 {
+                0 => {
+                    let (got, log) =
+                        traced(|| memory.atomic_swap(address, width, operand, |r| notes.push(r)));
+                    ("swap", operand & mask, got, Some(log))
+                }
+                1 => {
+                    let (got, log) = traced(|| {
+                        memory.atomic_fetch_add(address, width, operand, |r| notes.push(r))
+                    });
+                    ("add", old.wrapping_add(operand) & mask, got, Some(log))
+                }
+                2 => {
+                    // Half of the compares match (the expected value carries junk above the width).
+                    let matching = rng.next() % 2 == 0;
+                    let expected = if matching {
+                        old | (operand & !mask)
+                    } else {
+                        old ^ 1
+                    };
+                    let (got, log) = traced(|| {
+                        memory.atomic_compare_exchange(address, width, expected, operand, |r| {
+                            notes.push(r)
+                        })
+                    });
+                    let new = if matching { operand & mask } else { old };
+                    ("cas", new, got, Some(log))
+                }
+                _ => {
+                    let mut calls = 0;
+                    let got = memory.atomic_rmw(
+                        address,
+                        width,
+                        &mut |value| {
+                            calls += 1;
+                            value ^ operand
+                        },
+                        |r| notes.push(r),
+                    );
+                    assert_eq!(calls, 1, "no concurrent writer: the update runs once");
+                    ("rmw", (old ^ operand) & mask, got, None)
+                }
+            };
+            assert_eq!(got, Ok(old), "{kind} at {at:#x} width {bytes}");
+            if let Some(log) = log {
+                let region_start = if base == 0x1008 { 0x1003 } else { 0x3000 };
+                assert_eq!(
+                    log,
+                    vec![((at - region_start) as usize, bytes)],
+                    "{kind}: one host access"
+                );
+            }
+            assert_eq!(
+                notes,
+                vec![range(at, bytes as u64)],
+                "{kind}: one notification"
+            );
+            assert_eq!(
+                memory.code_page_generation(address),
+                Ok(generation + 1),
+                "{kind}: one raise"
+            );
+            for i in 0..bytes {
+                model.insert(at + i as u64, (new >> (8 * i)) as u8);
+            }
+            count += 1;
+        }
+        assert_eq!(count, 30_000);
+        // The whole memory equals the model (neighbours untouched).
+        for at in PROBE_START..PROBE_END {
+            if let Ok(byte) = memory.load_u8(GuestPhysicalAddress::new(at)) {
+                assert_eq!(byte, *model.get(&at).unwrap_or(&0), "byte {at:#x}");
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), 0);
+    }
+
+    /// S6-31: errors of the locked operations: a misaligned operand is refused and counted (also
+    /// across a page or a region), never executed as two accesses; ROM, a reserved region and a
+    /// hole are the errors of a write; none of them changes memory, raises a generation or
+    /// notifies; a framebuffer operand is plain memory without generations and without callback.
+    #[test]
+    fn locked_operations_refuse_what_they_cannot_do_atomically() {
+        let memory = storage_test_memory();
+        let mut notes = Vec::new();
+        let mut refused = 0u64;
+        for bytes in [2usize, 4, 8] {
+            for delta in 1..bytes as u64 {
+                for base in [0x1008u64, 0x1ff8, 0x2ffe, 0x3ff8 - 8] {
+                    // `at` is aligned to `bytes` plus `delta`: misaligned by construction.
+                    let at = (base & !(bytes as u64 - 1)) + delta;
+                    let address = GuestPhysicalAddress::new(at);
+                    let width = width_of(bytes);
+                    let error = Err(MemoryAccessError::MisalignedAtomic {
+                        address,
+                        width: bytes as u8,
+                    });
+                    assert_eq!(
+                        memory.atomic_swap(address, width, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_fetch_add(address, width, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_compare_exchange(address, width, 0, 1, |r| notes.push(r)),
+                        error
+                    );
+                    assert_eq!(
+                        memory.atomic_rmw(address, width, &mut |v| v + 1, |r| notes.push(r)),
+                        error
+                    );
+                    refused += 4;
+                    assert_eq!(memory.split_lock_refusals(), refused);
+                }
+            }
+        }
+        // A pair of aligned-neighbour bytes proves nothing was written by any refusal above.
+        for at in PROBE_START..PROBE_END {
+            if let Ok(byte) = memory.load_u8(GuestPhysicalAddress::new(at)) {
+                assert_eq!(byte, 0, "refusals write nothing ({at:#x})");
+            }
+        }
+        // Aligned operands in regions that cannot be written atomically.
+        let rom = GuestPhysicalAddress::new(0x4000);
+        let reserved = GuestPhysicalAddress::new(0x5000);
+        let hole = GuestPhysicalAddress::new(0x9000);
+        for (address, error) in [
+            (
+                rom,
+                MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom),
+            ),
+            (
+                reserved,
+                MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Reserved),
+            ),
+            (hole, MemoryAccessError::Unmapped(hole)),
+        ] {
+            let width = AccessWidth::Dword;
+            assert_eq!(
+                memory.atomic_swap(address, width, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_fetch_add(address, width, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_compare_exchange(address, width, 0, 1, |r| notes.push(r)),
+                Err(error.clone())
+            );
+            assert_eq!(
+                memory.atomic_rmw(address, width, &mut |v| v, |r| notes.push(r)),
+                Err(error)
+            );
+        }
+        assert_eq!(
+            memory.split_lock_refusals(),
+            refused,
+            "region errors are not counted"
+        );
+        assert!(notes.is_empty());
+        // The framebuffer is plain memory: it works, has no generation and no callback.
+        let frame = GuestPhysicalAddress::new(0x6010);
+        assert_eq!(
+            memory.atomic_fetch_add(frame, AccessWidth::Qword, 5, |r| notes.push(r)),
+            Ok(0)
+        );
+        assert_eq!(
+            memory.atomic_swap(frame, AccessWidth::Qword, 9, |r| notes.push(r)),
+            Ok(5)
+        );
+        assert_eq!(memory.load_u64(frame), Ok(9));
+        assert!(notes.is_empty());
+        assert!(memory.code_page_generation(frame).is_err());
+        // An exhausted generation rejects a locked write before any byte changes.
+        let exhausted = memory_with_exhausted_generation();
+        let at = GuestPhysicalAddress::new(0x1000);
+        assert_eq!(
+            exhausted.atomic_swap(at, AccessWidth::Dword, 7, |_| {}),
+            Err(MemoryAccessError::CodeGenerationExhausted)
+        );
+        assert_eq!(exhausted.load_u32(at), Ok(0));
+    }
+
+    fn memory_with_exhausted_generation() -> PhysicalMemory {
+        let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
+        memory
+    }
+
+    /// S6-31: four host threads on one memory: for every width the fetch-add sum is exact, a
+    /// compare-exchange spin lock gives mutual exclusion to an ordinary (non-atomic) load and
+    /// store of a counter, a swap-released lock works, and the closure RMW loses no update (the
+    /// update runs once per attempt and only the winning attempt is stored). One width per
+    /// location (S6-30a invariant d). The lock is released with `atomic_swap`.
+    #[test]
+    fn four_host_threads_see_every_locked_operation_as_indivisible_at_every_width() {
+        const THREADS: u64 = 4;
+        const ROUNDS: u64 = 4_000;
+        let mut memory = memory(&[(0x1000, 0x2000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
+        for (index, bytes) in [1usize, 2, 4, 8].into_iter().enumerate() {
+            let width = width_of(bytes);
+            let mask = width_mask(bytes);
+            let base = 0x1000 + index as u64 * 0x200;
+            let (sum, rmw, lock, data) = (
+                GuestPhysicalAddress::new(base),
+                GuestPhysicalAddress::new(base + 0x40),
+                GuestPhysicalAddress::new(base + 0x80),
+                GuestPhysicalAddress::new(base + 0xc0),
+            );
+            let attempts = AtomicU64::new(0);
+            let start = std::sync::Barrier::new(THREADS as usize);
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    let (memory, attempts, start) = (&memory, &attempts, &start);
+                    scope.spawn(move || {
+                        start.wait();
+                        for _ in 0..ROUNDS {
+                            memory.atomic_fetch_add(sum, width, 1, |_| {}).unwrap();
+                            let mut calls = 0u64;
+                            memory
+                                .atomic_rmw(
+                                    rmw,
+                                    width,
+                                    &mut |old| {
+                                        calls += 1;
+                                        old + 1
+                                    },
+                                    |_| {},
+                                )
+                                .unwrap();
+                            attempts.fetch_add(calls, Ordering::Relaxed);
+                            // Mutual exclusion: the critical section is an ordinary read and write.
+                            while memory
+                                .atomic_compare_exchange(lock, width, 0, 1, |_| {})
+                                .unwrap()
+                                != 0
+                            {
+                                std::hint::spin_loop();
+                            }
+                            let value = match bytes {
+                                1 => u64::from(memory.load_u8(data).unwrap()),
+                                2 => u64::from(memory.load_u16(data).unwrap()),
+                                4 => u64::from(memory.load_u32(data).unwrap()),
+                                _ => memory.load_u64(data).unwrap(),
+                            };
+                            std::hint::spin_loop();
+                            let next = value.wrapping_add(1);
+                            match bytes {
+                                1 => memory.store_u8(data, next as u8, |_| {}).unwrap(),
+                                2 => memory.store_u16(data, next as u16, |_| {}).unwrap(),
+                                4 => memory.store_u32(data, next as u32, |_| {}).unwrap(),
+                                _ => memory.store_u64(data, next, |_| {}).unwrap(),
+                            }
+                            memory.atomic_swap(lock, width, 0, |_| {}).unwrap();
+                        }
+                    });
+                }
+            });
+            let total = (THREADS * ROUNDS) & mask;
+            let load = |address| memory.atomic_fetch_add(address, width, 0, |_| {}).unwrap();
+            assert_eq!(load(sum), total, "width {bytes}: fetch-add sum");
+            assert_eq!(load(rmw), total, "width {bytes}: closure rmw counter");
+            assert_eq!(load(data), total, "width {bytes}: counter under the lock");
+            assert_eq!(load(lock), 0, "width {bytes}: lock released");
+            assert!(
+                attempts.load(Ordering::Relaxed) >= THREADS * ROUNDS,
+                "width {bytes}: the update ran at least once per call"
+            );
+        }
+    }
+
+    /// S6-31 step 5: the page-table compare-and-replace under real threads. Four threads set
+    /// disjoint bits in one entry, each retrying over the observed value (the accessed/dirty
+    /// protocol of the walk): no bit is lost, a lost compare changes and notifies nothing, and
+    /// the generation rises once per successful replace.
+    #[test]
+    fn compare_replace_u64_loses_no_bit_under_four_threads() {
+        let mut memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
+        memory.set_execution_mode(ExecutionMode::Parallel);
+        let entry = GuestPhysicalAddress::new(0x1008);
+        let replaced = AtomicU64::new(0);
+        let notified = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for thread in 0..4u32 {
+                let (memory, replaced, notified) = (&memory, &replaced, &notified);
+                scope.spawn(move || {
+                    for bit in 0..16u32 {
+                        let mask = 1u64 << (thread * 16 + bit);
+                        let mut expected = memory.load_u64(entry).unwrap();
+                        loop {
+                            match memory.compare_replace_u64(
+                                entry,
+                                expected,
+                                expected | mask,
+                                |_| {
+                                    notified.fetch_add(1, Ordering::Relaxed);
+                                },
+                            ) {
+                                Ok(Ok(())) => {
+                                    replaced.fetch_add(1, Ordering::Relaxed);
+                                    break;
+                                }
+                                Ok(Err(observed)) => expected = observed,
+                                Err(error) => panic!("{error:?}"),
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(memory.load_u64(entry), Ok(u64::MAX));
+        assert_eq!(replaced.load(Ordering::Relaxed), 64);
+        assert_eq!(
+            notified.load(Ordering::Relaxed),
+            64,
+            "one notification per success"
+        );
+        assert_eq!(memory.code_page_generation(entry), Ok(1 + 64));
+        // A counter: every thread adds one, ROUNDS times, by compare-and-replace over what it
+        // read; the total is exact and the generation rose once per success.
+        const ROUNDS: u64 = 20_000;
+        let counter = GuestPhysicalAddress::new(0x1010);
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let (memory, start) = (&memory, &start);
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..ROUNDS {
+                        let mut expected = memory.load_u64(counter).unwrap();
+                        while let Ok(Err(observed)) =
+                            memory.compare_replace_u64(counter, expected, expected + 1, |_| {})
+                        {
+                            expected = observed;
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(memory.load_u64(counter), Ok(4 * ROUNDS));
+        assert_eq!(
+            memory.code_page_generation(counter),
+            Ok(1 + 64 + 4 * ROUNDS)
+        );
+        // Misaligned entries are refused, not run as two accesses.
+        assert_eq!(
+            memory.compare_replace_u64(GuestPhysicalAddress::new(0x1004), 0, 1, |_| {}),
+            Err(MemoryAccessError::MisalignedAtomic {
+                address: GuestPhysicalAddress::new(0x1004),
+                width: 8
+            })
+        );
+    }
+    // ---- S6-32: the execution mode ----
+
+    /// Drives every scalar access function over random addresses and widths (aligned, misaligned,
+    /// across region edges, into ROM, holes and the framebuffer) and returns what it read and the
+    /// committed-write notifications, in order.
+    fn drive_scalar_ops(
+        memory: &PhysicalMemory,
+        seed: u64,
+        steps: usize,
+    ) -> (Vec<String>, Vec<GuestPhysicalRange>) {
+        let mut rng = XorShift(seed);
+        let mut seen = Vec::new();
+        let mut log = Vec::new();
+        for _ in 0..steps {
+            let at = random_address(&mut rng);
+            let value = rng.next();
+            let mut note = |range| log.push(range);
+            let result = match rng.next() % 8 {
+                0 => format!("{:?}", memory.load_u8(at)),
+                1 => format!("{:?}", memory.load_u16(at)),
+                2 => format!("{:?}", memory.load_u32(at)),
+                3 => format!("{:?}", memory.load_u64(at)),
+                4 => format!("{:?}", memory.store_u8(at, value as u8, &mut note)),
+                5 => format!("{:?}", memory.store_u16(at, value as u16, &mut note)),
+                6 => format!("{:?}", memory.store_u32(at, value as u32, &mut note)),
+                _ => format!("{:?}", memory.store_u64(at, value, &mut note)),
+            };
+            seen.push(result);
+        }
+        (seen, log)
+    }
+
+    /// The generations of every page of the probed window.
+    fn generations(memory: &PhysicalMemory) -> Vec<String> {
+        (0..=0x7u64)
+            .map(|page| {
+                format!(
+                    "{:?}",
+                    memory.code_page_generation(GuestPhysicalAddress::new(page * 0x1000))
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_default_mode_is_interleaved_and_the_switch_reads_back() {
+        let mut memory = storage_test_memory();
+        assert_eq!(memory.execution_mode(), ExecutionMode::Interleaved);
+        assert_eq!(ExecutionMode::default(), ExecutionMode::Interleaved);
+        memory.set_execution_mode(ExecutionMode::Parallel);
+        assert_eq!(memory.execution_mode(), ExecutionMode::Parallel);
+        memory.set_execution_mode(ExecutionMode::Interleaved);
+        assert_eq!(memory.execution_mode(), ExecutionMode::Interleaved);
+    }
+
+    #[test]
+    fn ordinary_scalar_accesses_use_the_order_of_the_execution_mode() {
+        use crate::ram_storage::traced_orders;
+        for (mode, expected) in [
+            (ExecutionMode::Interleaved, Ordering::Relaxed),
+            (ExecutionMode::Parallel, Ordering::SeqCst),
+        ] {
+            let mut memory = storage_test_memory();
+            memory.set_execution_mode(mode);
+            let (_, orders) = traced_orders(|| {
+                // Aligned and misaligned (byte path) of every width, inside RAM.
+                for width in 0..4u32 {
+                    for at in [0x2000u64, 0x2001, 0x2002, 0x2003, 0x2007] {
+                        let at = GuestPhysicalAddress::new(at);
+                        match width {
+                            0 => {
+                                memory.store_u8(at, 1, |_| {}).unwrap();
+                                memory.load_u8(at).unwrap();
+                            }
+                            1 => {
+                                memory.store_u16(at, 2, |_| {}).unwrap();
+                                memory.load_u16(at).unwrap();
+                            }
+                            2 => {
+                                memory.store_u32(at, 3, |_| {}).unwrap();
+                                memory.load_u32(at).unwrap();
+                            }
+                            _ => {
+                                memory.store_u64(at, 4, |_| {}).unwrap();
+                                memory.load_u64(at).unwrap();
+                            }
+                        }
+                    }
+                }
+            });
+            // Bulk copies (the operand pieces of the page walk, DMA, the loader) follow the mode
+            // too: every host access of a copy has the ordinary order (S6-32).
+            let (_, bulk) = traced_orders(|| {
+                for (at, len) in [
+                    (0x2000u64, 8usize),
+                    (0x2003, 8),
+                    (0x2001, 5),
+                    (0x2000, 13),
+                    (0x2005, 1),
+                ] {
+                    let at = GuestPhysicalAddress::new(at);
+                    memory.store_bytes(at, &vec![9u8; len], |_| {}).unwrap();
+                    memory.load_bytes(at, &mut vec![0u8; len]).unwrap();
+                }
+            });
+            assert!(bulk.len() >= 10, "{mode:?}: {} bulk accesses", bulk.len());
+            assert!(
+                bulk.iter().all(|order| *order == expected),
+                "{mode:?}: every access of a bulk copy is {expected:?}"
+            );
+            assert!(orders.len() >= 40, "{mode:?}: {} accesses", orders.len());
+            assert!(
+                orders.iter().all(|order| *order == expected),
+                "{mode:?}: every ordinary access is {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_threaded_run_is_identical_in_both_modes() {
+        for seed in [0x5eed_0001u64, 0x5eed_0002, 0x5eed_0003] {
+            let mut interleaved = storage_test_memory();
+            let mut parallel = storage_test_memory();
+            interleaved.set_execution_mode(ExecutionMode::Interleaved);
+            parallel.set_execution_mode(ExecutionMode::Parallel);
+            let (results_i, log_i) = drive_scalar_ops(&interleaved, seed, 20_000);
+            let (results_p, log_p) = drive_scalar_ops(&parallel, seed, 20_000);
+            assert_eq!(results_i, results_p, "seed {seed:#x}: every result");
+            assert_eq!(log_i, log_p, "seed {seed:#x}: the notification log");
+            assert!(!log_i.is_empty(), "seed {seed:#x}: the log is exercised");
+            assert_eq!(dump(&interleaved), dump(&parallel), "seed {seed:#x}: dump");
+            // The generations (Release in both) of every page of the window and the locked
+            // operations are mode independent.
+            assert_eq!(
+                generations(&interleaved),
+                generations(&parallel),
+                "seed {seed:#x}: generations"
+            );
+            let cell = GuestPhysicalAddress::new(0x2008);
+            for memory in [&interleaved, &parallel] {
+                memory.store_u64(cell, 5, |_| {}).unwrap();
+            }
+            assert_eq!(
+                interleaved.atomic_fetch_add(cell, AccessWidth::Qword, 7, |_| {}),
+                parallel.atomic_fetch_add(cell, AccessWidth::Qword, 7, |_| {})
+            );
+        }
+    }
+
+    #[test]
+    fn a_fence_places_a_host_fence_only_in_the_parallel_mode_and_changes_no_byte() {
+        use od_isa::FenceKind;
+        for (mode, issued) in [
+            (ExecutionMode::Interleaved, 0u64),
+            (ExecutionMode::Parallel, 6),
+        ] {
+            let mut memory = storage_test_memory();
+            memory.set_execution_mode(mode);
+            drive_scalar_ops(&memory, 0x5eed_0004, 500);
+            let before = dump(&memory);
+            let generation = memory.code_page_generation(GuestPhysicalAddress::new(0x2000));
+            assert_eq!(memory.host_fences_issued(), 0);
+            for kind in [FenceKind::Full, FenceKind::Store, FenceKind::Load] {
+                memory.fence(kind);
+                memory.fence(kind);
+            }
+            assert_eq!(memory.host_fences_issued(), issued, "{mode:?}");
+            assert_eq!(dump(&memory), before, "{mode:?}: no byte changed");
+            assert_eq!(
+                memory.code_page_generation(GuestPhysicalAddress::new(0x2000)),
+                generation,
+                "{mode:?}: no generation changed"
+            );
+        }
     }
 }

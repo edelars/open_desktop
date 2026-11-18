@@ -374,21 +374,55 @@ pub trait RealModeMemory {
     fn can_write(&self, linear: u32) -> bool;
     /// Writes one byte. Returns `false` (and writes nothing) when `linear` is not writable.
     fn write_u8(&mut self, linear: u32, value: u8) -> bool;
-    /// S6-25: ORs `mask` into the byte at `linear` as one operation; `false` (nothing written)
-    /// when the byte is not readable or not writable. It is the single place where this
-    /// byte-wise path updates the accessed/dirty bits of a page-table entry (see
-    /// `paging::commit_touches`); an OR never takes back a bit another writer set. The default
-    /// is the serial read followed by a write, correct while whole instructions are
-    /// interleaved (the instruction is indivisible). S6-31: replace with a CAS on the value the
-    /// walk read (see S6-31 step 5); an atomic OR without comparison is not enough: it can turn a
-    /// zeroed PTE into a nonzero one. Replacement points: this method and
-    /// `paging::commit_touches`. Deviation from steps 1-2 of the S6-25 plan: the AP path reads
-    /// an entry byte by byte and applies the touches as a deferred OR without comparison.
-    fn or_u8(&mut self, linear: u32, mask: u8) -> bool {
-        match self.read_u8(linear) {
-            Some(old) => self.write_u8(linear, old | mask),
-            None => false,
+    /// S6-31b: the 8-byte page-table entry at `linear` (little-endian), or `None` if one of its
+    /// bytes is not readable. `linear` is the address of an entry (8-aligned); the default reads
+    /// the eight bytes one by one, an implementation backed by shared memory overrides it with
+    /// one aligned 8-byte load (`BoardRam`, `PhysicalMemory::load_u64`).
+    fn read_u64(&self, linear: u32) -> Option<u64> {
+        let mut bytes = [0u8; 8];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            *slot = u32::checked_add(linear, i as u32).and_then(|a| self.read_u8(a))?;
         }
+        Some(u64::from_le_bytes(bytes))
+    }
+    /// S6-31b: compare-and-replace of the 8-byte entry at `linear` (the single place where this
+    /// path updates the accessed/dirty bits of a page-table entry, see `paging::commit_touches`;
+    /// it replaces `or_u8` of S6-25, whose behaviour was a plain read followed by a write). When
+    /// the entry equals `expected` it becomes `replacement` and the result is `Some(Ok(()))`;
+    /// otherwise nothing is written and the result is `Some(Err(observed))`. `None` (nothing
+    /// written): the entry is not readable, or a byte that would change is not writable.
+    ///
+    /// `linear` is 8-aligned (an entry address). The default is the serial read followed by a write
+    /// of the bytes that differ, correct for single-threaded implementations (images in tests); an
+    /// implementation over shared memory MUST override it with one host compare-exchange
+    /// (`BoardRam`, `PhysicalMemory::compare_replace_u64`, S6-31), which is what makes the update
+    /// of a table entry indivisible against another vCPU. See `MACHINE_CONTRACT.md`, S6-31b.
+    fn compare_replace_entry(
+        &mut self,
+        linear: u32,
+        expected: u64,
+        replacement: u64,
+    ) -> Option<Result<(), u64>> {
+        let observed = self.read_u64(linear)?;
+        if observed != expected {
+            return Some(Err(observed));
+        }
+        let (old, new) = (observed.to_le_bytes(), replacement.to_le_bytes());
+        for i in 0..8u32 {
+            let at = u32::checked_add(linear, i)?;
+            if old[i as usize] != new[i as usize] && !self.can_write(at) {
+                return None;
+            }
+        }
+        for i in 0..8u32 {
+            if old[i as usize] != new[i as usize] {
+                assert!(
+                    self.write_u8(linear + i, new[i as usize]),
+                    "can_write was true"
+                );
+            }
+        }
+        Some(Ok(()))
     }
 }
 

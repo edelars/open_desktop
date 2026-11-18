@@ -231,7 +231,7 @@ pub enum MutableTranslationSessionError {
 /// Successful pure translations are cached as values; no references into RAM
 /// or cache entries escape the session.
 pub struct MutableTranslationProbeSession<'a> {
-    memory: &'a mut PhysicalMemory,
+    memory: &'a PhysicalMemory,
     paging: Long64ProbeConfig,
     state: TranslationProbeCacheState,
     poisoned: bool,
@@ -239,7 +239,7 @@ pub struct MutableTranslationProbeSession<'a> {
 
 impl<'a> MutableTranslationProbeSession<'a> {
     pub fn new(
-        memory: &'a mut PhysicalMemory,
+        memory: &'a PhysicalMemory,
         paging: Long64ProbeConfig,
     ) -> Result<Self, MutableTranslationSessionError> {
         if !matches!(paging.cr0(), 0x8001_0033 | 0x8000_0033)
@@ -289,7 +289,7 @@ impl<'a> MutableTranslationProbeSession<'a> {
             return Err(MutableTranslationSessionError::PhysicalAddressWidth { address });
         }
         self.memory
-            .write_u64(address, value, committed_write)
+            .store_u64(address, value, committed_write)
             .map_err(MutableTranslationSessionError::Memory)
     }
 
@@ -725,7 +725,7 @@ impl GuestMemory for SessionFetchMemory<'_> {
         match report.outcome {
             Ok(ProbeOutcome::Translated(translation)) => self
                 .memory
-                .read_u8(translation.physical)
+                .load_u8(translation.physical)
                 .map_err(|error| MemoryError::Backend(format!("session fetch read: {error}"))),
             Ok(ProbeOutcome::PageFault(fault)) => Err(MemoryError::Architectural(
                 od_isa::memory::ArchitecturalFault {
@@ -838,7 +838,7 @@ mod tests {
             vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
         )
         .unwrap();
-        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x20_000)).unwrap();
+        let memory = PhysicalMemory::new(&map, RamLimits::new(0x20_000)).unwrap();
         for (address, value) in [
             (ROOT, PDPT | 7),
             (PDPT, PD | 7),
@@ -846,7 +846,7 @@ mod tests {
             (PT, pte),
         ] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
         memory
@@ -878,7 +878,7 @@ mod tests {
         cpu
     }
 
-    fn install_root_b(memory: &mut PhysicalMemory, leaf: u64) {
+    fn install_root_b(memory: &PhysicalMemory, leaf: u64) {
         for (address, value) in [
             (ROOT_B, PDPT_B | 7),
             (PDPT_B, PD_B | 7),
@@ -886,7 +886,7 @@ mod tests {
             (PT_B, leaf),
         ] {
             memory
-                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
         }
     }
@@ -930,17 +930,17 @@ mod tests {
         // Only the replacement physical page contains INVLPG. The stale
         // cached fetch translation still points at zero-filled old RAM.
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(0xa000 + 0x20),
                 &instruction,
                 |_| {},
             )
             .unwrap();
         memory
-            .write_u64(GuestPhysicalAddress::new(PT + 8), 0xb000 | 7, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT + 8), 0xb000 | 7, |_| {})
             .unwrap();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(0xb000 + 0x20),
                 &instruction,
                 |_| {},
@@ -1237,7 +1237,7 @@ mod tests {
         let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x21_000)).unwrap();
         let initial = 0xfeed_face_cafe_beef;
         memory
-            .write_u64(GuestPhysicalAddress::new(high_base), initial, |_| {})
+            .store_u64(GuestPhysicalAddress::new(high_base), initial, |_| {})
             .unwrap();
 
         let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
@@ -1257,7 +1257,7 @@ mod tests {
         assert_eq!(callback_count, 0);
         assert_eq!(
             memory
-                .read_u64(GuestPhysicalAddress::new(high_base))
+                .load_u64(GuestPhysicalAddress::new(high_base))
                 .unwrap(),
             initial,
             "the out-of-profile RAM bytes must remain unchanged"
@@ -1269,7 +1269,7 @@ mod tests {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         let mut before = [0; 16];
         memory
-            .read_bytes(GuestPhysicalAddress::new(PT), &mut before)
+            .load_bytes(GuestPhysicalAddress::new(PT), &mut before)
             .unwrap();
         let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
         let mut callback_count = 0;
@@ -1290,7 +1290,7 @@ mod tests {
 
         let mut after = [0; 16];
         memory
-            .read_bytes(GuestPhysicalAddress::new(PT), &mut after)
+            .load_bytes(GuestPhysicalAddress::new(PT), &mut after)
             .unwrap();
         assert_eq!(after, before, "inspect RAM after the mutable borrow ends");
         assert_eq!(callback_count, 0);
@@ -1305,7 +1305,7 @@ mod tests {
             (0x40, &[0xf0, 0x0f, 0x01, 0x3b][..]),
         ] {
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + offset),
                     bytes,
                     |_| {},
@@ -1421,7 +1421,7 @@ mod tests {
     fn mov_cr3_switch_clears_cache_before_root_b_walk_and_hit() {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x22, 0xd8],
                 |_| {},
@@ -1480,7 +1480,7 @@ mod tests {
         for cr0 in [0x8001_0033, 0x8000_0033] {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                     &[0x0f, 0x22, 0xd8],
                     |_| {},
@@ -1505,7 +1505,7 @@ mod tests {
             let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
 
@@ -1520,7 +1520,7 @@ mod tests {
             let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
             assert_eq!(entries_after, entries_before);
@@ -1555,7 +1555,7 @@ mod tests {
         for cr0 in [0x8001_0033, 0x8000_0033] {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                     &[0x0f, 0x22, 0xd8],
                     |_| {},
@@ -1582,7 +1582,7 @@ mod tests {
             let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
             let mut cpu = mov_cr3_cpu(rip.get(), ROOT_B);
@@ -1604,7 +1604,7 @@ mod tests {
             let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
             assert_eq!(entries_after, entries_before);
@@ -1622,7 +1622,7 @@ mod tests {
     fn wp_mov_cr3_prestate_mismatch_preserves_cache_and_poststate_mismatch_poisons() {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x22, 0xd8],
                 |_| {},
@@ -1738,14 +1738,14 @@ mod tests {
         for cr0 in [0x8001_0033, 0x8000_0033] {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                     &[0x0f, 0x22, 0xd8],
                     |_| {},
                 )
                 .unwrap();
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(0xa020),
                     &[0x0f, 0x22, 0xd8],
                     |_| {},
@@ -1838,7 +1838,7 @@ mod tests {
             for (leaf, expected_error) in [(0, 0x10), (0xa000 | 7 | (1 << 63), 0x11)] {
                 let mut memory = memory(PHYSICAL_PAGE | 7);
                 memory
-                    .write_bytes(
+                    .store_bytes(
                         GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                         &[0x0f, 0x22, 0xd8],
                         |_| {},
@@ -1883,21 +1883,21 @@ mod tests {
     fn mov_cr0_wp_switches_snapshot_clears_cache_and_changes_supervisor_write_result() {
         let mut memory = memory(PHYSICAL_PAGE | 5);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x22, 0xc0],
                 |_| {},
             )
             .unwrap();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x30),
                 &[0x0f, 0x01, 0x3b],
                 |_| {},
             )
             .unwrap();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x40),
                 &[0x0f, 0x22, 0xd8],
                 |_| {},
@@ -1927,7 +1927,7 @@ mod tests {
         let entries_before = table_addresses.map(|address| {
             session
                 .memory
-                .read_u64(GuestPhysicalAddress::new(address))
+                .load_u64(GuestPhysicalAddress::new(address))
                 .unwrap()
         });
         let result = session
@@ -1936,7 +1936,7 @@ mod tests {
         let entries_after = table_addresses.map(|address| {
             session
                 .memory
-                .read_u64(GuestPhysicalAddress::new(address))
+                .load_u64(GuestPhysicalAddress::new(address))
                 .unwrap()
         });
         assert_eq!(
@@ -2027,7 +2027,7 @@ mod tests {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         for physical in [PHYSICAL_PAGE, 0xa000] {
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(physical + 0x20),
                     &[0x0f, 0x22, 0xc0],
                     |_| {},
@@ -2082,7 +2082,7 @@ mod tests {
     fn mov_cr0_fetch_fault_preserves_matching_ring0_fetch_cache_hit() {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x22, 0xc0],
                 |_| {},
@@ -2137,7 +2137,7 @@ mod tests {
         ) {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                     instruction,
                     |_| {},
@@ -2520,7 +2520,7 @@ mod tests {
     fn mov_cr3_fetch_does_not_write_ad_bits_or_touch_data_memory() {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x22, 0xd8],
                 |_| {},
@@ -2528,7 +2528,7 @@ mod tests {
             .unwrap();
         let table_addresses = [ROOT, PDPT, PD + 16, PT];
         let before = table_addresses
-            .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+            .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap());
         let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
         let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
@@ -2560,7 +2560,7 @@ mod tests {
         assert_eq!(
             table_addresses.map(|address| session
                 .memory
-                .read_u64(GuestPhysicalAddress::new(address))
+                .load_u64(GuestPhysicalAddress::new(address))
                 .unwrap()),
             before,
             "pure fetch and CR3 effect consumption must not commit A/D bits"
@@ -2593,7 +2593,7 @@ mod tests {
             {
                 Ok(crate::ProbeOutcome::Translated(translation)) => self
                     .memory
-                    .read_u8(translation.physical)
+                    .load_u8(translation.physical)
                     .map_err(|error| MemoryError::Backend(format!("fetch snapshot read: {error}"))),
                 other => Err(MemoryError::Backend(format!(
                     "fetch translation: {other:?}"
@@ -2647,17 +2647,17 @@ mod tests {
 
     #[test]
     fn invlpg_consumption_forces_walk_after_hit_without_mutating_snapshot() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         let code = [0x0f, 0x01, 0x3b];
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &code,
                 |_| {},
             )
             .unwrap();
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x24),
                 &code,
                 |_| {},
@@ -2671,7 +2671,7 @@ mod tests {
         };
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
         let table_snapshot = [ROOT, PDPT, PD + 16, PT]
-            .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+            .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap());
         let mut cache = TranslationProbeCache::new(&memory);
         let first_walk = cache.probe(&paging, linear, AccessKind::Read, ring0);
         let first = match first_walk {
@@ -2752,7 +2752,7 @@ mod tests {
         assert_eq!(first, after);
         assert_eq!(
             [ROOT, PDPT, PD + 16, PT]
-                .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap()),
+                .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap()),
             table_snapshot,
         );
 
@@ -2832,7 +2832,7 @@ mod tests {
 
     #[test]
     fn nonretiring_or_noninvalidating_invlpg_paths_preserve_warmed_cache() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         for (offset, bytes) in [
             (0x20, &[0x0f, 0x01, 0x3b][..]),
             (0x30, &[0x0f, 0x01, 0x3b][..]),
@@ -2840,7 +2840,7 @@ mod tests {
             (0x50, &[0x0f, 0x01, 0x3b][..]),
         ] {
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + offset),
                     bytes,
                     |_| {},
@@ -2923,14 +2923,14 @@ mod tests {
         for cr0 in [0x8001_0033, 0x8000_0033] {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                     &[0x0f, 0x01, 0x3b],
                     |_| {},
                 )
                 .unwrap();
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(0xa000 + 0x20),
                     &[0x0f, 0x01, 0x3b],
                     |_| {},
@@ -2963,7 +2963,7 @@ mod tests {
             let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
             let mut cpu = invlpg_cpu(instruction.get(), linear.get());
@@ -2974,7 +2974,7 @@ mod tests {
             let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
                 session
                     .memory
-                    .read_u64(GuestPhysicalAddress::new(address))
+                    .load_u64(GuestPhysicalAddress::new(address))
                     .unwrap()
             });
             assert_eq!(
@@ -3013,7 +3013,7 @@ mod tests {
             (0x50, &[0x0f, 0x01, 0xfb][..]),
         ] {
             memory
-                .write_bytes(
+                .store_bytes(
                     GuestPhysicalAddress::new(PHYSICAL_PAGE + offset),
                     bytes,
                     |_| {},
@@ -3196,7 +3196,7 @@ mod tests {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         let rip = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
         memory
-            .write_bytes(
+            .store_bytes(
                 GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
                 &[0x0f, 0x01, 0x3b],
                 |_| {},
@@ -3293,9 +3293,9 @@ mod tests {
 
     #[test]
     fn a_different_linear_page_replaces_the_single_entry() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_u64(GuestPhysicalAddress::new(PT + 8), 0xa000 | 7, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT + 8), 0xa000 | 7, |_| {})
             .unwrap();
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let mut cache = TranslationProbeCache::new(&memory);
@@ -3429,7 +3429,7 @@ mod tests {
             .iter()
             .map(|address| {
                 memory
-                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .load_u64(GuestPhysicalAddress::new(*address))
                     .unwrap()
             })
             .collect();
@@ -3450,7 +3450,7 @@ mod tests {
             .iter()
             .map(|address| {
                 memory
-                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .load_u64(GuestPhysicalAddress::new(*address))
                     .unwrap()
             })
             .collect();
@@ -3460,7 +3460,7 @@ mod tests {
 
     #[test]
     fn dropping_cache_ends_borrow_so_page_table_can_be_remapped_before_recreation() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x33);
         {
@@ -3481,7 +3481,7 @@ mod tests {
             ));
         }
         memory
-            .write_u64(GuestPhysicalAddress::new(PT), 0xa000 | 7, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT), 0xa000 | 7, |_| {})
             .unwrap();
         let mut replacement = TranslationProbeCache::new(&memory);
         // The scope ends the immutable cache borrow; mutation is then allowed.
@@ -3500,7 +3500,7 @@ mod tests {
 
     #[test]
     fn leaf_write_permission_tighten_and_relax_are_observed_across_cache_lifetimes() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
 
@@ -3516,7 +3516,7 @@ mod tests {
             ));
         }
         memory
-            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 5, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 5, |_| {})
             .unwrap();
         {
             let mut cache = TranslationProbeCache::new(&memory);
@@ -3532,7 +3532,7 @@ mod tests {
             assert!(cache.is_empty());
         }
         memory
-            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
             .unwrap();
         let mut cache = TranslationProbeCache::new(&memory);
         let (hit, translated) =
@@ -3548,7 +3548,7 @@ mod tests {
 
     #[test]
     fn nx_fetch_rights_are_observed_across_cache_lifetimes_with_exact_pfec() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x62);
 
@@ -3564,7 +3564,7 @@ mod tests {
             ));
         }
         memory
-            .write_u64(
+            .store_u64(
                 GuestPhysicalAddress::new(PT),
                 PHYSICAL_PAGE | 7 | (1 << 63),
                 |_| {},
@@ -3584,7 +3584,7 @@ mod tests {
             assert!(cache.is_empty());
         }
         memory
-            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
             .unwrap();
         let mut cache = TranslationProbeCache::new(&memory);
         let (hit, translation) =
@@ -3600,12 +3600,12 @@ mod tests {
 
     #[test]
     fn cache_probe_has_no_write_callbacks_or_page_table_ad_side_effects() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x74);
         let mut writes = Vec::new();
         memory
-            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |range| {
+            .store_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |range| {
                 writes.push((range.start().get(), range.len()));
             })
             .unwrap();
@@ -3616,7 +3616,7 @@ mod tests {
             .iter()
             .map(|address| {
                 memory
-                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .load_u64(GuestPhysicalAddress::new(*address))
                     .unwrap()
             })
             .collect();
@@ -3638,7 +3638,7 @@ mod tests {
             .iter()
             .map(|address| {
                 memory
-                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .load_u64(GuestPhysicalAddress::new(*address))
                     .unwrap()
             })
             .collect();
@@ -3648,9 +3648,9 @@ mod tests {
 
     #[test]
     fn unsupported_outcome_is_not_cached() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let memory = memory(PHYSICAL_PAGE | 7);
         memory
-            .write_u64(GuestPhysicalAddress::new(PD + 16), PT | 0x87, |_| {})
+            .store_u64(GuestPhysicalAddress::new(PD + 16), PT | 0x87, |_| {})
             .unwrap();
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE);

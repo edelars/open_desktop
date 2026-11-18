@@ -1,0 +1,12 @@
+date: 2026-11-17T20:45:18Z
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+Apple M3 Max
+14
+38654705664
+rustc 1.99.0 (b940084d7 2026-09-28)
+Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64
+before: worktree of 839e388 (S6-31 commit) (release, --locked --offline, od-runner and od-bench, CARGO_TARGET_DIR=/private/tmp/s631b_target_before); after: working tree on top of 839e388 (S6-31b) (release, --locked --offline, CARGO_TARGET_DIR=/private/tmp/s631b_target_after)
+load average at runs: see linux-control/log.txt and page-walk-log.txt (other host processes were running: load 3-7)
+od-bench stderr on every process: 66 bytes (metadata note), see page-walk-log.txt

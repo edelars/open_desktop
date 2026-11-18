@@ -1,0 +1,341 @@
+{
+  "acceptance": "counted",
+  "acpi": {
+    "facs_address": "0xef000",
+    "load_base": "0xe0000",
+    "manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "payload_len": 832,
+    "rsdp_address": "0xe0000",
+    "tables": [
+      {
+        "address": "0xe0040",
+        "length": 245,
+        "signature": "DSDT"
+      },
+      {
+        "address": "0xe0140",
+        "length": 84,
+        "signature": "APIC"
+      },
+      {
+        "address": "0xe01a0",
+        "length": 276,
+        "signature": "FACP"
+      },
+      {
+        "address": "0xe02c0",
+        "length": 60,
+        "signature": "MCFG"
+      },
+      {
+        "address": "0xe0300",
+        "length": 60,
+        "signature": "XSDT"
+      }
+    ],
+    "version": 2
+  },
+  "acpi_rsdp_addr": "0xe0000",
+  "acpi_rsdp_signature_in_memory": "RSD PTR ",
+  "acpi_rsdp_signature_matches": true,
+  "cmdline": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s6-10-ctl nokaslr",
+  "cmdline_in_memory": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s6-10-ctl nokaslr",
+  "cmdline_in_memory_matches": true,
+  "command": "linux-direct",
+  "cpuid_profile": "X8664V1Stage4A",
+  "diagnostic_note": "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; checkpoint C7 boundary off by the profile); the result is counted (stage4a is the counted profile)",
+  "diagnostic_past_c7": false,
+  "e820": [
+    {
+      "addr": "0x0",
+      "end": "0x9f000",
+      "size": "0x9f000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0x9f000",
+      "end": "0xe0000",
+      "size": "0x41000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xe0000",
+      "end": "0xef000",
+      "size": "0xf000",
+      "type": 3,
+      "type_name": "acpi"
+    },
+    {
+      "addr": "0xef000",
+      "end": "0xf0000",
+      "size": "0x1000",
+      "type": 4,
+      "type_name": "nvs"
+    },
+    {
+      "addr": "0xf0000",
+      "end": "0x150000",
+      "size": "0x60000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0x150000",
+      "end": "0x8000000",
+      "size": "0x7eb0000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0xf8000000",
+      "end": "0xfa400000",
+      "size": "0x2400000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xfc100000",
+      "end": "0xfc200000",
+      "size": "0x100000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xffc00000",
+      "end": "0x100000000",
+      "size": "0x400000",
+      "type": 2,
+      "type_name": "reserved"
+    }
+  ],
+  "e820_count": 9,
+  "entry": {
+    "cr0": "0x80010033",
+    "cr3": "0x130000",
+    "cr4": "0x20",
+    "cs": "0x10",
+    "ds": "0x18",
+    "efer": "0xd00",
+    "es": "0x18",
+    "gdtr_base": "0x120000",
+    "gdtr_limit": "0x1f",
+    "rflags": "0x2",
+    "rip": "0x1000200",
+    "rsi": "0x100000",
+    "rsp": "0x150000",
+    "ss": "0x18"
+  },
+  "guest_started": true,
+  "header": {
+    "cmdline_size": 2047,
+    "init_size": "0x44c1000",
+    "initrd_addr_max": "0x7fffffff",
+    "kernel_alignment": "0x200000",
+    "payload_length": "0x10456ea",
+    "payload_offset": "0x2cc",
+    "pm_code_size": "0x107f200",
+    "pref_address": "0x1000000",
+    "protected_mode_offset": "0x5000",
+    "relocatable": 1,
+    "version": "0x020f",
+    "xloadflags": "0x007f"
+  },
+  "inputs": {
+    "acpi_blob": {
+      "bytes": 1072,
+      "expected_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "path": "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin",
+      "sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf"
+    },
+    "initramfs": {
+      "bytes": 4688,
+      "expected_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "path": "work/stage4/initramfs/initramfs.cpio",
+      "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588"
+    },
+    "vmlinuz": {
+      "bytes": 17320328,
+      "expected_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "path": "work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+      "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  },
+  "memory_sha256": {
+    "initrd": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "initrd_matches_file": true,
+    "kernel_pm_code": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+    "kernel_pm_code_matches_file": true
+  },
+  "nonce": "s6-10-ctl",
+  "plan": {
+    "acpi_facs": {
+      "end": "0xef040",
+      "start": "0xef000"
+    },
+    "acpi_tables": {
+      "end": "0xe0340",
+      "start": "0xe0000"
+    },
+    "boot_params": {
+      "end": "0x101000",
+      "start": "0x100000"
+    },
+    "cmdline": {
+      "end": "0x101800",
+      "start": "0x101000"
+    },
+    "gdt": {
+      "end": "0x121000",
+      "start": "0x120000"
+    },
+    "initrd": {
+      "end": "0x7fff250",
+      "start": "0x7ffe000"
+    },
+    "kernel": {
+      "end": "0x54c1000",
+      "start": "0x1000000"
+    },
+    "page_tables": {
+      "end": "0x140000",
+      "start": "0x130000"
+    },
+    "stack": {
+      "end": "0x150000",
+      "start": "0x140000"
+    }
+  },
+  "ram_mib": 128,
+  "retired": 300000000,
+  "schema_version": 1,
+  "status": "loaded",
+  "stop": {
+    "budget": 300000000,
+    "com1_hex": "",
+    "com1_text": "",
+    "cpl": 0,
+    "cpl3_retired": 0,
+    "cpu_profile": "Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+    "cpuid_divergence_leaf": null,
+    "cr0": "0x80010033",
+    "cr3": "0x54a0000",
+    "cr3_changes": 1,
+    "cr4": "0x20",
+    "diagnostic_past_c7": false,
+    "efer": "0xd00",
+    "exceptions_delivered": 9,
+    "exit_detail": "BudgetExhausted",
+    "exit_kind": "budget_exhausted",
+    "general_protection_faults_delivered": 0,
+    "gpr": {
+      "r10": "0x38d3",
+      "r11": "0xffffffffffffffff",
+      "r12": "0x4",
+      "r13": "0x4",
+      "r14": "0x213deb1",
+      "r15": "0x60",
+      "r8": "0x4",
+      "r9": "0x1c6",
+      "rax": "0xfffffffffffffffe",
+      "rbp": "0x16",
+      "rbx": "0x1a0",
+      "rcx": "0x1",
+      "rdi": "0x214442c",
+      "rdx": "0xe30bc77151fe8200",
+      "rsi": "0x9",
+      "rsp": "0x5459b00"
+    },
+    "guest_cstar": "0x0",
+    "guest_efer": "0xd00",
+    "guest_kernel_gs_base": "0x0",
+    "guest_lstar": "0x0",
+    "guest_star": "0x0",
+    "guest_syscall_mask": "0x0",
+    "guest_sysenter_cs": "0x0",
+    "guest_sysenter_eip": "0x0",
+    "guest_sysenter_esp": "0x0",
+    "halt_idle_ns": 0,
+    "halt_wakes": 0,
+    "inputs": {
+      "acpi_blob_sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf",
+      "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "initramfs_sha256_in_memory": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "kernel_pm_code_sha256_in_memory": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+      "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    },
+    "irq0_edges": 0,
+    "irq_refused_masked": 0,
+    "irq_refused_shadow": 0,
+    "irqs_delivered": 0,
+    "last_cr3_change": {
+      "new_cr3": "0x54a0000",
+      "old_cr3": "0x130000"
+    },
+    "linux_profile": true,
+    "machine_stop_reason": null,
+    "memory_error": null,
+    "mode": "long64",
+    "page_fault": null,
+    "page_faults_delivered": 9,
+    "path": "cpl0_set",
+    "pci_config_address": "0x0",
+    "pit_counter_port_reads": 0,
+    "pit_port_b_reads": 0,
+    "pm_timer_reads": 0,
+    "quanta": 2148,
+    "quantum_cut_by_deadline": 0,
+    "rdtsc_reads": 0,
+    "rdtsc_reads_by_cpl": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "retired": 300000000,
+    "rflags": "0x93",
+    "rip": "0x5424d7f",
+    "rip_bytes": "48 89 c1 41 0f b6 c5 48 f7 d1 01 f0 48 89 d6 4c",
+    "rip_bytes_error": null,
+    "rip_gpa": "0x5424d7f",
+    "set_exit_detail": "Run(InstructionBudgetExhausted)",
+    "set_members": [
+      "cli",
+      "cpu_owned_cr3",
+      "cpuid:X8664V1Stage4A",
+      "rdtsc",
+      "msr:EferReadOnlyV1(3328)",
+      "msr:fs_gs_base",
+      "msr:star_write",
+      "msr:lstar_write",
+      "msr:cstar_write",
+      "msr:sysenter_cs_write",
+      "msr:sysenter_stack_write",
+      "msr:syscall_mask_write",
+      "msr:kernel_gs_base_write",
+      "msr:tdx_keyid_partitioning_read",
+      "fp_state",
+      "int3",
+      "halt",
+      "pio_u8",
+      "sti",
+      "popf_cpl0",
+      "pci_config",
+      "irq",
+      "user_mode",
+      "syscall"
+    ],
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 0,
+      "entries": [],
+      "returned": 0
+    },
+    "tsc_hz": 1000000000,
+    "unsupported_opcode": null,
+    "user_mode": true,
+    "virtual_ns": 300000000
+  }
+}

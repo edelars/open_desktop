@@ -463,7 +463,7 @@ pub use pci_ecam::{
 };
 
 pub use physical_memory::{
-    GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
+    ExecutionMode, GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
     MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, PhysicalWidthError, RamLimits,
 };
 

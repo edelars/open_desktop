@@ -6,6 +6,8 @@ Replay the two canonical Stage4A nonces with the schema-v20 read-only MMU-gather
 
 Implementation revision: `36a568d` (`feat: capture schema-v20 MMU gather page walks`). Canonical schema-v18 source artifacts: `work/stage5/s5-07-post-main-v18-baseline-exact-replay-20261117-a/run-{0001,0002}/`; see [the schema-v18 replay report](s5-07-post-main-schema-v18-exact-replay-20261117.log).
 
+Release runner binary used for both runs: 12,982,320 bytes, SHA-256 `d5dceffff83b2731d5deee51cbdabf67785976dbb1a9f151b2252c76dee51338`.
+
 ## Inputs
 
 | Input | Bytes | SHA-256 |

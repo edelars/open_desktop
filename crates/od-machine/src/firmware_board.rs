@@ -1236,6 +1236,21 @@ pub struct LoadedFirmwareBoard {
 }
 
 impl LoadedFirmwareBoard {
+    /// S6-32: the one execution-mode switch of the machine (see [`crate::ExecutionMode`]); it is
+    /// stored in the board's physical memory and the interpreter does not know it. The default is
+    /// [`crate::ExecutionMode::Interleaved`], which is what every run uses today; the parallel
+    /// mode starts vCPU threads only in S6-34, so selecting it now changes the host memory order
+    /// of ordinary RAM accesses and the host fence of the guest fences, never the result of a
+    /// single-threaded run.
+    pub fn set_execution_mode(&mut self, mode: crate::ExecutionMode) {
+        self.bus.set_execution_mode(mode);
+    }
+
+    /// S6-32: the execution mode of the board.
+    pub fn execution_mode(&self) -> crate::ExecutionMode {
+        self.bus.execution_mode()
+    }
+
     pub fn state(&self) -> &LongModeState {
         &self.vcpus[BOOT_VCPU_INDEX].state
     }
@@ -1489,7 +1504,7 @@ impl LoadedFirmwareBoard {
         for spec in regions {
             let mut bytes = vec![0u8; spec.range.len() as usize];
             memory
-                .read_bytes(spec.range.start(), &mut bytes)
+                .load_bytes(spec.range.start(), &mut bytes)
                 .map_err(|error| {
                     format!(
                         "RAM region at {:#x} (len {:#x}) is unreadable: {error:?}",
@@ -2403,7 +2418,7 @@ impl LoadedFirmwareBoard {
             if offset == 0 {
                 first = Some(physical.get());
             }
-            match memory.read_u8(physical) {
+            match memory.load_u8(physical) {
                 Ok(byte) => bytes.push(byte),
                 Err(error) => return (first, bytes, Some(format!("{error:?}"))),
             }
@@ -3751,6 +3766,26 @@ mod tests {
         }
         assert_eq!(state.activity, Some(CpuActivity::Running));
         assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    }
+
+    /// S6-32: one execution-mode switch, on the board; the board starts interleaved and the
+    /// switch reaches the memory the vCPU adapters share.
+    #[test]
+    fn the_board_has_one_execution_mode_switch_and_starts_interleaved() {
+        let mut board = load(&hlt_image());
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Interleaved);
+        assert_eq!(
+            board.bus.physical_memory().execution_mode(),
+            crate::ExecutionMode::Interleaved
+        );
+        board.set_execution_mode(crate::ExecutionMode::Parallel);
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Parallel);
+        assert_eq!(
+            board.bus.physical_memory().execution_mode(),
+            crate::ExecutionMode::Parallel
+        );
+        board.set_execution_mode(crate::ExecutionMode::Interleaved);
+        assert_eq!(board.execution_mode(), crate::ExecutionMode::Interleaved);
     }
 
     #[test]

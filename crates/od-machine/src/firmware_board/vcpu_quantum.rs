@@ -322,7 +322,7 @@ pub(crate) mod fixture {
         let mut bytes = vec![0; len];
         let (memory, _) = board.bus_mut().split_for_pio_step();
         memory
-            .read_bytes(GuestPhysicalAddress::new(at), &mut bytes)
+            .load_bytes(GuestPhysicalAddress::new(at), &mut bytes)
             .unwrap();
         bytes
     }
