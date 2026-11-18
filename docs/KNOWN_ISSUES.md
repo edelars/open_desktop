@@ -1800,6 +1800,7 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 ### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes
 
+- **Ревью S7-12 (2026-11-18):** ограниченное качество реализованного AML/DSDT профиля одобрено независимым ревью; ISSUE-065 остаётся открытой, поскольку CRS/PRT gap подтверждён и не исправлялся. Suite evidence: 165 тестов прошло. ACPI 6.6 и точность кодировок не проверены; RTC/HPET/S5 (S7-14), TPM (S7-22) и поведение Windows/Linux остаются вне подтверждённого объёма.
 - **Дата обнаружения:** 2026-11-07.
 - **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
 - **Статус:** открыта; ограничение контракта, не runtime-дефект (без флага платы `pci_ecam` код 7 остаётся `PRESENT = 0` и PCI0 не выводится; с флагом `pci_ecam` (S4-30c) код 7 — `PRESENT = 1`, DSDT выводит `PCI0` с одним `WordBusNumber` и пустым `_PRT`, и это ограничение становится достижимым; MCFG, `_CRS` с окнами, host bridge и функции — S4-31/S4-38/S7).
