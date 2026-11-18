@@ -35,6 +35,7 @@ mod linux_direct;
 mod linux_load;
 mod linux_placement;
 mod litmus;
+mod litmus_interleaved_hooked;
 mod litmus_interleaving;
 mod litmus_parallel;
 mod local_apic;
@@ -406,8 +407,8 @@ pub use stage4_uart_irq_probe::{
 };
 
 pub use litmus::{
-    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusOutcome,
-    LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
+    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusInstruction,
+    LitmusOutcome, LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
     litmus_seed_schedule, run_litmus,
 };
 /// S6-36: this build has the host memory order weakened (`weak-host-ordering`); never in a product
@@ -415,9 +416,13 @@ pub use litmus::{
 pub const BUILD_WEAK_HOST_ORDERING: bool = cfg!(feature = "weak-host-ordering");
 /// S6-36: this build has `LOCK` non-atomic (`nonatomic-lock-test`); never in a product build.
 pub const BUILD_NONATOMIC_LOCK_TEST: bool = cfg!(feature = "nonatomic-lock-test");
+pub use litmus_interleaved_hooked::{
+    LitmusInterleavedOutcome, LitmusInterleavedReport, LitmusInterleavedVerdict,
+    run_litmus_interleaved_hooked,
+};
 pub use litmus_parallel::{
     LITMUS_PARALLEL_MAX_VCPUS, LitmusParallelOutcome, LitmusParallelReport, LitmusParallelVerdict,
-    run_litmus_parallel,
+    LitmusStep, LitmusStepHook, LitmusStepOutcome, run_litmus_parallel, run_litmus_parallel_hooked,
 };
 
 pub use stage6_smp_probe::{

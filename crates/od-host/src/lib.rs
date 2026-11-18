@@ -15,6 +15,8 @@ pub mod jit_region {
 pub mod atomic_inline;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod host_threads;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod litmus_jit;
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
@@ -3065,7 +3067,7 @@ pub struct PagedFetchedAtomicReport {
 
 /// Byte view of the fetched window for the decoder: instruction bytes only, nothing else is
 /// reachable through it.
-struct FetchedWindow<'a>(&'a [u8]);
+pub(crate) struct FetchedWindow<'a>(pub(crate) &'a [u8]);
 
 impl od_isa::memory::GuestMemory for FetchedWindow<'_> {
     fn fetch(
