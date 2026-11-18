@@ -1,7 +1,7 @@
 # ADR-0010: Process MAP_JIT region partitioned between vCPU threads
 
 - **Date:** 2026-11-18.
-- **Status:** proposed (S6-42b: the bus consequence below is updated, the decision itself is unchanged); accepted with the S6-42 gate review. Records the S6-40 contract decision (accepted 2026-11-18) and what S6-42 implemented; written by the S6-42 executor, to be confirmed or replaced by the coordinator.
+- **Status:** accepted after independent S6-42 review for the one-instruction production profile. The decision records the S6-40 ownership and publication contract. [Acceptance evidence](../reports/STAGE_6_S6-42_2026-11-18.md#приёмка-одноинструкционного-профиля).
 - **Related documents:** [JIT contract, S6-40 section](../specs/JIT_CONTRACT.md#s6-40-кэш-кода-при-нескольких-vcpu-контракт) (rules A1 to A7, M1 to M6, S1 to S6), [JIT contract, S6-42 section](../specs/JIT_CONTRACT.md#s6-42-межпроцессорная-инвалидация-и-безопасное-освобождение-блоков), [ADR-0004](ADR-0004-capacity-one-memory-cache.md), [ADR-0005](ADR-0005-persistent-same-code-session.md), [ISSUE-038](../KNOWN_ISSUES.md), [Stage 6 plan](../plans/STAGE_6.md).
 
 ## Question
