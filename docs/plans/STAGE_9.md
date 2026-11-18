@@ -163,7 +163,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-00. Зафиксировать область поддержки и failure model
 
-- [ ] Принято после архитектурного ревью.
+- [x] Принято после архитектурного ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** принято с оговорками по архитектурному ревью (чекбокс не отмечен): [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md) исправлены. Оговорки: лимит logical size RAW не задан (открытый вопрос), лимиты CoW, глубины цепочек, числа snapshots и LBA/CoW block size остаются TBD ([STORAGE_FORMAT §4](../specs/STORAGE_FORMAT.md#4-единицы-размеры-и-лимиты)); durability — [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed) (namespace, power-loss, ENOTSUP/EINVAL); обновлено 2026-11-18: формат CoW v1 принят как нормативный 2026-11-06, лимиты CoW v1 и размер блока заданы в §9 STORAGE_FORMAT (оговорка про них выше устарела); глубина цепочек и число snapshots — параметры ненормативного snapshot-слоя; LBA 512 B выбран для NVMe-контроллера S7-16, применение к образу — S9-13; лимит logical size RAW по-прежнему открыт.
 - **Где:** будущие `STORAGE_FORMAT.md`, `VM_STATE.md`, `STORAGE_RECOVERY.md`; ссылки на текущую support matrix.
 - **Сделать:** выбрать первую host/filesystem/media комбинацию, размеры guest sector/Cow block, limits диска/цепочек, single-writer policy, crash model, acknowledged durability и checksum scope. Размеры/структуры на горячем пути пока гипотеза для замеров S9-08. Определить minimal offline и целевой full-VM profiles.
@@ -172,7 +172,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-01. Проверить prerequisites по фактическому коду
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** принято: сверка [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) с кодом HEAD `4dedff2` выполнена. [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`); следующий runnable срез — недостающие замеры S9-40 (см. [VM_STATE.md §2.5](../specs/VM_STATE.md#25-вывод-s9-01)). Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); namespace-часть S9-06 — при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
 - **Где:** отчёт этапа и матрица зависимости в `VM_STATE.md`.
 - **Сделать:** перечислить готовность RAW/device backend, guest storage commands, всех CPU/RAM/device/time/I/O states, UEFI variables, vTPM и guest agents. Для каждого обязательного state указать реального owner и его versioned save/load contract либо точный blocker.
@@ -181,7 +181,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-02. Описать операции, состояния и результаты
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** принято с оговорками по архитектурному ревью (чекбокс не отмечен): таблицы операций в [VM_STATE.md §3](../specs/VM_STATE.md#3-операции-и-состояния-s9-02); состояние диска при forced stop сформулировано как «не старше последнего `durable_ack`». Операции VM не реализованы.
 - **Где:** `VM_STATE.md`, storage contract; control protocol меняется только при интеграции S9-33.
 - **Сделать:** таблица для pause/resume, suspend, guest shutdown, forced stop, disk-only snapshot, full checkpoint, restore, clone, export, repair. Для каждой: prerequisites, consistency, durability, allowed transitions, cancellation point, operation ID и recoverable/uncertain failure.
@@ -190,7 +190,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-03. Ввести узкий storage I/O interface
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `a59338a`. Contract suite исполняется на memory и host file backend; детали и ограничения — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-03-узкий-storage-io-interface--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, host implementation в `od-host`, локальный test backend.
 - **Сделать:** checked offset reads/writes, size/truncate/allocate при необходимости, file/namespace durability и locking capabilities; типизированные short/error outcomes. Interface описывает необходимые гарантии, а не копирует весь filesystem API.
@@ -208,7 +208,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-05. Реализовать RAW backend
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `4fcd5c4`. Power-loss durability не заявляется; детали — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-05-raw-backend--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, local tests, малые собственные fixtures.
 - **Сделать:** create/open/read/write/reopen с явным logical size, bounds и разрешённым alignment. Политика create existing file — безопасный отказ, а не молчаливое truncate. Различить out-of-range и чтение неполного файла.
@@ -228,7 +228,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-07. Сделать fault backend и независимый oracle
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (нет блокеров/мажоров), коммит `a7874b8`. Namespace и реальный power-loss в модель не входят — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-07-fault-backend-и-независимый-oracle--реализовано-ревью-пройдено-нет-блокеров-и-мажоров).
 - **Где:** unit tests `od-storage`, общая orchestration `tests/system/` и при необходимости `od-testkit` без production dependency.
 - **Сделать:** модель volatile/durable bytes и namespace, loss/reorder/torn/short writes в пределах failure model, errors на sync/rename/allocate. Вне faulted target вести sequence и durable watermark; ожидаемое состояние считать простой отдельной логической моделью.
@@ -237,7 +237,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-08. Выбрать минимальный собственный CoW format
 
-- [ ] Принято после архитектурного ревью и нужных прототипных замеров.
+- [x] Принято после архитектурного ревью и нужных прототипных замеров. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** протокол принят с оговорками: 2 root slot, копия корня, 2 барьера, create заполняет оба слота (`IncompleteCreate`), коммиты `000c1da`, `01ef35d`; проверен sweeps на fault backend. Обновлено 2026-11-18: формат CoW v1 принят как нормативный 2026-11-06 ([STORAGE_FORMAT §9](../specs/STORAGE_FORMAT.md#9-cow-v1-нормативно-с-2026-11-06)); замеры S9-40 не дали основания менять структуры — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-08-минимальный-собственный-cow-format--протокол-принят-с-оговорками-формат-cow-v1-принят-как-нормативный).
 - **Где:** `STORAGE_FORMAT.md`, `od-storage`, ADR при выборе среди вариантов.
 - **Сделать:** versioned superblock/root descriptors, block map, generation/transaction IDs, checksums и bounded snapshot metadata. Первый кандидат: один файл и writer, фиксированная virtual capacity/block size, append-only immutable extents, полная bounded map поколения и два root slots. Протокол-кандидат: data/map → durability barrier → неактивный root → durability barrier → ack. До writer доказать все cuts; не предполагать atomic sector write и не добавлять journal/B-tree/refcounts без необходимости.
@@ -246,7 +246,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-09. Написать строгий readonly parser
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (нет блокеров/мажоров, minor в сообщении коммита `17c9ce6`); fuzz 80000 разборов без паник. Формат CoW v1 принят как нормативный 2026-11-06 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-09-строгий-read-only-parser--реализовано-ревью-пройдено-нет-блокеров-и-мажоров-minor-в-сообщении-коммита).
 - **Где:** `od-storage`, малые manually specified fixtures.
 - **Сделать:** декодирование header/root/map с version/capability negotiation, проверкой lengths/offset arithmetic/size limits, checksum и references. Unknown mandatory feature запрещает writable open; readonly допустим только при доказанно понятной семантике.
@@ -255,7 +255,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-10. Реализовать создание и выбор корня
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено после одного major (исправлен), коммиты `61a99e0`, `88b9f42`, `01ef35d`. [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт: create пишет два пустых корня под одним барьером, пустой слот после ack — повреждение, `IncompleteCreate`. Формат CoW v1 принят как нормативный 2026-11-06 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-10-createopen-и-выбор-корня--реализовано-ревью-пройдено-после-одного-major-исправлен-issue-057-закрыт).
 - **Где:** `od-storage`.
 - **Сделать:** create пустого диска и open только полностью валидируемого состояния. Root validation включает reachable metadata/data integrity в заявленном checksum scope; generation и publication status проверяются по S9-08.
@@ -264,7 +264,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-11. Реализовать CoW write transaction
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (один major исправлен), коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат CoW v1 принят как нормативный 2026-11-06; [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-11-cow-write-transaction--реализовано-ревью-пройдено-один-major-исправлен).
 - **Где:** `od-storage` writer и transaction tests.
 - **Сделать:** подготовить новые extents/map, обеспечить нужную durability и опубликовать root по protocol; published objects неизменяемы. Ограничить размер transaction/dirty state; cancellation до/после publication имеет разные результаты.
@@ -273,7 +273,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-12. Проверить crash recovery по durable watermark
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано (recovery tests), ревью пройдено, коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат CoW v1 принят как нормативный 2026-11-06; [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-12-crash-recovery-по-durable-watermark--реализовано-recovery-tests-ревью-пройдено).
 - **Где:** storage recovery, fault harness, report/data.
 - **Сделать:** восстановление после каждого допустимого cut S9-11, cleanup только доказанного garbage; side-effect-free inspect перед возможной mutation. Сравнивать с последним durable acknowledgement и разрешёнными более поздними outcomes.
@@ -290,7 +290,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-14. Добавить неизменяемые snapshots и цепочки
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (единственный major — ошибка после опубликованного снимка — исправлен), коммит `7188582`: `SnapFile`, `ParentRef`, `MAX_CHAIN_DEPTH = 8`, fault-sweep публикации. Предел: resolver цепочки только в офлайн-CLI image-tool (`PathResolver`, `1590c9e`), VMHost цепочку не открывает (обновлено 2026-11-18), CRC блоков предков проверяется лениво, удаление snapshots — S9-17; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-14-неизменяемые-snapshots-и-цепочки--реализовано-ревью-пройдено-единственный-major-исправлен).
 - **Где:** `od-storage`, `STORAGE_FORMAT.md`.
 - **Сделать:** snapshot ID/root/parent generation, bounded chain, read resolution, immutable parent и создание writable child. Зафиксировать content и metadata identity родителя; не доверять одному относительному имени файла.
@@ -299,7 +299,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-15. Branch, checkout и disk rollback offline
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: `branch_from` и rollback как новая ветка. Предел: атомарный активный указатель не реализован (нет durable rename, [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-15-branch-checkout-и-disk-rollback-offline--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, image operations contract.
 - **Сделать:** из выбранного immutable snapshot создавать новый child, переключать active root атомарно; изменяемый guest диск не заменять под работающей VM. Disk rollback не изменяет RAM/TPM/UEFI автоматически.
@@ -308,7 +308,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-16. Проверить parent identities и leases
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: полная проверка цепочки предков до записи в `open_gated`, типизированные отказы, lease-тесты на реальных файлах. Предел: интеграция с VMHost lifecycle; resolver цепочки есть только в офлайн-CLI image-tool (`PathResolver`, обновлено 2026-11-18); слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-16-проверка-parent-identities-и-leases--реализовано-ревью-пройдено).
 - **Где:** storage chain resolver и host file access boundary.
 - **Сделать:** validate всю выбранную цепочку до writable open; hold нужные parent/read leases; порядок locks исключает deadlock. File alias/replacement и path traversal не дают подменить parent между check и use.
@@ -317,7 +317,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-17. Удаление снимков и reclamation
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (read-only; мажоров не было; цель проверена переоткрытием с диска), коммит `82f72e8`: `delete_snapshot`, `rootset`, `compact_to` с флагом building. Пределы: атомарной подмены источника результатом compaction нет ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); дети удалённого снимка неоткрываемы (`SnapshotMissing`); GC в живом файле не реализован; building-флаг — ненормативное расширение формата; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-17-удаление-снимков-и-reclamation--реализовано-ревью-пройдено-read-only-мажоров-не-было).
 - **Где:** `od-storage`; ownership protocol не переносить в UI.
 - **Сделать:** отделить удаление имени snapshot от освобождения data; rootset включает named snapshots, writable head, обе recoverable root generations, saved-VM manifests, clone parents и reader/export leases. Сначала не переиспользовать extents; первая reclamation — offline exclusive mark и copy-compaction в новый файл с полной проверкой и durable publication. In-place reuse или concurrent GC требуют отдельного доказанного среза.
@@ -326,7 +326,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-18. Capacity, explicit zero и discard
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (read-only), коммит `1590c9e`: `zero_range` (явные нули), `discard_range` (возврат к parent), capacity/quota до backend, ENOSPC на каждом шаге commit/compaction без порчи предыдущего состояния. Пределы: discard не рекламируется гостю; нет hole punching; блоки плотные до compaction; ENOSPC и power loss только fault-инъекция; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-18-capacity-explicit-zero-и-discard--реализовано-ревью-пройдено-read-only).
 - **Где:** storage allocation, guest storage feature contract.
 - **Сделать:** ENOSPC/quota/reserved space policy, bounded metadata growth и операции zero/discard в заявленном scope. Discard в child должен соблюдать guest contract, не неявно возвращать parent data; host hole punching использовать только как проверенную оптимизацию.
@@ -335,7 +335,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-19. Создать inspect/check CLI
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
 - **Текущий статус (2026-11-05):** реализовано, ревью пройдено (read-only), коммит `1590c9e`: `inspect_storage` (только чтение), `tools/image-tool` — CLI `info`/`check` с кодами выхода 0…5. Пределы: CLI использует модули CoW под feature `test-support`; нет repair-подкоманды; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-19-inspectcheck-cli--реализовано-ревью-пройдено-read-only).
 - **Где:** `tools/image-tool/src/` поверх `od-storage`; layout/manifests обновлять при реальной сборке tool.
 - **Сделать:** readonly info/check с version, logical size, root/chain IDs, integrity outcomes и машинно различимыми exit statuses. Mutating recovery — отдельная явная операция; default inspect источник не меняет.
@@ -344,8 +344,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-20. RAW import/export с проверкой результата
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-06):** реализовано, коммит `fd5ebcf`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Не принято. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), CLI `import` добавлен 2026-11-18 (цель создаётся после проверки RAW, отказ цели без durability до записи); слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-субагентом-без-блокеров-и-мажоров-не-принято).
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
+- **Текущий статус (2026-11-06):** реализовано, коммит `fd5ebcf`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Принято владельцем 2026-11-18. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), CLI `import` добавлен 2026-11-18 (цель создаётся после проверки RAW, отказ цели без durability до записи); слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-субагентом-без-блокеров-и-мажоров-принято-решение-владельца-2026-11-18).
 - **Где:** `od-storage`, `tools/image-tool`, test fixtures.
 - **Сделать:** import в новый собственный image; export выбранного immutable root/chain в простой RAW точного logical size. Зафиксировать source generation/lease на весь export, не читать меняющийся active disk; publish target только после завершения проверки/durability.
 - **Проверить:** block-by-block независимое сравнение/hash, holes/zeros/последний неполный block, cancellation, ENOSPC, existing target и crash. Не публиковать частичный файл как completed export.
@@ -353,8 +353,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-21. Сделать отдельный salvage/recovery-to-copy
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, коммит `fd5ebcf`; ревью субагентом 2026-11-06 (блокеров и мажоров нет), правка 2026-11-18 — Opus high; не принято. Предел: Partial копируется только с `--accept-partial`; нет восстановления конфликтующих roots; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-21-salvage--recovery-to-copy--реализовано-ревью-субагентом-без-блокеров-и-мажоров-не-принято).
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
+- **Текущий статус (2026-11-05):** реализовано, коммит `fd5ebcf`; ревью субагентом 2026-11-06 (блокеров и мажоров нет), правка 2026-11-18 — Opus high; принято владельцем 2026-11-18. Предел: Partial копируется только с `--accept-partial`; нет восстановления конфликтующих roots; слой ODSNAP не нормативен (STORAGE_FORMAT §9.8) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-21-salvage--recovery-to-copy--реализовано-ревью-субагентом-без-блокеров-и-мажоров-принято-решение-владельца-2026-11-18).
 - **Где:** `od-storage`, image-tool, методика восстановления.
 - **Сделать:** определить, какие данные можно доказанно извлечь при повреждении metadata; копировать в новый target и выпускать extent/report с valid/unknown/lost/conflicting ranges и основаниями. Сложный reconstruction вне первой версии можно явно отказать.
 - **Проверить:** повреждённая map/root, valid stale blocks, conflicting generations и неизвестный parent; не включать случайно найденные старые bytes как актуальные без provenance.
@@ -363,7 +363,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-22. Версии формата и migration
 
 - [x] Принято после ревью (решение владельца 2026-11-18: закрыта в объёме CoW v1).
-- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Обновлено 2026-11-18: таблица совместимости есть (STORAGE_FORMAT §9.7), путь RAW → v1 через `import` (S9-20) — единственный поддержанный; миграция между версиями CoW не сделана — второй версии нет; владелец 2026-11-18 закрыл задачу в объёме v1 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
+- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Обновлено 2026-11-18: таблица совместимости есть (STORAGE_FORMAT §9.7), путь RAW → v1 через `import` (S9-20) — единственный поддержанный; миграция между версиями CoW не сделана — второй версии нет; владелец 2026-11-18 закрыл задачу в объёме v1 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--закрыта-в-объёме-cow-v1-решение-владельца-2026-11-18).
 - **Где:** `od-storage` codecs, `STORAGE_FORMAT.md`, image-tool.
 - **Сделать:** compatibility table read/write/upgrade/downgrade; unknown mandatory features отклонять. Migration сначала в новый target, с проверкой logical data, snapshots/parent links и identities; activation отделить от copy. Не обещать произвольный downgrade.
 - **Проверить:** tiny frozen fixtures поддержанных старых versions, interrupted migration, source untouched, recovery после publish-before-response, insufficient space и unsupported version.
@@ -520,8 +520,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-41. Repeated recovery и длительные циклы
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-06):** реализовано, коммит `e57646c`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Обновлено 2026-11-18: оракул сверяет и `next_snapshot_id`, длинный прогон 8 seeds × 12000 циклов без расхождений выполнен и записан (лог в `docs/reports/data/stage9/`), ревью Opus high. Не принято. Предел: только `FaultBackend`, не реальный диск и не power loss — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-41-repeated-recovery-и-soak--реализовано-ревью-субагентом-без-блокеров-и-мажоров-не-принято).
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
+- **Текущий статус (2026-11-06):** реализовано, коммит `e57646c`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Обновлено 2026-11-18: оракул сверяет и `next_snapshot_id`, длинный прогон 8 seeds × 12000 циклов без расхождений выполнен и записан (лог в `docs/reports/data/stage9/`), ревью Opus high. Принято владельцем 2026-11-18. Предел: только `FaultBackend`, не реальный диск и не power loss — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-41-repeated-recovery-и-soak--реализовано-ревью-субагентом-без-блокеров-и-мажоров-принято-решение-владельца-2026-11-18).
 - **Где:** system/soak harness и report/data.
 - **Сделать:** повторять write/flush/snapshot/branch/delete/export/suspend/restore/clone с периодическими failures, chain growth и memory/disk limits. После каждого recovery заново проверить latest durable state и оставшиеся snapshots.
 - **Проверить:** утечки пространства/handles, generation overflow policy, stale events после restore, repeated migration, восстановление после сбоя самого recovery. Длительность и число циклов задать до прогона.
@@ -529,8 +529,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-42. Собрать воспроизводимый итоговый набор
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); последний запуск `20261118-s9-38c`: 12 passed, 0 failed, 1 not_run, 7 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
+- [x] Принято после ревью. (решение владельца 2026-11-18: принята по итогам итогового ревью S9-43 в реализованном объёме; ограничения — в статусе ниже и в отчёте)
+- **Текущий статус (2026-11-18):** принято владельцем 2026-11-18; описание ниже — состояние на момент приёмки: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); последний запуск `20261118-s9-38c`: 12 passed, 0 failed, 1 not_run, 7 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
 - **Где:** методика, существующие tools, отчёт и support matrix.
 - **Сделать:** freeze commit/config/artifact hashes и выполнить offline storage, real guest, lifecycle, corruption/crash, repeated recovery и power-loss matrix. Для optional S9-34 либо добавить выполненные provider tests, либо явно исключить соответствующий claim.
 - **Проверить:** каждый case имеет `passed`/`failed`/`not_run`/`blocked`, environment и evidence reference; большие images/logs в ignored `work/stage9/<run-id>/`, в Git только малые собственные fixtures/отчёты без секретов.
@@ -547,7 +547,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-44. Документировать приёмку и оставшиеся ограничения
 
-- [ ] Этап принят по gates раздела 8.
+- [ ] Этап принят по gates раздела 8. Не отмечено: задача S9-44 (запись приёмки и ограничений) принята владельцем 2026-11-18, но сам этап по gates раздела 8 не принят — G1–G6 не выполнены (полная VM).
 - **Текущий статус (2026-11-18):** решение — этап 9 не принят ([STAGE_9_REPORT.md §7, §10](../reports/STAGE_9_REPORT.md#7-приёмка-s9-44)); storage-часть реализована и прошла итоговое ревью в своём объёме; G3/G4 и VM-часть S9-38 открыты; S9-39 принята в объёме USB-накопителя; решения владельца 2026-11-18: ревью S9-43 засчитано, S9-22 закрыта в объёме v1, S9-06 — в суженном объёме v1, S9-38 — в объёме storage.
 - **Где:** этот план, `STAGE_9_REPORT.md`, `ROADMAP.md`, затронутые architecture/layout/specs/testing/support matrix и `KNOWN_ISSUES.md`.
 - **Сделать:** записать реальные гарантии и форматы, поддержанные host/guest combinations, команды check/export/recovery, migration/rollback/clone policy, доказательства и результаты ревью. Открытые дефекты получают scope, последствия, воспроизведение/основание и следующий шаг.
