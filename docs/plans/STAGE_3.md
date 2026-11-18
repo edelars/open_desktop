@@ -2603,6 +2603,15 @@ S3-25 и S3-28 приняты с ограничениями (gate-ревью Cla
 классификацию. Проверка запускается через `cargo test --offline -p od-jit
 --lib statepoints::tests`. Общая S3-27 остаётся открытой.
 
+Локальная регрессия checked-memory dispatcher проверяет `GuestFault` на
+границе с исполнителем. В путях с кешем и без кеша RIP должен указывать на
+следующую незавершённую инструкцию артефакта, а остаток бюджета должен
+позволять её начать. Неверный RIP, завершённый артефакт или исчерпанный
+бюджет дают ошибку контракта хоста. Кеш освобождает запись после возврата
+управления от исполнителя. До исправления оба теста принимали `GuestFault`
+после завершения пары. `cargo test --offline -p od-jit --lib
+guest_fault_requires_pending` проверяет допустимые отчёты и отклонения.
+
 #### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
 
 Native execution of either exact pair returns its canonical `A+6` CPU/RAM

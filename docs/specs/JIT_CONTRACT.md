@@ -3417,6 +3417,12 @@ fault delivery requires the future owner-supplied fetch integration.
 exactly one mapping per artifact before returning to the dispatcher. The
 dispatcher accepts only exact compiler-issued artifact types, preserves a
 committed prefix on later architectural or host errors, and never caches code.
+Both the uncached dispatcher and the retained memory-pair cache accept a
+`GuestFault` report only when the remaining budget permits the faulting
+instruction and the canonical RIP matches the artifact site indexed by the
+number of retired instructions. A report outside those bounds fails the host
+executor contract. The cache drops the affected mapping at the synchronous
+return boundary without retrying the artifact.
 Its unsafe caller contract requires immutable non-aliasing code bytes and
 private synchronous ordinary data RAM with all-or-nothing writes, no MMIO,
 executable/code aliases, DMA, concurrency, re-entry, or unwind. `GuestMemory`
