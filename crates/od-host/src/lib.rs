@@ -1,6 +1,7 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 mod display;
+pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
 #[cfg(all(unix, test))]
@@ -1036,6 +1037,34 @@ impl PublishedCode {
         >,
         PagedMemoryLoadV2Error,
     > {
+        let stop_requested = AtomicU8::new(0);
+        self.execute_paged_mov_rax_rbx_v2_with_stop(
+            state,
+            bus,
+            cr3,
+            efer,
+            access_context,
+            &stop_requested,
+        )
+    }
+
+    /// S3-38o: [`Self::execute_paged_mov_rax_rbx_v2`] with a STOP byte owned by
+    /// the caller (the one-vCPU host loop). The byte is passed to the native
+    /// call as `RuntimeContextV1::stop_requested`; this entry never writes it.
+    pub(crate) fn execute_paged_mov_rax_rbx_v2_with_stop(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        stop_requested: &AtomicU8,
+    ) -> Result<
+        od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
         check_paged_load_v2_context(state, access_context)?;
         let metadata = self
             .memory_operation_metadata_v2
@@ -1085,13 +1114,12 @@ impl PublishedCode {
         }
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
-        let stop_requested = AtomicU8::new(0);
         Ok(od_machine::with_paged_mov_memory(
             bus,
             paging,
             state.rip,
             |memory| {
-                self.execute_memory_load_v2(state, memory, access_context, 1, None, &stop_requested)
+                self.execute_memory_load_v2(state, memory, access_context, 1, None, stop_requested)
             },
         ))
     }
@@ -1104,7 +1132,8 @@ impl PublishedCode {
     /// published block's metadata is checked against `form` and `code` before
     /// anything is walked. The effective address is computed here from the CPU
     /// state of this call, and an operand that would cross a 4 KiB page is
-    /// refused before any walk.
+    /// refused before any walk. S3-38o: `stop_requested` is the caller's STOP
+    /// byte (the host loop's), passed to the native call and never written here.
     pub(crate) fn execute_paged_checked_load_v2(
         &self,
         form: PagedFetchedForm,
@@ -1114,6 +1143,7 @@ impl PublishedCode {
         cr3: u64,
         efer: u64,
         access_context: od_isa::memory::AccessContext,
+        stop_requested: &AtomicU8,
     ) -> Result<
         od_machine::PagedMovMemoryScope<
             Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
@@ -1189,7 +1219,6 @@ impl PublishedCode {
         }
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
-        let stop_requested = AtomicU8::new(0);
         Ok(if dword {
             od_machine::with_paged_mov_dword_memory(bus, paging, state.rip, |memory| {
                 self.execute_ir_memory_dword_load_v2(
@@ -1198,7 +1227,7 @@ impl PublishedCode {
                     access_context,
                     1,
                     None,
-                    &stop_requested,
+                    stop_requested,
                 )
             })
         } else {
@@ -1209,7 +1238,7 @@ impl PublishedCode {
                     access_context,
                     1,
                     None,
-                    &stop_requested,
+                    stop_requested,
                 )
             })
         })
@@ -1251,6 +1280,34 @@ impl PublishedCode {
         efer: u64,
         access_context: od_isa::memory::AccessContext,
         active_code_page: od_machine::GuestPhysicalAddress,
+    ) -> Result<
+        od_machine::PagedMovStoreScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        let stop_requested = AtomicU8::new(0);
+        self.execute_paged_mov_rbx_rax_store_v2_with_stop(
+            state,
+            bus,
+            cr3,
+            efer,
+            access_context,
+            active_code_page,
+            &stop_requested,
+        )
+    }
+
+    /// S3-38o: [`Self::execute_paged_mov_rbx_rax_store_v2`] with the caller's STOP byte.
+    pub(crate) fn execute_paged_mov_rbx_rax_store_v2_with_stop(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        active_code_page: od_machine::GuestPhysicalAddress,
+        stop_requested: &AtomicU8,
     ) -> Result<
         od_machine::PagedMovStoreScope<
             Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
@@ -1306,7 +1363,6 @@ impl PublishedCode {
         }
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
-        let stop_requested = AtomicU8::new(0);
         let mut scope = od_machine::with_paged_mov_store_memory(bus, paging, state.rip, |memory| {
             // SAFETY: `execute_memory_store_v2` requires private synchronous
             // ordinary RAM with no shared aliases, devices or re-entry.
@@ -1332,14 +1388,7 @@ impl PublishedCode {
             // - The adapter only pushes to local Vecs: it never calls back
             //   into this runtime and does not unwind through the block.
             unsafe {
-                self.execute_memory_store_v2(
-                    state,
-                    memory,
-                    access_context,
-                    1,
-                    None,
-                    &stop_requested,
-                )
+                self.execute_memory_store_v2(state, memory, access_context, 1, None, stop_requested)
             }
         });
         let page_start = active_code_page.get() & !0xfff;
@@ -2566,6 +2615,25 @@ impl PagedFetchedLoadSession {
         efer: u64,
         access_context: od_isa::memory::AccessContext,
     ) -> Result<PagedFetchedFormReport, PagedFetchedLoadError> {
+        let stop_requested = AtomicU8::new(0);
+        self.execute_forms_with_stop(state, bus, cr3, efer, access_context, &stop_requested)
+    }
+
+    /// S3-38o: [`Self::execute_forms`] with a STOP byte owned by the caller. The
+    /// byte is passed to every native call as `RuntimeContextV1::stop_requested`
+    /// and is only read here (the host loop takes it down, never the session).
+    /// A single-instruction block that observes the byte exits `StopRequested`
+    /// either before the instruction (retired 0, no effect) or right after it
+    /// (retired 1); both are ordinary results, see [`crate::paged_host_loop`].
+    pub(crate) fn execute_forms_with_stop(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        stop_requested: &AtomicU8,
+    ) -> Result<PagedFetchedFormReport, PagedFetchedLoadError> {
         let refuse = |kind| PagedFetchedLoadError {
             kind,
             fetch_committed_writes: Vec::new(),
@@ -2712,13 +2780,14 @@ impl PagedFetchedLoadSession {
             PagedFetchedForm::QwordStoreRbx => {
                 let scope = admitted
                     .published
-                    .execute_paged_mov_rbx_rax_store_v2(
+                    .execute_paged_mov_rbx_rax_store_v2_with_stop(
                         state,
                         bus,
                         cr3,
                         efer,
                         access_context,
                         snapshot.physical_base,
+                        stop_requested,
                     )
                     .map_err(load_error)?;
                 (scope.memory, scope.refusal)
@@ -2726,7 +2795,14 @@ impl PagedFetchedLoadSession {
             PagedFetchedForm::QwordLoadRbx => (
                 admitted
                     .published
-                    .execute_paged_mov_rax_rbx_v2(state, bus, cr3, efer, access_context)
+                    .execute_paged_mov_rax_rbx_v2_with_stop(
+                        state,
+                        bus,
+                        cr3,
+                        efer,
+                        access_context,
+                        stop_requested,
+                    )
                     .map_err(load_error)?,
                 None,
             ),
@@ -2741,6 +2817,7 @@ impl PagedFetchedLoadSession {
                         cr3,
                         efer,
                         access_context,
+                        stop_requested,
                     )
                     .map_err(load_error)?,
                 None,
@@ -6233,7 +6310,7 @@ pub(crate) mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize};
 
-    static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
     static DATA_EFFECT_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
     static RUNTIME_HELPER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static RUNTIME_HELPER_FAIL_AT: AtomicUsize = AtomicUsize::new(0);
