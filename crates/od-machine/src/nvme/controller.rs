@@ -298,12 +298,13 @@ impl NvmeState {
     }
 
     /// Controller reset (`CC.EN` 1 to 0): queues, features and outstanding
-    /// events are lost; the error log and counters are kept.
+    /// events are lost. Error log entries are cleared, with counters retained.
     fn reset(&mut self) {
         self.sqs = [None; QUEUE_SLOTS];
         self.cqs = [None; QUEUE_SLOTS];
         self.features = Features::default();
         self.aer = AerState::default();
+        self.errors.clear_entries();
         self.csts = 0;
         self.pending = false;
     }
@@ -500,9 +501,9 @@ impl NvmeState {
         let value = (value & 0xFFFF) as u16;
         if is_cq {
             match self.cqs[qid].as_mut() {
-                None => admin::report_invalid_doorbell_register(self, qid as u16),
+                None => admin::report_invalid_doorbell_register(self),
                 Some(cq) if value >= cq.entries => {
-                    admin::report_invalid_doorbell_value(self, qid as u16);
+                    admin::report_invalid_doorbell_value(self);
                 }
                 Some(cq) => {
                     cq.head = value;
@@ -511,9 +512,9 @@ impl NvmeState {
             }
         } else {
             match self.sqs[qid].as_mut() {
-                None => admin::report_invalid_doorbell_register(self, qid as u16),
+                None => admin::report_invalid_doorbell_register(self),
                 Some(sq) if value >= sq.entries => {
-                    admin::report_invalid_doorbell_value(self, qid as u16);
+                    admin::report_invalid_doorbell_value(self);
                 }
                 Some(sq) => {
                     sq.tail = value;
@@ -595,12 +596,15 @@ impl NvmeState {
         if !self.ready() {
             return false;
         }
-        if let Outcome::Done(completion) = outcome {
-            if !completion.status.is_success() {
-                let phase = self.cqs[cqid].is_some_and(|cq| cq.phase);
-                admin::log_command_error(self, slot as u16, &command, completion.status, phase);
-            }
+        if let Outcome::Done(mut completion) = outcome {
+            let error_phase = (!completion.status.is_success()).then(|| {
+                completion.status = completion.status.with_more();
+                self.cqs[cqid].is_some_and(|cq| cq.phase)
+            });
             if self.post(dma, cqid, slot as u16, command.cid, completion) {
+                if let Some(phase) = error_phase {
+                    admin::log_command_error(self, slot as u16, &command, completion.status, phase);
+                }
                 report.completions += 1;
             }
         }

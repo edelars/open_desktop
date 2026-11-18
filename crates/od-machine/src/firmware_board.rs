@@ -4847,12 +4847,13 @@ mod tests {
         put_command(bus, ASQ + 320, 0x09, 0, 9, (1 << 16) | 4);
         write(bus, bar(0x1000), dword, 6);
         assert_eq!(nvme.service(bus, |_| {}).completions, 6);
+        // Failed commands report More because they generate Error Information entries.
         let status = GuestPhysicalAddress::new(ACQ + 2 * 16 + 14);
-        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x4108);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x6108);
         let features = GuestPhysicalAddress::new(ACQ + 4 * 16);
         assert_eq!(read(bus, features, dword), 0x0001_0001);
         let status = GuestPhysicalAddress::new(ACQ + 5 * 16 + 14);
-        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x4002);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x6002);
         assert_eq!(read(bus, cfg(4), dword) & (1 << 19), 0, "INTx suppressed");
         assert_eq!(
             read(bus, bar(0x3000), qword),

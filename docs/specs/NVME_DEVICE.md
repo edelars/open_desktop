@@ -83,7 +83,7 @@ Admin CQ использует вектор 0, I/O CQ выбирает векто
 **Включение и сброс.**
 
 - При переходе `CC.EN` 0 → 1 проверяются `CSS/MPS/AMS` и размеры `AQA`. При успехе создаются пустые admin SQ/CQ с записями 64 и 16 байт соответственно, `CSTS = RDY`. При ошибке `CSTS = CFS`, `RDY = 0`, очереди не создаются (поведение при неверных значениях — NOT VERIFIED, раздел 11). Выход из `CFS` — запись `CC.EN = 0`.
-- `CC.EN` 1 → 0 — сброс контроллера: все очереди, features и невыполненные AER теряются, `CSTS = 0`. Error Information log и счётчики сохраняются.
+- `CC.EN` 1 → 0 — сброс контроллера. Очереди, features, невыполненные AER и записи Error Information очищаются, `CSTS = 0`. Идентификатор последней ошибки и счётчик SMART сохраняются в экземпляре контроллера. [NVMe Base 2.4, §5.2.13.1.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=244)
 - При `CC.EN = 1` можно записать `SHN` и независимо менять `IOSQES` и `IOCQES`, пока отсутствуют I/O-очереди соответствующего типа. При наличии таких очередей результат изменения поля спецификацией не определён. Модель сохраняет прежнее значение поля до удаления последней очереди этого типа. Запись `SHN = 01b/10b` сразу выставляет `CSTS.SHST = 10b` (shutdown complete).
 - Контроллер не «всегда готов»: до `CC.EN = 1` `RDY = 0`, doorbells возвращают `UnsupportedConfiguration`, `service` ничего не делает.
 
@@ -214,7 +214,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | LID | Страница | Содержимое |
 |---|---|---|
 | `0x00` | Supported Log Pages (1024) | 256 little-endian `u32`, по одному на LID. `LSUPP = 1` для шести страниц в таблице. Индексы записей как `LPO` и параметры `LIDSP` не объявлены |
-| `0x01` | Error Information | до 64 записей по 64 байта, новейшая первой. Заводится на каждую команду с ненулевым статусом (кроме событий-doorbell, у них свои записи): `Error Count` (с 1, растёт), `SQID`, `CID`, `Status Field` (`P` из CQE, `SC`, `SCT`, `DNR`), `Parameter Error Location = 0xFFFF` (не отслеживается), `NSID` команды (`0xFFFF_FFFF`, если 0). Неиспользованные записи — нули (`Error Count = 0`) |
+| `0x01` | Error Information | до 64 записей по 64 байта, новейшая первой. При публикации ошибочного CQE контроллер ставит `M = 1` и записывает `SQID`, `CID`, слово статуса CQE (`P`, `SC`, `SCT`, `M`, `DNR`) и `NSID` команды (`0xFFFF_FFFF`, если 0). Для ошибки doorbell `SQID` и `CID` равны `0xFFFF`. `Error Count` начинается с 1 и после `u64::MAX` снова становится 1. `Parameter Error Location = 0xFFFF` для записей модели. Неиспользованные записи нулевые. [NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=245) |
 | `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
 | `0x03` | Firmware Slot Information (512) | `AFI = 0x01` (активен слот 1, следующий — нет); `FRS1` = `FR`; слоты 2–7 пусты (нули) |
 | `0x05` | Commands Supported and Effects (4096) | 256 little-endian `u32` для Admin с байта 0 и 256 для NVM I/O с байта 1024. `CSUPP = 1` для реализованных команд, `LBCC = 1` для NVM `Write`. Зарезервированный остаток обнулён |
@@ -253,7 +253,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 - смещения и размеры полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`, нужны ли `CNS 0x03` и I/O-command-set-specific CNS для заявляемой редакции;
 - перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
 - коды статусов и их SCT, особенно `PRP Offset Invalid`, `Invalid Interrupt Vector`, `Invalid Queue Deletion`, порядок проверок при создании очередей, `DNR`;
-- формат Error Information log (`Status Field`, `Parameter Error Location`) и какие команды в него попадают;
+- точный `Parameter Error Location`, данные LBA и применимость других расширенных полей Error Information к отдельным ошибкам, а также сохранение счётчиков через новый экземпляр контроллера;
 - коды событий AER (тип 0, `info` 0 и 1) и правила маскирования до `Get Log Page` с `RAE = 0`;
 - ответ `Abort`, когда цель не найдена (`DW0` бит 0 = 1), и поведение при несуществующей SQ;
 - реакция на doorbell несозданной очереди и на значение вне диапазона (здесь — запись принимается, событие и запись в журнал, а не ошибка шины);

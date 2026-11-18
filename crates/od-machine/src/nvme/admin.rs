@@ -126,13 +126,16 @@ struct ErrorEntry {
 #[derive(Debug, Default)]
 pub(super) struct ErrorLog {
     entries: VecDeque<ErrorEntry>,
-    /// Total errors logged since power on; the log's `Error Count`.
+    /// Most recent Error Count identifier. Zero is reserved for unused entries.
     count: u64,
+    /// Number of entries generated over the lifetime of this controller.
+    total: u128,
 }
 
 impl ErrorLog {
     fn push(&mut self, sqid: u16, cid: u16, status_field: u16, nsid: u32) {
-        self.count += 1;
+        self.count = self.count.wrapping_add(1).max(1);
+        self.total = self.total.saturating_add(1);
         self.entries.push_front(ErrorEntry {
             count: self.count,
             sqid,
@@ -141,6 +144,10 @@ impl ErrorLog {
             nsid,
         });
         self.entries.truncate(ERROR_LOG_ENTRIES);
+    }
+
+    pub(super) fn clear_entries(&mut self) {
+        self.entries.clear();
     }
 
     fn page(&self) -> Vec<u8> {
@@ -224,23 +231,23 @@ pub(super) fn log_command_error(
         .push(sqid, command.cid, status.field() | u16::from(phase), nsid);
 }
 
-fn report_doorbell_error(state: &mut NvmeState, qid: u16, info: u8) {
+fn report_doorbell_error(state: &mut NvmeState, info: u8) {
     state
         .errors
-        .push(qid, 0xFFFF, Status::INVALID_FIELD.field(), 0xFFFF_FFFF);
+        .push(0xFFFF, 0xFFFF, Status::INVALID_FIELD.field(), 0xFFFF_FFFF);
     state
         .aer
         .raise(EVENT_TYPE_ERROR, info, LID_ERROR_INFORMATION);
 }
 
 /// A doorbell of a queue that does not exist (event "Write to Invalid Doorbell Register").
-pub(super) fn report_invalid_doorbell_register(state: &mut NvmeState, qid: u16) {
-    report_doorbell_error(state, qid, EVENT_INFO_INVALID_DOORBELL_REGISTER);
+pub(super) fn report_invalid_doorbell_register(state: &mut NvmeState) {
+    report_doorbell_error(state, EVENT_INFO_INVALID_DOORBELL_REGISTER);
 }
 
 /// A doorbell value not below the queue size (event "Invalid Doorbell Write Value").
-pub(super) fn report_invalid_doorbell_value(state: &mut NvmeState, qid: u16) {
-    report_doorbell_error(state, qid, EVENT_INFO_INVALID_DOORBELL_VALUE);
+pub(super) fn report_invalid_doorbell_value(state: &mut NvmeState) {
+    report_doorbell_error(state, EVENT_INFO_INVALID_DOORBELL_VALUE);
 }
 
 /// Executes one admin command. Unsupported opcodes (including the optional
@@ -679,11 +686,7 @@ fn smart_health_page(state: &NvmeState) -> Vec<u8> {
     put(&mut page, 80, &u128::from(io.write_commands).to_le_bytes()); // Host Write Commands
     put(&mut page, 112, &1u128.to_le_bytes()); // Power Cycles
     // Power On Hours stays 0: the device has no time source (documented gap).
-    put(
-        &mut page,
-        176,
-        &u128::from(state.errors.count).to_le_bytes(),
-    );
+    put(&mut page, 176, &state.errors.total.to_le_bytes());
     page
 }
 

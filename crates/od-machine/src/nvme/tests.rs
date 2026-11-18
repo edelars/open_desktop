@@ -137,6 +137,7 @@ struct Cqe {
     phase: bool,
     sc: u8,
     sct: u8,
+    more: bool,
     dnr: bool,
 }
 
@@ -152,6 +153,7 @@ impl Cqe {
             phase: (dw(3) >> 16) & 1 == 1,
             sc: ((dw(3) >> 17) & 0xFF) as u8,
             sct: ((dw(3) >> 25) & 0x7) as u8,
+            more: (dw(3) >> 30) & 1 == 1,
             dnr: dw(3) >> 31 == 1,
         }
     }
@@ -609,7 +611,7 @@ fn doorbell_value_not_below_the_queue_size_is_logged_and_ignored() {
     let (cqe, page) = rig.log_page(0x01, 4096, 0xFFFF_FFFF, true);
     assert_eq!(cqe.status(), (0, 0));
     assert_eq!(u64_at(&page, 0), 1, "error count");
-    assert_eq!(u16_at(&page, 8), 0, "SQID");
+    assert_eq!(u16_at(&page, 8), u16::MAX, "no command-specific SQID");
     assert_eq!(u16_at(&page, 10), 0xFFFF, "no command id");
     assert_eq!(u32_at(&page, 24), 0xFFFF_FFFF, "no namespace");
 }
@@ -1296,10 +1298,14 @@ fn error_information_log_records_failed_commands_newest_first() {
     );
     let (cid_a, a) = rig.admin_try(Sqe::new(0x7F)); // invalid opcode
     let (cid_b, b) = rig.admin_try(Sqe::new(OPC_IDENTIFY).nsid(7).prp(DATA, 0).cdw(0, 0));
-    assert_eq!(a.unwrap().status(), (0, 0x01));
-    assert_eq!(b.unwrap().status(), (0, 0x0B));
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.status(), (0, 0x01));
+    assert_eq!(b.status(), (0, 0x0B));
+    assert!(a.more && b.more);
     let (cqe, page) = rig.log_page(0x01, 4096, 0, true);
     assert_eq!(cqe.status(), (0, 0));
+    assert!(!cqe.more);
     // Entry 0 is the newest error (Identify with NSID 7), entry 1 the opcode.
     assert_eq!(u64_at(&page, 0), 2, "Error Count");
     assert_eq!(u16_at(&page, 8), 0, "SQID");
@@ -1307,6 +1313,8 @@ fn error_information_log_records_failed_commands_newest_first() {
     let status = u16_at(&page, 12);
     assert_eq!((status >> 1) & 0xFF, 0x0B, "SC");
     assert_eq!((status >> 9) & 0x7, 0, "SCT");
+    assert_eq!((status >> 14) & 1, 1, "M");
+    assert_eq!(status & 1, u16::from(b.phase), "P");
     assert_eq!(status >> 15, 1, "DNR");
     assert_eq!(u16_at(&page, 14), 0xFFFF, "parameter location not tracked");
     assert_eq!(u32_at(&page, 24), 7, "NSID of the failed command");
@@ -1317,6 +1325,33 @@ fn error_information_log_records_failed_commands_newest_first() {
     // A short read returns the prefix.
     let (_, short) = rig.log_page(0x01, 64, 0, true);
     assert_eq!(short, page[..64].to_vec());
+}
+
+#[test]
+fn controller_reset_clears_error_log_entries_but_keeps_the_counts() {
+    let mut rig = Rig::enabled();
+    assert!(rig.admin(Sqe::new(0x7F)).more);
+    assert_eq!(u64_at(&rig.log_page(0x01, 64, 0, true).1, 0), 1);
+
+    rig.set_dword(0x14, 0);
+    rig.sq_tail = 0;
+    rig.cq_head = 0;
+    rig.cq_phase = true;
+    rig.mem_write(ACQ, &[0; CQE_BYTES * 2]);
+    rig.enable();
+
+    let (_, log) = rig.log_page(0x01, 4096, 0, true);
+    assert!(log.iter().all(|byte| *byte == 0));
+    let (_, smart) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(u64_at(&smart, 176), 1);
+    let (cid, completion) = rig.admin_try(Sqe::new(0x7F));
+    assert!(completion.unwrap().more);
+    let (_, log) = rig.log_page(0x01, 128, 0, true);
+    assert_eq!(u64_at(&log, 0), 2);
+    assert_eq!(u16_at(&log, 10), cid);
+    assert!(log[64..].iter().all(|byte| *byte == 0));
+    let (_, smart) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(u64_at(&smart, 176), 2);
 }
 
 #[test]

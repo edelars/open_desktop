@@ -29,17 +29,24 @@ pub(crate) struct Status {
     pub(crate) sct: u8,
     pub(crate) sc: u8,
     pub(crate) dnr: bool,
+    more: bool,
 }
 
 impl Status {
     const fn generic(sc: u8, dnr: bool) -> Self {
-        Self { sct: 0, sc, dnr }
+        Self {
+            sct: 0,
+            sc,
+            dnr,
+            more: false,
+        }
     }
     const fn command_specific(sc: u8) -> Self {
         Self {
             sct: 1,
             sc,
             dnr: true,
+            more: false,
         }
     }
 
@@ -70,9 +77,17 @@ impl Status {
         self.sct == 0 && self.sc == 0
     }
 
+    pub(super) fn with_more(mut self) -> Self {
+        self.more = true;
+        self
+    }
+
     /// Bits `[15:1]` of the CQE `DW3[31:16]` status field (without the phase tag).
     pub(crate) const fn field(self) -> u16 {
-        ((self.sc as u16) | ((self.sct as u16) << 8) | ((self.dnr as u16) << 14)) << 1
+        ((self.sc as u16) << 1)
+            | ((self.sct as u16) << 9)
+            | ((self.more as u16) << 14)
+            | ((self.dnr as u16) << 15)
     }
 }
 
