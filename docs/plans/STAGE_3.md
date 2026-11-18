@@ -4119,6 +4119,13 @@ This bounded process suite does not establish persistent cache reuse across
 requests, a whole VM session, general memory execution through the C ABI,
 owner/MMU integration, Mini support, or performance benefit.
 
+The V0 process isolation smoke now validates the entire survivor RESULT
+after SIGSEGV in its peer. Its loop writes a marker to RCX and preserves
+flags. RCX and RIP must match the reported instruction count, including
+the valid zero-instruction STOP after RUN_ACK. Repetition on the same
+signed macOS ARM64 helper reproduced the old assertion failure twice in
+40 runs and passed all 100 runs with the correction. [ISSUE-059](../KNOWN_ISSUES.md#issue-059).
+
 #### S3-38c. Sequential cross-thread V0 handle lifecycle
 
 The focused `od-host` C ABI regression executes the same idle handle
