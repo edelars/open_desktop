@@ -884,6 +884,32 @@ on this checkout. [ISSUE-053](../KNOWN_ISSUES.md#issue-053) describes how the
 ignored artifacts affect reproducibility in a fresh checkout. Rerun the
 checker for the final S3-41 revision.
 
+### Full local selector, 2026-11-18
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only` on macOS 26.7.1 ARM64 with Rust 1.99.0. All 344 selected steps
+passed; 40 unselected steps retained `not_run`. Source revision:
+`6cd0c8ebfaaee96f846734ec17414ef9950dc672`. Both S3-01 documentation drafts
+(`BENCHMARKS.md` and the baseline report) were present for the entire run.
+The tree fingerprint was identical at start and finish:
+`25a252b2a6d1b63c4325c1e15fbc692421b253e4a46d9a191253a9456463ac65`.
+
+- 152 required harness self-tests and 326 exact Rust gates passed.
+- The local dispatcher oracle compared 10 manual and 1,000 generated
+  inputs twice, producing 2,020 comparison results.
+- The memory corpus checked 4,800 unique inputs with two replays per input.
+- All 14 VMHost RESULT steps passed, including release build, signed
+  executables, fixed budgets and both STOP scenarios.
+
+The saved run is `stage3-20261118-223445-2770f791c4` under
+`work/stage3-harness/`. Its input manifest SHA-256 is
+`8cbbe0da0af178eadd13b2a2a17a4503121b786e1676f9671eb35c5e40266d4b`.
+The summary SHA-256 is
+`ceb0a2db4ed270893cff4f2409024dfe05269c0ad5adf7dfc7f70b2363cc975d`.
+The full VMHost process selector, physical x86, Mac mini, performance,
+owner-backed and Stage 2 suites have status `not_run` in this summary.
+Final S3-41 acceptance remains open.
+
 ### Optional real-artifact replay or reduction
 
 Replay (`OD_S3_34DN_REPLAY_ARTIFACT`) and reduction
