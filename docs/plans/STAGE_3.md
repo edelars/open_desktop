@@ -319,7 +319,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-25d | One deterministic small-capacity (1 and 2 slots) lifecycle stress against the interpreter | Fixture arena only; one vCPU; S3-25 accepted with limitations (Opus gate 2026-11-18). См. [report](../reports/STAGE_3_S3-25cd_2026-11-18.md) |
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
 | [ ] | S3-27 | Точные fault exits и восстановление state | S3-12, S3-21, S3-26 |
-| [x] | S3-28 | STOP/events и безопасные точки — принято с ограничениями (gate-ревью Claude Opus, high, 2026-11-18; закрытие S3-28a–d) | S3-15, S3-16, S3-27; ограничения: один vCPU, JIT-путь без SMP; только cooperative STOP (generated guards + dispatcher), протокол `od-machine` StopAck/SafePoint не заявлен; граница: STOP — одна инструкция (в т.ч. внутри пары), event — один блок (≤32 инструкций по контракту, ≤9–10 через compile pipeline) / одна memory-пара / один bare NOP step; случай k-й инструкции 32-блока — через emitter напрямую; fallback — только bare NOP (REP/сложный fallback в JIT отсутствует; при появлении — только по restart-контракту S2, S3-16/S3-33); `PagedFetchedLoadSession` без STOP/event-входа (STOP — опрос хоста между вызовами, `StopRequested` недостижим по построению), подключение к production host loop — S3-38; восстановление после fault/host fault — S3-27 (открыт), проверен только приоритет STOP относительно helper/architectural fault; latency S3-28d — локально (Apple M3 Max, один прогон на профиль, register-only формы), не Mini, без обещания миллисекунд; таймеры/APIC/доставка событий не заявлены. См. [S3-28c/d report](../reports/STAGE_3_S3-28cd_2026-11-18.md) |
+| [x] | S3-28 | STOP/events и безопасные точки — принято с ограничениями (gate-ревью Claude Opus, high, 2026-11-18; закрытие S3-28a–d) | S3-15, S3-16, S3-27; ограничения: один vCPU, JIT-путь без SMP; только cooperative STOP (generated guards + dispatcher), протокол `od-machine` StopAck/SafePoint не заявлен; граница: STOP — одна инструкция (в т.ч. внутри пары), event — один блок (≤32 инструкций по контракту, ≤9–10 через compile pipeline) / одна memory-пара / один bare NOP step; случай k-й инструкции 32-блока — через emitter напрямую; fallback — только bare NOP (REP/сложный fallback в JIT отсутствует; при появлении — только по restart-контракту S2, S3-16/S3-33); `PagedFetchedLoadSession` без STOP/event-входа (STOP — опрос хоста между вызовами, `StopRequested` недостижим по построению), подключение к production host loop — S3-38o; восстановление после fault/host fault — S3-27 (открыт), проверен только приоритет STOP относительно helper/architectural fault; latency S3-28d — локально (Apple M3 Max, один прогон на профиль, register-only формы), не Mini, без обещания миллисекунд; таймеры/APIC/доставка событий не заявлены. См. [S3-28c/d report](../reports/STAGE_3_S3-28cd_2026-11-18.md) |
 | [x] | S3-28a | Cooperative event yield на границах register dispatcher | S3-15, S3-16, S3-27 |
 | [x] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [x] | S3-28c | Сводная матрица STOP/event по путям, граница задержки, общий budget блоков и interpreter | S3-28a, S3-28b |
@@ -456,6 +456,7 @@ Host PC map нужен для диагностики и восстановлен
 | [pass] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Focused ARM64 process smoke and fail-closed manifest test pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [pass] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Focused ARM64 process smoke and fail-closed manifest test pass using decoder-supported ADD; physical Mini and full process-suite acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
 | [pass] | S3-38n | V1 process isolation after a helper SIGSEGV | Focused two-helper smoke passed: both admitted `JNZ -2` RUNs were active, SIGSEGV terminated only helper A, helper B returned exact-ID STOP_ACK before its full unchanged-state RESULT, then completed same-code fresh-state RUN and idle EOF. Exact process gate and fail-closed manifest self-check passed against a locally rebuilt and signed VMHost. The full process suite, physical Mini, and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md) |
+| [ ] | S3-38o | Production host loop одного vCPU для `PagedFetchedLoadSession` (внешний STOP, протокол STOP-байта S6-40 в однопоточной форме, общий бюджет, общий интерпретатор для не-JIT форм) | S3-25 (S3-25c), S3-28 (S3-28c), S4-15, S4-16; не зависит от S3-34 и S3-38f–n; блокер S6-42; закрытие не закрывает S3-38. Оценка 2–3 дня-агента |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4342,6 +4343,33 @@ This proves local process isolation for this admitted-code scenario only. It
 does not resolve ISSUE-044, validate generated-fault retry behavior, or close
 the broader V1, Mini, or Stage 3 gates. See the
 [S3-38n implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md).
+
+#### S3-38o. Production host loop одного vCPU для PagedFetchedLoadSession
+
+Статус: не начат. Оценка: 2–3 дня-агента. Зависимости: S3-25 (S3-25c), S3-28 (S3-28c), S4-15, S4-16 (приняты с ограничениями). Не зависит от S3-34 и от VMHost/ABI-части S3-38 (S3-38f–n). Закрытие S3-38o пункты 1–4 S3-38 не закрывает. Потребитель — S6-42: он подключает цикл к потокам vCPU и переводит допуск на слоты region (M1/M2 контракта S6-40); в этом срезе этого нет.
+
+**Где:** `crates/od-host/src/` (рядом с `PagedFetchedLoadSession`, допустим новый модуль), тесты `od-host`. Не трогать: `crates/od-isa/src/` (линия S4-38; интерпретатор — только через существующий публичный API), `crates/od-host/src/storage_abi_v1.rs`, VMHost/Swift, C ABI V0/V1.
+
+**Сделать:**
+1. Цикл сессии одного vCPU. Каждая итерация начинается на safe point S3-25c: результат и счётчики проверены, уведомления `committed_write` применены, следующий lookup не начат. Затем один шаг: JIT-путь `PagedFetchedLoadSession` для допущенных форм. Если сессия отказала без эффектов инструкции, делается ровно один шаг общего paged-интерпретатора — того же, которым плата исполняет гостя (`run_paged_probe`, `FirmwareBoard::run_quantum`). MOV-only `step_paged_mov` для общей программы недостаточен. Все записи RAM обоих путей идут через `commit_write` (поколение растёт).
+2. Внешний STOP. `AtomicU8` принадлежит вызывающему, а не сессии, и передаётся в `RuntimeContextV1::stop_requested` каждого native-вызова. Выход `StopRequested` одноинструкционного блока — штатный исход без повтора, а не `JitHostFailure(InvalidOutcome)`.
+3. Протокол S6-40 (§5, S3, шаги 1–2) в однопоточной форме. Запрашивающий ставит флаг запроса (`SeqCst`: STOP, событие, finish), затем байт. Перед КАЖДЫМ шагом (JIT и интерпретатор) цикл снимает байт (`SeqCst`) и перечитывает флаги (`SeqCst`). При поднятом флаге шаг не выполняется, цикл возвращается на safe point с причиной. Байт снимает только цикл. Набор флагов расширяемый: S6-42 добавляет `stop_all` и `split_owner`, порядок не меняется.
+4. Общий бюджет на JIT- и интерпретаторные шаги: `retired_jit + retired_interp + remaining == incoming`.
+5. Событие проверяется на safe point. Выход «событие» происходит до следующего шага, флаг цикл не снимает. STOP приоритетнее события.
+6. Аренда `MAP_JIT` не держится дольше, чем у текущей сессии. После выхода и drop сессии она снята (M6).
+7. Обновить столбец `PagedFetchedLoadSession` матрицы S3-28c в JIT_CONTRACT по факту новых тестов (здесь не делать — при реализации).
+
+**Проверить** (реальный native, macOS aarch64, на других платформах явный skip):
+- программа из допущенных JIT-форм и не-JIT форм, с гостевым циклом: состояние, RAM и retired совпадают с чистым интерпретатором; доли шагов Jit и Interpreter записаны, обе > 0;
+- STOP из другого потока во время бесконечного гостевого цикла: выход не позже одной инструкции после того, как цикл увидел байт (по retired); resume после снятия флага совпадает с интерпретатором, без повтора инструкции и эффектов;
+- флаг, поднятый до перечитывания, — шаг не выполняется (retired 0);
+- запись в страницу кода (интерпретатором и JIT-store): следующий lookup видит новое поколение и исполняет новые байты;
+- бюджеты 0..N на смешанной программе равны интерпретатору; выход «событие» — на safe point до следующего шага; STOP приоритетнее события;
+- после выхода и drop `MapJitLease::acquire` успешен; новый цикл на новой сессии работает.
+
+**Готово:** S6-42 может подключить цикл к потокам vCPU без изменений этапа 3. Ограничения: один vCPU, один поток; профиль JIT — одна инструкция на блок; отображение на допуск сохраняется (слоты — S6-42); S3-27 открыт.
+
+**Не делать:** не менять VMHost/ABI; не править `od-isa/src`; не расширять набор JIT-форм; не вводить потоки и `Send`/`Sync` для ручек; не заявлять закрытие S3-38.
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
