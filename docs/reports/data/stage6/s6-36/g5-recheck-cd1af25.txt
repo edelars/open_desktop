@@ -1,0 +1,55 @@
+S6-36 replay for G5, 2026-11-18
+Source: cd1af25c0d44a16bdca91d5f5841a39acb3ba24a
+Darwin 25.6.0 arm64
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)
+
+Production replay, one fresh runner process per invocation shown below.
+$ cargo build --release -p od-runner --locked --offline
+runner=target/release/od-runner
+fixtures=tests/fixtures/guest/stage6/litmus
+Each executed case completed 1000000 rounds. Both weakening features were false.
+Fixture IDs and hashes match the archived first S6-36 process on the same configuration.
+$ $runner --stage6-litmus --corpus "$fixtures" --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 14, "cases": 15, "forbidden": 0, "not_applicable": 1}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter LOCK-INC --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter UNLOCKED-INC --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter THREE-INSN-COUNTER --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --corpus "$fixtures" --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 15, "cases": 15, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter LOCK-INC --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter UNLOCKED-INC --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+$ $runner --stage6-litmus --formula "$fixtures/counters-formula.json" --counter THREE-INSN-COUNTER --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+
+Sensitivity checks
+
+$ OD_S6_HOST_ORDER_ROUNDS=100000000 cargo test --release --locked --offline -p od-machine --lib -- --ignored host_order_litmus --nocapture
+host order litmus [normal build]: 100000000 rounds each, 57.5 s
+  MP    (r(y), r(x)) counts [[43881185, 13490086, 0], [0, 42628729, 0], [0, 0, 0]]; forbidden (1,0): 0
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 166485, 0], [0, 7833228, 92000287]]; forbidden (1,2): 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1733 filtered out; finished in 57.46s
+
+$ OD_S6_HOST_ORDER_ROUNDS=100000000 cargo test --release --locked --offline -p od-machine --lib --features weak-host-ordering -- --ignored host_order_litmus --nocapture
+host order litmus [weak-host-ordering]: 100000000 rounds each, 53.8 s
+  MP    (r(y), r(x)) counts [[42541523, 13907579, 0], [502, 43550396, 0], [0, 0, 0]]; forbidden (1,0): 502
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 484620, 0], [0, 7212470, 92302910]]; forbidden (1,2): 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 53.85s
+
+$ cargo test --locked --offline -p od-machine --lib -- parallel_run::tests::the_lock_inc_counter --nocapture
+LOCK INC counter, 2 vCPUs x 20000, exact 40000, lost per attempt [0, 0, 0] [normal build]
+LOCK INC counter, 4 vCPUs x 20000, exact 80000, lost per attempt [0, 0, 0] [normal build]
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1734 filtered out; finished in 5.94s
+
+$ cargo test --locked --offline -p od-machine --lib --features nonatomic-lock-test -- parallel_run::tests::the_lock_inc_counter --nocapture
+LOCK INC counter, 2 vCPUs x 20000, exact 40000, lost per attempt [85] [nonatomic-lock-test]
+LOCK INC counter, 4 vCPUs x 20000, exact 80000, lost per attempt [1012] [nonatomic-lock-test]
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1734 filtered out; finished in 1.63s
