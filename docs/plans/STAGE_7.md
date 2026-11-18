@@ -2760,3 +2760,15 @@ retires 10,303 instructions and stops at RIP `0x201407` on `80 7C 24 0A 01`
 (CMP byte ptr [RSP+0xa],1, ISSUE-461). It reports Unsupported opcode 128
 with empty COM1. Independent review approved with no findings. ISSUE-201 remains the unrelated
 CLD caveat.
+
+### ISSUE-461 — exact CMP byte ptr [RSP+0xa],1 (`80 7C 24 0A 01`)
+
+Base `PagedCpl0ProbeV1` admits the exact displacement and immediate pair. It
+checks the 64-bit stack address, reads one byte and defines the arithmetic
+flags from byte minus one. Only the arithmetic flags, their definedness and
+RIP change. Tests cover width, flags, stack canonicality, data and fetch faults,
+the pairing of displacement and immediate, decoding neighbors and profile
+isolation. With budget 20000 the runner retires 10,304 instructions and stops
+at RIP `0x20140c` on `75 65` (JNZ rel8 +0x65, ISSUE-462). It reports
+Unsupported opcode 117 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

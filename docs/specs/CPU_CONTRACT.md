@@ -29774,3 +29774,16 @@ A fault on the final immediate fetch preserves architectural state. The other
 CPL0 probes and the paged CPL3 MOV probe refuse this form. The unprefixed
 `BD 01 00 00 00` rule still admits only immediate 1 to EBP in this arm.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-461 — bounded CMP byte ptr [RSP+0xa],1
+
+The base paged CPL0 profile admits exact unprefixed `80 7C 24 0A 01`. The
+unindexed stack forms require the exact pairs (disp8 +9, imm8 0) and
+(disp8 +0xa, imm8 1). The decoder sign-extends the displacement and the
+executor forms the 64-bit stack address. It reads one byte through the
+tracked adapter, then defines CF, PF, AF, ZF, SF and OF from byte minus one
+and advances RIP. GPRs and memory contents are preserved. A noncanonical
+address raises #SS(0) before the read. Data and final-immediate fetch
+faults commit no architectural state. The other CPL0 probes and the paged
+CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
