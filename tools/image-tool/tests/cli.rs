@@ -779,3 +779,89 @@ fn export_and_salvage_usage_errors_exit_one() {
     }
     assert_eq!(names(&dir), ["a.img"], "usage errors must create nothing");
 }
+
+#[test]
+fn import_builds_a_new_image_that_exports_back_to_the_same_raw() {
+    let dir = Dir::new();
+    let raw = SplitMix64(41).bytes(5 * BS);
+    let input = dir.file("in.raw", &raw);
+    let img = dir.0.join("new.img");
+    let (code, text, _) = tool(&["import", p(&input), p(&img)]);
+    if !durable_host() {
+        assert_eq!(code, 5, "{text}");
+        assert!(text.contains("reason=durability_unavailable\n"), "{text}");
+        assert!(text.contains("target_left=true\n"), "{text}");
+        assert_eq!(std::fs::read(&img).expect("left"), b"", "nothing written");
+        return;
+    }
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("command=import\n"), "{text}");
+    assert!(
+        text.contains(&format!("logical_size={}\n", raw.len())),
+        "{text}"
+    );
+    assert!(text.contains("blocks=5\n"), "{text}");
+    assert!(text.contains("verified=true\n"), "{text}");
+    assert!(text.contains("reason=ok\n"), "{text}");
+    assert!(text.contains("target_left=true\n"), "{text}");
+    assert_eq!(std::fs::read(&input).expect("read"), raw, "the RAW changed");
+
+    let (code, text, _) = tool(&["check", p(&img)]);
+    assert_eq!(code, 0, "{text}");
+    let out = dir.0.join("out.raw");
+    let (code, text, _) = tool(&["export", p(&img), p(&out)]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(std::fs::read(&out).expect("read"), raw);
+    assert_eq!(names(&dir), ["in.raw", "new.img", "out.raw"]);
+}
+
+#[test]
+fn import_refuses_unusable_input_busy_input_and_existing_names_without_writing() {
+    let dir = Dir::new();
+    let raw = SplitMix64(42).bytes(2 * BS);
+    let input = dir.file("in.raw", &raw);
+
+    // An existing name is refused and left alone.
+    let old = dir.file("old.img", b"existing bytes");
+    let (code, text, _) = tool(&["import", p(&input), p(&old)]);
+    assert_eq!(code, 5, "{text}");
+    assert!(text.contains("reason=target_exists\n"), "{text}");
+    assert!(text.contains("target_left=false\n"), "{text}");
+    assert_eq!(std::fs::read(&old).expect("read"), b"existing bytes");
+
+    // Not whole blocks: unsupported, and no target is created.
+    let odd = dir.file("odd.raw", &[7u8; BS + 1]);
+    let img = dir.0.join("odd.img");
+    let (code, text, _) = tool(&["import", p(&odd), p(&img)]);
+    assert_eq!(code, 3, "{text}");
+    assert!(text.contains("reason=not_block_aligned\n"), "{text}");
+    assert!(text.contains("target_left=false\n"), "{text}");
+    assert!(!img.exists(), "a target was created for a refused RAW");
+
+    // A missing RAW: I/O error, nothing created.
+    let img = dir.0.join("missing.img");
+    let (code, text, _) = tool(&["import", p(&dir.0.join("none.raw")), p(&img)]);
+    assert_eq!(code, 5, "{text}");
+    assert!(text.contains("reason=not_found\n"), "{text}");
+    assert!(text.contains("target_left=false\n"), "{text}");
+    assert!(!img.exists());
+
+    // A RAW held by a writer (an active disk) is busy, nothing created.
+    let writer = HostFileStorage::open_read_write_exclusive(&input).expect("writer");
+    let img = dir.0.join("busy.img");
+    let (code, text, _) = tool(&["import", p(&input), p(&img)]);
+    assert_eq!(code, 4, "{text}");
+    assert!(text.contains("target_left=false\n"), "{text}");
+    assert!(!img.exists());
+    drop(writer);
+    assert_eq!(std::fs::read(&input).expect("read"), raw);
+    assert_eq!(names(&dir), ["in.raw", "odd.raw", "old.img"]);
+
+    // Usage errors read nothing.
+    for args in [vec!["import"], vec!["import", p(&input)]] {
+        let (code, _, err) = tool(&args);
+        assert_eq!(code, 1, "{err}");
+    }
+    let (code, _, err) = tool(&["import", p(&input), "a.img", "extra"]);
+    assert_eq!(code, 1, "{err}");
+}

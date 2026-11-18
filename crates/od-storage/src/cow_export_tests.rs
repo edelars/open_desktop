@@ -519,7 +519,7 @@ fn import_then_export_round_trips_and_an_independent_reader_agrees() {
     let mut raw = SplitMix64(21).bytes(300 * BS);
     raw[40 * BS..60 * BS].fill(0); // a run of zero blocks
     let dst = FaultHandle::new(&[], 30);
-    let (image, rep) = import_raw(&raw_of(&raw), st(&dst), 77, &|| false).expect("import");
+    let (image, rep) = import_raw(&raw_of(&raw), || Ok(st(&dst)), 77, &|| false).expect("import");
     assert_eq!(
         (rep.logical_size, rep.blocks, rep.file_uid),
         (raw.len() as u64, 300, 77)
@@ -545,7 +545,12 @@ fn import_then_export_round_trips_and_an_independent_reader_agrees() {
 #[test]
 fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them() {
     let dst = FaultHandle::new(&[], 31);
-    let err = import_raw(&raw_of(&vec![1u8; BS + 1]), st(&dst), 5, &|| false).err();
+    // A size that is refused never creates a target: `make_target` would turn
+    // the result into `TargetCreate`.
+    let never = || -> Result<CheckedStorage<FaultBackend>, std::io::Error> {
+        Err(std::io::Error::other("target created for a refused source"))
+    };
+    let err = import_raw(&raw_of(&vec![1u8; BS + 1]), never, 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::NotBlockAligned { len: BS as u64 + 1 })
@@ -553,7 +558,7 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
     assert_eq!(dst.next_ordinal(), 0);
 
     let big = vec![0u8; (MAX_DISK_BLOCKS as usize + 1) * BS];
-    let err = import_raw(&raw_of(&big), st(&dst), 5, &|| false).err();
+    let err = import_raw(&raw_of(&big), never, 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::TooLarge {
@@ -565,7 +570,7 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
 
     let old = SplitMix64(3).bytes(2 * BS);
     let existing = FaultHandle::new(&old, 32);
-    let err = import_raw(&raw_of(&[7u8; BS]), st(&existing), 5, &|| false).err();
+    let err = import_raw(&raw_of(&[7u8; BS]), || Ok(st(&existing)), 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::TargetNotEmpty {
@@ -576,8 +581,39 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
     assert_eq!(existing.next_ordinal(), 0);
 
     // A zero uid is refused too (identity of the new file).
-    let err = import_raw(&raw_of(&[7u8; BS]), st(&dst), 0, &|| false).err();
+    let err = import_raw(&raw_of(&[7u8; BS]), || Ok(st(&dst)), 0, &|| false).err();
     assert!(matches!(err, Some(ImportError::Image(_))), "{err:?}");
+}
+
+#[test]
+fn an_import_target_that_cannot_be_durable_is_refused_before_any_write() {
+    use crate::cow_salvage_tests::Weakened;
+    let raw = SplitMix64(23).bytes(3 * BS);
+    let run = |dst: &FaultHandle, durable: bool, writable: bool| {
+        let target = CheckedStorage::new(Weakened {
+            inner: dst.open(),
+            durable,
+            writable,
+        })
+        .expect("capabilities are consistent");
+        import_raw(&raw_of(&raw), || Ok(target), 9, &|| false).err()
+    };
+    let dst = FaultHandle::new(&[], 34);
+    assert_eq!(
+        run(&dst, false, true),
+        Some(ImportError::DurabilityUnavailable)
+    );
+    assert_eq!(dst.next_ordinal(), 0, "the target was written to");
+    assert!(
+        dst.volatile_bytes().is_empty(),
+        "a building target was left"
+    );
+    let dst = FaultHandle::new(&[], 35);
+    assert_eq!(run(&dst, true, false), Some(ImportError::TargetUnsuitable));
+    assert_eq!(dst.next_ordinal(), 0);
+    assert!(dst.volatile_bytes().is_empty());
+    let dst = FaultHandle::new(&[], 36);
+    assert_eq!(run(&dst, true, true), None);
 }
 
 #[test]
@@ -586,7 +622,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
     // Cancelled before publication.
     let dst = FaultHandle::new(&[], 33);
     let polls = Cell::new(0u32);
-    let err = import_raw(&raw_of(&raw), st(&dst), 9, &|| {
+    let err = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| {
         polls.set(polls.get() + 1);
         polls.get() == 2
     })
@@ -599,7 +635,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
     // A fault at every mutating step: either an error and no opening image,
     // or success and a complete one.
     let clean = FaultHandle::new(&[], 34);
-    import_raw(&raw_of(&raw), st(&clean), 9, &|| false).expect("clean import");
+    import_raw(&raw_of(&raw), || Ok(st(&clean)), 9, &|| false).expect("clean import");
     let ops = mutating_ops(&clean);
     for (k, op) in ops.iter().enumerate() {
         let fault = match *op {
@@ -609,7 +645,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
         };
         let dst = FaultHandle::new(&[], 35);
         dst.script(k as u64, fault);
-        let result = import_raw(&raw_of(&raw), st(&dst), 9, &|| false);
+        let result = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| false);
         assert!(result.is_err(), "{}", dst.report(&format!("step {k} {op}")));
         drop(result);
         dst.crash(CrashPolicy::Seeded(k as u64 + 7));

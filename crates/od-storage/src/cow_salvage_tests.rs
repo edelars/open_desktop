@@ -795,10 +795,10 @@ fn unordered_roots_that_agree_are_partial_and_never_complete() {
 /// A fault backend that declares fewer guarantees than it has: no file
 /// durability, or read-only (which also drops resize, lock and durability).
 /// Everything else is delegated.
-struct Weakened {
-    inner: FaultBackend,
-    durable: bool,
-    writable: bool,
+pub(crate) struct Weakened {
+    pub(crate) inner: FaultBackend,
+    pub(crate) durable: bool,
+    pub(crate) writable: bool,
 }
 
 impl crate::io::StorageBackend for Weakened {

@@ -6260,3 +6260,14 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Суть и последствия:** выбранный Windows ISO и файлы `bootx64.efi`, `bootmgfw.efi`, `winload.efi` отсутствуют в текущем workspace. Ранее сохранённые размер/хеш ISO и `bootmgfw.efi` есть в `SUPPORT_MATRIX.md`/audit item A7, но не были пересчитаны в этом срезе. `windows_media_manifest.json` явно помечает их `available=false`/`reverified=false`; static known-GUID search имеет статус `not_performed`. Нельзя делать выводы о GUID, протоколах или runtime использовании.
 - **Основание:** targeted file search в `tests/fixtures/firmware`, `work` и tracked workspace не нашёл Windows ISO/WIM/boot binaries; найден только собственный EFI probe, не являющийся компонентом Windows. Audit item A8 и §10.2/10.12 [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md) уже фиксировали, что GUID scan не выполнялся.
 - **Следующий шаг:** предоставить/получить выбранный официальный ISO вне Git, записать независимо проверяемый URL/дату/размер/SHA-256, выполнить только статический поиск известных UEFI GUID в boot binaries без дизассемблирования или запуска, сохранить воспроизводимые результаты и обновить manifest/аудит. После этого повторить S7-30 review. Не хранить ISO или чужие Windows binaries в Git.
+
+<a id="issue-512-s9-20-partial-removal-is-a-path-operation"></a>
+
+### ISSUE-512 — S9-20: removal of `.partial` after a successful export is a path operation
+
+- **Дата обнаружения:** 2026-11-06, ревью S9-20/21 (отчёт этапа 9, §8 п. 2); записано 2026-11-18.
+- **Компонент:** `crates/od-host/src/storage_policy.rs`, `publish_no_replace` (удаление `partial` после проверки identity).
+- **Статус:** открыта; принятый предел первой версии, не воспроизведённый дефект.
+- **Суть и последствия:** после успешной публикации `<out.raw>` файл `<out.raw>.partial` удаляется по пути, если по этому пути ещё лежит записанный inode. Между проверкой identity и `remove_file` имя `.partial` может подменить процесс того же пользователя; тогда будет удалён чужой файл с этим именем. Опубликованный `<out.raw>` и источник это не затрагивает. Результат сообщается как `partial_removed`.
+- **Основание:** чтение кода (`identity_of(partial)` затем `std::fs::remove_file(partial)`); на macOS нет удаления по дескриптору с проверкой inode, а директорные гарантии не подтверждены (ISSUE-055).
+- **Следующий шаг:** полного закрытия в рамках POSIX нет: удаления имени с проверкой inode нет ни в macOS, ни в Linux, а `unlinkat` относительно дескриптора каталога защищает только от подмены компонентов пути, не от подмены самого имени в каталоге. Варианты — не удалять `.partial` (оставлять под известным именем) или принять предел; решение откладывается до работы с namespace durability (ISSUE-055). До этого предел документирован в отчёте этапа 9 (S9-20) и в doc-комментарии `publish_no_replace`.

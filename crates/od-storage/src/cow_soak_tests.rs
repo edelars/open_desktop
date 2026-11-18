@@ -1528,7 +1528,7 @@ impl Soak {
             let raw_storage = self.st(&raw);
             let istorage = self.st(&image);
             self.arm(if round == 0 { FAULT_PERCENT } else { 0 }, 30);
-            let imported = import_raw(&raw_storage, istorage, uid, &|| false);
+            let imported = import_raw(&raw_storage, || Ok(istorage), uid, &|| false);
             let w = self.disarm();
             match imported {
                 Ok((built, _)) => {

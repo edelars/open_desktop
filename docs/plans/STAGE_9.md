@@ -343,7 +343,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-20. RAW import/export с проверкой результата
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-06):** реализовано, коммит `fd5ebcf`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Не принято. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), import только библиотечный; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-частично-ручное-не-принято).
+- **Текущий статус (2026-11-06):** реализовано, коммит `fd5ebcf`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Не принято. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), CLI `import` добавлен 2026-11-18 (цель создаётся после проверки RAW, отказ цели без durability до записи); формат CoW v1 принят 2026-11-06 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-частично-ручное-не-принято).
 - **Где:** `od-storage`, `tools/image-tool`, test fixtures.
 - **Сделать:** import в новый собственный image; export выбранного immutable root/chain в простой RAW точного logical size. Зафиксировать source generation/lease на весь export, не читать меняющийся active disk; publish target только после завершения проверки/durability.
 - **Проверить:** block-by-block независимое сравнение/hash, holes/zeros/последний неполный block, cancellation, ENOSPC, existing target и crash. Не публиковать частичный файл как completed export.
@@ -361,7 +361,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-22. Версии формата и migration
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Не сделано: таблица совместимости и миграция между версиями — второй версии нет, формат не принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
+- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Обновлено 2026-11-18: таблица совместимости есть (STORAGE_FORMAT §9.7), путь RAW → v1 через `import` (S9-20) — единственный поддержанный; миграция между версиями CoW не сделана — второй версии нет; закрытие в объёме v1 требует решения владельца — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
 - **Где:** `od-storage` codecs, `STORAGE_FORMAT.md`, image-tool.
 - **Сделать:** compatibility table read/write/upgrade/downgrade; unknown mandatory features отклонять. Migration сначала в новый target, с проверкой logical data, snapshots/parent links и identities; activation отделить от copy. Не обещать произвольный downgrade.
 - **Проверить:** tiny frozen fixtures поддержанных старых versions, interrupted migration, source untouched, recovery после publish-before-response, insufficient space и unsupported version.

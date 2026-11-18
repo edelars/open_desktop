@@ -203,6 +203,7 @@ Salvage ([`cow_salvage.rs`](../../crates/od-storage/src/cow_salvage.rs)) чит�
 |---|---|---|---|
 | v1 | да | да | — (текущая) |
 | v2 и новее | нет (неизвестная версия → отказ) | нет | не определена: вторая версия не существует |
+| RAW (вход) | как источник `import` | нет | `od-image-tool import` в новый base image v1 (S9-20): единственный поддержанный путь обновления; источник не меняется |
 
 Неизвестные версии, неизвестные mandatory-биты и неверная геометрия — типизированный отказ, не частичное чтение. Downgrade не поддерживается. Миграция проектируется только при появлении второй версии; она обязана сначала писать в новый target и проверять logical data, snapshots/parent links и identities. Frozen fixture [`v1_created_committed.img`](../../crates/od-storage/tests/fixtures/cow/v1_created_committed.img) (2560 Б) служит регрессией чтения v1.
 

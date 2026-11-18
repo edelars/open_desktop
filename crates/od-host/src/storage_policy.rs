@@ -190,7 +190,8 @@ pub struct Published {
 /// that does not name the written file is reported as
 /// [`PublishError::TargetUnverified`] and left in place, because removing it
 /// could delete a path that another party now owns. Removing the partial name
-/// after success is still a path operation; see STAGE_9_REPORT §8.
+/// after success is still a path operation; see STAGE_9_REPORT §8 and
+/// ISSUE-512 in `docs/KNOWN_ISSUES.md`.
 ///
 /// This is an atomic *no-replace* publication of a name, not the durable atomic
 /// rename that ISSUE-055 asks for: there is no directory flush, so a power loss
