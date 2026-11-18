@@ -20186,14 +20186,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.opcode.map == OpcodeMap::Primary
                 && matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0x89, OperandSize::Dword | OperandSize::Qword)
-                        | (0x8b, OperandSize::Dword | OperandSize::Qword)
+                    (
+                        0x89,
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                    ) | (0x8b, OperandSize::Dword | OperandSize::Qword)
                         | (0x8d, OperandSize::Dword | OperandSize::Qword)
                 )
                 && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes
                     == (Prefixes {
                         rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
                         ..Prefixes::default()
                     }) =>
         {
@@ -27657,6 +27660,24 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         {
             state.write(destination, value);
             state.rip = next_rip;
+        }
+        // S7-04: the firmware can load a full-width address into any GPR.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && matches!(instruction.opcode.byte, 0xb8..=0xbf)
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
         }
         // S7-04: the firmware compiler selects dword constants for any GPR.
         // The base probe still admits the original fixed handoff size in EDX.
