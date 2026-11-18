@@ -77,7 +77,7 @@
 | S9-08, S9-10…12 CoW v1 | `passed` на модели: cut-point sweeps ([`cow_proto_tests.rs`](../../crates/od-storage/src/cow_proto_tests.rs), [`cow_open_tests.rs`](../../crates/od-storage/src/cow_open_tests.rs), [`cow_tx_tests.rs`](../../crates/od-storage/src/cow_tx_tests.rs), [`cow_recovery_tests.rs`](../../crates/od-storage/src/cow_recovery_tests.rs)); ISSUE-057 закрыт (`01ef35d`, sweeps по каждому cut create/commit); формат CoW v1 принят как нормативный 2026-11-06 | `not_run` | `not_run` | `blocked`/`not_run` |
 | S9-09 parser corruption | fuzz 80000 мутаций (soundness) в [`cow_parse_tests.rs`](../../crates/od-storage/src/cow_parse_tests.rs) | — | — | — |
 | S9-41 soak | `passed` на модели: 8 seeds × 12000 циклов (2026-11-18, лог в `docs/reports/data/stage9/`) | — | — | — |
-| S9-39 power loss | — | — | — | выполнено частично (2026-11-06): 15 прогонов `verify ok` на внешнем USB-накопителе вне целевой комбинации; точки между барьерами не покрыты, барьерная семантика не доказана; приём не выполнен ([S9_39_POWER_LOSS_PLAN.md](S9_39_POWER_LOSS_PLAN.md)) |
+| S9-39 power loss | — | — | — | выполнено частично: 2026-11-06 — 15 прогонов `idle`/`block0`/`rootcopy`; 2026-11-18 — 15 прогонов `after-b1`/`before-b2`/`after-b2`, все `verify ok`, поколение после барьера 2 сохранено 5 из 5. Всё на внешнем USB-накопителе вне целевой комбинации, все отключения позже 2 с (слабое свидетельство барьерной семантики); принята владельцем 2026-11-18 в объёме USB-накопителя, целевая комбинация не испытана ([S9_39_POWER_LOSS_PLAN.md](S9_39_POWER_LOSS_PLAN.md)) |
 | S9-38 storage matrix | `passed` на модели (§4.1, 2026-11-18) | `passed` (2026-11-18, §4.2) | `not_run` | `not_run` |
 | S9-36 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
 
