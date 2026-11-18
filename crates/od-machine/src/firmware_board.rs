@@ -1901,8 +1901,8 @@ impl LoadedFirmwareBoard {
     /// Local APIC and IOAPIC MMIO windows of the set loop (the guest's register accesses). `false`
     /// and nothing installed without the Linux-profile PIT, or when the 8259 source
     /// ([`Self::enable_pit_pic_irq`]) is already installed: the two are exclusive. Called by the
-    /// `X8664V1Stage4AApic` run of the Linux board only.
-    pub(crate) fn enable_pit_ioapic_irq(&mut self) -> bool {
+    /// `X8664V1Stage4AApic` run and by explicitly configured host quanta.
+    pub fn enable_pit_ioapic_irq(&mut self) -> bool {
         if self.pit_ioapic_source.is_some() {
             return true;
         }
@@ -1949,9 +1949,9 @@ impl LoadedFirmwareBoard {
     /// interrupt output -> IOAPIC INTIN4 (once; a second call keeps the installed one). `false` and
     /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
     /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
-    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. Called by the
-    /// `X8664V1Stage4AApic` run of the Linux board only.
-    pub(crate) fn enable_uart_ioapic_irq4(&mut self) -> bool {
+    /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. A PCI NVMe
+    /// endpoint also contributes its INTx line through the same IOAPIC source.
+    pub fn enable_uart_ioapic_irq4(&mut self) -> bool {
         if self.uart_ioapic_source.is_some() {
             return true;
         }

@@ -694,68 +694,74 @@ fn s6_42d_acpi_stop_retires_the_out_and_preserves_the_board_stop_reason() {
     }
 }
 
+const NVME_ASQ: u64 = 0x8_0000;
+const NVME_ACQ: u64 = 0x8_1000;
+const NVME_IDENTIFY: u64 = 0x8_2000;
+const NVME_CID: u16 = 0x42;
+
+fn nvme_host_fixture() -> (LoadedFirmwareBoard, u64) {
+    const PT_NVME: u64 = 0x1_C000;
+    const PCI_FUNCTION: u64 = od_machine::PCI_ECAM_DESCRIPTOR.base + (4 << 15);
+    let mut board = with_paged_fixture(
+        od_machine::host_parallel_board_with_nvme(1, od_machine::NvmeConfig::default()).unwrap(),
+    );
+    let bus = board.bus_mut();
+    let read_bar = |bus: &mut od_machine::MachineBus, register| {
+        bus.read_physical(
+            GuestPhysicalAddress::new(PCI_FUNCTION + register),
+            AccessWidth::Dword,
+        )
+        .unwrap()
+    };
+    let bar = (read_bar(bus, 0x14) << 32) | (read_bar(bus, 0x10) & !0xF);
+    for (addr, width, value) in [
+        (PCI_FUNCTION + 4, AccessWidth::Word, 6), // memory decode and bus mastering
+        (bar + 0x24, AccessWidth::Dword, 0x000F_000F),
+        (bar + 0x28, AccessWidth::Qword, NVME_ASQ),
+        (bar + 0x30, AccessWidth::Qword, NVME_ACQ),
+        (bar + 0x14, AccessWidth::Dword, 0x0046_0001),
+    ] {
+        bus.write_physical(GuestPhysicalAddress::new(addr), width, value, |_| {})
+            .unwrap();
+    }
+    let nvme = board.nvme().unwrap();
+    assert!(nvme.is_ready());
+    let doorbell = bar + 0x1000;
+    put_u64(
+        &mut board,
+        PD_APIC + ((doorbell >> 21) & 0x1ff) * 8,
+        PT_NVME | 0x63,
+    );
+    put_u64(
+        &mut board,
+        PT_NVME + ((doorbell >> 12) & 0x1ff) * 8,
+        doorbell | 0x73,
+    );
+    let mut sqe = [0; 64];
+    sqe[0..4].copy_from_slice(&(0x06u32 | (u32::from(NVME_CID) << 16)).to_le_bytes());
+    sqe[24..32].copy_from_slice(&NVME_IDENTIFY.to_le_bytes());
+    sqe[40..44].copy_from_slice(&1u32.to_le_bytes()); // Identify Controller
+    put(&mut board, NVME_ASQ, &sqe);
+    (board, doorbell)
+}
+
 #[test]
 fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
     let _guard = jit_guard();
-    const ASQ: u64 = 0x8_0000;
-    const ACQ: u64 = 0x8_1000;
-    const IDENTIFY: u64 = 0x8_2000;
-    const PT_NVME: u64 = 0x1_C000;
-    const CID: u16 = 0x42;
-    const PCI_FUNCTION: u64 = od_machine::PCI_ECAM_DESCRIPTOR.base + (4 << 15);
 
     for (budget, stop_at_doorbell) in [(3, false), (u64::MAX, false), (u64::MAX, true)] {
-        let mut board = with_paged_fixture(
-            od_machine::host_parallel_board_with_nvme(1, od_machine::NvmeConfig::default())
-                .unwrap(),
-        );
-        let bus = board.bus_mut();
-        let read_bar = |bus: &mut od_machine::MachineBus, register| {
-            bus.read_physical(
-                GuestPhysicalAddress::new(PCI_FUNCTION + register),
-                AccessWidth::Dword,
-            )
-            .unwrap()
-        };
-        let bar = (read_bar(bus, 0x14) << 32) | (read_bar(bus, 0x10) & !0xF);
-        for (addr, width, value) in [
-            (PCI_FUNCTION + 4, AccessWidth::Word, 6), // memory decode and bus mastering
-            (bar + 0x24, AccessWidth::Dword, 0x000F_000F),
-            (bar + 0x28, AccessWidth::Qword, ASQ),
-            (bar + 0x30, AccessWidth::Qword, ACQ),
-            (bar + 0x14, AccessWidth::Dword, 0x0046_0001),
-        ] {
-            bus.write_physical(GuestPhysicalAddress::new(addr), width, value, |_| {})
-                .unwrap();
-        }
+        let (mut board, doorbell) = nvme_host_fixture();
         let nvme = board.nvme().unwrap();
-        assert!(nvme.is_ready());
-        let doorbell = bar + 0x1000;
-        put_u64(
-            &mut board,
-            PD_APIC + ((doorbell >> 21) & 0x1ff) * 8,
-            PT_NVME | 0x63,
-        );
-        put_u64(
-            &mut board,
-            PT_NVME + ((doorbell >> 12) & 0x1ff) * 8,
-            doorbell | 0x73,
-        );
-        let mut sqe = [0; 64];
-        sqe[0..4].copy_from_slice(&(0x06u32 | (u32::from(CID) << 16)).to_le_bytes());
-        sqe[24..32].copy_from_slice(&IDENTIFY.to_le_bytes());
-        sqe[40..44].copy_from_slice(&1u32.to_le_bytes()); // Identify Controller
-        put(&mut board, ASQ, &sqe);
         let generation = board
             .bus_mut()
             .atomic_inline_memory()
-            .code_page_generation(GuestPhysicalAddress::new(IDENTIFY))
+            .code_page_generation(GuestPhysicalAddress::new(NVME_IDENTIFY))
             .unwrap();
         let program = [
             mov_eax(1),
             mov_ebx(u32::try_from(doorbell).unwrap()),
             store_eax(0),
-            mov_ebx((IDENTIFY + 4) as u32),
+            mov_ebx((NVME_IDENTIFY + 4) as u32),
             vec![0x48, 0x8B, 0x03], // native load of DMA bytes
             mov_ebx(DATA as u32),
             vec![0x48, 0x89, 0x03, 0xF4], // publish the observed serial; HLT
@@ -827,15 +833,17 @@ fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
         assert_eq!(nvme.doorbell_pending(), stop_at_doorbell);
         let ram = board.bus_mut().atomic_inline_memory();
         assert_eq!(
-            ram.load_u32(GuestPhysicalAddress::new(ACQ + 12)).unwrap(),
+            ram.load_u32(GuestPhysicalAddress::new(NVME_ACQ + 12))
+                .unwrap(),
             if stop_at_doorbell {
                 0
             } else {
-                u32::from(CID) | (1 << 16)
+                u32::from(NVME_CID) | (1 << 16)
             }
         );
         assert_eq!(
-            ram.load_u64(GuestPhysicalAddress::new(ACQ + 16)).unwrap(),
+            ram.load_u64(GuestPhysicalAddress::new(NVME_ACQ + 16))
+                .unwrap(),
             0
         );
         assert_eq!(
@@ -843,14 +851,115 @@ fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
             expected_data
         );
         let generation_after = ram
-            .code_page_generation(GuestPhysicalAddress::new(IDENTIFY))
+            .code_page_generation(GuestPhysicalAddress::new(NVME_IDENTIFY))
             .unwrap();
         assert_eq!(generation_after > generation, !stop_at_doorbell);
         let writes = quantum.committed_writes(0);
-        assert_eq!(writes.contains(&(IDENTIFY, 4096)), !stop_at_doorbell);
-        assert_eq!(writes.contains(&(ACQ, 16)), !stop_at_doorbell);
+        assert_eq!(writes.contains(&(NVME_IDENTIFY, 4096)), !stop_at_doorbell);
+        assert_eq!(writes.contains(&(NVME_ACQ, 16)), !stop_at_doorbell);
         assert_eq!(board.clock().now_ns(), expected_retired);
     }
+}
+
+#[test]
+fn s6_42d_nvme_intx_reaches_a_guest_handler_and_clears_after_cq_head_and_eoi() {
+    let _guard = jit_guard();
+    const VECTOR: u8 = 0x51;
+    const NVME_PIN: u64 = 16;
+    const ACTIVE_LOW_LEVEL: u64 = (1 << 13) | (1 << 15);
+    let (mut board, doorbell) = nvme_host_fixture();
+    assert!(board.enable_pit_ioapic_irq());
+    assert!(board.enable_uart_ioapic_irq4());
+    let bus = board.bus_mut();
+    let ioapic = od_machine::IO_APIC_MMIO_BASE;
+    for (address, value) in [
+        (LOCAL_APIC + 0xF0, 0x1FF),
+        (ioapic, 0x11 + NVME_PIN * 2),
+        (ioapic + 0x10, 0),
+        (ioapic, 0x10 + NVME_PIN * 2),
+        (ioapic + 0x10, ACTIVE_LOW_LEVEL | u64::from(VECTOR)),
+    ] {
+        bus.write_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(address),
+            AccessWidth::Dword,
+            value,
+        )
+        .unwrap();
+    }
+    put(
+        &mut board,
+        IDT_AT + u64::from(VECTOR) * 16,
+        &gate(HANDLER_TIMER),
+    );
+    let handler = [
+        count(COUNTER_IRQ),
+        mov_ebx((doorbell + 4) as u32),
+        mov_eax(1),
+        store_eax(0), // advance the admin completion queue head and deassert INTx
+        mov_ebx(LOCAL_APIC as u32),
+        mov_eax(0),
+        store_eax(0xB0), // LAPIC EOI, which also clears IOAPIC remote IRR
+        vec![0x48, 0xCF],
+    ]
+    .concat();
+    put(&mut board, HANDLER_TIMER, &handler);
+    let program = [
+        mov_eax(1),
+        mov_ebx(doorbell as u32),
+        store_eax(0),
+        vec![0xF4],
+    ]
+    .concat();
+    install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        HostParallelConfig {
+            budget: 100,
+            ..host_config(true)
+        },
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(
+        report.finished,
+        HostParallelFinish::AllIdle,
+        "{report:?}, {:?}",
+        quantum.last_failure()
+    );
+    assert_eq!(quantum.stats(0).irqs_delivered, 1);
+    assert_eq!(quantum.stats(0).device_boundaries, 2);
+    assert_eq!(
+        board.local_apic_of(0).unwrap().vector_state(VECTOR),
+        (false, false)
+    );
+    let nvme = board.nvme().unwrap();
+    assert!(!nvme.doorbell_pending());
+    let bus = board.bus_mut();
+    let ram = bus.atomic_inline_memory();
+    assert_eq!(
+        ram.load_u64(GuestPhysicalAddress::new(COUNTER_IRQ))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        ram.load_u32(GuestPhysicalAddress::new(NVME_ACQ + 12))
+            .unwrap(),
+        u32::from(NVME_CID) | (1 << 16)
+    );
+    let route = bus
+        .read_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(ioapic + 0x10),
+            AccessWidth::Dword,
+        )
+        .unwrap();
+    assert_eq!(route & (1 << 14), 0, "remote IRR");
 }
 
 /// The one-shot timer of the vCPU's own Local APIC (the clock owner dispatches it on a charge)
