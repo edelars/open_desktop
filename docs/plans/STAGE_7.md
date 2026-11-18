@@ -443,8 +443,8 @@
 
 ### S7-12. Реализовать собственный AML-кодировщик и DSDT из manifest
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-18)**. AML/DSDT в ветке с `0df7dff`. 172 теста прошли. ACPICA разобрала _CRS/_PRT, _S5 и UID CPU0 в базовом и PCI NVMe профилях, а также `RTC0` в DSDT с записью RTC. Для приёмки остаются общие окна и маршруты PCI ([ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes)), условные декларации HPET и TPM по мере появления устройств и оставшиеся проверки спецификации. [Отчёт проверки](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
+- [x] Принято после независимого ревью `gpt-6.1-sol` / `high` 2026-11-18 для устройств текущей платы.
+- **Текущий статус (2026-11-18)**. DSDT описывает устройства текущей платы из handoff. 176 тестов прошли, в том числе проверки вложенных пакетов. ACPICA разобрала базовый профиль, PCI NVMe и совместный PCI NVMe с RTC. [Отчёт проверки](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
 - **Где:** `firmware/uefi/src/acpi/aml/{encoder,opcodes,builder}.rs`, `firmware/uefi/src/acpi/dsdt.rs` (построение DSDT из handoff block), host-side тесты с эталонными байтами, `docs/specs/ACPI_SMBIOS_TABLES.md` (новый, раздел «AML и DSDT»).
 - **Сделать:**
   1. Кодировщик AML по ACPI 6.6 раздел «ACPI Machine Language (AML) Specification»: PkgLength, NameString/NamePath, `Scope`, `Device`, `Name`, `Method` (минимум без логики или с простым `Return`), объекты `Integer/String/Buffer/Package`, `ResourceTemplate` дескрипторы (`Memory32Fixed`, `IO`, `IRQ`/`Interrupt`, `WordBusNumber`, `DWordMemory`, `QWordMemory`), `_HID/_CID/_UID/_CRS/_STA/_PRT/_ADR/_BBN/_SEG`. Опкоды — из спецификации с указанием таблицы; host-side тесты: каждый конструкт даёт эталонные байты, вычисленные вручную по спецификации и записанные в тесте с комментарием, а не снятые с чужого компилятора.

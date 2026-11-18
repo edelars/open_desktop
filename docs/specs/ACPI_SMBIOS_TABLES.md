@@ -54,10 +54,11 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 **Общие ресурсы PCI0.** Запись ECAM v1.0 передаёт диапазон шин.
 В базовой DSDT _CRS содержит этот диапазон и порты conf1 `0xCF8..=0xCFF`.
 _PRT возвращает пустой пакет, ACPICA сообщает об этом предупреждением.
-В специальном профиле PCI NVMe добавлены producer MMIO и один фиксированный
-маршрут INTA. Для общих апертур BAR и маршрутов оставлено открытое
-[ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes).
-_PRT описывает маршруты корневых мостов. [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
+В профиле PCI NVMe запись handoff v1.3 передаёт producer MMIO
+`0xFC004000..=0xFC007FFF` и фиксированный маршрут INTA на GSI 16.
+Это все ресурсы единственного PCI-устройства текущей платы. Формат
+апертур и маршрутов дополнительных устройств определяется при их добавлении.
+[ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes), [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
 
 ### Отложено
 
@@ -72,7 +73,12 @@ PCI0, COM1 и RTC0 объявляются по соответствующим з
 
 ### Валидатор
 
-`validate_dsdt` (`dsdt.rs`) проверяет: длину таблицы (поле `Length` равно числу байтов), сигнатуру, контрольную сумму (Table 5.4/5.17: вся таблица, включая поле контрольной суммы, в сумме по модулю 256 даёт нуль), затем `validate_definition_block`: границы каждого пакета внутри родительского и отсутствие повторяющихся имён объектов в одном Scope. `build_dsdt` вызывает его для собственного результата.
+`validate_dsdt` проверяет длину, сигнатуру и нулевую сумму байтов таблицы
+по модулю 256. Затем `validate_definition_block` проверяет границы пакетов
+в `Scope`, `Device` и данных `Name`, включая вложенные `Package` у `_PRT`,
+и уникальность имён. Лимиты глубины пакетов и пространства имён считаются
+отдельно. Содержимое Buffer, VarPackage и тела Method рассматриваются
+как байты с проверенной длиной. `build_dsdt` вызывает валидатор для своего результата.
 
 ### Выборочная сверка с ACPI 6.6
 
@@ -80,19 +86,20 @@ PCI0, COM1 и RTC0 объявляются по соответствующим з
   и порядок полей Buffer и Package. Выборочная сверка относится
   к кодированию этих конструкций. [ACPI 6.6, §20.2](https://uefi.org/specs/ACPI/6.6/20_AML_Specification.html)
 - Для QWord Address Space Descriptor сверены тег, минимальная длина и
-  смещения пяти 64-битных полей. Для End Tag сверены тег и правило
-  обработки нулевого checksum. [ACPI 6.6, §6.4](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html)
+  смещения пяти 64-битных полей. Для диапазона номеров шин Type Specific
+  Flags равны нулю по таблице 6.51. В Word и DWord Address Space Descriptor
+  бит 0 General Flags записывается нулём, стандарт помечает его как `Ignored`.
+  Нулевой checksum End Tag допустим по §6.4.2.9.
+  [ACPI 6.6, §6.4](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html)
 - Для фиксированного INTx-маршрута сверены четыре поля пакета,
   номер функции `0xFFFF` и связь нулевого Source с GSI в Source Index.
   [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
 
-### Остались для сверки
+- Идентификаторы PCI root `PNP0A08`/`PNP0A03` и последовательного порта
+  `PNP0501` сверены с документацией Microsoft. RTC `PNP0B00` описан в ACPI 6.6.
+  [PCI](https://learn.microsoft.com/en-us/windows-hardware/drivers/pci/accessing-pci-device-configuration-space), [COM](https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/serial-port-driver/), [RTC](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00)
 
-- Type Specific Flags для диапазона номеров шин пишутся нулём; таблица флагов для `Resource Type = 2` не получена (для памяти Table 6.49 проверена).
-- General Flags бит 0 дескрипторов адресного пространства Table 6.46/6.47 называет «Ignored»; пишется 0 (ResourceProducer), соответствие ASL `ResourceUsage` не проверено.
-- Контрольная сумма End Tag пишется нулём («0 — проверка считается успешной», Table 6.37); правило вычисления ненулевой суммы макросом `ResourceTemplate` не проверено.
-- Идентификаторы `PNP0A08` (PCIe root bridge) и `PNP0501` (UART 16550) взяты из плана S7-12; в тексте спецификации ACPI они не найдены (реестр PNP/ACPI ID — внешний, `uefi.org/PNP_ACPI_Registry`). `PNP0A03` как PCI root bridge подтверждён примерами ACPI 6.4; `PNP0103` и `PNP0B00` (отложены) не проверялись.
-- Поведение Windows/Linux при чтении этой DSDT не проверялось.
+Приёмка загрузки Windows и Linux с этими таблицами относится к S7-31/S7-32.
 
 ### Проверка
 

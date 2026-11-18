@@ -294,6 +294,7 @@ fn package_element_can_reference_a_defined_device() {
             })
         })
     });
+    assert_eq!(validate_definition_block(&got), Ok(()));
     assert_eq!(
         got,
         hex(
@@ -611,6 +612,59 @@ fn validator_rejects_a_package_that_overruns_its_parent() {
     // Scope claims 0x20 bytes but only 7 are present.
     let aml = hex("10 20 5C 5F 53 42 5F");
     assert_eq!(validate_definition_block(&aml), Err(AmlError::BadPkgLength));
+}
+
+#[test]
+fn validator_rejects_a_nested_package_that_overruns_its_parent() {
+    // Name(PRT0, Package { Package { 0 } }), followed by a sibling Name.
+    let mut aml = hex("08 50 52 54 30 12 06 01 12 03 01 00 08 46 4f 4f 5f 00");
+    assert_eq!(validate_definition_block(&aml), Ok(()));
+    aml[9] = 4; // Inner length would consume the sibling's opcode.
+    assert_eq!(validate_definition_block(&aml), Err(AmlError::BadPkgLength));
+}
+
+#[test]
+fn validator_rejects_a_fixed_package_without_an_element_count() {
+    let aml = hex("08 50 52 54 30 12 01");
+    assert_eq!(validate_definition_block(&aml), Err(AmlError::Truncated));
+}
+
+#[test]
+fn validator_bounds_nested_package_depth() {
+    let mut package = hex("12 02 00");
+    let mut aml = hex("08 50 52 54 30");
+    for depth in 1..=super::builder::MAX_NEST + 1 {
+        aml.truncate(5);
+        aml.extend_from_slice(&package);
+        let expected = if depth <= super::builder::MAX_NEST {
+            Ok(())
+        } else {
+            Err(AmlError::TooDeep)
+        };
+        assert_eq!(validate_definition_block(&aml), expected);
+        let mut wrapper = vec![0x12, (package.len() + 2) as u8, 1];
+        wrapper.extend_from_slice(&package);
+        package = wrapper;
+    }
+}
+
+#[test]
+fn validator_allows_max_package_depth_inside_a_device() {
+    fn nest(b: &mut AmlBuilder<'_>, remaining: usize) -> Result<(), AmlError> {
+        if remaining == 0 {
+            return b.integer(0);
+        }
+        b.package(|b| nest(b, remaining - 1))
+    }
+
+    let aml = build(|b| {
+        b.scope("\\_SB", |b| {
+            b.device("DEV0", |b| {
+                b.name_package("PRT0", |b| nest(b, super::builder::MAX_NEST - 1))
+            })
+        })
+    });
+    assert_eq!(validate_definition_block(&aml), Ok(()));
 }
 
 #[test]

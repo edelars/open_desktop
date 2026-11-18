@@ -67,7 +67,18 @@ fn table<'a>(blob: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
 fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
     let blob = build(&LINUX_NVME_DEVICES, 0);
     assert_eq!(blob, linux_nvme_blob_bytes::<LINUX_NVME_BLOB_LEN>());
-    let dsdt = table(&blob, b"DSDT");
+    assert_nvme_resources(table(&blob, b"DSDT"));
+
+    let mut devices = LINUX_NVME_DEVICES;
+    devices[7].base = devices[6].base;
+    let mut out = [0; STAGE4_BLOB_CAPACITY];
+    assert_eq!(
+        build_blob(&devices, &mut out),
+        Err(BlobError::Manifest(ManifestError::BadPciNvme))
+    );
+}
+
+fn assert_nvme_resources(dsdt: &[u8]) {
     let window = [
         0x87, 0x17, 0, 0, 0x0c, 1, // DWordMemory, producer, positive decode, fixed, RW.
         0, 0, 0, 0, // Granularity.
@@ -82,14 +93,6 @@ fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
     ];
     assert!(dsdt.windows(window.len()).any(|bytes| bytes == window));
     assert!(dsdt.windows(route.len()).any(|bytes| bytes == route));
-
-    let mut devices = LINUX_NVME_DEVICES;
-    devices[7].base = devices[6].base;
-    let mut out = [0; STAGE4_BLOB_CAPACITY];
-    assert_eq!(
-        build_blob(&devices, &mut out),
-        Err(BlobError::Manifest(ManifestError::BadPciNvme))
-    );
 }
 
 fn table_address(blob: &[u8], signature: &[u8; 4]) -> u64 {
@@ -147,9 +150,8 @@ fn tables_in_the_blob_are_the_runtime_ones() {
 
 #[test]
 fn rtc_handoff_advertises_the_same_rtc_in_dsdt_and_fadt() {
-    let mut devices = [DeviceEntry::default(); 9];
-    devices[..STAGE4_DEVICES.len()].copy_from_slice(&STAGE4_DEVICES);
-    devices[8] = DeviceEntry {
+    let mut devices = LINUX_NVME_DEVICES.to_vec();
+    devices.push(DeviceEntry {
         device_type: device_type::RTC_CMOS,
         flags: FLAG_PRESENT | FLAG_PIO,
         base: 0x70,
@@ -158,7 +160,7 @@ fn rtc_handoff_advertises_the_same_rtc_in_dsdt_and_fadt() {
         irq_flags: 0,
         param0: 1_704_067_200,
         param1: 0,
-    };
+    });
     let blob = build(&devices, 0);
     let fadt = table(&blob, b"FACP");
     assert_eq!(fadt[108], 0x32, "FADT CENTURY points at CMOS register 0x32");
@@ -174,13 +176,14 @@ fn rtc_handoff_advertises_the_same_rtc_in_dsdt_and_fadt() {
     ];
     let dsdt = table(&blob, b"DSDT");
     assert_eq!(validate_dsdt(dsdt), Ok(()));
+    assert_nvme_resources(dsdt);
     assert_eq!(
         dsdt.windows(rtc.len())
             .filter(|bytes| *bytes == rtc)
             .count(),
         1
     );
-    let without_rtc = build(&STAGE4_DEVICES, 0);
+    let without_rtc = build(&LINUX_NVME_DEVICES, 0);
     assert!(
         !table(&without_rtc, b"DSDT")
             .windows(4)
