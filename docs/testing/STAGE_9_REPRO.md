@@ -2,7 +2,7 @@
 
 Статус: **этап 9 НЕ принят.** Набор фиксирует, что реально выполнено локально на модели отказов и реальных файлах macOS, и явно хранит всё, что не выполнено. Локальный успех не заполняет hardware, Windows и ревью-клетки.
 
-Связанные документы: [план этапа 9](../plans/STAGE_9.md), [отчёт](../reports/STAGE_9_REPORT.md), [STORAGE_RECOVERY.md](STORAGE_RECOVERY.md), [S9_40_COMMIT_LATENCY.md](S9_40_COMMIT_LATENCY.md), [реестр проблем](../KNOWN_ISSUES.md).
+Связанные документы: [план этапа 9](../plans/STAGE_9.md), [отчёт](../reports/STAGE_9_REPORT.md), [STORAGE_RECOVERY.md](STORAGE_RECOVERY.md), [S9_40_COMMIT_LATENCY.md](S9_40_COMMIT_LATENCY.md), [S9_40_CHAIN_EXPORT_COMPACT.md](S9_40_CHAIN_EXPORT_COMPACT.md), [реестр проблем](../KNOWN_ISSUES.md).
 
 ## 1. Как запустить
 
@@ -16,7 +16,7 @@ tools/stage9/run_checks.sh
 
 Всё в игнорируемом Git каталоге `work/stage9/<run-id>/` (правило `/work/**` в `.gitignore`; скрипт проверяет `git check-ignore` и пишет результат в `environment.txt`):
 
-- `results.tsv` — `case`, `command`, `status`, `exit_code`, `seconds`, `evidence`, `note`; `evidence` — путь к логу внутри run-каталога;
+- `results.tsv` — `case`, `command`, `status`, `exit_code`, `seconds`, `evidence`, `note`; `evidence` — путь к логу внутри run-каталога, для статичных строк — документ со статусом (см. §5);
 - `environment.txt` — `git rev-parse HEAD`, ветка, `git status --porcelain`, `sw_vers`, `uname`, `rustc --version`, `cargo --version`, версия python3, параметры бюджета;
 - `frozen.txt` — sha256 `Cargo.toml`, `Cargo.lock`, `STORAGE_FORMAT.md`, `STAGE_9.md`, самого скрипта и `check_layout.py` (отсутствующий файл помечается `missing`);
 - `logs/<case>.log` — полный вывод каждой команды; `summary.txt` — счётчики статусов.
@@ -28,40 +28,47 @@ tools/stage9/run_checks.sh
 | Case | Команда | Ожидание |
 |---|---|---|
 | `fmt_check` | `cargo fmt --all -- --check` | код 0 |
-| `od_storage` | `cargo test -p od-storage` | 201 passed, 0 failed (на `7c68b98`) |
-| `od_host_storage_policy` | `cargo test -p od-host --lib storage_policy` | 20 passed |
-| `od_host_storage_io` | `cargo test -p od-host --lib storage_io` | 30 passed |
+| `od_storage` | `cargo test -p od-storage` | 210 passed, 1 ignored (`write_fixture`), 0 failed (на `3719cc9`) |
+| `od_host_storage_policy` | `cargo test -p od-host --lib storage_policy` | 24 passed |
+| `od_host_storage_io` | `cargo test -p od-host --lib storage_io` | 36 passed |
 | `od_host_raw_file_tests` | `cargo test -p od-host --lib raw_file_tests` | 9 passed |
-| `od_image_tool` | `cargo test -p od-image-tool` | 16 passed (`tests/cli.rs`) |
+| `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme -- --test-threads=1` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL). В один поток из-за нестабильного при параллельном запуске теста этапа 5 ([ISSUE-513](../KNOWN_ISSUES.md#issue-513-s5-persistent-nvme-reopen-test-flaky-in-parallel)) |
+| `od_image_tool` | `cargo test -p od-image-tool` | 21 passed (`tests/cli.rs`, в т. ч. `import`) |
 | `workspace_check` | `cargo check --workspace --all-targets --offline` | код 0 |
 | `git_diff_check` | `git diff --check` | код 0; проверяет только отслеживаемые изменения |
+| `s9_40_bench_once` | `cargo build -p od-bench --release --offline --bin s9_40_storage` и `s9_40_storage <run>/s9_40_bench 1` | код 0: код замера S9-40 собирается, все сверки с моделью проходят; это не замер, цифры одного прогона не публикуются. Только macOS/aarch64, иначе `not_run` |
 | `layout_check` | `python3 tools/check_layout.py` | код 1 ожидаем: известный baseline **45 ERROR** (в основном ссылки на `work/stage3-harness/...`, которых нет в чистом worktree). Число не должно расти; `passed` означает «не больше baseline», а не чистую структуру. Новые документы не добавляют markdown-ссылок на `work/` |
 
 Не входит в набор: полный `cargo test -p od-host` — в нём известны 21 падение (`s3_20*`, `native_register_v1_corpus::reduce_saved_native_register_v1_case`), существовавшие до этапа 9 (см. отчёт §6).
 
 ## 4. Case и статусы
 
-Словарь: `passed`, `failed`, `not_run`, `blocked`. Подсостояния `not_started` и `partial` пишутся в `note`, в `results.tsv` статус при этом `not_run`.
+Словарь: `passed`, `failed`, `not_run`, `blocked`. Подсостояния `not_started` и `partial` пишутся в `note`; в `results.tsv` статус при этом `not_run`, а если остаток заблокирован зависимостью — `blocked`.
 
-Первый полный запуск: run-id `20261105-final`, HEAD `7c68b98`, macOS 26.7.1 (Apple Silicon), rustc/cargo 1.99.0, 18 с. Итог: 9 passed, 0 failed, 3 not_run, 4 blocked. Рабочее дерево в момент запуска содержало только неотслеживаемые `docs/plans/.claude/`, `docs/plans/CLAUDE.md` и `tools/stage9/`.
+Последний полный запуск: run-id `20261118-s9-42c`, HEAD `3719cc9`; в рабочем дереве изменены только `tools/stage9/run_checks.sh` и документы, вошедшие в коммит S9-42. macOS 26.7.1 (25G241, Apple Silicon), rustc/cargo 1.99.0, бюджет по умолчанию 840 с, 95 с; основное время — `s9_40_bench_once` (76 с; release-сборка уже была в кэше, холодная пересборка в `20261118-s9-42` заняла около 43 с из 120). Итог: 11 passed, 0 failed, 2 not_run, 6 blocked.
+
+Промежуточные запуски того же дня: `20261118-s9-42` (бюджет 1800, до добавления S9-38 и смены статусов: 11 / 0 / 3 / 4) и `20261118-s9-42b` (`od_host_persistent_nvme` `failed` из-за ISSUE-513 при параллельном запуске; после этого case переведён в один поток). Предыдущий запуск `20261105-final` (HEAD `7c68b98`): 9 passed, 0 failed, 3 not_run, 4 blocked.
 
 | Case | Статус | Причина / ограничение |
 |---|---|---|
-| `fmt_check`, `od_storage`, `od_host_storage_policy`, `od_host_storage_io`, `od_host_raw_file_tests`, `od_image_tool`, `workspace_check`, `git_diff_check` | `passed` | Выполнено реально, код 0. Это тесты модели отказов (`FaultBackend`) и реальных локальных файлов; не power-loss и не guest |
+| `fmt_check`, `od_storage`, `od_host_storage_policy`, `od_host_storage_io`, `od_host_raw_file_tests`, `od_host_persistent_nvme`, `od_image_tool`, `workspace_check`, `git_diff_check`, `s9_40_bench_once` | `passed` | Выполнено реально, код 0. Это тесты модели отказов (`FaultBackend`), реальных локальных файлов и двух процессов; не power-loss и не guest |
 | `layout_check` | `passed` (с baseline) | 45 ERROR = baseline, рост отсутствует; код выхода 1 ожидаем |
-| `S9-39_power_loss` | `blocked` | Нет разрешения на стенд power-loss. Kill процесса и fault-инъекция его не заменяют (G5) |
-| `windows_vtpm_uefi` | `blocked` | Windows guest, UEFI firmware и vTPM отсутствуют (S9-26/27/28) |
-| `linux_mini_guest` | `not_run` | Реальный Linux guest с диском этого этапа не запускался; нет устройства хранения гостя (S9-13) |
+| `S9-38_corruption_matrix` | `not_run` (`partial`) | Полной fault/corruption matrix S9-38 нет; в `od_storage` входят только тесты модели отказов и повреждений (`FaultBackend`), не матрица по реальным носителям |
+| `S9-39_power_loss` | `blocked` | Испытания выполнены вне скрипта: процедура принята, 15 прогонов `verify ok` ([S9_39_POWER_LOSS_PLAN.md §7](S9_39_POWER_LOSS_PLAN.md)), N сокращено с 20 до 5 на стадию; приём результатов не выполнен, точки между барьерами 1 и 2 не покрыты. Kill процесса и fault-инъекция стенд не заменяют (G5) |
+| `windows_vtpm_uefi` | `blocked` | Нет Windows guest, UEFI variables store (этап 7, S7-09/S7-10) и vTPM (S9-26/27/28) |
+| `linux_mini_guest` | `blocked` | Реальный Linux guest с диском этого этапа не запускался: образ этапа 9 гостю не подключён (S9-13 `blocked`) |
 | `real_guest_lifecycle` | `blocked` | S9-28…S9-37: зависят от компонентов этапов 4–8 и [ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner) |
-| `S9-22_migration` | `not_run` (`not_started`) | Нет второй версии формата; формат не принят как нормативный |
-| `S9-40_full` | `not_run` (`partial`) | Выполнена только commit-latency ([S9_40_COMMIT_LATENCY.md](S9_40_COMMIT_LATENCY.md)); throughput, чтение, write amplification, recovery и память RAW против CoW не измерены |
-| `S9-43_independent_review` | `blocked` | Независимое ревью через субагент заблокировано классификатором; `passed` не ставится |
+| `S9-22_migration` | `not_run` (`partial`) | Путь RAW → CoW v1 через `import` покрыт `od_storage` и `od_image_tool`; миграции между версиями CoW нет — второй версии нет |
+| `S9-40_full` | `blocked` (`partial`) | Storage-замеры сделаны и воспроизводимы (`s9_40_bench_once`, [S9_40_CHAIN_EXPORT_COMPACT.md](S9_40_CHAIN_EXPORT_COMPACT.md)); пауза/длительность checkpoint и restore заблокированы S9-29…31; `not_run`: фрагментация, реальные размеры диска, независимый повтор |
+| `S9-43_independent_review` | `blocked` | План требует ревьюера `gpt-6.1-sol`; зависимости S9-38 и S9-39 не закрыты. Итоговое ревью записывается в [отчёт](../reports/STAGE_9_REPORT.md); скрипт его не заменяет и `passed` не ставит |
 
-Не включено в скрипт как отдельные case: seeded soak и repeated recovery (S9-41) входят в `od_storage` только как тесты на модели; optional S9-34 (guest coordination) не имеет выполненных provider tests и из claim исключается.
+Не включено в скрипт как отдельные case: длинный soak S9-41 (8 seeds × 12000 циклов, `OD_SOAK_CYCLES`/`OD_SOAK_SEED`) — выполнен отдельно, лог в [docs/reports/data/stage9](../reports/data/stage9/S9_41_soak_2026-11-18.log); в `od_storage` входит только короткий soak по умолчанию; optional S9-34 (guest coordination) не имеет выполненных provider tests и из claim исключается.
 
 ## 5. Правила чтения результата
 
 - `passed` относится только к команде в строке. Он не закрывает gate G1–G6.
 - Любой `blocked`/`not_run` mandatory case остаётся видимым в `results.tsv` и в этом документе; статичные строки скрипт не переопределяет по результату локальных команд.
 - Для воспроизведения сохранять `frozen.txt` и `environment.txt` рядом с результатом; сравнение прогонов без совпадающего HEAD и `Cargo.lock` недействительно.
-- Повторный запуск создаёт новый run-id; старые каталоги `work/stage9/` не удалять и не перезаписывать.
+- Повторный запуск создаёт новый run-id; старые каталоги `work/stage9/` не удалять и не перезаписывать. Скрипт отказывает (код 2), если каталог run-id уже существует.
+- У статичных строк поле `evidence` указывает документ, где записан статус.
+- Пределы механики: бюджет проверяется только перед стартом case (фактический предел — бюджет плюс таймаут одного case); SIGALRM завершает только процесс, запущенный через `perl exec`, — дочерние процессы `cargo` или бенчмарка после таймаута могут продолжить работу.

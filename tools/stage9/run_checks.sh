@@ -27,6 +27,11 @@ LAYOUT_BASELINE="${STAGE9_LAYOUT_ERROR_BASELINE:-45}"
 
 OUT="$ROOT/work/stage9/$RUN_ID"
 LOGS="$OUT/logs"
+# Прогон не перезаписывает старый run-каталог (STAGE_9_REPRO.md §5).
+if [ -e "$OUT" ]; then
+  echo "ERROR: $OUT уже существует; задайте новый STAGE9_RUN_ID" >&2
+  exit 2
+fi
 mkdir -p "$LOGS" || exit 2
 RESULTS="$OUT/results.tsv"
 START_EPOCH=$(date +%s)
@@ -131,12 +136,25 @@ run_case od_host_storage_io "cargo test -p od-host --lib storage_io" "cargo --ve
   cargo test -p od-host --lib storage_io
 run_case od_host_raw_file_tests "cargo test -p od-host --lib raw_file_tests" "cargo --version" -- \
   cargo test -p od-host --lib raw_file_tests
+# В один поток: при параллельном запуске тест этапа 5
+# failed_raw_reopen_keeps_writer_lock_in_terminal_adapter нестабилен (ISSUE-513).
+run_case od_host_persistent_nvme "cargo test -p od-host --lib persistent_nvme -- --test-threads=1" "cargo --version" -- \
+  cargo test -p od-host --lib persistent_nvme -- --test-threads=1
 run_case od_image_tool "cargo test -p od-image-tool" "cargo --version" -- \
   cargo test -p od-image-tool
 run_case workspace_check "cargo check --workspace --all-targets --offline" "cargo --version" -- \
   cargo check --workspace --all-targets --offline
 run_case git_diff_check "git diff --check" "git --version" -- \
   git diff --check
+
+# S9-40: один прогон бенчмарка хранилища (воспроизводимость кода замера и сверки
+# с моделью). Это не замер: цифры одного прогона не публикуются, полный набор —
+# docs/testing/S9_40_CHAIN_EXPORT_COMPACT.md. Только macOS/aarch64.
+mkdir -p "$OUT/s9_40_bench"
+run_case s9_40_bench_once "s9_40_storage <empty-dir> 1 (release)" \
+  "[ \"\$(uname -s)-\$(uname -m)\" = Darwin-arm64 ]" -- \
+  bash -c 'cargo build -p od-bench --release --offline --bin s9_40_storage && "$1/target/release/s9_40_storage" "$2" 1' \
+  _ "$ROOT" "$OUT/s9_40_bench"
 
 # check_layout: известное число ERROR (ссылки на work/, которых нет в чистом worktree)
 # не должно расти. Ненулевой код выхода при ERROR <= baseline ожидаем, не провал.
@@ -170,13 +188,14 @@ layout_case
 
 # --- Статичные case: не выполняются этим скриптом ----------------------------
 # Локальный успех выше НЕ заполняет эти строки.
-record S9-39_power_loss      "(стенд power-loss)"       blocked - 0 - "нет разрешения на стенд power-loss; kill процесса и FaultBackend его не заменяют"
-record windows_vtpm_uefi     "(Windows/UEFI/vTPM)"      blocked - 0 - "Windows guest, UEFI firmware и vTPM отсутствуют (S9-26/27/28)"
-record linux_mini_guest      "(Linux Mini guest)"       not_run - 0 - "реальный Linux guest на диске не запускался (зависит от S9-13/28…)"
-record real_guest_lifecycle  "(real guest, lifecycle)"  blocked - 0 - "S9-28…S9-37 заблокированы компонентами этапов 4-8 и ISSUE-056"
-record S9-22_migration       "(версии формата)"         not_run - 0 - "not_started: нет второй версии формата, формат не принят"
-record S9-40_full            "(RAW vs CoW замеры)"      not_run - 0 - "partial: измерена только commit-latency (docs/testing/S9_40_COMMIT_LATENCY.md); throughput/read/WA/recovery/память не измерены"
-record S9-43_independent_review "(независимое ревью)"   blocked - 0 - "ревью через субагент заблокировано классификатором; passed не ставится"
+record S9-38_corruption_matrix "(fault/corruption matrix)" not_run - 0 docs/reports/STAGE_9_REPORT.md "partial: полной матрицы S9-38 нет; в od_storage входят только тесты модели отказов и повреждений (FaultBackend), не матрица по реальным носителям"
+record S9-39_power_loss      "(стенд power-loss)"       blocked - 0 docs/testing/S9_39_POWER_LOSS_PLAN.md "вне скрипта: процедура принята, 15 прогонов verify ok (§7), N сокращено с 20 до 5 на стадию; приём результатов не выполнен, точки между барьерами 1 и 2 не покрыты"
+record windows_vtpm_uefi     "(Windows/UEFI/vTPM)"      blocked - 0 docs/reports/STAGE_9_REPORT.md "нет Windows guest, UEFI variables store (этап 7, S7-09/S7-10) и vTPM (S9-26/27/28)"
+record linux_mini_guest      "(Linux Mini guest)"       blocked - 0 docs/reports/STAGE_9_REPORT.md "реальный Linux guest на диске этапа 9 не запускался: образ гостю не подключён (S9-13 blocked)"
+record real_guest_lifecycle  "(real guest, lifecycle)"  blocked - 0 docs/KNOWN_ISSUES.md "S9-28…S9-37 заблокированы компонентами этапов 4-8 и ISSUE-056"
+record S9-22_migration       "(версии формата)"         not_run - 0 docs/specs/STORAGE_FORMAT.md "partial: RAW -> CoW v1 через import покрыт od_storage и od_image_tool (§9.7); миграции между версиями CoW нет (второй версии нет)"
+record S9-40_full            "(checkpoint/restore замеры)" blocked - 0 docs/testing/S9_40_CHAIN_EXPORT_COMPACT.md "partial: storage-замеры сделаны (docs/testing/S9_40_*.md); пауза/длительность checkpoint и restore заблокированы S9-29…31; not_run: фрагментация, реальные размеры диска, независимый повтор"
+record S9-43_independent_review "(независимое ревью)"   blocked - 0 docs/reports/STAGE_9_REPORT.md "вне скрипта: план требует ревьюера gpt-6.1-sol; зависимости S9-38, S9-39 не закрыты; скрипт ревью не заменяет и passed не ставит"
 
 # --- Сводка ------------------------------------------------------------------
 END_EPOCH=$(date +%s)

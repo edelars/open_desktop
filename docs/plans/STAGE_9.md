@@ -524,6 +524,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-42. Собрать воспроизводимый итоговый набор
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); запуск `20261118-s9-42c` (HEAD `3719cc9`): 11 passed, 0 failed, 2 not_run, 6 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
 - **Где:** методика, существующие tools, отчёт и support matrix.
 - **Сделать:** freeze commit/config/artifact hashes и выполнить offline storage, real guest, lifecycle, corruption/crash, repeated recovery и power-loss matrix. Для optional S9-34 либо добавить выполненные provider tests, либо явно исключить соответствующий claim.
 - **Проверить:** каждый case имеет `passed`/`failed`/`not_run`/`blocked`, environment и evidence reference; большие images/logs в ignored `work/stage9/<run-id>/`, в Git только малые собственные fixtures/отчёты без секретов.
