@@ -2,7 +2,9 @@
 
 Дата: 2026-11-18. Host: Apple M3 Max (ARM64), одна машина. Тесты: `crates/od-host/src/paged_host_loop/tests/s6_43a.rs`.
 
-Файлы (текст, вывод `eprintln!` тестов и строки `test`):
+[cpuid-release.txt](cpuid-release.txt) — актуальная приёмка с гостевой CPUID и одинаковыми байтами JIT/интерпретатора. Быстрая форма прошла 7800 циклов, длинная — 6 млн циклов и 18 млн нативных исполнений X.
+
+Исторические файлы пробы с CLD:
 
 - `fast-debug.txt` — быстрая форма (debug, `cargo test -p od-host --offline --lib -- s6_43a --nocapture`): чередование 600 сигналов и параллельный режим 2000 сигналов на каждый из трёх протоколов, сверка с интерпретатором.
 - `long-parallel-release.txt` — длинная форма (release, `#[ignore]`, 2 000 000 сигналов на протокол, 6 000 000 всего, 81 с): `cargo test --release -p od-host --offline --lib -- --ignored s6_43a_long_parallel_run --nocapture` (переменная `OD_S6_43A_CYCLES` меняет число).

@@ -1,0 +1,21 @@
+S6-43a CPUID gate, 2026-11-18
+ARM64, macOS 26.7.1 (25G241), rustc 1.99.0 (b940084d7 2026-09-28)
+Cargo release, default features. Source is the S6-43a acceptance commit (base f9f9280).
+
+OD_S6_43A_INTERLEAVED_CYCLES=600 OD_S6_43A_PARALLEL_CYCLES=2000 cargo test --release -p od-host --lib --offline -- s6_43a --nocapture
+S6-43a interleaved / guest-wait+serialize: 600 cycles, B native 2400 interpreter 600 (fallback 20.0% of B's steps: 600 CPUID, X native 1800 of 1800), wait steps 600 (max 1), admissions 1201, A native 1200 interpreter 0, stale 0, wrong 0, 0.01s
+S6-43a interleaved / guest-wait: 600 cycles, B native 2400 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 1800 of 1800), wait steps 600 (max 1), admissions 1201, A native 1200 interpreter 0, stale 0, wrong 0, 0.01s
+S6-43a interleaved / host-wait (block kept): 600 cycles, B native 1800 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 1800 of 1800), wait steps 600 (max 1), admissions 601, A native 1200 interpreter 0, stale 0, wrong 0, 0.00s
+S6-43a parallel / guest-wait+serialize: 2000 cycles, B native 9455 interpreter 2000 (fallback 17.5% of B's steps: 2000 CPUID, X native 6000 of 6000), wait steps 3455 (max 49), admissions 5141, A native 4000 interpreter 0, stale 0, wrong 0, 0.03s
+S6-43a parallel / guest-wait: 2000 cycles, B native 9852 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 6000 of 6000), wait steps 3852 (max 35), admissions 5490, A native 4000 interpreter 0, stale 0, wrong 0, 0.03s
+S6-43a parallel / host-wait (block kept): 2000 cycles, B native 6000 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 6000 of 6000), wait steps 2000 (max 1), admissions 2001, A native 4000 interpreter 0, stale 0, wrong 0, 0.02s
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 481 filtered out; finished in 0.14s
+
+OD_S6_43A_CYCLES=2000000 cargo test --release -p od-host --lib --offline -- --ignored --nocapture s6_43a_long_parallel_run
+S6-43a parallel / guest-wait+serialize: 2000000 cycles, B native 8237586 interpreter 2000000 (fallback 19.5% of B's steps: 2000000 CPUID, X native 6000000 of 6000000), wait steps 2237586 (max 323), admissions 4173618, A native 4000000 interpreter 0, stale 0, wrong 0, 27.07s
+S6-43a parallel / guest-wait+serialize: equals the interpreter (registers, RAM, data stores): yes
+S6-43a parallel / guest-wait: 2000000 cycles, B native 9594968 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 6000000 of 6000000), wait steps 3594968 (max 868), admissions 5445992, A native 4000000 interpreter 0, stale 0, wrong 0, 24.77s
+S6-43a parallel / guest-wait: equals the interpreter (registers, RAM, data stores): yes
+S6-43a parallel / host-wait (block kept): 2000000 cycles, B native 6000000 interpreter 0 (fallback 0.0% of B's steps: 0 CPUID, X native 6000000 of 6000000), wait steps 2000000 (max 1), admissions 2000001, A native 4000000 interpreter 0, stale 0, wrong 0, 21.23s
+S6-43a parallel / host-wait (block kept): equals the interpreter (registers, RAM, data stores): yes
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 485 filtered out; finished in 100.15s

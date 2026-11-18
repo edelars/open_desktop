@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
 use od_isa::{CliProfile, HaltProfile, MovCr3Long64V1, StiProfile};
 use od_machine::{
@@ -107,6 +108,7 @@ pub struct JitHostQuantum {
     write_log: Option<Vec<Mutex<Vec<(u64, u64)>>>>,
     /// S6-42c: the interpreter step is the CPL0 profile set with the guest side of the boundary.
     cpl0_set: bool,
+    cpuid: Option<CpuidProfile>,
     /// S6-42c: the text of the latest failure a call returned as an error (the run's error is a
     /// `&'static str`; the detail of an undelivered interrupt or fault stays here).
     failure: Mutex<Option<String>>,
@@ -137,6 +139,7 @@ impl JitHostQuantum {
             stats,
             write_log: None,
             cpl0_set: false,
+            cpuid: None,
             failure: Mutex::new(None),
         }
     }
@@ -149,6 +152,13 @@ impl JitHostQuantum {
     pub fn with_cpl0_set(mut self) -> Self {
         self.cpl0_set = true;
         self
+    }
+
+    /// Enable the CPL0 set and execute guest CPUID in its interpreter with the selected profile.
+    #[must_use]
+    pub fn with_cpl0_cpuid(mut self, profile: CpuidProfile) -> Self {
+        self.cpuid = Some(profile);
+        self.with_cpl0_set()
     }
 
     /// Fallback roots for the root-only `od_machine::run_host_threads` entry.
@@ -285,12 +295,18 @@ impl JitHostQuantum {
             let bus = if self.cpl0_set {
                 // The set the interpreter step runs: the Linux board's CPL0 profile without the
                 // members that need the board's devices or MSR cells.
-                set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                let base_set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
                     .with_cpu_owned_cr3(MovCr3Long64V1)
                     .with_cli(&cli)
                     .with_sti(&sti)
                     .with_halt(&halt)
                     .with_pio_u8();
+                set = match &self.cpuid {
+                    Some(profile) => base_set
+                        .with_cpuid(profile)
+                        .with_cpuid_topology(cpu as u8, self.configs.len() as u8),
+                    None => base_set,
+                };
                 LoopBusRef::SharedSet(
                     call.bus,
                     cpu,

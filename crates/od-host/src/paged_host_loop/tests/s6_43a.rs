@@ -1,35 +1,31 @@
 //! S6-43a: cross-modifying code on two vCPUs with the JIT on (G-XMC of S6-40, item 2.4).
 //!
 //! vCPU A rewrites the bytes of an instruction that vCPU B runs, and publishes a signal. B waits
-//! for the signal, runs the block-ending step, and runs the changed code. The changed instruction is a form the
+//! for the signal, runs CPUID in the serializing protocol, and runs the changed code. The changed instruction is a form the
 //! JIT admits (`mov rax,[rbx+disp8]`, S4-15e, two versions that load two different cells), and
 //! the run counts only when B ran it natively before and after the write. The same cycle
 //! functions run in three settings:
 //!
-//! * the interpreter of od-isa (`run_paged_probe`, the oracle) on one thread: the expected values
+//! * the CPL0 interpreter of od-isa (`run_host_set_step`, the oracle) on one thread: the expected values
 //!   and the final state;
 //! * the interleaved mode: one thread, one JIT session per vCPU, a fixed schedule;
 //! * the parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, no lock of the bus.
 //!
-//! The paged profile has no compare, no jump and no `CPUID`; the loops (wait for the signal, the
-//! cycle counter) are the host driver's, the steps are guest instructions: every step sets RIP and
-//! the registers and runs one instruction. `CLD` (interpreter only) is the step that ends the
-//! block, so the next step starts with a lookup (S6-40, 2.4). By the Intel SDM `CLD` is not a
-//! serializing instruction (the serializing non-privileged ones are `CPUID`, `IRET`, `RSM`,
-//! `SERIALIZE`); the SDM form of the protocol with a serializing instruction is not checked here.
-//! `CPUID` is not used because the paged probe answers `0F` with a refusal
-//! (`cpuid_boundary_does_not_apply_on_the_paged_probe_path`). With one instruction per block
-//! (budget 1) protocol (1) coincides mechanically with (2); what it can show is a fresh compile
-//! after the signal (2) and the check of the key of a kept block (3).
-
+//! The host drives the cycle and wait loops. Every step executes real guest bytes at the selected
+//! RIP. CPUID uses the selected CPL0 interpreter and the next native step performs a fresh lookup.
+//! With one guest instruction per block, the no-CPUID guest-wait variant still performs lookup
+//! for X, while the host-wait variant retains X's prior admission until that lookup.
 use super::*;
 use crate::host_threads::JitHostQuantum;
 use crate::jit_region::SharedJitRegion;
+use od_isa::cpuid::CpuidProfile;
+use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
 use od_machine::{
-    ExecutionMode, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostQuantumExit,
-    HostQuantumResult, host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
+    ExecutionMode, HostBoardIrqSource, HostCpl0Step, HostDeviceServices, HostParallelConfig,
+    HostParallelFinish, HostQuantumCall, HostQuantumExit, HostQuantumResult, HostSplitGate,
+    LocalApic, LocalApicHandle, host_install_vcpu, host_parallel_board, run_host_set_step,
+    run_host_threads_with_nmi_paging,
 };
-use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -37,9 +33,16 @@ use std::time::{Duration, Instant};
 const CPU_B: usize = 0;
 const CPU_A: usize = 1;
 const WAIT: Duration = Duration::from_secs(120);
+const CPUID_PROFILE: CpuidProfile = CpuidProfile::DiagnosticV1;
+
+fn interpreter_set(cpu: usize) -> Cpl0ProfileSet<'static> {
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpuid(&CPUID_PROFILE)
+        .with_cpuid_topology(cpu as u8, 2)
+}
 
 /// B's code page (physical 0x8000, `CODE_RIP`): the changed instruction, the guest wait for the
-/// signal, the block-ending step (`CLD`).
+/// signal, and guest CPUID.
 const CODE_X: u64 = CODE_RIP;
 const CODE_W: u64 = CODE_RIP + 0x10;
 const CODE_C: u64 = CODE_RIP + 0x20;
@@ -49,46 +52,21 @@ const A_CODE_PHYSICAL: u64 = 0xa000;
 /// cell X loads in its odd versions.
 const SIGNAL_LINEAR: u64 = DATA_LINEAR + 8;
 const SIGNAL_PHYSICAL: u64 = DATA_QWORD + 8;
-const SECOND_LINEAR: u64 = DATA_LINEAR + 16;
 const SECOND_PHYSICAL: u64 = DATA_QWORD + 16;
 const SECOND_VALUE: u64 = 0x5555_6666_7777_8888;
 const SENT: u64 = 0xAAAA_AAAA_AAAA_AAAA;
-/// The qword store A runs: the JIT form and the form the interpreter implements.
-const A_STORE_JIT: [u8; 8] = [0x48, 0x89, 0x03, 0, 0, 0, 0, 0];
-const A_STORE_ALIAS: [u8; 8] = [0x48, 0x89, 0x0b, 0, 0, 0, 0, 0];
-/// RAM below this address is compared; the page above it is A's code (JIT and alias bytes differ).
-const COMPARED_RAM_END: u64 = A_CODE_PHYSICAL;
+/// The qword store A runs and the RAM range compared by all three execution paths.
+const A_STORE: [u8; 8] = [0x48, 0x89, 0x03, 0, 0, 0, 0, 0];
+const COMPARED_RAM_END: u64 = A_CODE_PHYSICAL + 0x1000;
 /// Writes below this address are page-walk bits; the data stores are above it.
 const DATA_WRITES_FROM: u64 = CODE_PHYSICAL;
-
 fn qword(bytes: [u8; 8]) -> u64 {
     u64::from_le_bytes(bytes)
 }
-
-/// The two versions of X, a qword load of one of two cells. The JIT runs `mov rax,[rbx+disp8]`
-/// with disp8 0 (even versions, the first cell) or 16 (odd versions, the second cell): one form,
-/// different bytes. The interpreter's paged profile has no displacement form, so the oracle runs
-/// `mov rax,[rbx]` (the byte after it, never executed, tells the versions apart in RAM) with RBX
-/// moved to the second cell in the odd versions; the effect is the same.
-fn version_bytes(k: u64, oracle: bool) -> [u8; 8] {
-    let odd = k % 2 == 1;
-    match (oracle, odd) {
-        (false, false) => [0x48, 0x8b, 0x43, 0x00, 0, 0, 0, 0],
-        (false, true) => [0x48, 0x8b, 0x43, 0x10, 0, 0, 0, 0],
-        (true, false) => [0x48, 0x8b, 0x03, 0x00, 0, 0, 0, 0],
-        (true, true) => [0x48, 0x8b, 0x03, 0x01, 0, 0, 0, 0],
-    }
+/// The two versions of X load the first and second cell via the same base and different disp8.
+fn version_bytes(k: u64) -> [u8; 8] {
+    [0x48, 0x8b, 0x43, ((k % 2) * 16) as u8, 0, 0, 0, 0]
 }
-
-/// RBX of a run of version `k` of X.
-fn version_rbx(k: u64, oracle: bool) -> u64 {
-    if oracle && k % 2 == 1 {
-        SECOND_LINEAR
-    } else {
-        DATA_LINEAR
-    }
-}
-
 /// The RAX of a run of version `k` of X.
 fn version_result(k: u64) -> u64 {
     if k % 2 == 0 {
@@ -98,17 +76,17 @@ fn version_result(k: u64) -> u64 {
     }
 }
 
-fn b_code(oracle: bool) -> Vec<u8> {
+fn b_code() -> Vec<u8> {
     let mut code = vec![0u8; 0x30];
-    code[..8].copy_from_slice(&version_bytes(0, oracle));
+    code[..8].copy_from_slice(&version_bytes(0));
     code[0x10..0x13].copy_from_slice(&[0x48, 0x8b, 0x03]);
-    code[0x20] = 0xfc;
+    code[0x20..0x22].copy_from_slice(&[0x0f, 0xa2]);
     code
 }
 
-fn add_code_a(bus: &mut MachineBus, code_a: &[u8]) {
+fn add_code_a(bus: &mut MachineBus) {
     put_qword(bus, 0x6010, A_CODE_PHYSICAL | 0x7);
-    bus.patch_physical_ram(GuestPhysicalAddress::new(A_CODE_PHYSICAL), code_a)
+    bus.patch_physical_ram(GuestPhysicalAddress::new(A_CODE_PHYSICAL), &A_STORE)
         .unwrap();
 }
 
@@ -126,8 +104,7 @@ enum Wait {
 struct Protocol {
     name: &'static str,
     wait: Wait,
-    /// Run the block-ending step (`CLD`, interpreter; not serializing by the SDM) between the
-    /// signal and the changed code. The name `serialize` is kept for the protocol (1) label.
+    /// Execute CPUID between observing the signal and executing the changed code.
     serialize: bool,
 }
 
@@ -179,7 +156,7 @@ struct Direct<'a> {
     state: LongModeState,
     rflags_defined: u64,
     bus: &'a MachineBus,
-    vcpu: usize,
+    lapic: LocalApicHandle,
     writes: Vec<(u64, u64)>,
 }
 
@@ -192,16 +169,26 @@ impl Stepper for Direct<'_> {
             state,
             rflags_defined,
             bus,
-            vcpu,
+            lapic,
             writes,
         } = self;
-        let report = run_paged_host_loop_shared(
+        let vcpu = lapic.cpu_index();
+        let set = interpreter_set(vcpu);
+        let report = run_paged_host_loop_shared_set(
             session,
             control,
             config(),
             state,
             bus,
-            *vcpu,
+            vcpu,
+            PagedHostSetEnv {
+                lapic,
+                board_irq: HostBoardIrqSource::none(),
+                devices: HostDeviceServices::none(),
+                gate: HostSplitGate::none(),
+                set: &set,
+                skip_first_boundary: &mut false,
+            },
             rflags_defined,
             1,
             |range| writes.push((range.start().get(), range.len())),
@@ -221,9 +208,10 @@ impl Stepper for Direct<'_> {
     }
 }
 
-/// The oracle: the interpreter of od-isa over one shared bus (exclusive access per step).
+/// The oracle: one interpreted CPL0 instruction at a time, over the same guest bytes.
 struct Interp<'a> {
-    bus: &'a RefCell<MachineBus>,
+    bus: &'a MachineBus,
+    lapic: LocalApicHandle,
     state: LongModeState,
     writes: Vec<(u64, u64)>,
 }
@@ -232,17 +220,24 @@ impl Stepper for Interp<'_> {
     fn step(&mut self, rip: u64, rax: u64, rbx: u64) -> Result<Step, String> {
         load_registers(&mut self.state, rip, rax, rbx);
         let writes = &mut self.writes;
-        let report = od_machine::run_paged_probe(
+        let vcpu = self.lapic.cpu_index();
+        let step = run_host_set_step(
             &mut self.state,
-            &mut self.bus.borrow_mut(),
-            CR3,
-            EFER,
-            context(),
-            1,
-            RFLAGS_DEFINED,
-            || false,
+            self.bus,
+            HostCpl0Step {
+                vcpu,
+                lapic: &self.lapic,
+                gate: HostSplitGate::none(),
+                cr3: CR3,
+                efer: EFER,
+                context: context(),
+                rflags_defined: RFLAGS_DEFINED,
+                consecutive_faults: 0,
+            },
+            &interpreter_set(vcpu),
             |range| writes.push((range.start().get(), range.len())),
-        );
+        )?;
+        let report = step.report;
         if report.exit != od_machine::PagedProbeExit::BudgetExhausted
             || report.instructions_executed != 1
         {
@@ -308,8 +303,8 @@ struct Env<'a> {
     read_signal: &'a dyn Fn() -> u64,
     /// The run counts only when X ran natively (false for the interpreter: nothing is native).
     require_jit: bool,
-    /// The encoding of the oracle's versions of X (the interpreter's paged profile).
-    oracle: bool,
+    /// Require A's code write and signal to take the native path.
+    require_native_writes: bool,
     abort: &'a AtomicBool,
 }
 
@@ -377,7 +372,7 @@ fn run_x(
     rec: &mut BRecord,
 ) -> Result<(), String> {
     let version = if old { k - 1 } else { k };
-    let step = b.step(CODE_X, SENT, version_rbx(version, env.oracle))?;
+    let step = b.step(CODE_X, SENT, DATA_LINEAR)?;
     let native = step.jit_steps == 1 && step.interpreter_steps == 0;
     match (native, old) {
         (true, true) => rec.x_old_jit += 1,
@@ -416,21 +411,18 @@ fn b_before_write(
 /// A writes version `k` of X (a native qword store into B's code page), then publishes the
 /// signal (a native qword store of `k` into the signal cell).
 fn a_write_and_signal(a: &mut dyn Stepper, env: &Env<'_>, k: u64) -> Result<(), String> {
-    for (rax, rbx) in [
-        (qword(version_bytes(k, env.oracle)), CODE_X),
-        (k, SIGNAL_LINEAR),
-    ] {
+    for (rax, rbx) in [(qword(version_bytes(k)), CODE_X), (k, SIGNAL_LINEAR)] {
         let step = a.step(A_CODE_RIP, rax, rbx)?;
         // The oracle does not check A's store natively on purpose: the interpreter has no native
         // path, so the condition applies to the JIT runs only.
-        if env.require_jit && !env.oracle && (step.jit_steps != 1 || step.interpreter_steps != 0) {
+        if env.require_native_writes && (step.jit_steps != 1 || step.interpreter_steps != 0) {
             return Err(format!("A's store of cycle {k} did not run natively"));
         }
     }
     Ok(())
 }
 
-/// B after the signal of cycle `k`: waits, runs the block-ending step, runs the changed code twice.
+/// B after the signal of cycle `k`: waits, serializes when required, runs the changed code twice.
 fn b_after_signal(
     b: &mut dyn Stepper,
     env: &Env<'_>,
@@ -459,10 +451,27 @@ fn b_after_signal(
     rec.wait_steps += polls;
     rec.wait_max = rec.wait_max.max(polls);
     if env.protocol.serialize {
-        let step = b.step(CODE_C, SENT, DATA_LINEAR)?;
-        if step.interpreter_steps != 1 {
+        let flags = b.state().rflags;
+        // EAX=ECX=0 selects leaf 0/subleaf 0, with deliberately dirty upper halves.
+        let step = b.step(CODE_C, 0xffff_ffff_0000_0000, u64::MAX)?;
+        let state = b.state();
+        let results = [Register::Rax, Register::Rbx, Register::Rcx, Register::Rdx]
+            .map(|register| state.gpr[register as usize]);
+        let expected = [
+            1,
+            u64::from(u32::from_le_bytes(*b"Open")),
+            u64::from(u32::from_le_bytes(*b"top ")),
+            u64::from(u32::from_le_bytes(*b"Desk")),
+        ];
+        if step.interpreter_steps != 1
+            || step.jit_steps != 0
+            || state.rip != CODE_C + 2
+            || state.rflags != flags
+            || results != expected
+        {
             return Err(format!(
-                "cycle {k}: the block-ending step is not interpreted"
+                "cycle {k}: invalid CPUID: {step:?}, RIP {:#x}, RFLAGS {flags:#x}->{:#x}, outputs {results:08x?}",
+                state.rip, state.rflags
             ));
         }
         rec.serialize_steps += 1;
@@ -525,54 +534,22 @@ fn ram_qwords(bus: &MachineBus) -> Vec<u64> {
         .collect()
 }
 
-/// The qword of X in `Final::ram`: the JIT and the oracle encode the versions differently, so it
-/// is compared with the encoding of each, not with each other.
 const X_INDEX: usize = (CODE_PHYSICAL / 8) as usize;
-
-fn assert_same_final(actual: &Final, expected: &Final, cycles: u64, what: &str) {
+fn assert_same_final(actual: &Final, expected: &Final, what: &str) {
     assert_eq!(actual.a, expected.a, "{what}: vCPU A");
-    // B ends on X: the JIT's version is one byte longer (`disp8`), so its RIP is one further.
-    assert_eq!(actual.b.rip, expected.b.rip + 1, "{what}: B's RIP");
-    // RBX of the last run of X differs by construction in the odd versions (the oracle moves RBX
-    // to the second cell, the JIT keeps it and changes the displacement): each side is compared
-    // with the RBX of its own version, the other registers with each other.
-    assert_eq!(
-        actual.b.gpr[3],
-        version_rbx(cycles, false),
-        "{what}: B's RBX (JIT)"
-    );
-    assert_eq!(
-        expected.b.gpr[3],
-        version_rbx(cycles, true),
-        "{what}: B's RBX (oracle)"
-    );
-    let without_rbx = |view: &CpuView| {
-        let mut gpr = view.gpr;
-        gpr[3] = 0;
-        CpuView {
-            gpr,
-            rip: 0,
-            rflags: view.rflags,
-        }
-    };
-    assert_eq!(
-        without_rbx(&actual.b),
-        without_rbx(&expected.b),
-        "{what}: vCPU B"
-    );
+    assert_eq!(actual.b, expected.b, "{what}: vCPU B");
     let first = actual
         .ram
         .iter()
         .zip(&expected.ram)
         .enumerate()
-        .position(|(index, (left, right))| index != X_INDEX && left != right);
+        .position(|(_, (left, right))| left != right);
     assert_eq!(
         first.map(|index| (index * 8, actual.ram[index], expected.ram[index])),
         None,
         "{what}: first differing RAM qword (address, actual, expected)"
     );
 }
-
 fn b_state() -> LongModeState {
     let mut state = make_state(SENT, DATA_LINEAR, SENT);
     state.rip = CODE_X;
@@ -586,15 +563,15 @@ fn a_state() -> LongModeState {
 }
 
 /// A's code and the empty signal cell, on top of a bus whose tables and B's code are there.
-fn add_a_and_signal(bus: &mut MachineBus, a_code: &[u8]) {
-    add_code_a(bus, a_code);
+fn add_a_and_signal(bus: &mut MachineBus) {
+    add_code_a(bus);
     put_qword(bus, SIGNAL_PHYSICAL, 0);
     put_qword(bus, SECOND_PHYSICAL, SECOND_VALUE);
 }
 
-fn fresh_bus(a_code: &[u8], oracle: bool) -> MachineBus {
-    let mut bus = make_bus(&b_code(oracle));
-    add_a_and_signal(&mut bus, a_code);
+fn fresh_bus() -> MachineBus {
+    let mut bus = make_bus(&b_code());
+    add_a_and_signal(&mut bus);
     bus
 }
 
@@ -617,12 +594,11 @@ struct OracleRun {
 /// `require_jit` makes the oracle ask for native execution, which an interpreter never gives:
 /// the run is then not counted (the test of the counting rule).
 fn run_oracle(protocol: Protocol, cycles: u64, require_jit: bool) -> OracleRun {
-    let mut bus = fresh_bus(&A_STORE_ALIAS, true);
+    let mut bus = fresh_bus();
     bus.set_execution_mode(ExecutionMode::Interleaved);
-    let bus = RefCell::new(bus);
+    let lapics = LocalApic::with_cpus(2).unwrap();
     let read_signal = || {
-        bus.borrow()
-            .atomic_inline_memory()
+        bus.atomic_inline_memory()
             .load_u64(GuestPhysicalAddress::new(SIGNAL_PHYSICAL))
             .unwrap()
     };
@@ -631,16 +607,18 @@ fn run_oracle(protocol: Protocol, cycles: u64, require_jit: bool) -> OracleRun {
         protocol,
         read_signal: &read_signal,
         require_jit,
-        oracle: true,
+        require_native_writes: false,
         abort: &abort,
     };
     let mut a = Interp {
         bus: &bus,
+        lapic: lapics.handle_for(CPU_A).unwrap(),
         state: a_state(),
         writes: Vec::new(),
     };
     let mut b = Interp {
         bus: &bus,
+        lapic: lapics.handle_for(CPU_B).unwrap(),
         state: b_state(),
         writes: Vec::new(),
     };
@@ -648,7 +626,7 @@ fn run_oracle(protocol: Protocol, cycles: u64, require_jit: bool) -> OracleRun {
     let finished = Final {
         a: CpuView::of(&a.state),
         b: CpuView::of(&b.state),
-        ram: ram_qwords(&bus.borrow()),
+        ram: ram_qwords(&bus),
     };
     OracleRun {
         record,
@@ -688,7 +666,7 @@ impl JitRun {
     fn line(&self) -> String {
         format!(
             "S6-43a {} / {}: {} cycles, B native {} interpreter {} (fallback {:.1}% of B's steps: \
-             {} block-ending, X native {} of {}), wait steps {} (max {}), admissions {}, A native {} \
+             {} CPUID, X native {} of {}), wait steps {} (max {}), admissions {}, A native {} \
              interpreter {}, stale {}, wrong {}, {:.2}s{}",
             self.mode,
             self.protocol.name,
@@ -745,7 +723,7 @@ impl Stepper for Counting<'_> {
 /// The interleaved mode: one thread, a JIT session per vCPU on its own part of one region.
 fn run_interleaved(protocol: Protocol, cycles: u64) -> JitRun {
     let region = SharedJitRegion::new(2, 4).unwrap();
-    let mut bus = fresh_bus(&A_STORE_JIT, false);
+    let mut bus = fresh_bus();
     bus.set_execution_mode(ExecutionMode::Interleaved);
     let read_signal = signal_reader(&bus);
     let abort = AtomicBool::new(false);
@@ -753,9 +731,10 @@ fn run_interleaved(protocol: Protocol, cycles: u64) -> JitRun {
         protocol,
         read_signal: &read_signal,
         require_jit: true,
-        oracle: false,
+        require_native_writes: true,
         abort: &abort,
     };
+    let lapics = LocalApic::with_cpus(2).unwrap();
     let part_b = region.take_part().unwrap();
     let part_a = region.take_part().unwrap();
     let mut b = Direct {
@@ -764,7 +743,7 @@ fn run_interleaved(protocol: Protocol, cycles: u64) -> JitRun {
         state: b_state(),
         rflags_defined: RFLAGS_DEFINED,
         bus: &bus,
-        vcpu: CPU_B,
+        lapic: lapics.handle_for(CPU_B).unwrap(),
         writes: Vec::new(),
     };
     let mut a = Direct {
@@ -773,7 +752,7 @@ fn run_interleaved(protocol: Protocol, cycles: u64) -> JitRun {
         state: a_state(),
         rflags_defined: RFLAGS_DEFINED,
         bus: &bus,
-        vcpu: CPU_A,
+        lapic: lapics.handle_for(CPU_A).unwrap(),
         writes: Vec::new(),
     };
     let started = Instant::now();
@@ -869,7 +848,7 @@ fn drive(
         protocol: shared.protocol,
         read_signal: &read_signal,
         require_jit: true,
-        oracle: false,
+        require_native_writes: true,
         abort: &shared.abort,
     };
     let mut vcpu = Quantum { quantum, call };
@@ -939,11 +918,12 @@ fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
         Some(region.take_part().unwrap()),
         Some(region.take_part().unwrap()),
     ];
-    let quantum =
-        JitHostQuantum::new(parts, vec![config(), config()], RFLAGS_DEFINED).with_write_log();
+    let quantum = JitHostQuantum::new(parts, vec![config(), config()], RFLAGS_DEFINED)
+        .with_cpl0_cpuid(CPUID_PROFILE)
+        .with_write_log();
     let mut board = host_parallel_board(2).unwrap();
-    populate_tables(board.bus_mut(), &b_code(false));
-    add_a_and_signal(board.bus_mut(), &A_STORE_JIT);
+    populate_tables(board.bus_mut(), &b_code());
+    add_a_and_signal(board.bus_mut());
     assert!(host_install_vcpu(&mut board, CPU_B, b_state()));
     assert!(host_install_vcpu(&mut board, CPU_A, a_state()));
     let shared = Shared {
@@ -1039,17 +1019,18 @@ fn assert_matches_the_oracle(run: &JitRun, oracle: &OracleRun, complete_writes: 
     );
     let what = format!("{} / {}", run.mode, run.protocol.name);
     let cycles = run.record.cycles;
-    assert_same_final(&run.finished, &oracle.finished, cycles, &what);
-    // The last version of X is in B's code page, in the encoding of each side.
+    let cpuid_steps = if run.protocol.serialize { cycles } else { 0 };
+    assert_eq!(run.record.serialize_steps, cpuid_steps, "{what}: CPUID");
+    assert_eq!(
+        oracle.record.serialize_steps, cpuid_steps,
+        "{what}: CPUID in the interpreter"
+    );
+    assert_same_final(&run.finished, &oracle.finished, &what);
+    // The same final encoding of X is in B's code page in both runs.
     assert_eq!(
         run.finished.ram[X_INDEX],
-        qword(version_bytes(cycles, false)),
+        qword(version_bytes(cycles)),
         "{what}: X in the JIT run"
-    );
-    assert_eq!(
-        oracle.finished.ram[X_INDEX],
-        qword(version_bytes(cycles, true)),
-        "{what}: X in the oracle run"
     );
     if complete_writes {
         assert_eq!(
@@ -1116,7 +1097,7 @@ fn s6_43a_the_interpreter_reference_gives_the_expected_values_around_the_signal(
     }
 }
 
-/// Interleaved mode, fixed schedule (B old, A writes and signals, B waits/block-ending step/new), every
+/// Interleaved mode, fixed schedule (B old, A writes and signals, B waits/CPUID step/new), every
 /// protocol: B runs the old code before and only the new code after; the registers, the RAM and
 /// the committed writes equal the interpreter's run of the same schedule.
 #[test]
@@ -1174,7 +1155,7 @@ fn s6_43a_long_parallel_run() {
 /// A run in which the JIT did not execute the changed code does not count. The interpreter runs
 /// the whole schedule with native execution required: every run of X is a fallback, the results
 /// are right and the record is not counted; a JIT run of the same schedule is counted and its
-/// share of the interpreter is only the block-ending step.
+/// share of the interpreter is only the CPUID step.
 #[test]
 fn s6_43a_a_run_without_native_execution_of_the_changed_code_is_not_counted() {
     let _guard = jit_guard();
@@ -1187,7 +1168,7 @@ fn s6_43a_a_run_without_native_execution_of_the_changed_code_is_not_counted() {
     let counted = run_interleaved(PROTOCOLS[0], cycles);
     assert!(counted.counted(), "{}", counted.line());
     assert_eq!(counted.record.x_not_jit, 0);
-    // B's steps per cycle: the old run, the signal read, the block-ending step, two new runs.
+    // B's steps per cycle: the old run, the signal read, the CPUID step, two new runs.
     assert_eq!(counted.b_interpreter_steps, cycles);
     assert_eq!(counted.b_jit_steps, 4 * cycles);
     assert!((counted.fallback_percent() - 20.0).abs() < 1e-9);

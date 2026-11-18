@@ -4613,4 +4613,4 @@ CPL0-квант JIT использует `run_host_set_step` с профилем
 
 ## S6-43a — probe cross-modifying code на двух vCPU (без изменений API `od-machine`)
 
-Дата: 2026-11-18. API `od-machine`, порядок замков и нормативный текст S6-30…S6-36 не меняются: probe использует `run_host_threads` (S6-42b), `run_paged_probe` (эталон) и общую `&MachineBus` как есть. Сценарий, протокол G-XMC, результаты и ограничения — [JIT_CONTRACT.md, S6-43a](JIT_CONTRACT.md#s6-43a-probe-cross-modifying-code-на-двух-vcpu-с-включённым-jit).
+Дата: 2026-11-18. Проба использует существующие `run_host_threads_with_nmi_paging`, `run_host_set_step` и общую `&MachineBus`. Эталон исполняет те же байты гостя в CPL0 без JIT. API `od-machine`, порядок замков и нормативный текст S6-30…S6-36 сохранены. [Контракт и результаты](JIT_CONTRACT.md#s6-43a-probe-cross-modifying-code-на-двух-vcpu-с-включённым-jit).
