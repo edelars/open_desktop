@@ -28,7 +28,7 @@ impl NvmeIoapicIrqSource {
     }
 
     fn sample(&self) {
-        let level = self.nvme.pci_interrupt_line();
+        let level = self.nvme.sample_pci_interrupts();
         // Re-present an asserted level even after it was accepted: a masked
         // IOAPIC may have been reset since the last sample.
         if (level || self.accepted_level.get()) && self.io_apic.set_nvme_line(level).is_ok() {

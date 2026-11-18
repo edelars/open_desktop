@@ -449,6 +449,16 @@ impl LocalApicHandle {
             .unwrap_or_else(|e| e.into_inner())
             .edge(self.1, vector)
     }
+
+    /// Accept a fixed-edge MSI for a physical xAPIC ID in this machine.
+    pub(crate) fn request_msi_edge(&self, destination: u8, vector: u8) -> Result<(), DeviceError> {
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let cpu = usize::from(destination);
+        if destination == u8::MAX || cpu >= pair.cpus.len() {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        pair.edge(cpu, vector)
+    }
     /// Observe the highest pending vector without consuming it.
     pub fn pending(&self) -> Option<u8> {
         self.with_state(|s| State::highest(&s.irr))

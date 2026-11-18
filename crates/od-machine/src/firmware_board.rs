@@ -25,7 +25,7 @@ use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
 use crate::nvme::irq_source::NvmeIoapicIrqSource;
-use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_SLOT};
+use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES, NVME_PCI_SLOT};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
@@ -643,6 +643,7 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
         && nvme.code == DEVICE_CODE_NVME
     {
         nvme.base = NVME_PCI_BAR_BASE;
+        nvme.length = NVME_PCI_BAR_BYTES;
         nvme.gsi = crate::apic_pair::NVME_PIN as u32;
         nvme.irq_flags = 0b11;
         nvme.param0 = u64::from(NVME_PCI_SLOT);
@@ -3481,7 +3482,8 @@ pub(crate) fn assemble_board(
     {
         let (device, handle) = if config.nvme_pci {
             let (device, handle, function) =
-                NvmeDevice::new_pci(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+                NvmeDevice::new_pci(nvme_config.clone(), lapic_handle.clone())
+                    .map_err(FirmwareBoardError::Nvme)?;
             pci.add_function(0, NVME_PCI_SLOT, 0, Box::new(function))
                 .map_err(|_| FirmwareBoardError::Config("NVMe PCI slot is occupied"))?;
             (device, handle)
@@ -4762,6 +4764,168 @@ mod tests {
     }
 
     #[test]
+    fn linux_nvme_msix_masks_completions_and_routes_the_io_vector_to_the_ap() {
+        const ASQ: u64 = 0x10_0000;
+        const ACQ: u64 = 0x11_0000;
+        const IO_SQ: u64 = 0x12_0000;
+        const IO_CQ: u64 = 0x13_0000;
+        const MSE: u64 = 1 << 1;
+        const BME: u64 = 1 << 2;
+        const ADMIN_VECTOR: u8 = 0x59;
+        const IO_VECTOR: u8 = 0x5a;
+        let config = FirmwareBoardConfig {
+            linux_profile: true,
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            nvme: Some(NvmeConfig::default()),
+            nvme_pci: true,
+            vcpu_count: 2,
+            ..FirmwareBoardConfig::default()
+        };
+        let mut board = assemble_board(&config, PciEcam::new(), None, None).unwrap();
+        let bsp = board.lapic.clone();
+        let ap = bsp.for_cpu(1).unwrap();
+        let nvme = board.nvme.as_ref().unwrap().clone();
+        let bus = &mut board.bus;
+        let cfg = |reg| {
+            GuestPhysicalAddress::new(
+                PCI_ECAM_DESCRIPTOR.base + (u64::from(NVME_PCI_SLOT) << 15) + reg,
+            )
+        };
+        let bar = |off| GuestPhysicalAddress::new(NVME_PCI_BAR_BASE + off);
+        let read = |bus: &mut MachineBus, addr, width| bus.read_physical(addr, width).unwrap();
+        let write = |bus: &mut MachineBus, addr, width, value| {
+            bus.write_physical(addr, width, value, |_| {}).unwrap();
+        };
+        let dword = AccessWidth::Dword;
+        let qword = AccessWidth::Qword;
+        assert_ne!(read(bus, cfg(4), dword) & (1 << 20), 0);
+        assert_eq!(read(bus, cfg(0x34), AccessWidth::Byte), 0x50);
+        assert_eq!(read(bus, cfg(0x50), dword), 0x0004_0011);
+        assert_eq!(read(bus, cfg(0x54), dword), 0x2000);
+        assert_eq!(read(bus, cfg(0x58), dword), 0x3000);
+        write(bus, cfg(0x54), dword, 0x1000);
+        assert_eq!(read(bus, cfg(0x54), dword), 0x2000);
+
+        write(bus, cfg(4), dword, MSE | BME);
+        write(bus, cfg(0x53), AccessWidth::Byte, 0xc0);
+        assert_eq!(read(bus, cfg(0x52), AccessWidth::Word), 0xc004);
+        for (offset, destination, vector) in [(0x2000, 0, ADMIN_VECTOR), (0x2010, 1, IO_VECTOR)] {
+            assert_eq!(read(bus, bar(offset + 12), dword), 1);
+            write(bus, bar(offset), qword, 0xfee0_0000 | (destination << 12));
+            write(bus, bar(offset + 8), dword, u64::from(vector));
+        }
+        write(bus, bar(0x200c), dword, 0xffff_fffe);
+        assert_eq!(read(bus, bar(0x200c), dword), 0);
+        write(bus, bar(0x24), dword, 0x000f_000f);
+        write(bus, bar(0x28), qword, ASQ);
+        write(bus, bar(0x30), qword, ACQ);
+        write(bus, bar(0x14), dword, 1 | (6 << 16) | (4 << 20));
+        let put_command =
+            |bus: &mut MachineBus, address, opcode, prp1: u64, cdw10: u32, cdw11: u32| {
+                let mut command = [0; 64];
+                command[0] = opcode;
+                command[24..32].copy_from_slice(&prp1.to_le_bytes());
+                command[40..44].copy_from_slice(&cdw10.to_le_bytes());
+                command[44..48].copy_from_slice(&cdw11.to_le_bytes());
+                bus.write_flat_bytes(GuestPhysicalAddress::new(address), &command, |_| {})
+                    .unwrap();
+            };
+        put_command(bus, ASQ, 0x05, IO_CQ, 1 | (3 << 16), 3 | (1 << 16));
+        put_command(bus, ASQ + 64, 0x01, IO_SQ, 1 | (3 << 16), 1 | (1 << 16));
+        put_command(
+            bus,
+            ASQ + 128,
+            0x05,
+            IO_CQ + 4096,
+            2 | (3 << 16),
+            3 | (5 << 16),
+        );
+        put_command(bus, ASQ + 192, 0x09, 0, 9, (1 << 16) | 1);
+        put_command(bus, ASQ + 256, 0x0a, 0, 9, 1);
+        put_command(bus, ASQ + 320, 0x09, 0, 9, (1 << 16) | 4);
+        write(bus, bar(0x1000), dword, 6);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 6);
+        let status = GuestPhysicalAddress::new(ACQ + 2 * 16 + 14);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x4108);
+        let features = GuestPhysicalAddress::new(ACQ + 4 * 16);
+        assert_eq!(read(bus, features, dword), 0x0001_0001);
+        let status = GuestPhysicalAddress::new(ACQ + 5 * 16 + 14);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x4002);
+        assert_eq!(read(bus, cfg(4), dword) & (1 << 19), 0, "INTx suppressed");
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            1,
+            "function mask latches admin events"
+        );
+        assert!(!bsp.vector_state(ADMIN_VECTOR).0);
+
+        write(bus, cfg(4), dword, MSE);
+        write(bus, cfg(0x52), AccessWidth::Word, 0x8000);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            1,
+            "BME clear blocks MSI-X delivery"
+        );
+        write(bus, cfg(4), dword, MSE | BME);
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        assert!(bsp.vector_state(ADMIN_VECTOR).0);
+        assert!(!ap.vector_state(ADMIN_VECTOR).0);
+
+        put_command(bus, IO_SQ, 0xff, 0, 0, 0);
+        write(bus, bar(0x1008), dword, 1);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "vector mask latches I/O events"
+        );
+        assert!(!ap.vector_state(IO_VECTOR).0);
+        write(bus, bar(0x100c), dword, 1);
+        write(bus, bar(0x3000), qword, 0);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "read-only PBA is independent of CQ head"
+        );
+        ap.set_global_enabled(false).unwrap();
+        write(bus, bar(0x201c), dword, 0);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "a refused LAPIC edge remains pending"
+        );
+        ap.set_global_enabled(true).unwrap();
+        assert!(!nvme.sample_pci_interrupts());
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        assert!(ap.vector_state(IO_VECTOR).0);
+        assert!(!bsp.vector_state(IO_VECTOR).0);
+
+        write(bus, bar(0x201c), dword, 1);
+        write(bus, bar(0x2018), dword, u64::from(IO_VECTOR + 1));
+        write(bus, bar(0x201c), dword, 0);
+        put_command(bus, IO_SQ + 64, 0xff, 0, 0, 0);
+        write(bus, bar(0x1008), dword, 2);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert!(
+            ap.vector_state(IO_VECTOR + 1).0,
+            "unmasked CQE routes without BSP polling"
+        );
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        write(bus, bar(0x100c), dword, 2);
+
+        write(bus, cfg(0x53), AccessWidth::Byte, 0);
+        assert_ne!(
+            read(bus, cfg(4), dword) & (1 << 19),
+            0,
+            "unacknowledged admin CQ resumes INTx"
+        );
+        write(bus, bar(0x1004), dword, 6);
+        assert_eq!(read(bus, cfg(4), dword) & (1 << 19), 0);
+    }
+
+    #[test]
     fn linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes() {
         use crate::bus::SetStepMmio;
         use crate::{AccessWidth, GuestPhysicalAddress};
@@ -4787,7 +4951,7 @@ mod tests {
         // Generated by the independent firmware ACPI builder for this board.
         assert_eq!(
             hex(&config.acpi_manifest_hash().unwrap()),
-            "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+            "94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a",
         );
         let apic = board.lapic.clone();
         let bus = &mut board.bus;
@@ -4812,7 +4976,7 @@ mod tests {
         // Probe both halves of the BAR and restore it as firmware would.
         write(bus, cfg(0x10), u64::from(u32::MAX));
         write(bus, cfg(0x14), u64::from(u32::MAX));
-        assert_eq!(read(bus, cfg(0x10)), 0xffff_e004);
+        assert_eq!(read(bus, cfg(0x10)), 0xffff_c004);
         assert_eq!(read(bus, cfg(0x14)), u64::from(u32::MAX));
         write(bus, cfg(4), MSE);
         assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
@@ -4842,7 +5006,7 @@ mod tests {
         assert!(
             set_step_io
                 .windows()
-                .contains(&(NVME_PCI_BAR_BASE, NVME_MMIO_BYTES))
+                .contains(&(NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES))
         );
 
         write(bus, bar(0x24), 0x000f_000f);

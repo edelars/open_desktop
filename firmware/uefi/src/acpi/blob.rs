@@ -464,7 +464,7 @@ pub const LINUX_NVME_DEVICES: [DeviceEntry; 9] = [
         gsi: 16,
         irq_flags: IRQ_LEVEL | IRQ_ACTIVE_LOW,
         param0: 4,
-        ..mmio(device_type::NVME, 0xFC00_4000, 0x2000)
+        ..mmio(device_type::NVME, 0xFC00_4000, 0x4000)
     },
     STAGE4_DEVICES[7],
 ];

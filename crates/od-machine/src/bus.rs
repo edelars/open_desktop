@@ -788,8 +788,10 @@ const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
     (crate::IO_APIC_MMIO_BASE, crate::IO_APIC_MMIO_SIZE),
 ];
 
-const NVME_PCI_WINDOW: crate::page_walk::MmioWindow =
-    (crate::nvme::NVME_PCI_BAR_BASE, crate::NVME_MMIO_BYTES);
+const NVME_PCI_WINDOW: crate::page_walk::MmioWindow = (
+    crate::nvme::NVME_PCI_BAR_BASE,
+    crate::nvme::NVME_PCI_BAR_BYTES,
+);
 const SET_STEP_NVME_WINDOWS: [crate::page_walk::MmioWindow; 2] = [ECAM_WINDOW, NVME_PCI_WINDOW];
 const SET_STEP_APIC_NVME_WINDOWS: [crate::page_walk::MmioWindow; 4] = [
     SET_STEP_APIC_WINDOWS[0],

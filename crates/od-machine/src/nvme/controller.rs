@@ -19,11 +19,12 @@
 use super::admin::{self, AerState, ErrorLog, Features};
 use super::backend::NvmeBackend;
 use super::io::{self, IoStats};
+use super::msix::{self, Msix};
 use super::queues::{
     BusDma, CQE_BYTES, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome,
     SQE_BYTES, Status, SubmissionQueue, encode_cqe,
 };
-use super::{NVME_MMIO_BYTES, NVME_PCI_BAR_BASE};
+use super::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES};
 use crate::pci_ecam::{
     COMMAND_BUS_MASTER, COMMAND_INTX_DISABLE, COMMAND_MEMORY_ENABLE, PciFunction, Type0Config,
 };
@@ -195,7 +196,21 @@ pub(crate) struct NvmeState {
     pub(super) backend: Option<BackendSlot>,
     pub(super) io: IoStats,
     pending: bool,
-    pci: Option<Type0Config>,
+    pci: Option<NvmePci>,
+}
+
+#[derive(Debug)]
+struct NvmePci {
+    config: Type0Config,
+    msix: Msix,
+}
+
+impl NvmePci {
+    fn deliver_pending(&mut self) {
+        if self.config.command() & COMMAND_BUS_MASTER != 0 {
+            self.msix.deliver_pending();
+        }
+    }
 }
 
 /// The attached backend; `Debug` prints only its size (the trait has no `Debug`).
@@ -248,20 +263,29 @@ impl NvmeState {
 
     fn memory_decode_enabled(&self) -> bool {
         self.pci.as_ref().is_none_or(|pci| {
-            pci.command() & COMMAND_MEMORY_ENABLE != 0
-                && pci.memory_bar0_address() == NVME_PCI_BAR_BASE
+            pci.config.command() & COMMAND_MEMORY_ENABLE != 0
+                && pci.config.memory_bar0_address() == NVME_PCI_BAR_BASE
         })
     }
 
     fn dma_enabled(&self) -> bool {
         self.pci
             .as_ref()
-            .is_none_or(|pci| pci.command() & COMMAND_BUS_MASTER != 0)
+            .is_none_or(|pci| pci.config.command() & COMMAND_BUS_MASTER != 0)
+    }
+
+    pub(super) fn interrupt_vector_count(&self) -> u16 {
+        if self.pci.as_ref().is_some_and(|pci| pci.msix.enabled()) {
+            QUEUE_SLOTS as u16
+        } else {
+            1
+        }
     }
 
     /// PCIe transport revision 1.4 §3.5.1, pin mode with the single vector 0.
     fn interrupt_pending(&self) -> bool {
-        self.intms & 1 == 0
+        self.interrupt_vector_count() == 1
+            && self.intms & 1 == 0
             && self
                 .cqs
                 .iter()
@@ -302,7 +326,7 @@ impl NvmeState {
             return;
         }
         self.sqs[0] = Some(SubmissionQueue::new(self.asq, sq_entries as u16, 0));
-        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true));
+        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true, 0));
         self.csts = CSTS_RDY;
     }
 
@@ -524,6 +548,12 @@ impl NvmeState {
             return false;
         }
         cq.advance_tail();
+        if cq.interrupt_enabled
+            && let Some(pci) = &mut self.pci
+        {
+            // DMA has committed the CQE and the caller checked Bus Master Enable.
+            pci.msix.post(cq.interrupt_vector);
+        }
         true
     }
 
@@ -669,16 +699,18 @@ impl PciFunction for NvmePciFunction {
         let mut state = lock(&self.0.state);
         let pending = register & !3 == 0x04 && state.interrupt_pending();
         let pci = state.pci.as_mut().expect("PCI frontend has a PCI config");
-        pci.observe_interrupt(pending);
-        pci.config_read(register, width)
+        pci.config.observe_interrupt(pending);
+        pci.msix
+            .config_read(register, width)
+            .unwrap_or_else(|| pci.config.config_read(register, width))
     }
 
     fn config_write(&mut self, register: u16, width: AccessWidth, value: u32) {
-        lock(&self.0.state)
-            .pci
-            .as_mut()
-            .expect("PCI frontend has a PCI config")
-            .config_write(register, width, value);
+        let mut state = lock(&self.0.state);
+        let pci = state.pci.as_mut().expect("PCI frontend has a PCI config");
+        pci.config.config_write(register, width, value);
+        pci.msix.write_control(register, width, value);
+        pci.deliver_pending();
     }
 }
 
@@ -697,15 +729,26 @@ impl NvmeDevice {
 
     pub(crate) fn new_pci(
         config: NvmeConfig,
+        lapic: crate::LocalApicHandle,
     ) -> Result<(Self, NvmeHandle, NvmePciFunction), NvmeConfigError> {
         let (device, handle) = Self::new_with_handle(config)?;
         // Reserved test endpoint identity; class/prog-if are the standard NVMe values.
         // The driver binds by class, never a specific hardware vendor or quirk.
-        let mut pci = Type0Config::new(0xD1A6, 0x0008, 0, 0x01_08_02, Some(NVME_MMIO_BYTES as u32))
-            .expect("NVMe has a valid constant class and BAR size");
+        let mut pci = Type0Config::new(
+            0xD1A6,
+            0x0008,
+            0,
+            0x01_08_02,
+            Some(NVME_PCI_BAR_BYTES as u32),
+        )
+        .expect("NVMe has a valid constant class and BAR size");
         pci.configure_64_bit_memory_bar0(NVME_PCI_BAR_BASE);
         pci.configure_inta();
-        lock(&handle.state).pci = Some(pci);
+        pci.set_capability_pointer(msix::CAPABILITY_OFFSET);
+        lock(&handle.state).pci = Some(NvmePci {
+            config: pci,
+            msix: Msix::new(lapic),
+        });
         let function = NvmePciFunction(handle.clone());
         Ok((device, handle, function))
     }
@@ -735,11 +778,13 @@ impl NvmeHandle {
         Ok(())
     }
 
-    pub(crate) fn pci_interrupt_line(&self) -> bool {
-        let state = lock(&self.state);
-        state.pci.as_ref().is_some_and(|pci| {
-            pci.command() & COMMAND_INTX_DISABLE == 0 && state.interrupt_pending()
-        })
+    pub(crate) fn sample_pci_interrupts(&self) -> bool {
+        let mut state = lock(&self.state);
+        let Some(pci) = &mut state.pci else {
+            return false;
+        };
+        pci.deliver_pending();
+        pci.config.command() & COMMAND_INTX_DISABLE == 0 && state.interrupt_pending()
     }
 
     pub(crate) fn has_pci_transport(&self) -> bool {
@@ -787,6 +832,11 @@ impl BusDevice for NvmeDevice {
         if !state.memory_decode_enabled() {
             return Ok(u64::MAX >> (64 - access.width.bytes() * 8));
         }
+        if access.offset >= msix::TABLE_OFFSET
+            && let Some(pci) = &state.pci
+        {
+            return pci.msix.read_bar(access.offset, access.width);
+        }
         if access.offset >= reg::DOORBELLS {
             return NvmeState::read_doorbell(access.offset);
         }
@@ -799,6 +849,13 @@ impl BusDevice for NvmeDevice {
         }
         let mut state = lock(&self.state);
         if !state.memory_decode_enabled() {
+            return Ok(());
+        }
+        if access.offset >= msix::TABLE_OFFSET
+            && let Some(pci) = &mut state.pci
+        {
+            pci.msix.write_bar(access.offset, access.width, value)?;
+            pci.deliver_pending();
             return Ok(());
         }
         if access.offset >= reg::DOORBELLS {

@@ -84,7 +84,7 @@ pub(super) struct Features {
     /// `(NSQA, NCQA)`, 0's based, once the host has set them.
     queues: Option<(u16, u16)>,
     interrupt_coalescing: u16,
-    interrupt_vector_disable: bool,
+    interrupt_vector_disable: u32,
     write_atomicity: u32,
     async_event_config: u32,
 }
@@ -98,7 +98,7 @@ impl Default for Features {
             error_recovery_tler: 0,
             queues: None,
             interrupt_coalescing: 0,
-            interrupt_vector_disable: false,
+            interrupt_vector_disable: 0,
             write_atomicity: 0,
             async_event_config: 0,
         }
@@ -343,14 +343,15 @@ fn create_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
     }
     let entries = queue_geometry(command)?;
     let interrupt_enabled = command.cdw11 & 0b10 != 0;
-    // Pin-based interrupts have a single vector, 0.
-    if interrupt_enabled && command.cdw11 >> 16 != 0 {
+    let interrupt_vector = (command.cdw11 >> 16) as u16;
+    if interrupt_enabled && interrupt_vector >= state.interrupt_vector_count() {
         return Err(Status::INVALID_INTERRUPT_VECTOR);
     }
     state.cqs[qid] = Some(CompletionQueue::new(
         command.prp1,
         entries,
         interrupt_enabled,
+        interrupt_vector,
     ));
     Ok(Completion::ok(0))
 }
@@ -699,6 +700,7 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         return Err(Status::INVALID_FIELD);
     }
     let value = command.cdw11;
+    let interrupt_vectors = state.interrupt_vector_count();
     let features = &mut state.features;
     match (command.cdw10 & 0xFF) as u8 {
         FID_ARBITRATION => features.arbitration = value & 0xFFFF_FF07,
@@ -744,11 +746,21 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         }
         FID_INTERRUPT_COALESCING => features.interrupt_coalescing = (value & 0xFFFF) as u16,
         FID_INTERRUPT_VECTOR_CONFIG => {
-            // Pin-based interrupts have a single vector, 0.
-            if value & 0xFFFF != 0 || value >> 17 != 0 {
+            let vector = value as u16;
+            if vector >= interrupt_vectors || value >> 17 != 0 {
                 return Err(Status::INVALID_FIELD);
             }
-            features.interrupt_vector_disable = value >> 16 != 0;
+            if interrupt_vectors > 1
+                && !state.cqs[1..]
+                    .iter()
+                    .flatten()
+                    .any(|cq| cq.interrupt_enabled && cq.interrupt_vector == vector)
+            {
+                return Err(Status::INVALID_FIELD);
+            }
+            let disable = (value >> 16) << vector;
+            features.interrupt_vector_disable =
+                (features.interrupt_vector_disable & !(1 << vector)) | disable;
         }
         FID_WRITE_ATOMICITY => features.write_atomicity = value & 1,
         FID_ASYNC_EVENT_CONFIG => {
@@ -810,10 +822,11 @@ fn get_features(state: &NvmeState, command: &Command) -> Result<Completion, Stat
         }
         FID_INTERRUPT_COALESCING => u32::from(features.interrupt_coalescing),
         FID_INTERRUPT_VECTOR_CONFIG => {
-            if value & 0xFFFF != 0 {
+            let vector = value as u16;
+            if vector >= state.interrupt_vector_count() {
                 return Err(Status::INVALID_FIELD);
             }
-            u32::from(features.interrupt_vector_disable) << 16
+            u32::from(vector) | (((features.interrupt_vector_disable >> vector) & 1) << 16)
         }
         FID_WRITE_ATOMICITY => features.write_atomicity,
         FID_ASYNC_EVENT_CONFIG => features.async_event_config,

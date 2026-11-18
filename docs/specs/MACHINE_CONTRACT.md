@@ -3512,13 +3512,11 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 ## NVMe controller (S7-16, срезы A и B)
 
-**Статус: срезы A (управление) и B (ввод-вывод `Read`, `Write`, `Flush`) реализованы
-исполнителем, ожидают ревью.** Контракт устройства,
+**Статус.** Реализованы управление, ввод-вывод `Read`, `Write`, `Flush` и PCI-прерывания в opt-in профиле. Контракт устройства,
 регистры, команды, границы, разрывы и значения без сверки со спецификацией —
 [NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
 
-- **Шина.** Контроллер — `BusDevice` на одном `Mmio`-регионе `[0xFC00_1000, +0x2000)`
-  (`NVME_MMIO_BASE`, `NVME_MMIO_BYTES`), как дисплей; `MachineBus` не менялся.
+- **Шина.** В firmware-профиле контроллер занимает регион `[0xFC00_1000, 0xFC00_3000)`. В PCI-профиле `MachineBus` открывает BAR0/1 `[0xFC00_4000, 0xFC00_8000)` через MMIO, включая таблицу MSI-X и PBA.
   Ошибки доступа к окну — `DeviceError` по классам контракта шины:
   `UnsupportedWidth` (байт, слово, `Qword` на doorbell), `Misaligned`,
   `CrossesRegister` (`Qword` через границу регистров), `ReadOnly`, `WriteOnly`
@@ -3532,6 +3530,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   проходят через `committed_write`. PRP в MMIO, ROM, framebuffer и вне карты —
   статус `Data Transfer Error` команды, не доступ и не паника. Обращение к очереди
   не в RAM — `CSTS.CFS`.
+- **Прерывания.** PCI-профиль доставляет INTA через IOAPIC, а MSI-X — напрямую в IRR целевого Local APIC после записи CQE. Фиксированный MMIO-профиль использует опрос. [Контракт прерываний NVMe](NVME_DEVICE.md#31-прерывания-pci).
 - **Плата.** `FirmwareBoardConfig::nvme: Option<NvmeConfig>` (по умолчанию `None`):
   при `Some` в таблицу устройств handoff block добавляется запись кода 8 (`version_minor = 1`),
   в карту — регион `Mmio`, на шину — устройство; `LoadedFirmwareBoard::nvme()` отдаёт handle;

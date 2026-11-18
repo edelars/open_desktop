@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx. Постоянный RAW backend реализован в `od-host` (раздел 14). Добавлены страницы журналов `0x00`, `0x05` и `0x12`. Открыты MSI-X и оставшаяся сверка по разделу 11.
+**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx и пятью векторами MSI-X. Постоянный RAW backend реализован в `od-host` (раздел 14). Добавлены страницы журналов `0x00`, `0x05` и `0x12`. Открыты проверка драйвера в запущенном госте и оставшаяся сверка по разделу 11.
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -42,7 +42,15 @@
 - **Handoff block.** В v1.0 поля NVMe нет (коды 8–15 зарезервированы). Поэтому устройство добавляется как запись кода 8 и повышает `version_minor` до 1 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) 6.3–6.4): `PRESENT = 1`, MMIO, `base = 0xFC00_1000`, `length = 0x2000`, `gsi = 0xFFFF_FFFF` (нет IRQ), `irq_flags = 0`, `param0 = param1 = 0`; в таблицу регионов добавляется регион `MMIO` с `owner_device = 7`.
 - **Включается опционально:** `FirmwareBoardConfig::nvme: Option<NvmeConfig>`. По умолчанию `None`: handoff остаётся v1.0 байт в байт (эталон `REFERENCE_HANDOFF_HEX` не менялся), окна нет, `Unmapped`. При `Some` образ обязан объявлять `handoff_minor_max ≥ 1`, иначе загрузка отклоняется (`ImageHeader { field: "handoff_minor_max" }`). Прошивка в репозитории (`firmware/uefi`) пока понимает только minor 0 и NVMe-запись не читает — это работа S7-17.
 - Устройство подключается к шине только когда запись PRESENT; без конфигурации оно не существует и не объявляется.
-- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_6000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. IRQ идёт через level/active-low IOAPIC, учитывает PCI INTx Disable, `INTMS/INTMC` и флаг IEN очереди. Неподтверждённые CQE удерживают линию, запись CQ head снимает запрос после подтверждения всех таких CQE. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера в запущенном госте ещё не проверялась.
+- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_8000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера в запущенном госте ещё не проверялась.
+
+### 3.1. Прерывания PCI
+
+С выключенным MSI-X очередь с `IEN = 1` удерживает level/active-low INTA, пока остаются неподтверждённые CQE. На линию влияют PCI Command.INTx Disable и `INTMS/INTMC`. При MSI-X Enable линия INTA снимается на следующей выборке источника. `INTMS/INTMC` управляют только INTA.
+
+MSI-X capability по смещению `0x50` объявляет пять векторов. Таблица из пяти записей по 16 байт расположена с `BAR0 + 0x2000`. PBA расположен с `BAR0 + 0x3000`. Отдельные страницы таблицы и PBA входят в окно PCI. Биты Enable и Function Mask доступны для записи. В каждой табличной записи доступны адрес сообщения, данные и бит Vector Mask. У PBA доступны только чтения. При создании платы все векторы замаскированы, `Enable = Function Mask = 0`, PBA пуст. [PCIe Transport 1.4, §3.8.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=24).
+
+Admin CQ использует вектор 0, I/O CQ выбирает вектор через `IV` в Create I/O CQ. После успешной записи CQE контроллер формирует событие для соответствующего вектора. Function Mask или Vector Mask удерживают его в PBA. Запись CQ head не очищает PBA. Событие отправляется при снятии обеих масок и наличии BME. `CC.EN` сбрасывает очереди, а состояние MSI-X относится к PCI-функции и сохраняется. Поддерживается Fixed доставка edge-triggered в физический xAPIC ID существующего vCPU. Для сообщения вне этого формата, несуществующей цели или отказа LAPIC флаг PBA остаётся установленным. Повторная доставка пробуется при записи конфигурации, записи таблицы и выборке источника PCI IRQ. [PCIe Transport 1.4, §3.5.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=15), [Intel SDM Vol. 3A, Message Signalled Interrupts](https://cdrdv2-public.intel.com/812386/253668-sdm-vol-3a.pdf).
 
 ## 3. Модель обслуживания (DMA)
 
@@ -62,7 +70,7 @@
 |---|---|---|
 | `0x00` | `CAP` (RO, 64) | `MQES = 1023` (1024 записи); `CQR = 1` (только физически непрерывные очереди); `AMS = 0` (только round robin); `TO = 1` (500 мс; `RDY` меняется синхронно); `DSTRD = 0`; `NSSRS = 0`; `CSS`: бит 37 (NVM command set); `MPSMIN = MPSMAX = 0` (страница 4 KiB); `BPS`, `CPS`, `PMRS`, `CMBS`, `NSSS`, `CRMS` = 0. Значение `0x0000_0020_0101_03FF` |
 | `0x08` | `VS` (RO) | `0x0002_0000` (2.0.0). Заявлена 2.0.0, а не 2.4.0: набор реализованного (раздел 11) не претендует на более новую редакцию |
-| `0x0C` | `INTMS` (RW1S) | Маска pin-based прерываний (запись 1 ставит бит, чтение возвращает маску). Прерывание не доставляется (раздел 11), маска хранится |
+| `0x0C` | `INTMS` (RW1S) | Маска pin-based прерываний. Запись 1 ставит бит, чтение возвращает маску. Бит 0 маскирует INTA в PCI-профиле при выключенном MSI-X |
 | `0x10` | `INTMC` (RW1C) | Запись 1 снимает бит; чтение возвращает ту же маску |
 | `0x14` | `CC` (RW) | Записываемые биты: `EN`, `CSS[6:4]`, `MPS[10:7]`, `AMS[13:11]`, `SHN[15:14]`, `IOSQES[19:16]`, `IOCQES[23:20]`. `CRIME` не реализован. Для включения нужны `CSS = 0`, `MPS = 0` и `AMS = 0`. При создании I/O-очереди поддерживаются `IOSQES = 6` (SQE 64 байта) и `IOCQES = 4` (CQE 16 байт) |
 | `0x1C` | `CSTS` (RO) | `RDY` бит 0, `CFS` бит 1, `SHST[3:2]`; `NSSRO`, `PP` = 0 |
@@ -111,7 +119,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | `0x01` | Create I/O SQ | QID — `1..=NSQA+1`, не занят. `CDW10[31:16]` = QSIZE (0-based), `CDW11`: `PC` (бит 0, обязан быть 1), `CQID[31:16]`. Порядок проверок: QID → CQID (нет такой CQ — `Completion Queue Invalid`, SCT 1, SC `0x00`) → `IOSQES = 6` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC = 0` или `PRP1` не выровнен по странице (`Invalid Field`). `QPRIO` игнорируется (WRR нет). Область памяти очереди при создании не проверяется |
 | `0x02` | Get Log Page | раздел 9 |
 | `0x04` | Delete I/O CQ | как Delete SQ; если к CQ привязана SQ — `Invalid Queue Deletion` (SCT 1, SC `0x0C`) |
-| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят. `CDW11` содержит `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок проверок — QID → `IOCQES = 4` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC`/выравнивание → `IEN = 1` с `IV ≠ 0` (`Invalid Interrupt Vector`, SCT 1, SC `0x08`, при pin-based вектор один, 0). Профиль firmware MMIO использует опрос. Профиль PCI доставляет INTx согласно `IEN` и `INTMS` (раздел 13) |
+| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят. `CDW11` содержит `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок проверок — QID → `IOCQES = 4` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC`/выравнивание → при `IEN = 1` допустимый `IV` (`0` в режиме INTx, `0..=4` при MSI-X, иначе `Invalid Interrupt Vector`, SCT 1, SC `0x08`). Профиль firmware MMIO использует опрос |
 | `0x06` | Identify | раздел 8 |
 | `0x08` | Abort | `CDW10`: `SQID[15:0]`, `CID[31:16]`. Несуществующая SQ — `Invalid Field`. Иначе успех с `DW0` бит 0 = 1 (команда не прервана): к моменту исполнения `Abort` все ранее извлечённые команды уже завершены (раздел 3). Лимит одновременных `Abort` объявлен `ACL = 3` и не может быть превышен. Прерывать нечего: команд в работе нет |
 | `0x09` | Set Features | раздел 9 |
@@ -193,7 +201,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | `0x05` | Error Recovery | `TLER[15:0]`, `DULBE` не поддержан (`Invalid Field`); `NSID` — 0, 1 или `0xFFFF_FFFF`, иначе `Invalid Namespace or Format` |
 | `0x07` | Number of Queues | Get — текущее число (по умолчанию 4 SQ и 4 CQ, 0-based `3`, `DW0 = NSQA \| NCQA << 16`); Set — `NSQR/NCQR`, значение больше доступного усекается, `0xFFFF` — `Invalid Field`; после создания любой I/O-очереди — `Command Sequence Error` |
 | `0x08` | Interrupt Coalescing | `THR/TIME` хранятся, на доставку не влияют |
-| `0x09` | Interrupt Vector Configuration | только `IV = 0`, `CD` хранится; иное — `Invalid Field` |
+| `0x09` | Interrupt Vector Configuration | `IV = 0` в режиме INTx, `IV = 0..=4` при MSI-X. Set Features в режиме MSI-X требует I/O CQ с `IEN = 1` и соответствующим вектором. `CD` хранится отдельно для каждого вектора. Get Features возвращает `IV` и `CD` |
 | `0x0A` | Write Atomicity Normal | `DN` хранится |
 | `0x0B` | Asynchronous Event Configuration | допустимы только биты `[7:0]` (SMART/Health critical warning); `OAES = 0` |
 
@@ -228,8 +236,8 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Firmware Image Download/Commit | вне scope; `FRMW` объявляет слот 1 только для чтения |
 | Device Self-test, Format NVM, Sanitize, Security Send/Receive, Keep Alive, Directives, Virtualization, Doorbell Buffer Config | вне scope; `Invalid Command Opcode` |
 | SGL | вне scope; `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
-| Доставка прерываний | нет IRQ-маршрута (`gsi = 0xFFFF_FFFF`); `INTMS/INTMC`, `IEN`, `Interrupt Coalescing` хранятся без эффекта; прошивка опрашивает CQ. Pin-based через IOAPIC — отдельная часть S7-16; MSI-X — после S4-30 |
-| PCI-привязка (class `010802`, BAR0, MSI-X) | blocked до S4-30; до неё контроллер виден только прошивке |
+| Прерывания в профиле firmware MMIO | `gsi = 0xFFFF_FFFF`. Прошивка опрашивает CQ |
+| Доставка MSI-X в PCI-профиле | Fixed edge в физический xAPIC ID. Гостевые драйверы и другие форматы сообщений остаются непроверенными |
 | Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
 | `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR, ключевые события температуры | не реализованы; `CAP` не объявляет их |

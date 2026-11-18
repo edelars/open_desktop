@@ -214,10 +214,16 @@ pub(crate) struct CompletionQueue {
     pub(crate) phase: bool,
     /// Interrupt enable (`IEN`); the admin CQ has interrupts enabled implicitly.
     pub(crate) interrupt_enabled: bool,
+    pub(crate) interrupt_vector: u16,
 }
 
 impl CompletionQueue {
-    pub(crate) const fn new(base: u64, entries: u16, interrupt_enabled: bool) -> Self {
+    pub(crate) const fn new(
+        base: u64,
+        entries: u16,
+        interrupt_enabled: bool,
+        interrupt_vector: u16,
+    ) -> Self {
         Self {
             base,
             entries,
@@ -225,6 +231,7 @@ impl CompletionQueue {
             tail: 0,
             phase: true,
             interrupt_enabled,
+            interrupt_vector,
         }
     }
     /// A queue with one free slot left is full: head == tail would be "empty".
@@ -612,7 +619,7 @@ mod tests {
 
     #[test]
     fn completion_queue_flips_the_phase_on_wrap_and_reports_full() {
-        let mut cq = CompletionQueue::new(0x1000, 4, false);
+        let mut cq = CompletionQueue::new(0x1000, 4, false, 0);
         assert!(cq.phase);
         for _ in 0..3 {
             assert!(!cq.is_full());

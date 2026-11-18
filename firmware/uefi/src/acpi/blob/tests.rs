@@ -72,9 +72,9 @@ fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
         0x87, 0x17, 0, 0, 0x0c, 1, // DWordMemory, producer, positive decode, fixed, RW.
         0, 0, 0, 0, // Granularity.
         0, 0x40, 0, 0xfc, // Minimum.
-        0xff, 0x5f, 0, 0xfc, // Maximum.
+        0xff, 0x7f, 0, 0xfc, // Maximum.
         0, 0, 0, 0, // Translation.
-        0, 0x20, 0, 0, // Length.
+        0, 0x40, 0, 0, // Length.
     ];
     let route = [
         0x08, b'_', b'P', b'R', b'T', 0x12, 0x0e, 1, 0x12, 0x0b, 4, 0x0c, 0xff, 0xff, 4, 0, 0, 0,

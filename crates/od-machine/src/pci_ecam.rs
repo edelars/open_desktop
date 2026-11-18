@@ -134,6 +134,7 @@ pub struct Type0Config {
     interrupt_line: u8,
     interrupt_pin: u8,
     interrupt_status: bool,
+    capability_pointer: u8,
     bar0_mask: u32,
     bar0: u32,
     bar0_upper: Option<u32>,
@@ -165,6 +166,7 @@ impl Type0Config {
             interrupt_line: 0,
             interrupt_pin: 0,
             interrupt_status: false,
+            capability_pointer: 0,
             bar0_mask,
             bar0: 0,
             bar0_upper: None,
@@ -195,6 +197,10 @@ impl Type0Config {
         self.interrupt_line = 0xff;
     }
 
+    pub(crate) fn set_capability_pointer(&mut self, offset: u8) {
+        self.capability_pointer = offset;
+    }
+
     pub(crate) fn observe_interrupt(&mut self, asserted: bool) {
         self.interrupt_status = asserted;
     }
@@ -206,6 +212,11 @@ impl Type0Config {
                 u32::from(self.command)
                     | if self.interrupt_status {
                         STATUS_INTERRUPT
+                    } else {
+                        0
+                    }
+                    | if self.capability_pointer != 0 {
+                        1 << 20 // PCI Status: Capabilities List
                     } else {
                         0
                     }
@@ -221,6 +232,7 @@ impl Type0Config {
                     }
             }
             0x14 => self.bar0_upper.unwrap_or(0),
+            0x34 => u32::from(self.capability_pointer),
             0x3C => u32::from(self.interrupt_line) | (u32::from(self.interrupt_pin) << 8),
             _ => 0,
         }
