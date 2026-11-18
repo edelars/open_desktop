@@ -463,6 +463,12 @@ fn run_parallel(
     let (status, exit, error) = match &report.finished {
         Stage6SmpProbeParallelFinish::AllIdle => ("guest_idle", "all_idle", Value::Null),
         Stage6SmpProbeParallelFinish::BudgetExhausted => ("work_limit", "budget", Value::Null),
+        Stage6SmpProbeParallelFinish::GuestStop(od_machine::MachineStopReason::Reset) => {
+            ("guest_stop", "acpi_reset", Value::Null)
+        }
+        Stage6SmpProbeParallelFinish::GuestStop(od_machine::MachineStopReason::Shutdown) => {
+            ("guest_stop", "acpi_shutdown", Value::Null)
+        }
         Stage6SmpProbeParallelFinish::Timeout => ("work_limit", "timeout", Value::Null),
         Stage6SmpProbeParallelFinish::Error { cpu, error } => (
             "guest_error",
@@ -531,7 +537,7 @@ fn run_parallel(
         "lapic_vectors": lapic_vectors,
         "error": error,
     });
-    if status == "guest_idle" {
+    if status == "guest_idle" || status == "guest_stop" {
         Ok((result, 0))
     } else {
         Err((result, EXIT_GUEST))

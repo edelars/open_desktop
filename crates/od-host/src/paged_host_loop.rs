@@ -319,6 +319,8 @@ pub enum PagedHostLoopExit {
     InterpreterIntegration(String),
     /// The CPL0 quantum returns to reconcile a timer deadline or queued device work.
     DeviceBoundary,
+    /// The board latched a shutdown or reset request from the guest.
+    MachineStop(od_machine::MachineStopReason),
 }
 
 /// Counters and exit of one call of [`run_paged_host_loop`].
@@ -767,9 +769,15 @@ pub(crate) fn run_paged_host_loop_core(
         };
         // Deliver IRQs before native and interpreted steps. A delivery retires nothing.
         if let LoopBusRef::SharedSet(machine, _, env) = &mut bus {
-            if steps_started == 0 && env.devices.pending() {
-                report.exit = PagedHostLoopExit::DeviceBoundary;
-                return report;
+            if steps_started == 0 {
+                if let Some(reason) = env.devices.stop_request() {
+                    report.exit = PagedHostLoopExit::MachineStop(reason);
+                    return report;
+                }
+                if env.devices.pending() {
+                    report.exit = PagedHostLoopExit::DeviceBoundary;
+                    return report;
+                }
             }
             match env.board_irq.deliver_pending(
                 state,
@@ -922,6 +930,7 @@ pub(crate) fn run_paged_host_loop_core(
         report.jit_refusals += 1;
         // S6-42c: what the CPL0-set step adds to the probe report (set mode only).
         let mut set_step: Option<(bool, u64, bool)> = None;
+        let mut machine_stop = None;
         let quantum = match &mut bus {
             LoopBusRef::Exclusive(bus) => od_machine::run_paged_probe(
                 state,
@@ -964,6 +973,9 @@ pub(crate) fn run_paged_host_loop_core(
                 ) {
                     Ok(step) => {
                         *env.skip_first_boundary = step.partial_rep;
+                        if step.port_accessed {
+                            machine_stop = env.devices.stop_request();
+                        }
                         set_step = Some((
                             step.partial_rep,
                             step.delivered_exceptions,
@@ -996,6 +1008,10 @@ pub(crate) fn run_paged_host_loop_core(
         report.steps_interpreter += retired;
         if let Some((_, delivered, _)) = set_step {
             report.exceptions_delivered += delivered;
+        }
+        if let Some(reason) = machine_stop {
+            report.exit = PagedHostLoopExit::MachineStop(reason);
+            return report;
         }
         match quantum.exit {
             od_machine::PagedProbeExit::BudgetExhausted => {

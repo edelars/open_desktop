@@ -379,6 +379,7 @@ impl JitHostQuantum {
                 PagedHostLoopExit::Interpreter(PagedProbeExit::Shutdown) => {
                     HostQuantumExit::Shutdown
                 }
+                PagedHostLoopExit::MachineStop(reason) => HostQuantumExit::MachineStop(reason),
                 PagedHostLoopExit::Interpreter(_) => {
                     return Err("host JIT quantum: the interpreter refused the instruction");
                 }

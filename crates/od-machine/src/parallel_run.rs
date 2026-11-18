@@ -71,7 +71,7 @@ use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, NoIrqSource};
 use crate::smp_scheduler::{Executed, StopAck};
 use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary, Vcpu};
-use crate::{ExecutionMode, LocalApicHandle, PhysicalMemory};
+use crate::{ExecutionMode, LocalApicHandle, MachineStopReason, PhysicalMemory};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -141,6 +141,7 @@ pub(crate) enum ParallelFinish {
     /// The controller asked for the end (or its closure returned).
     Stopped,
     BudgetExhausted,
+    GuestStop(MachineStopReason),
     /// Every vCPU waits for SIPI, has shut down, or is halted with nothing that could wake it.
     AllIdle,
     /// A vCPU's host call, boundary or clock charge failed; every thread was stopped.
@@ -152,6 +153,16 @@ pub(crate) enum ParallelFinish {
     Panicked {
         cpu: usize,
     },
+}
+
+impl ParallelFinish {
+    fn priority(&self) -> u8 {
+        match self {
+            Self::Stopped | Self::BudgetExhausted | Self::AllIdle => 0,
+            Self::GuestStop(_) => 1,
+            Self::Error { .. } | Self::Panicked { .. } => 2,
+        }
+    }
 }
 
 /// What one vCPU's thread did.
@@ -353,6 +364,8 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) budget: u64,
     pub(crate) stop: &'a mut dyn FnMut() -> bool,
     pub(crate) native_stop: Option<&'a AtomicU8>,
+    /// A guest machine stop requested by the host quantum, published after its charge.
+    pub(crate) machine_stop: &'a mut Option<MachineStopReason>,
 }
 
 /// One quantum of a vCPU: the caller builds its CPL0 set and calls
@@ -488,9 +501,17 @@ impl SharedState<'_> {
         }
     }
 
-    /// The first reason wins; every thread is told to end.
+    /// Worker failures take precedence over a guest stop, which takes precedence over ordinary
+    /// completion. Retain the first reason of equal priority.
     fn finish_with(&self, reason: ParallelFinish) {
-        lock(&self.reason).get_or_insert(reason);
+        let mut current = lock(&self.reason);
+        if current
+            .as_ref()
+            .is_none_or(|prior| prior.priority() < reason.priority())
+        {
+            *current = Some(reason);
+        }
+        drop(current);
         self.finish.store(true, SEQ);
         self.kicks.kick_all();
         self.wake_controller();
@@ -945,7 +966,7 @@ impl Worker<'_, '_, '_, '_> {
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
-        let executed = if cpu == BOOT_VCPU_INDEX && sh.source_free {
+        let (executed, machine_stop) = if cpu == BOOT_VCPU_INDEX && sh.source_free {
             // The lock of the board's source and the clock owner's lock are held for the budget
             // only: the call itself runs under none of them.
             let budget = {
@@ -993,7 +1014,9 @@ impl Worker<'_, '_, '_, '_> {
             .remaining
             .try_update(SEQ, SEQ, |left| Some(left.saturating_sub(executed.retired)))
             .map_or(0, |before| before.saturating_sub(executed.retired));
-        if left_after == 0 {
+        if let Some(reason) = machine_stop {
+            sh.finish_with(ParallelFinish::GuestStop(reason));
+        } else if left_after == 0 {
             sh.finish_with(ParallelFinish::BudgetExhausted);
         }
         Ok(())
@@ -1010,12 +1033,13 @@ impl Worker<'_, '_, '_, '_> {
         gate: &WorkerGate<'_, '_>,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<(Executed, Option<MachineStopReason>), FirmwareBoardError> {
         let cpu = self.cpu;
-        let quantum = |vcpu: &mut Vcpu,
-                       source: &mut dyn BoardIrqSource,
-                       budget: u64,
-                       stop: &mut dyn FnMut() -> bool| {
+        let mut machine_stop = None;
+        let mut quantum = |vcpu: &mut Vcpu,
+                           source: &mut dyn BoardIrqSource,
+                           budget: u64,
+                           stop: &mut dyn FnMut() -> bool| {
             (self.run)(QuantumCall {
                 env: self.env,
                 vcpu,
@@ -1026,10 +1050,12 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 stop,
                 native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
+                machine_stop: &mut machine_stop,
             })
         };
         if vcpu.legacy.is_none() {
-            return quantum(vcpu, source, budget, stop);
+            let executed = quantum(vcpu, source, budget, stop)?;
+            return Ok((executed, machine_stop));
         }
         let legacy = crate::ap_legacy_exec::run_legacy_on(vcpu, self.memory(), cpu, budget, stop)?;
         let mut executed = legacy.executed;
@@ -1040,7 +1066,7 @@ impl Worker<'_, '_, '_, '_> {
             executed.partial_rep = rest.partial_rep;
             executed.device_ns += rest.device_ns;
         }
-        Ok(executed)
+        Ok((executed, machine_stop))
     }
 }
 
@@ -2136,6 +2162,64 @@ mod tests {
         .unwrap();
         assert_eq!(report.finished, ParallelFinish::Panicked { cpu: 1 });
         assert_joined(&report, 2);
+    }
+
+    #[test]
+    fn a_guest_stop_preserves_a_worker_error_in_either_publication_order() {
+        use std::time::Instant;
+
+        for first in [0, 1] {
+            let mut board = board(2);
+            system(&mut board, false);
+            let cr3 = board.cr3();
+            for (cpu, code, stack) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+                install(&mut board, cpu, long_state(code, stack, cr3, false), 0xD01);
+            }
+            let entered = [AtomicBool::new(false), AtomicBool::new(false)];
+            let quantum = |call: QuantumCall<'_, '_>| {
+                entered[call.cpu].store(true, SEQ);
+                let deadline = Instant::now() + WAIT;
+                while !entered[1 - call.cpu].load(SEQ) {
+                    assert!(Instant::now() < deadline, "both workers must enter");
+                    std::thread::yield_now();
+                }
+                if call.cpu != first {
+                    while !(call.stop)() {
+                        assert!(
+                            Instant::now() < deadline,
+                            "first worker must publish a stop"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+                if call.cpu == 0 {
+                    *call.machine_stop = Some(MachineStopReason::Shutdown);
+                    Ok(Executed {
+                        retired: 1,
+                        partial_rep: false,
+                        device_ns: 0,
+                    })
+                } else {
+                    Err(FirmwareBoardError::Config("expected host error"))
+                }
+            };
+            let (report, ()) = run_threads(&mut board, config(64, u64::MAX), &quantum, |control| {
+                assert!(control.wait_finished(WAIT));
+            })
+            .unwrap();
+            assert!(
+                matches!(
+                    report.finished,
+                    ParallelFinish::Error {
+                        cpu: 1,
+                        error: FirmwareBoardError::Config("expected host error"),
+                    }
+                ),
+                "{report:?}"
+            );
+            assert_eq!(report.cpus[0].retired, 1);
+            assert_joined(&report, 2);
+        }
     }
 
     // ---- the split LOCK (step 8) -------------------------------------------------------------

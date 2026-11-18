@@ -203,6 +203,7 @@ pub enum Stage6SmpProbeParallelFinish {
     /// Every processor halted or waits for SIPI and nothing can wake one.
     AllIdle,
     BudgetExhausted,
+    GuestStop(crate::MachineStopReason),
     /// The controller ended the run (the wait for the end timed out: the run was still going).
     Timeout,
     /// A host call of a vCPU ended in a board error (the text of the error).
@@ -585,6 +586,7 @@ impl Stage6SmpProbe {
         let finished = match report.finished {
             ParallelFinish::AllIdle => Stage6SmpProbeParallelFinish::AllIdle,
             ParallelFinish::BudgetExhausted => Stage6SmpProbeParallelFinish::BudgetExhausted,
+            ParallelFinish::GuestStop(reason) => Stage6SmpProbeParallelFinish::GuestStop(reason),
             ParallelFinish::Stopped if !ended => Stage6SmpProbeParallelFinish::Timeout,
             ParallelFinish::Stopped => Stage6SmpProbeParallelFinish::AllIdle,
             ParallelFinish::Error { cpu, error } => Stage6SmpProbeParallelFinish::Error {

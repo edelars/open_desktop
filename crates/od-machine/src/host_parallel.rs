@@ -55,7 +55,7 @@ use crate::smp_scheduler::Executed;
 use crate::vcpu::BOOT_VCPU_INDEX;
 use crate::{
     FirmwareBoardConfig, GuestPhysicalRange, LoadedFirmwareBoard, LocalApicHandle,
-    Long64ProbeConfig, MachineBus, PagedProbeQuantumReport, PciEcam,
+    Long64ProbeConfig, MachineBus, MachineStopReason, PagedProbeQuantumReport, PciEcam,
 };
 use od_isa::execute::{Cpl0ProfileSet, RunExit};
 use od_isa::memory::AccessContext;
@@ -143,6 +143,8 @@ pub enum HostQuantumExit {
     Halted,
     /// The vCPU shut down: it is put in `Shutdown`.
     Shutdown,
+    /// The guest issued a board-wide stop through ACPI PM.
+    MachineStop(MachineStopReason),
 }
 
 /// The result of one call of the host quantum.
@@ -157,6 +159,7 @@ pub struct HostQuantumResult {
 trait HostDeviceWork {
     fn pending(&self) -> bool;
     fn service(&self) -> u64;
+    fn stop_request(&self) -> Option<MachineStopReason>;
 }
 
 impl HostDeviceWork for ThreadQuantumEnv<'_> {
@@ -177,6 +180,10 @@ impl HostDeviceWork for ThreadQuantumEnv<'_> {
             .map_or(0, |pm| pm.take_timer_tick_ns());
         let pit = self.pit.as_ref().map_or(0, |pit| pit.take_port_tick_ns());
         pm + pit
+    }
+
+    fn stop_request(&self) -> Option<MachineStopReason> {
+        self.acpi_pm.as_ref().and_then(|pm| pm.stop_request())
     }
 }
 
@@ -199,6 +206,11 @@ impl HostDeviceServices<'_> {
     pub fn service(&self) -> u64 {
         self.0.map_or(0, HostDeviceWork::service)
     }
+
+    /// Observe the first guest ACPI PM machine stop, latched by the device.
+    pub fn stop_request(&self) -> Option<MachineStopReason> {
+        self.0.and_then(HostDeviceWork::stop_request)
+    }
 }
 
 /// The quantum of every vCPU thread of a host run. Called by every thread (so `Sync`); state that
@@ -217,6 +229,8 @@ pub enum HostParallelFinish {
     /// The controller asked for the end (or its closure returned).
     Stopped,
     BudgetExhausted,
+    /// The run ended at the guest's request to stop the whole board.
+    GuestStop(MachineStopReason),
     /// Every vCPU is halted with nothing that could wake it.
     AllIdle,
     /// A vCPU's quantum, boundary or clock charge failed; every thread was stopped.
@@ -431,6 +445,7 @@ fn run_host_threads_inner<R>(
             HostQuantumExit::Running => {}
             HostQuantumExit::Halted => call.vcpu.state.activity = Some(CpuActivity::Halted),
             HostQuantumExit::Shutdown => call.vcpu.state.activity = Some(CpuActivity::Shutdown),
+            HostQuantumExit::MachineStop(reason) => *call.machine_stop = Some(reason),
         }
         Ok(Executed {
             retired: result.retired,
@@ -454,6 +469,7 @@ fn host_report(report: ParallelReport) -> HostParallelReport {
     let finished = match report.finished {
         ParallelFinish::Stopped => HostParallelFinish::Stopped,
         ParallelFinish::BudgetExhausted => HostParallelFinish::BudgetExhausted,
+        ParallelFinish::GuestStop(reason) => HostParallelFinish::GuestStop(reason),
         ParallelFinish::AllIdle => HostParallelFinish::AllIdle,
         ParallelFinish::Error { cpu, error } => HostParallelFinish::Error {
             cpu,

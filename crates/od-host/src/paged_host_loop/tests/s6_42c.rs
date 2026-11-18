@@ -617,6 +617,80 @@ fn s6_42d_port_ticks_from_two_host_workers_are_charged_once() {
     assert_eq!(board.clock().now_ns() - start_ns, 4_008);
 }
 
+#[test]
+fn s6_42d_acpi_stop_retires_the_out_and_preserves_the_board_stop_reason() {
+    use od_machine::{
+        ACPI_PM_TMR_BLK, ACPI_PM1_CNT_SLP_EN, ACPI_PM1_CNT_SLP_TYP_SHIFT, ACPI_PM1A_CNT_BLK,
+        ACPI_RESET_REG, ACPI_RESET_VALUE, ACPI_SLP_TYP_S5, MachineStopReason,
+    };
+
+    let _guard = jit_guard();
+    let sleep = ACPI_PM1_CNT_SLP_EN | (u16::from(ACPI_SLP_TYP_S5) << ACPI_PM1_CNT_SLP_TYP_SHIFT);
+    for (cpu, reason, port, command, budget) in [
+        (
+            0,
+            MachineStopReason::Shutdown,
+            ACPI_PM1A_CNT_BLK + 1,
+            sleep.to_le_bytes()[1],
+            5,
+        ),
+        (
+            1,
+            MachineStopReason::Reset,
+            ACPI_RESET_REG,
+            ACPI_RESET_VALUE,
+            100,
+        ),
+    ] {
+        let mut board = board(2);
+        let start_ns = board.clock().now_ns();
+        let [timer_lo, timer_hi] = ACPI_PM_TMR_BLK.to_le_bytes();
+        let [port_lo, port_hi] = port.to_le_bytes();
+        let code = [
+            0x66, 0xBA, timer_lo, timer_hi, 0xEC, // MOV DX, PM timer; IN AL, DX
+            0x66, 0xBA, port_lo, port_hi, // MOV DX, PM stop register
+            0xB0, command, 0xEE, // MOV AL, command; OUT DX, AL
+            0xCC, // must not be fetched by a subsequent step
+        ];
+        let code_at = [CODE_0, CODE_1];
+        let stack = [STACK_TOP_0, STACK_TOP_1];
+        let other = 1 - cpu;
+        install(&mut board, cpu, &code, code_at[cpu], stack[cpu]);
+        let mut halted = state(code_at[other], stack[other]);
+        halted.activity = Some(CpuActivity::Halted);
+        halted.rflags = 2;
+        assert!(host_install_vcpu(&mut board, other, halted));
+
+        for first_run in [true, false] {
+            let region = SharedJitRegion::new(2, 4).unwrap();
+            let quantum = quantum_of(&region, 2);
+            let (report, ()) = run_host_threads_with_nmi_paging(
+                &mut board,
+                HostParallelConfig {
+                    budget,
+                    ..host_config(true)
+                },
+                &quantum.nmi_paging(),
+                &|call| quantum.run(call),
+                &|_| quantum.thread_exit(),
+                |control| assert!(control.wait_finished(WAIT)),
+            )
+            .unwrap();
+            assert_eq!(
+                report.finished,
+                HostParallelFinish::GuestStop(reason),
+                "{report:?}"
+            );
+            let mut retired = [0, 0];
+            retired[cpu] = if first_run { 5 } else { 0 };
+            assert_eq!(report.retired, retired);
+            assert_eq!(report.threads_exited, 2);
+            assert_eq!(board.acpi_pm().unwrap().stop_request(), Some(reason));
+            assert_eq!(board.clock().now_ns() - start_ns, 1_005);
+        }
+    }
+}
+
 /// The one-shot timer of the vCPU's own Local APIC (the clock owner dispatches it on a charge)
 /// fires exactly once and is delivered: the guest programs the timer registers by MMIO writes
 /// (each ends the call, `DeviceBoundary`), runs on, and its handler counts the one expiry.
