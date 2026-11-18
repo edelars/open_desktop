@@ -1318,6 +1318,7 @@
 - **Статус:** открыта; оба теста воспроизведены изолированно. Наблюдаемый stop на CLI согласуется с тем, что базовый профиль разрешает bare `CLD` для firmware path.
 - **Суть и последствия:** `cld_outside_the_allowlist_is_the_unsupported_stop_before_retirement` expects `Unsupported { opcode: 0xFC }` for `FC FA 31 C0`, but execution retires CLD and stops at CLI with `Unsupported { opcode: 0xFA }`. `set_facade_prologue_runs_the_null_segment_loads_over_the_loader_caches` has the same stale base-profile expectation. This makes the full `od-machine` library suite fail; it does not affect the ISSUE-199 load tests or paged-profile integration test.
 - **Основание:** `cargo test --offline -p od-machine --quiet` produced both failures; isolated reruns of both tests reproduced expected 0xFC vs actual 0xFA.
+- **Дополнительная проверка при объединении codex в main:** два runner-теста `run_reports_the_stop_record_of_each_exit` и `set_cpl0_runs_the_set_and_reports_its_path_and_members` также ожидают остановку на CLD; оба воспроизводимо падают и на исходном main `8467b95`, и на объединённой версии (retired 1 вместо 0; opcode 0xFA вместо 0xFC соответственно).
 - **Следующий шаг:** clarify whether Linux direct boot should use a narrower CPU-profile set or update these expectations to the current base-profile contract; add an explicit test for the selected boundary.
 
 <a id="issue-104-s7-04-paged-cpu-profile-does-not-admit-mov-r8-rdi-at-firmware-entry"></a>
