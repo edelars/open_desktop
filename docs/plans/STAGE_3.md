@@ -3743,6 +3743,20 @@ setup, teardown и другой overhead исключены. Scored runs ост�
 третий sequence, dispatcher/VMHost и broader checked-memory workloads не
 измерялись. Mini отложен до конца Stage 3.
 
+#### S3-35d. Сравнение свежих процессов на общих register-only входах
+
+Один release `od-runner` прогнал пять закреплённых S3-14 branch/helper
+фикстур через interpreter, legacy fragment JIT и uncached IR dispatcher.
+В каждом из трёх прогонов собрано по 24 группы с балансировкой порядка
+движков и одинаковыми 32 sweep на sample. Все 34 560 измеренных запусков
+совпали по результату с локальным интерпретатором. Медианы времени
+на пять процессов составили 14.073–15.459 мс для интерпретатора,
+14.082–15.277 мс для legacy JIT и 14.277–15.587 мс для IR dispatcher.
+Парные диапазоны пересекли равенство. Сравнение включает запуск процесса и
+обработку JSON; разницу времени самого JIT оно не изолирует.
+Команда и [сырые замеры](../testing/BENCHMARKS.md#s3-35d-fresh-runner-process-comparison)
+сохранены. Общая приёмка S3-35 остаётся открытой.
+
 ### S3-36. Измерить прогретое исполнение
 
 #### S3-36a: bounded resident warm register-only path

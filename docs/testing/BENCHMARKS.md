@@ -869,6 +869,63 @@ result only; it does not select a production default or general winner. See the
 [reviewed suite manifest](../reports/data/stage3/s3-35c/suite-manifest.json),
 and [raw evidence archive](../reports/data/stage3/s3-35c/).
 
+### S3-35d: fresh runner process comparison
+
+The process benchmark runs interpreter, legacy fragment JIT
+(`--engine jit`) and the uncached IR dispatcher (`--engine jit-dispatch`)
+on the same five S3-14 branch/helper fixtures. The case list, trace and
+each fixture's bytes must match the recorded S3-36b digests. The trace
+binds the inputs. The interpreter output from the current build provides
+the comparison state. All variants pass a preflight, and every timed
+launch must match that output, including exit, retirement and snapshot.
+
+Each fixture starts a fresh release `od-runner` process. The timed interval
+includes spawn, fixture parsing, engine execution, JSON transfer and child
+exit. JSON parsing and validation in the benchmark controller are outside
+the timer. Each sweep sums five intervals and retires 14 guest instructions.
+No guest code survives between processes. macOS file caches are left in
+their normal state. These timings include startup and cannot replace the
+in-process cold or warm measurements above.
+
+From the repository root:
+
+```sh
+OPEN_DESKTOP_GIT_REVISION="$(git rev-parse HEAD)" \
+  RUSTC_VERSION="$(rustc --version)" cargo build --release --offline -p od-runner
+mkdir -p work/tmp/s3-35d
+for run in 1 2 3; do
+  python3 tools/bench/stage3_cold_process.py --output "work/tmp/s3-35d/run-$run.json"
+done
+```
+
+The script needs local macOS host-model information from `sysctl`. It
+calibrates a common sweep count to at least 300 ms per engine, then repeats
+every engine order four times across 24 groups. Each scored sample must
+reach 200 ms. Three sequential runs on Mac15,11 / Apple M3 Max, macOS
+26.7.1 (25G241), used release revision `31ecf35` and 32 sweeps per sample.
+All 34,560 scored child launches passed the input and parity checks. The
+shortest sample was 404.262 ms. One-minute host load averages measured
+at the start and end of each run ranged from 8.02 to 12.04. Power and
+thermal state were not sampled.
+
+Median ms per five-process sweep, with observed minima and maxima:
+
+| Run | Interpreter | Legacy fragment JIT | IR dispatcher |
+| --- | ---: | ---: | ---: |
+| 1 | 14.073 [12.964, 35.738] | 14.082 [12.633, 31.541] | 14.314 [13.099, 17.561] |
+| 2 | 15.459 [13.879, 35.571] | 15.277 [13.680, 36.319] | 15.587 [13.780, 36.734] |
+| 3 | 14.168 [13.573, 35.639] | 14.150 [13.644, 36.686] | 14.277 [13.843, 36.749] |
+
+Across the 72 paired observations, the legacy/interpreter median time
+ratio was 0.9877 [0.5010, 1.5477] and dispatcher/interpreter was 1.0065
+[0.3829, 1.3372]. The observed spread crosses parity for both comparisons.
+The measurements do not establish a speed difference or a default policy.
+A pilot under the workspace sandbox did not write a report because
+`sysctl` was denied. The measured runs queried the host before calibration.
+Raw evidence is archived as [run 1](../reports/data/stage3/s3-35d-cold-process/run-1.json),
+[run 2](../reports/data/stage3/s3-35d-cold-process/run-2.json) and
+[run 3](../reports/data/stage3/s3-35d-cold-process/run-3.json).
+
 ### S3-36a: bounded resident warm register-only execution
 
 `od-bench warm-first-run` is an opt-in Apple Silicon macOS release benchmark

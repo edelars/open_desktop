@@ -1,0 +1,601 @@
+{
+  "schema": "s3-35-cold-process-v1",
+  "started_utc": "2026-11-18T23:34:19.399538+00:00",
+  "finished_utc": "2026-11-18T23:34:58.159785+00:00",
+  "runner": "target/release/od-runner",
+  "runner_sha256": "bc489e3a048b2eff9ad06fcdaea935a3f122a1c5bb5de4b9a6d17ef53de90627",
+  "build": {
+    "revision": "31ecf35d9dedc19a464f697dc3c411012b19592b",
+    "target": "aarch64-apple-darwin",
+    "profile": "release",
+    "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  },
+  "script_sha256": "3845c924f72d11aa434689b80d00d3003564d4919b552f52ab51a6beed3b5910",
+  "host": {
+    "model": "Mac15,11",
+    "cpu": "Apple M3 Max",
+    "os_version": "26.7.1",
+    "os_build": "25G241",
+    "python_version": "3.15.2",
+    "load_average_start": [
+      8.02392578125,
+      14.6875,
+      13.90966796875
+    ],
+    "load_average_end": [
+      9.2900390625,
+      14.19921875,
+      13.75830078125
+    ]
+  },
+  "timing_scope": "Sum of spawn, execution, JSON transfer and wait for each new runner process",
+  "case_list_sha256": "dd590c6c8f8ae1a09f2192e47c1d019f7449c814212c87e06194bf7425dd0881",
+  "trace_sha256": "272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8",
+  "cases": [
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jz_to_end_skips_tail.case.json",
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "interpreter": {
+        "schema_version": 1,
+        "case_id": "s3_14_jz_to_end_skips_tail",
+        "input_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+        "profile": "s0_09_register_subset_v1",
+        "status": "completed",
+        "expected_exit": "reached_code_end",
+        "exit_reason": {
+          "status": "available",
+          "value": "reached_code_end"
+        },
+        "instructions_executed": {
+          "status": "available",
+          "value": "0x0000000000000002"
+        },
+        "snapshot": {
+          "gpr": {
+            "status": "available",
+            "value": {
+              "rax": "0x0000000000000005",
+              "rcx": "0x0000000000000005",
+              "rdx": "0x000000000000feed",
+              "rbx": "0x0000000000000000"
+            }
+          },
+          "rip": {
+            "status": "available",
+            "value": "0x000000000000000f"
+          },
+          "rflags": {
+            "status": "available",
+            "value": "0x0000000000000046"
+          },
+          "memory": {
+            "status": "unavailable",
+            "reason": "S0-09 register-only profile does not capture memory"
+          },
+          "exception": {
+            "status": "unavailable",
+            "reason": "S0-09 profile does not capture exceptions"
+          }
+        }
+      }
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jnz_to_end_skips_tail.case.json",
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "interpreter": {
+        "schema_version": 1,
+        "case_id": "s3_14_jnz_to_end_skips_tail",
+        "input_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+        "profile": "s0_09_register_subset_v1",
+        "status": "completed",
+        "expected_exit": "reached_code_end",
+        "exit_reason": {
+          "status": "available",
+          "value": "reached_code_end"
+        },
+        "instructions_executed": {
+          "status": "available",
+          "value": "0x0000000000000002"
+        },
+        "snapshot": {
+          "gpr": {
+            "status": "available",
+            "value": {
+              "rax": "0x0000000000000001",
+              "rcx": "0x0000000000000002",
+              "rdx": "0x000000000000feed",
+              "rbx": "0x0000000000000000"
+            }
+          },
+          "rip": {
+            "status": "available",
+            "value": "0x000000000000000f"
+          },
+          "rflags": {
+            "status": "available",
+            "value": "0x0000000000000097"
+          },
+          "memory": {
+            "status": "unavailable",
+            "reason": "S0-09 register-only profile does not capture memory"
+          },
+          "exception": {
+            "status": "unavailable",
+            "reason": "S0-09 profile does not capture exceptions"
+          }
+        }
+      }
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jz_not_taken_backward_target.case.json",
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "interpreter": {
+        "schema_version": 1,
+        "case_id": "s3_14_jz_not_taken_backward_target",
+        "input_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+        "profile": "s0_09_register_subset_v1",
+        "status": "completed",
+        "expected_exit": "reached_code_end",
+        "exit_reason": {
+          "status": "available",
+          "value": "reached_code_end"
+        },
+        "instructions_executed": {
+          "status": "available",
+          "value": "0x0000000000000002"
+        },
+        "snapshot": {
+          "gpr": {
+            "status": "available",
+            "value": {
+              "rax": "0x0000000000000001",
+              "rcx": "0x0000000000000002",
+              "rdx": "0x0000000000000000",
+              "rbx": "0x0000000000000000"
+            }
+          },
+          "rip": {
+            "status": "available",
+            "value": "0x0000000000000005"
+          },
+          "rflags": {
+            "status": "available",
+            "value": "0x0000000000000097"
+          },
+          "memory": {
+            "status": "unavailable",
+            "reason": "S0-09 register-only profile does not capture memory"
+          },
+          "exception": {
+            "status": "unavailable",
+            "reason": "S0-09 profile does not capture exceptions"
+          }
+        }
+      }
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jnz_not_taken_backward_target.case.json",
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "interpreter": {
+        "schema_version": 1,
+        "case_id": "s3_14_jnz_not_taken_backward_target",
+        "input_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+        "profile": "s0_09_register_subset_v1",
+        "status": "completed",
+        "expected_exit": "reached_code_end",
+        "exit_reason": {
+          "status": "available",
+          "value": "reached_code_end"
+        },
+        "instructions_executed": {
+          "status": "available",
+          "value": "0x0000000000000002"
+        },
+        "snapshot": {
+          "gpr": {
+            "status": "available",
+            "value": {
+              "rax": "0x0000000000000007",
+              "rcx": "0x0000000000000007",
+              "rdx": "0x0000000000000000",
+              "rbx": "0x0000000000000000"
+            }
+          },
+          "rip": {
+            "status": "available",
+            "value": "0x0000000000000005"
+          },
+          "rflags": {
+            "status": "available",
+            "value": "0x0000000000000046"
+          },
+          "memory": {
+            "status": "unavailable",
+            "reason": "S0-09 register-only profile does not capture memory"
+          },
+          "exception": {
+            "status": "unavailable",
+            "reason": "S0-09 profile does not capture exceptions"
+          }
+        }
+      }
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_live_through_helpers.case.json",
+      "case_id": "s3_14_live_through_helpers",
+      "sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "interpreter": {
+        "schema_version": 1,
+        "case_id": "s3_14_live_through_helpers",
+        "input_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+        "profile": "s0_09_register_subset_v1",
+        "status": "completed",
+        "expected_exit": "reached_code_end",
+        "exit_reason": {
+          "status": "available",
+          "value": "reached_code_end"
+        },
+        "instructions_executed": {
+          "status": "available",
+          "value": "0x0000000000000006"
+        },
+        "snapshot": {
+          "gpr": {
+            "status": "available",
+            "value": {
+              "rax": "0x0000000000000001",
+              "rcx": "0x0000000000000000",
+              "rdx": "0x0000000000000000",
+              "rbx": "0x0000000000000001"
+            }
+          },
+          "rip": {
+            "status": "available",
+            "value": "0x0000000000000011"
+          },
+          "rflags": {
+            "status": "available",
+            "value": "0x0000000000000046"
+          },
+          "memory": {
+            "status": "unavailable",
+            "reason": "S0-09 register-only profile does not capture memory"
+          },
+          "exception": {
+            "status": "unavailable",
+            "reason": "S0-09 profile does not capture exceptions"
+          }
+        }
+      }
+    }
+  ],
+  "sweeps_per_sample": 32,
+  "calibration": [
+    {
+      "sweeps": 4,
+      "elapsed_ns": {
+        "interpreter": 65062710,
+        "jit": 59627081,
+        "jit-dispatch": 60314623
+      }
+    },
+    {
+      "sweeps": 8,
+      "elapsed_ns": {
+        "interpreter": 116629293,
+        "jit": 124137542,
+        "jit-dispatch": 136629374
+      }
+    },
+    {
+      "sweeps": 16,
+      "elapsed_ns": {
+        "interpreter": 260620041,
+        "jit": 244612285,
+        "jit-dispatch": 238015950
+      }
+    },
+    {
+      "sweeps": 32,
+      "elapsed_ns": {
+        "interpreter": 454096205,
+        "jit": 462349498,
+        "jit-dispatch": 469745751
+      }
+    }
+  ],
+  "groups": [
+    {
+      "order": [
+        "interpreter",
+        "jit",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "interpreter": 483640837,
+        "jit": 439319159,
+        "jit-dispatch": 441348428
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit-dispatch",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "interpreter": 434909750,
+        "jit-dispatch": 449734745,
+        "jit": 479192121
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "interpreter",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "jit": 432163661,
+        "interpreter": 430778963,
+        "jit-dispatch": 476230712
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "jit-dispatch",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit": 453804881,
+        "jit-dispatch": 423119616,
+        "interpreter": 479913212
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "interpreter",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 482397334,
+        "interpreter": 439197210,
+        "jit": 431096293
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "jit",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 457849748,
+        "jit": 419353834,
+        "interpreter": 418704424
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "interpreter": 455284500,
+        "jit": 452167086,
+        "jit-dispatch": 501584750
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit-dispatch",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "interpreter": 492562165,
+        "jit-dispatch": 486524578,
+        "jit": 494097834
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "interpreter",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "jit": 468963376,
+        "interpreter": 472389496,
+        "jit-dispatch": 512303583
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "jit-dispatch",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit": 470547802,
+        "jit-dispatch": 458227169,
+        "interpreter": 445381635
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "interpreter",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 429003962,
+        "interpreter": 425501336,
+        "jit": 420425748
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "jit",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 419177210,
+        "jit": 435587045,
+        "interpreter": 428637580
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "interpreter": 423842750,
+        "jit": 415894538,
+        "jit-dispatch": 423823336
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit-dispatch",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "interpreter": 418657454,
+        "jit-dispatch": 432925291,
+        "jit": 422726792
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "interpreter",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "jit": 404262300,
+        "interpreter": 414859669,
+        "jit-dispatch": 434255992
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "jit-dispatch",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit": 419616656,
+        "jit-dispatch": 425439504,
+        "interpreter": 420688576
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "interpreter",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 439939039,
+        "interpreter": 427316802,
+        "jit": 404762213
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "jit",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 435150869,
+        "jit": 933482826,
+        "interpreter": 1136501370
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "interpreter": 1143622384,
+        "jit": 1009321040,
+        "jit-dispatch": 561958797
+      }
+    },
+    {
+      "order": [
+        "interpreter",
+        "jit-dispatch",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "interpreter": 532665916,
+        "jit-dispatch": 514615164,
+        "jit": 521718962
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "interpreter",
+        "jit-dispatch"
+      ],
+      "elapsed_ns": {
+        "jit": 519732749,
+        "interpreter": 484857579,
+        "jit-dispatch": 487530956
+      }
+    },
+    {
+      "order": [
+        "jit",
+        "jit-dispatch",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit": 449107624,
+        "jit-dispatch": 459531663,
+        "interpreter": 473800748
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "interpreter",
+        "jit"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 474378510,
+        "interpreter": 483343212,
+        "jit": 494014624
+      }
+    },
+    {
+      "order": [
+        "jit-dispatch",
+        "jit",
+        "interpreter"
+      ],
+      "elapsed_ns": {
+        "jit-dispatch": 510693916,
+        "jit": 577354539,
+        "interpreter": 515949046
+      }
+    }
+  ]
+}
