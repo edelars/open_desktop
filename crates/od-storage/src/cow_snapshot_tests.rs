@@ -9,8 +9,9 @@
 use crate::cow_proto::{BLOCK_SIZE, CowFile};
 use crate::cow_proto_tests::{OpKind, faults_for, is_failing, parse_kind, policies};
 use crate::cow_snapshot::{
-    Header, MAX_CHAIN_DEPTH, MAX_DISK_BLOCKS, MAX_SNAPSHOTS, NoParents, ParentRef, ParentResolver,
-    ResolveError, SnapError, SnapFile, SnapshotRecord, decode_header, encode_header,
+    DATA_BASE, Header, MAX_CHAIN_DEPTH, MAX_DISK_BLOCKS, MAX_SNAPSHOTS, NoParents, ParentRef,
+    ParentResolver, ResolveError, SnapError, SnapFile, SnapshotRecord, decode_header,
+    encode_header,
 };
 use crate::io::CheckedStorage;
 use crate::testing::fault::{CrashPolicy, FaultBackend, FaultHandle};
@@ -1526,7 +1527,8 @@ fn every_wrong_field_of_a_parent_reference_refuses_create_and_open() {
 // ======================================================== S9-17: delete,
 // rootset and copy-compaction
 
-fn is_absent(e: &SnapError) -> bool {
+/// An image that never finished: no file, no header, or a building target.
+pub(crate) fn is_absent(e: &SnapError) -> bool {
     matches!(
         e,
         SnapError::NotSnapFile(_)
@@ -2703,4 +2705,284 @@ fn a_full_target_volume_fails_compaction_cleanly_and_leaves_the_source_alone() {
     }
     assert!(failed > 0 && done > 0, "{failed} {done}");
     assert_content(&file, &snaps, &head, "source");
+}
+
+// ------------------------------------- S9-38: full matrix for data operations
+
+/// Kinds of the mutating calls `op` makes on a clean `history`.
+fn op_kinds(op: Op) -> Vec<OpKind> {
+    enospc_ops(op)
+}
+
+/// Every mutating call of `op` × every fault of its kind × every crash policy,
+/// plus a power cut after the last call. A failing fault is never
+/// acknowledged; after the crash the file opens and shows either the state
+/// before `op` or the state after it (`after`, computed from the plain model,
+/// not from the implementation), never a mix; an acknowledged `op` is never
+/// lost; snapshots never change. Returns (cases, old outcomes, new outcomes).
+fn whole_or_absent_sweep(name: &str, op: Op, after: fn(&[u8]) -> Vec<u8>) -> (u64, u64, u64) {
+    let kinds = op_kinds(op);
+    assert!(kinds.len() >= 5, "{name}: {}", kinds.len());
+    // The model's "after" must be what a clean run produces.
+    {
+        let h = FaultHandle::new(&[], 0x3801);
+        let Hist { mut file, head, .. } = history(&h);
+        op(&mut file).expect("clean operation");
+        assert_eq!(
+            image(&file),
+            after(&head),
+            "{name}: model disagrees with a clean run"
+        );
+    }
+    let mut scenarios: Vec<(usize, Option<Fault>)> = vec![(kinds.len(), None)];
+    for (i, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            scenarios.push((i, Some(fault)));
+        }
+    }
+    let (mut cases, mut old_n, mut new_n) = (0u64, 0u64, 0u64);
+    for (i, fault) in scenarios {
+        for policy in policies() {
+            cases += 1;
+            let h = FaultHandle::new(&[], 0x3801);
+            let Hist {
+                mut file,
+                snaps,
+                head,
+            } = history(&h);
+            if let Some(f) = fault {
+                h.script(h.next_ordinal() + i as u64, f);
+            }
+            let result = op(&mut file);
+            let label = format!("{name} op={i} fault={fault:?} policy={policy:?}");
+            if fault.is_some_and(is_failing) {
+                assert!(result.is_err(), "{label}: failing fault was acknowledged");
+            }
+            let acked = result.is_ok();
+            drop(file);
+            h.crash(policy);
+            let f = match SnapFile::open(st(&h), &mut NoParents) {
+                Ok((f, _)) => f,
+                Err(e) => panic!("{}", h.report(&format!("{label}: refused {e:?}"))),
+            };
+            let now = image(&f);
+            let new = after(&head);
+            if now == new && now != head {
+                new_n += 1;
+            } else if now == head && now != new {
+                if acked {
+                    panic!(
+                        "{}",
+                        h.report(&format!("{label}: acknowledged {name} lost"))
+                    );
+                }
+                old_n += 1;
+            } else if now != head || now != new {
+                panic!("{}", h.report(&format!("{label}: mixed state")));
+            }
+            assert_eq!(
+                f.snapshot_ids(),
+                snaps.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                "{label}"
+            );
+            for (id, img) in &snaps {
+                assert_eq!(&snap_image(&f, *id), img, "{label}: snapshot {id} changed");
+            }
+        }
+    }
+    (cases, old_n, new_n)
+}
+
+#[test]
+fn data_operations_are_whole_or_absent_under_every_fault() {
+    let grow = |head: &[u8]| {
+        let mut m = Model(head.to_vec());
+        m.apply(9 * BS + 3, &rnd(0x38, 700));
+        m.0
+    };
+    let zero = |head: &[u8]| {
+        let mut v = head.to_vec();
+        v[20..620].fill(0);
+        v
+    };
+    let discard = |head: &[u8]| {
+        let mut v = head.to_vec();
+        v[..2 * BS].fill(0);
+        v
+    };
+    for (name, op, after) in [
+        (
+            "write_grow",
+            (|f: &mut File| f.write_at(9 * BS as u64 + 3, &rnd(0x38, 700)).map(|_| ())) as Op,
+            grow as fn(&[u8]) -> Vec<u8>,
+        ),
+        ("zero", |f| f.zero_range(20, 600).map(|_| ()), zero),
+        (
+            "discard",
+            |f| f.discard_range(0, 2 * BS as u64).map(|_| ()),
+            discard,
+        ),
+    ] {
+        let (cases, old_n, new_n) = whole_or_absent_sweep(name, op, after);
+        // Both legal outcomes were reached, so the check is not vacuous.
+        assert!(
+            cases >= 100 && old_n > 0 && new_n > 0,
+            "{name}: {cases} {old_n} {new_n}"
+        );
+    }
+}
+
+/// `create_base` under every fault of every call: the file either refuses to
+/// open (unfinished create) or opens empty with no snapshots; an acknowledged
+/// create always opens.
+#[test]
+fn base_creation_is_whole_or_absent_under_every_fault() {
+    let clean = FaultHandle::new(&[], 0x3802);
+    drop(SnapFile::create_base(st(&clean), 7).expect("clean create"));
+    let kinds: Vec<OpKind> = clean
+        .trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .map(|(_, k)| k)
+        .collect();
+    assert!(kinds.len() >= 3, "{}", kinds.len());
+    let mut scenarios: Vec<(usize, Option<Fault>)> = vec![(kinds.len(), None)];
+    for (i, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            scenarios.push((i, Some(fault)));
+        }
+    }
+    let (mut cases, mut refused, mut opened) = (0u64, 0u64, 0u64);
+    for (i, fault) in scenarios {
+        for policy in policies() {
+            cases += 1;
+            let h = FaultHandle::new(&[], 0x3802);
+            if let Some(f) = fault {
+                h.script(i as u64, f);
+            }
+            let result = SnapFile::create_base(st(&h), 7);
+            let label = format!("create op={i} fault={fault:?} policy={policy:?}");
+            if fault.is_some_and(is_failing) {
+                assert!(result.is_err(), "{label}: failing fault was acknowledged");
+            }
+            let acked = result.is_ok();
+            drop(result);
+            h.crash(policy);
+            match SnapFile::open(st(&h), &mut NoParents) {
+                Ok((f, _)) => {
+                    opened += 1;
+                    assert_eq!(f.file_uid(), 7, "{label}");
+                    assert_eq!(f.disk_size(), 0, "{label}");
+                    assert!(f.snapshot_ids().is_empty(), "{label}");
+                }
+                Err(e) => {
+                    assert!(
+                        !acked,
+                        "{}",
+                        h.report(&format!("{label}: acked create refused {e:?}"))
+                    );
+                    assert!(is_absent(&e), "{}", h.report(&format!("{label}: {e:?}")));
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        cases >= 50 && refused > 0 && opened > 0,
+        "{cases} {refused} {opened}"
+    );
+}
+
+// ------------------------------------- S9-38: corruption of the snapshot layer
+
+/// Bounded soundness fuzz of the ODSNAP metadata (header block 0 with a
+/// recomputed header CRC, presence bitmap block 1) committed through the CoW
+/// layer, so every CoW checksum is valid: open either refuses with a typed
+/// error or yields a self-consistent file whose every read returns or fails
+/// with a typed error. No panic, no hang. Like the parser fuzz, this checks
+/// soundness, not that every forged value is detected.
+#[test]
+fn forged_snapshot_metadata_is_refused_or_consistent() {
+    let h0 = FaultHandle::new(&[], 0x3803);
+    drop(history(&h0).file);
+    let pristine = h0.durable_bytes();
+    let mut rng = SplitMix64(0x3804);
+    let (mut refused, mut opened) = (0u64, 0u64);
+    for case in 0..600u64 {
+        let h = FaultHandle::new(&pristine, 0x3805);
+        let header = case % 2 == 0;
+        {
+            let (mut cow, _) = CowFile::open(st(&h)).expect("cow open");
+            let index = u64::from(!header);
+            let mut b = cow.read_block(index).expect("read meta");
+            for _ in 0..=rng.below(3) {
+                if header {
+                    let at = rng.below(508) as usize;
+                    b[at] = rng.next_u64() as u8;
+                } else {
+                    let at = rng.below(BS as u64) as usize;
+                    b[at] ^= 1 << rng.below(8);
+                }
+            }
+            if header {
+                let crc = crate::cow_proto::crc32(&b[..508]);
+                b[508..].copy_from_slice(&crc.to_le_bytes());
+            }
+            cow.commit(&[(index, &b)]).expect("commit forged metadata");
+        }
+        match SnapFile::open(st(&h), &mut NoParents) {
+            Err(_) => refused += 1,
+            Ok((f, _)) => {
+                opened += 1;
+                let ids = f.snapshot_ids();
+                assert!(
+                    ids.windows(2).all(|w| w[0] < w[1]),
+                    "case {case}: ids {ids:?}"
+                );
+                assert!(ids.len() <= MAX_SNAPSHOTS, "case {case}");
+                let mut buf = vec![0u8; f.disk_size() as usize];
+                let _ = f.read_at(0, &mut buf);
+                for id in ids {
+                    if let Some(blocks) = f.snapshot_disk_blocks(id) {
+                        let mut s = vec![0u8; blocks as usize * BS];
+                        let _ = f.read_snapshot_at(id, 0, &mut s);
+                    }
+                }
+            }
+        }
+    }
+    assert!(refused > 0 && opened > 0, "{refused} {opened}");
+}
+
+/// Media corruption under a valid root (map, a data block, the header block)
+/// is refused by the writable open before any write: no operation that needs
+/// the writable open (write, zero, discard, snapshot, delete, compaction) can
+/// run on such a file, and the file is not touched. (A branch reads the
+/// parent through `inspect_snapshot_ref` and never writes it.)
+#[test]
+fn corruption_refuses_the_writable_open_without_writing() {
+    let h0 = FaultHandle::new(&[], 0x3806);
+    drop(history(&h0).file);
+    let pristine = h0.durable_bytes();
+    let (view, _) =
+        crate::cow_proto::CowView::inspect(st(&FaultHandle::new(&pristine, 1))).expect("inspect");
+    let spots = [
+        ("map", view.map_offset() + 3),
+        ("header block", view.block_offset(0).expect("header") + 40),
+        ("bitmap block", view.block_offset(1).expect("bitmap")),
+        (
+            "data block",
+            view.block_offset(DATA_BASE).expect("data") + 7,
+        ),
+    ];
+    drop(view);
+    for (name, at) in spots {
+        let mut bytes = pristine.clone();
+        bytes[at as usize] ^= 0x5A;
+        let h = FaultHandle::new(&bytes, 0x3807);
+        let err = SnapFile::open(st(&h), &mut NoParents).err();
+        assert!(err.is_some(), "{name}: corrupted file opened writable");
+        assert_eq!(h.next_ordinal(), 0, "{name}: the refused open wrote");
+        assert_eq!(h.durable_bytes(), bytes, "{name}: file changed");
+    }
 }

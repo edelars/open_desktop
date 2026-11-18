@@ -12,7 +12,10 @@
 //! # Oracle
 //!
 //! The oracle is a plain `Vec<u8>` for the head and for every snapshot plus
-//! the next snapshot id. It never reads a header, bitmap or block map. An
+//! the next snapshot id. It never reads a header, bitmap or block map. The
+//! checks compare the oracle's next id with `next_snapshot_id` of the
+//! published header, read through the read-only inspector after every
+//! recovery and every cycle. An
 //! acknowledged operation moves the oracle to the new state and that state
 //! must survive every later crash. An operation that failed leaves two
 //! legal outcomes, the previous acknowledged state or the whole new one;
@@ -46,6 +49,7 @@
 //!   the recovered writer owns.
 
 use crate::cow_export::{ExportOptions, StateSelection, export_raw, import_raw};
+use crate::cow_inspect::{InspectMode, inspect_storage};
 use crate::cow_proto::{BLOCK_SIZE, CREATE_GENERATION};
 use crate::cow_proto_tests::{OpKind, is_failing, random_policy};
 use crate::cow_salvage::{CopyStatus, Recoverability, SalvageOptions, salvage_to_copy};
@@ -305,7 +309,9 @@ impl State {
         (self.head.len() / BS) as u64
     }
 
-    /// Same logical content (ids and bytes); `next_id` is not observable.
+    /// Same logical content (ids and bytes). `next_id` is not observable
+    /// through the file API; [`Soak::resolve`] and `check_cycle` check it against the header
+    /// separately.
     fn same(&self, other: &State) -> bool {
         self.head == other.head && self.snaps == other.snaps
     }
@@ -338,6 +344,21 @@ fn observe<B: StorageBackend>(f: &SnapFile<B>) -> Result<State, SnapError> {
         snaps,
         next_id: 0,
     })
+}
+
+/// `next_snapshot_id` of the published header, read by the inspector over a
+/// separate read-only view of the media (reads do not count as backend calls
+/// of the fault model). `None` unless the inspector read the same root as the
+/// open writer: generation `gen`, file `uid`, a usable (not building) head.
+fn media_next_id(h: &FaultHandle, generation: u64, uid: u64) -> Option<u64> {
+    let st = CheckedStorage::new(h.open()).ok()?;
+    let rep = inspect_storage(st, &mut NoParents, InspectMode::Info);
+    if rep.root_generation != Some(generation) {
+        return None;
+    }
+    rep.layer
+        .filter(|l| l.file_uid == uid && !l.building)
+        .map(|l| l.next_snapshot_id)
 }
 
 /// Upper bound of what one acknowledged write commit appends: data blocks,
@@ -750,6 +771,20 @@ impl Soak {
             ));
         }
         self.main.gen_now = g;
+        // `next_id` is not visible through the file API; the published header
+        // carries it. It must be the one of the state that landed, never a
+        // value from the other outcome (a reused or skipped id).
+        let want = match (landed, cand) {
+            (true, Some(c)) => c.next_id,
+            _ => self.main.acked.next_id,
+        };
+        let h = self.main.handle.clone();
+        match media_next_id(&h, g, f.file_uid()) {
+            Some(n) if n == want => {}
+            got => self.fail(&format!(
+                "next snapshot id {got:?} after recovery, expected {want} (landed {landed})"
+            )),
+        }
         landed
     }
 
@@ -1493,7 +1528,7 @@ impl Soak {
             let raw_storage = self.st(&raw);
             let istorage = self.st(&image);
             self.arm(if round == 0 { FAULT_PERCENT } else { 0 }, 30);
-            let imported = import_raw(&raw_storage, istorage, uid, &|| false);
+            let imported = import_raw(&raw_storage, || Ok(istorage), uid, &|| false);
             let w = self.disarm();
             match imported {
                 Ok((built, _)) => {
@@ -1630,6 +1665,14 @@ impl Soak {
             || !(CREATE_GENERATION..=u64::MAX - GENERATION_MARGIN).contains(&g)
         {
             self.fail(&format!("generation {g}, tracked {}", self.main.gen_now));
+        }
+        // Next snapshot id of the published header equals the oracle's after
+        // every cycle, acknowledged or not (localises a drift to its cycle).
+        let h = self.main.handle.clone();
+        let want = self.main.acked.next_id;
+        match media_next_id(&h, g, file.file_uid()) {
+            Some(n) if n == want => {}
+            got => self.fail(&format!("next snapshot id {got:?}, oracle {want}")),
         }
         // Space: the block count is bounded by the disk, the file by the
         // acknowledged commits and by the hard quota.

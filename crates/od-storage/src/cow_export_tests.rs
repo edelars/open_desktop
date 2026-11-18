@@ -519,7 +519,7 @@ fn import_then_export_round_trips_and_an_independent_reader_agrees() {
     let mut raw = SplitMix64(21).bytes(300 * BS);
     raw[40 * BS..60 * BS].fill(0); // a run of zero blocks
     let dst = FaultHandle::new(&[], 30);
-    let (image, rep) = import_raw(&raw_of(&raw), st(&dst), 77, &|| false).expect("import");
+    let (image, rep) = import_raw(&raw_of(&raw), || Ok(st(&dst)), 77, &|| false).expect("import");
     assert_eq!(
         (rep.logical_size, rep.blocks, rep.file_uid),
         (raw.len() as u64, 300, 77)
@@ -545,7 +545,12 @@ fn import_then_export_round_trips_and_an_independent_reader_agrees() {
 #[test]
 fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them() {
     let dst = FaultHandle::new(&[], 31);
-    let err = import_raw(&raw_of(&vec![1u8; BS + 1]), st(&dst), 5, &|| false).err();
+    // A size that is refused never creates a target: `make_target` would turn
+    // the result into `TargetCreate`.
+    let never = || -> Result<CheckedStorage<FaultBackend>, std::io::Error> {
+        Err(std::io::Error::other("target created for a refused source"))
+    };
+    let err = import_raw(&raw_of(&vec![1u8; BS + 1]), never, 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::NotBlockAligned { len: BS as u64 + 1 })
@@ -553,7 +558,7 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
     assert_eq!(dst.next_ordinal(), 0);
 
     let big = vec![0u8; (MAX_DISK_BLOCKS as usize + 1) * BS];
-    let err = import_raw(&raw_of(&big), st(&dst), 5, &|| false).err();
+    let err = import_raw(&raw_of(&big), never, 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::TooLarge {
@@ -565,7 +570,7 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
 
     let old = SplitMix64(3).bytes(2 * BS);
     let existing = FaultHandle::new(&old, 32);
-    let err = import_raw(&raw_of(&[7u8; BS]), st(&existing), 5, &|| false).err();
+    let err = import_raw(&raw_of(&[7u8; BS]), || Ok(st(&existing)), 5, &|| false).err();
     assert_eq!(
         err,
         Some(ImportError::TargetNotEmpty {
@@ -576,8 +581,39 @@ fn import_refuses_unaligned_oversized_and_existing_targets_without_touching_them
     assert_eq!(existing.next_ordinal(), 0);
 
     // A zero uid is refused too (identity of the new file).
-    let err = import_raw(&raw_of(&[7u8; BS]), st(&dst), 0, &|| false).err();
+    let err = import_raw(&raw_of(&[7u8; BS]), || Ok(st(&dst)), 0, &|| false).err();
     assert!(matches!(err, Some(ImportError::Image(_))), "{err:?}");
+}
+
+#[test]
+fn an_import_target_that_cannot_be_durable_is_refused_before_any_write() {
+    use crate::cow_salvage_tests::Weakened;
+    let raw = SplitMix64(23).bytes(3 * BS);
+    let run = |dst: &FaultHandle, durable: bool, writable: bool| {
+        let target = CheckedStorage::new(Weakened {
+            inner: dst.open(),
+            durable,
+            writable,
+        })
+        .expect("capabilities are consistent");
+        import_raw(&raw_of(&raw), || Ok(target), 9, &|| false).err()
+    };
+    let dst = FaultHandle::new(&[], 34);
+    assert_eq!(
+        run(&dst, false, true),
+        Some(ImportError::DurabilityUnavailable)
+    );
+    assert_eq!(dst.next_ordinal(), 0, "the target was written to");
+    assert!(
+        dst.volatile_bytes().is_empty(),
+        "a building target was left"
+    );
+    let dst = FaultHandle::new(&[], 35);
+    assert_eq!(run(&dst, true, false), Some(ImportError::TargetUnsuitable));
+    assert_eq!(dst.next_ordinal(), 0);
+    assert!(dst.volatile_bytes().is_empty());
+    let dst = FaultHandle::new(&[], 36);
+    assert_eq!(run(&dst, true, true), None);
 }
 
 #[test]
@@ -586,7 +622,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
     // Cancelled before publication.
     let dst = FaultHandle::new(&[], 33);
     let polls = Cell::new(0u32);
-    let err = import_raw(&raw_of(&raw), st(&dst), 9, &|| {
+    let err = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| {
         polls.set(polls.get() + 1);
         polls.get() == 2
     })
@@ -599,7 +635,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
     // A fault at every mutating step: either an error and no opening image,
     // or success and a complete one.
     let clean = FaultHandle::new(&[], 34);
-    import_raw(&raw_of(&raw), st(&clean), 9, &|| false).expect("clean import");
+    import_raw(&raw_of(&raw), || Ok(st(&clean)), 9, &|| false).expect("clean import");
     let ops = mutating_ops(&clean);
     for (k, op) in ops.iter().enumerate() {
         let fault = match *op {
@@ -609,7 +645,7 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
         };
         let dst = FaultHandle::new(&[], 35);
         dst.script(k as u64, fault);
-        let result = import_raw(&raw_of(&raw), st(&dst), 9, &|| false);
+        let result = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| false);
         assert!(result.is_err(), "{}", dst.report(&format!("step {k} {op}")));
         drop(result);
         dst.crash(CrashPolicy::Seeded(k as u64 + 7));
@@ -622,6 +658,201 @@ fn an_import_that_stops_early_leaves_a_target_that_does_not_open() {
                 let mut back = vec![0u8; raw.len()];
                 img.read_at(0, &mut back).expect("read");
                 assert_eq!(back, raw, "{}", dst.report(&format!("step {k} {op}")));
+            }
+        }
+    }
+}
+
+// ------------------------------- S9-38: full matrix for export and import
+
+/// Every fault of every kind at every mutating call of the target ×
+/// every crash policy. Export: a failing fault is never a completed export;
+/// a completed export survives every crash byte for byte; the source never
+/// changes.
+#[test]
+fn export_full_fault_matrix() {
+    use crate::cow_proto_tests::{OpKind, faults_for, is_failing, parse_kind, policies};
+    let fx = fixture(0x38);
+    let expected = fx.head.bytes.clone();
+    let source = fx.h.durable_bytes();
+    let clean = target();
+    export(&fx.h, StateSelection::Head, &clean).expect("clean export");
+    let kinds: Vec<OpKind> = clean
+        .trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .map(|(_, k)| k)
+        .collect();
+    let (mut cases, mut done, mut failed) = (0u64, 0u64, 0u64);
+    for (k, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            for policy in policies() {
+                cases += 1;
+                let dst = target();
+                dst.script(k as u64, fault);
+                let result = export(&fx.h, StateSelection::Head, &dst);
+                let label = format!("step {k} {fault:?} {policy:?}");
+                if is_failing(fault) {
+                    assert!(
+                        result.is_err(),
+                        "{}",
+                        dst.report(&format!("{label}: completed"))
+                    );
+                }
+                let ok = result.is_ok();
+                let after = dst.crash(policy);
+                if ok {
+                    done += 1;
+                    assert_eq!(after, expected, "{label}: completed export lost bytes");
+                } else {
+                    failed += 1;
+                    assert!(after.len() <= expected.len(), "{label}");
+                }
+                assert_eq!(fx.h.durable_bytes(), source, "{label}: source changed");
+            }
+        }
+    }
+    // Power cut after the last call of a completed export.
+    for policy in policies() {
+        cases += 1;
+        let dst = target();
+        export(&fx.h, StateSelection::Head, &dst).expect("clean export");
+        assert_eq!(dst.crash(policy), expected, "clean {policy:?}");
+        done += 1;
+    }
+    assert!(
+        cases >= 50 && done > 0 && failed > 0,
+        "{cases} {done} {failed}"
+    );
+}
+
+/// Import: every fault of every kind at every call × every crash policy.
+/// A failing fault is never a completed import; after the crash the target
+/// either does not open as an image or is the complete copy; a completed
+/// import always opens complete. The RAW is a read-only memory source.
+#[test]
+fn import_full_fault_matrix() {
+    use crate::cow_proto_tests::{OpKind, faults_for, is_failing, parse_kind, policies};
+    let raw = SplitMix64(0x381).bytes(37 * BS);
+    let clean = FaultHandle::new(&[], 0x382);
+    import_raw(&raw_of(&raw), || Ok(st(&clean)), 9, &|| false).expect("clean import");
+    let kinds: Vec<OpKind> = clean
+        .trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .map(|(_, k)| k)
+        .collect();
+    let (mut cases, mut complete, mut absent) = (0u64, 0u64, 0u64);
+    for (k, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            for policy in policies() {
+                cases += 1;
+                let dst = FaultHandle::new(&[], 0x382);
+                dst.script(k as u64, fault);
+                let src = raw_of(&raw);
+                let result = import_raw(&src, || Ok(st(&dst)), 9, &|| false);
+                let label = format!("step {k} {fault:?} {policy:?}");
+                if is_failing(fault) {
+                    assert!(
+                        result.is_err(),
+                        "{}",
+                        dst.report(&format!("{label}: completed"))
+                    );
+                }
+                let ok = result.is_ok();
+                drop(result);
+                dst.crash(policy);
+                match SnapFile::open(st(&dst), &mut NoParents) {
+                    Ok((img, _)) => {
+                        let mut back = vec![0u8; raw.len()];
+                        assert_eq!(img.disk_size(), raw.len() as u64, "{label}");
+                        img.read_at(0, &mut back).expect("read");
+                        assert_eq!(
+                            back,
+                            raw,
+                            "{}",
+                            dst.report(&format!("{label}: partial image"))
+                        );
+                        complete += 1;
+                    }
+                    Err(e) => {
+                        assert!(
+                            !ok,
+                            "{}",
+                            dst.report(&format!("{label}: completed import lost {e:?}"))
+                        );
+                        assert!(
+                            crate::cow_snapshot_tests::is_absent(&e),
+                            "{}",
+                            dst.report(&format!("{label}: {e:?}"))
+                        );
+                        absent += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Power cut after the last call of a completed import.
+    for policy in policies() {
+        cases += 1;
+        let dst = FaultHandle::new(&[], 0x382);
+        import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| false).expect("clean import");
+        dst.crash(policy);
+        let (img, _) = SnapFile::open(st(&dst), &mut NoParents).expect("completed import");
+        let mut back = vec![0u8; raw.len()];
+        img.read_at(0, &mut back).expect("read");
+        assert_eq!(back, raw, "clean {policy:?}");
+        complete += 1;
+    }
+    assert!(
+        cases >= 50 && complete > 0 && absent > 0,
+        "{cases} {complete} {absent}"
+    );
+}
+
+/// Import cancelled at every poll: never a completed import, and the target
+/// never opens as an image.
+#[test]
+fn import_cancelled_at_every_poll_never_completes() {
+    let raw = SplitMix64(0x383).bytes(37 * BS);
+    let polls = Cell::new(0u32);
+    import_raw(
+        &raw_of(&raw),
+        || Ok(st(&FaultHandle::new(&[], 1))),
+        9,
+        &|| {
+            polls.set(polls.get() + 1);
+            false
+        },
+    )
+    .expect("clean import");
+    let total = polls.get();
+    assert!(total >= 2, "{total}");
+    for stop in 1..=total {
+        let dst = FaultHandle::new(&[], 0x384);
+        let n = Cell::new(0u32);
+        let err = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| {
+            n.set(n.get() + 1);
+            n.get() == stop
+        })
+        .err();
+        assert_eq!(err, Some(ImportError::Cancelled), "poll {stop}");
+        // The run is deterministic: repeat it for every crash policy and
+        // crash the target itself, so pending writes are lost or reordered.
+        for policy in crate::cow_proto_tests::policies() {
+            let dst = FaultHandle::new(&[], 0x384);
+            let n = Cell::new(0u32);
+            let _ = import_raw(&raw_of(&raw), || Ok(st(&dst)), 9, &|| {
+                n.set(n.get() + 1);
+                n.get() == stop
+            });
+            dst.crash(policy);
+            match SnapFile::open(st(&dst), &mut NoParents) {
+                Ok(_) => panic!("poll {stop} {policy:?}: a cancelled import opens"),
+                Err(e) => assert!(
+                    crate::cow_snapshot_tests::is_absent(&e),
+                    "poll {stop} {policy:?}: {e:?}"
+                ),
             }
         }
     }

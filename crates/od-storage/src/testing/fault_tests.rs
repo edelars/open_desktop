@@ -848,3 +848,82 @@ fn run_is_deterministic_for_a_seed() {
     assert!(a.is_some());
     assert_eq!(a, b);
 }
+
+/// S9-38: RAW write + durable flush with every fault of every kind at every
+/// mutating call × every crash policy. RAW promises no atomicity of a
+/// multi-sector write (STORAGE_FORMAT §4.1), so the checks are what it does
+/// promise: a failing fault is never acknowledged, an acknowledged write
+/// survives every crash, and bytes outside the written range never change.
+#[test]
+fn raw_write_flush_full_fault_matrix() {
+    use crate::cow_proto_tests::{OpKind, faults_for, is_failing, parse_kind, policies};
+    let mut rng = SplitMix64(0x3808);
+    let old = rng.bytes(IMAGE);
+    let at = SECTOR / 2;
+    let data = rng.bytes(2 * SECTOR + 7);
+    let mut new = old.clone();
+    new[at..at + data.len()].copy_from_slice(&data);
+    let prepare = |seed: u64| {
+        // The old bytes are durable before the measured operation.
+        let handle = FaultHandle::new(&old, seed);
+        let image = open_image(&handle, IMAGE);
+        (handle, image)
+    };
+    let (clean, image) = prepare(0x3809);
+    let start = clean.next_ordinal();
+    let mut image = image;
+    image.write_at(at as u64, &data).expect("clean write");
+    assert!(flush_image(image).is_ok());
+    let kinds: Vec<OpKind> = clean
+        .trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .filter(|(o, _)| *o >= start)
+        .map(|(_, k)| k)
+        .collect();
+    assert!(kinds.len() >= 2, "{kinds:?}");
+    let (mut cases, mut acked_n) = (0u64, 0u64);
+    for (i, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            for policy in policies() {
+                cases += 1;
+                let (handle, mut image) = prepare(0x3809);
+                handle.script(handle.next_ordinal() + i as u64, fault);
+                let acked = image.write_at(at as u64, &data).is_ok()
+                    && match flush_image(image) {
+                        Ok(_) => true,
+                        Err(_) => false,
+                    };
+                let label = format!("op={i} {fault:?} {policy:?}");
+                if is_failing(fault) {
+                    ensure!(handle, !acked, "{label}: failing fault acknowledged");
+                }
+                let after = handle.crash(policy);
+                ensure!(handle, after.len() == IMAGE, "{label}: size changed");
+                if acked {
+                    acked_n += 1;
+                    ensure!(handle, after == new, "{label}: acknowledged write lost");
+                }
+                ensure!(
+                    handle,
+                    after[..at] == old[..at] && after[at + data.len()..] == old[at + data.len()..],
+                    "{label}: bytes outside the write changed"
+                );
+            }
+        }
+    }
+    // Power cut after the last call of an acknowledged write.
+    for policy in policies() {
+        cases += 1;
+        let (handle, mut image) = prepare(0x3809);
+        image.write_at(at as u64, &data).expect("write");
+        assert!(flush_image(image).is_ok());
+        ensure!(
+            handle,
+            handle.crash(policy) == new,
+            "clean {policy:?}: lost"
+        );
+        acked_n += 1;
+    }
+    assert!(cases >= 20 && acked_n > 0, "{cases} {acked_n}");
+}

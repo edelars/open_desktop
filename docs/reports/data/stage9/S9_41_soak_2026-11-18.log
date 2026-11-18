@@ -1,0 +1,25 @@
+scope: 8 seeds 0x5041C0DE0101..0108, OD_SOAK_CYCLES=12000, cargo test -p od-storage --lib --release; base 4c2b8c9 + uncommitted S9-41 oracle changes in cow_soak_tests.rs only (od-storage); 2026-11-18T18:22:36Z
+soak seed=0x5041c0de0101 cycles=12000 (6894 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2835 faults=2116 slot_tears=528 opens=3463 failed_opens=40 rolled_forward=266 stale_probes=2458 compactions=280 reclaimed_bytes=12128768 quota_rejects=63 snapshot_limit_hits=330 exports=961 salvages=498 migrations=239 branches=5593 chain_too_deep=618 children_retired=5593 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.89s
+soak seed=0x5041c0de0102 cycles=12000 (6475 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2742 faults=2069 slot_tears=505 opens=3322 failed_opens=45 rolled_forward=215 stale_probes=2344 compactions=277 reclaimed_bytes=12417024 quota_rejects=58 snapshot_limit_hits=317 exports=988 salvages=490 migrations=218 branches=5267 chain_too_deep=577 children_retired=5266 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.48s
+soak seed=0x5041c0de0103 cycles=12000 (6513 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2850 faults=2187 slot_tears=515 opens=3395 failed_opens=35 rolled_forward=209 stale_probes=2435 compactions=275 reclaimed_bytes=12167680 quota_rejects=55 snapshot_limit_hits=363 exports=948 salvages=499 migrations=221 branches=5250 chain_too_deep=582 children_retired=5250 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.51s
+soak seed=0x5041c0de0104 cycles=12000 (6959 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2778 faults=2057 slot_tears=535 opens=3423 failed_opens=23 rolled_forward=230 stale_probes=2415 compactions=278 reclaimed_bytes=12053504 quota_rejects=55 snapshot_limit_hits=335 exports=988 salvages=483 migrations=237 branches=5766 chain_too_deep=642 children_retired=5757 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.96s
+soak seed=0x5041c0de0105 cycles=12000 (6533 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2841 faults=2090 slot_tears=509 opens=3393 failed_opens=39 rolled_forward=226 stale_probes=2438 compactions=271 reclaimed_bytes=11909120 quota_rejects=62 snapshot_limit_hits=417 exports=1014 salvages=494 migrations=231 branches=5140 chain_too_deep=563 children_retired=5131 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.53s
+soak seed=0x5041c0de0106 cycles=12000 (6678 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2770 faults=2063 slot_tears=478 opens=3333 failed_opens=27 rolled_forward=223 stale_probes=2345 compactions=282 reclaimed_bytes=12444672 quota_rejects=70 snapshot_limit_hits=352 exports=992 salvages=476 migrations=224 branches=5515 chain_too_deep=615 children_retired=5514 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.68s
+soak seed=0x5041c0de0107 cycles=12000 (6434 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2825 faults=2133 slot_tears=544 opens=3459 failed_opens=48 rolled_forward=254 stale_probes=2448 compactions=282 reclaimed_bytes=12194304 quota_rejects=59 snapshot_limit_hits=418 exports=986 salvages=459 migrations=224 branches=4992 chain_too_deep=545 children_retired=4984 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.43s
+soak seed=0x5041c0de0108 cycles=12000 (6690 ms): result=ok
+soak summary: seeds=1 cycles/seed=12000 crashes=2755 faults=2083 slot_tears=491 opens=3316 failed_opens=33 rolled_forward=208 stale_probes=2374 compactions=257 reclaimed_bytes=12319232 quota_rejects=66 snapshot_limit_hits=286 exports=986 salvages=478 migrations=226 branches=5466 chain_too_deep=608 children_retired=5458 result=ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 6.69s

@@ -1,4 +1,4 @@
-//! Strict read-only parser for the prototype CoW layout (S9-09).
+//! Strict read-only parser for the CoW v1 layout (S9-09).
 //!
 //! The layout is CoW v1 described in [`crate::cow_proto`], normative per
 //! STORAGE_FORMAT §9. This module never writes and never calls a mutating backend

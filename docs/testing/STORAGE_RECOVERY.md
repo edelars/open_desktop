@@ -1,6 +1,6 @@
 # Методика испытаний storage recovery
 
-Статус: **S9-00 принято с оговорками по архитектурному ревью**. Документ описывает уровни испытаний и правила evidence. Фактические статусы на 2026-11-05 — в §3.1: уровень 0 выполнен на модели для RAW (S9-07) и прототипа CoW (S9-08…12); уровень 1 выполнен частично (lock и SIGKILL, S9-04); уровень 2 `not_run`; уровень 3 `blocked`/`not_run` до подготовки стенда и разрешения пользователя.
+Статус: **S9-00 принято с оговорками по архитектурному ревью**. Документ описывает уровни испытаний и правила evidence. Фактические статусы на 2026-11-05 — в §3.1: уровень 0 выполнен на модели для RAW (S9-07) и прототипа CoW (S9-08…12); уровень 1 выполнен частично (lock и SIGKILL, S9-04); уровень 2 `not_run`; уровень 3 `blocked`/`not_run` до подготовки стенда и разрешения пользователя. Обновлено 2026-11-18: матрица S9-38 уровней 0 и 1 для storage (§4.1–4.2), 15 прогонов уровня 3 на внешнем USB-накопителе (S9-39, приём не выполнен).
 
 Контракт гарантий и модель отказов — [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) (§6 уровни подтверждения, §8 модель отказов). Операции VM — [VM_STATE.md](../specs/VM_STATE.md). План — [этап 9](../plans/STAGE_9.md), разделы 5 и 8. Стенд x86 — [STAND.md](STAND.md).
 
@@ -67,16 +67,19 @@
 | S9-39 power loss | — | — | по процедуре | обязателен |
 | S9-41 repeated recovery/soak | обязателен | обязателен | — | — |
 
-### 3.1. Фактические статусы (2026-11-05, коммит `7d23bf9`)
+### 3.1. Фактические статусы (2026-11-05, коммит `7d23bf9`; строки S9-38, S9-39 и S9-41 обновлены 2026-11-18)
 
 | Задача | Уровень 0 | Уровень 1 | Уровень 2 | Уровень 3 |
 |---|---|---|---|---|
 | S9-07 RAW write→flush→crash→reopen | `passed` на модели: [`testing/fault_tests.rs`](../../crates/od-storage/src/testing/fault_tests.rs), самопроверка oracle (`oracle_detects_ack_without_durability`, `seeded_runs_detect_broken_flush_and_ack`); namespace в fault backend не моделируется | `not_run` | `not_run` | `blocked`/`not_run` |
 | S9-04 writer lock и read lease | — | `partial`: `writer_in_another_process_blocks_us_and_crash_releases_it` и `lease_in_another_process_blocks_writer_allows_readers_and_sigkill_releases_it` (SIGKILL процесса, lock освобождён) в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs); нет kill writer во время write/flush и в VMHost | `not_run` | `blocked`/`not_run` |
-| S9-06 durability path | `partial`: sticky `reconcile_required` на memory-backend ([`io_tests.rs`](../../crates/od-storage/src/io_tests.rs)); реальный `F_FULLFSYNC` вызывается в тестах host backend, но без журнала порядка операций; namespace не реализован | `not_run` | `not_run` | `blocked`/`not_run` |
-| S9-08, S9-10…12 CoW (прототип) | `passed` на модели: cut-point sweeps ([`cow_proto_tests.rs`](../../crates/od-storage/src/cow_proto_tests.rs), [`cow_open_tests.rs`](../../crates/od-storage/src/cow_open_tests.rs), [`cow_tx_tests.rs`](../../crates/od-storage/src/cow_tx_tests.rs), [`cow_recovery_tests.rs`](../../crates/od-storage/src/cow_recovery_tests.rs)); ISSUE-057 закрыт (`01ef35d`, sweeps по каждому cut create/commit); формат не принят | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-06 durability path | `partial`: sticky `reconcile_required` на memory-backend ([`io_tests.rs`](../../crates/od-storage/src/io_tests.rs)); реальный `F_FULLFSYNC` вызывается в тестах host backend; порядок вызовов commit на реальном файле (appends → barrier 1 → root в слот → barrier 2 → ack) проверен журналом ([`stage9_storage_kill.rs`](../../tests/system/stage9_storage_kill.rs) `a_commit_reaches_the_host_file_in_protocol_order`, 2026-11-18); namespace не реализован | `partial`: kill процесса на реальных файлах для 9 операций (S9-38, 2026-11-18) | `not_run` | `blocked`/`not_run` |
+| S9-08, S9-10…12 CoW v1 | `passed` на модели: cut-point sweeps ([`cow_proto_tests.rs`](../../crates/od-storage/src/cow_proto_tests.rs), [`cow_open_tests.rs`](../../crates/od-storage/src/cow_open_tests.rs), [`cow_tx_tests.rs`](../../crates/od-storage/src/cow_tx_tests.rs), [`cow_recovery_tests.rs`](../../crates/od-storage/src/cow_recovery_tests.rs)); ISSUE-057 закрыт (`01ef35d`, sweeps по каждому cut create/commit); формат CoW v1 принят как нормативный 2026-11-06 | `not_run` | `not_run` | `blocked`/`not_run` |
 | S9-09 parser corruption | fuzz 80000 мутаций (soundness) в [`cow_parse_tests.rs`](../../crates/od-storage/src/cow_parse_tests.rs) | — | — | — |
-| S9-36, S9-38, S9-39, S9-41 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-41 soak | `passed` на модели: 8 seeds × 12000 циклов (2026-11-18, лог в `docs/reports/data/stage9/`) | — | — | — |
+| S9-39 power loss | — | — | — | выполнено частично: 2026-11-06 — 15 прогонов `idle`/`block0`/`rootcopy`; 2026-11-18 — 15 прогонов `after-b1`/`before-b2`/`after-b2`, все `verify ok`, поколение после барьера 2 сохранено 5 из 5. Всё на внешнем USB-накопителе вне целевой комбинации, все отключения позже 2 с (слабое свидетельство барьерной семантики); принята владельцем 2026-11-18 в объёме USB-накопителя, целевая комбинация не испытана ([S9_39_POWER_LOSS_PLAN.md](S9_39_POWER_LOSS_PLAN.md)) |
+| S9-38 storage matrix | `passed` на модели (§4.1, 2026-11-18) | `passed` (2026-11-18, §4.2) | `not_run` | `not_run` |
+| S9-36 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
 
 Все результаты уровня 0 относятся к модели и не доказывают поведение реального host API, filesystem и накопителя.
 
@@ -86,8 +89,86 @@ Claim «durable после power loss» допустим только для к�
 
 Повреждения вносятся отдельно от crash cuts: усечение, порча lengths/root/map/payload, wrong version/identity, duplicate/conflicting entries, циклы и превышение depth. Ожидаемый исход — явная ошибка с местом и типом либо salvage в новый target с отчётом о valid/unknown/lost ranges. Bounded fuzzing parser'а дополняет, но не заменяет доказательство данных: «ноль crashes parser» не является PASS по данным.
 
+### 4.1. Матрица S9-38 на уровне 0 (модель `FaultBackend`, 2026-11-18)
+
+Полный перебор (**F**): каждый мутирующий вызов операции из её собственного trace × каждый отказ своего вида (`faults_for`: write — Fail Other/ENOSPC, Short 0/1/100, Torn 0/1/100/508; resize — Other/ENOSPC; flush — `IoNotDurable`, `IoAfterDurable`) × каждая политика сбоя (`policies`: DropPending, KeepPending, 8 Seeded — потеря и перестановка невыполненных записей), плюс обрыв после последнего вызова. Общий вердикт:
+- отказ никогда не подтверждается;
+- после сбоя файл открывается в старом или новом состоянии по независимой модели, без смеси;
+- подтверждённое никогда не теряется;
+- неопубликованная цель не открывается как образ;
+- источник не меняется.
+
+Тесты считают оба законных исхода, поэтому перебор не пустой.
+
+| Операция | Отказы × сбой (F) | Отмена | Тест(ы) |
+|---|---|---|---|
+| RAW write + flush | F (без атомарности многосекторной записи — контракт RAW) | n/a | `raw_write_flush_full_fault_matrix`; `raw_write_flush_crash_reopen_guarantee`, `lost_ack_outcome_is_old_or_new_and_indistinguishable` |
+| CoW create | F | n/a | `create_cut_points_give_no_file_or_empty_file`, `power_cut_at_every_create_step` |
+| CoW commit, tx commit | F | F | `every_cut_point_leaves_old_or_new_never_mixed`, `every_cut_of_a_transaction_gives_whole_old_or_whole_new`, `cancel_*` (`cow_tx_tests`) |
+| open-repair (roll-forward) | F | n/a | `crash_during_recovery_converges_to_the_same_state`, `repeated_crashed_recoveries_converge` |
+| `create_base` | F | n/a | `base_creation_is_whole_or_absent_under_every_fault` |
+| layer write (с ростом), zero, discard | F | n/a | `data_operations_are_whole_or_absent_under_every_fault`; `enospc_at_every_step_leaves_the_previous_durable_state_intact` |
+| snapshot create / delete | F | n/a (нет API) | `snapshot_publication_is_whole_or_absent_under_every_fault`, `snapshot_delete_is_whole_or_absent_and_never_damages_data_under_every_fault` |
+| branch / child create | F | n/a | `branch_creation_is_whole_or_absent_under_every_fault` |
+| compaction | F | n/a | `compaction_publishes_a_complete_verified_target_or_nothing_under_every_fault` |
+| export | F | F | `export_full_fault_matrix`, `cancellation_at_every_poll_stops_with_cancelled_and_never_succeeds` |
+| import | F | F | `import_full_fault_matrix`, `import_cancelled_at_every_poll_never_completes` |
+| salvage | F | n/a | `salvage_copy_full_fault_matrix` |
+
+**Повреждения:**
+
+| Класс | Тест(ы) |
+|---|---|
+| длины и усечение | `truncation_at_every_length_is_exact`, `truncation_boundaries_named` |
+| root | `damaged_root_carriers_of_a_committed_state` и тесты корней в `cow_proto_tests` |
+| map | `valid_header_with_invalid_map_is_refused`, тесты карты в salvage и цепочке |
+| payload | `damaged_data_under_valid_root_refuses_without_fallback`, повреждённые блоки в export/salvage |
+| метаданные снимков | `forged_snapshot_metadata_is_refused_or_consistent` (ограниченный fuzz заголовка с пересчитанным CRC и bitmap), одиночные bit flip, parent ref, циклы, глубина (`cow_snapshot_tests`) |
+| bounded fuzz базового формата | `deterministic_mutation_fuzz_never_panics_and_ok_is_consistent` |
+| повреждение → мутирующая операция | `corruption_refuses_the_writable_open_without_writing`: карта, блок заголовка, bitmap и блок данных отклоняются writable open без единой записи, поэтому ни одна мутирующая операция над таким файлом не начинается |
+
+Fuzz проверяет только устойчивость (soundness): отказ или согласованное состояние без паники. Что каждое подделанное значение будет обнаружено, он не доказывает.
+
+**Не сделано на уровне 0:** отдельной матрицы для конкурирующих операций (S9-37) нет.
+
+### 4.2. Матрица S9-38 на уровне 1 (kill процесса на реальных файлах, 2026-11-18)
+
+Тест [`stage9_storage_kill.rs`](../../tests/system/stage9_storage_kill.rs) (`cargo test -p od-host --test stage9_storage_kill`, только macOS). Родитель готовит на реальном томе базовый образ с двумя снимками и RAW-файл. Дочерний процесс (тот же бинарник) выполняет одну операцию через `HostFileStorage`; обёртка `KillAt` перед мутирующим вызовом N сообщает точку kill, и родитель посылает SIGKILL (проверяется сигнал 9). Перебор N идёт до первого полного прогона, плюс kill после возврата операции до её отчёта.
+
+После каждого kill проверяется:
+- writer lock освобождён ядром;
+- состояние — старое или целиком новое по простой модели, никогда не смесь; после возврата операции — новое;
+- цель копии (branch, compaction, import, salvage) либо не открывается как образ (типизированная ошибка недостроенного файла), либо полная;
+- экспортированный RAW полный после возврата;
+- источник копии не меняется.
+
+| Операция | Точек kill | Исходы «старое / новое» |
+|---|---|---|
+| RAW write + flush | 2 | 1 / 1 |
+| commit (с ростом) | 11 | 10 / 1 |
+| snapshot | 7 | 6 / 1 |
+| delete | 7 | 6 / 1 |
+| branch | 12 | 11 / 1 |
+| compaction | 61 | 60 / 1 |
+| export | 3 | 2 / 1 |
+| import | 35 | 34 / 1 |
+| salvage | 31 | 30 / 1 |
+
+Новое состояние видно только при kill перед последним барьером: корень к этому моменту уже в page cache. Writable reopen базового файла после kill не делает roll-forward и не сообщает `possible_lost_commit`: kill между вызовами не рвёт записей. Источники копий (base.img, raw.img) сверяются побайтно.
+
+Пределы:
+- kill процесса оставляет page cache живым, поэтому это не испытание потери питания (уровень 3);
+- kill только на границах вызовов backend, не внутри записи;
+- повторная мутация после восстановления (например, commit поверх хвоста) здесь не проверяется — она есть на уровне 0 (`repeated_crashed_recoveries_converge`, soak S9-41);
+- для RAW атомарность многосекторной записи контракт не обещает: проверено только, что при kill между вызовами диапазон старый или новый целиком;
+- библиотечный `export_raw` пишет прямо в цель, поэтому частичный RAW после kill неотличим от полного по виду. Публикация под конечным именем только после проверки — задача CLI (`.partial` + no-replace link, S9-20), а без durability каталога её атомарность не доказана (ISSUE-055).
+
+Здесь же `a_commit_reaches_the_host_file_in_protocol_order` журналом вызовов backend (не системных вызовов) на реальном файле подтверждает порядок §9.4: все appends (последней идёт копия корня в последнем секторе) → barrier 1 → ровно одна запись корня 512 Б в слот нового поколения → barrier 2 → ничего до ack; копия корня — ровно один сектор в конце файла и совпадает с опубликованным корнем. Что `flush_file_durable` хоста выполняет `F_FULLFSYNC` и что тот делает на носителе, тест не проверяет.
+
+**S9-38 в storage-scope:** уровни 0 и 1 выполнены. VM-часть (конкурирующие операции S9-37, checkpoint S9-29…31, гостевое устройство S9-13) заблокирована.
+
 ## 5. Открытые условия
 
 - Семантика `F_FULLFSYNC` подтверждена локальной man-страницей `fcntl`, но namespace durability и исполнение на выбранном накопителе не подтверждены ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); уровни 2–3 не выполнялись.
 - Модель накопителя/контроллера внутреннего SSD не зафиксирована.
-- Стенд для уровня 3 не подготовлен.
+- Стенд уровня 3 подготовлен и использован только для внешнего USB-накопителя (S9-39); внутренний SSD целевой комбинации не испытывался.

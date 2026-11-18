@@ -324,6 +324,7 @@ dependencies = [
  "od-isa",
  "od-jit",
  "od-machine",
+ "od-storage",
  "od-testkit",
  "serde",
  "serde_json",

@@ -1777,7 +1777,8 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 - **Дата обнаружения:** 2026-11-05.
 - **Компонент:** host storage backend `od-host` ([`storage_io.rs`](../crates/od-host/src/storage_io.rs)) / `od-storage` ([`io.rs`](../crates/od-storage/src/io.rs)) (S9-03, S9-06), контракт [STORAGE_FORMAT.md §7](specs/STORAGE_FORMAT.md#7-host-durability-api--статус-частично-реализовано-не-подтверждено-испытаниями).
-- **Статус:** открыта. Это неподтверждённая платформенная гарантия, а не обнаруженный runtime-дефект. Обновлено после коммитов `a59338a`…`69e0b02`: flush данных файла на macOS реализован через `fcntl(F_FULLFSYNC)` (`69e0b02`), но не проверен испытаниями; открыто для namespace durability, power-loss и non-APFS/network томов.
+- **Статус:** открыта как предел v1. 2026-11-18 владелец сузил объём v1 и закрыл S9-06: durable-гарантия только для данных файла, создание и публикация файлов — без durable-гарантии ([STORAGE_FORMAT §7](specs/STORAGE_FORMAT.md#7-host-durability-api--статус-частично-реализовано-не-подтверждено-испытаниями)). Запись остаётся открытой до проверяемого источника и испытаний namespace durability.
+- **Статус (история):** открыта. Это неподтверждённая платформенная гарантия, а не обнаруженный runtime-дефект. Обновлено после коммитов `a59338a`…`69e0b02`: flush данных файла на macOS реализован через `fcntl(F_FULLFSYNC)` (`69e0b02`), но не проверен испытаниями; открыто для namespace durability, power-loss и non-APFS/network томов.
 - **Суть и последствия:** для выбранной кандидатной комбинации (macOS Tahoe 26.7.1, APFS, внутренний SSD) источник семантики сброса содержимого файла есть (локальная man `fcntl`, `F_FULLFSYNC`), но нет проверяемого источника и реализации durability namespace (create, rename, directory entry), а исполнение на конкретном накопителе не проверено испытаниями. Без этого нельзя доказывать порядок data → metadata → publication → ack и заявлять power-loss свойства. Реализованный file-data flush не доказывает namespace durability и power-loss; S9-06 не принята, claims durability за пределами file-data не допускаются.
 - **Основание:** локальная man-страница `fcntl(2)`, macOS 26.7.1 (проверено 2026-11-05) — источник семантики `F_FULLFSYNC`: `fsync` плюс запрос накопителю сбросить буферы, barrier для ранее `fsync`-нутых данных, реализован на APFS; некоторые FireWire-накопители игнорируют запрос. Подтверждённым остаётся только это; сопоставление ENOTSUP/EINVAL man-страница не описывает (защитное предположение). Context7 Rust std (`/websites/doc_rust-lang_stable_std`): `File::sync_all` — «attempts to sync … to disk», `sync_data` может не синхронизировать metadata; namespace durability не описана. Источников по `F_BARRIERFSYNC` и namespace durability APFS нет. Правило плана [этапа 9 §3, п. 3](plans/STAGE_9.md#3-правила-исполнителя-и-размещение) запрещает угадывать гарантию.
 - **Реализовано (факт кода):** `F_FULLFSYNC` на заблокированном writable fd только на macOS; ENOTSUP -> `UnsupportedDurability`, прочие сбои (включая EINVAL) -> sticky `reconcile_required`. Сопоставление ENOTSUP/EINVAL — защитное предположение, не подтверждённое man `fcntl`.
@@ -3914,14 +3915,14 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 
 <a id="issue-086-s9-26-wrong-uefi-stage-reference"></a>
 
-### ISSUE-086 — S9-26 names the wrong UEFI stage
+### ISSUE-086 (закрыто) — S9-26 names the wrong UEFI stage
 
 - **Дата обнаружения:** 2026-11-13, при подготовке S6-00.
 - **Компонент:** `docs/reports/STAGE_9_REPORT.md`, запись S9-26.
-- **Статус:** открыта; подтверждённая документальная ошибка, не дефект реализации.
-- **Суть и последствия:** запись S9-26 указывает, что UEFI firmware отсутствует на этапах 6/8. UEFI принадлежит этапу 7. Текущая формулировка ошибочно распределяет владельца и может привести к неправильному планированию блокеров.
+- **Статус:** закрыта 2026-11-18: строка S9-26 в §3 [отчёта этапа 9](reports/STAGE_9_REPORT.md) называет владельцем UEFI variables этап 7 (S7-09, S7-10, S7-33); S9-26 остаётся `blocked`. Проверка: `rg -n "S9-26" docs/reports/STAGE_9_REPORT.md docs/specs` не находит «этап 6/8»; формулировка сверена с [ROADMAP.md](ROADMAP.md) (этап 7), [STAGE_7.md](plans/STAGE_7.md) (variable store / NVRAM) и статусами S7-09/S7-10/S7-33 `not_started` в [отчёте этапа 7](reports/STAGE_7_REPORT.md); в `firmware/uefi/src/` хранилища переменных нет. Строка [отчёта этапа 6](reports/STAGE_6_REPORT.md#4-документные-расхождения-и-передача) об открытой ISSUE-086 — исторический снимок на 2026-11-13.
+- **Суть и последствия:** до исправления запись S9-26 указывала, что UEFI firmware отсутствует на этапах 6/8, хотя UEFI принадлежит этапу 7. Формулировка ошибочно распределяла владельца и могла привести к неправильному планированию блокеров.
 - **Основание:** строка S9-26 в отчёте этапа 9 сопоставлена с планом этапа 7 и картой этапов; та же находка описана в [отчёте этапа 6](reports/STAGE_6_REPORT.md#4-документные-расхождения-и-передача).
-- **Следующий шаг:** владелец этапа 9 исправляет ссылку на этап 7 в `STAGE_9_REPORT.md`; до исправления сохранять эту запись открытой.
+- **Следующий шаг:** нет (исправлено 2026-11-18).
 
 ### ISSUE-087 — цикл CPL3-входа продолжает исполнять код ядра после SYSCALL
 
@@ -6324,3 +6325,31 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус:** устранена в одноинструкционном CPL0-профиле S6-42d.
 - **Основание:** до правки `STI; LOCK INC` с отсутствующей страницей завершал квант ошибкой доставки после обнаружения гостевого `#PF`.
 - **Результат:** успешная доставка синхронного `#PF` или `#GP` завершает известную тень STI после записи кадра и установки бита Accessed дескриптора, если он требовался. При незавершённой доставке состояние CPU сохраняется. Регрессия `s6_42d_page_fault_ends_sti_shadow_without_losing_the_pending_irq` проверяет очередность IRQ и повтор `LOCK INC` после `IRETQ` для interrupt gate и trap gate. [Проверки](reports/STAGE_6_S6-42c_2026-11-18.md#s6-42d--атомарные-инструкции-в-кванте-хоста).
+
+<a id="issue-519-s9-20-partial-removal-is-a-path-operation"></a>
+
+### ISSUE-519 — S9-20: removal of `.partial` after a successful export is a path operation
+
+- **Дата обнаружения:** 2026-11-06, ревью S9-20/21 (отчёт этапа 9, §8 п. 2); записано 2026-11-18.
+- **Компонент:** `crates/od-host/src/storage_policy.rs`, `publish_no_replace` (удаление `partial` после проверки identity).
+- **Статус:** открыта; принятый предел первой версии, не воспроизведённый дефект.
+- **Суть и последствия:** после успешной публикации `<out.raw>` файл `<out.raw>.partial` удаляется по пути, если по этому пути ещё лежит записанный inode. Между проверкой identity и `remove_file` имя `.partial` может подменить процесс того же пользователя; тогда будет удалён чужой файл с этим именем. Опубликованный `<out.raw>` и источник это не затрагивает. Результат сообщается как `partial_removed`.
+- **Основание:** чтение кода (`identity_of(partial)` затем `std::fs::remove_file(partial)`); на macOS нет удаления по дескриптору с проверкой inode, а директорные гарантии не подтверждены (ISSUE-055).
+- **Следующий шаг:** полного закрытия в рамках POSIX нет: удаления имени с проверкой inode нет ни в macOS, ни в Linux, а `unlinkat` относительно дескриптора каталога защищает только от подмены компонентов пути, не от подмены самого имени в каталоге. Варианты — не удалять `.partial` (оставлять под известным именем) или принять предел; решение откладывается до работы с namespace durability (ISSUE-055). До этого предел документирован в отчёте этапа 9 (S9-20) и в doc-комментарии `publish_no_replace`.
+
+<a id="issue-518-s5-persistent-nvme-reopen-test-flaky-in-parallel"></a>
+
+### ISSUE-518 (закрыто) — persistent NVMe: `failed_raw_reopen_keeps_writer_lock_in_terminal_adapter` нестабилен при параллельном запуске
+
+- **Дата обнаружения:** 2026-11-18, при запуске набора S9-42 (`work/stage9/20261118-s9-42b`, case `od_host_persistent_nvme`).
+- **Компонент:** тесты `crates/od-host/src/persistent_nvme.rs` (этап 5, коммит `c20e3d6`): `failed_raw_reopen_keeps_writer_lock_in_terminal_adapter` вместе с `killing_between_host_write_and_durable_ack_cannot_emit_write_success`.
+- **Статус:** закрыта 2026-11-18. Тесты `persistent_nvme.rs` с реальными файлами (8 тестов, включая тест с kill и S9-04) берут общий `process_spawn_guard()` из `storage_io.rs`, как уже делали `storage_io`, `raw_file_tests`, `storage_policy` и `storage_abi_v1`. Проверка: 40 параллельных прогонов `persistent_nvme` без падений (до правки — 2 из 15). Набор S9-42 снова запускает case параллельно.
+- **Суть и последствия:** после `drop` терминального адаптера повторное `open_read_write_exclusive` своего временного файла иногда получает `WriterBusy` (`persistent_nvme.rs`, ожидание «the OS lock is released only when the terminal owner drops»). Набор тестов `persistent_nvme` из-за этого иногда падает, хотя проверяемое свойство в однопоточном прогоне выполняется.
+- **Основание (замер 2026-11-18, macOS 26.7.1, debug):**
+  - `od_host-… persistent_nvme`, параллельно: 2 падения из 15;
+  - то же без нового теста S9-04 (`--skip a_second_process_is_busy`): 5 из 30;
+  - без теста этапа 5 с kill (`--skip killing_between`): 0 из 30;
+  - `--test-threads=1`: 0 из 25.
+
+  Причина уже описана у `process_spawn_guard` в `storage_io.rs`: порождённый одним тестовым потоком дочерний процесс до `exec` держит копии открытых дескрипторов, а вместе с ними `flock` writer-а из другого потока. Тесты `persistent_nvme.rs` этот guard не брали. Почему при работающем тесте S9-04 без теста с kill падений не было (0 из 30), не исследовалось.
+- **Следующий шаг:** по тестам — нет. Отдельно для владельцев этапов 5 и 11: тот же механизм `flock` означает, что в процессе хоста, который порождает дочерние процессы во время отключения и повторного подключения диска, возможен кратковременный `WriterBusy`; продуктовый путь это пока не проверяет (VMHost диски гостю не подключает).

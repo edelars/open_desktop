@@ -13,7 +13,7 @@
 //! | 0 | image opened and every check of the chosen mode passed |
 //! | 1 | usage error (nothing was read) |
 //! | 2 | corrupt, inconsistent or incomplete (parent missing, identity mismatch, possible lost commit, unpublished target, ...) |
-//! | 3 | unsupported (unknown mandatory feature, root version, or not an image of this format) |
+//! | 3 | unsupported (unknown mandatory feature, root version, or not an image of this format; for `import`, a RAW that is not whole 512-byte blocks or exceeds one layer) |
 //! | 4 | busy: a writer holds the file (or an ancestor) |
 //! | 5 | I/O error (missing file, not a regular file, read failure) |
 //!
@@ -57,14 +57,39 @@
 //!   unrecoverable source; 3 for an unsupported format; 5 when the copy or
 //!   report could not be written. An unrecoverable source gets no `<new.img>`
 //!   at all, and a partial one gets none unless `--accept-partial` is given.
-//!   A copy that failed midway is a *building* image that does not open.
+//!   A copy that failed midway is a *building* image that does not open. A
+//!   host without file durability is refused before anything is written
+//!   (exit 5, `copy=failed:durability_unavailable`); the empty `<new.img>`
+//!   created exclusively is left in place, so a rerun reports `target_exists`.
+//!
+//! # `import` (S9-20, S9-22)
+//!
+//! `import <in.raw> <new.img>` is the one supported way into the CoW v1
+//! format: it builds a new base image from a plain RAW file (see
+//! [`od_storage::cow_export::import_raw`]). The RAW is read under the same
+//! shared lease (a held writer is exit 4) and never written. A RAW that is not
+//! a whole number of 512-byte blocks or has more than `MAX_DISK_BLOCKS` blocks
+//! (the limit of one prototype layer) is exit 3 and creates nothing. Otherwise
+//! `<new.img>` is created exclusively (an existing name is exit 5,
+//! `target_exists`, untouched); the image is not published until it was read
+//! back, compared with a fresh read of the RAW and committed durably. Every
+//! run prints `target_left` (whether this run created `<new.img>`; a host
+//! I/O error inside the exclusive create is reported as not created). A failure
+//! after creation is exit 5 with `target_left=true`: the file stays in place
+//! and either does not open as an image (an unfinished building image or a
+//! file without a valid header) or, when the fault hit only the
+//! acknowledgement of the publishing commit, is a complete copy (`check`
+//! tells which); it never opens as a partial image. A host without file
+//! durability is refused before anything is written (`durability_unavailable`;
+//! an empty `<new.img>` is left). Not covered: durable directory entry
+//! (ISSUE-055).
 
 use od_host::storage_io::{HostFileStorage, LeaseOpenError, ReadLease, WriterOpenError};
 use od_host::storage_policy::{
     ParentLease, ParentLeaseError, ParentLeaseStorage, PolicyError, PublishError,
     export_with_lease, publish_no_replace,
 };
-use od_storage::cow_export::{ExportOptions, StateSelection, export_raw};
+use od_storage::cow_export::{ExportOptions, ImportError, StateSelection, export_raw, import_raw};
 use od_storage::cow_inspect::{InspectMode, InspectReport, Outcome, inspect_storage};
 use od_storage::cow_salvage::{CopyStatus, SalvageError, SalvageOptions, salvage_to_copy};
 use od_storage::cow_snapshot::{ParentRef, ParentResolver, ResolveError};
@@ -173,7 +198,7 @@ pub fn check_file(path: &Path, parents: &[(u64, PathBuf)]) -> InspectReport {
     inspect_file(path, InspectMode::Check, parents)
 }
 
-const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n";
+const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool import <in.raw> <new.img>\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n";
 
 /// Result of one invocation: the status and what to print.
 #[derive(Debug, Eq, PartialEq)]
@@ -196,6 +221,7 @@ enum Command {
     Info,
     Check,
     Export,
+    Import,
     Salvage,
     CreateRaw,
 }
@@ -204,7 +230,7 @@ impl Command {
     fn positionals(self) -> usize {
         match self {
             Self::Info | Self::Check => 1,
-            Self::Export => 2,
+            Self::Export | Self::Import => 2,
             Self::Salvage | Self::CreateRaw => 3,
         }
     }
@@ -235,6 +261,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         "check" => Command::Check,
         "export" => Command::Export,
         "salvage" => Command::Salvage,
+        "import" => Command::Import,
         #[cfg(target_os = "macos")]
         "create-raw" => Command::CreateRaw,
         _ => return Err(usage("unknown command")),
@@ -289,6 +316,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         return Err(usage(match command {
             Command::Info | Command::Check => "missing image path",
             Command::Export => "export needs an image and an output path",
+            Command::Import => "import needs a RAW input and a new image path",
             Command::Salvage => "salvage needs an image, a new image path and a report path",
             Command::CreateRaw => "create-raw needs a directory, name and capacity-bytes",
         }));
@@ -322,6 +350,7 @@ pub fn run(args: &[OsString]) -> Run {
         (Command::Export, [src, out]) => {
             export_file(Path::new(src), Path::new(out), selection, &parsed.parents)
         }
+        (Command::Import, [src, new]) => import_file(Path::new(src), Path::new(new)),
         (Command::Salvage, [src, new, report]) => salvage_file(
             Path::new(src),
             Path::new(new),
@@ -657,6 +686,112 @@ pub fn export_file(
         .put("namespace_durable", false)
         .put("partial_removed", published.partial_removed);
     run_of(l, Outcome::Ok)
+}
+
+// ------------------------------------------------------------------ import
+
+/// Imports the RAW file `src` into the new base image `new_image`. See the
+/// crate docs ("`import`").
+pub fn import_file(src: &Path, new_image: &Path) -> Run {
+    // `target_left` is printed on every path: whether this run created
+    // `<new.img>` (a failure after that leaves the file in place).
+    let refused = |reason: &str| {
+        let mut l = failure("import", Outcome::Io, reason, None);
+        l.put("target_left", false);
+        run_of(l, Outcome::Io)
+    };
+    match name_taken(new_image) {
+        Ok(false) => {}
+        Ok(true) => return refused("target_exists"),
+        Err(e) => return refused(io_reason(&e)),
+    }
+    let uid = fresh_uid();
+    let created = std::cell::Cell::new(false);
+    let result = export_with_lease(src, |lease| {
+        let source =
+            CheckedStorage::new(LeaseRef(lease)).map_err(|_| io::Error::other("capabilities"))?;
+        // Called by the library only after the RAW size was accepted. A lost
+        // `flock` race leaves the just-created empty file behind (see
+        // `create_new_exclusive`), so it counts as created; an `Io` error after
+        // the open cannot be told apart from a failed open and is reported as
+        // not created.
+        let make_target = || {
+            let file =
+                HostFileStorage::create_new_exclusive(new_image, 0).map_err(|e| match e {
+                    WriterOpenError::Io(e) => e,
+                    WriterOpenError::WriterBusy => {
+                        created.set(true);
+                        io::Error::from(io::ErrorKind::WouldBlock)
+                    }
+                    WriterOpenError::IdentityMismatch => io::Error::from(io::ErrorKind::Other),
+                })?;
+            created.set(true);
+            CheckedStorage::new(file).map_err(|_| io::Error::other("capabilities"))
+        };
+        // The new image (if any) is released here with its descriptor and lock.
+        Ok::<_, io::Error>(import_raw(&source, make_target, uid, &|| false).map(|(_, r)| r))
+    });
+    let report = match result {
+        Err(e) => {
+            let (mut l, outcome) = policy_failure("import", &e);
+            l.put("target_left", false);
+            return run_of(l, outcome);
+        }
+        Ok(Err(e)) => {
+            let mut l = failure("import", Outcome::Io, io_reason(&e), None);
+            l.put("target_left", created.get());
+            return run_of(l, Outcome::Io);
+        }
+        Ok(Ok(Err(e))) => {
+            let (outcome, reason, detail) = import_failure(&e);
+            let mut l = failure("import", outcome, reason, detail);
+            l.put("target_left", created.get());
+            return run_of(l, outcome);
+        }
+        Ok(Ok(Ok(r))) => r,
+    };
+    // `import_raw` refuses a target without file durability before writing,
+    // so a published image was made durable; the directory entry was not.
+    let mut l = Lines::new("import");
+    l.put("outcome", Outcome::Ok.as_str())
+        .put("reason", "ok")
+        .put("verified", true)
+        .put("logical_size", report.logical_size)
+        .put("blocks", report.blocks)
+        .put("file_uid", report.file_uid)
+        .put("file_durable", true)
+        .put("namespace_durable", false)
+        .put("target_left", true);
+    run_of(l, Outcome::Ok)
+}
+
+/// Outcome, reason and detail of a failed import. Whether `<new.img>` exists
+/// is tracked by the caller (`target_left`), not derived from the error.
+fn import_failure(e: &ImportError) -> (Outcome, &'static str, Option<u64>) {
+    use od_storage::cow_proto::CowError;
+    use od_storage::cow_snapshot::SnapError;
+    use od_storage::io::StorageError;
+    match e {
+        ImportError::NotBlockAligned { len } => {
+            (Outcome::Unsupported, "not_block_aligned", Some(*len))
+        }
+        ImportError::TooLarge { blocks, .. } => (Outcome::Unsupported, "too_large", Some(*blocks)),
+        ImportError::Raw(_) => (Outcome::Io, "source_read_error", None),
+        ImportError::TargetCreate(io::ErrorKind::AlreadyExists) => {
+            (Outcome::Io, "target_exists", None)
+        }
+        ImportError::TargetCreate(_) => (Outcome::Io, "target_create_failed", None),
+        ImportError::TargetNotEmpty { .. } => (Outcome::Io, "target_not_empty", None),
+        ImportError::TargetUnsuitable => (Outcome::Io, "target_unsuitable", None),
+        ImportError::DurabilityUnavailable => (Outcome::Io, "durability_unavailable", None),
+        ImportError::VerifyMismatch { offset } => (Outcome::Io, "verify_mismatch", Some(*offset)),
+        ImportError::Cancelled => (Outcome::Io, "cancelled", None),
+        ImportError::Image(SnapError::Cow(CowError::Storage(StorageError::Io {
+            kind: io::ErrorKind::StorageFull,
+            ..
+        }))) => (Outcome::Io, "no_space", None),
+        ImportError::Image(_) => (Outcome::Io, "target_io_error", None),
+    }
 }
 
 // ----------------------------------------------------------------- salvage

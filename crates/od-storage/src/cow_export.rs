@@ -490,10 +490,18 @@ pub enum ImportError {
         blocks: u64,
         limit: u64,
     },
+    /// `make_target` failed (`AlreadyExists`: the host refused an existing
+    /// name; nothing existing was touched).
+    TargetCreate(ErrorKind),
     /// The target is not empty: nothing was written.
     TargetNotEmpty {
         len: u64,
     },
+    /// The target is not writable and resizable: nothing was written.
+    TargetUnsuitable,
+    /// The target cannot make its file contents durable, so the publishing
+    /// commit could not be acknowledged: nothing was written.
+    DurabilityUnavailable,
     Image(SnapError),
     Cancelled,
     /// The built image read back differently from the RAW source.
@@ -523,9 +531,14 @@ impl std::error::Error for ImportError {}
 /// partial image. Before that commit the image is reopened from the media and
 /// compared, chunk by chunk, with a **fresh read** of `raw`. `raw` is only
 /// read. `new_uid` is the identity of the new file (non-zero).
+///
+/// `make_target` is called only after the RAW size was accepted (whole
+/// blocks, within [`MAX_DISK_BLOCKS`]) and must return a new, empty storage.
+/// A target that is not writable and resizable, or cannot make its file
+/// contents durable, is refused before anything is written to it.
 pub fn import_raw<R, T>(
     raw: &CheckedStorage<R>,
-    target: CheckedStorage<T>,
+    make_target: impl FnOnce() -> Result<CheckedStorage<T>, std::io::Error>,
     new_uid: u64,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(SnapFile<T>, ImportReport), ImportError>
@@ -543,6 +556,14 @@ where
             blocks,
             limit: MAX_DISK_BLOCKS,
         });
+    }
+    let target = make_target().map_err(|e| ImportError::TargetCreate(e.kind()))?;
+    let caps = target.capabilities();
+    if !caps.writable || !caps.resize {
+        return Err(ImportError::TargetUnsuitable);
+    }
+    if !caps.file_durability {
+        return Err(ImportError::DurabilityUnavailable);
     }
     let existing = target
         .size()
