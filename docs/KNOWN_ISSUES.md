@@ -6274,17 +6274,17 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 <a id="issue-513-s5-persistent-nvme-reopen-test-flaky-in-parallel"></a>
 
-### ISSUE-513 — persistent NVMe: `failed_raw_reopen_keeps_writer_lock_in_terminal_adapter` нестабилен при параллельном запуске
+### ISSUE-513 (закрыто) — persistent NVMe: `failed_raw_reopen_keeps_writer_lock_in_terminal_adapter` нестабилен при параллельном запуске
 
 - **Дата обнаружения:** 2026-11-18, при запуске набора S9-42 (`work/stage9/20261118-s9-42b`, case `od_host_persistent_nvme`).
 - **Компонент:** тесты `crates/od-host/src/persistent_nvme.rs` (этап 5, коммит `c20e3d6`): `failed_raw_reopen_keeps_writer_lock_in_terminal_adapter` вместе с `killing_between_host_write_and_durable_ack_cannot_emit_write_success`.
-- **Статус:** открыта; подтверждённая нестабильность теста, дефект runtime не подтверждён.
-- **Суть и последствия:** после `drop` терминального адаптера повторное `open_read_write_exclusive` своего временного файла иногда получает `WriterBusy` (`persistent_nvme.rs`, ожидание «the OS lock is released only when the terminal owner drops»). Набор тестов `persistent_nvme` из-за этого иногда падает, хотя проверяемое свойство в однопоточном прогоне выполняется. Если гипотеза верна, это свойство `flock`, а не только тестов: в процессе хоста, который порождает дочерние процессы во время отключения и повторного подключения диска, возможен кратковременный `WriterBusy`; владельцу проверить.
+- **Статус:** закрыта 2026-11-18. Тесты `persistent_nvme.rs` с реальными файлами (8 тестов, включая тест с kill и S9-04) берут общий `process_spawn_guard()` из `storage_io.rs`, как уже делали `storage_io`, `raw_file_tests`, `storage_policy` и `storage_abi_v1`. Проверка: 40 параллельных прогонов `persistent_nvme` без падений (до правки — 2 из 15). Набор S9-42 снова запускает case параллельно.
+- **Суть и последствия:** после `drop` терминального адаптера повторное `open_read_write_exclusive` своего временного файла иногда получает `WriterBusy` (`persistent_nvme.rs`, ожидание «the OS lock is released only when the terminal owner drops»). Набор тестов `persistent_nvme` из-за этого иногда падает, хотя проверяемое свойство в однопоточном прогоне выполняется.
 - **Основание (замер 2026-11-18, macOS 26.7.1, debug):**
   - `od_host-… persistent_nvme`, параллельно: 2 падения из 15;
   - то же без нового теста S9-04 (`--skip a_second_process_is_busy`): 5 из 30;
   - без теста этапа 5 с kill (`--skip killing_between`): 0 из 30;
   - `--test-threads=1`: 0 из 25.
 
-  Гипотеза, не проверенная: дочерний процесс, который тест с kill создаёт через `Command::spawn`, в окне порождения (`posix_spawn` или `fork`+`exec`) до закрытия CLOEXEC-дескрипторов держит копию дескриптора соседнего теста, а `flock` снимается только после закрытия всех копий. Дескрипторы открыты с `O_CLOEXEC`. Гипотеза пока не объясняет, почему при работающем тесте S9-04, который тоже порождает процесс, падений 0 из 30.
-- **Следующий шаг:** владелец этапа 5 подтверждает причину (например, трассировкой времени spawn и reopen) и делает тесты, порождающие процессы, независимыми от соседних (сериализация или повторная попытка reopen с ограничением). До этого набор S9-42 запускает `persistent_nvme` в один поток ([STAGE_9_REPRO.md](testing/STAGE_9_REPRO.md)).
+  Причина уже описана у `process_spawn_guard` в `storage_io.rs`: порождённый одним тестовым потоком дочерний процесс до `exec` держит копии открытых дескрипторов, а вместе с ними `flock` writer-а из другого потока. Тесты `persistent_nvme.rs` этот guard не брали. Почему при работающем тесте S9-04 без теста с kill падений не было (0 из 30), не исследовалось.
+- **Следующий шаг:** по тестам — нет. Отдельно для владельцев этапов 5 и 11: тот же механизм `flock` означает, что в процессе хоста, который порождает дочерние процессы во время отключения и повторного подключения диска, возможен кратковременный `WriterBusy`; продуктовый путь это пока не проверяет (VMHost диски гостю не подключает).

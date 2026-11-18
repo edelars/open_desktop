@@ -67,7 +67,7 @@
 | S9-39 power loss | — | — | по процедуре | обязателен |
 | S9-41 repeated recovery/soak | обязателен | обязателен | — | — |
 
-### 3.1. Фактические статусы (2026-11-05, коммит `7d23bf9`)
+### 3.1. Фактические статусы (2026-11-05, коммит `7d23bf9`; строки S9-39 и S9-41 обновлены 2026-11-18)
 
 | Задача | Уровень 0 | Уровень 1 | Уровень 2 | Уровень 3 |
 |---|---|---|---|---|
@@ -76,7 +76,9 @@
 | S9-06 durability path | `partial`: sticky `reconcile_required` на memory-backend ([`io_tests.rs`](../../crates/od-storage/src/io_tests.rs)); реальный `F_FULLFSYNC` вызывается в тестах host backend, но без журнала порядка операций; namespace не реализован | `not_run` | `not_run` | `blocked`/`not_run` |
 | S9-08, S9-10…12 CoW v1 | `passed` на модели: cut-point sweeps ([`cow_proto_tests.rs`](../../crates/od-storage/src/cow_proto_tests.rs), [`cow_open_tests.rs`](../../crates/od-storage/src/cow_open_tests.rs), [`cow_tx_tests.rs`](../../crates/od-storage/src/cow_tx_tests.rs), [`cow_recovery_tests.rs`](../../crates/od-storage/src/cow_recovery_tests.rs)); ISSUE-057 закрыт (`01ef35d`, sweeps по каждому cut create/commit); формат CoW v1 принят как нормативный 2026-11-06 | `not_run` | `not_run` | `blocked`/`not_run` |
 | S9-09 parser corruption | fuzz 80000 мутаций (soundness) в [`cow_parse_tests.rs`](../../crates/od-storage/src/cow_parse_tests.rs) | — | — | — |
-| S9-36, S9-38, S9-39, S9-41 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-41 soak | `passed` на модели: 8 seeds × 12000 циклов (2026-11-18, лог в `docs/reports/data/stage9/`) | — | — | — |
+| S9-39 power loss | — | — | — | выполнено частично (2026-11-06): 15 прогонов `verify ok` на внешнем USB-накопителе вне целевой комбинации; точки между барьерами не покрыты, барьерная семантика не доказана; приём не выполнен ([S9_39_POWER_LOSS_PLAN.md](S9_39_POWER_LOSS_PLAN.md)) |
+| S9-36, S9-38 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
 
 Все результаты уровня 0 относятся к модели и не доказывают поведение реального host API, filesystem и накопителя.
 
@@ -90,4 +92,4 @@ Claim «durable после power loss» допустим только для к�
 
 - Семантика `F_FULLFSYNC` подтверждена локальной man-страницей `fcntl`, но namespace durability и исполнение на выбранном накопителе не подтверждены ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); уровни 2–3 не выполнялись.
 - Модель накопителя/контроллера внутреннего SSD не зафиксирована.
-- Стенд для уровня 3 не подготовлен.
+- Стенд уровня 3 подготовлен и использован только для внешнего USB-накопителя (S9-39); внутренний SSD целевой комбинации не испытывался.

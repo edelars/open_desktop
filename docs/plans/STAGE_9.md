@@ -360,8 +360,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-22. Версии формата и migration
 
-- [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Обновлено 2026-11-18: таблица совместимости есть (STORAGE_FORMAT §9.7), путь RAW → v1 через `import` (S9-20) — единственный поддержанный; миграция между версиями CoW не сделана — второй версии нет; закрытие в объёме v1 требует решения владельца — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
+- [x] Принято после ревью (решение владельца 2026-11-18: закрыта в объёме CoW v1).
+- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Обновлено 2026-11-18: таблица совместимости есть (STORAGE_FORMAT §9.7), путь RAW → v1 через `import` (S9-20) — единственный поддержанный; миграция между версиями CoW не сделана — второй версии нет; владелец 2026-11-18 закрыл задачу в объёме v1 — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
 - **Где:** `od-storage` codecs, `STORAGE_FORMAT.md`, image-tool.
 - **Сделать:** compatibility table read/write/upgrade/downgrade; unknown mandatory features отклонять. Migration сначала в новый target, с проверкой logical data, snapshots/parent links и identities; activation отделить от copy. Не обещать произвольный downgrade.
 - **Проверить:** tiny frozen fixtures поддержанных старых versions, interrupted migration, source untouched, recovery после publish-before-response, insufficient space и unsupported version.
@@ -524,7 +524,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-42. Собрать воспроизводимый итоговый набор
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); запуск `20261118-s9-42c` (HEAD `3719cc9`): 11 passed, 0 failed, 2 not_run, 6 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
+- **Текущий статус (2026-11-18):** подготовлено, не принято: `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); последний запуск `20261118-s9-43`: 11 passed, 0 failed, 2 not_run, 6 blocked. Real guest, lifecycle, corruption matrix (S9-38), приём power-loss (S9-39) и итоговое ревью (S9-43) остаются видимыми `blocked`/`not_run`; optional S9-34 из claim исключён.
 - **Где:** методика, существующие tools, отчёт и support matrix.
 - **Сделать:** freeze commit/config/artifact hashes и выполнить offline storage, real guest, lifecycle, corruption/crash, repeated recovery и power-loss matrix. Для optional S9-34 либо добавить выполненные provider tests, либо явно исключить соответствующий claim.
 - **Проверить:** каждый case имеет `passed`/`failed`/`not_run`/`blocked`, environment и evidence reference; большие images/logs в ignored `work/stage9/<run-id>/`, в Git только малые собственные fixtures/отчёты без секретов.
@@ -533,6 +533,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-43. Независимое итоговое ревью
 
 - [ ] Все обязательные замечания закрыты.
+- **Текущий статус (2026-11-18):** итоговое ревью storage-части (S9-00…22, S9-39, S9-40…42) проведено Claude Opus (high) по AGENTS.md «Правила для Claude»: дефектов кода blocker/major нет, major в спецификации (§9.6 roll-forward) и minor исправлены — [STAGE_9_REPORT.md §10](../reports/STAGE_9_REPORT.md#10-итоговое-ревью-s9-43-и-актуализация-2026-11-18). Отклонение (ниже назван ревьюер `gpt-6.1-sol`) засчитано владельцем 2026-11-18: засчитан ревьюер, сама задача S9-43 как задача не принята (чекбокс не отмечен). Полная VM не ревьюирована (не реализована). Не принято; строка от 2026-11-06 ниже — история.
 - **Текущий статус (2026-11-06):** ревью субагентом (Opus, только чтение) проведено: блокеров и мажоров нет, minor открыты (отчёт §8). Требуемое итоговое ревью (`gpt-6.1-sol`/архитектурный) не проведено; задача не принята, пока не закрыты зависимости S9-38/39/42.
 - **Кто:** `gpt-6.1-sol` / `high`; архитектурные разногласия — `gpt-6-astra` / `high`.
 - **Проверить:** формат/limits, persisted ordering, ack uncertainty, root selection и salvage, ownership/leases/reclaim, whole-VM epoch/barrier, restore activation, UEFI/vTPM trust/clone, API outcomes и честность evidence. Ревьюер анализирует diff и contracts, а не только зелёный summary тестов.
@@ -541,6 +542,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-44. Документировать приёмку и оставшиеся ограничения
 
 - [ ] Этап принят по gates раздела 8.
+- **Текущий статус (2026-11-18):** решение — этап 9 не принят ([STAGE_9_REPORT.md §7, §10](../reports/STAGE_9_REPORT.md#7-приёмка-s9-44)); storage-часть реализована и прошла итоговое ревью в своём объёме; G3/G4, S9-38 и приём S9-39 открыты; ревью S9-43 засчитано, S9-22 закрыта в объёме v1 (решения владельца 2026-11-18).
 - **Где:** этот план, `STAGE_9_REPORT.md`, `ROADMAP.md`, затронутые architecture/layout/specs/testing/support matrix и `KNOWN_ISSUES.md`.
 - **Сделать:** записать реальные гарантии и форматы, поддержанные host/guest combinations, команды check/export/recovery, migration/rollback/clone policy, доказательства и результаты ревью. Открытые дефекты получают scope, последствия, воспроизведение/основание и следующий шаг.
 - **Проверить:** документация не называет disk snapshot backup всех данных VM или filesystem freeze application consistency без evidence; все локальные ссылки и структуры корректны.

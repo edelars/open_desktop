@@ -136,10 +136,8 @@ run_case od_host_storage_io "cargo test -p od-host --lib storage_io" "cargo --ve
   cargo test -p od-host --lib storage_io
 run_case od_host_raw_file_tests "cargo test -p od-host --lib raw_file_tests" "cargo --version" -- \
   cargo test -p od-host --lib raw_file_tests
-# В один поток: при параллельном запуске тест этапа 5
-# failed_raw_reopen_keeps_writer_lock_in_terminal_adapter нестабилен (ISSUE-513).
-run_case od_host_persistent_nvme "cargo test -p od-host --lib persistent_nvme -- --test-threads=1" "cargo --version" -- \
-  cargo test -p od-host --lib persistent_nvme -- --test-threads=1
+run_case od_host_persistent_nvme "cargo test -p od-host --lib persistent_nvme" "cargo --version" -- \
+  cargo test -p od-host --lib persistent_nvme
 run_case od_image_tool "cargo test -p od-image-tool" "cargo --version" -- \
   cargo test -p od-image-tool
 run_case workspace_check "cargo check --workspace --all-targets --offline" "cargo --version" -- \
@@ -193,9 +191,9 @@ record S9-39_power_loss      "(стенд power-loss)"       blocked - 0 docs/te
 record windows_vtpm_uefi     "(Windows/UEFI/vTPM)"      blocked - 0 docs/reports/STAGE_9_REPORT.md "нет Windows guest, UEFI variables store (этап 7, S7-09/S7-10) и vTPM (S9-26/27/28)"
 record linux_mini_guest      "(Linux Mini guest)"       blocked - 0 docs/reports/STAGE_9_REPORT.md "реальный Linux guest на диске этапа 9 не запускался: образ гостю не подключён (S9-13 blocked)"
 record real_guest_lifecycle  "(real guest, lifecycle)"  blocked - 0 docs/KNOWN_ISSUES.md "S9-28…S9-37 заблокированы компонентами этапов 4-8 и ISSUE-056"
-record S9-22_migration       "(версии формата)"         not_run - 0 docs/specs/STORAGE_FORMAT.md "partial: RAW -> CoW v1 через import покрыт od_storage и od_image_tool (§9.7); миграции между версиями CoW нет (второй версии нет)"
+record S9-22_migration       "(версии формата)"         not_run - 0 docs/specs/STORAGE_FORMAT.md "закрыта в объёме v1 (решение владельца 2026-11-18): RAW -> CoW v1 через import покрыт od_storage и od_image_tool (§9.7); миграции между версиями CoW нет (второй версии нет)"
 record S9-40_full            "(checkpoint/restore замеры)" blocked - 0 docs/testing/S9_40_CHAIN_EXPORT_COMPACT.md "partial: storage-замеры сделаны (docs/testing/S9_40_*.md); пауза/длительность checkpoint и restore заблокированы S9-29…31; not_run: фрагментация, реальные размеры диска, независимый повтор"
-record S9-43_independent_review "(независимое ревью)"   blocked - 0 docs/reports/STAGE_9_REPORT.md "вне скрипта: план требует ревьюера gpt-6.1-sol; зависимости S9-38, S9-39 не закрыты; скрипт ревью не заменяет и passed не ставит"
+record S9-43_independent_review "(независимое ревью)"   blocked - 0 docs/reports/STAGE_9_REPORT.md "вне скрипта: ревью storage-scope выполнено (Claude Opus high, засчитано владельцем 2026-11-18, отчёт §10); ревью полной VM невозможно — S9-38, S9-39, S9-23…37 не закрыты; скрипт passed не ставит"
 
 # --- Сводка ------------------------------------------------------------------
 END_EPOCH=$(date +%s)

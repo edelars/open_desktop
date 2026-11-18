@@ -1,7 +1,8 @@
 //! Byte-addressed copy-on-write write transaction (S9-11) over
 //! [`CowFile::commit`](crate::cow_proto::CowFile::commit).
 //!
-//! **Prototype, not a normative format.** The transaction collects *dirty*
+//! The layout is CoW v1 (normative since 2026-11-06, STORAGE_FORMAT §9). The
+//! transaction collects *dirty*
 //! logical blocks in memory and publishes them with a single commit:
 //!
 //! * [`CowTx::write_at`] takes a byte range. A range that covers a block only

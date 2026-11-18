@@ -437,6 +437,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn backend_keeps_created_storage_identity_and_refuses_replaced_path() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[]);
         let original_path = file.path.with_extension("created.raw");
         let moved_path = file.path.with_extension("locked.raw");
@@ -596,6 +597,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn host_file_write_reopens_with_data_and_holds_exclusive_writer_lock() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[0x19; SECTOR_BYTES * 2]);
         let mut backend = PersistentNvmeBackend::open(&file.path).expect("persistent open");
         assert_eq!(backend.sector_count(), 2);
@@ -619,6 +621,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn s5_17_second_lock_ex_open_returns_typed_busy_and_keeps_image_readable() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[0x19; SECTOR_BYTES * 2]);
         let mut backend = PersistentNvmeBackend::open(&file.path).expect("first writer");
         assert!(matches!(
@@ -637,6 +640,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn s5_17_empty_raw_open_returns_typed_error_without_mutation_or_panic() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[]);
         assert!(matches!(
             PersistentNvmeBackend::open(&file.path),
@@ -648,6 +652,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn s5_17_partial_sector_raw_open_returns_typed_error_without_mutation_or_panic() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let original = [0xA9; SECTOR_BYTES + 1];
         let file = TempFile::new(&original);
         assert!(matches!(
@@ -700,6 +705,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn failed_raw_reopen_keeps_writer_lock_in_terminal_adapter() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[0x19; SECTOR_BYTES]);
         let writer = HostFileStorage::open_read_write_exclusive(&file.path).expect("writer");
         let mut backend = PersistentStorage::open(TruncateAfterFlushStorage { inner: writer })
@@ -792,6 +798,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn killing_between_host_write_and_durable_ack_cannot_emit_write_success() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[0x23; SECTOR_BYTES]);
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -855,6 +862,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_second_process_is_busy_until_the_writer_process_is_killed() {
+        let _serial = crate::storage_io::process_spawn_guard();
         let file = TempFile::new(&[0x23; SECTOR_BYTES * 2]);
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

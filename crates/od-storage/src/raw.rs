@@ -28,9 +28,14 @@
 //! existing file therefore happens in the host constructor, before any byte of
 //! the existing file is touched, and `RawImage` has no truncate path at all.
 //!
-//! Durability: a successful write is completion only. `RawImage` offers no
-//! flush, and the backend declares no durability; a power-loss durable
-//! acknowledgement belongs to a later task.
+//! Durability: a successful write is completion only. `RawImage` itself offers
+//! no flush. A caller that needs a durable acknowledgement takes the checked
+//! storage back ([`RawImage::into_storage`]), flushes it, and rebuilds the view
+//! ([`RawImage::reopen_read_write_checked`]); the host NVMe backend
+//! (`od-host` `persistent_nvme`) does this after every guest write. Whether the
+//! backend can flush is declared by its capabilities (the macOS host file
+//! backend declares file-data durability); power-loss behaviour is not
+//! claimed here.
 
 use crate::io::{CheckedStorage, StorageBackend, StorageCapabilities, StorageError};
 

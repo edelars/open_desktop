@@ -32,7 +32,7 @@ tools/stage9/run_checks.sh
 | `od_host_storage_policy` | `cargo test -p od-host --lib storage_policy` | 24 passed |
 | `od_host_storage_io` | `cargo test -p od-host --lib storage_io` | 36 passed |
 | `od_host_raw_file_tests` | `cargo test -p od-host --lib raw_file_tests` | 9 passed |
-| `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme -- --test-threads=1` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL). В один поток из-за нестабильного при параллельном запуске теста этапа 5 ([ISSUE-513](../KNOWN_ISSUES.md#issue-513-s5-persistent-nvme-reopen-test-flaky-in-parallel)) |
+| `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL); тесты с файлами сериализованы `process_spawn_guard` ([ISSUE-513](../KNOWN_ISSUES.md#issue-513-s5-persistent-nvme-reopen-test-flaky-in-parallel), закрыто) |
 | `od_image_tool` | `cargo test -p od-image-tool` | 21 passed (`tests/cli.rs`, в т. ч. `import`) |
 | `workspace_check` | `cargo check --workspace --all-targets --offline` | код 0 |
 | `git_diff_check` | `git diff --check` | код 0; проверяет только отслеживаемые изменения |
@@ -45,9 +45,14 @@ tools/stage9/run_checks.sh
 
 Словарь: `passed`, `failed`, `not_run`, `blocked`. Подсостояния `not_started` и `partial` пишутся в `note`; в `results.tsv` статус при этом `not_run`, а если остаток заблокирован зависимостью — `blocked`.
 
-Последний полный запуск: run-id `20261118-s9-42c`, HEAD `3719cc9`; в рабочем дереве изменены только `tools/stage9/run_checks.sh` и документы, вошедшие в коммит S9-42. macOS 26.7.1 (25G241, Apple Silicon), rustc/cargo 1.99.0, бюджет по умолчанию 840 с, 95 с; основное время — `s9_40_bench_once` (76 с; release-сборка уже была в кэше, холодная пересборка в `20261118-s9-42` заняла около 43 с из 120). Итог: 11 passed, 0 failed, 2 not_run, 6 blocked.
+Последний полный запуск: run-id `20261118-s9-43`, HEAD `cdf8361` с изменениями среза S9-43 в рабочем дереве (вошли в его коммит; `persistent_nvme` снова параллельно после закрытия ISSUE-513), macOS 26.7.1 (25G241, Apple Silicon), rustc/cargo 1.99.0, бюджет по умолчанию 840 с, 151 с. Итог: 11 passed, 0 failed, 2 not_run, 6 blocked.
 
-Промежуточные запуски того же дня: `20261118-s9-42` (бюджет 1800, до добавления S9-38 и смены статусов: 11 / 0 / 3 / 4) и `20261118-s9-42b` (`od_host_persistent_nvme` `failed` из-за ISSUE-513 при параллельном запуске; после этого case переведён в один поток). Предыдущий запуск `20261105-final` (HEAD `7c68b98`): 9 passed, 0 failed, 3 not_run, 4 blocked.
+Промежуточные запуски того же дня:
+- `20261118-s9-42` — бюджет 1800, до добавления S9-38 и смены статусов: 11 / 0 / 3 / 4;
+- `20261118-s9-42b` — `od_host_persistent_nvme` `failed` из-за ISSUE-513;
+- `20261118-s9-42c` — HEAD `3719cc9`, тот же case в один поток: 11 / 0 / 2 / 6; холодная пересборка бенчмарка в `20261118-s9-42` заняла около 43 с.
+
+Предыдущий запуск `20261105-final` (HEAD `7c68b98`): 9 passed, 0 failed, 3 not_run, 4 blocked.
 
 | Case | Статус | Причина / ограничение |
 |---|---|---|
@@ -58,9 +63,9 @@ tools/stage9/run_checks.sh
 | `windows_vtpm_uefi` | `blocked` | Нет Windows guest, UEFI variables store (этап 7, S7-09/S7-10) и vTPM (S9-26/27/28) |
 | `linux_mini_guest` | `blocked` | Реальный Linux guest с диском этого этапа не запускался: образ этапа 9 гостю не подключён (S9-13 `blocked`) |
 | `real_guest_lifecycle` | `blocked` | S9-28…S9-37: зависят от компонентов этапов 4–8 и [ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner) |
-| `S9-22_migration` | `not_run` (`partial`) | Путь RAW → CoW v1 через `import` покрыт `od_storage` и `od_image_tool`; миграции между версиями CoW нет — второй версии нет |
+| `S9-22_migration` | `not_run` | Закрыта в объёме v1 (решение владельца 2026-11-18): путь RAW → CoW v1 через `import` покрыт `od_storage` и `od_image_tool`; миграции между версиями CoW нет — второй версии нет |
 | `S9-40_full` | `blocked` (`partial`) | Storage-замеры сделаны и воспроизводимы (`s9_40_bench_once`, [S9_40_CHAIN_EXPORT_COMPACT.md](S9_40_CHAIN_EXPORT_COMPACT.md)); пауза/длительность checkpoint и restore заблокированы S9-29…31; `not_run`: фрагментация, реальные размеры диска, независимый повтор |
-| `S9-43_independent_review` | `blocked` | План требует ревьюера `gpt-6.1-sol`; зависимости S9-38 и S9-39 не закрыты. Итоговое ревью записывается в [отчёт](../reports/STAGE_9_REPORT.md); скрипт его не заменяет и `passed` не ставит |
+| `S9-43_independent_review` | `blocked` | Итоговое ревью storage-scope выполнено Claude Opus high и засчитано владельцем 2026-11-18 (отчёт §10); строка остаётся `blocked`, потому что ревью полной VM невозможно: S9-38, S9-39 и S9-23…37 не закрыты. Итоговое ревью записывается в [отчёт](../reports/STAGE_9_REPORT.md); скрипт его не заменяет и `passed` не ставит |
 
 Не включено в скрипт как отдельные case: длинный soak S9-41 (8 seeds × 12000 циклов, `OD_SOAK_CYCLES`/`OD_SOAK_SEED`) — выполнен отдельно, лог в [docs/reports/data/stage9](../reports/data/stage9/S9_41_soak_2026-11-18.log); в `od_storage` входит только короткий soak по умолчанию; optional S9-34 (guest coordination) не имеет выполненных provider tests и из claim исключается.
 
