@@ -26313,7 +26313,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         // S7-04: exact `42 80 7C 04 08 01` compares byte [RSP+R8+8] with 1.
         // Exact unindexed forms compare byte [RSP+9] with 0 and bytes at
-        // [RSP+0xa], [RSP+0xb] or [RSP+0xc] with 1.
+        // [RSP+0xa], [RSP+0xb], [RSP+0xc] or [RSP+0xd] with 1.
         // Read through the memory adapter before committing flags and RIP.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
@@ -26341,7 +26341,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     && destination.index.is_none()
                     && matches!(
                         (destination.displacement, immediate),
-                        (9, 0) | (0xa, 1) | (0xb, 1) | (0xc, 1)
+                        (9, 0) | (0xa, 1) | (0xb, 1) | (0xc, 1) | (0xd, 1)
                     ))) =>
         {
             let lhs = match read_operand(

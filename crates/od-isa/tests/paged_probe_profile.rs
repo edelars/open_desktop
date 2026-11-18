@@ -37328,6 +37328,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_reads_one_byte_and_sets_flags() {
         (0x0a, 1, compare_one),
         (0x0b, 1, compare_one),
         (0x0c, 1, compare_one),
+        (0x0d, 1, compare_one),
     ] {
         let code = [0x80, 0x7c, 0x24, displacement, immediate];
         for (value, flags) in cases {
@@ -37365,7 +37366,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_reads_one_byte_and_sets_flags() {
 fn rust_helper_cmp_byte_rsp_disp8_imm8_read_fault_is_atomic() {
     use od_isa::integer_flags::DEFINED_ARITHMETIC_FLAGS;
 
-    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1)] {
+    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1), (0x0d, 1)] {
         let mut memory = Memory::new(&[0x80, 0x7c, 0x24, displacement, immediate]);
         memory.fail_read_at = Some((DATA, page_fault(0, DATA)));
         let mut cpu = state();
@@ -37396,7 +37397,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_read_fault_is_atomic() {
 
 #[test]
 fn rust_helper_cmp_byte_rsp_disp8_imm8_noncanonical_address_faults_before_read() {
-    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1)] {
+    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1), (0x0d, 1)] {
         let mut memory = Memory::new(&[0x80, 0x7c, 0x24, displacement, immediate]);
         let mut cpu = state();
         cpu.gpr = gpr_patterns();
@@ -37422,7 +37423,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_noncanonical_address_faults_before_read()
 
 #[test]
 fn rust_helper_cmp_byte_rsp_disp8_imm8_final_immediate_fetch_fault_is_atomic() {
-    for displacement in [9, 0x0a, 0x0b, 0x0c] {
+    for displacement in [9, 0x0a, 0x0b, 0x0c, 0x0d] {
         let rip = RIP + 0xffc;
         let mut memory = memory_with_code_at(&[0x80, 0x7c, 0x24, displacement], rip);
         memory.fail_fetch_at = Some((rip + 4, page_fault(0x10, rip + 4)));
@@ -37464,7 +37465,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_neighbours_stay_unsupported() {
         (&[0x40, 0x80, 0x7c, 0x24, 0x09, 0x00], 0x80), // Redundant REX.
         (&[0x67, 0x80, 0x7c, 0x24, 0x09, 0x00], 0x80), // Address-size prefix.
         (&[0x3e, 0x80, 0x7c, 0x24, 0x09, 0x00], 0x80), // Segment prefix.
-        (&[0x80, 0x7c, 0x24, 0x0d, 0x01], 0x80), // Adjacent displacement.
+        (&[0x80, 0x7c, 0x24, 0x0e, 0x01], 0x80), // Adjacent displacement.
         (&[0x80, 0x7c, 0x24, 0x0a, 0x00], 0x80), // Wrong pairing with zero.
         (&[0x80, 0x7c, 0x24, 0x0a, 0x02], 0x80), // Different immediate.
         (&[0x80, 0x7c, 0x64, 0x0a, 0x01], 0x80), // Scale bits with absent index.
@@ -37497,6 +37498,17 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_neighbours_stay_unsupported() {
         (&[0x40, 0x80, 0x7c, 0x24, 0x0c, 0x01], 0x80), // Redundant REX.
         (&[0x67, 0x80, 0x7c, 0x24, 0x0c, 0x01], 0x80), // Address-size prefix.
         (&[0x3e, 0x80, 0x7c, 0x24, 0x0c, 0x01], 0x80), // Segment prefix.
+        (&[0x80, 0x7c, 0x24, 0x0d, 0x00], 0x80), // Wrong pairing with zero.
+        (&[0x80, 0x7c, 0x24, 0x0d, 0x02], 0x80), // Different immediate.
+        (&[0x80, 0x7c, 0x64, 0x0d, 0x01], 0x80), // Scale bits with absent index.
+        (&[0x42, 0x80, 0x7c, 0x04, 0x0d, 0x01], 0x80), // R8 index.
+        (&[0x80, 0x7c, 0x25, 0x0d, 0x01], 0x80), // RBP base.
+        (&[0x80, 0x74, 0x24, 0x0d, 0x01], 0x80), // XOR /6.
+        (&[0x80, 0xbc, 0x24, 0x0d, 0, 0, 0, 1], 0x80), // disp32 encoding.
+        (&[0x83, 0x7c, 0x24, 0x0d, 0x01], 0x83), // Dword CMP.
+        (&[0x40, 0x80, 0x7c, 0x24, 0x0d, 0x01], 0x80), // Redundant REX.
+        (&[0x67, 0x80, 0x7c, 0x24, 0x0d, 0x01], 0x80), // Address-size prefix.
+        (&[0x3e, 0x80, 0x7c, 0x24, 0x0d, 0x01], 0x80), // Segment prefix.
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -37519,7 +37531,7 @@ fn rust_helper_cmp_byte_rsp_disp8_imm8_neighbours_stay_unsupported() {
 
 #[test]
 fn rust_helper_cmp_byte_rsp_disp8_imm8_is_unsupported_in_cpl3_mov_profile() {
-    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1)] {
+    for (displacement, immediate) in [(9, 0), (0x0a, 1), (0x0b, 1), (0x0c, 1), (0x0d, 1)] {
         let mut memory = Memory::new(&[0x80, 0x7c, 0x24, displacement, immediate]);
         let mut cpu = state();
         cpu.cr3 = Some(0x1000);
@@ -48303,6 +48315,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x80, 0x7c, 0x24, 0x0a, 0x01][..], 0x80),
         (&[0x80, 0x7c, 0x24, 0x0b, 0x01][..], 0x80),
         (&[0x80, 0x7c, 0x24, 0x0c, 0x01][..], 0x80),
+        (&[0x80, 0x7c, 0x24, 0x0d, 0x01][..], 0x80),
         (&[0x0f, 0x84, 0x9d, 0x01, 0, 0][..], 0x84),
         (&[0x0f, 0x84, 0x00, 0x01, 0, 0][..], 0x84),
         (&[0x0f, 0x84, 0x83, 0x00, 0x00, 0x00][..], 0x84),
