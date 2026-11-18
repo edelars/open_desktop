@@ -2,15 +2,8 @@
 //! management, `Identify`, `Get`/`Set Features`, `Get Log Page`,
 //! `Asynchronous Event Request` and `Abort`.
 //!
-//! The specification text could not be extracted (see
-//! `docs/specs/NVME_DEVICE.md`, section 1). Cross-checked with Linux
-//! `include/linux/nvme.h` (master, 2026-11-07), not with the text of NVMe Base
-//! 2.4: admin opcodes 0x00/01/02/04/05/06/08/09/0A/0C; CNS 0-3; FID
-//! 0x01/02/04/05/07/08/09/0A/0B; LID 0x01-0x03; generic statuses
-//! 0x01/02/04/0B/0C/13 and command specific 0x100/101/102/105/108/109/10C;
-//! Identify Controller and Namespace offsets; Error log, SMART and Firmware
-//! Slot offsets. `NOT VERIFIED`: AER info 0/1, PRP rules, feature defaults,
-//! error behaviour, which commands are mandatory, LID 0x00 and 0x05.
+//! See `docs/specs/NVME_DEVICE.md` for the implemented subset and its
+//! cross-checks against NVMe Base 2.4 and the NVM Command Set 1.3.
 
 use super::controller::{MAX_IO_QUEUES, NvmeServiceReport, NvmeState, QUEUE_SLOTS, VERSION};
 use super::io;
@@ -35,6 +28,12 @@ const CNS_NAMESPACE: u32 = 0x00;
 const CNS_CONTROLLER: u32 = 0x01;
 const CNS_ACTIVE_NAMESPACES: u32 = 0x02;
 const CNS_NAMESPACE_DESCRIPTORS: u32 = 0x03;
+const CNS_NVM_NAMESPACE: u32 = 0x05;
+const CNS_NVM_CONTROLLER: u32 = 0x06;
+const CNS_NVM_ACTIVE_NAMESPACES: u32 = 0x07;
+const CNS_COMMON_NAMESPACE: u32 = 0x08;
+const CSI_NVM: u32 = 0;
+const IDENTIFY_BYTES: usize = 4096;
 
 const FID_ARBITRATION: u8 = 0x01;
 const FID_POWER_MANAGEMENT: u8 = 0x02;
@@ -311,7 +310,7 @@ fn requires_zero_nsid(command: &Command) -> bool {
         | OPC_CREATE_CQ
         | OPC_ABORT
         | OPC_ASYNC_EVENT_REQUEST => true,
-        OPC_IDENTIFY => command.cdw10 & 0xFF == u32::from(CNS_CONTROLLER),
+        OPC_IDENTIFY => matches!(command.cdw10 & 0xFF, CNS_CONTROLLER | CNS_NVM_CONTROLLER),
         OPC_SET_FEATURES | OPC_GET_FEATURES => (command.cdw10 & 0xFF) as u8 != FID_ERROR_RECOVERY,
         _ => false,
     }
@@ -437,6 +436,14 @@ fn identify(
     command: &Command,
     dma: &mut dyn GuestDma,
 ) -> Result<Completion, Status> {
+    let cns = command.cdw10 & 0xFF;
+    if matches!(
+        cns,
+        CNS_NVM_NAMESPACE | CNS_NVM_CONTROLLER | CNS_NVM_ACTIVE_NAMESPACES
+    ) && command.cdw11 >> 24 != CSI_NVM
+    {
+        return Err(Status::INVALID_FIELD);
+    }
     let namespace_valid = |nsid: u32| -> Result<(), Status> {
         if nsid == NAMESPACE_ID {
             Ok(())
@@ -444,17 +451,17 @@ fn identify(
             Err(Status::INVALID_NAMESPACE)
         }
     };
-    let data = match command.cdw10 & 0xFF {
+    let data = match cns {
         CNS_NAMESPACE => {
             namespace_valid(command.nsid)?;
             identify_namespace(state)
         }
         CNS_CONTROLLER => identify_controller(state),
-        CNS_ACTIVE_NAMESPACES => {
+        CNS_ACTIVE_NAMESPACES | CNS_NVM_ACTIVE_NAMESPACES => {
             if command.nsid >= 0xFFFF_FFFE {
                 return Err(Status::INVALID_NAMESPACE);
             }
-            let mut list = vec![0u8; 4096];
+            let mut list = vec![0; IDENTIFY_BYTES];
             if command.nsid < NAMESPACE_ID {
                 list[0..4].copy_from_slice(&NAMESPACE_ID.to_le_bytes());
             }
@@ -463,6 +470,22 @@ fn identify(
         CNS_NAMESPACE_DESCRIPTORS => {
             namespace_valid(command.nsid)?;
             namespace_descriptors(state)
+        }
+        CNS_NVM_NAMESPACE => {
+            namespace_valid(command.nsid)?;
+            // The sole LBA format has no protection information or optional limits.
+            vec![0; IDENTIFY_BYTES]
+        }
+        CNS_NVM_CONTROLLER => {
+            // No optional NVM command variants or additional size limits.
+            vec![0; IDENTIFY_BYTES]
+        }
+        CNS_COMMON_NAMESPACE => {
+            namespace_valid(command.nsid)?;
+            let mut page = vec![0; IDENTIFY_BYTES];
+            page[2] = 1 << 7; // RESCAP.IEKS is set for versions 1.3 and later.
+            page[14] = u8::from(state.backend.is_some()); // NSTAT.NRDY
+            page
         }
         _ => return Err(Status::INVALID_FIELD),
     };
@@ -476,7 +499,7 @@ fn put(page: &mut [u8], offset: usize, bytes: &[u8]) {
 
 fn identify_controller(state: &NvmeState) -> Vec<u8> {
     let config = &state.config;
-    let mut page = vec![0u8; 4096];
+    let mut page = vec![0; IDENTIFY_BYTES];
     // VID/SSVID: no PCI vendor id is assigned to the project (PCI binding S4-30).
     put(&mut page, 4, &config.serial);
     put(&mut page, 24, &config.model);
@@ -499,6 +522,7 @@ fn identify_controller(state: &NvmeState) -> Vec<u8> {
     page[512] = (sqes << 4) | sqes;
     page[513] = (cqes << 4) | cqes;
     put(&mut page, 516, &NAMESPACE_ID.to_le_bytes()); // NN
+    page[525] = 0b100; // VWC: FB = 10b (no broadcast Flush), VWCP = 0.
     // SUBNQN: nqn.2014-08.org.nvmexpress:uuid:<hyphenated UUID>, NUL padded.
     let uuid = config.subsystem_uuid;
     let mut nqn = String::from("nqn.2014-08.org.nvmexpress:uuid:");
@@ -517,7 +541,7 @@ fn identify_controller(state: &NvmeState) -> Vec<u8> {
 fn identify_namespace(state: &NvmeState) -> Vec<u8> {
     let config = &state.config;
     let sectors = config.namespace_sectors.to_le_bytes();
-    let mut page = vec![0u8; 4096];
+    let mut page = vec![0; IDENTIFY_BYTES];
     put(&mut page, 0, &sectors); // NSZE
     put(&mut page, 8, &sectors); // NCAP
     put(&mut page, 16, &sectors); // NUSE: no thin provisioning
@@ -535,7 +559,7 @@ fn identify_namespace(state: &NvmeState) -> Vec<u8> {
 }
 
 fn namespace_descriptors(state: &NvmeState) -> Vec<u8> {
-    let mut page = vec![0u8; 4096];
+    let mut page = vec![0; IDENTIFY_BYTES];
     // NIDT 2 (NGUID), NIDL 16; then NIDT 4 (command set identifier, NVM = 0), NIDL 1.
     page[0] = 2;
     page[1] = 16;

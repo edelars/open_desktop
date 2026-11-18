@@ -606,6 +606,25 @@ CQE соответствует двум полным кругам. [NVMe Base 2.
 диагностик об отсутствующих локальных артефактах `work/`. Независимое
 ревью `gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
 
+#### Структуры Identify для NVM
+
+Добавлены все обязательные варианты Identify для текущего набора команд NVM.
+`0x05` и `0x06` возвращают страницы без необязательных полей, `0x07` возвращает
+список активных NSID для NVM, а `0x08` сообщает готовность NSID 1 при
+подключённом backend. Тесты проверяют байты всех четырёх страниц, неизвестный
+CSI, границы NSID и сохранение DMA-буфера при отказе. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=336) · [NVM Command Set 1.3, §4.1.5](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=83)
+
+В Identify Controller байт VWC равен `0x04`. `VWCP = 0` сообщает об
+отсутствии энергозависимого кэша записи, `FB = 10b` соответствует
+`Invalid Namespace or Format` при `Flush` для `NSID = 0xFFFF_FFFF`.
+[NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=374)
+
+Независимое ревью `gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
+Целевой прогон Identify дал 10 успешных тестов. Полный `od-machine` дал
+2 129 успешных тестов и 15 игнорируемых. Форматирование и офлайн-проверка
+всех целей workspace прошли. Graphify обновлён. Проверка структуры вернула
+прежние 46 диагностик об отсутствующих локальных артефактах `work/`.
+
 #### История исходного среза A
 
 Ниже сохранены результаты исходной реализации среза A в ноябре 2026 года. Актуальная сверка CC/CAP приведена выше.

@@ -668,6 +668,7 @@ fn identify_controller_matches_the_declared_structure_byte_for_byte() {
     expected[512] = 0x66; // SQES
     expected[513] = 0x44; // CQES
     put(&mut expected, 516, &1u32.to_le_bytes()); // NN
+    expected[525] = 0x04; // VWC: no volatile cache or broadcast Flush
     let nqn = b"nqn.2014-08.org.nvmexpress:uuid:4f70656e-4465-736b-746f-704e564d6553";
     put(&mut expected, 768, nqn); // SUBNQN
     put(&mut expected, 2048, &2500u16.to_le_bytes()); // PSD0.MP
@@ -686,7 +687,8 @@ fn identify_controller_declares_no_unimplemented_capability() {
     assert_eq!(u16_at(&page, 520), 0, "ONCS: only Read, Write, Flush");
     assert_eq!(u16_at(&page, 522), 0, "FUSES: no fused operations");
     assert_eq!(u32_at(&page, 536), 0, "SGLS: SGL not supported");
-    assert_eq!(page[525], 0, "VWC: no volatile write cache");
+    assert_eq!(page[525] & 1, 0, "VWC.VWCP: no volatile write cache");
+    assert_eq!((page[525] >> 1) & 3, 2, "VWC.FB: no broadcast Flush");
     assert_eq!(
         u32_at(&page, 92),
         0,
@@ -757,6 +759,57 @@ fn namespace_descriptor_list_has_nguid_and_command_set() {
         page[25..].iter().all(|&b| b == 0),
         "terminating zero descriptor"
     );
+}
+
+#[test]
+fn identify_nvm_command_set_structures_and_active_list() {
+    let mut rig = Rig::enabled();
+    for (cns, nsid) in [(5, 1), (6, 0)] {
+        let (cqe, page) = rig.identify(cns, nsid);
+        assert_eq!(cqe.status(), (0, 0));
+        assert_eq!(page, vec![0; 4096]);
+
+        rig.mem_write(DATA, &[0xAA; 4096]);
+        let cqe = rig.admin(
+            Sqe::new(OPC_IDENTIFY)
+                .nsid(nsid)
+                .prp(DATA, 0)
+                .cdw(cns, 2 << 24),
+        );
+        assert_eq!(cqe.status(), (0, 0x02), "unsupported CSI for CNS {cns}");
+        assert_eq!(rig.mem_read(DATA, 4096), vec![0xAA; 4096]);
+    }
+
+    for nsid in [0, 1, 2, 0xFFFF_FFFD, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+        let (unfiltered, unfiltered_page) = rig.identify(2, nsid);
+        let (filtered, filtered_page) = rig.identify(7, nsid);
+        assert_eq!(filtered.status(), unfiltered.status());
+        assert_eq!(filtered_page, unfiltered_page);
+    }
+    let unsupported_set = Sqe::new(OPC_IDENTIFY).prp(DATA, 0).cdw(7, 2 << 24);
+    assert_eq!(rig.admin(unsupported_set).status(), (0, 0x02));
+    assert_eq!(rig.identify(6, 1).0.status(), (0, 0x02));
+}
+
+#[test]
+fn identify_common_namespace_reports_readiness() {
+    let (mut with_backend, _) = Rig::with_disk();
+    let mut without_backend = Rig::enabled();
+    for (rig, ready) in [(&mut with_backend, 1), (&mut without_backend, 0)] {
+        let (cqe, page) = rig.identify(8, 1);
+        assert_eq!(cqe.status(), (0, 0));
+        let mut expected = vec![0; 4096];
+        expected[2] = 0x80; // IEKS; no reservation types advertised
+        expected[14] = ready;
+        assert_eq!(page, expected);
+    }
+    for cns in [5, 8] {
+        for nsid in [0, 2, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+            let (cqe, page) = with_backend.identify(cns, nsid);
+            assert_eq!(cqe.status(), (0, 0x0B));
+            assert_eq!(page, vec![0xAA; 4096]);
+        }
+    }
 }
 
 #[test]
