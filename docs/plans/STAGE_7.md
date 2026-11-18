@@ -3135,3 +3135,15 @@ stops after 10,347 retired instructions at RIP `0x20190a` on
 `66 85 C0` (TEST AX,AX, ISSUE-493). It reports Unsupported opcode 133
 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-493 — exact TEST AX,AX (`66 85 C0`)
+
+Base `PagedCpl0ProbeV1` admits the exact word register TEST. It computes
+SF, ZF and PF from AX, clears CF and OF, marks AF undefined and advances
+RIP by three. Tests cover word-width flags, AF bit preservation,
+final-ModR/M fetch faults, neighbors and profile isolation. The existing
+qword RAX self-test remains supported. With budget 20000 the runner stops
+after 10,348 retired instructions at RIP `0x20190d` on `74 26`
+(JZ rel8 +0x26, ISSUE-494). It reports Unsupported opcode 116 with empty
+COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -22018,9 +22018,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
-        // S7-04: exact `48 85 C0` tests qword RAX against itself. TEST writes
-        // no GPR; shared logical semantics clear CF/OF, derive SF/ZF/PF from
-        // RAX, and mark AF undefined while retaining its concrete bit.
+        // S7-04: exact `48 85 C0` and `66 85 C0` test RAX and AX respectively.
+        // TEST writes no GPR; logical flags use the matched operand width,
+        // and AF becomes undefined while retaining its concrete bit.
         Operation::Logic {
             kind: LogicKind::Test,
             dst: Operand::Register(destination),
@@ -22029,18 +22029,24 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x85
             && instruction.length == 3
-            && instruction.operand_size == OperandSize::Qword
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x48),
-                    ..Prefixes::default()
-                })
-            && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
-            && source == RegisterView::low(Register::Rax, OperandSize::Qword) =>
+            && destination == RegisterView::low(Register::Rax, instruction.operand_size)
+            && source == destination
+            && ((instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    }))
+                || (instruction.operand_size == OperandSize::Word
+                    && instruction.prefixes
+                        == (Prefixes {
+                            operand_override: true,
+                            ..Prefixes::default()
+                        }))) =>
         {
             let value = state.read(destination);
             let (_, flags) = logic_result(
-                OperandSize::Qword,
+                instruction.operand_size,
                 LogicKind::Test,
                 value,
                 value,

@@ -2879,3 +2879,12 @@ With budget 20000 the runner takes the branch from `0x2018e7` and reaches
 instructions. It reports Unsupported opcode 133 with empty COM1. Image
 SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-493 runner frontier
+
+Exact base-profile `66 85 C0` (TEST AX,AX) updates the logical flags at
+word width and advances RIP by three. With budget 20000 the runner
+reaches `74 26` (JZ rel8 +0x26, ISSUE-494) at RIP `0x20190d` after 10,348
+retired instructions, reporting Unsupported opcode 116 with empty COM1.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
