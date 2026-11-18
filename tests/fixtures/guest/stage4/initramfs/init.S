@@ -8,13 +8,17 @@
  *   83 mkdir, 165 mount, 257 openat.
  *
  * Flow: mkdir /proc and mount proc on it (the kernel does not mount /proc in an
- * initramfs), read /proc/cmdline, find the token "od.nonce=<value>", write
- * "OD_NONCE=<value>\n" to fd 1, getpid, nanosleep 1 ms, exit(0).
+ * initramfs), read /proc/cmdline, find the token "od.nonce=<value>", nanosleep
+ * 1 ms, write "OD_NONCE=<value>\n" to fd 1, getpid, exit(0).
  * Without a usable od.nonce token: write "OD_NONCE=MISSING\n", exit(1).
  * The nonce is never part of the archive; the host passes it on the command line.
  *
+ * The S5-08 build adds a newline-terminated shutdown request and asks
+ * Linux PID 1 to power off through reboot(LINUX_REBOOT_CMD_POWER_OFF).
+ * A returned reboot syscall is failure, even when the markers were sent.
+ *
  * Exit codes: 0 ok, 1 nonce missing, 3 write failed, 4 getpid failed,
- * 5 nanosleep failed.
+ * 5 nanosleep failed, 6 poweroff returned.
  */
 
 #define SYS_read       0
@@ -25,6 +29,13 @@
 #define SYS_exit       60
 #define SYS_mkdir      83
 #define SYS_mount      165
+#ifdef S5_08_POWEROFF
+#define SYS_reboot     169
+/* Linux v7.0.0 include/uapi/linux/reboot.h. */
+#define LINUX_REBOOT_MAGIC1        0xfee1dead
+#define LINUX_REBOOT_MAGIC2        0x28121969
+#define LINUX_REBOOT_CMD_POWER_OFF 0x4321fedc
+#endif
 #define SYS_openat     257
 
 #define AT_FDCWD       (-100)
@@ -124,6 +135,13 @@ val_done:
 	test	%rcx, %rcx
 	jz	missing
 	mov	%rcx, %r9
+	/* nanosleep(&{0 s, 1000000 ns}, NULL): must return 0 */
+	lea	sleep_ts(%rip), %rdi
+	xor	%esi, %esi
+	mov	$SYS_nanosleep, %eax
+	syscall
+	test	%rax, %rax
+	jnz	fail_sleep
 
 	/* outbuf = "OD_NONCE=" + value + "\n" */
 	lea	outbuf(%rip), %rdi
@@ -135,6 +153,17 @@ val_done:
 	rep movsb
 	movb	$0x0a, (%rdi)
 	inc	%rdi
+#ifdef S5_08_POWEROFF
+	lea	shutdown_prefix(%rip), %rsi
+	mov	$(shutdown_prefix_end - shutdown_prefix), %ecx
+	rep movsb
+	mov	%r8, %rsi
+	mov	%r9, %rcx
+	rep movsb
+	lea	shutdown_suffix(%rip), %rsi
+	mov	$(shutdown_suffix_end - shutdown_suffix), %ecx
+	rep movsb
+#endif
 	lea	outbuf(%rip), %rsi
 	mov	%rdi, %rdx
 	sub	%rsi, %rdx
@@ -143,6 +172,10 @@ val_done:
 	syscall
 	test	%rax, %rax
 	js	fail_write
+#ifdef S5_08_POWEROFF
+	cmp	%rdx, %rax
+	jne	fail_write
+#endif
 
 	/* getpid(): must be positive */
 	mov	$SYS_getpid, %eax
@@ -150,15 +183,22 @@ val_done:
 	test	%rax, %rax
 	jle	fail_getpid
 
-	/* nanosleep(&{0 s, 1000000 ns}, NULL): must return 0 */
-	lea	sleep_ts(%rip), %rdi
-	xor	%esi, %esi
-	mov	$SYS_nanosleep, %eax
+#ifdef S5_08_POWEROFF
+	mov	$LINUX_REBOOT_MAGIC1, %edi
+	mov	$LINUX_REBOOT_MAGIC2, %esi
+	mov	$LINUX_REBOOT_CMD_POWER_OFF, %edx
+	xor	%r10d, %r10d
+	mov	$SYS_reboot, %eax
 	syscall
-	test	%rax, %rax
-	jnz	fail_sleep
-
+	lea	shutdown_failed(%rip), %rsi
+	mov	$(shutdown_failed_end - shutdown_failed), %edx
+	mov	$1, %edi
+	mov	$SYS_write, %eax
+	syscall
+	mov	$6, %edi
+#else
 	xor	%edi, %edi
+#endif
 	jmp	do_exit
 
 missing:
@@ -196,6 +236,17 @@ needle_end:
 prefix:
 	.ascii	"OD_NONCE="
 prefix_end:
+#ifdef S5_08_POWEROFF
+shutdown_prefix:
+	.ascii	"OD_S5_A_SHUTDOWN_REQUEST nonce="
+shutdown_prefix_end:
+shutdown_suffix:
+	.ascii	" method=poweroff\n"
+shutdown_suffix_end:
+shutdown_failed:
+	.ascii	"OD_S5_A_FAIL step=poweroff-returned rc=6\n"
+shutdown_failed_end:
+#endif
 missing_msg:
 	.ascii	"OD_NONCE=MISSING\n"
 missing_msg_end:
@@ -209,6 +260,10 @@ sleep_ts:
 cmdbuf:
 	.skip	CMDBUF_SIZE
 outbuf:
+#ifdef S5_08_POWEROFF
+	.skip	2 * NONCE_MAX + (prefix_end - prefix) + 1 + (shutdown_prefix_end - shutdown_prefix) + (shutdown_suffix_end - shutdown_suffix)
+#else
 	.skip	NONCE_MAX + 16
+#endif
 
 	.section .note.GNU-stack,"",@progbits

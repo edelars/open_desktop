@@ -1,0 +1,98 @@
+S5-07 unknown optional panic-frame source audit — 2026-11-17
+
+Scope and provenance
+--------------------
+This read-only audit examines the eight optional panic-frame symbol strings
+that make the counted canonical common-ID N=2 comparison refuse
+`normalize_stage4_panic_snapshot`. No guest run, comparator edit, or allowlist
+change was made.
+
+The source pair is
+`s5-07-counted-canonical-n2-20261117-a` (run manifest SHA-256s
+`bfae2d1f44e9b39933c977400e7a3e6056a3792ecfbc21101f0d85b25ff52579` and
+`3712e611826cfd7a1abbede494c1b435647dc90feea51f6c3526e9f7848b92a7`). Its
+kernel payload SHA-256 is
+`9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+The matching debug ELF is
+`work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic`, SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`, BuildID
+`338e542e384c46228f7a378babc0f9bb2b6a5997`. The source archive is from the
+local `linux-source-7.0.0` package version `7.0.0-38.38`, SHA-256
+`1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222`.
+
+The exact optional frame strings in the two source UART traces are:
+
+| Frame string | Run 0001 | Run 0002 |
+|---|---:|---:|
+| `psi_task_switch+0x12a/0x390` | yes | — |
+| `__schedule+0x2c3/0x650` | yes | — |
+| `schedule+0x27/0xb0` | yes | yes |
+| `do_nanosleep+0x66/0x180` | yes | yes |
+| `hrtimer_nanosleep+0x8b/0x110` | yes | yes |
+| `__pfx_hrtimer_wakeup+0x10/0x10` | yes | yes |
+| `__x64_sys_nanosleep+0xb0/0xf0` | yes | yes |
+| `set_ptes.isra.0+0x3b/0x90` | yes | — |
+
+All offsets and symbol resolutions were checked with Xcode LLVM `llvm-nm` and
+`llvm-dwarfdump --lookup` against the matching debug ELF. The printed-size
+rule was verified in package `kernel/kallsyms.c` (`get_symbol_pos`, lines
+283–334) and symbol filtering in `scripts/kallsyms.c`.
+
+| Reported optional frame | ELF / DWARF result |
+|---|---|
+| `psi_task_switch+0x12a/0x390` | ELF symbol at `0xffffffff814fe1b0`, size `0x387`; offset resolves to `kernel/sched/psi.c:984`. |
+| `__schedule+0x2c3/0x650` | ELF symbol at `0xffffffff82730710`, size `0x650`; offset resolves to `kernel/sched/core.c:5309`. |
+| `schedule+0x27/0xb0` | ELF symbol at `0xffffffff82730d70`, size `0xae`; offset resolves to the inlined preemption path in `preempt.h:85`. |
+| `do_nanosleep+0x66/0x180` | ELF symbol at `0xffffffff82738a90`, size `0x176`; offset resolves to `kernel/time/hrtimer.c:1362`. |
+| `hrtimer_nanosleep+0x8b/0x110` | ELF symbol at `0xffffffff81577360`, size `0x104`; offset resolves to `kernel/time/hrtimer.c:2178`. |
+| `__pfx_hrtimer_wakeup+0x10/0x10` | Prefix symbol at `0xffffffff815759a0`, size `0x10`; the reported offset is exactly one-past that symbol. DWARF maps the resulting address `0xffffffff815759b0` to the `hrtimer_wakeup` entry at `kernel/time/hrtimer.c:2020`. |
+| `__x64_sys_nanosleep+0xb0/0xf0` | ELF symbol at `0xffffffff81577680`, size `0xea`; offset resolves to `kernel/time/hrtimer.c:2198`. |
+| `set_ptes.isra.0+0x3b/0x90` | Three same-named ELF clones exist at `0xffffffff817f2960` (`st_size=0x8f`), `0xffffffff81815950` (`st_size=0x91`), and `0xffffffff818a12e0` (`st_size=0x91`). Linux kallsyms prints the span to the next non-aliased symbol address, not ELF `st_size`. The embedded kallsyms table in the matching debug ELF (244,501 entries) retains all three; their spans are `0x90`, `0xa0`, and `0xa0`, so `/0x90` uniquely selects the first clone. `sprint_backtrace` looks up `address-1` and restores the displayed offset; for this candidate that still selects the first clone. Its address is `0xffffffff817f299b`, resolving to `paravirt.h:379` in the `mm/memory.c` compilation unit. The other two clone addresses resolve to `pgtable-invert.h:18` in the `mm/rmap.c` and `mm/huge_memory.c` units; they do not match the printed size. |
+
+Meaning of the `?` marker
+-------------------------
+In the matching 7.0.0-38.38 source, `arch/x86/kernel/dumpstack.c` documents
+that the kernel scans stack words for text addresses and prints addresses not
+reported by the unwinder as additional debugging clues prefixed with `?`
+(source lines 239–247). The code marks a candidate reliable only when its
+stack slot equals `unwind_get_return_address_ptr(&state)` (lines 249–267); an
+unreliable candidate is printed but does not advance the unwinder (lines
+280–293). This establishes that `?` is an unreliable diagnostic candidate,
+not a verified call-chain frame. It does not establish that the candidate is
+stale or false: kernel source explicitly describes these values as clues that
+may be useful.
+
+`arch/x86/kernel/unwind_orc.c` also documents one way the unwinder can become
+unreliable: if ORC metadata is absent, it guesses frame-pointer unwinding and
+sets the error state (lines 510–518). The saved run data contains no unwinder
+state proving that this fallback occurred in either panic. Do not infer an
+ORC miss from the `?` prefix alone.
+
+Context and remaining limits
+----------------------------
+Both syscall journals record syscall 35 at user RIP `0x40020b` with return
+value `0x0`, so a successful nanosleep occurred in each run. The scheduler and
+nanosleep names are consistent with that execution context, but the journal
+does not identify which raw stack word produced each candidate. In particular,
+the exact provenance of the run-1-only `psi_task_switch`, `__schedule`, and
+`set_ptes.isra.0` candidates remains unresolved. The `set_ptes` symbol clone
+does resolve uniquely to the `mm/memory.c` instance, but the stack word's
+origin is unknown. The `__pfx_hrtimer_wakeup` result is a one-past-prefix
+address that resolves to a function entry; that alone does not prove how the
+address entered the scanned stack.
+
+Astra separately inspected a diagnostic UART projection after removing nonce,
+timestamps, and optional-frame lines. It leaves only the already observed
+memory-available and `sched_clock` calibration values, the existing adjacent
+`Run /init` / `OD_NONCE` ordering difference, and user RSP. This projection is
+not the strict comparator and does not satisfy acceptance.
+
+Conclusion: all eight unknown optional strings have verified symbol/offset
+resolution in the matching ELF, including the uniquely selected `set_ptes`
+clone; their `?` status means the kernel did not confirm them as unwinder
+return-address frames. Some function names fit the recorded nanosleep/scheduler
+context, but the origin of the raw stack candidates is not recovered. There is
+no evidence to add these names to `optional_panic_frame`, and no blanket `?`
+normalization is justified. The
+strict pair remains `matches=false` on machine observations and ordered UART;
+S5-07 remains blocked/unaccepted.

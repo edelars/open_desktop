@@ -284,6 +284,14 @@ fn trim_ascii(mut line: &[u8]) -> &[u8] {
 
 pub(crate) fn capture_frame_chain(
     initial_rbp: u64,
+    read_frame: impl FnMut(u64) -> Result<[u8; 16], ()>,
+) -> (Vec<ConsoleContextFrame>, FrameChainEnd) {
+    capture_frame_chain_with_limit(initial_rbp, MAX_FRAME_LINKS, read_frame)
+}
+
+pub(crate) fn capture_frame_chain_with_limit(
+    initial_rbp: u64,
+    frame_limit: usize,
     mut read_frame: impl FnMut(u64) -> Result<[u8; 16], ()>,
 ) -> (Vec<ConsoleContextFrame>, FrameChainEnd) {
     let Some(window_end) = initial_rbp.checked_add(STACK_WINDOW_BYTES) else {
@@ -292,7 +300,7 @@ pub(crate) fn capture_frame_chain(
     let mut frame_pointer = initial_rbp;
     let mut frames = Vec::new();
     let mut visited = Vec::new();
-    for _ in 0..MAX_FRAME_LINKS {
+    for _ in 0..frame_limit {
         if frame_pointer == 0 {
             return (frames, FrameChainEnd::NullFramePointer);
         }

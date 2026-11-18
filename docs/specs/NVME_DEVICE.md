@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус: срезы A и B реализованы исполнителем, ожидают ревью.** Срез A — управляющая часть: регистры, admin-очереди и Admin-команды. Срез B — набор команд ввода-вывода `Read`, `Write`, `Flush` поверх backend диска (раздел 13; backend в памяти `InMemoryBackend`, файловый — вне `od-machine`). PCI-привязки нет (blocked до S4-30): устройство — фиксированное MMIO-окно, как у дисплея; прерываний нет (`gsi = 0xFFFF_FFFF`). Значения спецификации NVMe Base 2.4 не сверены (раздел 1).
+**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx. Постоянный RAW backend реализован в `od-host` (раздел 14). MSI-X и обязательные log pages из раздела 1 остаются открыты.
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -8,7 +8,9 @@
 
 Редакция по плану: NVM Express Base Specification 2.4, NVM Command Set Specification 1.3, NVMe over PCIe Transport Specification 1.4 (ratified 2026-07-31, [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md)).
 
-**Текст спецификаций не был получен.** Часть значений сверена с заголовком Linux `include/linux/nvme.h` (master, 2026-11-07), **не с текстом NVMe Base 2.4**. Это сверка с реализацией драйвера, а не со спецификацией. Что именно сделано 2026-11-07:
+На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`; в текущей модели их нет. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
+
+При первой сверке 2026-11-07 использовался заголовок Linux `include/linux/nvme.h` (master):
 
 - страница `https://nvmexpress.org/specifications/` открывается, но прямых ссылок на PDF не содержит (загрузка идёт через форму);
 - PDF Base 2.4 по угаданным адресам не найден (HTTP 404); в архиве (`nvm-express-specification-archives/`) последняя найденная редакция — Base 2.3 (`NVM-Express-Base-Specification-Revision-2.3-2025.08.01-Ratified.pdf`);
@@ -36,7 +38,7 @@
 - **Handoff block.** В v1.0 поля NVMe нет (коды 8–15 зарезервированы). Поэтому устройство добавляется как запись кода 8 и повышает `version_minor` до 1 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) 6.3–6.4): `PRESENT = 1`, MMIO, `base = 0xFC00_1000`, `length = 0x2000`, `gsi = 0xFFFF_FFFF` (нет IRQ), `irq_flags = 0`, `param0 = param1 = 0`; в таблицу регионов добавляется регион `MMIO` с `owner_device = 7`.
 - **Включается опционально:** `FirmwareBoardConfig::nvme: Option<NvmeConfig>`. По умолчанию `None`: handoff остаётся v1.0 байт в байт (эталон `REFERENCE_HANDOFF_HEX` не менялся), окна нет, `Unmapped`. При `Some` образ обязан объявлять `handoff_minor_max ≥ 1`, иначе загрузка отклоняется (`ImageHeader { field: "handoff_minor_max" }`). Прошивка в репозитории (`firmware/uefi`) пока понимает только minor 0 и NVMe-запись не читает — это работа S7-17.
 - Устройство подключается к шине только когда запись PRESENT; без конфигурации оно не существует и не объявляется.
-- **До PCI-привязки (S4-30) контроллер виден только прошивке** (по адресу из handoff block). `stornvme` и Linux `nvme` находят NVMe только по PCI class `010802`, поэтому ОС его не увидят; это блокирует S7-31 и S7-32.
+- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_6000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. IRQ идёт через level/active-low IOAPIC, учитывает PCI INTx Disable, `INTMS/INTMC` и флаг IEN очереди. Неподтверждённые CQE удерживают линию, запись CQ head снимает запрос после подтверждения всех таких CQE. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера в запущенном госте ещё не проверялась.
 
 ## 3. Модель обслуживания (DMA)
 
@@ -93,6 +95,10 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 
 ## 7. Admin-команды (срез A)
 
+Для `Create/Delete I/O SQ/CQ`, `Abort`, `Asynchronous Event Request`, `Identify Controller` и реализованных controller-scoped Features требуется `NSID = 0`, иначе `Invalid Field`. `Error Recovery` остаётся namespace-scoped и применяет отдельную проверку (раздел 9.1); Identify Namespace/List также сохраняют собственные правила раздела 8.
+
+Delete I/O SQ сначала обслуживает команды, уже покрытые текущим SQ tail, и публикует их CQE до успешного CQE удаления. Если связанная CQ не имеет места для completion всех поданных команд, оставшиеся SQ entries implicitly aborted без исполнения и I/O CQE; SQ удаляется успешно. Неподтверждённый CQ-full статус не вводится.
+
 Мандаторные Admin-команды NVMe Base для контроллера ввода-вывода (по знанию авторов; обязательность NOT VERIFIED, сами opcode сверены с Linux `nvme.h`): `Delete I/O SQ`, `Create I/O SQ`, `Get Log Page`, `Delete I/O CQ`, `Create I/O CQ`, `Identify`, `Abort`, `Set Features`, `Get Features`, `Asynchronous Event Request`. Все десять реализованы. Любой другой opcode — `Invalid Command Opcode` (SC `0x01`, DNR), в том числе опциональные команды, которые контроллер не объявляет в `OACS`/`ONCS` (раздел 10).
 
 | Opcode | Команда | Поведение и границы |
@@ -111,6 +117,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 Коды статусов (сверены с Linux `include/linux/nvme.h`, не с NVMe Base 2.4): `Invalid Command Opcode 0/0x01`, `Invalid Field in Command 0/0x02`, `Data Transfer Error 0/0x04`, `Invalid Namespace or Format 0/0x0B`, `Command Sequence Error 0/0x0C`, `PRP Offset Invalid 0/0x13`; command specific (SCT 1): `Completion Queue Invalid 0x00`, `Invalid Queue Identifier 0x01`, `Invalid Queue Size 0x02`, `Asynchronous Event Request Limit Exceeded 0x05`, `Invalid Interrupt Vector 0x08`, `Invalid Log Page 0x09`, `Invalid Queue Deletion 0x0C`.
 
 ## 8. Identify
+
+`Identify Controller` требует `NSID = 0` (`Invalid Field` при ненулевом NSID); namespace/list CNS применяют правила ниже.
 
 `CDW10[7:0]` = CNS; результат — 4096 байт по PRP, остальное содержимое страницы — нули. Поддержаны:
 
@@ -168,6 +176,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 ## 9. Features и log pages
 
 ### 9.1. Features
+
+Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` проверяет namespace (0, 1 или `0xFFFF_FFFF`).
 
 `CDW10[7:0]` = FID; Get — `CDW10[10:8]` = SEL: поддержаны `0` (текущее) и `1` (значение по умолчанию); `2` (сохранённое) и `3` (возможности) — `Invalid Field`. Set — бит `SV` (31): сохранение не поддержано (`ONCS` бит 4 = 0), `SV = 1` — `Invalid Field`. Features сбрасываются к значениям по умолчанию сбросом контроллера. Неподдержанный FID — `Invalid Field`.
 

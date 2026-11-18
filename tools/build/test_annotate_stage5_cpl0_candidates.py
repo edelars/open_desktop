@@ -16,11 +16,11 @@ BASE_COMMIT = "45401a1fcb5487fa83b12b3c26abda4dd137711e"
 INVENTORIES = {
     "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": (
         "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
-        "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
+        "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913",
     ),
     "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": (
         "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
-        "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
+        "52e9c9672ccd4930540e7e4feb2147f4d1dabfa41a7d1fa03377a067129144f2",
     ),
 }
 
@@ -244,11 +244,11 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
         candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
         expected = {
             "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": {
-                "cpl0": 115683, "all": 116191, "unique": 116114,
+                "cpl0": 115696, "all": 116204, "unique": 116127,
                 "classification": {"proven_supported": 6296422, "unclassified": 213978},
             },
             "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": {
-                "cpl0": 115743, "all": 116251, "unique": 116174,
+                "cpl0": 115756, "all": 116264, "unique": 116187,
                 "classification": {"proven_supported": 6296706, "unclassified": 214039},
             },
         }
@@ -417,11 +417,11 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
         candidate = "S4-38L7ay-LOCK-XADD-m32-r32-base-only"
         expected = {
             "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": {
-                "cpl0": 115683, "all": 116191, "unique": 116114,
+                "cpl0": 115696, "all": 116204, "unique": 116127,
                 "classification": {"proven_supported": 6296422, "unclassified": 213978},
             },
             "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": {
-                "cpl0": 115743, "all": 116251, "unique": 116174,
+                "cpl0": 115756, "all": 116264, "unique": 116187,
                 "classification": {"proven_supported": 6296706, "unclassified": 214039},
             },
         }
@@ -449,6 +449,55 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
                        if candidate in record["conditional_candidate_frequencies"]]
             self.assertEqual(len(matches), 6)
             self.assertEqual(sum(record["count"] for record in matches), 36)
+
+    def test_s4_38l9p_candidate_is_limited_to_13_observed_unprefixed_rows(self) -> None:
+        candidate = "S4-38L9p-XCHG-m32-r32-base-only"
+        expected = {
+            "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": (115696, 116204, 116127, {"proven_supported": 6296422, "unclassified": 213978}),
+            "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": (115756, 116264, 116187, {"proven_supported": 6296706, "unclassified": 214039}),
+        }
+        for relative, totals in expected.items():
+            baseline = subprocess.run(
+                ["git", "show", f"{BASE_COMMIT}:{relative}"], cwd=ROOT, check=True, stdout=subprocess.PIPE
+            ).stdout
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "inventory.json.gz"
+                target.write_bytes(baseline)
+                annotate.annotate(target)
+                data = json.loads(gzip.decompress(target.read_bytes()))
+            self.assertEqual(
+                (data["conditional_cpl0_candidate_hit_count"], data["conditional_candidate_hit_count"],
+                 data["exact_instruction_rows_with_any_conditional_candidate"]),
+                totals[:3],
+            )
+            self.assertEqual(data["conditional_cpl0_candidate_frequencies"][candidate], 13)
+            self.assertEqual(data["binaries"]["gcc-cc1"]["conditional_cpl0_candidate_frequencies"][candidate], 5)
+            self.assertEqual(data["binaries"]["gcc-collect2"]["conditional_cpl0_candidate_frequencies"][candidate], 4)
+            self.assertEqual(data["binaries"]["gcc-driver"]["conditional_cpl0_candidate_frequencies"][candidate], 4)
+            self.assertEqual(data["classification_frequencies"], totals[3])
+            self.assertEqual(data["scenarios"]["C"]["conditional_candidate_frequencies"][candidate], 0)
+            self.assertEqual(data["scenarios"]["D"]["conditional_candidate_frequencies"][candidate], 13)
+            self.assertEqual(data["binaries"].get("stage5-e-static", {}).get("conditional_cpl0_candidate_frequencies", {}).get(candidate, 0), 0)
+            exact = [record for record in data["exact_encoding_forms"]
+                     if candidate in record["conditional_candidate_frequencies"]]
+            self.assertEqual([(record["dimensions"]["modrm"]["raw"], record["count"]) for record in exact],
+                             [("07", 6), ("43", 4), ("47", 3)])
+            self.assertTrue(all(record["dimensions"]["prefix_bytes"] == []
+                                and record["classification_frequencies"] == {"unclassified": record["count"]}
+                                and not record["evidence_scope_frequencies"] for record in exact))
+
+        data = self._baseline_payload("docs/reports/data/stage5/s5-21-isa-inventory.json.gz")
+        exact = next(record for record in data["exact_encoding_forms"]
+                     if record["dimensions"]["operand_signature"] == "xchg mem32,r32"
+                     and record["dimensions"]["modrm"]["raw"] == "07")
+        exact["dimensions"]["prefix_bytes"] = ["F0"]
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "inventory.json.gz"
+            mutated = gzip.compress(json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), mtime=0)
+            target.write_bytes(mutated)
+            with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
+                annotate.annotate(target)
+            self.assertEqual(target.read_bytes(), mutated)
 
     def test_scenario_candidate_summaries_match_exact_records(self) -> None:
         candidate = "S4-38L7ay-LOCK-XADD-m32-r32-base-only"

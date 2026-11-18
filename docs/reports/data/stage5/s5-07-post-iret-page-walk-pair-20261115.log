@@ -1,0 +1,59 @@
+# S5-07 post-IRET page-walk diagnostic pair — 2026-11-15
+
+## Scope and provenance
+
+Two independent counted single runs used the schema-v5 execution-observations sidecar and selected zero-based delivered-#PF ordinal 30. They are diagnostic runs, not the automatic S5-07 N=2 series, and no strict comparator ran. Both ran `linux-direct --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --execution-observations-out ... --execution-observations-post-iret-index 30` with 128 MiB RAM and distinct nonces. Both reached the instruction-budget stop at `retired=2,999,999,998`; both loaded Linux and emitted the run nonce.
+
+Source revision: `ca7f6b2` (schema-v5 post-IRET implementation).
+
+Release runner SHA-256: `c3467f73ed5f5e2d8ac50593ceccd545d3f220eb796c86e47bca996e47ad3917`.
+
+Identical inputs:
+
+- kernel: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+- initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+- ACPI blob: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+- ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+Host: macOS/aarch64. Raw artifacts are in ignored directories `work/stage5/stage5-s5-07-post-iret-20261115-a2/` and `...-b2/`.
+
+| Artifact | A2 SHA-256 | B2 SHA-256 |
+|---|---|---|
+| runner JSON | `9fafae546dc408896be2d396717ef36e7219fc2ef96ad90b44120c07eae81cc7` | `18185cf59bab16df54b85d317402d10cdef8368625ea62e8b69f65c866e17925` |
+| execution sidecar | `26961c66860ed037090d183ca40068b36fc635c5303b7b3917188f0756c62496` | `563eaa560c664c71c3f5fb6b97c0391b6f05bf639e5f496ad3d6e645e7d94186` |
+
+## Observed pair
+
+| Metric | A2 | B2 |
+|---|---:|---:|
+| Acceptance/profile | counted / stage4a | counted / stage4a |
+| Retired / budget | 2,999,999,998 / 3,000,000,000 | 2,999,999,998 / 3,000,000,000 |
+| Delivered #PF / #GP(0) | 33 / 1 | 33 / 1 |
+| IRQ0 edges / delivered IRQs | 34,799 / 34,804 | 34,801 / 34,806 |
+| RDTSC reads | 34,438,590 | 34,440,100 |
+| Quanta | 34,564,457 | 34,566,115 |
+| Virtual ns | 37,456,987,535 | 37,458,683,038 |
+| PIT counter reads / PM timer reads | 16,672 / 230 | 16,672 / 230 |
+| Selected ordinal status | 30 / captured | 30 / captured |
+
+For ordinal 30, both sidecars report a CPL3 instruction-fetch #PF at RIP=CR2 `0x4000b0`, error code `0x00000014`, with original fault walk `NotPresent { level: Pml4 }` and raw PML4 entry value `0x0`. The matching post-IRET context restores CPL3, CS `0x0033`, RIP `0x4000b0`, and the same run's user RSP. In each run the CR3 is unchanged from the fault context. The post-IRET walk is translated in both runs to physical `0x443d0b0`; its final PT entry is index 0, value `0x443d025`. Intermediate paging-structure addresses and user RSP differ between runs because the runtime layout differs; the final mapping is identical.
+
+The pair observes that the selected mapping is absent at the original fetch and present at the matching IRET return boundary. It does not prove that the retried fetch retired or that the guest TLB has any particular state.
+
+Counters differ by 2 IRQ0 edges/deliveries, 1,510 RDTSC reads, 1,658 quanta, and 1,695,503 virtual ns. These timing/scheduling differences are not normalized and are not classified benign. This was not a strict automatic series comparison. Earlier event-presence variation and timing variation (including `delay_tsc+0x4d`) remain open; S5-07 remains blocked/unaccepted.
+
+## Command template
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce <unique-run-nonce> --ram-mib 128 --out <run.json> \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out <sidecar.json> \
+  --execution-observations-post-iret-index 30
+```

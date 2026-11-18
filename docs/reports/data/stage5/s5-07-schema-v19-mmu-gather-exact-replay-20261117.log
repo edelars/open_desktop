@@ -1,0 +1,53 @@
+# S5-07 schema-v19 MMU-gather exact replay (2026-11-17)
+
+## Inputs and invocation
+
+Both release replays used code revision `d0303be`, the same kernel, initramfs, ACPI blob, RAM size, 3,000,000,000-instruction budget, Stage4A CPL0/user-mode profile, expected input hashes, and `--execution-observations-elf-stack-copy` opt-in as the schema-v18 baseline. Only the canonical nonce and output directory varied. The schema-v19 capture adds four bounded MMU-gather checkpoints; it does not change guest execution, the strict comparator, or its allowlist.
+
+| Input | Bytes | SHA-256 |
+|---|---:|---|
+| `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` | 17,320,328 | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| `work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio` | 4,688 | `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` |
+| `work/stage5/staging/s5-07-canonical-acpi-20261117.bin` | 1,072 | `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` |
+
+Expected ACPI manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+The command for each run was the v18 exact replay command with its nonce, output directory, and the schema-v19 binary. Full stdout, runner JSON, and execution-observations sidecar are under the ignored directory `work/stage5/s5-07-post-main-v19-mmu-gather-exact-replay-20261117-a/{0001,0002}/`. UART files were reconstructed from `stop.com1_hex`; stdout is not itself the UART artifact.
+
+## Replay integrity
+
+| Run | Nonce | Stop object equal to source | UART equal to source | UART bytes / SHA-256 | CR3 ledger | Selected event gate |
+|---|---|---:|---:|---|---|---|
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | yes | yes | 24,220 / `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` | complete, 26,595/26,595, omitted 0 | `not_seen` |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | yes | yes | 23,880 / `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` | complete, 26,596/26,596, omitted 0 | captured at sequence 26,596 |
+
+Both stops retired 2,999,999,998 instructions and ended by budget exhaustion. Run 0001 stopped at CR3 `0x64ac000` with 26,617 CR3 writes and 33 delivered #PFs. Run 0002 stopped at CR3 `0x64d4000` with 26,618 CR3 writes and 34 delivered #PFs. Each full nested stop object matches its own schema-v18 canonical source.
+
+## Bounded MMU-gather observations
+
+The four captured phases in each invocation are `setup_arg_pages` (`0xffffffff818f24d5`), pre-`tlb_finish_mmu` (`0xffffffff8182bfdb`), actual-post (`0xffffffff81809fa1`), and return (`0xffffffff8182bfe0`). In both runs the retained invocation closed as `returned`; all four phase outcomes are `captured`, and initial/actual-post use the same `tlb` and `mm` within that run. Each overall ledger reports `incomplete` because it also preserves one unpaired actual-post observation from a different direct caller anchor (`saved_return_rip=0xffffffff818f24a7`). That unpaired record does not overwrite or invalidate the separately closed invocation.
+
+| Observation | Run 0001 | Run 0002 |
+|---|---|---|
+| `stack_shift` | `0x1d601000` | `0x62626000` |
+| VMA bounds | `0x7fffffffe000`–`0x7ffffffff000` | `0x7fffffffe000`–`0x7ffffffff000` |
+| `tlb` / `mm` | `0xffffc9000000fb20` / `0xffff888004cb3020` | `0xffffc9000000fb20` / `0xffff888004cab700` |
+| Gather range, initial and actual-post | `0x7fffffe00000`–`0x7fffffe01000` | `0x7fffc0000000`–`0x7fffffe01000` |
+| Raw flags, initial and actual-post | `0x00000024` | `0x00000064` |
+| `flags & 0x08f4` / derived `needs_flush` | `0x0024` / `true` | `0x0064` / `true` |
+| `mm_tlb_flush_nested` | 1 | 1 |
+
+The run-2 selected event at RIP `0xffffffff8141d753` is sequence 26,596 at retired count 2,319,748,956. Its captured CR3 write is a same-value write (`old_cr3=new_cr3=0x64d4000`, CPL 0). It falls between actual-post at retired 2,319,748,751 and return at 2,319,749,211. The run-2 target-event frame chain contains the exact full-RBP/saved-return pairs recorded at the corresponding MMU checkpoints: `0xffffc9000000f9d8` / `0xffffffff8182bfe0` (actual-post), `0xffffc9000000fbd0` / `0xffffffff818f24e5` (initial), and `0xffffc9000000fd10` / `0xffffffff8199bbec` (setup). The saved-RBP links connect those frames directly. This supports the bounded observational statement that the selected CR3 write occurred in this MMU invocation's call chain.
+
+Run 0001's selected event gate is `not_seen`; this means the exact ordinal-plus-RIP gate did not occur. Its complete prefix contains no CR3 event in the initial-to-return interval. Its CR3-write counter remains 26,595 across all four phases. In run 0002 the counter is 26,595 through actual-post and 26,596 at return; delivered page-fault count is 30 at all four phases in both runs. These unchanged counters establish that no #PF was delivered in either captured initial-to-return interval.
+
+The observed ranges and flag words differ while the derived predicate is true in both runs. This localizes a difference in the captured relocation state and an additional run-2 same-value CR3 write inside the invocation, but it does not establish why those values differ or that the write caused the later copy-destination PF. No local matching debug `vmlinux` was available to add or reinterpret instruction anchors. The strict source-pair comparison remains false; S5-07 remains blocked/unaccepted. No comparator or allowlist change was made.
+
+## Artifact hashes
+
+| Run | Runner JSON SHA-256 | Schema-v19 sidecar SHA-256 |
+|---|---|---|
+| 0001 | `4e9d074f6cbd6e093055de10064cf40aba8ef0fb4ce2dce4b5c28737b7e5b430` | `7318dc92ff27044fbfac02ea15be3f02a2eba311678e027c60b85ebf5683c75e` |
+| 0002 | `e94e47728cb42ac16b8a2c1b4ab05c766ea0e461d5841204379bc11ffd85c2e0` | `37fc3237d7d303a46c064352a1527b77acf7ed60fef0bff4bb4c8ec8687185e5` |
+
+The generated UART files match the source UART bytes; their SHA-256 values are listed in the replay-integrity table. No performance-overhead measurement was made.

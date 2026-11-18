@@ -47,7 +47,7 @@ use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
-use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason};
+use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason, NvmeConfig};
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
@@ -290,11 +290,30 @@ fn load_error(error: LinuxLoadError) -> LinuxDirectError {
 pub fn load_linux_direct_board(
     input: &LinuxDirectInput<'_>,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, None)
+}
+
+/// As the diskless loader, with a PCI NVMe endpoint and its own ACPI manifest.
+/// Attach the namespace backend through the returned board's NVMe handle before running it.
+/// Interrupt delivery uses the APIC Linux execution profile.
+pub fn load_linux_direct_board_with_nvme(
+    input: &LinuxDirectInput<'_>,
+    nvme: NvmeConfig,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, Some(nvme))
+}
+
+fn load_linux_direct_board_inner(
+    input: &LinuxDirectInput<'_>,
+    nvme: Option<NvmeConfig>,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
     // 1. Header first: a truncated or foreign kernel is refused before anything else is looked at.
     parse_linux_bzimage_header(input.bzimage).map_err(header_error)?;
     // 2. The board this module assembles, and its own manifest hash.
     let config = FirmwareBoardConfig {
         ram_bytes: input.ram_bytes,
+        nvme_pci: nvme.is_some(),
+        nvme,
         acpi_pm: true,
         acpi_tables: true,
         pci_ecam: true,
@@ -687,6 +706,7 @@ pub fn run_linux_direct_board(
     input: &LinuxDirectInput<'_>,
     instruction_budget: u64,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_nvme_interrupt_profile(boot, false)?;
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     let report = boot
         .board
@@ -720,6 +740,27 @@ pub fn run_linux_direct_board(
             checkpoints: None,
         },
     ))
+}
+
+fn check_nvme_interrupt_profile(
+    boot: &LinuxDirectBoot,
+    apic: bool,
+) -> Result<(), LinuxDirectError> {
+    if !apic
+        && boot
+            .board
+            .nvme()
+            .is_some_and(|nvme| nvme.has_pci_transport())
+    {
+        let mut error = LinuxDirectError::text(
+            "run_failed",
+            "run",
+            "PCI NVMe requires the X8664V1Stage4AApic execution profile".into(),
+        );
+        error.retired = Some(0);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// What the set path adds to a stop record.
@@ -1179,6 +1220,121 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_execution_observations_options(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        None,
+        None,
+    )
+}
+
+/// One-shot user-mode run with execution observations and optional focused RDTSC and post-IRET
+/// captures. A selected RDTSC RIP records bounded post-instruction register samples only.
+pub fn run_linux_direct_board_set_user_mode_with_execution_observations_options(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
+        1,
+        None,
+        None,
+        None,
+        false,
+    )
+}
+
+/// One-shot user-mode run with explicit deterministic stride for selected-RIP samples.
+pub fn run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+    selected_rdtsc_sample_stride: u64,
+    selected_rdtsc_entry_sample_rip: Option<u64>,
+    selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_elf_stack_copy(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
+        selected_rdtsc_sample_stride,
+        selected_rdtsc_entry_sample_rip,
+        selected_rdtsc_sample_window,
+        selected_rdtsc_prefix_sentinel_rip,
+        selected_instruction_path_trace,
+        false,
+    )
+}
+
+/// One-shot user-mode run with the exact S5-07 ELF stack copy observation enabled.
+#[allow(clippy::too_many_arguments)]
+pub fn run_linux_direct_board_set_user_mode_with_elf_stack_copy(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+    selected_rdtsc_sample_stride: u64,
+    selected_rdtsc_entry_sample_rip: Option<u64>,
+    selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
+    selected_elf_stack_copy: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary(
+        boot,
+        input,
+        instruction_budget,
+        members,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
+        selected_rdtsc_sample_stride,
+        selected_rdtsc_entry_sample_rip,
+        selected_rdtsc_sample_window,
+        selected_rdtsc_prefix_sentinel_rip,
+        selected_instruction_path_trace,
+        selected_elf_stack_copy,
+        false,
+    )
+}
+
+/// One-shot user-mode run with the opt-in bounded delay_tsc call summary.
+#[allow(clippy::too_many_arguments)]
+pub fn run_linux_direct_board_set_user_mode_with_delay_tsc_summary(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+    selected_rdtsc_sample_stride: u64,
+    selected_rdtsc_entry_sample_rip: Option<u64>,
+    selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
+    selected_elf_stack_copy: bool,
+    selected_delay_tsc_call_summary: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
     run_linux_direct_board_set_with_post_iret_index(
         boot,
         input,
@@ -1187,7 +1343,15 @@ pub fn run_linux_direct_board_set_user_mode_with_execution_observations(
         true,
         None,
         true,
-        None,
+        selected_post_iret_ordinal,
+        selected_rdtsc_sample_rip,
+        selected_rdtsc_sample_stride,
+        selected_rdtsc_entry_sample_rip,
+        selected_rdtsc_sample_window,
+        selected_rdtsc_prefix_sentinel_rip,
+        selected_instruction_path_trace,
+        selected_elf_stack_copy,
+        selected_delay_tsc_call_summary,
     )
 }
 
@@ -1208,6 +1372,14 @@ pub fn run_linux_direct_board_set_user_mode_with_post_iret_index(
         None,
         true,
         Some(delivered_page_fault_ordinal),
+        None,
+        1,
+        None,
+        None,
+        None,
+        false,
+        false,
+        false,
     )
 }
 
@@ -1229,6 +1401,14 @@ fn run_linux_direct_board_set_with(
         checkpoint_table,
         capture_execution_observations,
         None,
+        None,
+        1,
+        None,
+        None,
+        None,
+        false,
+        false,
+        false,
     )
 }
 
@@ -1242,7 +1422,19 @@ fn run_linux_direct_board_set_with_post_iret_index(
     checkpoint_table: Option<LinuxCheckpointTable>,
     capture_execution_observations: bool,
     selected_post_iret_ordinal: Option<u64>,
+    selected_rdtsc_sample_rip: Option<u64>,
+    selected_rdtsc_sample_stride: u64,
+    selected_rdtsc_entry_sample_rip: Option<u64>,
+    selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+    selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+    selected_instruction_path_trace: bool,
+    selected_elf_stack_copy: bool,
+    selected_delay_tsc_call_summary: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_nvme_interrupt_profile(
+        boot,
+        members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic,
+    )?;
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     // S4-39g: only the user-mode run of a board with the Linux-profile PIT and 8259 gets the
     // timer line: the PIT -> 8259 IR0 source becomes the board source, and the set carries `halt`
@@ -1468,6 +1660,14 @@ fn run_linux_direct_board_set_with_post_iret_index(
             members.irq,
             true,
             selected_post_iret_ordinal,
+            selected_rdtsc_sample_rip,
+            selected_rdtsc_sample_stride,
+            selected_rdtsc_entry_sample_rip,
+            selected_rdtsc_sample_window,
+            selected_rdtsc_prefix_sentinel_rip,
+            selected_instruction_path_trace,
+            selected_elf_stack_copy,
+            selected_delay_tsc_call_summary,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(
@@ -2245,6 +2445,51 @@ mod tests {
             observations,
         );
         (state, report)
+    }
+
+    #[test]
+    fn instruction_path_trace_records_retired_conditional_branch_and_following_order() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let mut boot = boot_with_entry(&[0x74, 0x02, 0x90, 0x90, 0x90, 0xF4]).0;
+        boot.board.state_mut().rflags |= 1 << 6;
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..crate::LINUX_INSTRUCTION_PATH_TRACE_START_HITS {
+            observations.record_cpl0_rdtsc(Some(crate::LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        observations.begin_instruction_path_quantum(
+            crate::LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            crate::LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        let (state, report) = run_set_with_observations(
+            &mut boot,
+            true,
+            8,
+            &switch_set(&cli, &halt),
+            Some(&mut observations),
+        );
+        assert_eq!(report.instructions_executed, 3, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 6);
+        let trace = observations.finish().instruction_path_trace.unwrap();
+        assert_eq!(trace.records.len(), 3);
+        assert_eq!(
+            (trace.records[0].rip, trace.records[0].next_rip),
+            (ENTRY, ENTRY + 4)
+        );
+        let branch = trace.records[0].control_flow.unwrap();
+        assert_eq!(branch.kind, "branch");
+        assert_eq!(branch.condition, Some(4));
+        assert!(branch.taken);
+        assert_ne!(branch.rflags_before & (1 << 6), 0);
+        assert_eq!(branch.destination, ENTRY + 4);
+        assert_eq!(
+            (trace.records[1].rip, trace.records[1].next_rip),
+            (ENTRY + 4, ENTRY + 5)
+        );
+        assert_eq!(
+            (trace.records[2].rip, trace.records[2].next_rip),
+            (ENTRY + 5, ENTRY + 6)
+        );
     }
 
     fn write_phys(boot: &mut LinuxDirectBoot, address: u64, bytes: &[u8]) {
@@ -10900,7 +11145,7 @@ mod tests {
     #[test]
     fn opt_in_execution_observations_attribute_rdtsc_to_exact_instruction_rip() {
         let cli = CliProfile::NonPviLong64V1;
-        let code = [0x0F, 0x31, 0xF4]; // RDTSC; HLT
+        let code = [0x90, 0x90, 0x0F, 0x31, 0xF4]; // NOP; NOP; RDTSC; HLT
         let (mut boot, _) = boot_with_entry(&code);
         let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
             .with_cli(&cli)
@@ -10908,22 +11153,60 @@ mod tests {
             .with_rdtsc();
         let report = boot
             .board
-            .run_linux_boot_cpl0_set_with_observations(2, &set, false, false, false, true)
+            .run_linux_boot_cpl0_set_with_post_iret_index(
+                4,
+                &set,
+                false,
+                false,
+                false,
+                true,
+                None,
+                None,
+                1,
+                Some(ENTRY + 2),
+                None,
+                None,
+                false,
+                false,
+                false,
+            )
             .expect("board run");
 
-        assert_eq!(report.run.retired, 1, "{report:?}");
+        assert_eq!(report.run.retired, 3, "{report:?}");
         let observations = report
             .execution_observations
             .expect("opt-in report is present");
         assert_eq!(
             observations.rdtsc_cpl0_sites,
             [crate::RdtscSiteCount {
-                rip: ENTRY,
+                rip: ENTRY + 2,
                 reads: 1,
             }]
         );
         assert_eq!(observations.rdtsc_cpl0_unattributed_reads, 0);
         assert_eq!(observations.rdtsc_cpl0_site_overflow_reads, 0);
+        assert_eq!(observations.rdtsc_entry_sample_hits, 1);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 0);
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 1);
+        let clock_read = observations.rdtsc_entry_clock_trace_samples[0];
+        assert_eq!(clock_read.hit_ordinal, 1);
+        assert_eq!(
+            clock_read.now_ns, 0,
+            "callback precedes current-quantum charge"
+        );
+        assert_eq!(clock_read.retired_instructions_charged, 0);
+        assert_eq!(clock_read.quantum_instructions_executed, 3);
+        assert_eq!(clock_read.retired_instructions_through_rdtsc, 3);
+        assert_eq!(
+            clock_read.rdtsc_ns_charged, 0,
+            "current RDTSC tick is post-callback"
+        );
+        assert_eq!(clock_read.irqs_delivered, 0);
+        assert_eq!(clock_read.unaccounted_elapsed_ns, Some(0));
+        assert_eq!(
+            clock_read.callback_tsc,
+            observations.rdtsc_entry_samples[0].observed_tsc
+        );
     }
 
     #[test]
@@ -14714,6 +14997,17 @@ mod tests {
             counters: &mut IrqCounters,
             skip_first_boundary: bool,
         ) -> (LongModeState, PagedCpl0SetReport) {
+            run_hook_with_mirror(boot, budget, source, counters, skip_first_boundary, None)
+        }
+
+        fn run_hook_with_mirror(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+            skip_first_boundary: bool,
+            delivered_mirror: Option<&std::cell::Cell<u64>>,
+        ) -> (LongModeState, PagedCpl0SetReport) {
             let cli = CliProfile::NonPviLong64V1;
             let sti = StiProfile::NonPviLong64V1;
             let set = minimal_set(&cli)
@@ -14740,6 +15034,7 @@ mod tests {
                 Some(IrqBoundaryHook {
                     source,
                     counters,
+                    delivered_mirror,
                     skip_first_boundary,
                 }),
             );
@@ -15076,6 +15371,25 @@ mod tests {
             assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
             assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn delivered_irq_mirror_updates_at_successful_delivery() {
+            let (mut boot, _file) = irq_board(&[CLD; 8]);
+            let mut script = ScriptedSource::default();
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
+            let mut counters = IrqCounters::default();
+            let delivered = std::cell::Cell::new(0);
+            let (_state, _report) = run_hook_with_mirror(
+                &mut boot,
+                3,
+                &mut script,
+                &mut counters,
+                false,
+                Some(&delivered),
+            );
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(delivered.get(), counters.irqs_delivered);
         }
 
         #[test]

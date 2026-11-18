@@ -2,8 +2,16 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::execution_observations::{
-    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
-    LinuxExecutionObservationCollector, PendingPostIretObservation, PostIretPageWalkSnapshot,
+    DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackAlignmentPoint,
+    ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus, ElfStackCopyTargetCr3Capture,
+    ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame, FaultingPageFaultContext,
+    FaultingPageWalkContext, InstructionPathControlFlow, InstructionPathRegisterValue,
+    InstructionPathTraceRecord, LINUX_ELF_STACK_ALIGN_AFTER_RIP, LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+    LINUX_ELF_STACK_COPY_PROBE_CAPACITY, LINUX_ELF_STACK_COPY_RIP,
+    LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP, LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+    LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP, LinuxExecutionObservationCollector,
+    PendingPostIretObservation, PostIretPageWalkSnapshot,
 };
 use crate::fetch_cache_report::{C5Split, LinuxWalkCounts, WalkCounter};
 use crate::fetch_cache_sweep::FetchCacheSweep;
@@ -17,8 +25,8 @@ use crate::page_walk::{
 };
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
-    MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
-    TrackedAccessRequest,
+    MemoryRegionKind, PageFaultReason, PageTableLevel, RamAccessOperation, TrackedAccessError,
+    TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::execute::{
     Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, Cpl0ProfileSetResult, InvlpgExit,
@@ -32,6 +40,7 @@ use od_isa::execute::{
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
+use od_isa::long_decode::{AddressBase, Operand, Operation};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
     MemoryError, PageFaultRecord, PrivilegeLevel,
@@ -1048,6 +1057,906 @@ fn observed_fetch_view(
     (first, bytes)
 }
 
+#[derive(Clone, Copy)]
+struct InstructionPathBefore {
+    rip: u64,
+    control_flow: Option<InstructionPathControlFlow>,
+}
+
+struct InstructionPathBytes<'a> {
+    rip: u64,
+    bytes: &'a [u8],
+}
+
+impl GuestMemory for InstructionPathBytes<'_> {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.wrapping_sub(self.rip) as usize;
+        self.bytes
+            .get(offset)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("trace byte view is read-only".into()))
+    }
+}
+
+fn trace_destination_register(
+    registers: &mut [Option<InstructionPathRegisterValue>; 2],
+    state: &LongModeState,
+    register: od_isa::Register,
+) {
+    if registers
+        .iter()
+        .flatten()
+        .any(|value| value.register == register as u8)
+    {
+        return;
+    }
+    if let Some(slot) = registers.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(InstructionPathRegisterValue {
+            register: register as u8,
+            value: state.gpr[register as usize],
+        });
+    }
+}
+
+fn instruction_path_before(
+    rip: u64,
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> InstructionPathBefore {
+    let (_, bytes) = observed_fetch_view(rip, bus.physical_memory(), paging, context);
+    let mut memory = InstructionPathBytes { rip, bytes: &bytes };
+    let decoded = od_isa::long_decode::decode(&mut memory, rip, context).ok();
+    let control_flow = decoded.and_then(|instruction| {
+        let (kind, condition, taken, operand) = match instruction.operation {
+            Operation::Branch { condition, .. } => (
+                "branch",
+                Some(condition as u8),
+                condition.evaluate(state.rflags),
+                None,
+            ),
+            Operation::Jump { .. } => ("jump", None, true, None),
+            Operation::Call { .. } => ("call", None, true, None),
+            Operation::Return { .. } | Operation::FarReturn | Operation::IretQ => {
+                ("return", None, true, None)
+            }
+            Operation::Syscall | Operation::Sysenter => ("syscall", None, true, None),
+            Operation::Sysret | Operation::Sysexit => ("sysret", None, true, None),
+            Operation::IndirectJump { operand } => ("indirect_jump", None, true, Some(operand)),
+            Operation::IndirectCall { operand } => ("indirect_call", None, true, Some(operand)),
+            _ => return None,
+        };
+        let mut destination_registers = [None, None];
+        match operand {
+            Some(Operand::Register(view)) => {
+                trace_destination_register(&mut destination_registers, state, view.register());
+            }
+            Some(Operand::Memory(memory)) => {
+                if let AddressBase::Register(register) = memory.base {
+                    trace_destination_register(&mut destination_registers, state, register);
+                }
+                if let Some(register) = memory.index {
+                    trace_destination_register(&mut destination_registers, state, register);
+                }
+            }
+            Some(Operand::Immediate(_)) | None => {}
+        }
+        if kind == "return" {
+            trace_destination_register(&mut destination_registers, state, od_isa::Register::Rsp);
+        }
+        if kind == "syscall" || kind == "sysret" {
+            trace_destination_register(&mut destination_registers, state, od_isa::Register::Rcx);
+        }
+        Some(InstructionPathControlFlow {
+            kind,
+            condition,
+            taken,
+            rflags_before: state.rflags,
+            rflags_after: 0,
+            destination_registers,
+            destination: 0,
+        })
+    });
+    InstructionPathBefore { rip, control_flow }
+}
+
+fn finish_instruction_path_record(
+    before: InstructionPathBefore,
+    state: &LongModeState,
+) -> InstructionPathTraceRecord {
+    let control_flow = before.control_flow.map(|mut flow| {
+        flow.rflags_after = state.rflags;
+        flow.destination = state.rip;
+        flow
+    });
+    InstructionPathTraceRecord {
+        rip: before.rip,
+        next_rip: state.rip,
+        control_flow,
+    }
+}
+
+fn capture_instruction_path_frame_chain(
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+    let rbp = state.gpr[od_isa::Register::Rbp as usize];
+    capture_frame_chain(rbp, |frame_pointer| {
+        let mut bytes = [0; 16];
+        bus.read_virtual_ram_diagnostic(
+            paging,
+            state.rip,
+            GuestLinearAddress::new(frame_pointer),
+            context,
+            &mut bytes,
+        )
+        .map(|()| bytes)
+        .map_err(|_| ())
+    })
+}
+
+fn capture_elf_stack_copy_target_rbp_chain(
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+) -> (
+    ElfStackCopyTargetCr3ChainStatus,
+    Vec<ElfStackCopyTargetCr3Frame>,
+    Option<String>,
+) {
+    let mut rbp = state.gpr[od_isa::Register::Rbp as usize];
+    let mut previous_rbp = None;
+    let mut frames = Vec::with_capacity(crate::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY);
+    for _ in 0..crate::LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY {
+        if rbp == 0 {
+            return (ElfStackCopyTargetCr3ChainStatus::Complete, frames, None);
+        }
+        if (rbp & 7) != 0 || !is_canonical_48_bit(rbp) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("invalid frame pointer 0x{rbp:016x}")),
+            );
+        }
+        if previous_rbp.is_some_and(|previous| rbp <= previous) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("non-monotonic frame pointer 0x{rbp:016x}")),
+            );
+        }
+        let Some(return_address_slot) = rbp.checked_add(8) else {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some("frame slot address overflow".into()),
+            );
+        };
+        let mut bytes = [0u8; 16];
+        if let Err(error) = bus.read_virtual_ram_diagnostic(
+            paging,
+            instruction_rip,
+            GuestLinearAddress::new(rbp),
+            context,
+            &mut bytes,
+        ) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Unreadable,
+                frames,
+                Some(error),
+            );
+        }
+        let saved_rbp = u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice"));
+        let return_address = u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice"));
+        frames.push(ElfStackCopyTargetCr3Frame {
+            rbp,
+            saved_rbp_slot: rbp,
+            saved_rbp,
+            return_address_slot,
+            return_address,
+        });
+        if !is_canonical_48_bit(return_address) {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!(
+                    "non-canonical return address 0x{return_address:016x}"
+                )),
+            );
+        }
+        if saved_rbp == 0 {
+            return (ElfStackCopyTargetCr3ChainStatus::Complete, frames, None);
+        }
+        if (saved_rbp & 7) != 0 || !is_canonical_48_bit(saved_rbp) || saved_rbp <= rbp {
+            return (
+                ElfStackCopyTargetCr3ChainStatus::Malformed,
+                frames,
+                Some(format!("malformed saved RBP 0x{saved_rbp:016x}")),
+            );
+        }
+        previous_rbp = Some(rbp);
+        rbp = saved_rbp;
+    }
+    (
+        ElfStackCopyTargetCr3ChainStatus::FrameLimit,
+        frames,
+        Some("frame chain reached the 8-frame capture limit".into()),
+    )
+}
+
+fn is_canonical_48_bit(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
+    (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
+}
+
+#[cfg(test)]
+thread_local! {
+    static MMU_GATHER_DIAGNOSTIC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MMU_GATHER_PAGE_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn capture_elf_mmu_gather_boundary(
+    instruction_rip: u64,
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cr3: u64,
+    observations: &mut LinuxExecutionObservationCollector,
+) {
+    if !observations.wants_mmu_gather_capture()
+        || !matches!(
+            instruction_rip,
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP
+                | LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP
+                | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+                | LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP
+        )
+    {
+        return;
+    }
+    use od_isa::Register::{R14, R15, Rbp, Rdi, Rsp};
+    let rbp = state.gpr[Rbp as usize];
+    let rsp = state.gpr[Rsp as usize];
+    let frame = read_mmu_gather_frame(bus, paging, instruction_rip, context, rbp);
+    let (saved_rbp, saved_return_rip, frame_error) = match frame {
+        Ok((saved_rbp, saved_return_rip)) => (Some(saved_rbp), Some(saved_return_rip), None),
+        Err(error) => (None, None, Some(error)),
+    };
+    let tlb_pointer = matches!(
+        instruction_rip,
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+    )
+    .then_some(state.gpr[Rdi as usize]);
+    let event_context = observations.mmu_gather_context(
+        instruction_rip,
+        cr3,
+        rbp,
+        rsp,
+        tlb_pointer,
+        saved_rbp,
+        saved_return_rip,
+    );
+    match instruction_rip {
+        LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP => {
+            let vma = state.gpr[R15 as usize];
+            let bounds = read_mmu_gather_vma_bounds(bus, paging, instruction_rip, context, vma);
+            let (vm_start, vm_end, vma_error) = match bounds {
+                Ok((start, end)) => (Some(start), Some(end), None),
+                Err(error) => (None, None, Some(error)),
+            };
+            let error = frame_error.or(vma_error);
+            let setup_index_and_candidates = observations.record_mmu_gather_setup(
+                event_context,
+                state.gpr[R14 as usize],
+                vma,
+                vm_start,
+                vm_end,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+            );
+            if let Some((setup_index, candidates)) = setup_index_and_candidates {
+                let page_walks = capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                );
+                observations.record_mmu_gather_setup_page_walks(setup_index, page_walks);
+            }
+        }
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP => {
+            let candidate_pages =
+                observations.mmu_gather_candidate_pages_for_relocate(event_context);
+            let page_walks = candidate_pages.map(|candidates| {
+                capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                )
+            });
+            let (raw, raw_error) = read_mmu_gather_raw(
+                bus,
+                paging,
+                instruction_rip,
+                context,
+                state.gpr[Rdi as usize],
+            );
+            let error = frame_error.or(raw_error);
+            observations.record_mmu_gather_relocate_with_walks(
+                event_context,
+                raw,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+                page_walks,
+            );
+        }
+        LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP => {
+            let (raw, raw_error) = read_mmu_gather_raw(
+                bus,
+                paging,
+                instruction_rip,
+                context,
+                state.gpr[Rdi as usize],
+            );
+            let error = frame_error.or(raw_error);
+            observations.record_mmu_gather_actual_post(
+                event_context,
+                raw,
+                if error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                error,
+            );
+        }
+        LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP => {
+            let candidate_pages = observations.mmu_gather_candidate_pages_for_return(event_context);
+            let page_walks = candidate_pages.map(|candidates| {
+                capture_mmu_gather_candidate_page_walks(
+                    candidates,
+                    bus,
+                    paging,
+                    instruction_rip,
+                    context,
+                )
+            });
+            observations.record_mmu_gather_return_with_walks(
+                event_context,
+                if frame_error.is_none() {
+                    "captured"
+                } else {
+                    "read_error"
+                },
+                frame_error,
+                page_walks,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn capture_mmu_gather_candidate_page_walks(
+    candidates: [Option<u64>; 2],
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+) -> [ElfMmuGatherPageWalk; 2] {
+    let cr0_wp = paging.cr0() & (1 << 16) != 0;
+    let efer_nxe = paging.efer() & (1 << 11) != 0;
+    candidates.map(|address| {
+        let Some(address) = address else {
+            return ElfMmuGatherPageWalk {
+                address: None,
+                access: "Write",
+                cpl: 0,
+                origin: "Explicit",
+                profile: "long64_4k_2m",
+                cr0_wp,
+                efer_nxe,
+                status: "invalid_address",
+                entries: Vec::new(),
+                terminal_level: None,
+                leaf_size: None,
+                translated_physical: None,
+                error: Some("candidate address derivation failed".into()),
+            };
+        };
+        if !is_canonical_48_bit(address) {
+            return ElfMmuGatherPageWalk {
+                address: Some(address),
+                access: "Write",
+                cpl: 0,
+                origin: "Explicit",
+                profile: "long64_4k_2m",
+                cr0_wp,
+                efer_nxe,
+                status: "invalid_address",
+                entries: Vec::new(),
+                terminal_level: None,
+                leaf_size: None,
+                translated_physical: None,
+                error: Some("candidate address is noncanonical".into()),
+            };
+        }
+        #[cfg(test)]
+        {
+            MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+            MMU_GATHER_PAGE_WALKS.with(|count| count.set(count.get() + 1));
+        }
+        let write_context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+            ..context
+        };
+        let (translation, trace) = {
+            let ram = bus.physical_memory();
+            translate_long64_2m_ram_read_only_with_trace(
+                ram,
+                paging,
+                instruction_rip,
+                GuestLinearAddress::new(address),
+                write_context,
+                AccessKind::Write,
+            )
+        };
+        let entries = trace
+            .entries()
+            .iter()
+            .flatten()
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>();
+        let terminal_level = match &translation {
+            Ok(_) => entries.last().map(|entry| entry.level),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent { level },
+                ..
+            }) => Some(*level),
+            Err(TrackedAccessError::TableRead { level, .. })
+            | Err(TrackedAccessError::UnsupportedPageSize { level, .. }) => Some(*level),
+            _ => entries.last().map(|entry| entry.level),
+        };
+        let leaf_size = entries.last().and_then(|entry| match entry.level {
+            PageTableLevel::Pd if entry.entry_value & (1 << 7) != 0 => Some(2 * 1024 * 1024),
+            PageTableLevel::Pt => Some(4096),
+            _ => None,
+        });
+        let (status, translated_physical, error) = match translation {
+            Ok((physical, _)) => ("translated", Some(physical.get()), None),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent { .. },
+                ..
+            }) => ("non_present", None, None),
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::Protection { .. },
+                ..
+            }) => ("protection", None, None),
+            Err(error) => ("read_error", None, Some(format!("{error:?}"))),
+        };
+        ElfMmuGatherPageWalk {
+            address: Some(address),
+            access: "Write",
+            cpl: 0,
+            origin: "Explicit",
+            profile: "long64_4k_2m",
+            cr0_wp,
+            efer_nxe,
+            status,
+            entries,
+            terminal_level,
+            leaf_size: if matches!(status, "translated" | "protection") {
+                leaf_size
+            } else {
+                None
+            },
+            translated_physical,
+            error,
+        }
+    })
+}
+
+fn read_mmu_gather_frame(
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    rbp: u64,
+) -> Result<(u64, u64), String> {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if rbp == 0 || (rbp & 7) != 0 || !is_canonical_48_bit(rbp) {
+        return Err(format!("invalid RBP frame pointer 0x{rbp:016x}"));
+    }
+    rbp.checked_add(15)
+        .ok_or_else(|| "RBP frame address overflow".to_string())?;
+    let mut bytes = [0u8; 16];
+    bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(rbp),
+        context,
+        &mut bytes,
+    )
+    .map_err(|error| format!("RBP frame read: {error:?}"))?;
+    Ok((
+        u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice")),
+        u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice")),
+    ))
+}
+
+fn read_mmu_gather_vma_bounds(
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    vma: u64,
+) -> Result<(u64, u64), String> {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if (vma & 7) != 0 || !is_canonical_48_bit(vma) {
+        return Err(format!("invalid VMA pointer 0x{vma:016x}"));
+    }
+    vma.checked_add(15)
+        .ok_or_else(|| "VMA bounds address overflow".to_string())?;
+    let mut bytes = [0u8; 16];
+    bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(vma),
+        context,
+        &mut bytes,
+    )
+    .map_err(|error| format!("VMA bounds read: {error:?}"))?;
+    Ok((
+        u64::from_le_bytes(bytes[..8].try_into().expect("8-byte slice")),
+        u64::from_le_bytes(bytes[8..].try_into().expect("8-byte slice")),
+    ))
+}
+
+fn read_mmu_gather_raw(
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    tlb: u64,
+) -> (Option<ElfMmuGatherRaw>, Option<String>) {
+    #[cfg(test)]
+    MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(count.get() + 1));
+    if (tlb & 7) != 0 || !is_canonical_48_bit(tlb) {
+        return (None, Some(format!("invalid tlb pointer 0x{tlb:016x}")));
+    }
+    let Some(last) = tlb.checked_add(0x23) else {
+        return (None, Some("tlb field address overflow".into()));
+    };
+    let mut bytes = [0u8; 0x24];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(tlb),
+        context,
+        &mut bytes,
+    ) {
+        return (
+            None,
+            Some(format!("tlb fields read through 0x{last:016x}: {error:?}")),
+        );
+    }
+    let mm = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte slice"));
+    if (mm & 7) != 0 || !is_canonical_48_bit(mm) {
+        return (None, Some(format!("invalid mm pointer 0x{mm:016x}")));
+    }
+    let Some(nested_address) = mm.checked_add(0x61c) else {
+        return (None, Some("mm_tlb_flush_nested address overflow".into()));
+    };
+    if nested_address.checked_add(3).is_none() {
+        return (None, Some("mm_tlb_flush_nested field overflow".into()));
+    }
+    let mut nested_bytes = [0u8; 4];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        instruction_rip,
+        GuestLinearAddress::new(nested_address),
+        context,
+        &mut nested_bytes,
+    ) {
+        return (None, Some(format!("mm_tlb_flush_nested read: {error:?}")));
+    }
+    (
+        Some(ElfMmuGatherRaw {
+            tlb,
+            mm,
+            start: u64::from_le_bytes(bytes[0x10..0x18].try_into().expect("8-byte slice")),
+            end: u64::from_le_bytes(bytes[0x18..0x20].try_into().expect("8-byte slice")),
+            flags: u32::from_le_bytes(bytes[0x20..0x24].try_into().expect("4-byte slice")),
+            mm_tlb_flush_nested: i32::from_le_bytes(nested_bytes),
+        }),
+        None,
+    )
+}
+
+fn capture_elf_stack_copy_snapshot(
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cr3: u64,
+) -> ElfStackCopySnapshot {
+    use od_isa::Register::{R13, R15, Rbp, Rdi, Rdx, Rsi, Rsp};
+
+    let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::GateMismatch);
+    let r15 = state.gpr[R15 as usize];
+    let r13 = state.gpr[R13 as usize];
+    let rdi = state.gpr[Rdi as usize];
+    let rsi = state.gpr[Rsi as usize];
+    let rdx = state.gpr[Rdx as usize];
+    let cpl = state.cs_selector.map(|selector| (selector & 3) as u8);
+    snapshot.rip = Some(state.rip);
+    snapshot.cr3 = Some(cr3);
+    snapshot.cs_selector = state.cs_selector;
+    snapshot.cpl = cpl;
+    snapshot.r15 = Some(r15);
+    snapshot.rbp = Some(state.gpr[Rbp as usize]);
+    snapshot.rsp = Some(state.gpr[Rsp as usize]);
+    snapshot.r13 = Some(r13);
+    snapshot.rdi = Some(rdi);
+    snapshot.rsi = Some(rsi);
+    snapshot.rdx = Some(rdx);
+    snapshot.aligned_stack_pointer = Some(r13);
+    snapshot.copy_destination = Some(rdi);
+    snapshot.copy_length = Some(rdx);
+
+    let mut instruction_bytes = [0u8; 5];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(state.rip),
+        context,
+        &mut instruction_bytes,
+    ) {
+        snapshot.status = ElfStackCopyStatus::ReadError;
+        snapshot.error = Some(format!("instruction bytes: {error:?}"));
+        return snapshot;
+    }
+    snapshot.instruction_bytes = Some(instruction_bytes.to_vec());
+
+    if instruction_bytes != [0xe8, 0x47, 0xd9, 0x34, 0x00] {
+        snapshot
+            .mismatch_reasons
+            .push("instruction_bytes_mismatch".into());
+        return snapshot;
+    }
+    snapshot.return_rip = state.rip.checked_add(instruction_bytes.len() as u64);
+
+    let bprm_p_address = match r15.checked_add(0x20) {
+        Some(address) => address,
+        None => {
+            snapshot.status = ElfStackCopyStatus::ReadError;
+            snapshot.error = Some("R15 + 0x20 overflows".to_string());
+            return snapshot;
+        }
+    };
+    snapshot.bprm_p_address = Some(bprm_p_address);
+    let mut pointer_bytes = [0u8; 8];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(bprm_p_address),
+        context,
+        &mut pointer_bytes,
+    ) {
+        snapshot.status = ElfStackCopyStatus::ReadError;
+        snapshot.error = Some(format!("bprm_p read: {error:?}"));
+        return snapshot;
+    }
+    let bprm_p = u64::from_le_bytes(pointer_bytes);
+    snapshot.bprm_p = Some(bprm_p);
+
+    let expected_destination = r13.checked_sub(7);
+    if cpl != Some(0) {
+        snapshot.mismatch_reasons.push("cpl_not_zero".into());
+    }
+    if rdx != 7 {
+        snapshot.mismatch_reasons.push("rdx_not_7".into());
+    }
+    if rsi != 0xffff_ffff_82fd_eb8f {
+        snapshot.mismatch_reasons.push("rsi_mismatch".into());
+    }
+    if r13 & 0xf != 0 {
+        snapshot
+            .mismatch_reasons
+            .push("r13_not_16_byte_aligned".into());
+    }
+    if expected_destination != Some(rdi) {
+        snapshot.mismatch_reasons.push("rdi_not_r13_minus_7".into());
+    }
+    if bprm_p < r13 || bprm_p - r13 > 8206 {
+        snapshot
+            .mismatch_reasons
+            .push("bprm_p_outside_stack_window".into());
+    }
+    if !snapshot.mismatch_reasons.is_empty() {
+        return snapshot;
+    }
+
+    let mut platform_string = [0u8; 7];
+    if let Err(error) = bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(rsi),
+        context,
+        &mut platform_string,
+    ) {
+        snapshot.status = ElfStackCopyStatus::ReadError;
+        snapshot.error = Some(format!("platform string read: {error:?}"));
+        return snapshot;
+    }
+    snapshot.platform_string_matches = Some(platform_string == *b"x86_64\0");
+    if snapshot.platform_string_matches != Some(true) {
+        snapshot
+            .mismatch_reasons
+            .push("platform_string_mismatch".into());
+        snapshot.status = ElfStackCopyStatus::GateMismatch;
+        return snapshot;
+    }
+
+    let probes = [
+        ("stack_input", bprm_p, AccessKind::Read),
+        ("copy_source", rsi, AccessKind::Read),
+        ("copy_destination", rdi, AccessKind::Write),
+    ];
+    for (name, address, access) in probes {
+        if snapshot.probes.len() == LINUX_ELF_STACK_COPY_PROBE_CAPACITY {
+            break;
+        }
+        let (translation, trace) = {
+            let ram = bus.physical_memory();
+            translate_long64_2m_ram_read_only_with_trace(
+                ram,
+                paging,
+                state.rip,
+                GuestLinearAddress::new(address),
+                context,
+                access,
+            )
+        };
+        let entries = trace
+            .entries()
+            .iter()
+            .flatten()
+            .take(LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY)
+            .copied()
+            .collect();
+        let (outcome, translated_physical, error) = match translation {
+            Ok((physical, _)) => ("translated", Some(physical.get()), None),
+            Err(TrackedAccessError::PageFault { record, reason }) => (
+                "page_fault",
+                None,
+                Some(format!("record={record:?}; reason={reason:?}")),
+            ),
+            Err(error) => ("error", None, Some(format!("{error:?}"))),
+        };
+        snapshot.probes.push(ElfStackCopyProbe {
+            name: name.to_string(),
+            address,
+            page_base: address & !0xfff,
+            access: if access == AccessKind::Write {
+                "Write"
+            } else {
+                "Read"
+            }
+            .into(),
+            cpl: cpl.unwrap_or(0),
+            entries,
+            outcome: outcome.into(),
+            translated_physical,
+            error,
+        });
+    }
+    snapshot.status = ElfStackCopyStatus::Captured;
+    snapshot
+}
+
+fn capture_elf_stack_alignment_point(
+    state: &LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cr3: u64,
+    before_call: bool,
+) -> ElfStackAlignmentPoint {
+    use od_isa::Register::{R15, Rax, Rbp, Rdi, Rsp};
+
+    let mut bytes = [0u8; 5];
+    let (instruction_bytes, error) = match bus.read_virtual_ram_diagnostic(
+        paging,
+        state.rip,
+        GuestLinearAddress::new(state.rip),
+        context,
+        &mut bytes,
+    ) {
+        Ok(()) => (Some(bytes.to_vec()), None),
+        Err(error) => (None, Some(format!("instruction bytes: {error:?}"))),
+    };
+    ElfStackAlignmentPoint {
+        rip: state.rip,
+        retired_instructions_before_current: 0,
+        cr3,
+        cs_selector: state.cs_selector,
+        cpl: state.cs_selector.map(|selector| (selector & 3) as u8),
+        r15: state.gpr[R15 as usize],
+        rbp: state.gpr[Rbp as usize],
+        rsp: state.gpr[Rsp as usize],
+        pointer: state.gpr[(if before_call { Rdi } else { Rax }) as usize],
+        instruction_bytes,
+        error,
+    }
+}
+
 /// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
 /// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
 /// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
@@ -1543,6 +2452,12 @@ pub(crate) enum LoopBus<'a> {
 }
 
 impl LoopBus<'_> {
+    fn machine(&self) -> &MachineBus {
+        match self {
+            Self::Exclusive(bus) => bus,
+            Self::Shared(bus) => bus,
+        }
+    }
     fn ram(&self) -> &crate::PhysicalMemory {
         match self {
             Self::Exclusive(bus) => bus.physical_memory(),
@@ -1572,6 +2487,117 @@ impl LoopBus<'_> {
 /// (`split_gate`, S6-34 step 8; `None` keeps the refusal of S6-31/S6-32).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_loop(
+    state: &mut LongModeState,
+    mut bus: LoopBus<'_>,
+    split_gate: Option<&dyn crate::bus::SplitLockGate>,
+    vcpu: usize,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    cache: Option<&FetchTranslationCache>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    let trace = execution_observations
+        .as_deref()
+        .is_some_and(LinuxExecutionObservationCollector::wants_instruction_path_trace);
+    let elf = execution_observations
+        .as_deref()
+        .is_some_and(LinuxExecutionObservationCollector::needs_elf_stack_copy_path);
+    match (trace, elf) {
+        (true, true) => run_cpl0_set_loop_impl::<true, true>(
+            state,
+            bus,
+            split_gate,
+            vcpu,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        ),
+        (true, false) => run_cpl0_set_loop_impl::<true, false>(
+            state,
+            bus,
+            split_gate,
+            vcpu,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        ),
+        (false, true) => run_cpl0_set_loop_impl::<false, true>(
+            state,
+            bus,
+            split_gate,
+            vcpu,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        ),
+        (false, false) => run_cpl0_set_loop_impl::<false, false>(
+            state,
+            bus,
+            split_gate,
+            vcpu,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: bool>(
     state: &mut LongModeState,
     mut bus: LoopBus<'_>,
     split_gate: Option<&dyn crate::bus::SplitLockGate>,
@@ -1759,8 +2785,70 @@ pub(crate) fn run_cpl0_set_loop(
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
-        if execution_observations.is_some() {
+        let mut trace_before = None;
+        if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
+            if ELF_COPY_ENABLED {
+                if instruction_rip == LINUX_ELF_STACK_ALIGN_BEFORE_RIP
+                    || instruction_rip == LINUX_ELF_STACK_ALIGN_AFTER_RIP
+                {
+                    let before_call = instruction_rip == LINUX_ELF_STACK_ALIGN_BEFORE_RIP;
+                    let point = capture_elf_stack_alignment_point(
+                        state,
+                        bus.machine(),
+                        &paging,
+                        context,
+                        reported_cr3,
+                        before_call,
+                    );
+                    observations.record_elf_stack_alignment_point(point, before_call);
+                }
+                capture_elf_mmu_gather_boundary(
+                    instruction_rip,
+                    state,
+                    bus.machine(),
+                    &paging,
+                    context,
+                    reported_cr3,
+                    observations,
+                );
+                observations.observe_elf_stack_copy_boundary(instruction_rip);
+                if observations.elf_copy_invocation_active()
+                    && observations.elf_copy_return_rip() == Some(instruction_rip)
+                {
+                    observations.finish_elf_copy_invocation(instruction_rip, reported_cr3);
+                }
+                if instruction_rip == LINUX_ELF_STACK_COPY_RIP
+                    && observations.wants_elf_stack_copy()
+                {
+                    let snapshot = capture_elf_stack_copy_snapshot(
+                        state,
+                        bus.machine(),
+                        &paging,
+                        context,
+                        reported_cr3,
+                    );
+                    observations.record_elf_stack_copy(snapshot);
+                }
+            }
+            if TRACE_ENABLED {
+                if observations.needs_instruction_path_header() {
+                    let (frame_chain, frame_chain_end) = capture_instruction_path_frame_chain(
+                        state,
+                        bus.machine(),
+                        &paging,
+                        context,
+                    );
+                    observations.begin_instruction_path_header(state, frame_chain, frame_chain_end);
+                }
+                trace_before = Some(instruction_path_before(
+                    instruction_rip,
+                    state,
+                    bus.machine(),
+                    &paging,
+                    context,
+                ));
+            }
         }
         // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
         // frame came back through `IRETQ`) is cleared once the instruction retires, except
@@ -1865,6 +2953,13 @@ pub(crate) fn run_cpl0_set_loop(
                 }
             }
             if done.instructions_executed > 0 {
+                if let Some(before) = trace_before
+                    && let Some(observations) = execution_observations.as_deref_mut()
+                {
+                    observations.record_instruction_path_retirement(
+                        finish_instruction_path_record(before, state),
+                    );
+                }
                 deliveries_without_retirement = 0;
                 if clear_resume_flag {
                     state.rflags &= !RFLAGS_RF;
@@ -2005,6 +3100,12 @@ pub(crate) fn run_cpl0_set_loop(
                     None => {
                         delivered_exceptions += 1;
                         delivered_general_protection_faults += 1;
+                        if ELF_COPY_ENABLED
+                            && let Some(observations) = execution_observations.as_deref_mut()
+                            && observations.tracks_elf_copy_counters()
+                        {
+                            observations.record_elf_copy_general_protection();
+                        }
                         if pending_post_iret.is_some()
                             && let Some(observations) = execution_observations.as_deref_mut()
                         {
@@ -2055,6 +3156,69 @@ pub(crate) fn run_cpl0_set_loop(
                     syscall_events.pop_front();
                 }
                 syscall_events.push_back(event);
+            }
+        }
+        if ELF_COPY_ENABLED
+            && let Some(observations) = execution_observations.as_deref_mut()
+            && observations.tracks_elf_copy_counters()
+        {
+            observations.record_elf_copy_retired(result.instructions_executed);
+            if let Cpl0ProfileSetExit::TranslationContextChange(
+                TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
+            ) = &result.exit
+            {
+                let target_capture =
+                    if observations.wants_elf_copy_target_cr3_event(instruction_rip) {
+                        let rsp = state.gpr[od_isa::Register::Rsp as usize];
+                        let rbp = state.gpr[od_isa::Register::Rbp as usize];
+                        let chain_paging = Long64ProbeConfig::from_cpu_state(state, *new_cr3, efer);
+                        let (chain_status, frames, error) = match chain_paging {
+                            Ok(chain_paging) => capture_elf_stack_copy_target_rbp_chain(
+                                state,
+                                bus.machine(),
+                                &chain_paging,
+                                instruction_rip,
+                                context,
+                            ),
+                            Err(error) => (
+                                ElfStackCopyTargetCr3ChainStatus::Unreadable,
+                                Vec::new(),
+                                Some(format!(
+                                    "post-write paging configuration rejected: {error:?}"
+                                )),
+                            ),
+                        };
+                        Some(ElfStackCopyTargetCr3Capture {
+                            status: "captured",
+                            sequence: None,
+                            rip: Some(instruction_rip),
+                            cr3: Some(*new_cr3),
+                            retired_instructions: None,
+                            rsp: Some(rsp),
+                            rbp: Some(rbp),
+                            chain_status: Some(chain_status),
+                            frames,
+                            error,
+                        })
+                    } else {
+                        None
+                    };
+                if let Some(target_capture) = target_capture {
+                    observations.record_elf_copy_cr3_with_target(
+                        instruction_rip,
+                        *old_cr3,
+                        *new_cr3,
+                        if cpl3 { 3 } else { 0 },
+                        Some(target_capture),
+                    );
+                } else {
+                    observations.record_elf_copy_cr3(
+                        instruction_rip,
+                        *old_cr3,
+                        *new_cr3,
+                        if cpl3 { 3 } else { 0 },
+                    );
+                }
             }
         }
         instructions_executed += result.instructions_executed;
@@ -2410,6 +3574,9 @@ fn deliver_pending_irq(
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
             hook.counters.irqs_delivered += 1;
+            if let Some(delivered) = hook.delivered_mirror {
+                delivered.set(delivered.get().saturating_add(1));
+            }
             return IrqBoundaryOutcome::Delivered;
         }
         Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::InterruptsMasked) => {
@@ -4047,8 +5214,9 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
 mod tests {
     use super::*;
     use crate::{
-        AccessWidth, GuestPhysicalAddress, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec,
-        RamLimits,
+        AccessWidth, GuestPhysicalAddress, LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY,
+        LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP, MachineMemoryMap, MemoryRegionKind,
+        MemoryRegionSpec, RamLimits,
     };
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
     use od_isa::{CpuActivity, InvlpgExit, StiShadow, TranslationInvalidation};
@@ -4098,6 +5266,105 @@ mod tests {
         put(&mut bus, 0x4000, 0x7007);
         put(&mut bus, 0x5000, data_pte);
         bus
+    }
+
+    const ELF_COPY_R13: u64 = 0xffff_ffff_83ff_0000;
+    const ELF_COPY_RSI: u64 = 0xffff_ffff_82fd_eb8f;
+
+    fn elf_copy_bus(
+        map_destination: bool,
+        map_stack_input: bool,
+    ) -> (MachineBus, Long64ProbeConfig) {
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_LEN), vec![], vec![], vec![]).unwrap();
+        let mut tables = std::collections::BTreeMap::<Vec<u16>, u64>::new();
+        tables.insert(Vec::new(), ROOT);
+        let mut next_table = 0x2000;
+        let mut map_page = |bus: &mut MachineBus, address: u64, frame: u64, present: bool| {
+            let indices = [
+                ((address >> 39) & 0x1ff) as u16,
+                ((address >> 30) & 0x1ff) as u16,
+                ((address >> 21) & 0x1ff) as u16,
+                ((address >> 12) & 0x1ff) as u16,
+            ];
+            let mut prefix = Vec::new();
+            for level in 0..3 {
+                let table = *tables.get(&prefix).unwrap();
+                prefix.push(indices[level]);
+                let child = *tables.entry(prefix.clone()).or_insert_with(|| {
+                    let child = next_table;
+                    next_table += 0x1000;
+                    child
+                });
+                put(bus, table + u64::from(indices[level]) * 8, child | 7);
+            }
+            let table = *tables.get(&prefix).unwrap();
+            put(
+                bus,
+                table + u64::from(indices[3]) * 8,
+                if present { frame | 7 } else { 0 },
+            );
+        };
+        map_page(&mut bus, LINUX_ELF_STACK_COPY_RIP, 0x10_000, true);
+        map_page(&mut bus, ELF_COPY_RSI, 0x11_000, true);
+        for (offset, byte) in b"x86_64\0".iter().copied().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(0x11_000 + (ELF_COPY_RSI & 0xfff) + offset as u64),
+                AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+        map_page(&mut bus, ELF_COPY_R13, 0x12_000, true);
+        if map_destination {
+            map_page(&mut bus, ELF_COPY_R13 - 7, 0x13_000, true);
+        }
+        if !map_stack_input {
+            let indices = [
+                ((ELF_COPY_R13 >> 39) & 0x1ff) as u16,
+                ((ELF_COPY_R13 >> 30) & 0x1ff) as u16,
+                ((ELF_COPY_R13 >> 21) & 0x1ff) as u16,
+                ((ELF_COPY_R13 >> 12) & 0x1ff) as u16,
+            ];
+            let mut prefix = Vec::new();
+            for index in indices {
+                prefix.push(index);
+            }
+            let table = *tables.get(&prefix[..3]).unwrap();
+            put(&mut bus, table + u64::from(indices[3]) * 8, 0);
+        }
+        let instruction_physical = 0x10_000 + (LINUX_ELF_STACK_COPY_RIP & 0xfff);
+        for (offset, byte) in [0xe8u8, 0x47, 0xd9, 0x34, 0x00].into_iter().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(instruction_physical + offset as u64),
+                AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+        let stack_input_physical = 0x12_000 + 0x60;
+        put(&mut bus, stack_input_physical, ELF_COPY_R13 + 0x100);
+        (bus, Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap())
+    }
+
+    fn elf_copy_state(rdx: u64) -> LongModeState {
+        let mut state = LongModeState::default();
+        state.rip = LINUX_ELF_STACK_COPY_RIP;
+        state.cs_selector = Some(0x8);
+        state.gpr[od_isa::Register::R15 as usize] = ELF_COPY_R13 + 0x40;
+        state.gpr[od_isa::Register::R13 as usize] = ELF_COPY_R13;
+        state.gpr[od_isa::Register::Rdi as usize] = ELF_COPY_R13 - 7;
+        state.gpr[od_isa::Register::Rsi as usize] = ELF_COPY_RSI;
+        state.gpr[od_isa::Register::Rdx as usize] = rdx;
+        state
     }
 
     fn adapter<'a>(
@@ -4153,6 +5420,239 @@ mod tests {
             fault_rsp: 0x7000,
             fault_cs: Some(if cpl == 3 { 0x23 } else { 0x08 }),
         }
+    }
+
+    fn capture_elf_copy(
+        state: &LongModeState,
+        bus: &mut MachineBus,
+        paging: &Long64ProbeConfig,
+    ) -> ElfStackCopySnapshot {
+        capture_elf_stack_copy_snapshot(state, bus, paging, context(), ROOT)
+    }
+
+    fn put_elf_copy_frame(bus: &mut MachineBus, rbp: u64, saved_rbp: u64, return_address: u64) {
+        let physical = 0x12_000 + (rbp & 0xfff);
+        put(bus, physical, saved_rbp);
+        put(bus, physical + 8, return_address);
+    }
+
+    fn elf_copy_page_table_snapshot(bus: &mut MachineBus) -> Vec<u64> {
+        (0x1000..0x10_000)
+            .step_by(8)
+            .map(|address| {
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selected_cr3_rbp_chain_reader_reports_all_terminal_states_without_writes() {
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let first_rbp = ELF_COPY_R13 + 0x200;
+        let second_rbp = ELF_COPY_R13 + 0x300;
+        let return_address = 0xffff_ffff_8100_1234;
+        put_elf_copy_frame(&mut bus, first_rbp, second_rbp, return_address);
+        put_elf_copy_frame(&mut bus, second_rbp, 0, return_address + 0x10);
+        let before = elf_copy_page_table_snapshot(&mut bus);
+        let mut state = LongModeState::default();
+        state.rip = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP;
+        state.gpr[od_isa::Register::Rbp as usize] = first_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Complete);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].saved_rbp_slot, first_rbp);
+        assert_eq!(frames[0].saved_rbp, second_rbp);
+        assert_eq!(frames[0].return_address_slot, first_rbp + 8);
+        assert_eq!(frames[0].return_address, return_address);
+        assert_eq!(frames[1].saved_rbp, 0);
+        assert_eq!(error, None);
+        assert_eq!(elf_copy_page_table_snapshot(&mut bus), before);
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let mut state = LongModeState::default();
+        state.rip = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Complete);
+        assert!(frames.is_empty());
+        assert_eq!(error, None);
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        state.gpr[od_isa::Register::Rbp as usize] = 0xffff_8880_0000_0000;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Unreadable);
+        assert!(frames.is_empty());
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let malformed_rbp = ELF_COPY_R13 + 0x200;
+        put_elf_copy_frame(&mut bus, malformed_rbp, malformed_rbp, return_address);
+        state.gpr[od_isa::Register::Rbp as usize] = malformed_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert_eq!(frames.len(), 1);
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        state.gpr[od_isa::Register::Rbp as usize] = 0xffff_ffff_ffff_fff8;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert!(frames.is_empty());
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let prefix_rbp = ELF_COPY_R13 + 0x200;
+        put_elf_copy_frame(&mut bus, prefix_rbp, 0xffff_ffff_ffff_fff8, return_address);
+        state.gpr[od_isa::Register::Rbp as usize] = prefix_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::Malformed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].saved_rbp, 0xffff_ffff_ffff_fff8);
+        assert!(error.is_some());
+
+        let (mut bus, paging) = elf_copy_bus(true, true);
+        let initial_rbp = ELF_COPY_R13 + 0x100;
+        for index in 0..LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY {
+            let rbp = initial_rbp + index as u64 * 0x10;
+            put_elf_copy_frame(&mut bus, rbp, rbp + 0x10, return_address);
+        }
+        state.gpr[od_isa::Register::Rbp as usize] = initial_rbp;
+        let (status, frames, error) = capture_elf_stack_copy_target_rbp_chain(
+            &state,
+            &mut bus,
+            &paging,
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            context(),
+        );
+        assert_eq!(status, ElfStackCopyTargetCr3ChainStatus::FrameLimit);
+        assert_eq!(frames.len(), LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY);
+        assert_ne!(frames.last().unwrap().saved_rbp, 0);
+        assert!(error.is_some());
+    }
+
+    #[test]
+    fn elf_stack_copy_records_present_and_absent_destination_leaf_as_probe_data() {
+        for (present, expected) in [(true, "translated"), (false, "page_fault")] {
+            let (mut bus, paging) = elf_copy_bus(present, true);
+            let snapshot = capture_elf_copy(&elf_copy_state(7), &mut bus, &paging);
+            assert_eq!(snapshot.status, ElfStackCopyStatus::Captured);
+            assert_eq!(snapshot.probes.len(), 3);
+            assert_eq!(snapshot.probes[0].name, "stack_input");
+            assert_eq!(snapshot.probes[1].name, "copy_source");
+            assert_eq!(snapshot.probes[2].name, "copy_destination");
+            assert_eq!(snapshot.probes[2].outcome, expected);
+            assert_eq!(snapshot.probes[2].access, "Write");
+            if !present {
+                assert!(snapshot.probes[2].error.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn elf_stack_copy_bprm_pointer_read_error_is_partial_and_diagnostic() {
+        let (mut bus, paging) = elf_copy_bus(false, false);
+        let snapshot = capture_elf_copy(&elf_copy_state(7), &mut bus, &paging);
+        assert_eq!(snapshot.status, ElfStackCopyStatus::ReadError);
+        assert_eq!(snapshot.rip, Some(LINUX_ELF_STACK_COPY_RIP));
+        assert_eq!(snapshot.r15, Some(ELF_COPY_R13 + 0x40));
+        assert_eq!(snapshot.bprm_p_address, Some(ELF_COPY_R13 + 0x60));
+        assert!(
+            snapshot
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("bprm_p read:")
+        );
+        assert!(snapshot.probes.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_copy_guard_mismatch_does_not_probe_guest_memory() {
+        let (mut bus, paging) = elf_copy_bus(false, true);
+        let snapshot = capture_elf_copy(&elf_copy_state(8), &mut bus, &paging);
+        assert_eq!(snapshot.status, ElfStackCopyStatus::GateMismatch);
+        assert_eq!(snapshot.mismatch_reasons, ["rdx_not_7"]);
+        assert!(snapshot.probes.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_copy_requires_an_observed_cpl_selector() {
+        let (mut bus, paging) = elf_copy_bus(false, true);
+        let mut state = elf_copy_state(7);
+        state.cs_selector = None;
+        let snapshot = capture_elf_copy(&state, &mut bus, &paging);
+        assert_eq!(snapshot.status, ElfStackCopyStatus::GateMismatch);
+        assert_eq!(snapshot.cpl, None);
+        assert!(
+            snapshot
+                .mismatch_reasons
+                .contains(&"cpl_not_zero".to_string())
+        );
+        assert!(snapshot.probes.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_copy_read_only_probe_preserves_state_and_page_table_bytes() {
+        let (mut bus, paging) = elf_copy_bus(false, true);
+        let state = elf_copy_state(7);
+        let state_before = state.clone();
+        let table_words_before = (ROOT..0x10_000)
+            .step_by(8)
+            .map(|address| {
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let snapshot = capture_elf_copy(&state, &mut bus, &paging);
+        let table_words_after = (ROOT..0x10_000)
+            .step_by(8)
+            .map(|address| {
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(snapshot.status, ElfStackCopyStatus::Captured);
+        assert_eq!(state, state_before);
+        assert_eq!(
+            table_words_after, table_words_before,
+            "walk changed table/A-D bytes"
+        );
     }
 
     #[test]
@@ -5886,6 +7386,365 @@ mod tests {
             (pair.cpus[0].local.tpr, pair.cpus[1].local.tpr),
             (0x40, 0x30)
         );
+    }
+
+    #[test]
+    fn mmu_gather_diagnostic_capture_reads_raw_fields_without_page_table_writes() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3000, 0x4007);
+        put(&mut bus, 0x4028, 0x9007);
+        put(&mut bus, 0x4030, 0xa007);
+        let mut tlb = [0u8; 0x24];
+        tlb[0..8].copy_from_slice(&0x6000u64.to_le_bytes());
+        tlb[0x10..0x18].copy_from_slice(&0x1111u64.to_le_bytes());
+        tlb[0x18..0x20].copy_from_slice(&0x2222u64.to_le_bytes());
+        tlb[0x20..0x24].copy_from_slice(&0x800u32.to_le_bytes());
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x9000), &tlb)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0xa61c), &(-7i32).to_le_bytes())
+            .unwrap();
+        let page_table_addresses = [0x1000, 0x2000, 0x3000, 0x4028, 0x4030];
+        let before = page_table_addresses.map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let (raw, error) = read_mmu_gather_raw(
+            &mut bus,
+            &paging,
+            LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+            context(),
+            0x5000,
+        );
+        assert_eq!(error, None);
+        let raw = raw.unwrap();
+        assert_eq!(
+            (raw.mm, raw.start, raw.end, raw.flags),
+            (0x6000, 0x1111, 0x2222, 0x800)
+        );
+        assert_eq!(raw.mm_tlb_flush_nested, -7);
+        let after = page_table_addresses.map(|address| {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        });
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn mmu_gather_walks_two_fixed_candidate_pages_at_setup_initial_and_return_only() {
+        use od_isa::Register::{R14, R15, Rbp, Rdi, Rsp};
+
+        let (mut machine_bus, paging) = elf_copy_bus(true, true);
+        let setup_rbp = ELF_COPY_R13 + 0x100;
+        let relocate_rbp = ELF_COPY_R13 + 0x180;
+        let actual_post_rbp = ELF_COPY_R13 + 0x240;
+        let tlb = ELF_COPY_R13 + 0x200;
+        let mm = ELF_COPY_R13 + 0x400;
+        let mut setup_bytes = [0u8; 16];
+        setup_bytes[..8].copy_from_slice(&(ELF_COPY_R13 + 0x300).to_le_bytes());
+        setup_bytes[8..].copy_from_slice(&0xffff_ffff_818f_24e5u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12100), &setup_bytes)
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12000), &[0u8; 0x1000])
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(0x12000),
+                &(ELF_COPY_R13 + 0x1000).to_le_bytes(),
+            )
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(
+                GuestPhysicalAddress::new(0x12008),
+                &(ELF_COPY_R13 + 0x2000).to_le_bytes(),
+            )
+            .unwrap();
+        let mut relocate_frame = [0u8; 16];
+        relocate_frame[..8].copy_from_slice(&setup_rbp.to_le_bytes());
+        relocate_frame[8..].copy_from_slice(&0xffff_ffff_818f_24e5u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12180), &relocate_frame)
+            .unwrap();
+        let mut actual_post_frame = [0u8; 16];
+        actual_post_frame[..8].copy_from_slice(&relocate_rbp.to_le_bytes());
+        actual_post_frame[8..].copy_from_slice(&0xffff_ffff_8182_bfe0u64.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12240), &actual_post_frame)
+            .unwrap();
+        let mut tlb_bytes = [0u8; 0x24];
+        tlb_bytes[..8].copy_from_slice(&mm.to_le_bytes());
+        tlb_bytes[0x10..0x18].copy_from_slice(&0xffff_ffff_83fe_f000u64.to_le_bytes());
+        tlb_bytes[0x18..0x20].copy_from_slice(&0xffff_ffff_83ff_1000u64.to_le_bytes());
+        tlb_bytes[0x20..0x24].copy_from_slice(&0x800u32.to_le_bytes());
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12200), &tlb_bytes)
+            .unwrap();
+        machine_bus
+            .patch_physical_ram(GuestPhysicalAddress::new(0x12a1c), &(-1i32).to_le_bytes())
+            .unwrap();
+
+        let ram_before = (0..RAM_LEN)
+            .step_by(8)
+            .map(|address| {
+                machine_bus
+                    .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut state = LongModeState::default();
+        state.gpr[R14 as usize] = 0x1000;
+        state.gpr[R15 as usize] = ELF_COPY_R13;
+        state.gpr[Rbp as usize] = setup_rbp;
+        state.gpr[Rsp as usize] = ELF_COPY_R13 + 0x800;
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP;
+        let before_setup = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_setup);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert!(matches!(
+            &setup.setup,
+            crate::ElfMmuGatherPhase::Captured { value, .. }
+                if value.relocated_start == Some(ELF_COPY_R13)
+                    && value.aligned_start == Some(ELF_COPY_R13)
+                    && value.candidate_pages == [Some(ELF_COPY_R13 - 0x1000), Some(ELF_COPY_R13)]
+        ));
+        assert_eq!(
+            setup
+                .setup_page_walks
+                .iter()
+                .map(|walk| walk.status)
+                .collect::<Vec<_>>(),
+            vec!["translated", "translated"]
+        );
+
+        state.gpr[Rbp as usize] = relocate_rbp;
+        state.gpr[Rdi as usize] = tlb;
+        state.gpr[Rsp as usize] = ELF_COPY_R13 + 0x7f0;
+        state.rip = LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP;
+        let before_initial = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_initial);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert_eq!(
+            setup
+                .initial_page_walks
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|walk| walk.address)
+                .collect::<Vec<_>>(),
+            vec![Some(ELF_COPY_R13 - 0x1000), Some(ELF_COPY_R13)]
+        );
+
+        let page_walks_before_actual = MMU_GATHER_PAGE_WALKS.with(std::cell::Cell::get);
+        state.gpr[Rbp as usize] = actual_post_rbp;
+        state.gpr[Rdi as usize] = tlb;
+        state.rip = LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP;
+        let before_actual_post = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_actual_post);
+        assert_eq!(
+            MMU_GATHER_PAGE_WALKS.with(std::cell::Cell::get),
+            page_walks_before_actual,
+            "actual_post captures gather fields without candidate page walks"
+        );
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert!(matches!(
+            setup.actual_post,
+            crate::ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(setup.initial_page_walks.is_some());
+        assert!(setup.return_page_walks.is_none());
+        state.rip = LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP;
+        state.gpr[Rbp as usize] = relocate_rbp;
+        let before_return = state.clone();
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(state, before_return);
+        let setup = &observations.mmu_gather_capture_for_test().setups[0];
+        assert_eq!(
+            setup
+                .return_page_walks
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|walk| walk.status)
+                .collect::<Vec<_>>(),
+            vec!["translated", "translated"]
+        );
+        assert!(matches!(
+            setup.actual_post,
+            crate::ElfMmuGatherPhase::Captured { .. }
+        ));
+
+        let mut copy_snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        copy_snapshot.copy_destination = Some(ELF_COPY_R13 - 7);
+        observations.record_elf_stack_copy(copy_snapshot);
+        let capture = observations
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .pre_copy_cr3_ledger
+            .unwrap()
+            .mmu_gather;
+        assert_eq!(capture.copy_destination, Some(ELF_COPY_R13 - 7));
+        assert_eq!(capture.destination_in_candidate_pages, Some(true));
+        let ram_after = (0..RAM_LEN)
+            .step_by(8)
+            .map(|address| {
+                machine_bus
+                    .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ram_after, ram_before,
+            "diagnostic walk changed guest RAM/A-D bits"
+        );
+    }
+
+    #[test]
+    fn mmu_gather_candidate_walks_distinguish_nonpresent_protection_and_read_errors() {
+        let candidate = ELF_COPY_R13 - 0x1000;
+        let candidates = [Some(candidate), Some(ELF_COPY_R13)];
+        let mut absent_bus = elf_copy_bus(false, true).0;
+        let absent = capture_mmu_gather_candidate_page_walks(
+            candidates,
+            &mut absent_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(absent[0].status, "non_present");
+        assert_eq!(absent[0].translated_physical, None);
+
+        let mut protected_bus = elf_copy_bus(true, true).0;
+        let indices = [
+            ((candidate >> 39) & 0x1ff) as u64,
+            ((candidate >> 30) & 0x1ff) as u64,
+            ((candidate >> 21) & 0x1ff) as u64,
+            ((candidate >> 12) & 0x1ff) as u64,
+        ];
+        let pml4e = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new(ROOT + indices[0] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pdpte = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new((pml4e & !0xfff) + indices[1] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pde = protected_bus
+            .read_physical(
+                GuestPhysicalAddress::new((pdpte & !0xfff) + indices[2] * 8),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        let pte_address = (pde & !0xfff) + indices[3] * 8;
+        let pte = protected_bus
+            .read_physical(GuestPhysicalAddress::new(pte_address), AccessWidth::Qword)
+            .unwrap();
+        put(&mut protected_bus, pte_address, pte & !2);
+        let protected = capture_mmu_gather_candidate_page_walks(
+            candidates,
+            &mut protected_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(protected[0].status, "protection");
+        assert_eq!(protected[0].translated_physical, None);
+
+        let mut error_bus = bus(0);
+        let root_index = ((candidate >> 39) & 0x1ff) as u64;
+        put(&mut error_bus, ROOT + root_index * 8, 0x1_0000_0007);
+        let read_error = capture_mmu_gather_candidate_page_walks(
+            [Some(candidate), None],
+            &mut error_bus,
+            &Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            context(),
+        );
+        assert_eq!(read_error[0].status, "read_error");
+        assert!(read_error[0].error.is_some());
+        assert_eq!(read_error[1].status, "invalid_address");
+    }
+
+    #[test]
+    fn non_anchor_and_frozen_mmu_gather_capture_do_zero_guest_reads() {
+        let mut machine_bus = bus(0x7007);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut state = LongModeState::default();
+        let mut observations =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+
+        MMU_GATHER_DIAGNOSTIC_READS.with(|count| count.set(0));
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP + 1;
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(MMU_GATHER_DIAGNOSTIC_READS.with(std::cell::Cell::get), 0);
+
+        observations.record_elf_stack_copy(ElfStackCopySnapshot::empty(
+            ElfStackCopyStatus::GateMismatch,
+        ));
+        state.rip = LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP;
+        capture_elf_mmu_gather_boundary(
+            state.rip,
+            &state,
+            &mut machine_bus,
+            &paging,
+            context(),
+            ROOT,
+            &mut observations,
+        );
+        assert_eq!(MMU_GATHER_DIAGNOSTIC_READS.with(std::cell::Cell::get), 0);
     }
 
     // ---- S6-31: locked operations on the host atomics of the shared RAM ----

@@ -10,10 +10,10 @@
 
 ### Источники и редакции
 
-- ACPI Specification, главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 19.3.4 (EISAID), 5.2.6 и 5.2.11.1 (заголовок таблицы, DSDT, Tables 5.4 и 5.17).
+- ACPI Specification, главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 8.4 (processor device object), 19.3.4 (EISAID), 5.2.6, 5.2.11.1 и 5.2.12.2 (заголовок таблицы, DSDT, MADT Local APIC).
 - **Редакция фактически прочитанного текста — ACPI 6.4** (HTML-копия `uefi.org/htmlspecs/ACPI_Spec_6_4_html`, полученная через Context7, библиотека `/websites/uefi_htmlspecs_acpi_spec_6_4_html`, 2026-11-07). Страницы ACPI 6.6, на которые ссылается [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) («Нормативные источники и редакции»), на `uefi.org/specs/ACPI/6.6/…` вернули HTTP 403 (curl и WebFetch). Совпадение указанных таблиц и кодировок в 6.6 **не проверено**.
 - Чужие `.asl`/`.aml`, DSDT QEMU/OVMF/ПК и исходники других кодировщиков не использовались. Опкоды и поля взяты из таблиц спецификации; у каждой константы в `firmware/uefi/src/acpi/aml/opcodes.rs` указан раздел или таблица.
-- Эталонные байты в тестах вычислены вручную по спецификации (конструкты) и независимой Python-программой по тексту ACPI 6.4 (DSDT); скрипт не сохранён, общего кода с Rust у него нет. `iasl` на host отсутствует и не использовался: пункт «разбор `iasl -d` как диагностика» **не сделан**.
+- Эталонные байты в тестах вычислены вручную по спецификации (конструкты) и независимой Python-программой по тексту ACPI 6.4 (DSDT); скрипт не сохранён, общего кода с Rust у него нет. Для S4-31 prerequisite итоговая DSDT дополнительно разобрана ACPICA `iasl` версии 20260408; это проверка синтаксиса AML, не установка или поведение таблиц в ОС.
 
 ### Кодировщик (`firmware/uefi/src/acpi/aml/`)
 
@@ -36,11 +36,12 @@
 
 `BoardManifest` — семь записей таблицы устройств handoff block v1.0 (FIRMWARE_BOOT.md §6.3, 48 байт: `type`, `flags`, `base`, `length`, `gsi`, `irq_flags`, `param0`, `param1`); других полей нет. Проверки: каждый тип 1–7 ровно один раз (в любом порядке), зарезервированные биты `flags` и `irq_flags` — нули, у `PRESENT = 0` нет адреса. Разбор заголовка и таблицы регионов handoff block — задача ядра прошивки (S7-04), здесь не дублируется.
 
-DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, ревизия 2, `OEMID` `OPNDSK`, `OEM Table ID` `ODFWDSDT`, `OEM Revision` 1, `Creator ID` `ODFW`, `Creator Revision` 1 — собственные строки, S7-13 берёт их общими для всех таблиц), затем AML `Scope(\_SB) { … }`. Объект `\_S5_` добавляется вариантом `build_dsdt_with_s5` (S4-31e, см. таблицу ниже); в нём нет устройств. Дочерние устройства выводятся только при `PRESENT = 1`, в порядке PCI0, ECAM, COM1. Запись ECAM проверяется правилами MCFG (S4-31a): окно в памяти (не PIO), сегмент 0, шины 0..=0, длина `(end_bus − start_bus + 1) << 20`, база ненулевая, кратная 1 MiB, конец не выше 4 GiB, `param1` без битов выше 15; иначе `build_dsdt` возвращает `DsdtError::Ecam(McfgError)`. Прежняя тестовая конфигурация S7-12 (база `0xC000_0000`, 256 MiB, шины 0..=0xFF) вне контракта платы и не собирается.
+DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, ревизия 2, `OEMID` `OPNDSK`, `OEM Table ID` `ODFWDSDT`, `OEM Revision` 1, `Creator ID` `ODFW`, `Creator Revision` 1 — собственные строки, S7-13 берёт их общими для всех таблиц), затем AML `Scope(\_SB) { … }`. Объект `\_S5_` добавляется вариантом `build_dsdt_with_s5` (S4-31e, см. таблицу ниже); он не добавляет устройств. Для фиксированного одноядерного профиля первым всегда объявляется `Device(CPU0)` с `_HID` строкой `ACPI0007` и целочисленным `_UID` 0. UID совпадает с единственной Processor Local APIC записью MADT (S4-31f); это обязательная пара по ACPI 6.4 §5.2.12.2, а формат Device/HID/целочисленного UID следует §8.4 и правилу ACPI 6.3+. Далее manifest-устройства выводятся при `PRESENT = 1`, в порядке PCI0, ECAM, COM1. Запись ECAM проверяется правилами MCFG (S4-31a): окно в памяти (не PIO), сегмент 0, шины 0..=0, длина `(end_bus − start_bus + 1) << 20`, база ненулевая, кратная 1 MiB, конец не выше 4 GiB, `param1` без битов выше 15; иначе `build_dsdt` возвращает `DsdtError::Ecam(McfgError)`. Прежняя тестовая конфигурация S7-12 (база `0xC000_0000`, 256 MiB, шины 0..=0xFF) вне контракта платы и не собирается.
 
 | Устройство в DSDT | Источник в manifest | Содержимое |
 |---|---|---|
-| `\_SB.PCI0` | запись типа 7 (PCIe ECAM), `PRESENT = 1`, не PIO; окно проходит те же проверки, что MCFG (`EcamWindow::from_entry`, S4-31b) | `_HID` `PNP0A08`, `_CID` `PNP0A03`, `_UID` 0, `_SEG` = сегмент (0), `_BBN` = `start_bus` (0), `_CRS`: `WordBusNumber` (ResourceProducer, MinFixed, MaxFixed) `start_bus..=end_bus` (0..=0), затем `IO(Decode16, 0xCF8, 0xCF8, 1, 8)` (порты conf1 платы S4-30c), `_PRT`: пустой пакет |
+| `\_SB.CPU0` | фиксированный профиль S4-31/S4-31f (не отдельная запись handoff) | `_HID` — строка `ACPI0007`, `_UID` — целое `0`; совпадает с UID единственной Local APIC записи MADT |
+| `\_SB.PCI0` | запись типа 7 (PCIe ECAM), `PRESENT = 1`, не PIO; окно проходит те же проверки, что MCFG (`EcamWindow::from_entry`, S4-31b) | `_HID` `PNP0A08`, `_CID` `PNP0A03`, `_UID` 0, `_SEG` = сегмент (0), `_BBN` = `start_bus` (0), `_CRS`: `WordBusNumber` (ResourceProducer, MinFixed, MaxFixed) `start_bus..=end_bus` (0..=0), затем `IO(Decode16, 0xCF8, 0xCF8, 1, 8)` (порты conf1 платы S4-30c), `_PRT`: пустой пакет в базовом профиле. В Linux direct boot с PCI NVMe запись типа 8 handoff v1.3 добавляет producer `DWordMemory` для BAR0/1 и INTA → GSI 16 в `_PRT`. [ACPI 6.6 §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table) |
 | `\_SB.ECAM` | та же запись типа 7, `PRESENT = 1` (S4-31b) | `_HID` `PNP0C02` (motherboard resources), `_UID` 0, `_CRS`: `Memory32Fixed(ReadWrite, base, 0x10_0000)` — окно ECAM из записи; выводится после PCI0 и перед COM; нужен для `pci_mmcfg_late_init` (ECAM принимается как зарезервированный ресурс) |
 | `\_SB.COM<n>` | запись типа 1 (COM1), `PRESENT = 1`, `PIO` | имя `COM` + цифра `param0` (1–9), `_HID` `PNP0501`, `_UID` = `param0`, `_CRS`: `IO(Decode16, base, base, 1, length)` (`base` и `length` из записи; `base + length ≤ 0x10000`, `1 ≤ length ≤ 255`) и, если `gsi ≠ 0xFFFF_FFFF`, один `Interrupt(ResourceConsumer, …) {gsi}`; режим и полярность из `irq_flags` (бит 0: 1 = level, 0 = edge; бит 1: 1 = active-low), Exclusive |
 | `\_S5_` | `build_dsdt_with_s5` (S4-31e), поле `slp_typ_s5` записи ACPI PM (тип 9) | `Name(\_S5, Package() { 5, 5, 0, 0 })` в корне после `\_SB`: `SLP_TYPa` = `SLP_TYPb` = 5 (`ACPI_SLP_TYP_S5`), два последних элемента нулевые. `build_dsdt` без `_S5` даёт прежние байты (golden S4-31b) |
@@ -57,7 +58,7 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 |---|---|---|
 | RTC `PNP0B00`, HPET `PNP0103` | в manifest v1.0 нет их записей (коды 8–15 зарезервированы под S7-14); устройств на плате нет | S7-14 |
 | TPM `MSFT0101`, `_CRS` CRB `0xFED4_0000` | запись типа 6 `PRESENT = 0` до S7-22; CRB-устройства на плате нет | S7-22 |
-| Local APIC, IOAPIC, дисплей, NVRAM в DSDT | описываются таблицами MADT и конфигурацией ОС, а не AML; отдельного решения «описывать ли в DSDT» нет | S7-13 (состав — после S7-30) |
+| IOAPIC, дисплей, NVRAM в DSDT | описываются таблицами MADT и конфигурацией ОС, а не AML; отдельного решения «описывать ли в DSDT» нет | S7-13 (состав — после S7-30) |
 | Установка DSDT как configuration table, `X_DSDT` в FADT | остальные таблицы — S7-13 | S7-13 |
 
 Механизм «устройство есть в manifest» реализован для PCI0 и COM1; для отложенных устройств добавление означает новую запись manifest и новый вывод в `dsdt.rs`, а не изменение кодировщика.
@@ -170,16 +171,16 @@ RSDP, XSDT, FADT, FACS, MADT; DSDT с PNP0C02; E820 запись для ECAM; р
 
 Регион ACPI платы — `[0xE_0000, 0xF_0000)`: часть для таблиц (E820 ACPI reclaim) `[0xE_0000, 0xE_F000)` и часть NVS `[0xE_F000, 0xF_0000)` для FACS. Blob: заголовок 0x60 байт (magic `ODACPIB1`, `version` 2, `manifest_hash`, `load_base`, `payload_offset`/`payload_len`, `rsdp_address`, `table_count`, `total_len`, `facs_offset`/`facs_len`/`facs_address`), каталог по 16 байт на таблицу (сигнатура, смещение в payload, длина, reserved 0), payload и 64 байта FACS в конце файла.
 
-Раскладка payload (загружается как есть на `load_base` = `0xE_0000`; значения — для эталонного blob `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`, в нём 5 таблиц, `payload_len` 0x340):
+Раскладка payload (загружается как есть на `load_base` = `0xE_0000`; значения — для эталонного 1104-byte blob `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`, в нём 5 таблиц, `payload_len` 0x360):
 
 | Таблица | Адрес (GPA) | Смещение в payload | Длина |
 |---|---|---|---|
 | RSDP revision 2 | `0xE_0000` | 0x000 (слот 0x40, остаток нулевой) | 36 |
-| DSDT (с `\_S5`) | `0xE_0040` | 0x040 | 245 |
-| MADT (`APIC`) | `0xE_0140` | 0x140 | 84 |
-| FADT (`FACP`, revision 6) | `0xE_01A0` | 0x1A0 | 276 |
-| MCFG (есть при окне ECAM) | `0xE_02C0` | 0x2C0 | 60 |
-| XSDT | `0xE_0300` | 0x300 | 60 |
+| DSDT (с `\_S5` и `CPU0`) | `0xE_0040` | 0x040 | 273 |
+| MADT (`APIC`) | `0xE_0160` | 0x160 | 84 |
+| FADT (`FACP`, revision 6) | `0xE_01C0` | 0x1C0 | 276 |
+| MCFG (есть при окне ECAM) | `0xE_02E0` | 0x2E0 | 60 |
+| XSDT | `0xE_0320` | 0x320 | 60 |
 | FACS | `0xE_F000` | вне payload (`facs_offset`, NVS) | 64 |
 
 Порядок таблиц и адреса следуют из кода сборки (16-выравнивание, зазоры нулевые); при другой конфигурации платы (нет ECAM) MCFG отсутствует, и адреса следующих таблиц сдвигаются. XSDT перечисляет FADT, MADT, MCFG (DSDT и FACS в нём нет); RSDP даёт адрес XSDT и нулевой `RsdtAddress`; FADT указывает на DSDT (`DSDT`/`X_DSDT`) и FACS (`FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`, оба `0xE_F000`). FACS не имеет контрольной суммы и не входит в каталог. Открытые вопросы по FADT/FACS и упаковщику — [ISSUE-497…500](../KNOWN_ISSUES.md).

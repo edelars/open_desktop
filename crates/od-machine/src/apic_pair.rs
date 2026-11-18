@@ -16,12 +16,14 @@ pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
 pub(crate) const POLARITY_LOW: u32 = 1 << 13;
 /// The input the MADT interrupt source override (S4-31f) describes as level, active low: the SCI
-/// (ISA IRQ 9 -> GSI 9, flags 0x000F). The only input besides INTIN4 with level semantics.
+/// (ISA IRQ 9 -> GSI 9, flags 0x000F).
 pub(crate) const SCI_PIN: usize = 9;
 /// Entry bits of the SCI form: trigger level (bit 15) and polarity active low (bit 13).
 pub(crate) const SCI_LEVEL_LOW: u32 = LEVEL | POLARITY_LOW;
-/// Inputs with level semantics (Remote IRR, EOI-driven redelivery): INTIN4 and the SCI.
-const LEVEL_PINS: [usize; 2] = [4, SCI_PIN];
+/// The Linux PCI NVMe INTA route consumes a dedicated level, active-low input outside ISA space.
+pub(crate) const NVME_PIN: usize = 16;
+/// Inputs with Remote IRR and EOI-driven redelivery.
+const LEVEL_PINS: [usize; 3] = [4, SCI_PIN, NVME_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
 /// IOAPIC ID loaded at reset: the value the firmware MADT declares (S4-31f).
@@ -41,10 +43,12 @@ pub(crate) struct Route {
     pub sci_asserted: bool,
     /// Remote IRR of the SCI entry: set by a level delivery, cleared by the destination's EOI.
     pub sci_remote_irr: bool,
+    pub nvme_asserted: bool,
+    pub nvme_remote_irr: bool,
     /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
     pub id: u8,
-    /// Stored low dwords of entries other than INTIN4. Only INTIN2 (edge) and the SCI entry in
-    /// its level/active-low form deliver; every other entry has no input line.
+    /// Stored low dwords of entries other than INTIN4. INTIN2 is an edge input; the
+    /// SCI and the NVMe INTA route are level, active low.
     pub pins: [u32; IO_APIC_PINS],
     /// Destination field (high dword bits 31:24, a physical APIC ID) of every entry. Always an
     /// existing vCPU index; a write naming another one is refused (SMP_CONTRACT.md 6).
@@ -60,6 +64,8 @@ impl Default for Route {
             remote_irr: false,
             sci_asserted: false,
             sci_remote_irr: false,
+            nvme_asserted: false,
+            nvme_remote_irr: false,
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
             dest: [0; IO_APIC_PINS],
@@ -276,24 +282,27 @@ impl PairState {
         Self::is_level_form(pin, self.level_low(pin))
     }
     fn level_asserted(&self, pin: usize) -> bool {
-        if pin == 4 {
-            self.route.high_line
-        } else {
-            self.route.sci_asserted
+        match pin {
+            4 => self.route.high_line,
+            SCI_PIN => self.route.sci_asserted,
+            NVME_PIN => self.route.nvme_asserted,
+            _ => unreachable!("non-level pin"),
         }
     }
     fn level_remote_irr(&self, pin: usize) -> bool {
-        if pin == 4 {
-            self.route.remote_irr
-        } else {
-            self.route.sci_remote_irr
+        match pin {
+            4 => self.route.remote_irr,
+            SCI_PIN => self.route.sci_remote_irr,
+            NVME_PIN => self.route.nvme_remote_irr,
+            _ => unreachable!("non-level pin"),
         }
     }
     fn set_level_remote_irr(&mut self, pin: usize, value: bool) {
-        if pin == 4 {
-            self.route.remote_irr = value;
-        } else {
-            self.route.sci_remote_irr = value;
+        match pin {
+            4 => self.route.remote_irr = value,
+            SCI_PIN => self.route.sci_remote_irr = value,
+            NVME_PIN => self.route.nvme_remote_irr = value,
+            _ => unreachable!("non-level pin"),
         }
     }
 
@@ -407,7 +416,7 @@ impl PairState {
     }
 
     pub fn reset_io(&mut self) -> Result<(), DeviceError> {
-        if self.route.remote_irr || self.route.sci_remote_irr {
+        if LEVEL_PINS.into_iter().any(|pin| self.level_remote_irr(pin)) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         self.route = Route::default();
@@ -518,10 +527,18 @@ impl PairState {
     /// EOI while the line stays asserted); a masked entry only records the line. An unmasked
     /// entry of any other form is refused before any change.
     pub fn set_sci_line(&mut self, asserted: bool) -> Result<(), DeviceError> {
-        if asserted && self.route.pins[SCI_PIN] & MASK == 0 && !self.is_level(SCI_PIN) {
+        self.set_active_low_level_line(SCI_PIN, asserted)
+    }
+
+    pub fn set_nvme_line(&mut self, asserted: bool) -> Result<(), DeviceError> {
+        self.set_active_low_level_line(NVME_PIN, asserted)
+    }
+
+    fn set_active_low_level_line(&mut self, pin: usize, asserted: bool) -> Result<(), DeviceError> {
+        if asserted && self.route.pins[pin] & MASK == 0 && !self.is_level(pin) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        self.set_level_line(SCI_PIN, asserted)
+        self.set_level_line(pin, asserted)
     }
     fn set_level_line(&mut self, pin: usize, high: bool) -> Result<(), DeviceError> {
         let low = self.level_low(pin);
@@ -534,10 +551,11 @@ impl PairState {
                 self.edge(usize::from(self.route.dest[pin]), low as u8)?;
             }
         }
-        if pin == 4 {
-            self.route.high_line = high;
-        } else {
-            self.route.sci_asserted = high;
+        match pin {
+            4 => self.route.high_line = high,
+            SCI_PIN => self.route.sci_asserted = high,
+            NVME_PIN => self.route.nvme_asserted = high,
+            _ => unreachable!("non-level pin"),
         }
         Ok(())
     }
@@ -573,7 +591,7 @@ impl PairState {
     pub fn set_sci_low(&mut self, value: u32) -> Result<(), DeviceError> {
         self.set_level_low(SCI_PIN, value)
     }
-    fn set_level_low(&mut self, pin: usize, value: u32) -> Result<(), DeviceError> {
+    pub(crate) fn set_level_low(&mut self, pin: usize, value: u32) -> Result<(), DeviceError> {
         let cpu = usize::from(self.route.dest[pin]);
         let old = self.level_low(pin);
         let (was, now) = (
@@ -644,7 +662,7 @@ impl PairState {
         let old = usize::from(self.route.dest[pin]);
         if new != old {
             match pin {
-                4 | SCI_PIN if self.is_level(pin) => {
+                4 | SCI_PIN | NVME_PIN if self.is_level(pin) => {
                     let vector = self.level_low(pin) as u8;
                     if self.level_asserted(pin)
                         || self.level_remote_irr(pin)

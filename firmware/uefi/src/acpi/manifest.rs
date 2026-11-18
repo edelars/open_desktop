@@ -32,6 +32,8 @@ pub mod device_type {
     pub const NVRAM: u32 = 5;
     pub const TPM_CRB: u32 = 6;
     pub const PCIE_ECAM: u32 = 7;
+    /// NVMe, including the optional PCI aperture and INTx route in handoff v1.3.
+    pub const NVME: u32 = 8;
     /// ACPI fixed hardware: PM block and SCI route (handoff v1.2, S4-31c).
     pub const ACPI_PM: u32 = 9;
 }
@@ -50,6 +52,7 @@ pub enum ManifestError {
     ReservedIrqFlags(u32),
     /// An ACPI PM entry (code 9) that cannot be described by the FADT; the text names the field.
     BadAcpiPm(&'static str),
+    BadPciNvme,
 }
 
 /// One 48-byte device entry.
@@ -131,6 +134,16 @@ impl DeviceEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoardManifest {
     devices: [DeviceEntry; DEVICE_COUNT],
+    pci_nvme: Option<PciNvmeRoute>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PciNvmeRoute {
+    pub min: u32,
+    pub max: u32,
+    pub length: u32,
+    pub slot: u8,
+    pub gsi: u32,
 }
 
 impl BoardManifest {
@@ -163,7 +176,58 @@ impl BoardManifest {
             slots[index] = entry;
         }
         // Seven entries, no repeats and all in range: every slot is filled.
-        Ok(BoardManifest { devices: slots })
+        Ok(BoardManifest {
+            devices: slots,
+            pci_nvme: None,
+        })
+    }
+
+    pub(super) const fn with_nvme(mut self, entry: &DeviceEntry) -> Result<Self, ManifestError> {
+        // Handoff v1.1/v1.2 NVMe is polled at a fixed MMIO address.
+        if entry.gsi == GSI_NONE && entry.irq_flags == 0 && entry.param0 == 0 && entry.param1 == 0 {
+            return Ok(self);
+        }
+        let Some(ecam) = self.device(device_type::PCIE_ECAM) else {
+            return Err(ManifestError::BadPciNvme);
+        };
+        let Some(ioapic) = self.device(device_type::IOAPIC) else {
+            return Err(ManifestError::BadPciNvme);
+        };
+        let Some(end) = entry.base.checked_add(entry.length) else {
+            return Err(ManifestError::BadPciNvme);
+        };
+        let Some(ecam_end) = ecam.base.checked_add(ecam.length) else {
+            return Err(ManifestError::BadPciNvme);
+        };
+        if entry.flags != FLAG_PRESENT
+            || entry.base == 0
+            || entry.length > u32::MAX as u64
+            || !entry.length.is_power_of_two()
+            || entry.base & (entry.length - 1) != 0
+            || end > (1u64 << 32)
+            || (entry.base < ecam_end && ecam.base < end)
+            || entry.gsi < 16
+            || entry.gsi >= 24
+            || entry.irq_flags != (IRQ_LEVEL | IRQ_ACTIVE_LOW)
+            || entry.param0 > 31
+            || entry.param1 != 0
+            || !ecam.is_present()
+            || !ioapic.is_present()
+        {
+            return Err(ManifestError::BadPciNvme);
+        }
+        self.pci_nvme = Some(PciNvmeRoute {
+            min: entry.base as u32,
+            max: (end - 1) as u32,
+            length: entry.length as u32,
+            slot: entry.param0 as u8,
+            gsi: entry.gsi,
+        });
+        Ok(self)
+    }
+
+    pub(super) const fn pci_nvme(&self) -> Option<PciNvmeRoute> {
+        self.pci_nvme
     }
 
     /// The entry of a device type (1..=7).

@@ -16,7 +16,7 @@
 
 **Numeric calibration gate** остаётся blocked до появления всех фактических входов: `I_boot`/`W_boot` из уже принятого S5-08 calibration boot path; `I_cycle`/`W_cycle` из уже принятого повторяемого C+D+G cycle после S5-10/11/14; и заранее заданных, обоснованных `B_series`/`B_soak`. Gate вычисляет `N`/`D_soak_estimate`; только его принятие вместе с Method gate позволяет принять полный S5-01.
 
-S5-06/07 могут готовить guest сценарии и evidence orchestration по Method gate. Одиночный функциональный сценарий можно выполнить по той же методике только после собственных prerequisites: S5-08 остаётся blocked до S4-39/S4-31; S5-09 — до принятия S7-16, PCI binding и IRQ route; C/D/G — до принятия S5-09 и относящихся к ним ISA/profile gates S5-21. Numeric gate не требуется для этих functional checks. Ограниченные повторы, требуемые собственными критериями задач (например, второй boot S5-08, повторная сборка S5-11 или явно заданный S5-07 smoke count), могут закрывать критерии именно этих задач, если полностью проверены. Они не задают приёмочный `N` S5-15 или soak target S5-16. S5-15 и S5-16 начинаются только после принятия Numeric gate и полного S5-01; их итоговые серии не используются для ретроактивного вычисления собственных бюджетов.
+S5-06/07 могут готовить guest сценарии и evidence orchestration по Method gate. Одиночный функциональный сценарий можно выполнить по той же методике только после собственных prerequisites: S5-08 принят на этапе функциональной проверки с ограничениями S4-39/S4-31; S5-09 — до принятия S7-16, PCI binding и IRQ route; C/D/G — до принятия S5-09 и относящихся к ним ISA/profile gates S5-21. Numeric gate не требуется для этих functional checks. Ограниченные повторы, требуемые собственными критериями задач (например, второй boot S5-08, повторная сборка S5-11 или явно заданный S5-07 smoke count), могут закрывать критерии именно этих задач, если полностью проверены. Они не задают приёмочный `N` S5-15 или soak target S5-16. S5-15 и S5-16 начинаются только после принятия Numeric gate и полного S5-01; их итоговые серии не используются для ретроактивного вычисления собственных бюджетов.
 
 По [инвентаризации стенда](STAND.md#основной-host) основной host — MacBook Pro с Apple M3 Max под macOS 26.7.1, arm64. Физический x86 oracle — отдельный Mac mini с Intel Core i5-3210M под Ubuntu 25.10. Это разные машины, ОС и цели проверки: результаты нельзя объединять в одну временную baseline. Каждая запись evidence фиксирует реальный host, ОС, архитектуру CPU, сборку runner, исходную ревизию и параметры guest machine.
 
@@ -59,6 +59,66 @@ S5-06/07 могут готовить guest сценарии и evidence orchestr
 Stage 5 series writer uses schema v2: `host.source_revision` records the Git HEAD at runner build time and `host.source_dirty` records whether the runner's production source inputs were dirty. The checked input paths are declared in `tools/runner/build.rs`, including the runner and its workspace dependencies. This boolean is state metadata, not a source-content fingerprint. The reader accepts v1 and v2; v1 records without `source_dirty` preserve it as unobserved (`null`). A dirty or unavailable source identity does not establish artifact equivalence or a passing guest run.
 
 Подготовленный Stage 5 path принимает два `series.json` через `od-runner --compare-results <series-a> <series-b> --linux-stage5 --json`; существующий fixture path `od-runner --compare-results <result-a> <result-b> --case <fixture> --json` сохранён. Raw JSON `linux-direct` не является непосредственным input ни для Stage 5 comparator, ни для fixture comparator: Stage 5 comparator читает run manifests и сверяет ссылки/хеши исходных JSON и runner-recorded COM1 bytes. Его stop record содержит байты COM1 только из `run_boot` для данного stop; это stop-scoped capture, а не полный независимый UART transcript, который требуется на scenario level. Результат `matches: true` означает лишь совпадение сравниваемых series evidence; сам по себе он не доказывает pass guest scenario или acceptance. Для pass всё ещё нужны scenario-specific expected markers/assertions, корректные machine observations, полный UART transcript и guest/host file evidence по критериям раздела 2.
+
+
+### Дисковый профиль не требуется для S5-07
+
+Для проверки механизма повторов используется существующий сценарий `stage4-init-nonce`.
+Подготовьте pin inputs из [рецепта Stage 4](MACHINE.md#воспроизведение-linux-direct-boot-s4-39j).
+Используйте `--nonce-bootconfig` с сохранённым ядром Ubuntu 7.0.0-38.38 и исходным Stage 4 initramfs. Один вызов выполняет два запуска, выдаёт отдельный nonce каждому и сохраняет сравнение:
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 --series-id s5-07-diskless-n2 --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted --out work/stage5/s5-07-diskless-n2/series.json \
+  --vmlinuz "$VMLINUX" --initramfs "$INITRAMFS" --acpi-blob "$ACPI_BLOB" \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --nonce-bootconfig
+```
+
+Для ACPI используйте 1,072-байтовый blob с SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` из рецепта Stage 4.
+Для следующей серии выберите новый `--series-id` и соответствующий ему `--out`.
+Оба запуска должны завершить сценарий, а сохранённый `comparison.json` должен содержать `matches: true` и пустой `unexplained_differences`. Эта серия проверяет S5-07 и используется с профилем `smoke_not_acceptance`.
+
+Перед загрузкой runner проверяет SHA-256 файла initramfs, затем добавляет Linux bootconfig с `kernel.od.nonce` в памяти. Linux передаёт этот параметр в `/proc/cmdline`, который читает Stage 4 `/init`. Ранняя boot command line остаётся одинаковой, что исключает nonce из конкретного источника энтропии `random_init_early`. Исходный файл, профиль CPU и настройки ASLR сохраняются. Per-run raw JSON отдельно фиксирует хеш и длину загруженного initrd и хеш трейлера. Comparator проверяет совпадение исходных artifact hashes, сверяет дублирующие хеши загруженного initrd в `stop.inputs` с проверенным readback и относит их к входным данным. Остальные машинные наблюдения сравниваются напрямую. Допустимое изменение в UART ограничено заменой собственного nonce.
+
+Для повторной сверки сохранённой серии вызовите `od-runner --compare-results <series.json> --linux-stage5 --json`. Он использует тот же comparator, что и завершение `--test-runs`. Вариант команды с двумя путями сравнивает две серии между собой.
+
+
+
+### S5-08 загрузка и ACPI-выключение без диска
+
+Соберите вариант Stage 4 `/init` для выключения в отдельный каталог.
+
+```sh
+python3 tools/build/build_stage4_initramfs.py --poweroff \
+  --output-dir work/stage4/s5-08-poweroff \
+  --config work/stage4/linux-7.0.0-38.38/source/extracted/config --no-evidence
+cargo build --release --locked --offline -p od-runner
+```
+
+Команда использует зафиксированное ядро Stage 4 и 1 072-байтовый ACPI blob с SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`. Его можно извлечь из Git как `git show c09f62d:tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin` в новый файл и передать как `$ACPI_BLOB`.
+
+```sh
+series=s5-08-stage4a-poweroff-n2
+target/release/od-runner linux-direct --test-runs 2 \
+  --scenario-id s5-08 --expected-stop-kind stopped --series-id "$series" \
+  --out "work/stage5/$series/series.json" \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-08-poweroff/initramfs.cpio --acpi-blob "$ACPI_BLOB" \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 dea0fcb2a0c4401a99f342413567a0a9b4aa5d8929cd0abdaf687e5042567d03 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a \
+  --user-mode --nonce-bootconfig
+python3 tests/system/s5_08_shutdown_smoke.py "work/stage5/$series/series.json"
+```
+
+Каждый новый запуск команды требует нового `series`; runner создаёт свежий guest nonce для каждого прогона. `/init` выводит `OD_NONCE=<nonce>` и `OD_S5_A_SHUTDOWN_REQUEST nonce=<nonce> method=poweroff`, затем вызывает Linux `reboot(POWER_OFF)`. Зачёт требует точных полных строк в этом порядке, отсутствия kernel panic и `exit_kind=stopped` с типизированной причиной `machine_stop_reason=shutdown`. Сравнение проверяет UART, машинные наблюдения и хеши исходных артефактов по тем же правилам, что и серия с bootconfig выше. Профиль `stage5_functional` относится к функциональной проверке S5-08. Приёмочный `N` и калибровка S5-01 описаны отдельно.
+
 
 ## 4. Расхождения, pass/fail и целостность
 

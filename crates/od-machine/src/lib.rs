@@ -192,9 +192,14 @@ pub use linux_direct::{
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
-    load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
+    load_linux_direct_board, load_linux_direct_board_with_nvme, run_linux_direct_board,
+    run_linux_direct_board_set, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
+    run_linux_direct_board_set_user_mode_with_elf_stack_copy,
     run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_execution_observations_options,
+    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options,
     run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 
@@ -202,10 +207,39 @@ pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEve
 
 pub use ap_legacy_exec::ApLegacyRefusal;
 pub use execution_observations::{
-    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
-    LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+    DelayTscCallSummary, DelayTscCallSummaryCollection, DelayTscPollSequenceStatus,
+    DeliveredPageFaultObservation, ElfStackAlignmentCapture, ElfStackAlignmentPoint,
+    ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event,
+    ElfStackCopyCr3LedgerStatus, ElfStackCopyInvocation, ElfStackCopyInvocationStatus,
+    ElfStackCopyPageFaultEvent, ElfStackCopyPreCopyCr3Event, ElfStackCopyPreCopyCr3Ledger,
+    ElfStackCopyProbe, ElfStackCopyRdtscSiteCount, ElfStackCopySnapshot, ElfStackCopyStatus,
+    ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame,
+    FaultingPageFaultContext, FaultingPageWalkContext, InstructionPathControlFlow,
+    InstructionPathRegisterValue, InstructionPathTrace, InstructionPathTraceHeader,
+    InstructionPathTraceRecord, InstructionPathTraceStatus, LINUX_DELAY_TSC_CALL_CAPACITY,
+    LINUX_DELAY_TSC_ENTRY_RIP, LINUX_DELAY_TSC_POLL_RIP, LINUX_ELF_STACK_ALIGN_AFTER_RIP,
+    LINUX_ELF_STACK_ALIGN_BEFORE_RIP, LINUX_ELF_STACK_COPY_BOUNDARIES,
+    LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY, LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
+    LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
+    LINUX_ELF_STACK_COPY_PROFILE, LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY,
+    LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY, LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+    LINUX_ELF_STACK_COPY_RIP, LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL,
+    LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP, LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
+    LINUX_INSTRUCTION_PATH_TRACE_CAPACITY, LINUX_INSTRUCTION_PATH_TRACE_END_HIT,
+    LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+    LINUX_INSTRUCTION_PATH_TRACE_START_HITS, LINUX_PAGE_FAULT_EVENT_CAPACITY,
+    LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY, LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
+    LINUX_RDTSC_PREFIX_CAPACITY, LINUX_RDTSC_PREFIX_SENTINEL_RIP, LINUX_RDTSC_SAMPLE_CAPACITY,
     LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, PostIretPageWalkSnapshot,
-    RdtscSiteCount,
+    RdtscClockTraceSample, RdtscEntrySample, RdtscPrefixSample, RdtscPrefixStatus,
+    RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
+};
+pub use execution_observations::{
+    ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
+    ElfMmuGatherPageWalk, ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+    ElfMmuGatherUnpaired, LINUX_ELF_MMU_GATHER_SETUP_CAPACITY,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+    LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP, LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
@@ -230,6 +264,7 @@ pub use page_walk::{
     ProbeReport, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport,
     TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_2m_ram,
     access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
+    validate_long64_read_only_walk_observation,
 };
 
 pub use host_parallel::{

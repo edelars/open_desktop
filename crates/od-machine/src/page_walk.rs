@@ -238,6 +238,130 @@ pub struct WalkEntry {
     pub entry_address: GuestPhysicalAddress,
     pub entry_value: u64,
 }
+// Keep these entry checks local to serialized observations. Sharing them with the live walk
+// changed its generated hot path and slowed the 4 KiB first-Accessed case. Parity tests below
+// exercise the validator against actual walks.
+fn long64_observation_reserved_bits(
+    level: PageTableLevel,
+    value: u64,
+    nxe: bool,
+    large_leaf: bool,
+) -> u64 {
+    let mut reserved_bits = value & ENTRY_ADDRESS_RESERVED;
+    if !nxe {
+        reserved_bits |= value & ENTRY_NX;
+    }
+    if matches!(level, PageTableLevel::Pml4 | PageTableLevel::Pdpt) && value & ENTRY_PS_OR_PAT != 0
+    {
+        reserved_bits |= ENTRY_PS_OR_PAT;
+    }
+    if large_leaf {
+        reserved_bits |= value & ENTRY_2M_RESERVED;
+    }
+    reserved_bits
+}
+
+/// Verifies a schema-20 MMU-gather observation of a CPL0 explicit write translation in the
+/// four-level 4 KiB / 2 MiB profile. This validates the trace without accessing guest state.
+pub fn validate_long64_read_only_walk_observation(
+    linear: u64,
+    cr3: u64,
+    entries: &[WalkEntry],
+    status: &str,
+    terminal_level: Option<PageTableLevel>,
+    leaf_size: Option<u64>,
+    translated_physical: Option<u64>,
+    write_protect: bool,
+    nxe: bool,
+) -> bool {
+    if !canonical_linear_address(linear) || entries.len() > 4 || cr3 & CR3_HIGH_MASK != 0 {
+        return false;
+    }
+    let levels = [
+        PageTableLevel::Pml4,
+        PageTableLevel::Pdpt,
+        PageTableLevel::Pd,
+        PageTableLevel::Pt,
+    ];
+    let mut table_base = cr3 & ENTRY_ADDRESS_MASK;
+    let mut effective_writable = true;
+    let mut leaf = None;
+    for (position, entry) in entries.iter().enumerate() {
+        let level = levels[position];
+        let index = ((linear >> level.index_shift()) & 0x1ff) as u16;
+        let entry_address = table_base + u64::from(index) * 8;
+        if entry.level != level
+            || entry.index != index
+            || entry.entry_address.get() != entry_address
+        {
+            return false;
+        }
+        let value = entry.entry_value;
+        if value & ENTRY_PRESENT == 0 {
+            return position + 1 == entries.len()
+                && status == "non_present"
+                && terminal_level == Some(level)
+                && leaf_size.is_none()
+                && translated_physical.is_none();
+        }
+        let large_leaf = level == PageTableLevel::Pd && value & ENTRY_PS_OR_PAT != 0;
+        if long64_observation_reserved_bits(level, value, nxe, large_leaf) != 0 {
+            return position + 1 == entries.len()
+                && status == "read_error"
+                && terminal_level == Some(level)
+                && leaf_size.is_none()
+                && translated_physical.is_none();
+        }
+        effective_writable &= value & ENTRY_WRITABLE != 0;
+        if large_leaf || level == PageTableLevel::Pt {
+            leaf = Some((
+                level,
+                value,
+                if large_leaf { 2 * 1024 * 1024 } else { 4096 },
+            ));
+            if position + 1 != entries.len() {
+                return false;
+            }
+            break;
+        }
+        table_base = value & ENTRY_ADDRESS_MASK;
+    }
+    let Some((level, value, expected_leaf_size)) = leaf else {
+        let expected_terminal = entries.last().map_or(Some(PageTableLevel::Pml4), |last| {
+            levels.get(entries.len()).copied().or(Some(last.level))
+        });
+        return status == "read_error"
+            && terminal_level == expected_terminal
+            && leaf_size.is_none()
+            && translated_physical.is_none();
+    };
+    if terminal_level != Some(level) || leaf_size != Some(expected_leaf_size) {
+        return false;
+    }
+    let write_denied = !effective_writable && write_protect;
+    if status == "protection" {
+        return write_denied && translated_physical.is_none();
+    }
+    if status != "translated" || write_denied {
+        return false;
+    }
+    let address_mask = if expected_leaf_size == 4096 {
+        ENTRY_ADDRESS_MASK
+    } else {
+        ENTRY_ADDRESS_MASK & !((1 << 21) - 1)
+    };
+    let expected_physical = (value & address_mask) | (linear & (expected_leaf_size - 1));
+    translated_physical == Some(expected_physical)
+}
+
+const fn canonical_linear_address(value: u64) -> bool {
+    let upper = value >> 48;
+    if value & (1 << 47) == 0 {
+        upper == 0
+    } else {
+        upper == 0xffff
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WalkTrace {
@@ -2145,6 +2269,305 @@ mod tracked_access_tests {
 
     const LINEAR: u64 = 0x0000_0080_8060_4abc;
     const RIP: u64 = 0x1234;
+
+    const SCHEMA20_LEVELS: [PageTableLevel; 4] = [
+        PageTableLevel::Pml4,
+        PageTableLevel::Pdpt,
+        PageTableLevel::Pd,
+        PageTableLevel::Pt,
+    ];
+    const SCHEMA20_4K_ENTRIES: [u64; 4] = [0x2007, 0x3007, 0x4007, 0x9007];
+
+    struct Schema20TestWalk {
+        linear: u64,
+        wp: bool,
+        nxe: bool,
+        entries: Vec<WalkEntry>,
+        translation: Result<WalkTranslation, TrackedAccessError>,
+    }
+
+    impl Schema20TestWalk {
+        fn validates(
+            &self,
+            status: &str,
+            terminal: PageTableLevel,
+            size: Option<u64>,
+            physical: Option<u64>,
+        ) -> bool {
+            validate_long64_read_only_walk_observation(
+                self.linear,
+                0x1000,
+                &self.entries,
+                status,
+                Some(terminal),
+                size,
+                physical,
+                self.wp,
+                self.nxe,
+            )
+        }
+    }
+
+    fn schema20_test_walk(
+        raw_entries: &[u64],
+        linear: u64,
+        wp: bool,
+        nxe: bool,
+        allow_2m: bool,
+    ) -> Schema20TestWalk {
+        let size = (raw_entries.len() as u64 + 1) * 0x1000;
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), size).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(size)).unwrap();
+        let addresses: Vec<_> = [39, 30, 21, 12]
+            .into_iter()
+            .enumerate()
+            .take(raw_entries.len())
+            .map(|(i, shift)| {
+                GuestPhysicalAddress::new((i as u64 + 1) * 0x1000 + ((linear >> shift) & 0x1ff) * 8)
+            })
+            .collect();
+        for (&address, &value) in addresses.iter().zip(raw_entries) {
+            memory.store_u64(address, value, |_| {}).unwrap();
+        }
+
+        let paging = paging_config(wp, nxe);
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let address = GuestLinearAddress::new(linear);
+        let read_only = allow_2m.then(|| {
+            translate_long64_2m_ram_read_only_with_trace(
+                &mut memory,
+                &paging,
+                RIP,
+                address,
+                context,
+                AccessKind::Write,
+            )
+        });
+        for (&address, &value) in addresses.iter().zip(raw_entries) {
+            assert_eq!(memory.load_u64(address).unwrap(), value);
+        }
+        let walk = walk_long64_4k_with_writer(
+            &mut memory,
+            &paging,
+            RIP,
+            address,
+            context,
+            AccessKind::Write,
+            &mut |_| {},
+            &mut compare_replace_table_entry,
+            allow_2m,
+        );
+        if let Some((translation, trace)) = read_only {
+            assert_eq!(trace, walk.trace);
+            assert_eq!(
+                translation.as_ref().map(|(physical, _)| *physical),
+                walk.translation.as_ref().map(|value| value.physical),
+            );
+        }
+        Schema20TestWalk {
+            linear,
+            wp,
+            nxe,
+            entries: walk.trace.entries().iter().flatten().copied().collect(),
+            translation: walk.translation,
+        }
+    }
+
+    #[test]
+    fn schema20_validator_accepts_live_leaf_traces_at_multiple_offsets() {
+        const IGNORED: u64 = (1 << 9) | (1 << 52);
+        let mut small = SCHEMA20_4K_ENTRIES.map(|entry| entry | IGNORED);
+        small[3] |= ENTRY_PS_OR_PAT; // 4 KiB leaf PAT
+        let large = [0x2007, 0x3007, 0x40_1087].map(|entry| entry | IGNORED); // 2 MiB leaf PAT
+        for (entries, terminal, size, base, offsets) in [
+            (
+                &small[..],
+                PageTableLevel::Pt,
+                0x1000,
+                0x9000,
+                [0, 0xabc, 0xfff],
+            ),
+            (
+                &large[..],
+                PageTableLevel::Pd,
+                0x20_0000,
+                0x40_0000,
+                [0, 0x43_210, 0x1f_ffff],
+            ),
+        ] {
+            for offset in offsets {
+                let linear = (LINEAR & !(size - 1)) | offset;
+                let walk = schema20_test_walk(entries, linear, true, true, true);
+                let translated = walk.translation.as_ref().unwrap();
+                assert_eq!(translated.physical.get(), base + offset);
+                assert_eq!(translated.leaf_level, terminal);
+                assert!(walk.validates("translated", terminal, Some(size), Some(base + offset)));
+                assert!(!walk.validates(
+                    "translated",
+                    terminal,
+                    Some(size),
+                    Some(base + offset + 1)
+                ));
+                assert!(!walk.validates("read_error", terminal, Some(size), None));
+                assert!(!walk.validates("read_error", terminal, None, None));
+            }
+        }
+    }
+
+    #[test]
+    fn schema20_validator_observes_non_present_before_reserved_bits_at_each_level() {
+        for (index, level) in SCHEMA20_LEVELS.into_iter().enumerate() {
+            let mut entries = SCHEMA20_4K_ENTRIES;
+            entries[index] =
+                (entries[index] & !ENTRY_PRESENT) | ENTRY_PS_OR_PAT | ENTRY_NX | (1 << 36);
+            let walk = schema20_test_walk(&entries, LINEAR, true, false, true);
+            assert!(
+                matches!(walk.translation, Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent { level: actual }, ..
+            }) if actual == level)
+            );
+            assert_eq!(walk.entries.len(), index + 1);
+            assert_eq!(walk.entries[index].entry_value, entries[index]);
+            assert!(walk.validates("non_present", level, None, None));
+            assert!(!walk.validates("read_error", level, None, None));
+        }
+    }
+
+    #[test]
+    fn schema20_validator_observes_live_reserved_address_nx_and_page_size_errors() {
+        for (index, bits) in [
+            (0, 1 << 36),
+            (1, 1 << 51),
+            (2, 1 << 36),
+            (3, 1 << 51),
+            (0, ENTRY_NX),
+            (1, ENTRY_NX),
+            (2, ENTRY_NX),
+            (3, ENTRY_NX),
+            (0, ENTRY_PS_OR_PAT),
+            (1, ENTRY_PS_OR_PAT),
+        ] {
+            let level = SCHEMA20_LEVELS[index];
+            let mut entries = SCHEMA20_4K_ENTRIES;
+            entries[index] |= bits;
+            let walk = schema20_test_walk(&entries, LINEAR, true, false, true);
+            assert!(
+                matches!(walk.translation, Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::ReservedBits { level: actual, offending_bits }, ..
+            }) if actual == level && offending_bits == bits)
+            );
+            assert_eq!(walk.entries.len(), index + 1);
+            assert!(walk.validates("read_error", level, None, None));
+            assert!(!walk.validates("non_present", level, None, None));
+        }
+
+        let mut entries = [0x2007, 0x3007, 0x40_0087];
+        let unsupported = schema20_test_walk(&entries, LINEAR, true, false, false);
+        assert!(matches!(
+            unsupported.translation,
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level: PageTableLevel::Pd,
+                ..
+            })
+        ));
+        // The 4 KiB-only mode is outside schema 20. The same present PD entry is valid here.
+        assert!(!unsupported.validates("read_error", PageTableLevel::Pd, None, None));
+        assert!(unsupported.validates(
+            "translated",
+            PageTableLevel::Pd,
+            Some(0x20_0000),
+            Some(0x40_4abc)
+        ));
+
+        let reserved = (1 << 13) | (1 << 20) | ENTRY_NX;
+        entries[2] |= reserved;
+        let unsupported = schema20_test_walk(&entries, LINEAR, true, false, false);
+        assert!(matches!(
+            unsupported.translation,
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level: PageTableLevel::Pd,
+                ..
+            })
+        ));
+        let walk = schema20_test_walk(&entries, LINEAR, true, false, true);
+        assert!(
+            matches!(walk.translation, Err(TrackedAccessError::PageFault {
+            reason: PageFaultReason::ReservedBits { level: PageTableLevel::Pd, offending_bits }, ..
+        }) if offending_bits == reserved)
+        );
+        assert!(walk.validates("read_error", PageTableLevel::Pd, None, None));
+    }
+
+    #[test]
+    fn schema20_validator_observes_cpl0_wp_and_ignores_nx_for_data_with_nxe() {
+        for size in [0x1000, 0x20_0000] {
+            let mut entries = SCHEMA20_4K_ENTRIES;
+            let (terminal_index, physical) = if size == 0x1000 {
+                (3, 0x9abc)
+            } else {
+                entries[2] = 0x40_0087;
+                (2, 0x40_4abc)
+            };
+            let terminal = SCHEMA20_LEVELS[terminal_index];
+            for index in 0..=terminal_index {
+                let mut entries = entries;
+                entries[index] = (entries[index] & !ENTRY_WRITABLE) | ENTRY_NX;
+                let entries = &entries[..=terminal_index];
+                let denied = schema20_test_walk(entries, LINEAR, true, true, true);
+                assert!(matches!(
+                    denied.translation,
+                    Err(TrackedAccessError::PageFault {
+                        reason: PageFaultReason::Protection {
+                            user_denied: false,
+                            write_denied: true,
+                            execute_denied: false,
+                        },
+                        ..
+                    })
+                ));
+                assert!(denied.validates("protection", terminal, Some(size), None));
+                assert!(!denied.validates("translated", terminal, Some(size), Some(physical)));
+                let allowed = schema20_test_walk(entries, LINEAR, false, true, true);
+                assert_eq!(
+                    allowed.translation.as_ref().unwrap().physical.get(),
+                    physical
+                );
+                assert!(allowed.validates("translated", terminal, Some(size), Some(physical)));
+                assert!(!allowed.validates("protection", terminal, Some(size), None));
+            }
+        }
+    }
+
+    #[test]
+    fn schema20_validator_accepts_only_exact_prefix_and_level_for_live_table_read_failure() {
+        for (index, level) in SCHEMA20_LEVELS.into_iter().enumerate() {
+            let walk = schema20_test_walk(&SCHEMA20_4K_ENTRIES[..index], LINEAR, true, true, true);
+            let missing_address = [0x1008, 0x2010, 0x3018, 0x4020][index];
+            assert!(
+                matches!(walk.translation, Err(TrackedAccessError::TableRead {
+                level: actual, entry_address, ..
+            }) if actual == level && entry_address.get() == missing_address)
+            );
+            assert_eq!(walk.entries.len(), index);
+            for (seen, expected) in walk.entries.iter().zip(SCHEMA20_4K_ENTRIES) {
+                assert_eq!(seen.entry_value, expected);
+            }
+            assert!(walk.validates("read_error", level, None, None));
+            for wrong_level in SCHEMA20_LEVELS.into_iter().filter(|&wrong| wrong != level) {
+                assert!(!walk.validates("read_error", wrong_level, None, None));
+            }
+            assert!(!walk.validates("non_present", level, None, None));
+        }
+    }
 
     fn setup(entry: u64, size: u64) -> (PhysicalMemory, Long64ProbeConfig) {
         setup_entries([0x2007, 0x3007, 0x4007, entry], size)

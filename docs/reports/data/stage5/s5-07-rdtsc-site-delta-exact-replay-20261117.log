@@ -1,0 +1,68 @@
+S5-07 exact-nonce RDTSC per-RIP histogram delta — 2026-11-17
+
+Scope and artifacts
+-------------------
+Offline attribution of the remaining 10,473-read CPL0 RDTSC difference using
+the two schema-v14 sidecars from the canonical exact-nonce replays. This is a
+data analysis slice; it ran no guest, changed no comparator, and made no
+allowlist or normalization edits.
+
+The replays and canonical input hashes are documented in
+[the schema-v14 stack-copy replay log](s5-07-elf-stack-copy-snapshot-exact-replay-20261117.log).
+They exactly reproduced their source stop/UART. The sidecar artifacts are:
+
+| Run | Sidecar bytes | SHA-256 |
+|---|---:|---|
+| 0001 | 51,718 | `1444324e770114f9e290d5a7b33c4dadc80573055a68490ee6e64937e19d4f17` |
+| 0002 | 54,676 | `64388e66f08ad4541c39b3fa2f37593fd5a121ebf8789dc088e4672182b25309` |
+
+Both schema-v14 sidecars contain 22 CPL0 RDTSC sites, with
+`rdtsc_cpl0_site_overflow_reads=0` and
+`rdtsc_cpl0_unattributed_reads=0`. Summing the site histograms reproduces the
+runner's complete source totals, 34,429,691 and 34,440,164.
+
+Per-site changes
+----------------
+| RIP | Matching ELF symbol | Run 0001 | Run 0002 | Delta |
+|---|---|---:|---:|---:|
+| `0xffffffff813afa20` | `read_tsc+0x0` | 137,959 | 137,996 | +37 |
+| `0xffffffff8184f2f1` | `__refill_objects_any+0x31` | 964 | 965 | +1 |
+| `0xffffffff8200713e` | `add_interrupt_randomness+0xe` | 34,796 | 34,806 | +10 |
+| `0xffffffff8200796e` | `extract_entropy.constprop.0+0xee` | 122,068 | 122,072 | +4 |
+| `0xffffffff8271b31b` | `delay_tsc+0x1b` | 43,915 | 43,926 | +11 |
+| `0xffffffff8271b34d` | `delay_tsc+0x4d` | 34,037,704 | 34,048,106 | +10,402 |
+| `0xffffffff82726060` | `native_sched_clock+0x20` | 40,087 | 40,095 | +8 |
+| **Changed-site total** |  |  |  | **+10,473** |
+
+The other 15 sites are unchanged. The signed site deltas sum exactly to
+`34,440,164 - 34,429,691 = 10,473`.
+
+Matching-ELF code at `delay_tsc`
+-------------------------------
+The debug ELF is the matching BuildID `338e542e384c46228f7a378babc0f9bb2b6a5997`
+and SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+`llvm-nm` resolves the function start as `0xffffffff8271b300`, size `0xbf`.
+Disassembly confirms:
+
+* `delay_tsc+0x1b` (`0xffffffff8271b31b`) is the initial `rdtsc`; its value is
+  combined and retained as the starting timestamp before control jumps to the
+  polling site.
+* `delay_tsc+0x4d` (`0xffffffff8271b34d`) is the polling `rdtsc`. The code
+  subtracts the starting timestamp, compares elapsed cycles with the requested
+  duration, and loops through the `pause`/deadline-check path while the
+  duration has not elapsed.
+
+Thus the histogram localizes nearly all of this pair's read-count difference
+to repeated polling at `delay_tsc+0x4d`; the entry site differs by 11 hits.
+This identifies where the additional reads occurred, not why the number or
+length of waits changed. The data do not establish nonce causality or connect
+these RDTSC deltas to the separately localized extra page fault. CR3 changes
+also remain 26,617/26,618.
+
+The source series' strict comparison remains `matches=false` on
+`machine_observations` and nonce-normalized `ordered_uart_bytes`. The histogram
+does not change that result or satisfy S5-07 acceptance. Preserve the current
+comparator and normalization rules. Astra independently recommended this
+offline localization as the next evidence slice; the sidecar arithmetic and
+matching-ELF disassembly were checked locally.

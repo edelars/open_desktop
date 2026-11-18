@@ -1,0 +1,51 @@
+# S5-07 selected TLB-flush caller-chain replay — 2026-11-17
+
+## Run and integrity
+
+One schema-v18 release-runner replay used the exact canonical run-0002 nonce `OD518e8bfb13a39d1980000fb3400000001`, the same kernel/initramfs/ACPI input bytes, Stage4A CPL0 set, user mode, RAM128, and 3,000,000,000 instruction budget.
+
+- Canonical source ID: `s5-07-counted-canonical-n2-20261117-a-run-0002`
+- Full runner `stop` object: exact value match
+- Decoded `stop.com1_hex`: exact match to source `uart.bin`, 23,880 bytes, SHA-256 `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4`
+- Stop: `cr3=0x64d4000`, `cr3_changes=26,618`, 34 delivered #PF, 35 exceptions, `retired=2,999,999,998`
+- Prefix ledger: schema 18, complete, 26,596 retained/total, 0 omitted
+
+## Selected event capture
+
+The one-shot target gate matched both CR3 event sequence 26,596 and RIP `0xffffffff8141d753`:
+
+- capture status: `captured`
+- chain status: `frame_limit` (the bounded eight-frame cap was reached)
+- CR3: `0x64d4000`; retired count: 2,319,748,956
+- RSP/RBP: `0xffffc9000000f8f8`
+- Eight frames captured; all saved-RBP links and return-address slots were readable and passed the validator
+
+## Symbolized call path
+
+The containing function was looked up at `return_address - 1` in the matching Linux 7.0.0-38.38 debug ELF; offsets in the table are measured from each recorded return address:
+
+| Frame | Return address | Symbol |
+|---:|---|---|
+| 1 | `0xffffffff8141c7f1` | `flush_tlb_func+0x131` |
+| 2 | `0xffffffff8141d1b9` | `flush_tlb_mm_range+0x269` |
+| 3 | `0xffffffff81809855` | `tlb_flush_mmu_tlbonly+0x45` |
+| 4 | `0xffffffff81809fa6` | `tlb_finish_mmu+0x46` |
+| 5 | `0xffffffff8182bfe0` | `relocate_vma_down+0x1d0` |
+| 6 | `0xffffffff818f24e5` | `setup_arg_pages+0x225` |
+| 7 | `0xffffffff8199bbec` | `load_elf_binary+0x3cc` |
+| 8 | `0xffffffff818f1cbc` | `exec_binprm+0x13c`, inline `search_binary_handler` |
+
+The exact package source agrees with the observed call path: `fs/exec.c:683–690` calls `relocate_vma_down` when `stack_shift != 0`; `mm/vma_exec.c:65–87` moves page tables, frees the displaced range, then calls `tlb_finish_mmu`. Thus run 2's extra same-value CR3 write is from argument-stack VMA relocation cleanup before `create_elf_tables`, not from the later platform-string copy PF handler. The chain reaches the operation initiator within eight frames, but `frame_limit` still records that it was truncated.
+
+One symbolization caveat: on-disk ELF bytes at `0xffffffff8141c7ec` encode a six-byte indirect `pv_ops` call, ending at `...c7f2`; the observed return address `...c7f1` is consistent with a five-byte runtime direct-call patch. The matching ELF establishes the function path, but does not by itself prove the patched runtime instruction bytes.
+
+## Limits and next step
+
+This single run confirms the run-2 call path and its `stack_shift != 0` branch. It does not establish why run 1 did not produce the corresponding additional flush, or whether the relocation/flush caused the later absent destination PTE and #PF. Do not infer `stack_shift == 0` in run 1. The next measurement should compare the MMU-gather state before `tlb_finish_mmu` in both exact-nonce runs: range being freed, page-table-free flags, and whether the flush condition is set. Comparator and allowlist remain unchanged; S5-07 remains blocked/unaccepted.
+
+## Artifact hashes
+
+- Runner JSON SHA-256: `711a8265002cef3579a7941c0b48a6a58f415a606b32fb1d2fc2e339be5991db`
+- Schema-v18 sidecar SHA-256: `1b822e063f164211b519061d4dc655f103bcfd4bd622f16d6fe4d0c97c37f240`
+
+Local runner files are under `work/stage5/s5-07-tlb-flush-caller-chain-exact-replay-20261117-a/run-0002/` and are not committed.

@@ -1,0 +1,79 @@
+# S5-07 canonical initramfs same-input replay control
+
+Date: 2026-11-16
+
+## Purpose and scope
+
+Repeat each run from the canonical updated-initramfs 3-billion N=2 series as
+an independent direct invocation, using the exact same run-specific nonce and
+guest artifact hashes. This tests whether the observed run-specific state is
+repeatable under identical guest-visible input. The controls are diagnostic,
+not a counted unique-nonce series and not S5-07 acceptance evidence.
+
+Both direct invocations used the same runner binary rebuilt from commit
+`b6d5e78` (SHA-256
+`d0e3be4b345cb1ce4b2b5e72c721630ab098641b29e77816b13fdd2e13c4251f`), kernel,
+canonical initramfs, CPU0 ACPI blob, 128 MiB RAM, 3,000,000,000 retirement
+budget, `stage4a --user-mode --set-cpl0`, and schema-v5
+`--execution-observations-out`. No `--linux-norandmaps` flag was used.
+
+```sh
+target/release/od-runner linux-direct \
+  --nonce OD518e878f3f96ffdf800012fdc00000000 \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 \
+  --out work/stage5/s5-07-canonical-same-input-replay-n2-20261116-a/run-0001.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/s5-07-canonical-same-input-replay-n2-20261116-a/run-0001-execution-observations.json
+
+target/release/od-runner linux-direct \
+  --nonce OD518e87a00efc97e3800012fdc00000001 \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 \
+  --out work/stage5/s5-07-canonical-same-input-replay-n2-20261116-a/run-0002.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/s5-07-canonical-same-input-replay-n2-20261116-a/run-0002-execution-observations.json
+```
+
+## Results
+
+| Source series run | Replayed nonce | Direct retired / stop | Stop equal | UART equal | Sidecar equal |
+|---|---|---|---|---|---|
+| 0001 | `OD518e878f3f96ffdf800012fdc00000000` | 2,999,999,998 / `budget_exhausted` | yes | yes | yes |
+| 0002 | `OD518e87a00efc97e3800012fdc00000001` | 2,999,999,998 / `budget_exhausted` | yes | yes | yes |
+
+For both controls, the complete machine `stop` object, UART bytes, and
+schema-v5 sidecar are byte-identical to the corresponding automatic-series run.
+The complete runner JSON differs only in
+`execution_observations_sidecar.path`, which names the new output file. Input
+hashes and exact nonce markers match their corresponding source runs.
+
+This is evidence that each observed run outcome repeats under the same
+guest-visible nonce and artifacts. Since the automatic N=2 pair differs only
+in run-specific nonce/input and output metadata, the cross-run variation is
+reproducible per input; attributing the variation specifically to nonce value
+is an inference, not a proven mechanism. This control does not classify the
+machine or UART differences as benign and does not change the strict comparator.
+S5-07 remains blocked/unaccepted.
+
+## Raw hashes
+
+The source automatic series is documented in
+[`s5-07-canonical-pre-marker-sleep-n2-20261116.log`](s5-07-canonical-pre-marker-sleep-n2-20261116.log).
+Direct runner JSON and sidecars are retained under
+`work/stage5/s5-07-canonical-same-input-replay-n2-20261116-a/`.
+
+| Replay | Runner JSON SHA-256 | Sidecar SHA-256 | UART SHA-256 |
+|---|---|---|---|
+| 0001 | `f866d52010ac2d6b748f9486c29176c98761f0982b103966065104c6b3f9a7fe` | `eb880af2bb073594212b488b24215a84f6d8e9491f5a6ae9a374cc73fa69a4d0` | `258712baddb16fbbba892e77a2c9aae7cf2422aa6126f6f1f1c8bed0f8c4519b` |
+| 0002 | `90b4d2e88cfd51a7e03969176a3c5f6f89e3a3cb370f654e5a85d92f4e5ce309` | `893a70fead7ab90381703f4826220ce8518ce9c4d107614ac4ad7ed2cca3620f` | `3ebe789ac812bf48a47e92c7ed05835cb03fbfe4a978907c84017bfe270d1dbd` |

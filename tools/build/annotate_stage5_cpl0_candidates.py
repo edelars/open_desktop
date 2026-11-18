@@ -22,6 +22,7 @@ def annotate(path: Path) -> None:
         "S4-38L6a-PREFETCHT0-base-only": ("prefetcht0 mem8", ["0F", "18"], []),
         "S4-38L4g-REP-BSF-register-BMI1-clear": ("tzcnt register operands; BSF when BMI1=0", ["0F", "BC"], ["F3"]),
         "S4-38L7ay-LOCK-XADD-m32-r32-base-only": ("lock xadd mem32,r32", ["0F", "C1"], ["F0"]),
+        "S4-38L9p-XCHG-m32-r32-base-only": ("xchg mem32,r32", ["87"], []),
     }
     candidate_ids = set(candidates)
     forms: dict[str, int] = {}
@@ -56,6 +57,15 @@ def annotate(path: Path) -> None:
                     form["operand_signature"] == "lock xadd mem32,r32"
                     and form["opcode_bytes"] == ["0F", "C1"]
                     and form["semantic_prefixes"] == ["lock"]
+                    and form["modrm_mode"] == "memory"
+                    and form["address"] == {"form": "base_only", "segment": None, "size": 64}
+                    and form["group_extension"] is None
+                )
+            if candidate == "S4-38L9p-XCHG-m32-r32-base-only":
+                matches = (
+                    form["operand_signature"] == "xchg mem32,r32"
+                    and form["opcode_bytes"] == ["87"]
+                    and form["semantic_prefixes"] == []
                     and form["modrm_mode"] == "memory"
                     and form["address"] == {"form": "base_only", "segment": None, "size": 64}
                     and form["group_extension"] is None
@@ -116,6 +126,20 @@ def annotate(path: Path) -> None:
                     and dimensions["address"] == {"form": "base_only", "segment": None, "size": 64}
                     and dimensions["sib"] is None
                 )
+            if candidate == "S4-38L9p-XCHG-m32-r32-base-only":
+                modrm = dimensions["modrm"]
+                observed_modrm = {"07": (0, 0, 7), "43": (1, 0, 3), "47": (1, 0, 7)}
+                matches = (
+                    dimensions["operand_signature"] == "xchg mem32,r32"
+                    and dimensions["opcode_bytes"] == ["87"]
+                    and dimensions["prefix_bytes"] == []
+                    and modrm is not None
+                    and modrm["raw"] in observed_modrm
+                    and dimensions["instruction_length"] == (2 if modrm["mod"] == 0 else 3)
+                    and (modrm["mod"], modrm["reg"], modrm["rm"]) == observed_modrm[modrm["raw"]]
+                    and dimensions["address"] == {"form": "base_only", "segment": None, "size": 64}
+                    and dimensions["sib"] is None
+                )
             if candidate.startswith("S4-38L6a-PREFETCH"):
                 reg = 0 if candidate.endswith("PREFETCHNTA-base-only") else 1
                 matches = matches and dimensions == {
@@ -142,6 +166,7 @@ def annotate(path: Path) -> None:
         "S4-38L6a-PREFETCHT0-base-only": 3,
         "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
         "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 36,
+        "S4-38L9p-XCHG-m32-r32-base-only": 13,
     }
     if forms != expected:
         raise ValueError(f"observed candidate counts changed: {forms}")

@@ -1,0 +1,15 @@
+# S5-07 same-run panic console-context follow-up
+
+## Run
+
+- Artifact directory: `work/stage5/stage5-s5-07-panic-context-20261115-a/` (ignored local evidence).
+- Invocation: release `od-runner linux-direct --run --set-cpl0 --cpuid-profile stage4a --user-mode`, retirement budget `3,000,000,000`, nonce `OD5CTX20261115xxxxxxxxxxxxxxxxxxxxx`, plus `--stack-context-out work/stage5/stage5-s5-07-panic-context-20261115-a/context.json`.
+- The 35-character nonce kept the command line at 116 bytes, matching the counted F-series command-line length. Kernel, initramfs, ACPI inputs and release runner were the saved Stage 4A set. The run was already active when the environment date advanced from 2026-11-15 to 2026-11-16; it was not restarted.
+- `run.json`: `status=loaded`, `acceptance=counted`, `retired=2,999,999,998`, budget `3,000,000,000`; exact nonce is recorded. Command line: `console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=OD5CTX20261115xxxxxxxxxxxxxxxxxxxxx nokaslr`.
+- SHA-256: `run.json` `d58a8130376a4e06bc46547b9dc957355c247394a3efcc2ffc55ab2d7d4ca1cd`; `context.json` `b0d3f4bc8dd00d7d908d7abeb3eb35e85e2f5ea657f030feedb5861250b09696`.
+
+## Observation
+
+The terminal trace contains `? tty_ldisc_deref+0x16/0x20`, along with already allowlisted optional frames and `vfs_write`. The bounded sidecar contains four snapshots: one on `Call Trace:` and three on optional-frame lines. Each was captured at RIP `0xffffffff81fee690`, resolved with the staged debug ELF to `io_serial_out` (`drivers/tty/serial/8250/8250_port.c:408`). The sampled frame-pointer chains are the active UART trace-printing path (`serial8250_console_putchar`, `uart_console_write`, `__show_trace_log_lvl`, `show_stack`, `dump_stack_lvl`, `dump_stack`, `do_syscall_x64`, `entry_SYSCALL_64_after_hwframe`), not a contemporaneous sample of the original kernel frames represented by the `?` text.
+
+Therefore this run confirms the exact unknown optional symbol in a counted run and confirms when the sidecar sampled the console. It does not establish whether `tty_ldisc_deref` is stale or a real frame. Do not expand the optional-frame allowlist or relax the terminal panic comparator on this evidence. The next useful evidence must inspect the original trace-generation/unwind context, or otherwise prove the candidate's semantics for this exact kernel build. S5-07 remains blocked/unaccepted pending a justified explanation and strict-clean automatic N=2.

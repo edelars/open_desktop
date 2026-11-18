@@ -13,7 +13,8 @@ use crate::console_output_context::{
     capture_frame_chain,
 };
 use crate::execution_observations::{
-    LinuxExecutionObservationCollector, LinuxExecutionObservations,
+    LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
+    RdtscClockReadLedger,
 };
 use crate::fetch_cache_report::{CallObservation, FetchCacheAccumulator, LinuxFetchCacheReport};
 use crate::fetch_cache_sweep::{FetchCacheSweep, FetchSweepReport, SweepConfig};
@@ -23,6 +24,8 @@ use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSourc
 use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
+use crate::nvme::irq_source::NvmeIoapicIrqSource;
+use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_SLOT};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
@@ -61,6 +64,7 @@ use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, IretqUserEntry, LongModeState, Register, StiShadow};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -155,6 +159,7 @@ const DEVICE_CODE_ACPI_PM: u32 = 9;
 const HANDOFF_MINOR_NVME: u16 = 1;
 /// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
 const HANDOFF_MINOR_ACPI: u16 = 2;
+const HANDOFF_MINOR_NVME_PCI: u16 = 3;
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,11 +179,14 @@ pub struct FirmwareBoardConfig {
     /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
     /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
     pub nvme: Option<NvmeConfig>,
+    /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
+    /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
+    pub nvme_pci: bool,
     /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
-    /// over an empty bus 0. `false` keeps handoff v1.0 byte for byte (code 7
+    /// over bus 0. `false` keeps handoff v1.0 byte for byte (code 7
     /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
     /// `version_minor` and the entry count do not change) and adds the MMIO
-    /// region of the window. The board declares no PCI function.
+    /// region of the window. The Linux board may provide an NVMe PCI function.
     pub pci_ecam: bool,
     /// ACPI fixed hardware (S7-14a): PM1a event/control, PM timer and reset
     /// register on ports `0x0600..0x0610`. The handoff block does not describe it
@@ -197,8 +205,8 @@ pub struct FirmwareBoardConfig {
     /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
     /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
     /// `0xA0..=0xA1`, and the absent-device sinks (read `0xFF`, write ignored)
-    /// for CMOS `0x70..=0x71`, `0xED` and `0x80`. The handoff block and the ACPI
-    /// manifest hash do not depend on it (`false` and `true` give the same bytes).
+    /// for CMOS `0x70..=0x71`, `0xED` and `0x80`. The handoff and ACPI manifest
+    /// are unchanged unless the separate `nvme_pci` option is selected.
     /// Not bound: `0x60/0x64` (a trap), LAPIC shared timer, port tick, IRQ delivery.
     pub linux_profile: bool,
     /// Number of vCPUs `N` (S6-11), `1..=4`; `1` is the board as it was. Each has its own Local
@@ -218,6 +226,7 @@ impl Default for FirmwareBoardConfig {
             system_uuid: [0; 16],
             serial: Vec::new(),
             nvme: None,
+            nvme_pci: false,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
@@ -246,12 +255,7 @@ impl FirmwareBoardConfig {
     /// therefore requires rebuilding the blob.
     pub fn acpi_manifest_hash(&self) -> Result<crate::AcpiManifestHash, FirmwareBoardError> {
         validate_config(self)?;
-        let devices = board_devices(
-            self.nvme.is_some(),
-            self.pci_ecam,
-            self.acpi_tables,
-            self.display_enabled,
-        );
+        let devices = configured_board_devices(self);
         let encoded: Vec<[u8; DEVICE_ENTRY_BYTES]> =
             devices.iter().copied().map(DeviceEntry::to_bytes).collect();
         crate::acpi_manifest_hash(&encoded).map_err(|_| {
@@ -469,6 +473,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
         ));
     }
+    if config.nvme_pci && !(config.nvme.is_some() && config.linux_profile) {
+        return Err(FirmwareBoardError::Config(
+            "nvme_pci needs nvme and linux_profile",
+        ));
+    }
     if config.serial.len() > 64 || config.serial.iter().any(|b| !(0x20..=0x7e).contains(b)) {
         return Err(FirmwareBoardError::Config(
             "serial must be at most 64 ASCII 0x20..0x7E bytes",
@@ -593,18 +602,32 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -
 }
 
 fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
-    board_devices(
+    let mut devices = board_devices(
         config.nvme.is_some(),
         config.pci_ecam,
         config.acpi_tables,
         config.display_enabled,
-    )
+    );
+    if let Some(nvme) = devices.get_mut(DEV_NVME_TABLE)
+        && config.nvme_pci
+        && nvme.code == DEVICE_CODE_NVME
+    {
+        nvme.base = NVME_PCI_BAR_BASE;
+        nvme.gsi = crate::apic_pair::NVME_PIN as u32;
+        nvme.irq_flags = 0b11;
+        nvme.param0 = u64::from(NVME_PCI_SLOT);
+    }
+    devices
 }
 
-/// `version_minor` of the handoff block: 2 with the ACPI entry (code 9), else 1
-/// with the NVMe entry (code 8), else 0 (FIRMWARE_BOOT.md 6.4).
+/// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
-    if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
+    if devices
+        .iter()
+        .any(|d| d.code == DEVICE_CODE_NVME && d.gsi != u32::MAX)
+    {
+        HANDOFF_MINOR_NVME_PCI
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
         HANDOFF_MINOR_ACPI
     } else if devices.iter().any(|d| d.code == DEVICE_CODE_NVME) {
         HANDOFF_MINOR_NVME
@@ -1716,6 +1739,46 @@ impl LoadedFirmwareBoard {
         (frames, ended)
     }
 
+    fn capture_delay_tsc_frame_chain(
+        &mut self,
+        rip: u64,
+        rbp: u64,
+        cr3: u64,
+    ) -> (Vec<crate::ConsoleContextFrame>, crate::FrameChainEnd) {
+        const CR0_LONG_PAGING: u64 = (1 << 31) | (1 << 16) | (1 << 4) | 1;
+        const CR4_PAE: u64 = 1 << 5;
+        let paging = Long64ProbeConfig::new(
+            self.state().cr0.unwrap_or(CR0_LONG_PAGING),
+            cr3,
+            self.state().cr4.unwrap_or(CR4_PAE),
+            FIRMWARE_EFER,
+        );
+        match paging {
+            Ok(paging) => crate::console_output_context::capture_frame_chain_with_limit(
+                rbp,
+                4,
+                |frame_pointer| {
+                    let mut bytes = [0; 16];
+                    self.bus
+                        .read_virtual_ram_diagnostic(
+                            &paging,
+                            rip,
+                            GuestLinearAddress::new(frame_pointer),
+                            AccessContext {
+                                mode: InstructionMode::Long64,
+                                privilege: PrivilegeLevel::Ring0,
+                                origin: AccessOrigin::Explicit,
+                            },
+                            &mut bytes,
+                        )
+                        .map(|()| bytes)
+                        .map_err(|_| ())
+                },
+            ),
+            Err(_) => (Vec::new(), crate::FrameChainEnd::ReadFailed),
+        }
+    }
+
     pub fn uart(&self) -> Uart16550Handle {
         self.uart.clone()
     }
@@ -1849,8 +1912,15 @@ impl LoadedFirmwareBoard {
             return false;
         };
         let io_apic = IoApic::new(self.lapic.clone()).handle();
-        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic);
-        self.irq_source = Box::new(source.clone());
+        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone());
+        self.irq_source = match &self.nvme {
+            Some(nvme) if nvme.has_pci_transport() => Box::new(NvmeIoapicIrqSource::new(
+                Box::new(source.clone()),
+                nvme.clone(),
+                io_apic,
+            )),
+            _ => Box::new(source.clone()),
+        };
         self.uart_ioapic_source = Some(source);
         true
     }
@@ -2564,6 +2634,14 @@ impl LoadedFirmwareBoard {
             irq_hook,
             capture_execution_observations,
             None,
+            None,
+            1,
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
         )
     }
 
@@ -2576,6 +2654,14 @@ impl LoadedFirmwareBoard {
         irq_hook: bool,
         capture_execution_observations: bool,
         selected_post_iret_ordinal: Option<u64>,
+        selected_rdtsc_sample_rip: Option<u64>,
+        selected_rdtsc_sample_stride: u64,
+        selected_rdtsc_entry_sample_rip: Option<u64>,
+        selected_rdtsc_sample_window: Option<crate::RdtscSampleWindow>,
+        selected_rdtsc_prefix_sentinel_rip: Option<u64>,
+        selected_instruction_path_trace: bool,
+        selected_elf_stack_copy: bool,
+        selected_delay_tsc_call_summary: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2591,6 +2677,14 @@ impl LoadedFirmwareBoard {
         let mut general_protection_faults_delivered = 0u64;
         let mut execution_observations = capture_execution_observations.then(|| {
             LinuxExecutionObservationCollector::with_post_iret_ordinal(selected_post_iret_ordinal)
+                .with_elf_stack_copy(selected_elf_stack_copy)
+                .with_rdtsc_sample_rip(selected_rdtsc_sample_rip)
+                .with_rdtsc_sample_stride(selected_rdtsc_sample_stride)
+                .with_rdtsc_entry_sample_rip(selected_rdtsc_entry_sample_rip)
+                .with_rdtsc_sample_window(selected_rdtsc_sample_window)
+                .with_rdtsc_prefix_sentinel(selected_rdtsc_prefix_sentinel_rip)
+                .with_delay_tsc_call_summary(selected_delay_tsc_call_summary)
+                .with_instruction_path_trace(selected_instruction_path_trace)
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
@@ -2624,6 +2718,12 @@ impl LoadedFirmwareBoard {
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
+        let mut clock_origin = None;
+        let mut pm_timer_ns_charged = 0u64;
+        let mut pit_ns_charged = 0u64;
+        let mut rdtsc_ns_charged = 0u64;
+        let mut idle_ns_advanced = 0u64;
+        let delivered_irq_mirror = Cell::new(0u64);
         let mut fetch_report = self
             .fetch_cache_report_enabled
             .then(|| FetchCacheAccumulator::new(fetch_cache, self.checkpoints.is_some()));
@@ -2652,11 +2752,49 @@ impl LoadedFirmwareBoard {
         );
         let result = loop {
             let uart = self.uart.clone();
+            let clock_read = Cell::new(None);
+            let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
+                observations.build_rdtsc_clock_trace_if_active(|| {
+                    let (initial_now_ns, tsc_hz) = *clock_origin.get_or_insert_with(|| {
+                        let snapshot = self.clock.snapshot();
+                        (snapshot.now_ns(), snapshot.tsc_hz())
+                    });
+                    delivered_irq_mirror.set(irq_counters.irqs_delivered);
+                    RdtscClockReadLedger {
+                        initial_now_ns,
+                        now_ns: 0,
+                        tsc: 0,
+                        tsc_hz,
+                        retired_instructions_charged: retired,
+                        pm_timer_ns_charged,
+                        pit_ns_charged,
+                        rdtsc_ns_charged,
+                        idle_ns_advanced,
+                        quantum_ordinal: quanta.saturating_add(1),
+                        irqs_delivered: delivered_irq_mirror.get(),
+                    }
+                })
+            });
+            let capture_clock_read = quantum_clock_ledger.is_some();
+            let clock_read_ref = &clock_read;
+            let delivered_irq_mirror_ref = &delivered_irq_mirror;
             let mut source = rdtsc_tick.clone().map(|tick| {
                 let clock = self.clock.clone();
                 move || {
                     tick.store(true, Ordering::Relaxed);
-                    clock.snapshot().tsc()
+                    if let Some(quantum_clock_ledger) = quantum_clock_ledger {
+                        let snapshot = clock.snapshot();
+                        let tsc = snapshot.tsc();
+                        clock_read_ref.set(Some(RdtscClockReadLedger {
+                            now_ns: snapshot.now_ns(),
+                            tsc,
+                            irqs_delivered: delivered_irq_mirror_ref.get(),
+                            ..quantum_clock_ledger
+                        }));
+                        tsc
+                    } else {
+                        clock.snapshot().tsc()
+                    }
                 }
             });
             let stop = || {
@@ -2708,6 +2846,9 @@ impl LoadedFirmwareBoard {
                 }
             }
             // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
+            if let Some(observations) = execution_observations.as_mut() {
+                observations.begin_instruction_path_quantum(quanta.saturating_add(1), retired);
+            }
             if self.checkpoints.is_some() {
                 let ns_at_start = self.clock.snapshot().now_ns();
                 if let Some(recorder) = self.checkpoints.as_mut() {
@@ -2733,6 +2874,7 @@ impl LoadedFirmwareBoard {
                 irq_hook.then(|| IrqBoundaryHook {
                     source: &mut *self.irq_source,
                     counters: &mut irq_counters,
+                    delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
                     skip_first_boundary: partial_rep,
                 }),
                 self.checkpoints.as_mut(),
@@ -2781,11 +2923,18 @@ impl LoadedFirmwareBoard {
                 if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
+                if capture_clock_read {
+                    pm_timer_ns_charged = pm_timer_ns_charged.saturating_add(tick_ns);
+                }
             }
-            if let Some(pit) = &pit
-                && let Err(error) = self.charge_ns(pit.take_port_tick_ns())
-            {
-                break Err(failure(error));
+            if let Some(pit) = &pit {
+                let tick_ns = pit.take_port_tick_ns();
+                if let Err(error) = self.charge_ns(tick_ns) {
+                    break Err(failure(error));
+                }
+                if capture_clock_read {
+                    pit_ns_charged = pit_ns_charged.saturating_add(tick_ns);
+                }
             }
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
@@ -2799,7 +2948,53 @@ impl LoadedFirmwareBoard {
                 if cpl == 0
                     && let Some(observations) = execution_observations.as_mut()
                 {
+                    let (frame_links, frame_chain_end) = if observations
+                        .wants_delay_tsc_call_summary()
+                        && report.last_instruction_rip == Some(crate::LINUX_DELAY_TSC_ENTRY_RIP)
+                    {
+                        self.capture_delay_tsc_frame_chain(
+                            report.last_instruction_rip.unwrap_or_default(),
+                            self.state().gpr[Register::Rbp as usize],
+                            self.page_table_root,
+                        )
+                    } else {
+                        (Vec::new(), crate::FrameChainEnd::NullFramePointer)
+                    };
+                    observations.record_delay_tsc_entry(
+                        report.last_instruction_rip,
+                        self.state(),
+                        frame_links,
+                        frame_chain_end,
+                    );
                     observations.record_cpl0_rdtsc(report.last_instruction_rip);
+                    observations.record_rdtsc_site_sample(
+                        report.last_instruction_rip,
+                        self.state(),
+                        clock_read.get().filter(|_| {
+                            report.last_instruction_rip == selected_rdtsc_entry_sample_rip
+                        }),
+                    );
+                    let prefix_ordinal = observations.record_rdtsc_prefix(
+                        report.last_instruction_rip,
+                        self.state(),
+                        clock_read.get(),
+                        page_faults_delivered,
+                        general_protection_faults_delivered,
+                    );
+                    observations.complete_rdtsc_clock_trace(
+                        report.last_instruction_rip,
+                        RdtscClockReadCompletion {
+                            quantum_instructions_executed: report.instructions_executed,
+                            retired_instructions_through_rdtsc: retired,
+                        },
+                    );
+                    observations.complete_rdtsc_prefix(
+                        prefix_ordinal,
+                        RdtscClockReadCompletion {
+                            quantum_instructions_executed: report.instructions_executed,
+                            retired_instructions_through_rdtsc: retired,
+                        },
+                    );
                 }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
@@ -2807,6 +3002,16 @@ impl LoadedFirmwareBoard {
                 if let Err(error) = self.charge_ns(tick_ns) {
                     break Err(failure(error));
                 }
+                if execution_observations
+                    .as_ref()
+                    .is_some_and(LinuxExecutionObservationCollector::wants_any_rdtsc_clock_trace)
+                {
+                    rdtsc_ns_charged = rdtsc_ns_charged.saturating_add(tick_ns);
+                }
+            }
+            if let Some(observations) = execution_observations.as_mut() {
+                observations
+                    .complete_instruction_path_quantum(quanta, report.instructions_executed);
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             // S4-39g: a halted CPU (`HLT`) with IF = 1 and a source that can wake it: the clock
@@ -2829,6 +3034,12 @@ impl LoadedFirmwareBoard {
                 };
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
+                if execution_observations
+                    .as_ref()
+                    .is_some_and(LinuxExecutionObservationCollector::wants_any_rdtsc_clock_trace)
+                {
+                    idle_ns_advanced = idle_ns_advanced.saturating_add(idle);
+                }
                 self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
                 remaining -= 1;
                 partial_rep = false;
@@ -2896,12 +3107,25 @@ impl LoadedFirmwareBoard {
             })
             .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
         };
+        if let Some(observations) = execution_observations.as_mut() {
+            observations.finish_elf_copy_run(
+                self.vcpus[BOOT_VCPU_INDEX].state.cr3.unwrap_or(0),
+                page_faults_delivered,
+                exceptions_delivered,
+                changes.len() as u64,
+                rdtsc_reads_by_cpl[0],
+                retired,
+            );
+        }
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = None;
         // CR2 moves to the vCPU's `guest_cr2` cell (see the entry comment); the CPU state gets
         // back what it had.
         self.vcpus[BOOT_VCPU_INDEX].guest_cr2 = self.vcpus[BOOT_VCPU_INDEX].state.cr2;
         self.vcpus[BOOT_VCPU_INDEX].state.cr2 = prior_cr2;
+        if let Some(observations) = execution_observations.as_mut() {
+            observations.finish_instruction_path_trace();
+        }
         let leaf_2m_tag = fetch_cache && self.fetch_cache_tag == FetchCacheTag::Leaf2M;
         self.fetch_cache_report = fetch_report.map(|accumulator| {
             let mut report = accumulator.finish();
@@ -3111,7 +3335,7 @@ pub(crate) struct AssembledBoard {
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
 pub(crate) fn assemble_board(
     config: &FirmwareBoardConfig,
-    pci: PciEcam,
+    mut pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
@@ -3197,8 +3421,15 @@ pub(crate) fn assemble_board(
     if let Some(nvme_config) = &config.nvme
         && devices[DEV_NVME_TABLE].present()
     {
-        let (device, handle) =
-            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+        let (device, handle) = if config.nvme_pci {
+            let (device, handle, function) =
+                NvmeDevice::new_pci(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+            pci.add_function(0, NVME_PCI_SLOT, 0, Box::new(function))
+                .map_err(|_| FirmwareBoardError::Config("NVMe PCI slot is occupied"))?;
+            (device, handle)
+        } else {
+            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?
+        };
         let device_index = bus_devices.len();
         bus_devices.push(Box::new(device));
         mmio.push(MmioBinding {
@@ -3287,7 +3518,7 @@ pub(crate) fn assemble_board(
             Box::new(DmaPage0::new()),
         )?;
     }
-    let bus = MachineBus::new(
+    let mut bus = MachineBus::new(
         map,
         RamLimits::new(config.ram_bytes),
         bus_devices,
@@ -3295,6 +3526,9 @@ pub(crate) fn assemble_board(
         ports,
     )
     .map_err(FirmwareBoardError::BusBuild)?;
+    if config.nvme_pci {
+        bus.enable_nvme_pci_mmio_window();
+    }
     Ok(AssembledBoard {
         bus,
         uart,
@@ -3521,6 +3755,11 @@ fn load_firmware_image_inner(
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
     let entry_offset = validate_image(image, handoff_minor(&devices))?;
+    if config.nvme_pci {
+        return Err(FirmwareBoardError::Config(
+            "nvme_pci needs Linux direct boot",
+        ));
+    }
     assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
 }
 
@@ -4421,6 +4660,176 @@ mod tests {
                 .read_physical(ecam_at(0), AccessWidth::Dword),
             Ok(0xFFFF_FFFF)
         );
+    }
+
+    #[test]
+    fn linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes() {
+        use crate::bus::SetStepMmio;
+        use crate::{AccessWidth, GuestPhysicalAddress};
+        const ASQ: u64 = 0x10_0000;
+        const ACQ: u64 = 0x11_0000;
+        const MSE: u64 = 1 << 1;
+        const BME: u64 = 1 << 2;
+        const PCI_INTERRUPT_STATUS: u64 = 1 << 19;
+        const VECTOR: u8 = 0x51;
+        let local = |off| GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + off);
+        let io = |off| GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + off);
+        let config = FirmwareBoardConfig {
+            linux_profile: true,
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            nvme: Some(NvmeConfig::default()),
+            nvme_pci: true,
+            ..FirmwareBoardConfig::default()
+        };
+        let mut board = assemble_board(&config, PciEcam::new(), None, None).unwrap();
+        assert_eq!(le_u16(board.handoff_block(), 0x0a).unwrap(), 3);
+        // Generated by the independent firmware ACPI builder for this board.
+        assert_eq!(
+            hex(&config.acpi_manifest_hash().unwrap()),
+            "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+        );
+        let apic = board.lapic.clone();
+        let bus = &mut board.bus;
+        let cfg = |reg| {
+            GuestPhysicalAddress::new(
+                PCI_ECAM_DESCRIPTOR.base + (u64::from(NVME_PCI_SLOT) << 15) + reg,
+            )
+        };
+        let bar = |off| GuestPhysicalAddress::new(NVME_PCI_BAR_BASE + off);
+        let read =
+            |bus: &mut MachineBus, addr| bus.read_physical(addr, AccessWidth::Dword).unwrap();
+        let write = |bus: &mut MachineBus, addr, value| {
+            bus.write_physical(addr, AccessWidth::Dword, value, |_| {})
+                .unwrap();
+        };
+        assert_eq!(read(bus, cfg(8)) >> 8, 0x01_08_02);
+        assert_eq!(read(bus, cfg(0x3c)) & 0xff00, 0x100);
+        assert_eq!(read(bus, cfg(0x10)), NVME_PCI_BAR_BASE | 4);
+        assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
+        write(bus, bar(0x14), 1);
+
+        // Probe both halves of the BAR and restore it as firmware would.
+        write(bus, cfg(0x10), u64::from(u32::MAX));
+        write(bus, cfg(0x14), u64::from(u32::MAX));
+        assert_eq!(read(bus, cfg(0x10)), 0xffff_e004);
+        assert_eq!(read(bus, cfg(0x14)), u64::from(u32::MAX));
+        write(bus, cfg(4), MSE);
+        assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
+        write(bus, cfg(0x10), NVME_PCI_BAR_BASE);
+
+        // ECAM and conf1 program the same address, including the high half.
+        let conf1_bar_high = (1 << 31) | (u32::from(NVME_PCI_SLOT) << 11) | 0x14;
+        bus.write_port(
+            PortAddress::new(PCI_CONF1_BASE_PORT),
+            AccessWidth::Dword,
+            conf1_bar_high,
+        )
+        .unwrap();
+        bus.write_port(
+            PortAddress::new(PCI_CONF1_BASE_PORT + 4),
+            AccessWidth::Dword,
+            0,
+        )
+        .unwrap();
+        assert_eq!(read(bus, bar(0)) & 0xffff, 1023);
+        assert_eq!(
+            read(bus, bar(0x14)),
+            0,
+            "the disabled CC write was discarded"
+        );
+        let (_, set_step_io) = bus.split_for_set_step();
+        assert!(
+            set_step_io
+                .windows()
+                .contains(&(NVME_PCI_BAR_BASE, NVME_MMIO_BYTES))
+        );
+
+        write(bus, bar(0x24), 0x000f_000f);
+        bus.write_physical(bar(0x28), AccessWidth::Qword, ASQ, |_| {})
+            .unwrap();
+        bus.write_physical(bar(0x30), AccessWidth::Qword, ACQ, |_| {})
+            .unwrap();
+        write(bus, bar(0x14), 1 | (6 << 16) | (4 << 20));
+        let mut get_features = [0; 64];
+        get_features[0] = 0x0a; // Get Features.
+        get_features[40] = 0x07; // Number of Queues.
+        bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ), &get_features, |_| {})
+            .unwrap();
+        write(bus, bar(0x1000), 1);
+        let nvme = board.nvme.as_ref().unwrap();
+
+        assert!(!nvme.doorbell_pending());
+        assert_eq!(
+            nvme.service(bus, |_| {}),
+            crate::NvmeServiceReport::default()
+        );
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+
+        let source = NvmeIoapicIrqSource::new(
+            Box::new(NoIrqSource),
+            nvme.clone(),
+            IoApic::new(apic.clone()).handle(),
+        );
+        write(bus, local(0xf0), 0x1ff);
+        write(bus, io(0), (0x10 + 2 * crate::apic_pair::NVME_PIN) as u64);
+        write(
+            bus,
+            io(0x10),
+            u64::from(crate::apic_pair::SCI_LEVEL_LOW) | u64::from(VECTOR),
+        );
+
+        write(
+            bus,
+            cfg(4),
+            MSE | BME | u64::from(crate::pci_ecam::COMMAND_INTX_DISABLE),
+        );
+        assert!(
+            nvme.doorbell_pending(),
+            "disabled DMA must retain queued work"
+        );
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(
+            read(bus, cfg(4)) & PCI_INTERRUPT_STATUS,
+            PCI_INTERRUPT_STATUS
+        );
+        source.pending_vector();
+        assert_eq!(apic.pending(), None, "PCI Command disables the wire");
+
+        write(bus, bar(0x0c), 1); // INTMS masks vector 0.
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+        write(bus, cfg(4), MSE | BME);
+        source.pending_vector();
+        assert_eq!(apic.pending(), None, "INTMS masks the interrupt");
+
+        write(bus, bar(0x10), 1); // INTMC unmasks it while a CQE is still pending.
+        assert_eq!(
+            read(bus, cfg(4)) & PCI_INTERRUPT_STATUS,
+            PCI_INTERRUPT_STATUS
+        );
+        source.pending_vector();
+        assert_eq!(apic.acknowledge(), Some(VECTOR));
+        assert_ne!(
+            read(bus, io(0x10)) & u64::from(crate::apic_pair::REMOTE_IRR),
+            0
+        );
+        write(bus, local(0xb0), 0); // EOI with CQE still pending.
+        assert_eq!(
+            apic.acknowledge(),
+            Some(VECTOR),
+            "level re-delivered while asserted"
+        );
+
+        write(bus, bar(0x1004), 1); // CQ head acknowledges the completion.
+        assert_eq!(read(bus, cfg(4)) & PCI_INTERRUPT_STATUS, 0);
+        source.pending_vector();
+        write(bus, local(0xb0), 0);
+        assert_eq!(
+            read(bus, io(0x10)) & u64::from(crate::apic_pair::REMOTE_IRR),
+            0
+        );
+        assert_eq!(apic.pending(), None);
     }
 
     #[test]
@@ -6802,6 +7211,7 @@ mod tests {
                 Some(IrqBoundaryHook {
                     source,
                     counters,
+                    delivered_mirror: None,
                     skip_first_boundary: false,
                 }),
                 None,

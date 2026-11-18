@@ -1,0 +1,132 @@
+S5-07 strict N=2 residual ledger — 2026-11-17
+
+Scope and actual comparator path
+--------------------------------
+This is an offline analysis of the counted common-ID source series
+`s5-07-counted-canonical-n2-20261117-a`. Its strict within-series result is
+`matches=false`. No guest replay, comparator edit, or allowlist edit was made
+for this ledger.
+
+The scalar/configuration/syscall checks pass, but the full
+`stage4_nonce_variation_eligible` gate is false. It also requires the terminal
+panic snapshot to pass `normalize_stage4_panic_snapshot`. Both source runs have
+optional panic frames that the current allowlist rejects, so the panic
+snapshot helper returns `None`; this disables both the machine stop volatility
+projection and Stage4 UART normalization. The actual comparator therefore
+compares the full nonce-normalized stop and UART bytes, after its explicit
+removals of `com1_hex`, `com1_text`, and `machine_stop_reason` from the stop
+object. The five-field volatility projection described in earlier analysis
+was only a manual counterfactual and is not the strict comparator path.
+
+Actual machine stop differences
+-------------------------------
+These are all 26 differing leaves in the canonical source runner `stop`
+objects after nonce substitution and the comparator's three explicit stop
+field removals. Values are run 0001 → run 0002.
+
+| JSON path | Run 0001 | Run 0002 |
+| --- | ---: | ---: |
+| `stop.cr3` | `0x64ac000` | `0x64d4000` |
+| `stop.cr3_changes` | 26,617 | 26,618 |
+| `stop.exceptions_delivered` | 34 | 35 |
+| `stop.gpr.r14` | `0x7` | `0x60` |
+| `stop.gpr.rax` | `0x8b81added` | `0x8b8b987c7` |
+| `stop.gpr.rbp` | `0xffffc9000000fa00` | `0xffffc9000000fb20` |
+| `stop.gpr.rbx` | `0x8408` | `0x846c` |
+| `stop.gpr.rdi` | `0x8b80c2abb` | `0x8b8ad5448` |
+| `stop.gpr.rdx` | `0xeb332` | `0xc337f` |
+| `stop.gpr.rsp` | `0xffffc9000000fa00` | `0xffffc9000000fb20` |
+| `stop.halt_idle_ns` | 1,913,888 | 1,839,061 |
+| `stop.irq0_edges` | 34,791 | 34,801 |
+| `stop.irq_refused_masked` | 1,437,141 | 1,212,264 |
+| `stop.irq_refused_shadow` | 156 | 155 |
+| `stop.irqs_delivered` | 34,796 | 34,806 |
+| `stop.last_cr3_change.new_cr3` | `0x64ac000` | `0x64d4000` |
+| `stop.last_cr3_change.old_cr3` | `0x64ad000` | `0x64d5000` |
+| `stop.page_faults_delivered` | 33 | 34 |
+| `stop.quanta` | 34,556,254 | 34,566,405 |
+| `stop.quantum_cut_by_deadline` | 33,157,312 | 33,167,296 |
+| `stop.rdtsc_reads` | 34,429,691 | 34,440,164 |
+| `stop.rdtsc_reads_by_cpl[0]` | 34,429,691 | 34,440,164 |
+| `stop.rip` | `0xffffffff8271b335` | `0xffffffff8271b345` |
+| `stop.rip_bytes` | `f3 90 65 ff 05 f2 1c d0 01 65 8b 35 ef 1c d0 01` | `41 39 f1 75 39 41 89 f1 0f 31 0f 1f 00 48 c1 e2` |
+| `stop.rip_gpa` | `0x271b335` | `0x271b345` |
+| `stop.virtual_ns` | 37,448,507,886 | 37,458,906,059 |
+
+These endpoint snapshots and counters show differences, not their full causal
+order. The exact schema-v13 fault-event replay and schema-v14 pre-copy
+stack-copy capture are from these same source runs. The v14 snapshot locally
+explains the extra run-2 `#PF`: run 1's seven-byte copy destination shares the
+mapped page with `bprm_p`; in run 2, stack alignment puts the destination on an
+adjacent lower page whose PT leaf is absent. The upstream reason for the
+different aligned stack position/page state remains unknown. The exact v13
+fault-event replay for these same source runs
+records 33 and 34 delivered `#PF` events, respectively, with no omissions.
+Run 2 has one inserted event after the first 30 common tuples: a CPL0 write
+fault at `rep_movs_alternative+0x11` while populating the initial `/init`
+stack. This additional `#PF` numerically accounts for the +1 page-fault and
+aggregate delivered-exception counts (each run also delivered one `#GP(0)`).
+Together, v13 and v14 identify the local cause of the extra fault and its
+additional exception. They do not connect that fault to the +1 `cr3_changes`
+counter.
+
+RDTSC accounting and terminal-loop evidence
+-------------------------------------------
+The full 22-site RDTSC histograms reconcile to the source totals. Delay sites
+account for +10,402 poll reads and +11 entry reads, or +10,413 combined. Other
+sites contribute the remaining net +60. Per-call summaries attribute all +11
+delay entries to `vpanic+0x497` through `__const_udelay`; the completed-call
+and final-partial-poll balance is recorded in
+`s5-07-delay-call-summary-exact-replay-20261117.log`. The descriptive median
+of 975 polls per vpanic call is not a fixed-cost guarantee. The +60 at other
+RDTSC sites and the +1 CR3 counter are not explained by that caller/poll
+balance, and the delay-count increase is not causally linked to the extra
+page fault.
+
+Actual first UART difference
+----------------------------
+The strict comparator applies nonce substitution only. The first differing
+byte is offset 6,569 (zero-based), on UART line 96 (one-based):
+
+* Run 0001: `[    0.021286] KHO: Failed to reserve scratch area, disabling kexec handover`
+* Run 0002: `[    0.021285] KHO: Failed to reserve scratch area, disabling kexec handover`
+
+The nearest common preceding line is line 95, `[    0.021252] KHO: Failed to
+reserve lowmem scratch buffer`. This is an observed one-microsecond timestamp
+difference on the same message; no timing normalization was active because the
+eligibility gate failed. Later UART differences include the terminal panic
+stack. Its normalizer is also disabled by unknown optional frames; run 1 first
+has `? psi_task_switch+0x12a/0x390` at original UART line 328, while run 2
+first has `? schedule+0x27/0xb0` at original UART line 331. A manually forced
+Stage4 panic projection has a common `do_exit.cold+0x15/0x15` anchor, but that
+projection is not the comparator result and must not be used to claim the
+strict UART first difference.
+
+Conclusion and next step
+------------------------
+The corrected offline ledger records the actual ineligible comparator path,
+all 26 machine stop leaf differences, and the first nonce-normalized UART
+byte. Earlier five-field/`psi_task_switch` findings came from a manually
+forced projection that the strict comparator does not use. The v13/v14
+captures already localize the extra `#PF`; no further replay is needed for
+that bounded explanation. S5-07 remains blocked/unaccepted; the comparator
+and allowlist remain unchanged.
+
+The existing schema-v14 capture is from this exact pair and confirms the
+local stack-copy fault mechanism, but it does not record invocation-local
+`cr3_changes`, RDTSC or retired deltas. Its separate whole-run PF events,
+RDTSC histograms and stop counters cannot assign counter changes to this call.
+If pursuing the remaining +1 CR3 counter, a diagnostic slice can bound a trace to the identified
+`create_elf_tables` platform-string copy invocation, from copy-site entry
+through fault/return, and record those local deltas plus PF/exception counts.
+Mark a capped capture incomplete. This would not explain later terminal-loop
+variation or make the series pass.
+
+Evidence used
+-------------
+* `s5-07-counted-canonical-common-id-n2-20261117.log`
+* `s5-07-counted-canonical-pf-event-exact-replay-20261117.log`
+* `s5-07-rdtsc-site-delta-exact-replay-20261117.log`
+* `s5-07-delay-call-summary-exact-replay-20261117.log`
+* `s5-07-unknown-optional-panic-frames-source-audit-20261117.log`
+* `s5-07-elf-stack-copy-snapshot-exact-replay-20261117.log`

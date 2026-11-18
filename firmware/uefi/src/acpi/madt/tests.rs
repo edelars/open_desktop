@@ -460,6 +460,21 @@ fn validation_rejects_a_bad_structure_list() {
 }
 
 #[test]
+fn validation_rejects_online_capable_when_local_apic_is_enabled() {
+    // ACPI 6.4 Table 5.23 requires Online Capable=0 when Enabled=1. Re-seal the MADT so
+    // rejection proves the one-CPU profile check rather than a checksum failure.
+    let mut t = board_madt();
+    t[48..52].copy_from_slice(&3u32.to_le_bytes());
+    fix_checksum(&mut t);
+
+    assert_eq!(byte_sum(&t), 0);
+    assert_eq!(
+        validate_madt(&t),
+        Err(MadtError::BadField("Local APIC: flags"))
+    );
+}
+
+#[test]
 fn builder_rejects_bad_manifest_entries() {
     let pm = board_pm();
     let mut out = [0x5Au8; 100];

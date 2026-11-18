@@ -1,0 +1,36 @@
+# S5-07 schema-v12 ordered RDTSC prefix exact-nonce replay N=2
+
+Date: 2026-11-17. Purpose: replay the two canonical dual-site stride-512 source runs with opt-in bounded CPL0 RDTSC prefix capture, retaining the same inputs, nonces, guest profile, and retirement budget. Diagnostic only; no comparator or guest CPU behavior changes.
+
+## Inputs and execution
+
+- Source series: `stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a`; revision `71cca6233444a06ec69bf1623c7a46e791313b6a`; series SHA-256 `269cff1da52a8ae5196ab2f6a4d5f6eda1db2143df03325cdaa42167670449b6`; source comparison SHA-256 `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+- Runner release binary built from commit `1ea19d1`; SHA-256 `0b18d7847c19a1b54fb1fe02d390a5a8e60f5744138d509b333e066af89f2b3d`.
+- Kernel SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7`; ACPI `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`; ACPI manifest `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Profile: stage4a, `--set-cpl0 --user-mode`, 128 MiB, `norandmaps`, `randomize_kstack_offset=off`, budget 3,000,000,000. Selected poll RIP `0xffffffff8271b34d`, stride 512; entry/sentinel RIP `0xffffffff8271b31b`. Added `--execution-observations-rdtsc-prefix`; each run wrote to a separate output path.
+- Run 1 nonce: `OD518e8a0fda5d3f4600000175200000000`. Run 2 nonce: `OD518e8a2228ca02d300000175200000001`.
+- Local macOS/aarch64 release runs were sequential. Sidecar creation-to-final-write durations were about 20:05 and 20:14; these include guest execution and serialization, not an isolated performance measurement.
+
+## Outcomes and artifacts
+
+Both runs loaded Linux, passed the exact nonce marker, and stopped `budget_exhausted` at retired count 2,999,999,998 with `diagnostic_not_counted`. Each run exactly matches its corresponding schema-v11 direct replay in stop object, UART bytes, complete entry stream, stride-512 poll samples, entry hits, and poll hits. Those direct replays matched the automatic source runs. The automatic source strict comparator remains `matches=false`; it was not rerun or relaxed here.
+
+Raw outputs are retained locally under ignored `work/stage5/stage5-s5-07-rdtsc-prefix-exact-replay-20261116-a/`:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `run-0001.json` | 82,349 | `4a8eea27721393a01e98613ce9ecb7952cf8e07e29f27804bd359514c8af3378` |
+| `run-0001-observations.json` | 120,878,364 | `62606e4d05512c9d2fba2578121ba3042109a510a9fb7178cc63511df2d299f0` |
+| `run-0002.json` | 82,369 | `35390769e758e94c4504dd2e5ec1a3ac20cf9df26367af6767cd53bf971290df` |
+| `run-0002-observations.json` | 120,877,648 | `1506fa1104855eaeb4a8fa7aa4c71320d67b91da6d1a6b5427cbacd009ccbf16` |
+
+Both schema-v12 captures report `sentinel_seen`, sentinel RIP `0xffffffff8271b31b`, zero missing records, contiguous ordinals beginning at 1, and complete counts: 95,023 records (1–95,023) and 95,025 records (1–95,025). Clock retired sums/residuals validate. Successful fault totals remain equal through the captured prefixes and end at 30 `#PF`, 0 `#GP` in each run. The sentinel clock/instruction fields match the first schema-v11 entry clock record except for `hit_ordinal`, which is the prefix-global ordinal (95,023/95,025) versus entry-local ordinal 1.
+
+## First divergence in the captured prefix
+
+- Context (`RIP`, CPL, CR3, RSP, RBP) remains identical through ordinal 9,612.
+- First `retired_instructions_through_rdtsc` divergence is ordinal 8,383 at RIP `0xffffffff82726060`, CPL0, CR3 `0x3a44000`, RSP `0xffffffff83a03b60`, RBP `0xffffffff83a03ba8`. Callback TSC and charged retired total are equal (`0x49365cda`, `1,203,244,482`); completed quantum instruction counts are 1,867,950 / 1,867,964 (+14), producing through-RDTSC totals 1,205,112,432 / 1,205,112,446. Fault totals are 30/0 in both.
+- First guest-visible callback TSC divergence is ordinal 8,384, same RIP/context: `0x4953111b` / `0x49531129` (+14). Charged retired totals are 1,205,124,635 / 1,205,124,649; current quantum count is 6,842 in both; through-RDTSC totals are 1,205,131,477 / 1,205,131,491. PM0, PIT 16,673,000, charged RDTSC 8,383,000 and idle0 match.
+- First event/context sequence divergence is ordinal 9,613: run 1 RIP `0xffffffff8184f2f1`, run 2 RIP `0xffffffff8184aeb3`; CR3 still matches, but RSP/RBP are `0xffffffff83a03cc0`/`0xffffffff83a03d10` versus `0xffffffff83a03d20`/`0xffffffff83a03d88`. At this event the prior +14 retired gap grows by the completed-quantum count difference (5,277 / 23,463), to +18,200 through-RDTSC.
+
+The first count divergence is therefore in the completed quantum ending at ordinal 8,383, and the first differing guest-visible RDTSC callback value is ordinal 8,384. This bounds the interval where divergence becomes observable. It does not identify the first differing guest instruction, prove nonce causality, or explain later machine/UART differences. No difference is classified benign; S5-07 remains blocked/unaccepted.

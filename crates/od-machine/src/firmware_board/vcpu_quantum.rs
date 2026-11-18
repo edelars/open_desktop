@@ -188,6 +188,7 @@ fn quantum_loop(
         None,
         Some(IrqBoundaryHook {
             source,
+            delivered_mirror: None,
             counters: &mut counters,
             skip_first_boundary,
         }),

@@ -11,8 +11,11 @@
 //! golden `reference_both` was replaced by a table for the board window (see its comment).
 
 use super::*;
+use crate::acpi::blob::STAGE4_DEVICES;
+use crate::acpi::madt::{CPU_UID, MADT_FIXED_LEN, build_madt};
 use crate::acpi::manifest::{
-    DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE, IRQ_ACTIVE_LOW, IRQ_LEVEL,
+    AcpiPmEntry, DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE, IRQ_ACTIVE_LOW,
+    IRQ_LEVEL,
 };
 
 fn hex(text: &str) -> Vec<u8> {
@@ -133,8 +136,9 @@ fn build_err(m: &BoardManifest) -> DsdtError {
     build_dsdt(m, &mut out).unwrap_err()
 }
 
-/// `\_SB` with `PCI0` (segment 0, buses 0..=0), `ECAM` (PNP0C02, window 0xFC10_0000 + 1 MiB)
-/// and `COM1` (0x3F8, 8 ports, GSI 4, edge, active-high), for the board ECAM window.
+/// `\_SB` with `CPU0` (`ACPI0007`, integer UID 0), `PCI0` (segment 0, buses 0..=0), `ECAM`
+/// (PNP0C02, window 0xFC10_0000 + 1 MiB) and `COM1` (0x3F8, 8 ports, GSI 4, edge, active-high),
+/// for the one-CPU board profile.
 ///
 /// Assembled by hand from the AML grammar (DefDevice 20.2.5.2: `5B 82` PkgLength NameString body;
 /// DefName `08`; PkgLength 20.2.4: one byte below 64, else lead byte `0x40 | low nibble` and
@@ -143,52 +147,69 @@ fn build_err(m: &BoardManifest) -> DsdtError {
 /// `41 D0 0C 02`) and cross-checked by a separate Python script that computes every PkgLength
 /// from the pieces (not saved, no code shared with the Rust encoder).
 ///
-/// Layout: header 36 bytes (Length 0xE6); `10 41 0C` Scope(`\_SB_`, PkgLength 193 = 5 + 89 + 46 +
-/// 51 + 2); `5B 82 47 05` Device(`PCI0`, PkgLength 87 = 2 + 4 + 81) with `_HID` PNP0A08, `_CID`
+/// Layout: header 36 bytes (Length 0x102); `10 4D 0D` Scope(`\_SB_`, PkgLength 221 = 5 + 28 + 89 +
+/// 46 + 51 + 2); `5B 82 1A` Device(`CPU0`, PkgLength 26 = 1 + 4 + 15 + 6) with string `_HID`
+/// `ACPI0007` and integer `_UID` 0: 28 bytes; `5B 82 47 05` Device(`PCI0`, PkgLength 87 = 2 + 4 + 81)
+/// with `_HID` PNP0A08, `_CID`
 /// PNP0A03, `_UID` 0, `_SEG` 0, `_BBN` 0, `_CRS` (Buffer, PkgLength 0x1D = 1 + 2 + 26, size
 /// `0A 1A`: WordBusNumber 0..0 length 1 (16 bytes), IO(Decode16, 0xCF8, 0xCF8, 1, 8) (8 bytes),
 /// End Tag (2 bytes)), `_PRT` `12 02 00`: 89 bytes; `5B 82 2C` Device(`ECAM`, PkgLength 44 = 1 +
 /// 4 + 39) with `_HID` PNP0C02, `_UID` 0, `_CRS` (Buffer, PkgLength 0x11 = 1 + 2 + 14, size
 /// `0A 0E`: Memory32Fixed ReadWrite base `00 00 10 FC` length `00 00 10 00`, End Tag): 46 bytes;
 /// `5B 82 31` Device(`COM1`) with `_HID` PNP0501, `_UID` 1, `_CRS` (Buffer 0x16: IO, Extended
-/// Interrupt GSI 4, End Tag): 51 bytes. Total 36 + 1 + 2 + 191 = 230 = 0xE6 bytes, checksum 0xFE.
+/// Interrupt GSI 4, End Tag): 51 bytes. Total 36 + 1 + 2 + 219 = 258 = 0x102 bytes, checksum 0x4F.
 ///
 /// Replaces the S7-12 golden (PCI0 for buses 0..=0xFF, base 0xC000_0000, 256 MiB; Length 0xB0,
 /// checksum 0x0E): that entry is outside the board contract (S4-30c) and MCFG-style checks reject
-/// it. The COM1-only, COM2-only and empty tables did not change.
+/// it. The COM1-only, COM2-only and empty tables gain the same fixed CPU0 device.
 pub(super) fn reference_both() -> Vec<u8> {
-    hex("44 53 44 54 E6 00 00 00 02 FE 4F 50 4E 44 53 4B \
-         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 41 0C 5C 5F 53 42 5F 5B 82 47 05 \
-         50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
-         43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
-         53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
-         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
-         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
-         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
-         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
-         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
-         00 79 00 5B 82 31 43 4F 4D 31 08 5F 48 49 44 0C \
-         41 D0 05 01 08 5F 55 49 44 01 08 5F 43 52 53 11 \
-         16 0A 13 47 01 F8 03 F8 03 01 08 89 06 00 03 01 \
+    hex("44 53 44 54 02 01 00 00 02 4F 4F 50 \
+         4E 44 53 4B 4F 44 46 57 44 53 44 54 \
+         01 00 00 00 4F 44 46 57 01 00 00 00 \
+         10 4D 0D 5C 5F 53 42 5F 5B 82 1A 43 \
+         50 55 30 08 5F 48 49 44 0D 41 43 50 \
+         49 30 30 30 37 00 08 5F 55 49 44 00 \
+         5B 82 47 05 50 43 49 30 08 5F 48 49 \
+         44 0C 41 D0 0A 08 08 5F 43 49 44 0C \
+         41 D0 0A 03 08 5F 55 49 44 00 08 5F \
+         53 45 47 00 08 5F 42 42 4E 00 08 5F \
+         43 52 53 11 1D 0A 1A 88 0D 00 02 0C \
+         00 00 00 00 00 00 00 00 00 01 00 47 \
+         01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D \
+         08 5F 48 49 44 0C 41 D0 0C 02 08 5F \
+         55 49 44 00 08 5F 43 52 53 11 11 0A \
+         0E 86 09 00 01 00 00 10 FC 00 00 10 \
+         00 79 00 5B 82 31 43 4F 4D 31 08 5F \
+         48 49 44 0C 41 D0 05 01 08 5F 55 49 \
+         44 01 08 5F 43 52 53 11 16 0A 13 47 \
+         01 F8 03 F8 03 01 08 89 06 00 03 01 \
          04 00 00 00 79 00")
 }
 
-/// `\_SB` with only `COM2` (0x2F8, GSI 3, level, active-low). Checksum 0x5A.
+/// `\_SB` with CPU0 and `COM2` (0x2F8, GSI 3, level, active-low). Checksum 0xA6.
 fn reference_com2_only() -> Vec<u8> {
-    hex("44 53 44 54 5F 00 00 00 02 5A 4F 50 4E 44 53 4B \
-         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 3A 5C 5F 53 42 5F 5B 82 32 43 4F \
-         4D 32 08 5F 48 49 44 0C 41 D0 05 01 08 5F 55 49 \
-         44 0A 02 08 5F 43 52 53 11 16 0A 13 47 01 F8 02 \
-         F8 02 01 08 89 06 00 05 01 03 00 00 00 79 00")
+    hex("44 53 44 54 7C 00 00 00 02 A6 4F 50 \
+         4E 44 53 4B 4F 44 46 57 44 53 44 54 \
+         01 00 00 00 4F 44 46 57 01 00 00 00 \
+         10 47 05 5C 5F 53 42 5F 5B 82 1A 43 \
+         50 55 30 08 5F 48 49 44 0D 41 43 50 \
+         49 30 30 30 37 00 08 5F 55 49 44 00 \
+         5B 82 32 43 4F 4D 32 08 5F 48 49 44 \
+         0C 41 D0 05 01 08 5F 55 49 44 0A 02 \
+         08 5F 43 52 53 11 16 0A 13 47 01 F8 \
+         02 F8 02 01 08 89 06 00 05 01 03 00 \
+         00 00 79 00")
 }
 
-/// `\_SB` with no devices. Checksum 0x7F.
+/// `\_SB` with the fixed CPU0 processor device and no manifest-backed devices. Checksum 0xC2.
 fn reference_empty() -> Vec<u8> {
-    hex("44 53 44 54 2B 00 00 00 02 7F 4F 50 4E 44 53 4B \
-         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 06 5C 5F 53 42 5F")
+    hex("44 53 44 54 47 00 00 00 02 C2 4F 50 \
+         4E 44 53 4B 4F 44 46 57 44 53 44 54 \
+         01 00 00 00 4F 44 46 57 01 00 00 00 \
+         10 22 5C 5F 53 42 5F 5B 82 1A 43 50 \
+         55 30 08 5F 48 49 44 0D 41 43 50 49 \
+         30 30 30 37 00 08 5F 55 49 44 00")
 }
 
 #[test]
@@ -204,6 +225,27 @@ fn dsdt_for_com2_with_level_active_low_irq_matches_the_reference() {
         absent(device_type::PCIE_ECAM),
     );
     assert_eq!(build(&m), reference_com2_only());
+}
+
+#[test]
+fn cpu0_device_uid_matches_the_madt_local_apic_record() {
+    let entries: [DeviceEntry; 7] = STAGE4_DEVICES[..7].try_into().unwrap();
+    let manifest = BoardManifest::from_entries(entries).unwrap();
+    let pm = AcpiPmEntry::from_entry(&STAGE4_DEVICES[7]).unwrap();
+    let mut madt = [0u8; 128];
+    let madt_len = build_madt(&manifest, &pm, &mut madt).unwrap();
+    assert_eq!(madt_len, 84);
+    assert_eq!(madt[MADT_FIXED_LEN], 0); // Processor Local APIC structure.
+    assert_eq!(madt[MADT_FIXED_LEN + 1], 8);
+    assert_eq!(madt[MADT_FIXED_LEN + 2], CPU_UID);
+    assert_eq!(CPU_UID, 0);
+
+    let dsdt = build(&manifest);
+    let cpu0 = hex(
+        "5B 82 1A 43 50 55 30 08 5F 48 49 44 0D 41 43 50 49 30 30 30 37 00 \
+         08 5F 55 49 44 00",
+    );
+    assert!(contains(&dsdt, &cpu0));
 }
 
 #[test]
@@ -415,20 +457,26 @@ fn ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted() {
 
 use crate::acpi::mcfg::McfgError;
 
-/// The same as `reference_both` without `COM1`: Scope body 5 + 89 + 46 = 140, PkgLength 142 =
-/// `4E 08`, table 36 + 1 + 2 + 140 = 179 = 0xB3 bytes, checksum 0xD9.
+/// The same as `reference_both` without `COM1`: Scope body 5 + 28 + 89 + 46 = 168, PkgLength 170 =
+/// `4A 0A`, table 36 + 1 + 2 + 168 = 207 = 0xCF bytes, checksum 0x3A.
 fn reference_ecam_only() -> Vec<u8> {
-    hex("44 53 44 54 B3 00 00 00 02 D9 4F 50 4E 44 53 4B \
-         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 4E 08 5C 5F 53 42 5F 5B 82 47 05 \
-         50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
-         43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
-         53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
-         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
-         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
-         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
-         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
-         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
+    hex("44 53 44 54 CF 00 00 00 02 3A 4F 50 \
+         4E 44 53 4B 4F 44 46 57 44 53 44 54 \
+         01 00 00 00 4F 44 46 57 01 00 00 00 \
+         10 4A 0A 5C 5F 53 42 5F 5B 82 1A 43 \
+         50 55 30 08 5F 48 49 44 0D 41 43 50 \
+         49 30 30 30 37 00 08 5F 55 49 44 00 \
+         5B 82 47 05 50 43 49 30 08 5F 48 49 \
+         44 0C 41 D0 0A 08 08 5F 43 49 44 0C \
+         41 D0 0A 03 08 5F 55 49 44 00 08 5F \
+         53 45 47 00 08 5F 42 42 4E 00 08 5F \
+         43 52 53 11 1D 0A 1A 88 0D 00 02 0C \
+         00 00 00 00 00 00 00 00 00 01 00 47 \
+         01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D \
+         08 5F 48 49 44 0C 41 D0 0C 02 08 5F \
+         55 49 44 00 08 5F 43 52 53 11 11 0A \
+         0E 86 09 00 01 00 00 10 FC 00 00 10 \
          00 79 00")
 }
 
@@ -441,9 +489,9 @@ fn board_ecam_without_com1_matches_the_hand_assembled_reference() {
     let table = build(&manifest(absent(device_type::COM1), board_ecam()));
     assert_eq!(table, reference_ecam_only());
     // Length and checksum separately, not through the encoder.
-    assert_eq!(table.len(), 0xB3);
-    assert_eq!(&table[4..8], &0xB3u32.to_le_bytes());
-    assert_eq!(table[9], 0xD9);
+    assert_eq!(table.len(), 0xCF);
+    assert_eq!(&table[4..8], &0xCFu32.to_le_bytes());
+    assert_eq!(table[9], 0x3A);
     assert_eq!(table.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
     validate_dsdt(&table).unwrap();
 }
@@ -452,12 +500,12 @@ fn board_ecam_without_com1_matches_the_hand_assembled_reference() {
 fn board_ecam_with_com1_has_the_golden_length_and_checksum() {
     let table = build(&manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam()));
     assert_eq!(table, reference_both());
-    assert_eq!(table.len(), 0xE6);
-    assert_eq!(&table[4..8], &0xE6u32.to_le_bytes());
-    assert_eq!(table[9], 0xFE);
+    assert_eq!(table.len(), 0x102);
+    assert_eq!(&table[4..8], &0x102u32.to_le_bytes());
+    assert_eq!(table[9], 0x4F);
     validate_dsdt(&table).unwrap();
     // COM1 is the same 51 bytes as in the COM-only tables: the ECAM-only table plus COM1.
-    assert!(table.ends_with(&reference_both()[0xE6 - 51..]));
+    assert!(table.ends_with(&reference_both()[0x102 - 51..]));
 }
 
 #[test]
@@ -619,9 +667,9 @@ fn ecam_entries_that_mcfg_rejects_are_rejected_with_the_mcfg_reason() {
 // `Name(\_S5, Package() { 5, 5, 0, 0 })` appended after the `\_SB` scope, assembled by hand:
 // NameOp 08, RootChar 5C + NameSeg `_S5_` (5F 53 35 5F), PackageOp 12, PkgLength 08 (1 + 1 + 2 + 2
 // + 1 + 1), NumElements 04, BytePrefix 0A 05 twice (SLP_TYPa, SLP_TYPb), ZeroOp 00 twice. The
-// table grows from 0xB3 to 0xC2 bytes, the checksum from 0xD9 to 0xE4 (the sum of the 15 new
-// bytes is 486 and the length byte grows by 15: 217 - 501 = 228 mod 256 = 0xE4, worked out by
-// hand and confirmed by a separate script).
+// table grows from 0xCF to 0xDE bytes, the checksum from 0x3A to 0x45 (the sum of the 15 new
+// bytes is 486 and the length byte grows by 15: the new checksum is `0x3A - 486 - 15 = -443`,
+// which is `69 (0x45)` modulo 256, worked out by hand and confirmed by a separate script).
 // ---------------------------------------------------------------------------------------------
 
 const S5_BYTES: [u8; 15] = [
@@ -629,19 +677,25 @@ const S5_BYTES: [u8; 15] = [
 ];
 
 fn reference_ecam_only_with_s5() -> Vec<u8> {
-    hex("44 53 44 54 C2 00 00 00 02 E4 4F 50 4E 44 53 4B \
-         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 4E 08 5C 5F 53 42 5F 5B 82 47 05 \
-         50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
-         43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
-         53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
-         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
-         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
-         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
-         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
-         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
-         00 79 00 08 5C 5F 53 35 5F 12 08 04 0A 05 0A 05 \
-         00 00")
+    hex("44 53 44 54 DE 00 00 00 02 45 4F 50 \
+         4E 44 53 4B 4F 44 46 57 44 53 44 54 \
+         01 00 00 00 4F 44 46 57 01 00 00 00 \
+         10 4A 0A 5C 5F 53 42 5F 5B 82 1A 43 \
+         50 55 30 08 5F 48 49 44 0D 41 43 50 \
+         49 30 30 30 37 00 08 5F 55 49 44 00 \
+         5B 82 47 05 50 43 49 30 08 5F 48 49 \
+         44 0C 41 D0 0A 08 08 5F 43 49 44 0C \
+         41 D0 0A 03 08 5F 55 49 44 00 08 5F \
+         53 45 47 00 08 5F 42 42 4E 00 08 5F \
+         43 52 53 11 1D 0A 1A 88 0D 00 02 0C \
+         00 00 00 00 00 00 00 00 00 01 00 47 \
+         01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D \
+         08 5F 48 49 44 0C 41 D0 0C 02 08 5F \
+         55 49 44 00 08 5F 43 52 53 11 11 0A \
+         0E 86 09 00 01 00 00 10 FC 00 00 10 \
+         00 79 00 08 5C 5F 53 35 5F 12 08 04 \
+         0A 05 0A 05 00 00")
 }
 
 fn build_s5(m: &BoardManifest, typ: u8) -> Vec<u8> {
@@ -654,16 +708,15 @@ fn build_s5(m: &BoardManifest, typ: u8) -> Vec<u8> {
 fn dsdt_with_s5_matches_the_hand_assembled_reference() {
     let table = build_s5(&manifest(absent(device_type::COM1), board_ecam()), 5);
     assert_eq!(table, reference_ecam_only_with_s5());
-    assert_eq!(table.len(), 0xC2);
-    assert_eq!(table[9], 0xE4);
+    assert_eq!(table.len(), 0xDE);
+    assert_eq!(table[9], 0x45);
     assert_eq!(&table[table.len() - 15..], &S5_BYTES);
     validate_dsdt(&table).unwrap();
 }
 
 #[test]
-fn building_without_s5_still_gives_the_old_golden_bytes() {
-    // The `_S5`-less builder is untouched: both goldens of S4-31b still match, with and
-    // without COM1.
+fn building_without_s5_still_gives_the_golden_bytes() {
+    // The `_S5`-less builder preserves its golden tables, with and without COM1.
     let no_com = manifest(absent(device_type::COM1), board_ecam());
     assert_eq!(build(&no_com), reference_ecam_only());
     let with_com = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
@@ -672,7 +725,7 @@ fn building_without_s5_still_gives_the_old_golden_bytes() {
 
 #[test]
 fn s5_follows_the_scope_and_leaves_the_rest_of_the_table_alone() {
-    // With COM1 too: the variant is the old table, three header bytes changed (Length, checksum)
+    // With COM1 too: the variant is the plain table, three header bytes changed (Length, checksum)
     // and the 15 `_S5` bytes appended.
     let m = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
     let plain = build(&m);

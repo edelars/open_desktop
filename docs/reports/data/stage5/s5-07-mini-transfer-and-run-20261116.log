@@ -1,0 +1,53 @@
+# S5-07 mini source transfer, Linux build, and incomplete N=2 attempt (2026-11-16)
+
+## Host and transferred inputs
+
+- SSH target: `senya@192.168.1.39`, host `mini`.
+- Host: Ubuntu x86_64, Linux `7.0.0-42-generic`.
+- Destination: `/tmp/codex-s5-07-mini-20261116/`.
+- Source: committed `codex` tree at `67bcad8`, streamed with `git archive`; 11,356 files extracted under `repo/`.
+- Also transferred: pinned Linux 7.0.0-38 kernel, initramfs, Stage 4 ACPI blob, and the prior local S5-07 RDTSC N=2 run directory.
+- Mini confirmed the SHA-256 of `series.json` (`06cc6ed458fc2825e02b1a2a863c7300e66492328d525d7ed9f85abd6c5bad0e`) and both observation sidecars (`1be53b1fe518efa2212208f312148195d62667a75bb7ca9e1f87aec60d125cca`, `0e4d845ce0e2759ffbc73d36998e0464eb2e82892ad2cf81d74f0dd7fd3f1a79`) against the local artifacts. The source archive was transferred and extracted, but no source-tree hash comparison was performed.
+
+## Toolchain and build
+
+System package installation required interactive sudo, so Rust was installed with rustup in the user's home directory. The selected toolchain was stable `rustc 1.100.0` / `cargo 1.100.0`. From the transferred source tree:
+
+```sh
+cargo build --release --offline -p od-runner
+```
+
+The x86_64 Linux release build succeeded in 3:06. It emitted dead-code warnings in `crates/od-machine/src/page_walk.rs` and several runner items; no build error occurred. The Mac ARM release binary was not used on Linux.
+
+## Incomplete physical-mini diagnostic
+
+Command, from `/tmp/codex-s5-07-mini-20261116/repo`:
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-rdtsc-delay-trace-mini-n2-20261116-c \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-rdtsc-delay-trace-mini-n2-20261116-c/series.json \
+  --vmlinuz ../work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs ../work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset --execution-observations \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d
+```
+
+The series ID was `stage5-s5-07-rdtsc-delay-trace-mini-n2-20261116-c`.
+
+The first run used one CPU core continuously. After 60 minutes and 36 seconds, its `execution-observations.json` was still zero bytes, and no manifest, runner JSON, UART, series JSON, or comparison had been finalized. The process was stopped with SIGINT at the one-hour limit. Run 0002 never started. The incomplete directory remains at:
+
+```text
+/tmp/codex-s5-07-mini-20261116/repo/work/stage5/stage5-s5-07-rdtsc-delay-trace-mini-n2-20261116-c/
+```
+
+The owner notes that the mini CPU is old. The full single-core use and duration were observed, but this attempt does not establish that CPU age caused the runtime or why the original cross-run timing differences occur. Because no run completed, this attempt is neither a passed nor failed guest scenario, was not compared, and cannot be counted toward S5-07 acceptance. No benign-difference classification or comparator change was made.

@@ -203,7 +203,7 @@ def parse_cpio(archive: bytes) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def check_elf(elf: bytes) -> dict[str, Any]:
+def check_elf(elf: bytes, *, poweroff: bool = False) -> dict[str, Any]:
     """Validate the static x86-64 executable ABI of /init; raise BuildError if not."""
     if len(elf) < 64 or elf[:4] != b"\x7fELF":
         raise BuildError("/init is not an ELF file")
@@ -251,6 +251,7 @@ def check_elf(elf: bytes) -> dict[str, Any]:
         if marker in elf:
             raise BuildError(f"/init contains a secret-like string ({marker.decode()})")
 
+    allowed_syscalls = {**ALLOWED_SYSCALLS, 169: "reboot"} if poweroff else ALLOWED_SYSCALLS
     syscalls_used: dict[int, int] = {}
     for segment in code_segments:
         code = elf[segment["offset"] : segment["offset"] + segment["filesz"]]
@@ -261,12 +262,14 @@ def check_elf(elf: bytes) -> dict[str, Any]:
             if position < 5 or code[position - 5] != 0xB8:
                 raise BuildError(f"syscall at code offset 0x{position:x} is not preceded by mov imm32, %eax")
             number = int.from_bytes(code[position - 4 : position], "little")
-            if number not in ALLOWED_SYSCALLS:
+            if number not in allowed_syscalls:
                 raise BuildError(f"/init uses syscall number {number}, not in the allowed set")
             syscalls_used[number] = syscalls_used.get(number, 0) + 1
             position = code.find(b"\x0f\x05", position + 2)
     if not syscalls_used:
         raise BuildError("/init contains no syscall instruction")
+    if poweroff and syscalls_used.get(169) != 1:
+        raise BuildError("poweroff fixture must have exactly one reboot syscall site")
     return {
         "class": "ELF64",
         "data": "little-endian",
@@ -286,7 +289,7 @@ def check_elf(elf: bytes) -> dict[str, Any]:
         ],
         "host_path_markers_checked": [m.decode() for m in HOST_PATH_MARKERS],
         "secret_markers_checked": [m.decode() for m in SECRET_MARKERS],
-        "syscalls_used": {ALLOWED_SYSCALLS[n]: {"number": n, "sites": c} for n, c in sorted(syscalls_used.items())},
+        "syscalls_used": {allowed_syscalls[n]: {"number": n, "sites": c} for n, c in sorted(syscalls_used.items())},
         "size_bytes": len(elf),
         "sha256": sha256(elf),
     }
@@ -297,7 +300,7 @@ def check_elf(elf: bytes) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def verify_archive(archive: bytes, nonce: str | None = None) -> dict[str, Any]:
+def verify_archive(archive: bytes, nonce: str | None = None, *, poweroff: bool = False) -> dict[str, Any]:
     """Check content, mode, ABI of /init and the absence of a baked nonce."""
     entries = parse_cpio(archive)
     by_name = {entry["name"]: entry for entry in entries}
@@ -322,7 +325,7 @@ def verify_archive(archive: bytes, nonce: str | None = None) -> dict[str, Any]:
         validate_nonce(nonce)
         if nonce.encode("ascii") in archive:
             raise BuildError("the nonce is baked into the archive")
-    elf_report = check_elf(init["data"])
+    elf_report = check_elf(init["data"], poweroff=poweroff)
     return {
         "entries": [
             {
@@ -405,7 +408,7 @@ def kernel_identity(config_path: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def compile_init(build_dir: Path) -> tuple[bytes, dict[str, str]]:
+def compile_init(build_dir: Path, *, poweroff: bool = False) -> tuple[bytes, dict[str, str]]:
     clang = resolve_executable(os.environ.get("STAGE4_CLANG"), "clang")
     _rustc, _host, _rustc_version, ld_lld, _objcopy, tool_env = rust_toolchain()
     env = tool_env.copy()
@@ -426,6 +429,7 @@ def compile_init(build_dir: Path) -> tuple[bytes, dict[str, str]]:
             "-fno-pic",
             "-fno-pie",
             "-c",
+            *(["-DS5_08_POWEROFF"] if poweroff else []),
             "init.S",
             "-o",
             str(obj),
@@ -481,20 +485,23 @@ def _patch(data: bytes, offset: int, value: bytes) -> bytes:
     return data[:offset] + value + data[offset + len(value) :]
 
 
-def run_negatives(init_elf: bytes) -> list[dict[str, Any]]:
+def run_negatives(init_elf: bytes, *, poweroff: bool = False) -> list[dict[str, Any]]:
     def archive(entries: list[tuple[str, int, bytes]]) -> bytes:
         return pack_cpio(entries)
 
+    def verify(data: bytes, nonce: str | None = None) -> dict[str, Any]:
+        return verify_archive(data, nonce, poweroff=poweroff)
+
     results = [
-        _expect_reject("missing_init", lambda: verify_archive(archive([])), "no /init entry"),
+        _expect_reject("missing_init", lambda: verify(archive([])), "no /init entry"),
         _expect_reject(
             "non_executable_init",
-            lambda: verify_archive(archive([(INIT_NAME, 0o100644, init_elf)])),
+            lambda: verify(archive([(INIT_NAME, 0o100644, init_elf)])),
             "not executable",
         ),
         _expect_reject(
             "extra_entry",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, init_elf), ("etc", 0o040755, b"")])),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, init_elf), ("etc", 0o040755, b"")])),
             "unexpected entries",
         ),
     ]
@@ -509,38 +516,44 @@ def run_negatives(init_elf: bytes) -> list[dict[str, Any]]:
     results.append(
         _expect_reject(
             "nonce_baked_into_archive",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, init_elf + probe.encode())]), probe),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, init_elf + probe.encode())]), probe),
             "the nonce is baked into the archive",
         )
     )
     results.append(
         _expect_reject(
             "baked_od_nonce_value",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, init_elf + b"od.nonce=0123456789abcdef")])),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, init_elf + b"od.nonce=0123456789abcdef")])),
             "baked nonce-like value",
         )
     )
     results.append(
         _expect_reject(
             "host_path_in_binary",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, init_elf + b"/Users/someone/build\0")])),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, init_elf + b"/Users/someone/build\0")])),
             "host path string",
         )
     )
     results.append(
         _expect_reject(
             "not_elf",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, b"#!/bin/sh\necho hello\n" * 8)])),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, b"#!/bin/sh\necho hello\n" * 8)])),
             "not an ELF",
         )
     )
     results.append(
         _expect_reject(
             "wrong_e_machine",
-            lambda: verify_archive(archive([(INIT_NAME, INIT_MODE, _patch(init_elf, 18, struct.pack("<H", 183)))])),
+            lambda: verify(archive([(INIT_NAME, INIT_MODE, _patch(init_elf, 18, struct.pack("<H", 183)))])),
             "e_machine 183",
         )
     )
+    if poweroff:
+        results.append(_expect_reject(
+            "poweroff_archive_requires_opt_in",
+            lambda: verify_archive(build_archive(init_elf)),
+            "syscall number 169, not in the allowed set",
+        ))
     return results
 
 
@@ -561,6 +574,7 @@ def run_build(
     config_path: Path = DEFAULT_CONFIG,
     evidence_path: Path | None = None,
     check_kernel_identity: bool = True,
+    poweroff: bool = False,
 ) -> dict[str, Any]:
     if nonce is not None:
         validate_nonce(nonce)
@@ -575,8 +589,8 @@ def run_build(
         with tempfile.TemporaryDirectory(prefix="stage4-initramfs-a-") as dir_a, tempfile.TemporaryDirectory(
             prefix="stage4-initramfs-b-"
         ) as dir_b:
-            elf_a, versions = compile_init(Path(dir_a))
-            elf_b, _ = compile_init(Path(dir_b))
+            elf_a, versions = compile_init(Path(dir_a), poweroff=poweroff)
+            elf_b, _ = compile_init(Path(dir_b), poweroff=poweroff)
         build_kind = "compiled from tests/fixtures/guest/stage4/initramfs (two independent builds)"
         build_runs = 2
     cpio_a = build_archive(elf_a)
@@ -584,8 +598,8 @@ def run_build(
     if cpio_a != cpio_b or sha256(cpio_a) != sha256(cpio_b):
         raise BuildError("build is not repeatable: two runs produced different archives")
     probe = nonce if nonce is not None else secrets.token_hex(16)
-    report = verify_archive(cpio_a, probe)
-    negatives = run_negatives(elf_a)
+    report = verify_archive(cpio_a, probe, poweroff=poweroff)
+    negatives = run_negatives(elf_a, poweroff=poweroff)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     cpio_path = out_dir / "initramfs.cpio"
@@ -598,7 +612,7 @@ def run_build(
         shown = cpio_path.name
 
     evidence = {
-        "slice": "S4-36",
+        "slice": "S5-08" if poweroff else "S4-36",
         "status": "passed",
         "scope": "static build and structure checks; Linux was not booted",
         "kernel": kernel,
@@ -686,15 +700,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence", default=str(DEFAULT_EVIDENCE), help="evidence JSON path, inside docs/reports/data/stage4")
     parser.add_argument("--no-evidence", action="store_true", help="do not write the evidence JSON")
     parser.add_argument("--verify-archive", help="only verify an existing cpio archive and exit")
+    parser.add_argument("--poweroff", action="store_true", help="build or verify the S5-08 poweroff variant")
     args = parser.parse_args(argv)
     try:
         if args.verify_archive:
-            report = verify_archive(Path(args.verify_archive).read_bytes(), args.nonce)
+            report = verify_archive(Path(args.verify_archive).read_bytes(), args.nonce, poweroff=args.poweroff)
             print(f"archive ok: {len(report['entries'])} entry, sha256 {sha256(Path(args.verify_archive).read_bytes())}")
             return 0
         if args.nonce is not None:
             validate_nonce(args.nonce)
+        if args.poweroff and (args.output_dir is None or not args.no_evidence):
+            raise BuildError("--poweroff requires a separate --output-dir and --no-evidence")
         out_dir = output_directory(args.output_dir)
+        if args.poweroff and out_dir == DEFAULT_OUTPUT_DIR.resolve():
+            raise BuildError("--poweroff requires a directory other than the default Stage 4 output")
+        if args.poweroff and any((out_dir / name).exists() for name in ("initramfs.cpio", "init.elf")):
+            raise BuildError("--poweroff refuses to replace existing initramfs outputs")
         evidence_path = None if args.no_evidence else evidence_file(args.evidence)
         evidence = run_build(
             out_dir,
@@ -702,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             init_binary=Path(args.init_binary) if args.init_binary else None,
             config_path=Path(args.config),
             evidence_path=evidence_path,
+            poweroff=args.poweroff,
         )
     except BuildError as exc:
         print(f"error: {exc}", file=sys.stderr)

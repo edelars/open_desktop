@@ -69,7 +69,7 @@ def load_build_firmware():
     return module
 
 
-def build_elf(target_dir: Path) -> Path:
+def build_elf(target_dir: Path, *, linux_nvme: bool = False) -> Path:
     bf = load_build_firmware()
     try:
         tools = bf.resolve_tools()
@@ -80,8 +80,11 @@ def build_elf(target_dir: Path) -> Path:
         env["CARGO_TARGET_DIR"] = str(target_dir)
         env["OD_FW_CLANG"] = str(tools.clang)
         # cwd inside firmware/uefi: cargo reads .cargo/config.toml relative to the cwd.
+        command = [str(tools.cargo), "build", "--release", "--target", TARGET, "--offline", "--bin", BIN_NAME]
+        if linux_nvme:
+            command.extend(["--features", "linux-nvme-acpi"])
         result = subprocess.run(
-            [str(tools.cargo), "build", "--release", "--target", TARGET, "--offline", "--bin", BIN_NAME],
+            command,
             cwd=FIRMWARE_DIR,
             env=env,
             check=False,
@@ -253,12 +256,16 @@ def package(elf_path: Path, out_dir: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default=str(DEFAULT_OUT))
+    parser.add_argument("--output-dir")
     parser.add_argument("--target-dir", help="cargo target directory (default: <output-dir>/cargo-target)")
     parser.add_argument("--elf", help="package this ELF instead of building one")
     parser.add_argument("--compare", help="a blob file the extracted bytes must equal (the committed fixture)")
+    parser.add_argument("--linux-nvme", action="store_true", help="build for the direct Linux PCI NVMe board")
     args = parser.parse_args()
-    out_dir = Path(args.output_dir)
+    if args.elf and args.linux_nvme:
+        parser.error("--linux-nvme selects a build and cannot be combined with --elf")
+    default_out = DEFAULT_OUT.with_name("linux_nvme_acpi_blob") if args.linux_nvme else DEFAULT_OUT
+    out_dir = Path(args.output_dir) if args.output_dir else default_out
     if not out_dir.is_absolute():
         out_dir = ROOT / out_dir
     try:
@@ -266,7 +273,7 @@ def main() -> int:
             elf = Path(args.elf)
         else:
             target = Path(args.target_dir) if args.target_dir else out_dir / "cargo-target"
-            elf = build_elf(target if target.is_absolute() else ROOT / target)
+            elf = build_elf(target if target.is_absolute() else ROOT / target, linux_nvme=args.linux_nvme)
         metadata = package(elf, out_dir)
         if args.compare:
             expected = Path(args.compare).read_bytes()

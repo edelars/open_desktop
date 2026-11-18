@@ -1,0 +1,94 @@
+S5-07 counted canonical common-ID N=2 — 2026-11-17
+
+Result
+------
+The fresh `stage4-init-nonce` series completed two runs with unique generated
+nonces. Both run scenarios passed: each reached the 3,000,000,000 instruction
+budget (`retired=2,999,999,998`), validated its exact nonce markers, and had the
+expected syscall order `[83,165,257,0,3,1,39,35,60]`. Both manifests recorded
+`counted` acceptance, Stage4A, CPL0 set, user mode, RAM 128 MiB, and no
+diagnostic randomization flags. The series profile is still
+`smoke_not_acceptance`; counted run eligibility is not Stage 5 scenario
+acceptance. The host was macOS/aarch64, release runner
+0.1.0, source revision `dd7712141f582117cf0ab2c2fa28e6b44f9646d5`, clean.
+
+The series outcome is `passed` for the two individual scenarios, but strict
+within-series comparison is `matches=false` with exactly these unexplained
+items:
+
+* `run[1].machine_observations differs`
+* `run[1].ordered_uart_bytes differs after nonce normalization`
+
+Thus this is a counted common-ID N=2 experiment, not a successful S5-07
+acceptance series. No comparator or eligibility rule was changed.
+
+Eligibility / terminal panic normalization
+------------------------------------------
+All scalar/configuration/syscall eligibility conditions pass. Terminal panic
+normalization is disabled because each panic backtrace contains optional frames
+not in the current allowlist. Run 1's first rejected frame is `? psi_task_switch`
+(UART line 328); additional rejected frames are `__schedule`, `schedule`,
+`do_nanosleep`, `hrtimer_nanosleep`, `__pfx_hrtimer_wakeup`,
+`__x64_sys_nanosleep`, and `set_ptes.isra.0`. Run 2's first rejected frame is
+`? schedule` (UART line 331); its additional rejected frames are
+`do_nanosleep`, `hrtimer_nanosleep`, `__pfx_hrtimer_wakeup`, and
+`__x64_sys_nanosleep`.
+`normalize_stage4_panic_snapshot` returns `None` for an unknown optional frame,
+which also disables UART and machine volatile-observation normalization. Merely
+adding these frames to the allowlist would not make this series match.
+
+Residual machine observations
+-----------------------------
+After applying the existing machine-volatility removals offline, the following
+strict values still differ:
+
+| Observation | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| `cr3_changes` | 26,617 | 26,618 |
+| `exceptions_delivered` | 34 | 35 |
+| `page_faults_delivered` | 33 | 34 |
+| `rdtsc_reads` | 34,429,691 | 34,440,164 |
+| CPL0 `rdtsc_reads_by_cpl` | 34,429,691 | 34,440,164 |
+
+`general_protection_faults_delivered=1`, CPL3 retired instructions `=1,093`,
+and halt wakes `=2` agree. The aggregate fault counts do not identify the differing
+fault event: these source outputs contain no per-fault history or observation
+sidecar. The optional panic frames and the extra page fault are separate
+observations; no causal link is established.
+
+Inputs / provenance
+-------------------
+The run used the canonical historical kernel, rebuilt initramfs, and ACPI blob:
+
+* kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+* initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+* ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`
+* ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+Series ID: `s5-07-counted-canonical-n2-20261117-a`.
+Run nonces: `OD518e8be9ac44221a00000fb3400000000`,
+`OD518e8bfb13a39d1980000fb3400000001`.
+Ignored raw artifacts are under
+`work/stage5/s5-07-counted-canonical-n2-20261117-a/`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `series.json` | `754d10c063a184d810ab4b99debec9db21ab0c62b6dec2fc4c42335e47fc28de` |
+| `comparison.json` | `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e` |
+| run 0001 `manifest.json` | `bfae2d1f44e9b39933c977400e7a3e6056a3792ecfbc21101f0d85b25ff52579` |
+| run 0001 `runner.json` | `9f6096e97bf0fc8292d2b037467589769cf549ef3d4ade95eb543768a089d697` |
+| run 0001 `uart.bin` | `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` |
+| run 0002 `manifest.json` | `3712e611826cfd7a1abbede494c1b435647dc90feea51f6c3526e9f7848b92a7` |
+| run 0002 `runner.json` | `60ac89db2073b77fac6da6a46a6a33d5a4506a83da8fb89961ecaaabc018571a` |
+| run 0002 `uart.bin` | `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` |
+
+Next step
+---------
+Preserve the current comparator and record this exact rejection and residual
+ledger. If tracing the extra `#PF`, replay each exact source run with its own
+nonce, identical canonical inputs and the existing execution-observation
+collector; require exact source stop/UART reproduction and complete 33/34 fault
+event histories without omissions before comparing the first unpaired event
+(RIP, CR2, error code, CPL, and page-walk evidence). This is a separate
+diagnostic experiment, not evidence that the optional frames caused the fault
+delta.

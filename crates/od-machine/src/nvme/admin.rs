@@ -12,7 +12,7 @@
 //! Slot offsets. `NOT VERIFIED`: AER info 0/1, PRP rules, feature defaults,
 //! error behaviour, which commands are mandatory, LID 0x00 and 0x05.
 
-use super::controller::{MAX_IO_QUEUES, NvmeState, QUEUE_SLOTS, VERSION};
+use super::controller::{MAX_IO_QUEUES, NvmeServiceReport, NvmeState, QUEUE_SLOTS, VERSION};
 use super::queues::{
     Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, PAGE_BYTES, Status,
     SubmissionQueue, write_to_host,
@@ -240,7 +240,12 @@ pub(super) fn report_invalid_doorbell_value(state: &mut NvmeState, qid: u16) {
 /// Executes one admin command. Unsupported opcodes (including the optional
 /// commands this controller does not implement) complete with `Invalid
 /// Command Opcode`.
-pub(super) fn execute(state: &mut NvmeState, command: &Command, dma: &mut dyn GuestDma) -> Outcome {
+pub(super) fn execute(
+    state: &mut NvmeState,
+    command: &Command,
+    dma: &mut dyn GuestDma,
+    report: &mut NvmeServiceReport,
+) -> Outcome {
     let known = matches!(
         command.opcode,
         OPC_DELETE_SQ
@@ -261,8 +266,11 @@ pub(super) fn execute(state: &mut NvmeState, command: &Command, dma: &mut dyn Gu
     if command.fuse != 0 || command.psdt != 0 {
         return Outcome::Done(Completion::error(Status::INVALID_FIELD));
     }
+    if requires_zero_nsid(command) && command.nsid != 0 {
+        return Outcome::Done(Completion::error(Status::INVALID_FIELD));
+    }
     let result = match command.opcode {
-        OPC_DELETE_SQ => delete_sq(state, command),
+        OPC_DELETE_SQ => delete_sq(state, command, dma, report),
         OPC_CREATE_SQ => create_sq(state, command),
         OPC_GET_LOG_PAGE => get_log_page(state, command, dma),
         OPC_DELETE_CQ => delete_cq(state, command),
@@ -274,6 +282,23 @@ pub(super) fn execute(state: &mut NvmeState, command: &Command, dma: &mut dyn Gu
         _ => return state.aer.request(command.cid),
     };
     Outcome::Done(result.unwrap_or_else(Completion::error))
+}
+
+/// NSID is required to be zero for controller-scoped admin commands. Error
+/// Recovery is the one implemented feature here with namespace scope; its
+/// existing namespace-or-all validation remains in `set_features`/`get_features`.
+fn requires_zero_nsid(command: &Command) -> bool {
+    match command.opcode {
+        OPC_DELETE_SQ
+        | OPC_CREATE_SQ
+        | OPC_DELETE_CQ
+        | OPC_CREATE_CQ
+        | OPC_ABORT
+        | OPC_ASYNC_EVENT_REQUEST => true,
+        OPC_IDENTIFY => command.cdw10 & 0xFF == u32::from(CNS_CONTROLLER),
+        OPC_SET_FEATURES | OPC_GET_FEATURES => (command.cdw10 & 0xFF) as u8 != FID_ERROR_RECOVERY,
+        _ => false,
+    }
 }
 
 /// Valid I/O queue id for creation: `1..=allocated + 1`. Submission and
@@ -340,11 +365,18 @@ fn existing_io_queue_id(command: &Command) -> Result<usize, Status> {
     Ok(qid)
 }
 
-fn delete_sq(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
+fn delete_sq(
+    state: &mut NvmeState,
+    command: &Command,
+    dma: &mut dyn GuestDma,
+    report: &mut NvmeServiceReport,
+) -> Result<Completion, Status> {
     let qid = existing_io_queue_id(command)?;
-    if state.sqs[qid].take().is_none() {
+    if state.sqs[qid].is_none() {
         return Err(Status::INVALID_QUEUE_IDENTIFIER);
     }
+    state.drain_io_queue_for_delete(qid, dma, report)?;
+    state.sqs[qid] = None;
     Ok(Completion::ok(0))
 }
 

@@ -1,0 +1,74 @@
+# S5-07 canonical `norandmaps` same-input replay controls
+
+Date: 2026-11-16
+
+## Scope
+
+Repeat each run from the canonical `norandmaps` automatic N=2 diagnostic as a
+direct invocation, reusing the exact run-specific nonce, kernel/initramfs/ACPI
+inputs, 128 MiB profile, 3-billion instruction budget, and schema-v5 sidecar
+capture. This checks repeatability under identical guest-visible inputs. The
+controls are diagnostic, not a counted unique-nonce series or acceptance
+evidence.
+
+Both invocations used runner SHA-256
+`d0e3be4b345cb1ce4b2b5e72c721630ab098641b29e77816b13fdd2e13c4251f`, built
+from source revision `b6d5e7803c63f9b586776a1f5493440fd3526efb`.
+
+```sh
+target/release/od-runner linux-direct \
+  --nonce OD518e87e0fcdbcc3a00000e27000000000 \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 --out work/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116-a/run-0001.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --linux-norandmaps \
+  --execution-observations-out work/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116-a/run-0001-execution-observations.json
+
+target/release/od-runner linux-direct \
+  --nonce OD518e87f2156c65b180000e27000000001 \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 --out work/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116-a/run-0002.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --linux-norandmaps \
+  --execution-observations-out work/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116-a/run-0002-execution-observations.json
+```
+
+## Results
+
+| Source run | Replayed nonce | Retired / stop | Stop equal | UART equal | Sidecar equal |
+|---|---|---|---|---|---|
+| 0001 | `OD518e87e0fcdbcc3a00000e27000000000` | 2,999,999,998 / `budget_exhausted` | yes | yes | yes |
+| 0002 | `OD518e87f2156c65b180000e27000000001` | 2,999,999,998 / `budget_exhausted` | yes | yes | yes |
+
+Both replays reported `loaded`, `guest_started=true`, and passed the exact
+nonce marker. For each run, the complete machine stop object, UART bytes, and
+schema-v5 sidecar are byte-identical to the corresponding automatic-series
+run. Runner JSON is also identical after replacing only
+`execution_observations_sidecar.path` with a common placeholder.
+
+The controls show that each output from the automatic pair repeats under its
+same nonce and guest artifacts. This makes the cross-run variation repeatable
+per input, but does not identify which input-dependent state causes it, prove
+that the nonce itself is causal, or establish benignity. The strict N=2
+comparison remains false; no comparator normalization changed and S5-07
+remains blocked/unaccepted.
+
+## Raw outputs
+
+Raw replay files are retained locally under
+`work/stage5/s5-07-canonical-norandmaps-same-input-replay-n2-20261116-a/`.
+
+| Replay | Runner JSON SHA-256 | Sidecar SHA-256 | UART SHA-256 |
+|---|---|---|---|
+| 0001 | `7b9ab4d5cbb3faed6af1cbc16ff1c7d97f8d4607f544b2dd85032af226751eef` | `d7cf4c1554b804d696f8001b997e9310319f30bb12294e7475cc42046893e060` | `5e1aa859b8f8098f4f299f777edd0fec8d7f6a7f4b702f8661741bcc2a0a124f` |
+| 0002 | `ff3842f6096b3c25729ea3e6b51fcae633325e6d15295933a7bc5faf543c4020` | `10f3a48851fab75d39da0028bdb37a054837b9729738375189480cb04260bbb7` | `f8420be3e44d602884a051ae7e157f2c945f162628d5fccb5c003566547c7bf3` |

@@ -1,0 +1,123 @@
+S5-07 bounded delay_tsc call-summary exact-nonce replays — 2026-11-17
+
+Purpose
+-------
+This diagnostic followed the schema-v14 per-RIP attribution that localized
++10,402 CPL0 RDTSC reads to `delay_tsc+0x4d` and +11 reads to
+`delay_tsc+0x1b`. It tests whether the delta comes from additional calls or
+different polling lengths. The opt-in schema-v15 capture does not change guest
+semantics, the comparator, or normalization rules.
+
+Inputs and invocation
+---------------------
+Both 3,000,000,000-instruction direct runs were executed sequentially with the
+release `od-runner` on Mac ARM64. They used the same Stage4A/CPL0/user-mode
+profile as the counted canonical source runs, RAM 128 MiB, and no diagnostic
+randomization flags. Exact per-run nonces:
+
+* run 0001: `OD518e8be9ac44221a00000fb3400000000`
+* run 0002: `OD518e8bfb13a39d1980000fb3400000001`
+
+Input SHA-256 values, verified before execution and again in runner metadata:
+
+| Input | SHA-256 |
+|---|---|
+| kernel `vmlinuz-7.0.0-38-generic` | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| initramfs | `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` |
+| ACPI blob | `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+Command template (run once per nonce and output directory):
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio \
+  --acpi-blob work/stage5/staging/s5-07-canonical-acpi-20261117.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --nonce <source-nonce> \
+  --out work/stage5/s5-07-delay-call-summary-exact-replay-20261117-a/<run-dir>/runner.json \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out work/stage5/s5-07-delay-call-summary-exact-replay-20261117-a/<run-dir>/execution-observations.json \
+  --execution-observations-delay-call-summary
+```
+
+The feature is enabled only by the new flag. It captures at most 131,072
+entry summaries, each with requested cycles, entry TSC, CR3/RBP/RSP and up to
+four caller links read through the existing RAM-only diagnostic walk. The
+matching debug ELF has BuildID
+`338e542e384c46228f7a378babc0f9bb2b6a5997` and SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+Disassembly shows `delay_tsc` pushes RBP and establishes its frame before the
+entry RDTSC at `+0x1b`. Thus the first stored return link is
+`__const_udelay+0x3d`; the next link is the caller of `__const_udelay`.
+
+Replay integrity
+----------------
+| Run | Retired | Source stop equal | Source UART equal | RDTSC site histogram equal | Entries | Polls | Unmatched/ambiguous |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 2,999,999,998 | yes | yes | yes (22 sites) | 43,915 | 34,037,704 | 0 / 0 |
+| 0002 | 2,999,999,998 | yes | yes | yes (22 sites) | 43,926 | 34,048,106 | 0 / 0 |
+
+Each run retained every entry (`entries_omitted=0`). The per-entry poll sums
+equal the captured poll totals. Exactly one final entry per run is partial at
+the budget stop; all other entries observed the requested elapsed-cycle
+threshold. The poll-site and entry-site histogram totals equal the full
+sidecar counts; no CPL0 RDTSC sites overflowed or were unattributed. Runner
+metadata byte counts and SHA-256 values match each serialized sidecar.
+
+Artifact hashes
+----------------
+| Run | Artifact | Bytes | SHA-256 |
+|---|---|---:|---|
+| 0001 | `runner.json` | 85,169 | `a9c6d0eb15bc2a03ae48a7602db5de8e252cea75bb47513026e5f5d6b4155190` |
+| 0001 | `execution-observations.json` | 58,254,323 | `5a1379f865279c0c8659c7214dd51b6457820f9f82f3952e317066c12e7624fa` |
+| 0002 | `runner.json` | 84,136 | `982ddb9810d89ee49396763bed0f6e0874a5049551cda5ac99aa57d3551bc3c7` |
+| 0002 | `execution-observations.json` | 58,271,618 | `974bb1147efda23a5640f7b6ace4e3491934911ccdc1454bac4ba759337f03d6` |
+
+The corresponding schema-v14 exact-nonce source sidecar hashes are
+`1444324e770114f9e290d5a7b33c4dadc80573055a68490ee6e64937e19d4f17`
+(run 0001) and
+`64388e66f08ad4541c39b3fa2f37593fd5a121ebf8789dc088e4672182b25309`
+(run 0002).
+
+Per-caller and requested-cycle attribution
+------------------------------------------
+Calls are grouped by the next frame above the common `__const_udelay+0x3d`
+return site and by the captured `R8` requested-cycle value. Return addresses
+were resolved against the matching debug ELF:
+
+| Caller | Request | Run 0001 calls / polls | Run 0002 calls / polls | Delta calls / polls |
+|---|---:|---:|---:|---:|
+| `vpanic+0x497` (`0xffffffff81214ae7`) | `0xf4217` | 33,894 / 33,043,619 | 33,905 / 33,054,194 | **+11 / +10,575** |
+| `mc146818_avoid_UIP+0xfb` (`0xffffffff822e5dab`) | `0x1869c` | 10,000 / 989,998 | 10,000 / 989,998 | 0 / 0 |
+| `init_8259A` | mixed, mostly `0x7d0` | 9 / 114 | 9 / 114 | 0 / 0 |
+| `__udelay+0x15` | mixed | 10 / 3,971 | 10 / 3,798 | 0 / -173 |
+| `serial8250_THRE_test` | `0x3e8` | 2 / 2 | 2 / 2 | 0 / 0 |
+| **Total** |  | **43,915 / 34,037,704** | **43,926 / 34,048,106** | **+11 / +10,402** |
+
+The run-length encodings of the 23 caller/request blocks have the same block
+order in both runs. The vpanic block has median 975 polls per call in both
+runs; its means are 974.9106 and 974.9062. Its one terminal partial call is
+938 polls in run 0001 and 787 in run 0002. Since the vpanic block contains
+tens of thousands of identical caller/request keys, individual calls are not
+forced into ordinal pairs. Its poll-count distribution remains concentrated
+at 975; the +11 calls account for most of the +10,575 block poll increase.
+The other caller blocks contribute -173 polls, which reconciles the total
++10,402 poll difference. The entry histogram delta is entirely in the vpanic
+block.
+
+Conclusion and limits
+---------------------
+The per-call summaries explain where the differing reads accumulated: run 2
+made 11 additional `delay_tsc` calls from `vpanic+0x497` through
+`__const_udelay`, and that block accounts for +10,575 polls. Rare
+initialization/`__udelay` calls contribute -173 polls; `mc146818_avoid_UIP`
+is unchanged. This is caller-level localization, not proof why vpanic issued
+the extra calls or whether they were caused by the nonce. It does not explain
+the separate +1 page fault, establish UART-difference benignity, or satisfy
+S5-07 acceptance. The source series' strict comparator remains
+`matches=false` on machine observations and nonce-normalized UART; no
+comparator or allowlist changes were made.
