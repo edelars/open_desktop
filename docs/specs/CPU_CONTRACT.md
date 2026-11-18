@@ -30048,3 +30048,17 @@ taken target raises #GP(0). This fault and a displacement fetch fault
 commit no architectural state. The other CPL0 probes and the paged CPL3
 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-485 — bounded CALL rel32 +0x8ad
+
+The base paged CPL0 profile admits exact unprefixed `E8 AD 08 00 00` in
+Long64. It adds signed rel32 +0x8ad to next RIP using 64-bit wrapping
+arithmetic and checks target canonicality before the stack access. It
+writes next RIP as a qword to old RSP minus eight. RSP and target RIP
+commit after a successful write. The instruction preserves other GPRs,
+RFLAGS and flag definedness. A noncanonical target raises #GP(0) and a
+noncanonical stack range raises #SS(0). Either fault, a stack-write page
+fault or a displacement fetch fault commits no architectural CPU state
+or retirement. The other CPL0 probes and the paged CPL3 MOV probe refuse
+this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

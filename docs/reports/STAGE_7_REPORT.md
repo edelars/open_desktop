@@ -4845,3 +4845,38 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-485 — exact CALL rel32 +0x8ad
+
+The focused helper CALL tests pass 8/8 and the firmware entry CALL tests
+pass 7/7. They check the canonical target, a single qword push, RSP, flag
+preservation, target #GP before stack access, stack #SS, stack-write #PF,
+displacement fetch #PF, neighboring encodings and CPL3 MOV probe
+isolation. The other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue485.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+The CALL return RIP is `0x20101e + 5 = 0x201023`. The target is
+`0x201023 + 0x8ad = 0x2018d0`. The positive test verifies the pushed qword
+equals `0x201023` for this encoding at the firmware RIP.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,338 | `0x20101e` | `E8 AD 08 00 00`, CALL rel32 +0x8ad |
+| 10,339 | `0x2018d0` | `8B 46 1C`, MOV EAX,dword ptr [RSI+0x1c] (ISSUE-486) |
+
+Both boundary runs report BudgetExhausted and empty COM1. With budget
+20000 the runner attempts the MOV and exits 5 with 10,339 retired
+instructions and empty COM1. Unsupported opcode 139 is the decimal value
+of the MOV opcode byte `0x8b` at the new stop. The previous stop reported
+232 for the CALL opcode byte `0xe8`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,558/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

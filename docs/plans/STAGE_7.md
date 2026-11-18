@@ -3038,3 +3038,16 @@ after 10,338 retired instructions at RIP `0x20101e` on `E8 AD 08 00 00`
 (CALL rel32 +0x8ad, ISSUE-485). It reports Unsupported opcode 232 with
 empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-485 — exact CALL rel32 +0x8ad (`E8 AD 08 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed near CALL. It checks
+the canonical target from signed rel32 +0x8ad and pushes next RIP as a
+qword. Successful stack writes commit RSP and target RIP. Other GPRs,
+flags and definedness are preserved. Tests cover target and return RIP,
+stack and fetch faults, neighboring encodings and profile isolation.
+With budget 20000 the runner branches to `0x2018d0` and stops there
+after 10,339 retired instructions on `8B 46 1C`
+(MOV EAX,dword ptr [RSI+0x1c], ISSUE-486). It reports Unsupported opcode
+139 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

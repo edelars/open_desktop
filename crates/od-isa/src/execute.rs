@@ -22296,7 +22296,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: firmware and its helper use five exact rel32 targets in
+        // S7-04: firmware and its helper use exact rel32 CALL encodings in
         // this profile. Reuse CALL's canonical-target and push semantics.
         Operation::Call { displacement }
             if base_profile
@@ -22305,7 +22305,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && instruction.length == 5
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.prefixes == Prefixes::default()
-                && matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859) =>
+                && matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad) =>
         {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));
             if !canonical(target) {
