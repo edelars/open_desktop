@@ -2374,6 +2374,17 @@ impl PagedFetchedLoadSession {
         self.part.as_ref()
     }
 
+    pub(crate) fn has_region_part(&self) -> bool {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.part.is_some()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            false
+        }
+    }
+
     /// The part the next admission publishes into (a clone of the `Rc`).
     fn publish_part(&self) -> Option<jit_region::ActiveJitPart> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

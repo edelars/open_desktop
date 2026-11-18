@@ -1060,6 +1060,87 @@ fn atomic_host_step(
 }
 
 #[test]
+fn s6_42d_parallel_host_quantum_without_a_part_executes_in_the_interpreter() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    put(
+        &mut board,
+        CODE_0,
+        &[0x48, 0x8B, 0x03, 0xF0, 0xFF, 0x03, 0xF4],
+    );
+    put_u64(&mut board, DATA, 0);
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rbx as usize] = DATA;
+    assert!(host_install_vcpu(&mut board, 0, state));
+    let quantum = JitHostQuantum::new(vec![None], vec![config()], RFLAGS_DEFINED).with_cpl0_set();
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(report.finished, HostParallelFinish::AllIdle, "{report:?}");
+    assert_eq!(report.retired, [3]);
+    let stats = quantum.stats(0);
+    assert_eq!(
+        (
+            stats.admissions,
+            stats.retired_jit,
+            stats.retired_interpreter
+        ),
+        (0, 0, 3)
+    );
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(DATA))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn s6_42d_parallel_host_loop_releases_owned_blocks_after_the_mode_changes() {
+    let _guard = jit_guard();
+    for (code, atomic) in [([0x48, 0x8B, 0x03], false), ([0xF0, 0xFF, 0x03], true)] {
+        let mut board = board(1);
+        put(&mut board, CODE_0, &code);
+        put_u64(&mut board, DATA, 0);
+        let mut state = state(CODE_0, STACK_TOP_0);
+        state.gpr[Register::Rbx as usize] = DATA;
+        let mut session = PagedFetchedLoadSession::new();
+        let warm = atomic_host_step(&mut session, &mut board, &mut state, &mut 0, |_, _| {});
+        assert_eq!(warm.retired_jit, 1, "{warm:?}");
+        assert_eq!(warm.atomic_jit_steps, u64::from(atomic));
+        assert_eq!(session.admissions(), 1);
+
+        board.set_execution_mode(od_machine::ExecutionMode::Parallel);
+        state.rip = CODE_0;
+        let parallel = atomic_host_step(&mut session, &mut board, &mut state, &mut 0, |_, _| {});
+        assert_eq!(
+            parallel.exit,
+            PagedHostLoopExit::BudgetExhausted,
+            "{parallel:?}"
+        );
+        assert_eq!((parallel.retired_jit, parallel.retired_interpreter), (0, 1));
+        assert_eq!(session.admissions(), 1);
+        assert_eq!(session.resets(), 1);
+        assert_eq!(
+            board
+                .bus_mut()
+                .atomic_inline_memory()
+                .load_u64(GuestPhysicalAddress::new(DATA))
+                .unwrap(),
+            if atomic { 2 } else { 0 }
+        );
+    }
+}
+
+#[test]
 fn s6_42d_atomic_steps_share_the_budget_and_definedness_with_the_interpreter() {
     let _guard = jit_guard();
     let region = SharedJitRegion::new(2, 4).unwrap();

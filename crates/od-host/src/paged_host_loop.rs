@@ -723,6 +723,12 @@ pub(crate) fn run_paged_host_loop_core(
         return report;
     }
     let stop_byte = native_stop.unwrap_or_else(|| control.stop_byte());
+    // The bus mode stays fixed for this call. Parallel native blocks live only in an owner part.
+    let native_allowed = bus.machine().execution_mode() != od_machine::ExecutionMode::Parallel
+        || session.has_region_part();
+    if !native_allowed {
+        session.reset();
+    }
     let mut steps_started = 0u64;
     let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
     let cpu_owns_cr3 =
@@ -804,18 +810,20 @@ pub(crate) fn run_paged_host_loop_core(
         steps_started += 1;
 
         // JIT path for the admitted forms; a native block gets the caller's byte.
-        let attempt = with_native_paging(state, cpu_owns_cr3, |state| {
-            session.execute_forms_with_stop(
-                state,
-                bus.machine(),
-                config.cr3,
-                config.efer,
-                config.access_context,
-                stop_byte,
-            )
+        let attempt = native_allowed.then(|| {
+            with_native_paging(state, cpu_owns_cr3, |state| {
+                session.execute_forms_with_stop(
+                    state,
+                    bus.machine(),
+                    config.cr3,
+                    config.efer,
+                    config.access_context,
+                    stop_byte,
+                )
+            })
         });
         match attempt {
-            Ok(jit) => {
+            Some(Ok(jit)) => {
                 // The walk writes are applied at the safe point after the call.
                 for range in jit
                     .fetch_committed_writes
@@ -894,7 +902,7 @@ pub(crate) fn run_paged_host_loop_core(
                 }
             }
             // Refused before the instruction ran; only walk writes of the fetch.
-            Err(refusal) => {
+            Some(Err(refusal)) => {
                 for range in &refusal.fetch_committed_writes {
                     committed_write(*range);
                 }
@@ -924,6 +932,7 @@ pub(crate) fn run_paged_host_loop_core(
                     }
                 }
             }
+            None => {}
         }
 
         // Exactly one step of the shared interpreter.

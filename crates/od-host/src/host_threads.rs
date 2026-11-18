@@ -113,8 +113,7 @@ pub struct JitHostQuantum {
 }
 
 impl JitHostQuantum {
-    /// `parts[cpu]` is the part of vCPU `cpu` (`None`: the vCPU's session has no part and the
-    /// native attempts are refused while a region is live, the interpreter runs everything);
+    /// `parts[cpu]` is the part of vCPU `cpu` (`None` uses the interpreter for the parallel run);
     /// `configs[cpu]` is its translation and access context; `rflags_defined` is the interpreter's
     /// initial definedness mask. The three vectors have one element per vCPU.
     pub fn new(
