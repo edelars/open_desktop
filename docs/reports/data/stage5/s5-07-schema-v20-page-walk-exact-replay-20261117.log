@@ -1,0 +1,83 @@
+# S5-07 schema-v20 MMU-gather page-walk exact replay (2026-11-17)
+
+## Scope
+
+Replay the two canonical Stage4A nonces with the schema-v20 read-only MMU-gather page-walk capture. Verify each runner stop and UART against its own schema-v18 canonical replay, then inspect the bounded gather phases and copy-destination page walks. This is diagnostic evidence; it does not change the strict comparator or S5-07 acceptance.
+
+Implementation revision: `36a568d` (`feat: capture schema-v20 MMU gather page walks`). Canonical schema-v18 source artifacts: `work/stage5/s5-07-post-main-v18-baseline-exact-replay-20261117-a/run-{0001,0002}/`; see [the schema-v18 replay report](s5-07-post-main-schema-v18-exact-replay-20261117.log).
+
+## Inputs
+
+| Input | Bytes | SHA-256 |
+|---|---:|---|
+| `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` | 17,320,328 | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| `work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio` | 4,688 | `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` |
+| `work/stage5/staging/s5-07-canonical-acpi-20261117.bin` | 1,072 | `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` |
+
+Expected ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+## Invocation
+
+Both runs used the schema-v20 release runner with RAM128, the 3,000,000,000-instruction budget, CPL0, Stage4A CPUID profile, user mode, and ELF stack-copy observations. The exact source nonces were passed unchanged:
+
+- Run 0001: `OD518e8be9ac44221a00000fb3400000000`
+- Run 0002: `OD518e8bfb13a39d1980000fb3400000001`
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/s507-stage5-bench/target-candidate cargo run --release --offline -p od-runner -- linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio \
+  --acpi-blob work/stage5/staging/s5-07-canonical-acpi-20261117.bin \
+  --nonce <exact-source-nonce> \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out <run-dir>/runner.json \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out <run-dir>/execution-observations.json \
+  --execution-observations-elf-stack-copy
+```
+
+Standard output was preserved as `runner-stdout.bin`; `uart.bin` was reconstructed from `stop.com1_hex`, not from runner stdout. Raw artifacts are in the ignored directory `work/stage5/s5-07-schema-v20-mmuwalk-exact-replay-20261117-a/run-{0001,0002}/`.
+
+## Stop and UART comparison
+
+| Run | Status / acceptance | Retired / budget | Stop and UART compared to its own canonical v18 run | UART bytes / SHA-256 |
+|---|---|---:|---|---|
+| 0001 | `loaded` / `counted` | 2,999,999,998 / 3,000,000,000 | Full nested stop object equal; UART byte-identical | 24,220 / `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` |
+| 0002 | `loaded` / `counted` | 2,999,999,998 / 3,000,000,000 | Full nested stop object equal; UART byte-identical | 23,880 / `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` |
+
+The complete execution-observations sidecars report schema version 20. Each run retained the full ordered CR3 prefix with no omissions: 26,595 events for run 0001 and 26,596 for run 0002. Delivered page-fault events are complete: 33/33 and 34/34 respectively.
+
+## MMU-gather and destination-page observations
+
+Each sidecar contains one gather setup with all four recorded phases (`setup`, `initial`, `actual_post`, `returned`) captured, no omitted setups, and no omitted unpaired events. The aggregate gather status is `incomplete` because each capture also contains one separate unpaired `actual_post` at RIP `0xffffffff81809fa1`, for raw range `0x7ffffffff000..0x0`; the event is explicit and not hidden by a cap. Candidate association is `prefix_candidates`, and the copy destination is inside the two retained candidate pages.
+
+| Observation | Run 0001 | Run 0002 |
+|---|---|---|
+| Candidate pages | `0x7fffe29fc000`, `0x7fffe29fd000` | `0x7fff9d9d7000`, `0x7fff9d9d8000` |
+| `bprm_p` | upper page + `0xfd2` | upper page + `0xfd2` |
+| `aligned_stack_pointer` | upper page + `0xa80` | upper page − `0xbd0` (lower page + `0x430`) |
+| Copy destination / length | upper page + `0xa79` / 7 bytes | lower page + `0x429` / 7 bytes |
+| Setup page walks | both candidates non-present at PD | both candidates non-present at PDPT |
+| Initial and return page walks | lower candidate non-present at PT; upper maps to `0x39ff000` | lower candidate non-present at PT; upper maps to `0x39ff000` |
+| Delivered fault at copy destination | none | #PF at `0x7fff9d9d7429`, error code `0x2` (write, not-present), original guest-access walk ends non-present at PT |
+
+Both `bprm_p` values are at offset `+0xfd2` in their respective upper candidate pages. The aligned-pointer offsets relative to those pages are `+0xa80` and `-0xbd0`, a normalized offset difference of `0x1650`; equivalently, the `bprm_p`-to-aligned-pointer distances are `0x552` and `0x1ba2`. The same seven-byte copy length is subtracted afterward. The replay localizes the differing copy outcome: run 0001's destination lies in the mapped upper candidate page, while run 0002's destination lies in the absent lower candidate page and matches its additional delivered #PF. The snapshots do not identify why the aligned pointer differs, when the lower mapping first diverged, or whether a particular CR3 write caused it. In run 0002 the lower page is already non-present at the captured initial phase; the trace does not provide continuous page-table history.
+
+## Result and next step
+
+Schema-v20 exact replay integrity is verified for both canonical nonces, and the new capture narrows the differing copy result to the aligned-pointer value and the mapped/unmapped candidate page at the sampled phases. The aggregate `incomplete` status reflects the explicit extra unpaired event; it does not mean the four phases or page-walk records were omitted. This replay does not run or satisfy the strict source-pair comparator, explain the origin of the aligned-pointer difference, establish CR3 causality, or accept S5-07. No comparator or eligibility rule changed.
+
+The diagnostic replay slice is complete. Next integrate local `main` at `1ef4897` as a separate slice, repeat focused checks and measurements on that RAM/MMU backend, then revisit the `aligned_stack_pointer` difference using the paired v20 evidence. Keep S5-07 blocked/unaccepted until its existing strict acceptance gate passes.
+
+## Raw artifact hashes
+
+| Run | Artifact | Bytes | SHA-256 |
+|---|---|---:|---|
+| 0001 | `runner.json` | 85,130 | `c18e107c559be9703f0dac019876f740c58bf16a58dc4e515e276021b23a04fe` |
+| 0001 | `execution-observations.json` | 6,385,289 | `33b6d198d652c00d829772087c3d4a8b60e110d62eb392c98367d738422665cb` |
+| 0001 | `runner-stdout.bin` | 82,204 | `be913f21fe2888566ca4cc5e3851c1da91726df8608ccbdb36208dd7e15d8624` |
+| 0002 | `runner.json` | 84,097 | `b7913cc0afa4537a02aeb24329e00e19b6f3979c4cabf51428f222d5d6c2be1d` |
+| 0002 | `execution-observations.json` | 6,390,621 | `86e22ad7e08d331dc0e08959cb574493b9a7fe36c3c88bf31657cd8411649ed0` |
+| 0002 | `runner-stdout.bin` | 81,171 | `dda93786a0b79deb992cb87268a938c5407d43931bd50ea2335586420445d8db` |
