@@ -547,10 +547,12 @@ fn put(page: &mut [u8], offset: usize, bytes: &[u8]) {
     page[offset..offset + bytes.len()].copy_from_slice(bytes);
 }
 
-fn identify_controller(state: &NvmeState) -> Vec<u8> {
+fn identify_controller(state: &mut NvmeState) -> Vec<u8> {
+    let (vendor, subsystem_vendor) = state.pci_vendor_ids();
     let config = &state.config;
     let mut page = vec![0; IDENTIFY_BYTES];
-    // VID/SSVID: no PCI vendor id is assigned to the project (PCI binding S4-30).
+    put(&mut page, 0, &vendor.to_le_bytes()); // VID
+    put(&mut page, 2, &subsystem_vendor.to_le_bytes()); // SSVID
     put(&mut page, 4, &config.serial);
     put(&mut page, 24, &config.model);
     put(&mut page, 64, &config.firmware_revision);

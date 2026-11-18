@@ -5094,6 +5094,25 @@ mod tests {
             0
         );
         assert_eq!(apic.pending(), None);
+
+        // Identify reports the same vendor IDs as Function 0's Type-0 header.
+        const IDENTIFY_DATA: u64 = 0x12_0000;
+        let mut identify = [0u8; 64];
+        identify[0] = 0x06; // Identify.
+        identify[24..32].copy_from_slice(&IDENTIFY_DATA.to_le_bytes());
+        identify[40] = 0x01; // Identify Controller.
+        bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ + 64), &identify, |_| {})
+            .unwrap();
+        write(bus, bar(0x1000), 2);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(read(bus, GuestPhysicalAddress::new(ACQ + 16 + 12)) >> 17, 0);
+        let vendor = read(bus, cfg(0x00)) & 0xFFFF;
+        let subsystem_vendor = read(bus, cfg(0x2c)) & 0xFFFF;
+        assert_ne!(vendor, 0);
+        assert_eq!(
+            read(bus, GuestPhysicalAddress::new(IDENTIFY_DATA)),
+            vendor | (subsystem_vendor << 16)
+        );
     }
 
     #[test]

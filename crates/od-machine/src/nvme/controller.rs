@@ -274,6 +274,15 @@ impl NvmeState {
             .is_none_or(|pci| pci.config.command() & COMMAND_BUS_MASTER != 0)
     }
 
+    /// Match Identify Controller to the PCI frontend's published header.
+    pub(super) fn pci_vendor_ids(&mut self) -> (u16, u16) {
+        self.pci.as_mut().map_or((0, 0), |pci| {
+            let vendor = pci.config.config_read(0x00, AccessWidth::Word) as u16;
+            let subsystem = pci.config.config_read(0x2c, AccessWidth::Word) as u16;
+            (vendor, subsystem)
+        })
+    }
+
     pub(super) fn interrupt_vector_count(&self) -> u16 {
         if self.pci.as_ref().is_some_and(|pci| pci.msix.enabled()) {
             QUEUE_SLOTS as u16

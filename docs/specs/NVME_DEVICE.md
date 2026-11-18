@@ -153,7 +153,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 
 | Смещение | Поле | Значение | Смысл |
 |---|---|---|---|
-| 0, 2 | `VID`, `SSVID` | 0 | **PCI vendor ID проекту не выдан**; поле определяется вместе с PCI-привязкой (S4-30). Это зафиксированная заглушка, не значение «по смыслу» |
+| 0, 2 | `VID`, `SSVID` | `0xD1A6`, `0x0000` в PCI-профиле | Значения берутся из PCI Configuration Header. Для фиксированного MMIO-профиля без PCI оба поля равны 0. [NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=366) |
 | 4 | `SN` (20) | `NvmeConfig::serial`, по умолчанию `OD-NVME-0001` + пробелы | ASCII `0x20..=0x7E`, дополнено пробелами |
 | 24 | `MN` (40) | `Open Desktop Virtual NVMe` + пробелы | |
 | 64 | `FR` (8) | `0.1.0` + пробелы | |
@@ -247,7 +247,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
 | `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR | вне реализованного профиля; `CAP` их не объявляет |
-| Идентификаторы `VID`, `SSVID`, `IEEE` | нулевые; значения проекту не выданы (раздел 8.1) |
+| Идентификаторы для поставки | PCI-профиль использует тестовый `VID`, нулевой `SSVID` и нулевой `IEEE`. Тестовый `VID` инициализируется в PCI Configuration Header и отображается в Identify |
 | Моделирование времени исполнения команд | команды завершаются в `service`, без виртуальной задержки |
 
 ## 11. NOT VERIFIED: места, где расхождение наиболее вероятно
