@@ -21,7 +21,7 @@ use super::backend::NvmeBackend;
 use super::io::{self, IoStats};
 use super::queues::{
     BusDma, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, SQE_BYTES,
-    SubmissionQueue, encode_cqe,
+    Status, SubmissionQueue, encode_cqe,
 };
 use crate::{
     AccessWidth, BusDevice, DeviceAccess, DeviceError, GuestPhysicalRange, IoSpace, MachineBus,
@@ -516,10 +516,15 @@ impl NvmeState {
         let command = Command::decode(&raw);
         report.commands += 1;
         let outcome = if slot == 0 {
-            admin::execute(self, &command, dma)
+            admin::execute(self, &command, dma, report)
         } else {
             io::execute(self, &command, dma)
         };
+        // A failed CQ DMA write sets CFS. Do not publish a completion for the
+        // command that caused it (or continue an enclosing Delete SQ operation).
+        if !self.ready() {
+            return false;
+        }
         if let Outcome::Done(completion) = outcome {
             if !completion.status.is_success() {
                 let phase = self.cqs[cqid].is_some_and(|cq| cq.phase);
@@ -530,6 +535,36 @@ impl NvmeState {
             }
         }
         true
+    }
+
+    /// Services commands already covered by an I/O SQ's tail before Delete SQ
+    /// removes the queue. If the associated CQ cannot hold all completions, the
+    /// queued commands are implicitly aborted and the SQ is deleted successfully.
+    pub(super) fn drain_io_queue_for_delete(
+        &mut self,
+        slot: usize,
+        dma: &mut dyn GuestDma,
+        report: &mut NvmeServiceReport,
+    ) -> Result<(), Status> {
+        let Some(sq) = self.sqs[slot] else {
+            return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        };
+        let pending = sq.pending_entries();
+        let cqid = usize::from(sq.cqid);
+        let free = self.cqs[cqid].map_or(0, |cq| cq.free_entries());
+        if free < pending {
+            self.sqs[slot] = None;
+            return Ok(());
+        }
+        while self.sqs[slot].is_some_and(|sq| sq.has_work()) {
+            if !self.run_one(slot, dma, report) {
+                return Err(Status::INVALID_QUEUE_DELETION);
+            }
+            if !self.ready() {
+                return Err(Status::INTERNAL_ERROR);
+            }
+        }
+        Ok(())
     }
 
     /// Posts completions of `Asynchronous Event Request` commands whose event arrived.

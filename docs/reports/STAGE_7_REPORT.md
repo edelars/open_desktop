@@ -36,7 +36,7 @@
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | in_progress | — | ожидает | RTC/CMOS реализованы как опциональное устройство из handoff и используют shared `VirtualClock`; HPET остаётся отложенным; подробности ниже |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срез A — admin — и срез B — I/O `Read`/`Write`/`Flush` на in-memory backend — выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы; значения спецификации не сверены) |
+| S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срезы A/B выполнены; подтверждённые замечания ревью исправлены, ожидают независимого повторного ревью; PCI-привязка — S4-30, прерывания не реализованы, значения спецификации не сверены) |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
 | S7-18 | not_started | — | — | Собственная FAT и Simple File System |
 | S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
@@ -331,7 +331,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез A)
 
-Статус: `in_progress`. **Срез A выполнен исполнителем, ожидает ревью, коммита нет. Срез B (I/O `Read`/`Write`/`Flush`, backend диска) выполнен исполнителем, см. раздел «Срез B» ниже; прерывания не реализованы.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+Статус: `in_progress`. **Срезы A и B реализованы; подтверждённые замечания первого ревью исправлены и ожидают независимого повторного ревью. Коммита реализации пока нет; прерывания не реализованы.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
 
 Создано: `docs/specs/NVME_DEVICE.md`; `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend,tests}.rs`. Изменено: `firmware_board.rs` (`FirmwareBoardConfig::nvme`, запись device code 8, `LoadedFirmwareBoard::nvme()`, `run_boot` обслуживает контроллер), `lib.rs` (экспорты), `FIRMWARE_BOOT.md` (§2, §6.3), `MACHINE_CONTRACT.md` (раздел «NVMe controller»), `VIRTUAL_BOARD.md` (строка «Boot storage»), `STAGE_7.md` (статус S7-16).
 
@@ -368,6 +368,8 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 - `trait NvmeBackend` (`sector_count`, `read_sectors`, `write_sectors`, `flush`) и `InMemoryBackend` (нулевой вектор фиксированного размера); подключение — `NvmeHandle::attach_backend` только при `CC.EN = 0`, `NSZE` = размер backend, Identify согласован. Файлового ввода-вывода в `od-machine` нет; файл/CoW подключает владелец машины над `od-storage`.
 - SMART/Health: `Host Read/Write Commands` и `Data Units Read/Written` — живые счётчики.
 - Тесты: Write → Read на границе страницы (PRP1 + PRP2) и через PRP list, максимальная передача, Flush (доходит до backend), LBA/NSID/NLB, неподдержанные поля, плохие PRP (диск не меняется), отказ backend, без backend, полная CQ (запись не исполняется до сдвига `head`), I/O без созданной SQ. Тест «гость пишет doorbell» не делался (разрыв среза A); покрыто через `service` напрямую.
+
+**Повторное ревью срезов A/B (2026-11-18):** исправлено удаление SQ с уже поданными I/O-командами: при достаточной ёмкости связанной CQ они исполняются и получают CQE до CQE успешного Delete SQ; если места недостаточно, оставшиеся SQ entries implicitly aborted без исполнения/I/O CQE, а Delete SQ завершается успешно. Добавлены регрессии порядка CQE и отсутствия side effects при implicit abort. Добавлены проверки `NSID = 0` для Create/Delete SQ/CQ, Abort, AER, Identify Controller и поддерживаемых controller-scoped features; Error Recovery сохраняет отдельную namespace validation. `cargo test --offline -p od-machine nvme::tests --lib` — 60/60 passed; `cargo check --offline -p od-machine --all-targets` — passed с прежним dead-code warning в `page_walk.rs`; scoped rustfmt и `git diff --check` — passed. Также добавлена регрессия: ошибка DMA при записи I/O CQE немедленно устанавливает CFS, прекращает обработку последующих I/O-команд и не публикует admin CQE Delete SQ. Независимое повторное ревью ожидается.
 
 Решения: LBA 512 байт, 4 KiB LBA **не поддержан** (один формат `LBAF0`); без backend устройство существует и отвечает `Namespace Not Ready` (не «не подключать устройство»); `Flush` с `NSID = 0xFFFF_FFFF` отвергается; `Flush` всегда вызывает `flush` backend, хотя `VWC = 0`.
 

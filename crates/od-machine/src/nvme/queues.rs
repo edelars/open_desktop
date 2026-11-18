@@ -187,6 +187,10 @@ impl SubmissionQueue {
     pub(crate) const fn has_work(&self) -> bool {
         self.head != self.tail
     }
+    /// Number of commands covered by the current tail doorbell.
+    pub(crate) const fn pending_entries(&self) -> u16 {
+        (self.tail + self.entries - self.head) % self.entries
+    }
     /// Guest address of the entry at `head`.
     pub(crate) fn head_address(&self) -> u64 {
         self.base + u64::from(self.head) * SQE_BYTES as u64
@@ -224,6 +228,10 @@ impl CompletionQueue {
     /// A queue with one free slot left is full: head == tail would be "empty".
     pub(crate) const fn is_full(&self) -> bool {
         (self.tail + 1) % self.entries == self.head
+    }
+    /// Number of CQEs that can be posted before the ring becomes full.
+    pub(crate) const fn free_entries(&self) -> u16 {
+        (self.head + self.entries - self.tail - 1) % self.entries
     }
     pub(crate) fn tail_address(&self) -> u64 {
         self.base + u64::from(self.tail) * CQE_BYTES as u64

@@ -901,6 +901,201 @@ fn deleting_a_cq_that_a_sq_uses_is_invalid_queue_deletion() {
     rig.create_io_queues();
 }
 
+#[test]
+fn delete_sq_services_tail_submitted_io_before_posting_its_admin_completion() {
+    let mut rig = Rig::enabled();
+    rig.create_io_queues();
+
+    let io_cid = rig.io_queue(Sqe::new(OPC_FLUSH).nsid(1));
+    let admin_cid = rig.next_cid;
+    rig.next_cid += 1;
+    let admin_address = ACQ + u64::from(rig.cq_head) * CQE_BYTES as u64;
+    let sqe_address = ASQ + u64::from(rig.sq_tail) * SQE_BYTES as u64;
+    rig.mem_write(
+        sqe_address,
+        &Sqe::new(OPC_DELETE_SQ).cdw(1, 0).raw(admin_cid),
+    );
+    rig.sq_tail = (rig.sq_tail + 1) % ADMIN_ENTRIES;
+    rig.set_dword(ADMIN_SQ_DOORBELL, u32::from(rig.sq_tail));
+
+    let mut committed = Vec::new();
+    let report = rig
+        .nvme
+        .service(&mut rig.bus, |range| committed.push(range.start().get()));
+    assert_eq!((report.commands, report.completions), (2, 2));
+    assert_eq!(committed, [IO_CQ, admin_address]);
+
+    let io_cqe = rig.io_poll().expect("submitted I/O command completed");
+    assert_eq!((io_cqe.cid, io_cqe.sqid), (io_cid, 1));
+    assert_eq!(io_cqe.status(), (0, 0x82), "Namespace Not Ready");
+    let admin_cqe = rig.poll_admin().expect("Delete SQ completed");
+    assert_eq!((admin_cqe.cid, admin_cqe.sqid), (admin_cid, 0));
+    assert_eq!(admin_cqe.status(), (0, 0));
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_CQ).cdw(1, 0)).status(),
+        (0, 0),
+        "Delete SQ removed the queue only after its submitted command completed"
+    );
+}
+
+#[test]
+fn delete_sq_aborts_tail_submitted_commands_when_the_cq_lacks_room() {
+    let mut rig = rig();
+    let disk = SharedBackend::new(DISK_SECTORS);
+    rig.nvme.attach_backend(Box::new(disk.clone())).unwrap();
+    rig.enable();
+    rig.create_io_queues();
+
+    let existing_cid = rig.io_queue(Sqe::new(OPC_FLUSH).nsid(1));
+    rig.service();
+    assert_eq!(rig.io_cq_entry(0).cid, existing_cid);
+    let payload = pattern(512, 0xA7);
+    rig.mem_write(BUF_A, &payload);
+    for lba in 0..3 {
+        rig.io_queue(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(lba, 0));
+    }
+
+    let deleted = rig.admin(Sqe::new(OPC_DELETE_SQ).cdw(1, 0));
+    assert_eq!(deleted.status(), (0, 0));
+    assert_eq!(
+        disk.bytes(0, 3),
+        vec![0; 3 * 512],
+        "implicit abort has no I/O side effect"
+    );
+    assert_eq!(rig.io_poll().unwrap().cid, existing_cid);
+    assert!(
+        rig.io_poll().is_none(),
+        "aborted SQ entries have no I/O CQEs"
+    );
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_CQ).cdw(1, 0)).status(),
+        (0, 0),
+        "the SQ is deleted successfully after implicit abort"
+    );
+}
+
+#[test]
+fn fatal_io_cq_dma_failure_stops_delete_sq_before_later_side_effects_or_admin_cqe() {
+    let mut rig = rig();
+    let disk = SharedBackend::new(DISK_SECTORS);
+    rig.nvme.attach_backend(Box::new(disk.clone())).unwrap();
+    rig.enable();
+    let invalid_cq = RAM_BYTES + 0x1000;
+    assert_eq!(
+        rig.admin(
+            Sqe::new(OPC_CREATE_CQ)
+                .prp(invalid_cq, 0)
+                .cdw(1 | (3 << 16), 1)
+        )
+        .status(),
+        (0, 0)
+    );
+    assert_eq!(
+        rig.admin(
+            Sqe::new(OPC_CREATE_SQ)
+                .prp(IO_SQ, 0)
+                .cdw(1 | (3 << 16), 1 | (1 << 16))
+        )
+        .status(),
+        (0, 0)
+    );
+    let first = pattern(512, 0x31);
+    let second = pattern(512, 0x92);
+    rig.mem_write(BUF_A, &first);
+    rig.mem_write(BUF_B, &second);
+    rig.io_queue(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(0, 0));
+    rig.io_queue(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_B, 0).rw(1, 0));
+    let admin_cqe_address = ACQ + u64::from(rig.cq_head) * CQE_BYTES as u64;
+    let admin_cid = rig.next_cid;
+    let admin_sqe_address = ASQ + u64::from(rig.sq_tail) * SQE_BYTES as u64;
+    rig.mem_write(
+        admin_sqe_address,
+        &Sqe::new(OPC_DELETE_SQ).cdw(1, 0).raw(admin_cid),
+    );
+    rig.sq_tail = (rig.sq_tail + 1) % ADMIN_ENTRIES;
+    rig.set_dword(ADMIN_SQ_DOORBELL, u32::from(rig.sq_tail));
+
+    rig.service();
+    assert_eq!(rig.dword(0x1C) & 0b11, 0b11, "CQ DMA failure sets CFS");
+    assert_eq!(
+        disk.bytes(0, 1),
+        first,
+        "first command executed before CQ write failed"
+    );
+    assert_eq!(
+        disk.bytes(1, 1),
+        vec![0; 512],
+        "later commands stop after fatal CFS"
+    );
+    let admin_cqe = Cqe::parse(
+        &rig.mem_read(admin_cqe_address, CQE_BYTES)
+            .try_into()
+            .unwrap(),
+    );
+    assert_ne!(
+        admin_cqe.phase, rig.cq_phase,
+        "Delete SQ must not post an admin CQE after CFS"
+    );
+}
+
+#[test]
+fn controller_scoped_admin_commands_reject_nonzero_nsid() {
+    let mut rig = Rig::enabled();
+    rig.create_io_queues();
+
+    for command in [
+        Sqe::new(OPC_CREATE_CQ)
+            .nsid(1)
+            .prp(IO_CQ, 0)
+            .cdw(1 | (3 << 16), 1),
+        Sqe::new(OPC_CREATE_SQ)
+            .nsid(1)
+            .prp(IO_SQ, 0)
+            .cdw(1 | (3 << 16), 1 | (1 << 16)),
+        Sqe::new(OPC_DELETE_CQ).nsid(1).cdw(1, 0),
+        Sqe::new(OPC_DELETE_SQ).nsid(1).cdw(1, 0),
+        Sqe::new(OPC_ABORT).nsid(1).cdw(0x1234 << 16, 0),
+        Sqe::new(OPC_AER).nsid(1),
+    ] {
+        assert_eq!(
+            rig.admin(command).status(),
+            (0, 0x02),
+            "opcode {:#04x}",
+            command.opcode
+        );
+    }
+
+    let controller_identify = rig.identify(1, 1).0;
+    assert_eq!(
+        controller_identify.status(),
+        (0, 0x02),
+        "Identify Controller"
+    );
+
+    // These implemented feature IDs are controller-scoped. Error Recovery
+    // remains namespace-scoped and is validated separately.
+    for fid in [0x01, 0x02, 0x04, 0x07, 0x08, 0x09, 0x0A, 0x0B] {
+        assert_eq!(
+            rig.admin(Sqe::new(OPC_SET_FEATURES).nsid(1).cdw(fid, 0))
+                .status(),
+            (0, 0x02),
+            "Set Features FID {fid:#04x}"
+        );
+        assert_eq!(
+            rig.admin(Sqe::new(OPC_GET_FEATURES).nsid(1).cdw(fid, 0))
+                .status(),
+            (0, 0x02),
+            "Get Features FID {fid:#04x}"
+        );
+    }
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).nsid(9).cdw(0x05, 0))
+            .status(),
+        (0, 0x0B),
+        "Error Recovery retains namespace validation"
+    );
+}
+
 // ---------------------------------------------------------------- features
 
 #[test]

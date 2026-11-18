@@ -93,6 +93,10 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 
 ## 7. Admin-команды (срез A)
 
+Для `Create/Delete I/O SQ/CQ`, `Abort`, `Asynchronous Event Request`, `Identify Controller` и реализованных controller-scoped Features требуется `NSID = 0`, иначе `Invalid Field`. `Error Recovery` остаётся namespace-scoped и применяет отдельную проверку (раздел 9.1); Identify Namespace/List также сохраняют собственные правила раздела 8.
+
+Delete I/O SQ сначала обслуживает команды, уже покрытые текущим SQ tail, и публикует их CQE до успешного CQE удаления. Если связанная CQ не имеет места для completion всех поданных команд, оставшиеся SQ entries implicitly aborted без исполнения и I/O CQE; SQ удаляется успешно. Неподтверждённый CQ-full статус не вводится.
+
 Мандаторные Admin-команды NVMe Base для контроллера ввода-вывода (по знанию авторов; обязательность NOT VERIFIED, сами opcode сверены с Linux `nvme.h`): `Delete I/O SQ`, `Create I/O SQ`, `Get Log Page`, `Delete I/O CQ`, `Create I/O CQ`, `Identify`, `Abort`, `Set Features`, `Get Features`, `Asynchronous Event Request`. Все десять реализованы. Любой другой opcode — `Invalid Command Opcode` (SC `0x01`, DNR), в том числе опциональные команды, которые контроллер не объявляет в `OACS`/`ONCS` (раздел 10).
 
 | Opcode | Команда | Поведение и границы |
@@ -111,6 +115,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 Коды статусов (сверены с Linux `include/linux/nvme.h`, не с NVMe Base 2.4): `Invalid Command Opcode 0/0x01`, `Invalid Field in Command 0/0x02`, `Data Transfer Error 0/0x04`, `Invalid Namespace or Format 0/0x0B`, `Command Sequence Error 0/0x0C`, `PRP Offset Invalid 0/0x13`; command specific (SCT 1): `Completion Queue Invalid 0x00`, `Invalid Queue Identifier 0x01`, `Invalid Queue Size 0x02`, `Asynchronous Event Request Limit Exceeded 0x05`, `Invalid Interrupt Vector 0x08`, `Invalid Log Page 0x09`, `Invalid Queue Deletion 0x0C`.
 
 ## 8. Identify
+
+`Identify Controller` требует `NSID = 0` (`Invalid Field` при ненулевом NSID); namespace/list CNS применяют правила ниже.
 
 `CDW10[7:0]` = CNS; результат — 4096 байт по PRP, остальное содержимое страницы — нули. Поддержаны:
 
@@ -168,6 +174,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 ## 9. Features и log pages
 
 ### 9.1. Features
+
+Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` проверяет namespace (0, 1 или `0xFFFF_FFFF`).
 
 `CDW10[7:0]` = FID; Get — `CDW10[10:8]` = SEL: поддержаны `0` (текущее) и `1` (значение по умолчанию); `2` (сохранённое) и `3` (возможности) — `Invalid Field`. Set — бит `SV` (31): сохранение не поддержано (`ONCS` бит 4 = 0), `SV = 1` — `Invalid Field`. Features сбрасываются к значениям по умолчанию сбросом контроллера. Неподдержанный FID — `Invalid Field`.
 
