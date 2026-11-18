@@ -20093,17 +20093,25 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: use the shared transfers for compiler-selected qword
-        // register stores and LEAs in the firmware profile.
+        // S7-04: execute the compiler's ordinary loads, qword stores and
+        // effective address calculations through the shared transfers.
         operation @ (Operation::Mov {
             dst: Operand::Memory(_),
             src: Operand::Register(_),
         }
+        | Operation::Mov {
+            dst: Operand::Register(_),
+            src: Operand::Memory(_),
+        }
         | Operation::Lea { .. })
             if firmware_boot_profile
                 && instruction.opcode.map == OpcodeMap::Primary
-                && matches!(instruction.opcode.byte, 0x89 | 0x8d)
-                && instruction.operand_size == OperandSize::Qword
+                && matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x89, OperandSize::Qword)
+                        | (0x8b, OperandSize::Dword | OperandSize::Qword)
+                        | (0x8d, OperandSize::Dword | OperandSize::Qword)
+                )
                 && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes
                     == (Prefixes {
