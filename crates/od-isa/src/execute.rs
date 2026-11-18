@@ -22192,7 +22192,17 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         | (
                             ConditionCode::Equal,
                             0x74,
-                            -0x30 | 0x0d | 0x11 | 0x1d | 0x33 | 0x35 | 0x3b | 0x59 | 0x64 | 0x71
+                            -0x30
+                                | 0x0d
+                                | 0x11
+                                | 0x1d
+                                | 0x29
+                                | 0x33
+                                | 0x35
+                                | 0x3b
+                                | 0x59
+                                | 0x64
+                                | 0x71
                         )
                 ))
                 || (instruction.opcode.map == OpcodeMap::Escape0f

@@ -4629,3 +4629,25 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-477 — exact JZ rel8 +0x29
+
+Five focused short JZ tests exercise both branch outcomes, concrete ZF with
+and without definedness, taken-target canonicality, the displacement fetch
+fault, neighboring encodings and CPL3 MOV probe isolation. The short JNZ
+regressions pass 10/10 and the other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue477.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It exits 5 with 10,320 retired instructions, RIP `0x20144a`, Unsupported
+opcode 131 and empty COM1. Bytes `66 41 83 F9 01` select CMP R9W,1 (ISSUE-478).
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,554/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

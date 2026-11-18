@@ -2720,3 +2720,12 @@ runner reaches `74 29` (JZ rel8 +0x29, ISSUE-477) at RIP `0x201448` after
 COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-477 runner frontier
+
+Exact base-profile `74 29` (JZ rel8 +0x29) uses ZF and checks a taken
+target for canonicality. With budget 20000 the runner reaches
+`66 41 83 F9 01` (CMP R9W,1, ISSUE-478) at RIP `0x20144a` after 10,320
+retired instructions. It reports Unsupported opcode 131 with empty COM1.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

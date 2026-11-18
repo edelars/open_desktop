@@ -2943,3 +2943,15 @@ neighboring encodings and profile isolation. With budget 20000 the runner
 retires 10,319 instructions and stops at RIP `0x201448` on `74 29` (JZ rel8
 +0x29, ISSUE-477). It reports Unsupported opcode 116 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-477 — exact JZ rel8 +0x29 (`74 29`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short branch. With ZF=1
+it adds signed rel8 +0x29 to next RIP and checks the taken target for
+canonicality. With ZF=0 it advances to next RIP. Both outcomes preserve
+flags and definedness. Tests cover both paths, target and fetch faults,
+neighboring encodings and profile isolation. With budget 20000 the runner
+retires 10,320 instructions and stops at RIP `0x20144a` on
+`66 41 83 F9 01` (CMP R9W,1, ISSUE-478). It reports Unsupported opcode 131
+with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
