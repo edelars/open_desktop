@@ -149,6 +149,8 @@ pub(crate) type EccPrivate = p256::ecdsa::SigningKey;
 const RSA_BYTES: usize = 256;
 /// Bytes of one RSA prime.
 const PRIME_BYTES: usize = RSA_BYTES / 2;
+/// Public exponent of RSA keys supported by the virtual TPM.
+pub(crate) const RSA_EXPONENT: u32 = 65_537;
 
 /// Generates an RSA-2048 key (public exponent 65537) from `rng`. The result is a function of the
 /// bytes the generator yields, so a generator seeded identically gives the same key (primary
@@ -182,15 +184,15 @@ pub(crate) fn rsa_primes(key: &RsaPrivate) -> Option<Zeroizing<Vec<u8>>> {
     Some(out)
 }
 
-/// Rebuilds the key from `p || q` and checks that it matches the public modulus `n` and that the
-/// exponent is 65537. `None` is a mismatch (`TPM_RC_BINDING`) or an invalid key.
+/// Rebuilds the key for the profile's fixed exponent from `p || q` and checks the public
+/// modulus `n`. The caller must validate the encoded public exponent separately.
 pub(crate) fn rsa_from_primes(pq: &[u8], n: &[u8]) -> Option<RsaPrivate> {
     if pq.len() != RSA_BYTES || n.len() != RSA_BYTES {
         return None;
     }
     let p = BoxedUint::from_be_slice(&pq[..PRIME_BYTES], 1024).ok()?;
     let q = BoxedUint::from_be_slice(&pq[PRIME_BYTES..], 1024).ok()?;
-    let key = RsaPrivate::from_p_q(p, q, BoxedUint::from(65537u64)).ok()?;
+    let key = RsaPrivate::from_p_q(p, q, BoxedUint::from(u64::from(RSA_EXPONENT))).ok()?;
     (key.n_bytes().as_ref() == n).then_some(key)
 }
 
@@ -204,7 +206,7 @@ pub(crate) fn rsa_sign(key: &RsaPrivate, digest: &[u8], rng: &mut Drbg) -> Optio
 /// The RSA public key `(n, 65537)`; `None` for a modulus the library rejects.
 fn rsa_public_key(n: &[u8]) -> Option<rsa::PublicKey> {
     let n = BoxedUint::from_be_slice(n, (n.len() * 8) as u32).ok()?;
-    rsa::PublicKey::new(n, BoxedUint::from(65537u64)).ok()
+    rsa::PublicKey::new(n, BoxedUint::from(u64::from(RSA_EXPONENT))).ok()
 }
 
 /// Verifies an RSASSA-PKCS1-v1_5 SHA-256 signature with the public key `(n, 65537)`.

@@ -25,7 +25,7 @@ use super::tests_obj::*;
 use super::*;
 use crate::StateError;
 use crate::codes::{object_attr as oa, pt};
-use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
+use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique, Writer};
 use sha2::{Digest, Sha256};
 
 fn rsa_decrypt_key(scheme: Scheme) -> TpmtPublic {
@@ -1600,6 +1600,69 @@ fn snapshots_of_another_version_are_refused() {
     assert_eq!(
         Tpm::restore(&v1, &[9; 48]).unwrap_err(),
         StateError::UnsupportedVersion(1)
+    );
+}
+
+#[test]
+fn persistent_rsa_snapshot_validates_the_encoded_exponent() {
+    const HANDLE: u32 = 0x8100_0001;
+    let mut t = started();
+    let mut template = rsa_sign();
+    let PublicParams::Rsa { exponent, .. } = &mut template.params else {
+        unreachable!("RSA signing template");
+    };
+    *exponent = 65_537;
+    let primary = parse_primary(&create_primary_raw(
+        &mut t,
+        OWNER,
+        b"",
+        &creation_params(b"rsapw", b"", &template, b"", &NO_PCR),
+    ));
+    ok(&evict(&mut t, OWNER, b"", primary.handle, HANDLE));
+    let snapshot = t.persistent_snapshot();
+    let public_response = read_public(&mut t, HANDLE);
+    let signature = sign(&mut t, HANDLE, b"rsapw", &DIGEST, &rsa_sig_scheme());
+    let mut restored = Tpm::restore(&snapshot, &[9; 48]).unwrap();
+    assert_eq!(restored.persistent_snapshot(), snapshot);
+    startup(&mut restored, 0);
+    assert_eq!(
+        params(&read_public(&mut restored, HANDLE), 0),
+        params(&public_response, 0)
+    );
+    assert_eq!(
+        params(
+            &sign(&mut restored, HANDLE, b"rsapw", &DIGEST, &rsa_sig_scheme()),
+            0
+        ),
+        params(&signature, 0)
+    );
+
+    let object = t.persistent.objects.get(HANDLE).unwrap();
+    let encoded_public = |public: &TpmtPublic| {
+        let mut writer = Writer::new();
+        public.marshal(&mut writer);
+        writer.finish()
+    };
+    let original = encoded_public(&object.public);
+    let mut incompatible = object.public.clone();
+    let PublicParams::Rsa { exponent, .. } = &mut incompatible.params else {
+        unreachable!("persistent RSA key");
+    };
+    *exponent = 3;
+    let sensitive =
+        crate::object::sensitive_to_bytes(object.sensitive.as_ref().unwrap(), alg::RSA).unwrap();
+    assert!(matches!(
+        crate::object::sensitive_from_bytes(&sensitive, &incompatible),
+        Err(Rc::BINDING)
+    ));
+    let mut invalid_snapshot = snapshot;
+    let offset = offset_of(&invalid_snapshot, &original);
+    invalid_snapshot[offset..offset + original.len()]
+        .copy_from_slice(&encoded_public(&incompatible));
+    refix(&mut invalid_snapshot);
+    assert_eq!(
+        Tpm::restore(&invalid_snapshot, &[9; 48]).unwrap_err(),
+        StateError::BadField
     );
 }
 

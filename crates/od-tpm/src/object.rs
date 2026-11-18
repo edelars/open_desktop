@@ -63,9 +63,9 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
-    EccPrivate, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public, ecc_scalar,
-    hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes, rsa_generate, rsa_modulus,
-    rsa_primes,
+    EccPrivate, RSA_EXPONENT, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid,
+    ecc_public, ecc_scalar, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes,
+    rsa_generate, rsa_modulus, rsa_primes,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::marshal::{
@@ -380,7 +380,7 @@ pub(crate) fn check_public(
             ..
         } => {
             check_asymmetric_attributes(public, sign, decrypt, restricted)?;
-            if *exponent != 0 && *exponent != 65537 {
+            if !supported_rsa_exponent(*exponent) {
                 return Err(bad(Rc::RANGE));
             }
             check_symmetric(public, *symmetric)?;
@@ -437,6 +437,10 @@ fn check_asymmetric_attributes(
         return Err(Rc::ATTRIBUTES.in_param(2));
     }
     Ok(())
+}
+
+fn supported_rsa_exponent(encoded: u32) -> bool {
+    matches!(encoded, 0 | RSA_EXPONENT)
 }
 
 fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
@@ -627,12 +631,15 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
     }
     let auth = AuthValue::from_slice_trimmed(&auth).ok_or(Rc::SENSITIVE)?;
     let secret = match &public.params {
-        PublicParams::Rsa { .. } => {
+        PublicParams::Rsa { exponent, .. } => {
             let Unique::Rsa(n) = &public.unique else {
                 return Err(Rc::BINDING);
             };
             if secret.len() != MAX_RSA_BYTES {
                 return Err(Rc::KEY_SIZE);
+            }
+            if !supported_rsa_exponent(*exponent) {
+                return Err(Rc::BINDING);
             }
             Secret::Rsa(Box::new(rsa_from_primes(&secret, n).ok_or(Rc::BINDING)?))
         }
@@ -778,7 +785,7 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
     }
     match (&public.params, &public.unique) {
         (PublicParams::Rsa { exponent, .. }, Unique::Rsa(n)) => {
-            if *exponent != 0 && *exponent != 65537 {
+            if !supported_rsa_exponent(*exponent) {
                 return Err(bad(Rc::RANGE));
             }
             if n.len() != MAX_RSA_BYTES || n[0] & 0x80 == 0 || n[MAX_RSA_BYTES - 1] & 1 == 0 {
