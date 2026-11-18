@@ -36,27 +36,33 @@
 use crate::irq_source::BoardIrqSource;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::{IoApicHandle, Uart16550Handle};
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 struct Inner {
     pit_ioapic: PitIoapicIrqSource,
     uart: Uart16550Handle,
     io_apic: IoApicHandle,
+    /// The sample state. Its lock is taken before the UART and APIC locks (MACHINE_CONTRACT.md,
+    /// S6-33 lock order) and is held across the sample.
+    line: Mutex<Line>,
+}
+
+#[derive(Default)]
+struct Line {
     /// The UART interrupt level the IOAPIC accepted last.
-    level: Cell<bool>,
+    level: bool,
     /// Rising levels accepted by INTIN4 (a masked one included).
-    edges: Cell<u64>,
+    edges: u64,
     /// Rising levels the IOAPIC refused (counted once per rise).
-    refused: Cell<u64>,
+    refused: u64,
     /// A rise was refused and is being retried.
-    refusing: Cell<bool>,
+    refusing: bool,
 }
 
 /// The board source with the PIT on INTIN2 and the UART on INTIN4. Cloning gives a second handle
 /// on the same source (the board owns one, a test keeps another to read the counters).
 #[derive(Clone)]
-pub(crate) struct UartIoapicIrqSource(Rc<Inner>);
+pub(crate) struct UartIoapicIrqSource(Arc<Inner>);
 
 impl UartIoapicIrqSource {
     /// Wraps the PIT -> INTIN2 source; `uart` and `io_apic` are the handles of the same board.
@@ -65,27 +71,28 @@ impl UartIoapicIrqSource {
         uart: Uart16550Handle,
         io_apic: IoApicHandle,
     ) -> Self {
-        Self(Rc::new(Inner {
+        Self(Arc::new(Inner {
             pit_ioapic,
             uart,
             io_apic,
-            level: Cell::new(false),
-            edges: Cell::new(0),
-            refused: Cell::new(0),
-            refusing: Cell::new(false),
+            line: Mutex::new(Line::default()),
         }))
+    }
+
+    fn line(&self) -> MutexGuard<'_, Line> {
+        self.0.line.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Rising levels of the UART line presented to INTIN4 and accepted so far.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_edges(&self) -> u64 {
-        self.0.edges.get()
+        self.line().edges
     }
 
     /// Rising levels INTIN4 refused (the Local APIC was disabled or the vector was busy).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn uart_refused(&self) -> u64 {
-        self.0.refused.get()
+        self.line().refused
     }
 
     /// A second handle on the wrapped PIT -> INTIN2 source (its counters).
@@ -97,25 +104,26 @@ impl UartIoapicIrqSource {
     /// Samples the UART interrupt output and presents a change of it to INTIN4.
     pub(crate) fn sample(&self) {
         let inner = &*self.0;
+        let mut state = self.line();
         let line = inner.uart.interrupt_line();
-        if line == inner.level.get() {
+        if line == state.level {
             if !line {
-                inner.refusing.set(false);
+                state.refusing = false;
             }
             return;
         }
         match inner.io_apic.set_intin4(line) {
             Ok(()) => {
-                inner.level.set(line);
-                inner.refusing.set(false);
+                state.level = line;
+                state.refusing = false;
                 if line {
-                    inner.edges.set(inner.edges.get() + 1);
+                    state.edges += 1;
                 }
             }
             Err(_) => {
                 // Nothing changed in the IOAPIC; the next sample tries again.
-                if !inner.refusing.replace(true) {
-                    inner.refused.set(inner.refused.get() + 1);
+                if !std::mem::replace(&mut state.refusing, true) {
+                    state.refused += 1;
                 }
             }
         }

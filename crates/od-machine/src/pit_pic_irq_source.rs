@@ -42,8 +42,7 @@ use crate::stage4_pit_irq0_probe::{next_out0_rising_tick, pit_tick_deadline_ns};
 use crate::{
     EventQueue, Pic8259Handle, Pit8254Handle, PitMode, PitRun, VirtualClockHandle, pit_ticks,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Capacity of the queue: one chain of events per generation holds one event.
 const QUEUE_CAPACITY: usize = 4;
@@ -177,13 +176,19 @@ impl Inner {
 /// Cloning gives a second handle on the same source (the board owns one, a test keeps another to
 /// read the counters).
 #[derive(Clone)]
-pub(crate) struct PitPicIrqSource(Rc<RefCell<Inner>>);
+pub(crate) struct PitPicIrqSource(Arc<Mutex<Inner>>);
 
 impl PitPicIrqSource {
+    /// The source state. Its lock is taken before every device lock it reaches (PIT, PIC, APIC,
+    /// clock; MACHINE_CONTRACT.md, S6-33 lock order) and no device ever takes it.
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A source on the handles of one board; `clock` is the clock of the PIT.
     pub(crate) fn new(pit: Pit8254Handle, pic: Pic8259Handle, clock: VirtualClockHandle) -> Self {
         let now = clock.snapshot().now_ns();
-        Self(Rc::new(RefCell::new(Inner {
+        Self(Arc::new(Mutex::new(Inner {
             pit,
             pic,
             clock,
@@ -198,25 +203,25 @@ impl PitPicIrqSource {
     /// Counters for evidence.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stats(&self) -> PitPicStats {
-        self.0.borrow().stats
+        self.inner().stats
     }
 
     /// Events in the queue, as of the last catch-up; tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn queued(&self) -> usize {
-        self.0.borrow().queue.len()
+        self.inner().queue.len()
     }
 }
 
 impl BoardIrqSource for PitPicIrqSource {
     fn pending_vector(&self) -> Option<u8> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         inner.catch_up();
         inner.pic.pending_vector()
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         if inner.pic.acknowledge(vector) {
             inner.stats.acknowledged += 1;
         } else {
@@ -225,7 +230,7 @@ impl BoardIrqSource for PitPicIrqSource {
     }
 
     fn next_deadline_ns(&self) -> Option<u64> {
-        self.0.borrow_mut().next_edge_ns()
+        self.inner().next_edge_ns()
     }
 
     fn pit_write_ends_quantum(&self) -> bool {
@@ -233,11 +238,11 @@ impl BoardIrqSource for PitPicIrqSource {
     }
 
     fn irq0_edges(&self) -> u64 {
-        self.0.borrow().stats.edges
+        self.inner().stats.edges
     }
 
     fn wake_ns(&self) -> Option<u64> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.inner();
         inner.catch_up();
         if inner.pic.pending_vector().is_some() {
             return Some(inner.clock.snapshot().now_ns());

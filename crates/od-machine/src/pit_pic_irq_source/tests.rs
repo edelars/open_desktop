@@ -299,7 +299,7 @@ fn a_mode4_count_gives_one_edge_one_tick_after_the_strobe_and_none_after() {
     // S4-39g2: control word 0x38 (channel 0, LSB+MSB, mode 4), count 10 written at 0 ns: the
     // strobe is at tick 10 (8381 ns), OUT rises at tick 11 (ceil(11e9 / 1_193_182) = 9220 ns).
     let mut rig = Rig::new(0x00);
-    rig.source.0.borrow().pit.enable_software_strobe();
+    rig.source.inner().pit.enable_software_strobe();
     rig.program(0x38, 10);
     assert_eq!(rig.source.next_deadline_ns(), Some(9220));
     rig.advance_to(8381);

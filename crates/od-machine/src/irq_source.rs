@@ -8,9 +8,12 @@
 
 /// A source of maskable external interrupts on the board.
 ///
+/// `Send` (S6-33): a source moves to the thread of the vCPU that asks it. Its own state sits behind
+/// a lock that is taken before any device lock it reaches (MACHINE_CONTRACT.md, lock order).
+///
 /// The three questions are cheap and allocation-free: `pending_vector` is asked once on every
 /// instruction boundary of the set loop.
-pub(crate) trait BoardIrqSource {
+pub(crate) trait BoardIrqSource: Send {
     /// The vector of the interrupt to deliver now: the line is active and not masked at the
     /// source. `None` when nothing is pending. The source is not changed by the question.
     fn pending_vector(&self) -> Option<u8>;

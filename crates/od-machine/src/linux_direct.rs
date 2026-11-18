@@ -14627,8 +14627,7 @@ mod tests {
         use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
         use crate::paged_memory_adapter::IrqDeliveryFailure;
         use od_isa::{Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal, StiShadow};
-        use std::cell::RefCell;
-        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
 
         /// What the scripted source does, shared with the test that owns it.
         #[derive(Default)]
@@ -14644,11 +14643,11 @@ mod tests {
         }
 
         #[derive(Clone, Default)]
-        struct ScriptedSource(Rc<RefCell<Script>>);
+        struct ScriptedSource(Arc<Mutex<Script>>);
 
         impl BoardIrqSource for ScriptedSource {
             fn pending_vector(&self) -> Option<u8> {
-                let mut script = self.0.borrow_mut();
+                let mut script = self.0.lock().unwrap();
                 if script.pending_after_queries > 0 {
                     script.pending_after_queries -= 1;
                     None
@@ -14657,19 +14656,19 @@ mod tests {
                 }
             }
             fn acknowledge(&mut self, vector: u8) {
-                let mut script = self.0.borrow_mut();
+                let mut script = self.0.lock().unwrap();
                 script.acked.push(vector);
                 if !script.keep_pending {
                     script.pending = None;
                 }
             }
             fn next_deadline_ns(&self) -> Option<u64> {
-                let mut script = self.0.borrow_mut();
+                let mut script = self.0.lock().unwrap();
                 script.polls += 1;
                 script.deadline
             }
             fn pit_write_ends_quantum(&self) -> bool {
-                self.0.borrow().pit_ends
+                self.0.lock().unwrap().pit_ends
             }
         }
 
@@ -14801,13 +14800,13 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let rsp = boot.board.state().gpr[Register::Rsp as usize];
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             // The delivery retires nothing; the budget of 1 is the handler's first `CLD`.
             let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
             assert_eq!(report.instructions_executed, 1, "{report:?}");
             assert_eq!(counters.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
             assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
             assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
@@ -14829,7 +14828,7 @@ mod tests {
             assert_eq!(report.instructions_executed, 3);
             assert_eq!(state.rip, rip_before + 3);
             assert_eq!(counters, IrqCounters::default());
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -14837,7 +14836,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().rflags = 2;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
             // Boundaries 0, 1 and 2; the budget check precedes the interrupt check at 3.
@@ -14845,8 +14844,12 @@ mod tests {
             assert_eq!(counters.irq_refused_masked, 3);
             assert_eq!(counters.irq_refused_shadow, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
-            assert_eq!(script.0.borrow().pending, Some(IRQ_VECTOR), "still pending");
+            assert!(script.0.lock().unwrap().acked.is_empty());
+            assert_eq!(
+                script.0.lock().unwrap().pending,
+                Some(IRQ_VECTOR),
+                "still pending"
+            );
             assert_eq!(state.rip, ENTRY + 3);
         }
 
@@ -14855,7 +14858,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             // Boundary 0: shadow, refused; `CLD` retires and ends the shadow; boundary 1:
             // delivered; the second retired instruction is the handler's first.
@@ -14864,7 +14867,7 @@ mod tests {
             assert_eq!(counters.irq_refused_shadow, 1);
             assert_eq!(counters.irq_refused_masked, 0);
             assert_eq!(counters.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
         }
 
@@ -14873,12 +14876,12 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             boot.board.state_mut().sti_shadow = None;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (_, _report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
             assert_eq!(counters.irq_refused_shadow, 1);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -14886,7 +14889,7 @@ mod tests {
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
             {
-                let mut script = script.0.borrow_mut();
+                let mut script = script.0.lock().unwrap();
                 script.pending = Some(IRQ_VECTOR);
                 script.keep_pending = true;
             }
@@ -14896,7 +14899,7 @@ mod tests {
             assert_eq!(report.instructions_executed, 1);
             assert_eq!(state.rip, ENTRY + 1);
             assert_eq!(counters, IrqCounters::default());
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             // Without the skip the same pending vector is delivered at once.
             let (mut boot, _) = irq_board(&[CLD; 8]);
             let mut counters = IrqCounters::default();
@@ -14915,7 +14918,7 @@ mod tests {
                 &[0u8; 16],
             );
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let before = boot.board.state().clone();
             let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
@@ -14931,7 +14934,7 @@ mod tests {
             );
             assert_eq!(report.instructions_executed, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             assert_eq!(
                 (state.rip, state.gpr, state.rflags),
                 (before.rip, before.gpr, before.rflags)
@@ -14947,7 +14950,7 @@ mod tests {
                 limit: 0xFFF,
             });
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let (_, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
             let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
@@ -14965,7 +14968,7 @@ mod tests {
                 "{failure:?}"
             );
             assert_eq!(report.instructions_executed, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
         }
 
         #[test]
@@ -14974,7 +14977,7 @@ mod tests {
             // The stack lies in an unmapped page: the first frame store faults.
             boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             let (mut source, mut counters) = (script.clone(), IrqCounters::default());
             let before = boot.board.state().clone();
             let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
@@ -14994,7 +14997,7 @@ mod tests {
             );
             assert_eq!(report.instructions_executed, 0);
             assert_eq!(counters.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             assert_eq!(
                 (state.rip, state.gpr, state.rflags),
                 (before.rip, before.gpr, before.rflags)
@@ -15010,7 +15013,7 @@ mod tests {
                 &[0u8; 16],
             );
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let error = run_linux_direct_board_set(
                 &mut boot,
@@ -15036,11 +15039,11 @@ mod tests {
             );
             assert!(error.detail.contains("rip: "), "{error:?}");
             assert!(error.detail.contains("cs_selector: Some("), "{error:?}");
-            assert!(script.0.borrow().acked.is_empty());
+            assert!(script.0.lock().unwrap().acked.is_empty());
             // Without the `irq` member the same source is never asked.
             let (mut boot, file) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(
                 &mut boot,
@@ -15052,19 +15055,19 @@ mod tests {
                 },
             );
             assert_eq!(record.irqs_delivered, 0);
-            assert!(script.0.borrow().acked.is_empty());
-            assert_eq!(script.0.borrow().polls, 0);
+            assert!(script.0.lock().unwrap().acked.is_empty());
+            assert_eq!(script.0.lock().unwrap().polls, 0);
         }
 
         #[test]
         fn the_board_delivers_and_counts_through_the_facade() {
             let (mut boot, file) = irq_board(&[CLD; 8]);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            script.0.lock().unwrap().pending = Some(IRQ_VECTOR);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 3, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.irqs_delivered, 1);
-            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(script.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
             assert_eq!(record.retired, 3);
         }
@@ -15107,7 +15110,7 @@ mod tests {
 
             let source = ScriptedSource::default();
             {
-                let mut script = source.0.borrow_mut();
+                let mut script = source.0.lock().unwrap();
                 // First boundary is the kernel IRETQ; the next boundary is in CPL3.
                 script.pending_after_queries = 1;
                 script.pending = Some(IRQ_VECTOR);
@@ -15121,7 +15124,7 @@ mod tests {
                 "{report:?}"
             );
             assert_eq!(counters.irqs_delivered, 1, "{report:?}");
-            assert_eq!(source.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(source.0.lock().unwrap().acked, [IRQ_VECTOR]);
             assert_eq!(report.instructions_executed, 5, "{report:?}");
             assert_eq!(report.cpl3_retired, 3, "{report:?}");
             assert_eq!(state.cs_selector, Some(0x13), "{report:?}");
@@ -15155,7 +15158,7 @@ mod tests {
             // one instruction (the minimum) until the budget is spent.
             let (mut boot, file) = boot_with_entry(&program);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            script.0.lock().unwrap().deadline = Some(boot.board.clock().now_ns() + 5);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
@@ -15166,7 +15169,7 @@ mod tests {
             // The deadline is not consulted without the member.
             let (mut boot, file) = boot_with_entry(&program);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            script.0.lock().unwrap().deadline = Some(boot.board.clock().now_ns() + 5);
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(
                 &mut boot,
@@ -15178,7 +15181,7 @@ mod tests {
                 },
             );
             assert_eq!((record.quanta, record.quantum_cut_by_deadline), (1, 0));
-            assert_eq!(script.0.borrow().polls, 0);
+            assert_eq!(script.0.lock().unwrap().polls, 0);
         }
 
         /// `MOV AL, 0x34; MOV DX, 0x43; OUT DX, AL; CLD; CLD; CLD; CLD`.
@@ -15191,7 +15194,7 @@ mod tests {
             for pit_ends in [false, true] {
                 let (mut boot, _) = irq_board(&PIT_WRITE_PROGRAM);
                 let script = ScriptedSource::default();
-                script.0.borrow_mut().pit_ends = pit_ends;
+                script.0.lock().unwrap().pit_ends = pit_ends;
                 let (mut source, mut counters) = (script.clone(), IrqCounters::default());
                 let (state, report) = run_hook(&mut boot, 20, &mut source, &mut counters, false);
                 exits.push((
@@ -15226,7 +15229,7 @@ mod tests {
         fn a_pit_write_quantum_end_is_resumed_by_the_board_and_deadline_is_asked_again() {
             let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
             let script = ScriptedSource::default();
-            script.0.borrow_mut().pit_ends = true;
+            script.0.lock().unwrap().pit_ends = true;
             boot.board.set_irq_source(Box::new(script.clone()));
             let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
             assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
@@ -15234,7 +15237,7 @@ mod tests {
             // The OUT ended the first quantum; the rest is the second.
             assert_eq!(record.quanta, 2);
             // One question before each quantum.
-            assert_eq!(script.0.borrow().polls, 2);
+            assert_eq!(script.0.lock().unwrap().polls, 2);
             // The same program without the request is one quantum.
             let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
             let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());

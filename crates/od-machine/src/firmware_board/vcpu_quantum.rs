@@ -1204,16 +1204,16 @@ mod tests {
     /// A source with one vector, pending until it was acknowledged once.
     struct OneShot {
         vector: u8,
-        acks: std::rc::Rc<std::cell::Cell<u32>>,
+        acks: std::sync::Arc<std::sync::atomic::AtomicU32>,
     }
 
     impl BoardIrqSource for OneShot {
         fn pending_vector(&self) -> Option<u8> {
-            (self.acks.get() == 0).then_some(self.vector)
+            (self.acks.load(std::sync::atomic::Ordering::Relaxed) == 0).then_some(self.vector)
         }
         fn acknowledge(&mut self, vector: u8) {
             assert_eq!(vector, self.vector);
-            self.acks.set(self.acks.get() + 1);
+            self.acks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         fn next_deadline_ns(&self) -> Option<u64> {
             None
@@ -1221,7 +1221,12 @@ mod tests {
     }
 
     /// Two vCPUs (spinning, IF = 1) with a counting handler for the board vector in each IDT.
-    fn one_shot_board(vector: u8) -> (LoadedFirmwareBoard, std::rc::Rc<std::cell::Cell<u32>>) {
+    fn one_shot_board(
+        vector: u8,
+    ) -> (
+        LoadedFirmwareBoard,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
         let mut board = board(2);
         system(&mut board, false);
         patch(&mut board, CODE_0, &[0xEB, 0xFE]);
@@ -1254,7 +1259,7 @@ mod tests {
             limit: 0xFFF,
         });
         install(&mut board, 1, ap, 0xD01);
-        let acks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let acks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         board.irq_source = Box::new(OneShot {
             vector,
             acks: acks.clone(),
@@ -1267,14 +1272,14 @@ mod tests {
         let (mut board, acks) = one_shot_board(BOARD_VECTOR);
         quantum(&mut board, 1, 50).unwrap();
         assert_eq!(
-            acks.get(),
+            acks.load(std::sync::atomic::Ordering::Relaxed),
             0,
             "an application processor is not offered the source"
         );
         assert_eq!(dword(&mut board, COUNTER_1), 0);
         quantum(&mut board, 0, 50).unwrap();
         assert_eq!(
-            acks.get(),
+            acks.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "the boot processor takes it at its first boundary"
         );
@@ -1306,7 +1311,13 @@ mod tests {
             .unwrap();
         quantum(&mut board, 0, 60).unwrap();
         // The board's vector was delivered and acknowledged in the board's source ...
-        assert_eq!((acks.get(), dword(&mut board, COUNTER_0)), (1, 1));
+        assert_eq!(
+            (
+                acks.load(std::sync::atomic::Ordering::Relaxed),
+                dword(&mut board, COUNTER_0)
+            ),
+            (1, 1)
+        );
         // ... the Local APIC's vector through its own IDT gate and acknowledged in the LAPIC of the
         // boot processor (IRR -> ISR; the handler does not EOI), not in the board's source.
         assert_eq!(dword(&mut board, COUNTER_LAPIC), 1);

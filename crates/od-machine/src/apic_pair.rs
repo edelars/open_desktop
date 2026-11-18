@@ -2,9 +2,12 @@
 //!
 //! The IOAPIC route and every Local APIC sit behind one lock, because a level request couples
 //! them: delivery sets IRR/TMR in the destination LAPIC and Remote IRR in the route, and the
-//! destination's EOI clears Remote IRR. Operations that name no processor (`level`, `set_line`,
-//! `set_line2`, `set_low`, `set_low2`) act on the LAPIC the route's destination field selects;
-//! the others take the index of the LAPIC they act on.
+//! destination's EOI clears Remote IRR. That lock is the APIC lock of the lock order of
+//! MACHINE_CONTRACT.md (S6-33): an ICR write is decoded and delivered under it, so there is never a
+//! second Local APIC lock to take while holding one, and nothing under it takes the device-table
+//! lock of the bus or the lock of an interrupt source. Operations that name no processor (`level`,
+//! `set_line`, `set_line2`, `set_low`, `set_low2`) act on the LAPIC the route's destination field
+//! selects; the others take the index of the LAPIC they act on.
 use crate::{DeviceError, EventQueue, VirtualClock, VirtualClockHandle, local_apic::State};
 
 pub(crate) const MASK: u32 = 1 << 16;

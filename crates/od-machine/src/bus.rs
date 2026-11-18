@@ -10,6 +10,7 @@ use od_isa::{
 };
 use std::cell::RefCell;
 use std::fmt;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 // Must match the bounded 36-bit physical-address format accepted by
 // page_walk.rs. Higher PTE bits can contain software metadata or NX.
@@ -116,7 +117,10 @@ impl fmt::Display for DeviceError {
 }
 impl std::error::Error for DeviceError {}
 
-pub trait BusDevice {
+/// A device on the bus. `Send` (S6-33): the device table sits behind one lock and is used from the
+/// thread of the vCPU that holds it (MACHINE_CONTRACT.md, lock order); a device does not call back
+/// into the bus.
+pub trait BusDevice: Send {
     /// An error must be returned before any guest-visible state or external
     /// effect is committed. Implementations validate the complete operation
     /// before applying its synchronous effect.
@@ -250,7 +254,11 @@ impl std::error::Error for BusAccessError {}
 
 pub struct MachineBus {
     memory: PhysicalMemory,
-    devices: Vec<Box<dyn BusDevice>>,
+    /// The device table, behind the one device lock of S6-33 (MACHINE_CONTRACT.md, lock order).
+    /// RAM is not behind it: `memory` is a separate field, reached through a shared reference
+    /// without the lock. Code that owns the bus exclusively (every interleaved path) reaches the
+    /// table with [`exclusive_devices`], which takes no lock.
+    devices: Mutex<Vec<Box<dyn BusDevice>>>,
     mmio: Vec<MmioBinding>,
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
@@ -917,7 +925,7 @@ impl MachineBus {
         (
             memory,
             MachineBusSetStepIo {
-                devices: RefCell::new(devices.as_mut_slice()),
+                devices: RefCell::new(exclusive_devices(devices).as_mut_slice()),
                 ports,
                 mmio,
                 mmio_lens,
@@ -944,7 +952,13 @@ impl MachineBus {
             ports,
             ..
         } = self;
-        (memory, MachineBusPortIo { devices, ports })
+        (
+            memory,
+            MachineBusPortIo {
+                devices: exclusive_devices(devices),
+                ports,
+            },
+        )
     }
 
     /// A tracked access by vCPU `vcpu`: an MMIO operand reaches the device as that vCPU's access.
@@ -961,6 +975,7 @@ impl MachineBus {
             mmio,
             ..
         } = self;
+        let devices = exclusive_devices(devices);
         let regions = memory.region_specs().collect::<Vec<_>>();
         crate::page_walk::access_long64_4k_with_mmio(
             memory,
@@ -1311,12 +1326,116 @@ impl MachineBus {
         let memory = PhysicalMemory::new(&map, ram_limits).map_err(BusBuildError::Memory)?;
         Ok(Self {
             memory,
-            devices,
+            devices: Mutex::new(devices),
             mmio,
             mmio_lens,
             apic_mmio_windows: false,
             ports,
         })
+    }
+
+    /// The device and the device-relative access of an MMIO operand: the region that wholly holds
+    /// `width` bytes at `address`, and the device bound to it.
+    fn mmio_target(
+        &self,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> Result<(usize, DeviceAccess), BusAccessError> {
+        let len = u64::from(width.bytes());
+        let region = self
+            .memory
+            .region_specs()
+            .find(|region| {
+                region.kind == MemoryRegionKind::Mmio
+                    && region.range.start() <= address
+                    && u128::from(address.get()) + u128::from(len) <= region.range.end_exclusive()
+            })
+            .ok_or(BusAccessError::CrossesRegion)?;
+        let device_index = self
+            .mmio
+            .iter()
+            .find(|binding| binding.region_start == region.range.start())
+            .ok_or(BusAccessError::UnmappedPhysical(address))?
+            .device_index;
+        Ok((
+            device_index,
+            DeviceAccess {
+                space: IoSpace::Mmio,
+                offset: address.get() - region.range.start().get(),
+                width,
+            },
+        ))
+    }
+
+    /// S6-33: the one device lock. Every access of a thread that holds only `&MachineBus` takes
+    /// it, so device accesses of different vCPU threads are serialized; RAM is not behind it
+    /// ([`MachineBus::physical_memory`] needs no lock). The device lock is the first lock of the
+    /// order in MACHINE_CONTRACT.md: a device reached through it takes its own lock (a Local APIC
+    /// the APIC lock) and never calls back into the bus. A panic in a device does not poison it
+    /// for good: the table is used as the panicking thread left it, as for every device lock.
+    pub(crate) fn lock_devices(&self) -> MutexGuard<'_, Vec<Box<dyn BusDevice>>> {
+        self.devices.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Port read by a thread that holds only `&MachineBus` (takes the device lock).
+    pub fn read_port_shared(
+        &self,
+        port: PortAddress,
+        width: AccessWidth,
+    ) -> Result<u32, BusAccessError> {
+        read_port_from(&mut self.lock_devices(), &self.ports, port, width)
+    }
+
+    /// Port write by a thread that holds only `&MachineBus` (takes the device lock).
+    pub fn write_port_shared(
+        &self,
+        port: PortAddress,
+        width: AccessWidth,
+        value: u32,
+    ) -> Result<(), BusAccessError> {
+        write_port_to(&mut self.lock_devices(), &self.ports, port, width, value)
+    }
+
+    /// MMIO read of vCPU `vcpu` by a thread that holds only `&MachineBus` (takes the device
+    /// lock); a Local APIC access is that processor's.
+    ///
+    /// Only addresses inside an MMIO region are served: an address of RAM or outside every MMIO
+    /// region gives `CrossesRegion` here, where `read_physical` would return the RAM bytes or
+    /// `UnmappedPhysical`. This shared path does not consult `apic_mmio_windows` (S6-34 must route
+    /// the Local APIC window of the executing vCPU itself).
+    pub fn read_mmio_shared(
+        &self,
+        vcpu: usize,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+    ) -> Result<u64, BusAccessError> {
+        let (device_index, access) = self.mmio_target(address, width)?;
+        self.lock_devices()[device_index]
+            .read_from_cpu(vcpu, access)
+            .map(|v| v & width.mask())
+            .map_err(|source| BusAccessError::Device {
+                device_index,
+                source,
+            })
+    }
+
+    /// MMIO write of vCPU `vcpu` by a thread that holds only `&MachineBus`; see
+    /// [`MachineBus::read_mmio_shared`] (same `CrossesRegion` result for RAM or non-MMIO
+    /// addresses, same absence of `apic_mmio_windows` routing).
+    pub fn write_mmio_shared(
+        &self,
+        vcpu: usize,
+        address: GuestPhysicalAddress,
+        width: AccessWidth,
+        value: u64,
+    ) -> Result<(), BusAccessError> {
+        let (device_index, access) = self.mmio_target(address, width)?;
+        self.lock_devices()[device_index]
+            .write_from_cpu(vcpu, access, value & width.mask())
+            .map_err(|source| BusAccessError::Device {
+                device_index,
+                source,
+            })
     }
 
     pub fn read_physical(
@@ -1334,28 +1453,8 @@ impl MachineBus {
                 read_ram(&self.memory, address, width).map_err(BusAccessError::Memory)
             }
             MemoryRegionKind::Mmio => {
-                let region = self
-                    .memory
-                    .region_specs()
-                    .find(|region| {
-                        region.kind == MemoryRegionKind::Mmio
-                            && region.range.start() <= address
-                            && u128::from(address.get()) + u128::from(len)
-                                <= region.range.end_exclusive()
-                    })
-                    .ok_or(BusAccessError::CrossesRegion)?;
-                let device_index = self
-                    .mmio
-                    .iter()
-                    .find(|binding| binding.region_start == region.range.start())
-                    .ok_or(BusAccessError::UnmappedPhysical(address))?
-                    .device_index;
-                let access = DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset: address.get() - region.range.start().get(),
-                    width,
-                };
-                self.devices[device_index]
+                let (device_index, access) = self.mmio_target(address, width)?;
+                exclusive_devices(&mut self.devices)[device_index]
                     .read(access)
                     .map(|v| v & width.mask())
                     .map_err(|source| BusAccessError::Device {
@@ -1393,28 +1492,8 @@ impl MachineBus {
                     .map_err(BusAccessError::Memory)
             }
             MemoryRegionKind::Mmio => {
-                let region = self
-                    .memory
-                    .region_specs()
-                    .find(|region| {
-                        region.kind == MemoryRegionKind::Mmio
-                            && region.range.start() <= address
-                            && u128::from(address.get()) + u128::from(len)
-                                <= region.range.end_exclusive()
-                    })
-                    .ok_or(BusAccessError::CrossesRegion)?;
-                let device_index = self
-                    .mmio
-                    .iter()
-                    .find(|binding| binding.region_start == region.range.start())
-                    .ok_or(BusAccessError::UnmappedPhysical(address))?
-                    .device_index;
-                let access = DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset: address.get() - region.range.start().get(),
-                    width,
-                };
-                self.devices[device_index]
+                let (device_index, access) = self.mmio_target(address, width)?;
+                exclusive_devices(&mut self.devices)[device_index]
                     .write(access, value & width.mask())
                     .map_err(|source| BusAccessError::Device {
                         device_index,
@@ -1440,7 +1519,12 @@ impl MachineBus {
         port: PortAddress,
         width: AccessWidth,
     ) -> Result<u32, BusAccessError> {
-        read_port_from(&mut self.devices, &self.ports, port, width)
+        read_port_from(
+            exclusive_devices(&mut self.devices),
+            &self.ports,
+            port,
+            width,
+        )
     }
 
     pub fn write_port(
@@ -1449,7 +1533,13 @@ impl MachineBus {
         width: AccessWidth,
         value: u32,
     ) -> Result<(), BusAccessError> {
-        write_port_to(&mut self.devices, &self.ports, port, width, value)
+        write_port_to(
+            exclusive_devices(&mut self.devices),
+            &self.ports,
+            port,
+            width,
+            value,
+        )
     }
 
     pub(crate) fn read_flat_bytes(
@@ -1586,6 +1676,12 @@ impl PortIo for MachineBusPortIo<'_> {
             value,
         )
     }
+}
+
+/// The device table of a bus owned exclusively: `&mut` proves no other thread holds the lock, so
+/// no lock is taken (the interleaved paths pay nothing for the device lock of S6-33).
+fn exclusive_devices(devices: &mut Mutex<Vec<Box<dyn BusDevice>>>) -> &mut Vec<Box<dyn BusDevice>> {
+    devices.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn read_port_from(
@@ -2572,3 +2668,6 @@ mod tests {
         assert_eq!(final_port.end(), 65_536);
     }
 }
+
+#[cfg(test)]
+mod shared_tests;
