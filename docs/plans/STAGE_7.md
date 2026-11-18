@@ -2966,3 +2966,15 @@ profile isolation. With budget 20000 the runner retires 10,321 instructions
 and stops at RIP `0x20144f` on `0F 85 DD 00 00 00` (JNZ rel32 +0xdd,
 ISSUE-479). It reports Unsupported opcode 133 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-479 — exact JNZ rel32 +0xdd (`0F 85 DD 00 00 00`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed near branch. With ZF=0
+it adds signed rel32 +0xdd to next RIP and checks the taken target for
+canonicality. With ZF=1 it advances to next RIP. Both paths preserve flags
+and definedness. Tests cover both outcomes, target and fetch faults,
+neighboring encodings and profile isolation. With budget 20000 the runner
+takes the branch and stops after 10,322 retired instructions at RIP
+`0x201532` on `66 41 83 F9 02` (CMP R9W,2, ISSUE-480). It reports
+Unsupported opcode 131 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

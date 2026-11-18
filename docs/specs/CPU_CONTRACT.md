@@ -29980,3 +29980,15 @@ and OF. RIP advances five bytes. All GPRs, other flags and their definedness
 are preserved. A fault on the final immediate fetch commits no architectural
 state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-479 — bounded JNZ rel32 +0xdd
+
+The base paged CPL0 profile admits exact unprefixed `0F 85 DD 00 00 00`.
+JNZ uses the concrete ZF value and preserves RFLAGS and flag definedness.
+With ZF=0 it adds signed rel32 +0xdd to next RIP using 64-bit wrapping
+arithmetic and checks the target for canonicality. With ZF=1 it advances
+to next RIP and defers address validation to the next fetch. A noncanonical
+taken target raises #GP(0). This fault and a final-displacement-byte fetch
+fault commit no architectural state. The other CPL0 probes and the paged
+CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

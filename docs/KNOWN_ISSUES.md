@@ -5830,7 +5830,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-479 — S7-04: exact JNZ rel32 +0xdd frontier (`0F 85 DD 00 00 00`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-478.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20144f`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `0F 85 DD 00 00 00` (JNZ rel32 +0xdd).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `0F 85 DD 00 00 00` branches on ZF=0 to next RIP plus signed rel32. A taken target must be canonical. Flags and definedness are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 133 }` at RIP `0x20144f` after 10,321 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 85 DD 00 00 00`.
-- **Следующий шаг:** admit the exact near branch and cover the ZF condition, target canonicality, fault atomicity and profile isolation.
+- **Результат:** the runner takes the branch and stops at RIP `0x201532` on `66 41 83 F9 02` (CMP R9W,2, ISSUE-480) after 10,322 retired instructions. It reports `Unsupported { opcode: 131 }` with empty COM1.
+- **Проверка:** focused tests cover ZF, both RIP outcomes, flag definedness, taken-target canonicality, the final displacement fetch fault, neighboring encodings and the CPL3 MOV probe. Other CPL0 profile regressions pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-480 — S7-04: exact CMP R9W,2 frontier (`66 41 83 F9 02`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-479.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201532`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `66 41 83 F9 02` (CMP R9W,2).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x201532` after 10,322 retired instructions. COM1 is empty. Bytes at the link-base shadow are `66 41 83 F9 02`.
+- **Следующий шаг:** admit the exact word CMP and cover operand width, arithmetic flags, the immediate fetch fault and profile isolation.
