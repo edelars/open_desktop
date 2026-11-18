@@ -1031,7 +1031,7 @@ fn resumes_deadline_cut(
 /// the guest asked for, or no budget left) and is then expressed like the quantum stop
 /// (`Stopped`), which the loop turns into `BudgetExhausted` once the budget is spent.
 #[derive(Debug, Eq, PartialEq)]
-enum SetExitMappingError {
+pub(crate) enum SetExitMappingError {
     Integration(&'static str),
     ExternalInterrupt {
         vector: u8,
@@ -1055,7 +1055,7 @@ impl SetExitMappingError {
     }
 }
 
-fn set_exit_to_probe_exit(
+pub(crate) fn set_exit_to_probe_exit(
     exit: PagedCpl0SetExit,
 ) -> Result<(PagedProbeExit, String), SetExitMappingError> {
     let detail = format!("{exit:?}");
@@ -1257,13 +1257,15 @@ pub struct LoadedFirmwareBoard {
 }
 
 /// The NMI half of a vCPU boundary (see [`LoadedFirmwareBoard::deliver_pending_nmi`]) on what it
-/// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the board's page-table root.
+/// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the page-table root to use when the
+/// vCPU has no CR3 of its own (the board's root, or, for a host thread run of S6-42c, the root the
+/// caller named for that vCPU; `None`: there is none, and an NMI that needs one is an error).
 /// A vCPU thread of the parallel mode (S6-34) calls it with the shared reference to the RAM.
 pub(crate) fn deliver_pending_nmi_of(
     apic: &LocalApicHandle,
     vcpu: &mut Vcpu,
     memory: &crate::PhysicalMemory,
-    page_table_root: u64,
+    page_table_root: Option<u64>,
 ) -> Result<NmiBoundary, FirmwareBoardError> {
     use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
     use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
@@ -1308,8 +1310,16 @@ pub(crate) fn deliver_pending_nmi_of(
     }
     // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
     // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
-    // modelled CR3 uses the board's `page_table_root`.
-    let paging_root = vcpu.state.cr3.unwrap_or(page_table_root);
+    // modelled CR3 uses the root the caller gave (the board's `page_table_root`, or the host
+    // run's root of that vCPU). With neither there is nothing to walk: an explicit refusal, not a
+    // read at some address the board happens to report (S6-42c).
+    let paging_root = vcpu
+        .state
+        .cr3
+        .or(page_table_root)
+        .ok_or(FirmwareBoardError::Config(
+            "deliver_pending_nmi: the vCPU has no page-table root (no CR3 and no root named for the NMI)",
+        ))?;
     let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
         .map_err(|_| FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU"))?;
     let context = AccessContext {
@@ -1575,7 +1585,7 @@ impl LoadedFirmwareBoard {
             &apic,
             vcpu,
             self.bus.physical_memory(),
-            self.page_table_root,
+            Some(self.page_table_root),
         )
     }
 

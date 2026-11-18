@@ -782,7 +782,10 @@ struct Worker<'s, 'a, 'e, 'b> {
     shared: &'s SharedState<'a>,
     env: &'e ThreadQuantumEnv<'b>,
     run: &'e QuantumFn<'e>,
-    page_table_root: u64,
+    /// The root an NMI is delivered through for a vCPU without a CR3 of its own: the board's
+    /// (the interpreter paths), or the root named for this vCPU by a host run (S6-42c); `None`
+    /// when none was named (the NMI is then an error, see `deliver_pending_nmi_of`).
+    page_table_root: Option<u64>,
     cpu: usize,
 }
 
@@ -1031,6 +1034,11 @@ impl ParallelControl<'_, '_> {
             .collect()
     }
 
+    /// The Local APIC of vCPU `cpu` (S6-42c: the controller of a host run posts vectors to it).
+    pub(crate) fn lapic(&self, cpu: usize) -> Option<LocalApicHandle> {
+        self.shared.lapics.get(cpu).cloned()
+    }
+
     /// The number of vCPU threads of the run.
     pub(crate) fn vcpu_count(&self) -> usize {
         self.shared.cells.len()
@@ -1182,12 +1190,44 @@ pub(crate) fn run_threads_with<R>(
     on_thread_exit: Option<&ThreadExitFn<'_>>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
+    run_threads_rooted(
+        board,
+        config,
+        source_free,
+        run,
+        on_thread_exit,
+        None,
+        controller,
+    )
+}
+
+/// [`run_threads_with`] with the page-table root of every vCPU for the delivery of an NMI
+/// (S6-42c): `nmi_roots[cpu]` is the root of vCPU `cpu` when it has no CR3 of its own, `None` (or a
+/// vCPU past the end of the slice) means no root, and an NMI that needs one is an error. Without
+/// `nmi_roots` the board's root is used, as in every interpreter run.
+pub(crate) fn run_threads_rooted<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: ParallelConfig,
+    source_free: bool,
+    run: &QuantumFn<'_>,
+    on_thread_exit: Option<&ThreadExitFn<'_>>,
+    nmi_roots: Option<&[Option<u64>]>,
+    controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+) -> Result<(ParallelReport, R), FirmwareBoardError> {
     if config.quantum == 0 {
         return Err(FirmwareBoardError::Config("parallel run: quantum 0"));
     }
     let previous_mode = board.execution_mode();
     board.set_execution_mode(ExecutionMode::Parallel);
-    let outcome = run_threads_inner(board, config, source_free, run, on_thread_exit, controller);
+    let outcome = run_threads_inner(
+        board,
+        config,
+        source_free,
+        run,
+        on_thread_exit,
+        nmi_roots,
+        controller,
+    );
     board.set_execution_mode(previous_mode);
     outcome
 }
@@ -1198,6 +1238,7 @@ fn run_threads_inner<R>(
     source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
+    nmi_roots: Option<&[Option<u64>]>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     let parts = board.thread_parts()?;
@@ -1266,7 +1307,10 @@ fn run_threads_inner<R>(
                 shared: &shared,
                 env: &env,
                 run,
-                page_table_root,
+                page_table_root: match nmi_roots {
+                    None => Some(page_table_root),
+                    Some(roots) => roots.get(cpu).copied().flatten(),
+                },
                 cpu,
             };
             thread::Builder::new()

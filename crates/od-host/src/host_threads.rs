@@ -13,18 +13,32 @@
 //! iteration: a block is one instruction, so a native call is never longer than one instruction and
 //! the thread acknowledges on the safe point after its quantum returned, never inside a native call.
 //! The STOP byte that native code polls (`RuntimeContextV1::stop_requested`) is not raised by this
-//! binding: it is needed only for blocks of several instructions (S3-24) and is open (S6-42c).
+//! binding: it is needed only for blocks of several instructions (S3-24); the blocks of this loop
+//! are one instruction, so the poll between iterations is the same boundary (open for S3-24
+//! blocks, S6-42d).
+//!
+//! S6-42c: [`JitHostQuantum::with_cpl0_set`] switches the quantum to the guest side of the
+//! boundary (`run_paged_host_loop_shared_set`): a vector waiting in the vCPU's own Local APIC is
+//! delivered through the guest IDT before every step, the interpreter step is the CPL0 profile set
+//! (so `IRETQ`, `STI`, `LOCK` forms and the rest of the set run), a guest `#PF`/`#GP(0)` is
+//! delivered through the guest IDT, and the split `LOCK` goes through the gate of the run. The
+//! default quantum is the base profile as before (a guest fault or a refusal of the interpreter is
+//! an error of the run). [`JitHostQuantum::nmi_roots`] gives the page-table roots for the NMI
+//! delivery of `od_machine::run_host_threads`.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
+use od_isa::{CliProfile, HaltProfile, StiProfile};
 use od_machine::{HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit};
 
 use crate::PagedFetchedLoadSession;
 use crate::jit_region::{JitPartStats, JitRegionPart};
 use crate::paged_host_loop::{
-    PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, run_paged_host_loop_shared,
+    PagedHostLoopConfig, PagedHostLoopControl, PagedHostLoopExit, PagedHostSetEnv,
+    run_paged_host_loop_shared, run_paged_host_loop_shared_set,
 };
 
 /// What one vCPU's JIT host loop did, summed over its calls (published after every call, read by
@@ -39,6 +53,14 @@ pub struct HostJitVcpuStats {
     pub jit_refusals: u64,
     /// Calls that ended because the run's stop poll fired.
     pub stop_exits: u64,
+    /// S6-42c (CPL0-set mode): external interrupts delivered to the guest.
+    pub irqs_delivered: u64,
+    /// S6-42c: guest `#PF`/`#GP(0)` delivered through the guest IDT.
+    pub exceptions_delivered: u64,
+    /// S6-42c: native steps that reported a guest fault and were redone by the interpreter step.
+    pub jit_faults_redone: u64,
+    /// S6-42c: calls that ended on a device boundary (a write to a timer register of the Local APIC).
+    pub device_boundaries: u64,
     /// Blocks compiled and published by the session so far.
     pub admissions: u64,
     /// The counters of the vCPU's part of the region at the end of the latest call.
@@ -50,6 +72,8 @@ struct ThreadVcpu {
     session: PagedFetchedLoadSession,
     control: PagedHostLoopControl,
     rflags_defined: u64,
+    /// The REP rule of the interrupt boundary, kept across calls (CPL0-set mode).
+    skip_first_boundary: bool,
 }
 
 thread_local! {
@@ -80,6 +104,11 @@ pub struct JitHostQuantum {
     /// S6-43a: when enabled, the ranges every vCPU's calls reported as committed (page-walk
     /// Accessed/Dirty bits and data stores), in the order of that vCPU's program.
     write_log: Option<Vec<Mutex<Vec<(u64, u64)>>>>,
+    /// S6-42c: the interpreter step is the CPL0 profile set with the guest side of the boundary.
+    cpl0_set: bool,
+    /// S6-42c: the text of the latest failure a call returned as an error (the run's error is a
+    /// `&'static str`; the detail of an undelivered interrupt or fault stays here).
+    failure: Mutex<Option<String>>,
 }
 
 impl JitHostQuantum {
@@ -107,7 +136,25 @@ impl JitHostQuantum {
             rflags_defined,
             stats,
             write_log: None,
+            cpl0_set: false,
+            failure: Mutex::new(None),
         }
+    }
+
+    /// S6-42c: run the quantum with the guest side of the boundary (see the module documentation):
+    /// interrupts of the vCPU's Local APIC, the CPL0 profile set as the interpreter step, guest
+    /// faults delivered, the split `LOCK` behind the gate. The vCPUs' states must carry no CR3 of
+    /// their own (the roots are the configurations').
+    #[must_use]
+    pub fn with_cpl0_set(mut self) -> Self {
+        self.cpl0_set = true;
+        self
+    }
+
+    /// The page-table root of every vCPU (`Some(config.cr3)`), for the `nmi_roots` of
+    /// `od_machine::run_host_threads`: the root an NMI to a vCPU is delivered through.
+    pub fn nmi_roots(&self) -> Vec<Option<u64>> {
+        self.configs.iter().map(|config| Some(config.cr3)).collect()
     }
 
     /// S6-43a: keep, per vCPU, the committed write ranges `(start, length)` of every call
@@ -159,6 +206,15 @@ impl JitHostQuantum {
         drop(session);
     }
 
+    /// The detail of the latest failure of a call (an interrupt that could not be delivered, a
+    /// guest fault the guest IDT did not take, an exit the CPL0 set cannot resume), if any.
+    pub fn last_failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// The counters of vCPU `cpu` (the totals of the calls that have returned).
     pub fn stats(&self, cpu: usize) -> HostJitVcpuStats {
         *self.stats[cpu]
@@ -195,27 +251,62 @@ impl JitHostQuantum {
                     session,
                     control: PagedHostLoopControl::new(),
                     rflags_defined: self.rflags_defined,
+                    skip_first_boundary: false,
                 });
             }
             let thread = slot.as_mut().expect("the thread's vCPU was just set");
             let logging = self.write_log.is_some();
             let mut logged = Vec::new();
-            let report = run_paged_host_loop_shared(
-                &mut thread.session,
-                &thread.control,
-                config,
-                call.state,
-                call.bus,
-                cpu,
-                &mut thread.rflags_defined,
-                call.budget,
-                |range| {
-                    if logging {
-                        logged.push((range.start().get(), range.len()));
-                    }
-                },
-                &mut *call.stop,
-            );
+            let mut record = |range: od_machine::GuestPhysicalRange| {
+                if logging {
+                    logged.push((range.start().get(), range.len()));
+                }
+            };
+            let report = if self.cpl0_set {
+                // The set the interpreter step runs: the Linux board's CPL0 profile without the
+                // members that need the board (CR3 is the configuration's, not the set's).
+                let (cli, sti, halt) = (
+                    CliProfile::NonPviLong64V1,
+                    StiProfile::NonPviLong64V1,
+                    HaltProfile::Long64V1,
+                );
+                let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                    .with_cli(&cli)
+                    .with_sti(&sti)
+                    .with_halt(&halt)
+                    .with_pio_u8();
+                run_paged_host_loop_shared_set(
+                    &mut thread.session,
+                    &thread.control,
+                    config,
+                    call.state,
+                    call.bus,
+                    cpu,
+                    PagedHostSetEnv {
+                        lapic: call.lapic,
+                        gate: call.gate,
+                        set: &set,
+                        skip_first_boundary: &mut thread.skip_first_boundary,
+                    },
+                    &mut thread.rflags_defined,
+                    call.budget,
+                    &mut record,
+                    &mut *call.stop,
+                )
+            } else {
+                run_paged_host_loop_shared(
+                    &mut thread.session,
+                    &thread.control,
+                    config,
+                    call.state,
+                    call.bus,
+                    cpu,
+                    &mut thread.rflags_defined,
+                    call.budget,
+                    &mut record,
+                    &mut *call.stop,
+                )
+            };
             if let Some(log) = &self.write_log {
                 log[cpu]
                     .lock()
@@ -233,15 +324,41 @@ impl JitHostQuantum {
                 stats.steps_interpreter += report.steps_interpreter;
                 stats.jit_refusals += report.jit_refusals;
                 stats.stop_exits += u64::from(report.exit == PagedHostLoopExit::StopRequested);
+                stats.irqs_delivered += report.irqs_delivered;
+                stats.exceptions_delivered += report.exceptions_delivered;
+                stats.jit_faults_redone += report.jit_faults_redone;
+                stats.device_boundaries +=
+                    u64::from(report.exit == PagedHostLoopExit::DeviceBoundary);
                 stats.admissions = thread.session.admissions();
                 stats.part = thread.session.region_part().map(|part| part.stats());
             }
             let retired = report.retired_total();
+            let detail = match &report.exit {
+                PagedHostLoopExit::IrqDeliveryFailed(text)
+                | PagedHostLoopExit::InterpreterIntegration(text) => Some(text.clone()),
+                PagedHostLoopExit::GuestFault(fault) => Some(format!(
+                    "{fault:?}; page_fault: {:?}; rip {:#x}",
+                    report.page_fault, call.state.rip
+                )),
+                PagedHostLoopExit::Interpreter(exit)
+                    if !matches!(exit, PagedProbeExit::Halted | PagedProbeExit::Shutdown) =>
+                {
+                    Some(format!("{exit:?}; page_fault: {:?}", report.page_fault))
+                }
+                _ => None,
+            };
+            if let Some(detail) = detail {
+                *self
+                    .failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(detail);
+            }
             let exit = match report.exit {
                 PagedHostLoopExit::BudgetExhausted
                 | PagedHostLoopExit::StopRequested
                 | PagedHostLoopExit::FinishRequested
-                | PagedHostLoopExit::EventPending => HostQuantumExit::Running,
+                | PagedHostLoopExit::EventPending
+                | PagedHostLoopExit::DeviceBoundary => HostQuantumExit::Running,
                 PagedHostLoopExit::Interpreter(PagedProbeExit::Halted) => HostQuantumExit::Halted,
                 PagedHostLoopExit::Interpreter(PagedProbeExit::Shutdown) => {
                     HostQuantumExit::Shutdown
@@ -250,7 +367,17 @@ impl JitHostQuantum {
                     return Err("host JIT quantum: the interpreter refused the instruction");
                 }
                 PagedHostLoopExit::GuestFault(_) => {
-                    return Err("host JIT quantum: a guest fault (no delivery in this quantum)");
+                    return Err(if self.cpl0_set {
+                        "host JIT quantum: a guest fault the guest IDT did not take"
+                    } else {
+                        "host JIT quantum: a guest fault (no delivery in this quantum)"
+                    });
+                }
+                PagedHostLoopExit::IrqDeliveryFailed(_) => {
+                    return Err("host JIT quantum: an interrupt could not be delivered");
+                }
+                PagedHostLoopExit::InterpreterIntegration(_) => {
+                    return Err("host JIT quantum: the CPL0 set returned an exit it cannot resume");
                 }
                 PagedHostLoopExit::JitHostFailure(_) => {
                     return Err("host JIT quantum: the JIT boundary failed");

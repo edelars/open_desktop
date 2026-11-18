@@ -408,6 +408,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
             budget: u64::MAX,
             end_when_idle: false,
         },
+        &quantum.nmi_roots(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -560,6 +561,7 @@ fn s6_42b_the_thread_exit_releases_the_region_before_the_run_returns() {
                 budget: u64::MAX,
                 end_when_idle: false,
             },
+            &quantum.nmi_roots(),
             &|call| quantum.run(call),
             &|_| {
                 if crate::host_threads::thread_slot_occupied() {
