@@ -36,7 +36,7 @@
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | in_progress | `330ea41` | Независимое ревью RTC/CMOS-среза одобрило, замечаний нет | Опциональный RTC/CMOS из handoff v1.4, shared `VirtualClock`, календарные регистры и documented fidelity limits; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты. См. подробности ниже и [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time). |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | in_progress | `ba9692c`, `e44566c` | Ревью срезов A/B и повторное ревью Delete SQ/NSID | Плата прошивки использует фиксированное MMIO. В опциональном PCI-профиле проверены BAR, bus mastering и INTx. Для приёмки остаются MSI-X, [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified) и [ISSUE-519](../KNOWN_ISSUES.md#issue-519). |
+| S7-16 | in_progress | `ba9692c`, `e44566c` | Ревью срезов A/B, Delete SQ/NSID и настройки QES | Плата прошивки использует фиксированное MMIO. В опциональном PCI-профиле проверены BAR, bus mastering и INTx. Закрыт [ISSUE-519](../KNOWN_ISSUES.md#issue-519). Для приёмки остаются MSI-X и [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified). |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
 | S7-18 | not_started | — | — | Собственная FAT и Simple File System |
 | S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
@@ -433,7 +433,7 @@ S7-12 остаётся открытой по общим окнам и маршр
 [NVMe Base 2.4, с. 58–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
 
 - `cargo test -p od-machine --lib nvme:: --offline` — 75 тестов прошли.
-  В их числе тест, закрепляющий текущее раннее выставление CFS.
+  На исходном коммите один из них закреплял раннее выставление CFS.
 - `cargo test -p od-machine --lib doorbell_pending_stops_quantum_then_host_services_before_the_next_quantum --offline` —
   тест прошёл. Фикстура записывает doorbell со стороны host и проверяет
   остановку кванта и обслуживание DMA.
@@ -441,6 +441,16 @@ S7-12 остаётся открытой по общим окнам и маршр
   тест прошёл. Он проверяет PCI config space, BAR, DMA и INTx на модели платы
   через MachineBus. Исполнение драйвера прошивки остаётся проверкой S7-17.
 - Полный `cargo test -p od-machine --offline` завершился успешно. Прошло 2 120 тестов. Ещё 15 помечены `ignored`.
+
+#### Настройка размеров записей I/O-очередей
+
+`CC.EN` запускает admin SQ и CQ с фиксированными размерами записей. После включения можно независимо настроить `CC.IOSQES` и `CC.IOCQES`, пока отсутствуют очереди соответствующего типа. Create I/O CQ и Create I/O SQ проверяют своё поле с учётом допустимых значений в Identify Controller. При недопустимом размере команда возвращает `Invalid Queue Size`, контроллер остаётся готовым. Проверка каждого поля следует таблице статусов соответствующей команды. [Контракт NVMe](../specs/NVME_DEVICE.md#4-регистры-контроллера), [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
+
+Тест `io_entry_sizes_can_be_configured_after_admin_queues_are_ready` выполняет Identify с нулевыми полями, проверяет ошибки Create при нулевых и неподдерживаемых значениях и создаёт очереди после записи правильных размеров. Тест также проверяет сохранение размера при существующей очереди и возможность записи после удаления последней очереди данного типа.
+
+Полный `cargo test -p od-machine --offline` прошёл. Всего 2 121 тест, включая 76 тестов NVMe. Ещё 15 помечены `ignored`. Проверка `cargo check --workspace --all-targets --offline` прошла. Граф кода обновлён.
+
+Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез после уточнения доставки прерываний в описании Create I/O CQ. Открытых замечаний к срезу нет.
 
 #### История исходного среза A
 
@@ -459,7 +469,7 @@ S7-12 остаётся открытой по общим окнам и маршр
 
 - **Нет I/O `Read`/`Write`/`Flush` — разрыв с обязательными командами NVM command set (срез B).** Сейчас I/O-команда завершается `Invalid Command Opcode`; контроллер диск не читает. `NvmeBackend` — только интерфейс без реализации. Доказательство для S7-17 и этапа 5 срезом A не получено.
 - **Значения сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с текстом NVMe Base 2.4.** Текст NVMe Base 2.4 (и Command Set 1.3, PCIe Transport 1.4) получить не удалось: страница спецификаций не содержит прямых ссылок, PDF 2.4 по предполагаемому адресу — 404, PDF 2.3 из архива `WebFetch` не принял (больше 10 MiB), индексатор вернул сырые потоки PDF без текста. Сверено с заголовком Linux: регистры и doorbells, биты CC/CSTS/CAP (MQES, TO, CSS, MPSMIN), admin-opcode и I/O Flush/Write/Read, CNS 0–3, FID, LID 0x01–0x03, статусы, смещения Identify и log pages. NOT VERIFIED: `CAP.CQR`, AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00`/`0x05`, `VS` 2.0 против 2.4 (NVME_DEVICE.md §1 и §11, шапки файлов). Заявлена версия `VS = 2.0.0`, а не 2.4.0.
-- **Открытый вопрос (вероятное отклонение).** `CSTS.CFS` выставляется при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4` (`controller.rs`, `enable`); по спецификации (неподтверждённо) эти поля проверяются при создании I/O-очереди, а не при включении. Поведение и тесты не менялись; помечено в коде и NVME_DEVICE.md §11.
+- Исходный срез выставлял `CSTS.CFS` при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4`. Отклонение подтверждено сверкой Base 2.4 и исправлено. [Настройка размеров записей I/O-очередей](#настройка-размеров-записей-io-очередей).
 - **Разрыв в тестах.** Путь «гость пишет doorbell → квант останавливается по `doorbell_pending` → `service` между квантами» тестом не покрыт: интерпретатор поддерживает 64-битный `mov [rbx], rcx`, а doorbell — 32-битный (`Dword`), поэтому запись doorbell гостем end-to-end не тестируется. На host-стороне `service` покрыт (`run_boot_executes_commands_submitted_before_the_guest_starts`). Код не менялся (NVME_DEVICE.md §3, §12).
 - `VID`, `SSVID`, `IEEE` = 0 (PCI vendor ID и OUI проекту не выданы); `Power On Hours` и `Controller Busy Time` = 0 (у устройства нет времени); Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы — их обязательность не сверена. Это открытые вопросы среза A (первый кандидат в дефекты, вместе с `VS = 2.0.0`; NVME_DEVICE.md §11).
 - Прерывания не доставляются (`gsi = 0xFFFF_FFFF`, `INTMS/INTMC`, `IEN`, coalescing хранятся без эффекта); контроллер виден только прошивке (PCI-привязка blocked до S4-30), ОС его не найдут — S7-31, S7-32 остаются blocked.

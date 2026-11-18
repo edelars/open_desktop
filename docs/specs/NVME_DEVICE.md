@@ -10,7 +10,7 @@
 
 На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`; в текущей модели их нет. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
 
-Прочитаны поля, относящиеся к размерам записей очередей. Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Попытка создать I/O SQ/CQ до инициализации обоих полей `CC.IOSQES` и `CC.IOCQES` должна завершаться статусом `Invalid Queue Size`. Figure 41 связывает допустимые значения этих полей с SQES/CQES в Identify Controller. Текущее отклонение записано в [ISSUE-519](../KNOWN_ISSUES.md#issue-519). [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85)
+Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Figure 41 связывает допустимые `CC.IOSQES` и `CC.IOCQES` с SQES/CQES в Identify Controller. Таблицы статусов Create I/O CQ и Create I/O SQ относят `Invalid Queue Size` к неинициализированному `CC.IOCQES` и `CC.IOSQES` соответственно. Модель проверяет соответствующее поле при обработке каждой команды. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85), [Figure 574](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=554), [Figure 579](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=557), [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
 
 `CAP.CQR` сверено по Figure 36. Бит 16 при значении 1 требует физически непрерывных очередей и PC в Create I/O SQ/CQ. В модели выставлен бит 16, а `queue_geometry` проверяет PC. [NVMe Base 2.4, с. 58](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
 
@@ -64,7 +64,7 @@
 | `0x08` | `VS` (RO) | `0x0002_0000` (2.0.0). Заявлена 2.0.0, а не 2.4.0: набор реализованного (раздел 11) не претендует на более новую редакцию |
 | `0x0C` | `INTMS` (RW1S) | Маска pin-based прерываний (запись 1 ставит бит, чтение возвращает маску). Прерывание не доставляется (раздел 11), маска хранится |
 | `0x10` | `INTMC` (RW1C) | Запись 1 снимает бит; чтение возвращает ту же маску |
-| `0x14` | `CC` (RW) | Записываемые биты: `EN`, `CSS[6:4]`, `MPS[10:7]`, `AMS[13:11]`, `SHN[15:14]`, `IOSQES[19:16]`, `IOCQES[23:20]`. `CRIME` не реализован. Принимаются только `CSS = 0`, `MPS = 0`, `AMS = 0`, `IOSQES = 6` (SQE 64 байта), `IOCQES = 4` (CQE 16 байт) |
+| `0x14` | `CC` (RW) | Записываемые биты: `EN`, `CSS[6:4]`, `MPS[10:7]`, `AMS[13:11]`, `SHN[15:14]`, `IOSQES[19:16]`, `IOCQES[23:20]`. `CRIME` не реализован. Для включения нужны `CSS = 0`, `MPS = 0` и `AMS = 0`. При создании I/O-очереди поддерживаются `IOSQES = 6` (SQE 64 байта) и `IOCQES = 4` (CQE 16 байт) |
 | `0x1C` | `CSTS` (RO) | `RDY` бит 0, `CFS` бит 1, `SHST[3:2]`; `NSSRO`, `PP` = 0 |
 | `0x20` | `NSSR` | не реализован (`CAP.NSSRS = 0`), чтение 0, запись игнорируется |
 | `0x24` | `AQA` | `ASQS[11:0]` и `ACQS[27:16]`, 0-based; допустимо 2…1024 записей |
@@ -74,9 +74,9 @@
 
 **Включение и сброс.**
 
-- `CC.EN` 0 → 1: проверяются `CSS/MPS/AMS/IOSQES/IOCQES` и размеры `AQA`. Верно — создаются admin SQ/CQ (пустые: `head = tail = 0`, фаза CQ = 1), `CSTS = RDY`. Неверно — `CSTS = CFS`, `RDY = 0`, очереди не создаются (поведение при неверных значениях — NOT VERIFIED, раздел 11). Выход из `CFS` — запись `CC.EN = 0`.
+- При переходе `CC.EN` 0 → 1 проверяются `CSS/MPS/AMS` и размеры `AQA`. При успехе создаются пустые admin SQ/CQ с записями 64 и 16 байт соответственно, `CSTS = RDY`. При ошибке `CSTS = CFS`, `RDY = 0`, очереди не создаются (поведение при неверных значениях — NOT VERIFIED, раздел 11). Выход из `CFS` — запись `CC.EN = 0`.
 - `CC.EN` 1 → 0 — сброс контроллера: все очереди, features и невыполненные AER теряются, `CSTS = 0`. Error Information log и счётчики сохраняются.
-- При `CC.EN = 1` меняется только `SHN`. Запись `SHN = 01b/10b` сразу выставляет `CSTS.SHST = 10b` (shutdown complete); состояния «в процессе» нет, так как нечего сбрасывать на носитель.
+- При `CC.EN = 1` можно записать `SHN` и независимо менять `IOSQES` и `IOCQES`, пока отсутствуют I/O-очереди соответствующего типа. При наличии таких очередей результат изменения поля спецификацией не определён. Модель сохраняет прежнее значение поля до удаления последней очереди этого типа. Запись `SHN = 01b/10b` сразу выставляет `CSTS.SHST = 10b` (shutdown complete).
 - Контроллер не «всегда готов»: до `CC.EN = 1` `RDY = 0`, doorbells возвращают `UnsupportedConfiguration`, `service` ничего не делает.
 
 ## 5. Doorbells
@@ -108,10 +108,10 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | Opcode | Команда | Поведение и границы |
 |---|---|---|
 | `0x00` | Delete I/O SQ | `CDW10[15:0]` = QID. QID 0, больше 4 или не создана — `Invalid Queue Identifier` (SCT 1, SC `0x01`) |
-| `0x01` | Create I/O SQ | QID — `1..=NSQA+1`, не занят. `CDW10[31:16]` = QSIZE (0-based), `CDW11`: `PC` (бит 0, обязан быть 1), `CQID[31:16]`. Порядок проверок: QID → CQID (нет такой CQ — `Completion Queue Invalid`, SCT 1, SC `0x00`) → размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC = 0` или `PRP1` не выровнен по странице (`Invalid Field`). `QPRIO` игнорируется (WRR нет). Область памяти очереди при создании не проверяется |
+| `0x01` | Create I/O SQ | QID — `1..=NSQA+1`, не занят. `CDW10[31:16]` = QSIZE (0-based), `CDW11`: `PC` (бит 0, обязан быть 1), `CQID[31:16]`. Порядок проверок: QID → CQID (нет такой CQ — `Completion Queue Invalid`, SCT 1, SC `0x00`) → `IOSQES = 6` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC = 0` или `PRP1` не выровнен по странице (`Invalid Field`). `QPRIO` игнорируется (WRR нет). Область памяти очереди при создании не проверяется |
 | `0x02` | Get Log Page | раздел 9 |
 | `0x04` | Delete I/O CQ | как Delete SQ; если к CQ привязана SQ — `Invalid Queue Deletion` (SCT 1, SC `0x0C`) |
-| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят; `CDW11`: `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок: QID → размер → `PC`/выравнивание → `IEN = 1` с `IV ≠ 0` — `Invalid Interrupt Vector` (SCT 1, SC `0x08`; при pin-based вектор один, 0). `IEN` сохраняется, прерывание не доставляется |
+| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят. `CDW11` содержит `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок проверок — QID → `IOCQES = 4` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC`/выравнивание → `IEN = 1` с `IV ≠ 0` (`Invalid Interrupt Vector`, SCT 1, SC `0x08`, при pin-based вектор один, 0). Профиль firmware MMIO использует опрос. Профиль PCI доставляет INTx согласно `IEN` и `INTMS` (раздел 13) |
 | `0x06` | Identify | раздел 8 |
 | `0x08` | Abort | `CDW10`: `SQID[15:0]`, `CID[31:16]`. Несуществующая SQ — `Invalid Field`. Иначе успех с `DW0` бит 0 = 1 (команда не прервана): к моменту исполнения `Abort` все ранее извлечённые команды уже завершены (раздел 3). Лимит одновременных `Abort` объявлен `ACL = 3` и не может быть превышен. Прерывать нечего: команд в работе нет |
 | `0x09` | Set Features | раздел 9 |
@@ -238,7 +238,6 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 Сверка с Linux `nvme.h` (раздел 1) не заменяет сверку с текстом NVMe Base 2.4; NOT VERIFIED остаётся всё, что в разделе 1 не перечислено как сверенное. Особо проверить при сверке:
 
 - положение и значения полей `CAP` (`MQES`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
-- **Подтверждённое отклонение.** Текущая модель выставляет CFS при включении контроллера с неинициализированными `IOSQES`/`IOCQES`. Base 2.4 проверяет этот случай при Create I/O SQ/CQ. Для этого сценария также нужна запись размеров в CC при включённом контроллере до создания соответствующих I/O-очередей. [ISSUE-519](../KNOWN_ISSUES.md#issue-519)
 - битовые поля `CC`, `CSTS`, `AQA` и поведение при недопустимых значениях `CC` (здесь — `CSTS.CFS = 1`, `RDY = 0`) и при записи `AQA/ASQ/ACQ` при `CC.EN = 1` (здесь — `Busy` на шине, без эффекта);
 - смещения и размеры полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`, нужны ли `CNS 0x03` и I/O-command-set-specific CNS для заявляемой редакции;
 - перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
@@ -253,11 +252,10 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 **Открытые вопросы среза A (для ревью и S7-17):**
 
-1. Сохранить возможность записи `IOSQES`/`IOCQES` после включения до создания соответствующих I/O-очередей. Проверять инициализацию размеров в Create I/O SQ/CQ. [ISSUE-519](../KNOWN_ISSUES.md#issue-519)
-2. Добавить обязательные для целевой Base 2.4 страницы `0x00`, `0x05` и `0x12`. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified)
-3. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
-4. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
-5. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
+1. Добавить обязательные для целевой Base 2.4 страницы `0x00`, `0x05` и `0x12`. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified)
+2. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
+3. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
+4. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
 
 ## 12. Проверка
 

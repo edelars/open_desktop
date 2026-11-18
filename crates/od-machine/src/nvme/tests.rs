@@ -247,11 +247,15 @@ impl Rig {
 
     /// Programs AQA/ASQ/ACQ and enables the controller.
     fn enable(&mut self) {
+        self.enable_with_cc(CC_ENABLE);
+    }
+
+    fn enable_with_cc(&mut self, cc: u32) {
         let aqa = u32::from(ADMIN_ENTRIES - 1) | (u32::from(ADMIN_ENTRIES - 1) << 16);
         self.set_dword(0x24, aqa);
         self.write(0x28, AccessWidth::Qword, ASQ).unwrap();
         self.write(0x30, AccessWidth::Qword, ACQ).unwrap();
-        self.set_dword(0x14, CC_ENABLE);
+        self.set_dword(0x14, cc);
         assert_eq!(self.dword(0x1C) & 0b11, 1, "RDY set, CFS clear");
     }
 
@@ -452,13 +456,62 @@ fn enable_sets_rdy_and_disable_clears_it_and_the_queues() {
 }
 
 #[test]
+fn io_entry_sizes_can_be_configured_after_admin_queues_are_ready() {
+    let mut rig = rig();
+    let enable = 1;
+    let sqes = 6 << 16;
+    let cqes = 4 << 20;
+    let unsupported_sqes = 5 << 16;
+    let unsupported_cqes = 3 << 20;
+    let invalid_size = (1, 0x02);
+    let success = (0, 0);
+    let create_cq = Sqe::new(OPC_CREATE_CQ).prp(IO_CQ, 0).cdw(1 | (3 << 16), 1);
+    let create_sq = Sqe::new(OPC_CREATE_SQ)
+        .prp(IO_SQ, 0)
+        .cdw(1 | (3 << 16), 1 | (1 << 16));
+
+    rig.enable_with_cc(enable);
+    let (identify, page) = rig.identify(1, 0);
+    assert_eq!(identify.status(), success);
+    assert_eq!(page[512..514], [0x66, 0x44]);
+    assert_eq!(rig.admin(create_cq).status(), invalid_size);
+    rig.set_dword(0x14, enable | unsupported_cqes);
+    assert_eq!(rig.dword(0x14), enable | unsupported_cqes);
+    assert_eq!(rig.admin(create_cq).status(), invalid_size);
+
+    rig.set_dword(0x14, enable | cqes);
+    assert_eq!(rig.admin(create_cq).status(), success);
+    assert_eq!(rig.admin(create_sq).status(), invalid_size);
+    rig.set_dword(0x14, enable | unsupported_sqes | unsupported_cqes);
+    assert_eq!(rig.dword(0x14), enable | unsupported_sqes | cqes);
+    assert_eq!(rig.admin(create_sq).status(), invalid_size);
+    assert_eq!(rig.dword(0x1C) & 0b11, 1, "RDY set, CFS clear");
+
+    rig.set_dword(0x14, enable | sqes);
+    assert_eq!(rig.admin(create_sq).status(), success);
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), CC_ENABLE);
+
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_SQ).cdw(1, 0)).status(),
+        success
+    );
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), enable | cqes);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_CQ).cdw(1, 0)).status(),
+        success
+    );
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), enable);
+}
+
+#[test]
 fn invalid_cc_values_set_cfs_instead_of_rdy() {
     for (name, cc) in [
         ("MPS = 1", CC_ENABLE | (1 << 7)),
         ("CSS = 1", CC_ENABLE | (1 << 4)),
         ("AMS = 1", CC_ENABLE | (1 << 11)),
-        ("IOSQES = 5", (CC_ENABLE & !(0xF << 16)) | (5 << 16)),
-        ("IOCQES = 3", (CC_ENABLE & !(0xF << 20)) | (3 << 20)),
     ] {
         let mut rig = rig();
         rig.set_dword(0x24, 0x000F_000F);

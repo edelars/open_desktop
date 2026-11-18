@@ -14,8 +14,8 @@
 
 use super::controller::{MAX_IO_QUEUES, NvmeServiceReport, NvmeState, QUEUE_SLOTS, VERSION};
 use super::queues::{
-    Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, PAGE_BYTES, Status,
-    SubmissionQueue, write_to_host,
+    CQE_BYTES, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome,
+    PAGE_BYTES, SQE_BYTES, Status, SubmissionQueue, write_to_host,
 };
 use std::collections::VecDeque;
 
@@ -329,6 +329,9 @@ fn create_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
     if state.cqs[qid].is_some() {
         return Err(Status::INVALID_QUEUE_IDENTIFIER);
     }
+    if !state.io_cq_entry_size_configured() {
+        return Err(Status::INVALID_QUEUE_SIZE);
+    }
     let entries = queue_geometry(command)?;
     let interrupt_enabled = command.cdw11 & 0b10 != 0;
     // Pin-based interrupts have a single vector, 0.
@@ -351,6 +354,9 @@ fn create_sq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
     let cqid = (command.cdw11 >> 16) as usize;
     if cqid == 0 || cqid >= QUEUE_SLOTS || state.cqs[cqid].is_none() {
         return Err(Status::COMPLETION_QUEUE_INVALID);
+    }
+    if !state.io_sq_entry_size_configured() {
+        return Err(Status::INVALID_QUEUE_SIZE);
     }
     let entries = queue_geometry(command)?;
     state.sqs[qid] = Some(SubmissionQueue::new(command.prp1, entries, cqid as u16));
@@ -470,8 +476,10 @@ fn identify_controller(state: &NvmeState) -> Vec<u8> {
     put(&mut page, 268, &CRITICAL_TEMPERATURE_K.to_le_bytes()); // CCTEMP
     let capacity = u128::from(config.namespace_sectors) << LBA_DATA_SIZE_LOG2;
     put(&mut page, 280, &capacity.to_le_bytes()); // TNVMCAP; UNVMCAP stays 0
-    page[512] = 0x66; // SQES: 64-byte entries only
-    page[513] = 0x44; // CQES: 16-byte entries only
+    let sqes = SQE_BYTES.ilog2() as u8;
+    let cqes = CQE_BYTES.ilog2() as u8;
+    page[512] = (sqes << 4) | sqes;
+    page[513] = (cqes << 4) | cqes;
     put(&mut page, 516, &NAMESPACE_ID.to_le_bytes()); // NN
     // SUBNQN: nqn.2014-08.org.nvmexpress:uuid:<hyphenated UUID>, NUL padded.
     let uuid = config.subsystem_uuid;

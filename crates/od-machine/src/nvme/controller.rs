@@ -12,7 +12,7 @@
 //! 2.4. Verified: CAP/VS/INTMS/INTMC/CC/CSTS/NSSR/AQA/ASQ/ACQ and doorbells
 //! (0x1000); CC EN 0, CSS 4, MPS 7, AMS 11, SHN 14, IOSQES 16, IOCQES 20; CSTS
 //! RDY, CFS, SHST; CAP MQES[15:0], TO[31:24], CSS, MPSMIN 48. Everything else
-//! (CAP.CQR bit 16, AER info 0/1, PRP rules, feature defaults, error behaviour,
+//! (AER info 0/1, PRP rules, feature defaults, error behaviour,
 //! which commands are mandatory, `VS` 2.0 versus 2.4) is `NOT VERIFIED`
 //! (`docs/specs/NVME_DEVICE.md` sections 1 and 11).
 
@@ -20,8 +20,8 @@ use super::admin::{self, AerState, ErrorLog, Features};
 use super::backend::NvmeBackend;
 use super::io::{self, IoStats};
 use super::queues::{
-    BusDma, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, SQE_BYTES,
-    Status, SubmissionQueue, encode_cqe,
+    BusDma, CQE_BYTES, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome,
+    SQE_BYTES, Status, SubmissionQueue, encode_cqe,
 };
 use super::{NVME_MMIO_BYTES, NVME_PCI_BAR_BASE};
 use crate::pci_ecam::{
@@ -61,6 +61,9 @@ mod reg {
 const CAP_VALUE: u64 = (MAX_QUEUE_ENTRIES as u64 - 1) | (1 << 16) | (1 << 24) | (1 << 37);
 
 const CC_EN: u32 = 1;
+const CC_SHN_MASK: u32 = 0b11 << 14;
+const CC_IOSQES_MASK: u32 = 0xF << 16;
+const CC_IOCQES_MASK: u32 = 0xF << 20;
 /// Writable `CC` bits: EN, CSS, MPS, AMS, SHN, IOSQES, IOCQES (CRIME is not implemented).
 const CC_WRITABLE: u32 = 0x00FF_FFF1;
 const CSTS_RDY: u32 = 1;
@@ -287,18 +290,11 @@ impl NvmeState {
         let css = (cc >> 4) & 0x7;
         let mps = (cc >> 7) & 0xF;
         let ams = (cc >> 11) & 0x7;
-        let iosqes = (cc >> 16) & 0xF;
-        let iocqes = (cc >> 20) & 0xF;
         let sq_entries = (self.aqa & 0xFFF) + 1;
         let cq_entries = ((self.aqa >> 16) & 0xFFF) + 1;
-        // NOT VERIFIED against NVMe Base 2.4: проверка IOSQES/IOCQES при EN=1 против при Create I/O SQ/CQ
-        // (likely deviation: the specification, unconfirmed, checks these fields when an
-        // I/O queue is created, not on enable; NVME_DEVICE.md section 11).
         let valid = css == 0
             && mps == 0
             && ams == 0
-            && iosqes == 6
-            && iocqes == 4
             && (2..=MAX_QUEUE_ENTRIES).contains(&sq_entries)
             && (2..=MAX_QUEUE_ENTRIES).contains(&cq_entries);
         if !valid {
@@ -308,6 +304,14 @@ impl NvmeState {
         self.sqs[0] = Some(SubmissionQueue::new(self.asq, sq_entries as u16, 0));
         self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true));
         self.csts = CSTS_RDY;
+    }
+
+    pub(super) fn io_sq_entry_size_configured(&self) -> bool {
+        self.cc & CC_IOSQES_MASK == SQE_BYTES.ilog2() << 16
+    }
+
+    pub(super) fn io_cq_entry_size_configured(&self) -> bool {
+        self.cc & CC_IOCQES_MASK == CQE_BYTES.ilog2() << 20
     }
 
     /// Controller property span containing `offset`: `(start, length)`; the
@@ -426,9 +430,16 @@ impl NvmeState {
             self.reset();
             return;
         }
-        // Enabled and staying enabled: only the shutdown notification changes.
-        self.cc = (self.cc & !(0b11 << 14)) | (value & (0b11 << 14));
-        if value & (0b11 << 14) != 0 {
+        // Admin queues use fixed entry sizes and do not lock the I/O fields.
+        let mut writable = CC_SHN_MASK;
+        if self.sqs[1..].iter().all(Option::is_none) {
+            writable |= CC_IOSQES_MASK;
+        }
+        if self.cqs[1..].iter().all(Option::is_none) {
+            writable |= CC_IOCQES_MASK;
+        }
+        self.cc = (self.cc & !writable) | (value & writable);
+        if value & CC_SHN_MASK != 0 {
             self.csts = (self.csts & !(0b11 << 2)) | CSTS_SHST_COMPLETE;
         }
     }
