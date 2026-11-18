@@ -16051,8 +16051,8 @@ fn rust_helper_jnz_rel8_0x37_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn rust_helper_jnz_rel8_0x23_or_0x65_obeys_zf_and_preserves_flags_and_definedness() {
-    for displacement in [0x23, 0x65] {
+fn rust_helper_jnz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
+    for displacement in [0x23, 0x59, 0x65] {
         let code = [0x75, displacement];
         for zero in [false, true] {
             for zf_defined in [false, true] {
@@ -16091,8 +16091,8 @@ fn rust_helper_jnz_rel8_0x23_or_0x65_obeys_zf_and_preserves_flags_and_definednes
 }
 
 #[test]
-fn rust_helper_jnz_rel8_0x23_or_0x65_checks_canonicality_only_when_taken() {
-    for displacement in [0x23, 0x65] {
+fn rust_helper_jnz_rel8_checks_canonicality_only_when_taken() {
+    for displacement in [0x23, 0x59, 0x65] {
         let code = [0x75, displacement];
         let rip = 0x0000_8000_0000_0000 - code.len() as u64 - u64::from(displacement);
         let mut memory = memory_with_code_at(&code, rip);
@@ -16134,7 +16134,7 @@ fn rust_helper_jnz_rel8_0x23_or_0x65_checks_canonicality_only_when_taken() {
 }
 
 #[test]
-fn rust_helper_jnz_rel8_0x23_or_0x65_final_byte_fetch_fault_is_atomic() {
+fn rust_helper_jnz_rel8_final_byte_fetch_fault_is_atomic() {
     let rip = RIP + 0xfff;
     let mut memory = Memory::new(&[]);
     memory.bytes[CODE_PHYSICAL + 0xfff] = 0x75;
@@ -16161,7 +16161,7 @@ fn rust_helper_jnz_rel8_0x23_or_0x65_final_byte_fetch_fault_is_atomic() {
 }
 
 #[test]
-fn rust_helper_jnz_rel8_0x23_or_0x65_neighbours_stay_unsupported_without_mutation() {
+fn rust_helper_jnz_rel8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x75, 0x22], 0x75),                // nearby unsupported displacement
         (&[0x75, 0x25], 0x75),                // nearby unsupported displacement
@@ -16169,6 +16169,11 @@ fn rust_helper_jnz_rel8_0x23_or_0x65_neighbours_stay_unsupported_without_mutatio
         (&[0x66, 0x75, 0x23], 0x75),          // operand-size prefix
         (&[0x40, 0x75, 0x23], 0x75),          // REX prefix
         (&[0x0f, 0x85, 0x23, 0, 0, 0], 0x85), // near JNZ
+        (&[0x75, 0x58], 0x75),                // nearby unsupported displacement
+        (&[0x75, 0x5a], 0x75),                // nearby unsupported displacement
+        (&[0x66, 0x75, 0x59], 0x75),          // operand-size prefix
+        (&[0x40, 0x75, 0x59], 0x75),          // REX prefix
+        (&[0x0f, 0x85, 0x59, 0, 0, 0], 0x85), // near JNZ
         (&[0x75, 0x64], 0x75),                // nearby unsupported displacement
         (&[0x75, 0x66], 0x75),                // nearby unsupported displacement
         (&[0x74, 0x65], 0x74),                // JZ with same displacement
@@ -16192,8 +16197,8 @@ fn rust_helper_jnz_rel8_0x23_or_0x65_neighbours_stay_unsupported_without_mutatio
 }
 
 #[test]
-fn rust_helper_jnz_rel8_0x23_or_0x65_is_unsupported_in_cpl3_profile() {
-    for displacement in [0x23, 0x65] {
+fn rust_helper_jnz_rel8_is_unsupported_in_cpl3_profile() {
+    for displacement in [0x23, 0x59, 0x65] {
         let bytes = [0x75, displacement];
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
@@ -16392,7 +16397,6 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
         (&[0x0f, 0x84, 0x64, 0, 0, 0], 0x84),          // near JZ
         (&[0x74, 0x58], 0x74),                         // displacement below +0x59
         (&[0x74, 0x5a], 0x74),                         // displacement above +0x59
-        (&[0x75, 0x59], 0x75),                         // JNZ with same displacement
         (&[0x66, 0x74, 0x59], 0x74),                   // operand-size prefix
         (&[0x40, 0x74, 0x59], 0x74),                   // REX prefix
         (&[0x0f, 0x84, 0x59, 0, 0, 0], 0x84),          // near JZ
@@ -48267,6 +48271,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x75, 0x0a][..], 0x75),
         (&[0x75, 0x14][..], 0x75),
         (&[0x75, 0x23][..], 0x75),
+        (&[0x75, 0x59][..], 0x75),
         (&[0x75, 0x65][..], 0x75),
         (&[0x75, 0x37][..], 0x75),
         (&[0x75, 0x24][..], 0x75),

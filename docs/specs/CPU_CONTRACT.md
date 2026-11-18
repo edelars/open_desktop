@@ -29820,3 +29820,14 @@ are preserved. A noncanonical stack address raises #SS(0) before the read.
 A data or final-immediate fetch page fault commits no architectural state.
 The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-465 — bounded JNZ rel8 +0x59
+
+The base paged CPL0 profile admits exact unprefixed `75 59`. JNZ uses the
+concrete ZF value and preserves flags and definedness. With ZF=0 it adds
+signed rel8 +0x59 to next RIP using 64-bit wrapping arithmetic and checks
+target canonicality. With ZF=1 it advances to next RIP. A noncanonical
+taken target raises #GP(0). This fault and a displacement fetch fault commit
+no architectural state. The other CPL0 probes and the paged CPL3 MOV probe
+refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
