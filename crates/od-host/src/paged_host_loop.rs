@@ -2,8 +2,11 @@
 //!
 //! One thread, one vCPU, one session. The loop owns no executable memory and no
 //! thread: it borrows the caller's session, the caller's [`PagedHostLoopControl`]
-//! (STOP byte and request flags) and the caller's CPU state and bus. S6-42 wires
-//! the same loop to vCPU threads; nothing here changes for that.
+//! (STOP byte and request flags) and the caller's CPU state and bus. S6-42 runs
+//! the same loop on vCPU threads, one session (and one slot part of the process
+//! `MAP_JIT` region, `crate::jit_region`) per thread; the loop itself only gained
+//! the call of the session's safe point and the acknowledgement of
+//! [`PagedVcpuGroup`] (S6-40 section 5, S1 and S3).
 //!
 //! # Iteration
 //!
@@ -55,6 +58,7 @@
 //! recovery in generated code) is open.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::{
     MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadSession,
@@ -81,6 +85,10 @@ pub struct PagedHostLoopControl {
     stop: AtomicBool,
     finish: AtomicBool,
     event: AtomicBool,
+    /// S6-34 `safe`: raised by the vCPU thread on the safe point after the loop
+    /// returned for a STOP request (S6-40 section 5, S1), lowered before the
+    /// thread reads the request flags again. Never raised inside a native call.
+    safe: AtomicBool,
 }
 
 impl PagedHostLoopControl {
@@ -90,7 +98,33 @@ impl PagedHostLoopControl {
             stop: AtomicBool::new(false),
             finish: AtomicBool::new(false),
             event: AtomicBool::new(false),
+            safe: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a STOP request is raised (the flag, not the byte).
+    pub fn stop_pending(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// The vCPU thread's acknowledgement of a stop (S6-34 `safe`). Call it only
+    /// on the safe point, after [`run_paged_host_loop`] returned
+    /// [`PagedHostLoopExit::StopRequested`]: the native call is over and the
+    /// state of the vCPU is entirely in its `LongModeState` (S6-40 section 5, S2).
+    pub fn acknowledge_safe(&self) {
+        self.safe.store(true, Ordering::SeqCst);
+    }
+
+    /// Lowers the acknowledgement. The thread does this first, and only then
+    /// rereads the request flags (Dekker order of S6-34): a requester that sets
+    /// its flag and then still finds `safe` up knows the thread has not read the
+    /// flag yet, and the thread's reread then sees it.
+    pub fn withdraw_safe(&self) {
+        self.safe.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_safe(&self) -> bool {
+        self.safe.load(Ordering::SeqCst)
     }
 
     /// The byte generated code polls (`RuntimeContextV1::stop_requested`).
@@ -139,6 +173,82 @@ impl PagedHostLoopControl {
             event: self.event.load(Ordering::SeqCst),
         };
         (byte_was_set, requests)
+    }
+}
+
+/// S6-34 `stop_all` and `resume` for a set of vCPU threads that run
+/// [`run_paged_host_loop`] (S6-40 section 5, S3), on the host side of the JIT
+/// loop. The controller sets each vCPU's flag and then its STOP byte
+/// ([`PagedHostLoopControl::request_stop`]) and waits until every vCPU has
+/// acknowledged. A vCPU thread acknowledges only on its safe point, after the
+/// loop returned; a thread that is inside a native call never acknowledges
+/// until the call has returned and its result is accounted.
+///
+/// The thread side is the driver loop: call [`run_paged_host_loop`]; on
+/// [`PagedHostLoopExit::StopRequested`] call
+/// [`PagedHostLoopControl::acknowledge_safe`], wait until
+/// [`PagedHostLoopControl::stop_pending`] is false, call
+/// [`PagedHostLoopControl::withdraw_safe`], and call the loop again.
+///
+/// This type is not the `ParallelControl` of `od-machine` (that one is
+/// crate-private and drives interpreter quanta); it is the same protocol for the
+/// host JIT loop, and the binding of the two is open (S6-42 report).
+pub struct PagedVcpuGroup<'a> {
+    controls: Vec<&'a PagedHostLoopControl>,
+}
+
+/// A vCPU that did not acknowledge within the deadline of
+/// [`PagedVcpuGroup::stop_all`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct PagedStopTimeout {
+    /// Indices (in the order given to [`PagedVcpuGroup::new`]) of the vCPUs
+    /// whose `safe` was not up at the deadline.
+    pub missing: Vec<usize>,
+}
+
+impl<'a> PagedVcpuGroup<'a> {
+    pub fn new(controls: Vec<&'a PagedHostLoopControl>) -> Self {
+        Self { controls }
+    }
+
+    /// Requests a stop of every vCPU and waits for every acknowledgement. When
+    /// it returns `Ok`, no vCPU executes an instruction until [`Self::resume`]:
+    /// each flag was raised before the acknowledgement was read, and a thread
+    /// reads its flags after it lowered `safe` (Dekker order).
+    ///
+    /// `Ok` may be returned from a `safe` left over from the previous stop: by
+    /// the Dekker order this is still correct, because the thread rereads its
+    /// flags before the next step and sees the raised request. On `Err` the
+    /// requests stay raised; the caller must call [`Self::resume`].
+    pub fn stop_all(&self, timeout: Duration) -> Result<(), PagedStopTimeout> {
+        for control in &self.controls {
+            control.request_stop();
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let missing: Vec<usize> = self
+                .controls
+                .iter()
+                .enumerate()
+                .filter(|(_, control)| !control.is_safe())
+                .map(|(index, _)| index)
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(PagedStopTimeout { missing });
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Withdraws the stop requests. The STOP bytes are not touched (the loops take
+    /// them down).
+    pub fn resume(&self) {
+        for control in &self.controls {
+            control.clear_stop_request();
+        }
     }
 }
 
@@ -295,7 +405,9 @@ pub(crate) fn run_paged_host_loop_with_hook(
     }
     let mut steps_started = 0u64;
     loop {
-        // Safe point (S3-25c): nothing is executing, no lookup has started.
+        // Safe point (S3-25c): nothing is executing, no lookup has started. The
+        // session applies the slot releases it deferred (A4).
+        session.safe_point();
         let (byte_was_set, requests) = control.take_byte_and_reread_flags();
         if byte_was_set {
             report.stop_byte_observations += 1;
@@ -688,11 +800,78 @@ mod tests {
         Run { report, writes }
     }
 
+    /// S6-42: how many parts the slot-backend region of a test has. The tests
+    /// that open several sessions in a row take a part for each.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn jit_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::tests::JIT_TEST_LOCK
+    const SLOT_BACKEND_PARTS: usize = 32;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    thread_local! {
+        /// Set by [`with_slot_backend`]: the next [`jit_guard`] of this thread
+        /// maps a shared region and [`new_session`] takes a part of it.
+        static SLOT_BACKEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static SLOT_REGION: std::cell::RefCell<Option<crate::jit_region::SharedJitRegion>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Holds the process-wide JIT test lock and, on the slot backend, the shared
+    /// region. The region is dropped before the lock is released, so no other
+    /// test can see the process lease taken.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) struct JitGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    impl Drop for JitGuard {
+        fn drop(&mut self) {
+            SLOT_REGION.with(|cell| cell.borrow_mut().take());
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn jit_guard() -> JitGuard {
+        let lock = crate::tests::JIT_TEST_LOCK
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(|error| error.into_inner());
+        if SLOT_BACKEND.with(|flag| flag.get()) {
+            let region = crate::jit_region::SharedJitRegion::new(SLOT_BACKEND_PARTS, 2)
+                .expect("the slot backend maps the process region");
+            SLOT_REGION.with(|cell| *cell.borrow_mut() = Some(region));
+        }
+        JitGuard { _lock: lock }
+    }
+
+    /// A session of the test: a slot of the guard's shared region on the slot
+    /// backend, a region of its own otherwise.
+    pub(crate) fn new_session() -> PagedFetchedLoadSession {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let part = SLOT_REGION.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|region| region.take_part().expect("a part is left"))
+            });
+            if let Some(part) = part {
+                return PagedFetchedLoadSession::with_region_part(part);
+            }
+        }
+        PagedFetchedLoadSession::new()
+    }
+
+    /// Runs `test` with the slot backend: every session of it publishes into a
+    /// slot of one shared region (S6-42). The test must take [`jit_guard`] first.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn with_slot_backend(test: impl FnOnce()) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SLOT_BACKEND.with(|flag| flag.set(false));
+            }
+        }
+        SLOT_BACKEND.with(|flag| flag.set(true));
+        let _reset = Reset;
+        test();
     }
 
     /// Runs the loop to `budget` and the interpreter to the same budget over
@@ -700,7 +879,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn assert_loop_equals_reference(budget: u64) -> (PagedHostLoopReport, u64) {
         let reference_run = reference(&LOOP_ALIAS, &loop_state(), budget, true);
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_JIT_STORE);
         let mut state = loop_state();
@@ -764,7 +943,7 @@ mod tests {
     #[test]
     fn s3_38o_flag_raised_before_the_reread_runs_no_step() {
         let _guard = jit_guard();
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_JIT_STORE);
         let mut state = loop_state();
@@ -836,7 +1015,7 @@ mod tests {
         for (raise_at_step, expected_native_exits, expected_retired) in
             [(0u64, 1u64, 0u64), (1, 1, 0), (2, 0, 1), (3, 0, 1)]
         {
-            let mut session = PagedFetchedLoadSession::new();
+            let mut session = new_session();
             let control = PagedHostLoopControl::new();
             let mut bus = make_bus(&LOOP_JIT_STORE);
             let mut state = loop_state();
@@ -950,7 +1129,7 @@ mod tests {
         const NEW_VALUE: u64 = 0xdead_beef_0bad_f00d;
         const DATA_PTE: u64 = 0x7000 + 8 * ((DATA_LINEAR >> 12) & 0x1ff);
         let _guard = jit_guard();
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         // `mov [rbx],rax` as the first instruction.
         let mut bus = make_bus(&[0x48, 0x89, 0x03]);
@@ -1021,7 +1200,7 @@ mod tests {
     #[test]
     fn s3_38o_a_byte_without_a_flag_is_harmless() {
         let _guard = jit_guard();
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_JIT_STORE);
         let mut state = loop_state();
@@ -1066,7 +1245,7 @@ mod tests {
 
         let _guard = jit_guard();
         for round in 0..3u64 {
-            let mut session = PagedFetchedLoadSession::new();
+            let mut session = new_session();
             let control = PagedHostLoopControl::new();
             let progress = AtomicU64::new(0);
             let mut bus = make_bus(&LOOP_JIT_STORE);
@@ -1148,7 +1327,7 @@ mod tests {
     #[test]
     fn s3_38o_event_exits_on_the_safe_point_before_the_next_step_and_stop_wins() {
         let _guard = jit_guard();
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_JIT_STORE);
         let mut state = loop_state();
@@ -1254,7 +1433,7 @@ mod tests {
         ];
         // Patch for +3: `mov eax,[rbx]` (native dword form), then hlt.
         let patch = u64::from_le_bytes([0x8b, 0x03, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4]);
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&code);
         let mut rflags_defined = RFLAGS_DEFINED;
@@ -1316,7 +1495,7 @@ mod tests {
         // Patch for +3: `mov eax,[rbx]` (native dword form), hlt. The rewritten
         // bytes load a dword; the old bytes would load all eight.
         let patch = u64::from_le_bytes([0x8b, 0x03, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4]);
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&code);
         let mut state = make_state(patch, CODE_RIP + 3, 0);
@@ -1374,7 +1553,7 @@ mod tests {
         let od_machine::PagedProbeExit::Fault(fault) = &reference_run.exit else {
             panic!("expected a fault, got {:?}", reference_run.exit);
         };
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_JIT_STORE);
         let mut rflags_defined = RFLAGS_DEFINED;
@@ -1464,7 +1643,7 @@ mod tests {
 
     #[test]
     fn s3_38o_invalid_rflags_definedness_runs_nothing() {
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_ALIAS);
         let mut state = loop_state();
@@ -1493,7 +1672,7 @@ mod tests {
     #[test]
     fn s3_38o_without_native_support_the_loop_is_interpreter_only() {
         let reference_run = reference(&LOOP_ALIAS, &loop_state(), 40, false);
-        let mut session = PagedFetchedLoadSession::new();
+        let mut session = new_session();
         let control = PagedHostLoopControl::new();
         let mut bus = make_bus(&LOOP_ALIAS);
         let mut state = loop_state();
@@ -1511,4 +1690,9 @@ mod tests {
         assert_eq!(run.report.steps_interpreter, 40);
         assert_eq!(observe(&state, &mut bus, false), reference_run.observation);
     }
+
+    /// S6-42: tests of several vCPU threads over the slot backend and the
+    /// cross-vCPU invalidation (child module: it uses the helpers above).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s6_42;
 }

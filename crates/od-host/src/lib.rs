@@ -1,6 +1,16 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 mod display;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod jit_region;
+/// Placeholder so the publication API compiles where `MAP_JIT` is unsupported.
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub mod jit_region {
+    #[derive(Clone)]
+    pub struct ActiveJitPart {
+        _unsupported: (),
+    }
+}
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
@@ -41,7 +51,7 @@ pub enum ExecutableMemoryError {
 /// simultaneous publication is rejected until this value is dropped. The
 /// pointer is only valid while this owner remains alive.
 pub struct PublishedCode {
-    region: MappedRegion,
+    region: CodeRegion,
     block_metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
     direct_memory_metadata_v2: Option<DirectMemoryMetadataV2>,
@@ -51,6 +61,18 @@ pub struct PublishedCode {
     checked_dword_store_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
     checked_two_site_metadata_v2: Option<TwoSiteMetadataV2>,
 }
+
+/// Where the bytes of a [`PublishedCode`] live: its own `MAP_JIT` region (one
+/// region per publication, the process lease) or one slot of a vCPU's part of a
+/// [`jit_region::SharedJitRegion`] (S6-42, JIT_CONTRACT S6-40 M1/M2).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum CodeRegion {
+    Owned(MappedRegion),
+    Slot(jit_region::SlotLease),
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+type CodeRegion = MappedRegion;
 
 struct BlockMetadata {
     pc_map: od_jit::statepoints::PcMap,
@@ -326,6 +348,14 @@ impl PublishedCode {
     pub fn publish_memory_load_v2(
         block: &od_jit::memory_load_v2::MemoryLoadBlockV2,
     ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_memory_load_v2_in(block, None)
+    }
+
+    /// [`Self::publish_memory_load_v2`] into a slot of `part` (S6-42) instead of a region of its own.
+    pub fn publish_memory_load_v2_in(
+        block: &od_jit::memory_load_v2::MemoryLoadBlockV2,
+        part: Option<&jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
         if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Load
             || block.compile_flavor() != od_jit::translation::CompileFlavor::S3_19bMemoryLoadV2
         {
@@ -342,7 +372,7 @@ impl PublishedCode {
             source_len: block.source_bytes_storage().1,
             compile_flavor: block.compile_flavor(),
         };
-        let mut published = Self::publish_with_metadata(&code, None, Some(operation))?;
+        let mut published = Self::publish_with_metadata_in(&code, None, Some(operation), part)?;
         published.direct_memory_metadata_v2 = Some(DirectMemoryMetadataV2 {
             operation,
             pc_map: block.pc_map().clone(),
@@ -354,6 +384,14 @@ impl PublishedCode {
     /// metadata record. It cannot be entered through either V1 or direct V2.
     pub fn publish_ir_memory_load_v2(
         block: &od_jit::memory_load_v2::IrMemoryLoadBlockV2,
+    ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_ir_memory_load_v2_in(block, None)
+    }
+
+    /// [`Self::publish_ir_memory_load_v2`] into a slot of `part` (S6-42) instead of a region of its own.
+    pub fn publish_ir_memory_load_v2_in(
+        block: &od_jit::memory_load_v2::IrMemoryLoadBlockV2,
+        part: Option<&jit_region::ActiveJitPart>,
     ) -> Result<Self, ExecutableMemoryError> {
         if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Load
             || block.compile_flavor() != od_jit::translation::CompileFlavor::S3_26aIrMemoryLoadV2
@@ -380,7 +418,7 @@ impl PublishedCode {
         }
         let mut source_bytes = [0; od_jit::runtime::MEMORY_SITE_SOURCE_BYTES_MAX];
         source_bytes[..source.len()].copy_from_slice(source);
-        let mut published = Self::publish_with_metadata(&code, None, None)?;
+        let mut published = Self::publish_with_metadata_in(&code, None, None, part)?;
         published.checked_load_ir_metadata_v2 = Some(CheckedLoadIrMetadataV2 {
             entry_rip: block.entry_rip(),
             site: *block.site(),
@@ -394,6 +432,14 @@ impl PublishedCode {
 
     pub fn publish_ir_memory_dword_load_v2(
         block: &od_jit::memory_load_v2::IrMemoryDwordLoadBlockV2,
+    ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_ir_memory_dword_load_v2_in(block, None)
+    }
+
+    /// [`Self::publish_ir_memory_dword_load_v2`] into a slot of `part` (S6-42) instead of a region of its own.
+    pub fn publish_ir_memory_dword_load_v2_in(
+        block: &od_jit::memory_load_v2::IrMemoryDwordLoadBlockV2,
+        part: Option<&jit_region::ActiveJitPart>,
     ) -> Result<Self, ExecutableMemoryError> {
         if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Load
             || block.compile_flavor()
@@ -423,7 +469,7 @@ impl PublishedCode {
         }
         let mut source_bytes = [0; od_jit::runtime::MEMORY_SITE_SOURCE_BYTES_MAX];
         source_bytes[..source.len()].copy_from_slice(source);
-        let mut published = Self::publish_with_metadata(&code, None, None)?;
+        let mut published = Self::publish_with_metadata_in(&code, None, None, part)?;
         published.checked_dword_load_ir_metadata_v2 = Some(CheckedLoadIrMetadataV2 {
             entry_rip: block.entry_rip(),
             site: *block.site(),
@@ -971,6 +1017,14 @@ impl PublishedCode {
     pub fn publish_memory_store_v2(
         block: &od_jit::memory_load_v2::MemoryStoreBlockV2,
     ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_memory_store_v2_in(block, None)
+    }
+
+    /// [`Self::publish_memory_store_v2`] into a slot of `part` (S6-42) instead of a region of its own.
+    pub fn publish_memory_store_v2_in(
+        block: &od_jit::memory_load_v2::MemoryStoreBlockV2,
+        part: Option<&jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
         if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Store
             || block.compile_flavor() != od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2
         {
@@ -987,7 +1041,7 @@ impl PublishedCode {
             source_len: block.source_bytes_storage().1,
             compile_flavor: block.compile_flavor(),
         };
-        let mut published = Self::publish_with_metadata(&code, None, Some(operation))?;
+        let mut published = Self::publish_with_metadata_in(&code, None, Some(operation), part)?;
         published.direct_memory_metadata_v2 = Some(DirectMemoryMetadataV2 {
             operation,
             pc_map: block.pc_map().clone(),
@@ -1508,11 +1562,36 @@ impl PublishedCode {
         block_metadata: Option<BlockMetadata>,
         memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
     ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_with_metadata_in(code, block_metadata, memory_operation_metadata_v2, None)
+    }
+
+    /// Publishes raw bytes into a slot of `part` (S6-42) or, without a part, into
+    /// a region of their own. The slot is released when the value drops.
+    pub fn publish_in(
+        code: &[u8],
+        part: Option<&jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_with_metadata_in(code, None, None, part)
+    }
+
+    fn publish_with_metadata_in(
+        code: &[u8],
+        block_metadata: Option<BlockMetadata>,
+        memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
+        part: Option<&jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let region = MappedRegion::allocate(code.len())?;
-            // SAFETY: the new region owns at least `code.len()` writable bytes.
-            unsafe { write_mapping_bytes(region.ptr(), code) };
+            let region = match part {
+                None => {
+                    let region = MappedRegion::allocate(code.len())?;
+                    // SAFETY: the new region owns at least `code.len()` writable
+                    // bytes.
+                    unsafe { write_mapping_bytes(region.ptr(), code) };
+                    CodeRegion::Owned(region)
+                }
+                Some(part) => CodeRegion::Slot(part.allocate_and_write(code)?),
+            };
             return Ok(Self {
                 region,
                 block_metadata,
@@ -1531,6 +1610,7 @@ impl PublishedCode {
             let _ = code;
             let _ = block_metadata;
             let _ = memory_operation_metadata_v2;
+            let _ = part;
             let _ = std::marker::PhantomData::<CheckedLoadIrMetadataV2>;
             Err(ExecutableMemoryError::UnsupportedPlatform)
         }
@@ -1638,7 +1718,10 @@ impl PublishedCode {
     pub fn as_ptr(&self) -> *const u8 {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            self.region.ptr.as_ptr()
+            match &self.region {
+                CodeRegion::Owned(region) => region.ptr.as_ptr(),
+                CodeRegion::Slot(lease) => lease.ptr().as_ptr(),
+            }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -2198,11 +2281,56 @@ pub struct PagedFetchedLoadSession {
     admitted: Option<AdmittedFetchedLoad>,
     admissions: u64,
     resets: u64,
+    /// S6-42: the vCPU's part of the process `MAP_JIT` region. With a part the
+    /// block of every admission lives in a slot of the part (no region of its
+    /// own, no process lease taken per admission); without one the admission
+    /// maps a region of its own as before.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    part: Option<jit_region::ActiveJitPart>,
 }
 
 impl PagedFetchedLoadSession {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// S6-42: a session whose blocks are published into slots of `part`, the
+    /// calling thread's part of a [`jit_region::SharedJitRegion`] (A1, M2). The
+    /// session, the part and every block stay on this thread (`!Send`).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn with_region_part(part: jit_region::JitRegionPart) -> Self {
+        Self {
+            part: Some(part.activate()),
+            ..Self::default()
+        }
+    }
+
+    /// The slot part of this session, if it has one.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn region_part(&self) -> Option<&jit_region::ActiveJitPart> {
+        self.part.as_ref()
+    }
+
+    /// The part the next admission publishes into (a clone of the `Rc`).
+    fn publish_part(&self) -> Option<jit_region::ActiveJitPart> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.part.clone()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            None
+        }
+    }
+
+    /// S3-25c safe point of this session, called by the host loop before every
+    /// step: applies the slot releases the part deferred (A4). Nothing executes
+    /// here and no lookup has started.
+    pub(crate) fn safe_point(&self) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(part) = &self.part {
+            part.safe_point();
+        }
     }
 
     /// Number of blocks compiled and published from fetched bytes so far.
@@ -2377,9 +2505,12 @@ impl PagedFetchedLoadSession {
             }
             PagedFetchAdmission::Reused
         } else {
-            // Drop the stale block first: the host has one executable region
-            // and an old block must never run against new bytes.
+            // Drop the stale block first: an old block must never run against
+            // new bytes, and its executable memory (a slot of the part, or a
+            // mapping of its own without a part) must be free for the new one.
             self.admitted = None;
+            let part = self.publish_part();
+            let part = part.as_ref();
             let is_store = fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES;
             if fetched_bytes != PAGED_FETCHED_LOAD_V2_BYTES && !(admit_store && is_store) {
                 return Err(fail(
@@ -2412,11 +2543,11 @@ impl PagedFetchedLoadSession {
             let published = if is_store {
                 let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
                     .map_err(compile_error)?;
-                PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+                PublishedCode::publish_memory_store_v2_in(&block, part).map_err(publish_error)?
             } else {
                 let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
                     .map_err(compile_error)?;
-                PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+                PublishedCode::publish_memory_load_v2_in(&block, part).map_err(publish_error)?
             };
             self.admitted = Some(AdmittedFetchedLoad {
                 linear_base: snapshot.linear_base,
@@ -2705,9 +2836,12 @@ impl PagedFetchedLoadSession {
         let admission = if reusable {
             PagedFetchAdmission::Reused
         } else {
-            // Drop the stale block first: one MAP_JIT region, and an old block
-            // must never run against new bytes.
+            // Drop the stale block first: an old block must never run against
+            // new bytes, and its executable memory (a slot of the part, or a
+            // mapping of its own without a part) must be free for the new one.
             self.admitted = None;
+            let part = self.publish_part();
+            let part = part.as_ref();
             let view = od_jit::block::CodeView::new(rip, &snapshot.bytes).map_err(|_| {
                 fail(
                     PagedFetchedLoadErrorKind::UnsupportedForm {
@@ -2732,25 +2866,28 @@ impl PagedFetchedLoadSession {
                 PagedFetchedForm::QwordStoreRbx => {
                     let block = od_jit::memory_load_v2::compile_memory_store_block_v2(view, rip)
                         .map_err(compile_error)?;
-                    PublishedCode::publish_memory_store_v2(&block).map_err(publish_error)?
+                    PublishedCode::publish_memory_store_v2_in(&block, part)
+                        .map_err(publish_error)?
                 }
                 PagedFetchedForm::QwordLoadRbx => {
                     let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, rip)
                         .map_err(compile_error)?;
-                    PublishedCode::publish_memory_load_v2(&block).map_err(publish_error)?
+                    PublishedCode::publish_memory_load_v2_in(&block, part).map_err(publish_error)?
                 }
                 PagedFetchedForm::DwordLoadRbx => {
                     let block =
                         od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(view, rip)
                             .map_err(compile_error)?;
-                    PublishedCode::publish_ir_memory_dword_load_v2(&block).map_err(publish_error)?
+                    PublishedCode::publish_ir_memory_dword_load_v2_in(&block, part)
+                        .map_err(publish_error)?
                 }
                 PagedFetchedForm::QwordLoadRbxDisp8
                 | PagedFetchedForm::QwordLoadRbxDisp32
                 | PagedFetchedForm::QwordLoadRipRel32 => {
                     let block = od_jit::memory_load_v2::compile_ir_memory_load_block_v2(view, rip)
                         .map_err(compile_error)?;
-                    PublishedCode::publish_ir_memory_load_v2(&block).map_err(publish_error)?
+                    PublishedCode::publish_ir_memory_load_v2_in(&block, part)
+                        .map_err(publish_error)?
                 }
             };
             self.admitted = Some(AdmittedFetchedLoad {
