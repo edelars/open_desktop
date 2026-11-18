@@ -870,11 +870,19 @@ broader Stage 3 acceptance remain open. Stage 3 remains partial; see the
 
 ### Layout acceptance
 
-The linked-worktree `.git` pointer fix in `tools/check_layout.py` is present in
-`f1670fc` and passed independent static Sol/high review. The exact layout
-checker has not been run after the fix. ISSUE-042 remains **OPEN** until the
-existing `python3 tools/check_layout.py` command passes at Stage 3 end; the
-historical S3-00 checker result predates the fix and is not post-fix acceptance.
+The linked-worktree `.git` pointer fix in `f1670fc` passed independent static
+Sol High review. On 2026-11-18, the `codex` linked worktree at `3476780` had
+45 broken links to local evidence and no Git metadata error. The original
+artifacts were restored from the main checkout under the same ignored
+`work/` paths. This restored 22 Stage 3 report links to 21 files, plus 23
+links to existing Stage 2 evidence used by the repository-wide check.
+After restoration, `python3 tools/check_layout.py` exited 0 with
+`Layout OK: 54 required directories, 7 crate scaffolds, 14 instruction scopes.`
+
+This verifies [ISSUE-042](../KNOWN_ISSUES.md#issue-042) and the layout check
+on this checkout. [ISSUE-053](../KNOWN_ISSUES.md#issue-053) describes how the
+ignored artifacts affect reproducibility in a fresh checkout. Rerun the
+checker for the final S3-41 revision.
 
 ### Optional real-artifact replay or reduction
 

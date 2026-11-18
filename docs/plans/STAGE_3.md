@@ -4724,11 +4724,11 @@ python3 tools/check_layout.py
 git diff --check
 ```
 
-On integrated revision `f1670fc`, the linked-worktree metadata fix in
-`tools/check_layout.py` passed independent static Sol/high review. The exact
-layout checker has not been run after the fix; ISSUE-042 remains open until
-`python3 tools/check_layout.py` passes at Stage 3 end. The earlier S3-00
-layout-check result is historical and does not establish post-fix acceptance.
+The linked-worktree metadata fix in `f1670fc` passed independent static
+Sol High review. On 2026-11-18, `python3 tools/check_layout.py` passed in the
+`codex` linked worktree at `3476780` after restoration of the existing local
+evidence. This verifies the layout and link check for that checkout.
+Repeat the command at S3-41 acceptance. See the [layout evidence](../reports/STAGE_3_REPORT.md#layout-acceptance).
 
 После изменения кода выполнять `graphify update .`. Временные логи/корпуса хранить в `work/`; в Git — малые собственные fixtures, необходимые raw measurements и отчёты без секретов. Не запускать CPU-тесты ради изменения только этого плана.
 

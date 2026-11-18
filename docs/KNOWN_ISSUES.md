@@ -3762,6 +3762,8 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Следующий шаг:** audit all earlier compressed/decompression and `__pi_*` helper paths for EFER accesses and capture/establish the relevant startup control-state assumptions through independent evidence. The S4-12a `from_cpu_state` bridge only validates an immutable diagnostic snapshot; it does not resolve startup provenance or WRMSR mode effects. Keep any next CPU slice read-only until WRMSR mode and paging effects have an owning contract; Stage 4 remains owner of system translation effects.
 - **S2-25e:** implemented a local exact read-only `RDMSR IA32_EFER` fixture profile over four synthetic values with bounded current CR0/CR4 prerequisites. This does not change the open status: no actual Ubuntu entry value, initial CR snapshot, absolute-first-access ordering, WRMSR behavior, guest exception delivery, paging effect, or runtime boot observation is established. See [S2-25e CPU contract](specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer) and [implementation report](reports/STAGE_2_REPORT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer).
 
+<a id="issue-053"></a>
+
 ### ISSUE-053 — Stage 3 reports reference absent ignored evidence
 
 - **Дата обнаружения:** 2026-11-04; разрешено в текущем main worktree 2026-11-04.
@@ -3769,7 +3771,8 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Статус:** разрешена локальным восстановлением исходных файлов.
 - **Суть и последствия:** Several Stage 3 reports linked to run summaries, manifests, and diagnostic attempts under `work/stage3-harness/` or `work/stage1-harness/` that were absent from this checkout. The reports could not be opened locally until those files were restored.
 - **Основание и результат:** all 21 files reported as broken by `python3 tools/check_layout.py` were found in `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop` and copied to the same relative `work/` paths in the main worktree. The layout checker now passes: `Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes.`
-- **Граница:** `work/` remains Git-ignored, so these local evidence files are available in this main worktree but are not part of the source commit. If portable evidence is needed, curate the required records into `docs/reports/data/stage3/` under the project's evidence policy.
+- **Повторная проверка, 2026-11-18:** in the `codex` linked worktree at `3476780`, 22 Stage 3 report links pointed to 21 absent files. All 21 were restored byte-for-byte from the main checkout. After restoring the remaining local evidence required by the checker, `python3 tools/check_layout.py` passed. See the [Stage 3 layout evidence](reports/STAGE_3_REPORT.md#layout-acceptance).
+- **Граница:** `work/` is Git-ignored. These artifacts are local to the checkouts where they have been restored. A fresh checkout needs the original files at the linked paths or a portable bundle curated into `docs/reports/data/stage3/` under the project's evidence policy.
 
 ### ISSUE-058 — VMHost control race smoke fails on HEAD (Stage 10 session)
 
