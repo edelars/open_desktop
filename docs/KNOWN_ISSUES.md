@@ -5927,9 +5927,18 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Проверка:** six focused tests cover 64-bit addressing, eight-byte reads, qword flags and definedness, noncanonical ranges, data and fetch faults, neighboring encodings and profile isolation. The existing dword SIB compare tests pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
 ### ISSUE-490 — S7-04: exact MOVZX EAX,word ptr [RSI+0x58] frontier (`0F B7 46 58`)
+
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-489.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018df`.
+- **Статус:** устранена точечным допуском.
+- **Результат:** base `PagedCpl0ProbeV1` admits exact `0F B7 46 58`, reads two bytes at RSI+0x58, clears RAX bits 63:16, preserves flags and advances RIP by four. Fault and profile isolation checks pass. Earlier exact word-load tuples are preserved.
+- **Проверка:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` with budget 20000, the runner retires 10,345 instructions and stops at RIP `0x2018e3` on exact `48 83 F8 40` (Unsupported opcode 131, empty COM1). See [Stage 7 report](reports/STAGE_7_REPORT.md#issue-490--exact-movzx-eaxword-ptr-rsi0x58). Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-491 — S7-04: exact CMP RAX,0x40 frontier (`48 83 F8 40`)
+
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-490.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018e3`.
 - **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58]).
-- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 183 }` at RIP `0x2018df` after 10,344 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F B7 46 58`.
-- **Следующий шаг:** admit the exact word load with zero extension and cover read width, flags, data and fetch faults and profile isolation.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `48 83 F8 40` (CMP RAX,0x40).
+- **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` after 10,345 retired instructions at RIP `0x2018e3`. COM1 is empty. Bytes at the link-base shadow are `48 83 F8 40`.
+- **Следующий шаг:** admit only the exact qword register compare and check flags, imm8 fetch faults and profile isolation.

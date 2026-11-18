@@ -30109,3 +30109,16 @@ A data-read page fault or final immediate fetch fault commits no
 architectural CPU state or retirement. The other CPL0 probes and the
 paged CPL3 MOV probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-490 — bounded MOVZX EAX,word ptr [RSI+0x58]
+
+The base paged CPL0 profile admits exact unprefixed `0F B7 46 58` in
+Long64. It forms the 64-bit effective address RSI plus sign-extended
+disp8 0x58 and reads a little-endian word through the tracked data path.
+The dword destination write zero-extends the word into all of RAX. RIP
+advances four bytes. Other GPRs, flags, flag definedness and memory
+contents are preserved. A noncanonical data range raises #GP(0) before
+the read. Data-read and final-displacement fetch page faults commit no
+CPU state or retirement. The other CPL0 probes and the paged CPL3 MOV
+probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

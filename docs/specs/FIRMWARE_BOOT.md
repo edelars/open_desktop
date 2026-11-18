@@ -2850,3 +2850,13 @@ It stops on `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58], ISSUE-490) after
 COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-490 runner frontier
+
+Exact base-profile `0F B7 46 58` (MOVZX EAX,word ptr [RSI+0x58]) reads a
+word, zero-extends it into RAX and advances RIP by four. With budget
+20000 the runner reaches `48 83 F8 40` (CMP RAX,0x40, ISSUE-491) at RIP
+`0x2018e3` after 10,345 retired instructions, reporting Unsupported
+opcode 131 with empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -3098,3 +3098,15 @@ runner executes the CMP and existing JZ fall-through, then stops after
 (MOVZX EAX,word ptr [RSI+0x58], ISSUE-490). It reports Unsupported opcode
 183 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-490 — exact MOVZX EAX,word ptr [RSI+0x58] (`0F B7 46 58`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed word load. It reads two
+bytes at RSI+0x58, zero-extends the word into RAX and advances RIP by four.
+Tests cover address width, flag preservation, noncanonical data ranges,
+data and fetch faults, neighboring forms and profile isolation. The
+previous exact MOVZX forms remain supported. With budget 20000 the runner
+stops after 10,345 retired instructions at RIP `0x2018e3` on
+`48 83 F8 40` (CMP RAX,0x40, ISSUE-491). It reports Unsupported opcode
+131 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
