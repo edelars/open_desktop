@@ -236,7 +236,9 @@ pub fn emit_data_effects(
                     operation: operation_index,
                 });
             }
-            Operation::CheckedStore { .. } => {
+            Operation::CheckedStore { .. }
+            | Operation::AtomicRmw { .. }
+            | Operation::Fence { .. } => {
                 return Err(EmitterError::InvalidOperation {
                     operation: operation_index,
                 });
@@ -443,7 +445,9 @@ pub fn emit_data_effects(
                     operation: operation_index,
                 });
             }
-            Operation::CheckedStore { .. } => {
+            Operation::CheckedStore { .. }
+            | Operation::AtomicRmw { .. }
+            | Operation::Fence { .. } => {
                 return Err(EmitterError::InvalidOperation {
                     operation: operation_index,
                 });
@@ -903,6 +907,58 @@ mod tests {
             ),
             Err(EmitterError::UnsupportedFlagEffect { .. })
         ));
+    }
+
+    #[test]
+    fn s6_41_data_effect_emitter_refuses_atomic_and_fence_effects() {
+        // The register-only emitter has no memory-order lowering: such effects
+        // are a typed refusal, never skipped (S6-41).
+        for kind in 0..2 {
+            let mut program = lower_bytes(&[0x48, 0x03, 0xC1]); // ADD RAX, RCX
+            let (position, value) = program
+                .operations
+                .iter()
+                .enumerate()
+                .find_map(|(index, operation)| match operation {
+                    Operation::ReadGpr { dst, .. } | Operation::Constant { dst, .. } => {
+                        Some((index + 1, *dst))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let inserted = if kind == 0 {
+                Operation::Fence {
+                    kind: ir::FenceKind::Full,
+                }
+            } else {
+                Operation::AtomicRmw {
+                    kind: ir::AtomicRmwKind::Add,
+                    width: IntWidth::W64,
+                    operand: od_isa::long_decode::MemoryOperand {
+                        base: od_isa::long_decode::AddressBase::None,
+                        index: None,
+                        scale: 1,
+                        displacement: 0x1000,
+                        address_size: od_isa::OperandSize::Qword,
+                        size: od_isa::OperandSize::Qword,
+                    },
+                    value,
+                    expected: None,
+                    dst: TempId(900),
+                }
+            };
+            program.operations.insert(position, inserted);
+            ir::verify(&program).unwrap();
+            let allocation = allocation(&program, 4);
+            assert!(matches!(
+                emit_data_effects(
+                    &program,
+                    &allocation,
+                    crate::runtime::arithmetic_flags_helper_adapter
+                ),
+                Err(EmitterError::InvalidOperation { operation }) if operation == position
+            ));
+        }
     }
 
     #[test]

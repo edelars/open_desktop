@@ -65,6 +65,63 @@ pub enum PairIndexMode {
     PostIndex,
 }
 
+/// Access width of the S6-41 memory-order forms: B, H, W, X suffixes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessWidth {
+    Byte,
+    Half,
+    Word,
+    Dword,
+}
+
+impl AccessWidth {
+    const fn size_bits(self) -> u32 {
+        match self {
+            Self::Byte => 0,
+            Self::Half => 1,
+            Self::Word => 2,
+            Self::Dword => 3,
+        }
+    }
+
+    pub const fn bytes(self) -> u32 {
+        1 << self.size_bits()
+    }
+}
+
+/// Acquire/release bits of an LSE read-modify-write. Only the two orders the
+/// lowering needs: no ordering (interleaved mode) and `AL` (parallel mode).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AtomicOrder {
+    Relaxed,
+    AcquireRelease,
+}
+
+impl AtomicOrder {
+    const fn bits(self) -> (u32, u32) {
+        match self {
+            Self::Relaxed => (0, 0),
+            Self::AcquireRelease => (1, 1),
+        }
+    }
+}
+
+/// `DMB` options in the fence norm: `ISH` (full) and `ISHLD` (load barrier).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarrierOption {
+    Ish,
+    IshLd,
+}
+
+impl BarrierOption {
+    const fn crm(self) -> u32 {
+        match self {
+            Self::Ish => 0b1011,
+            Self::IshLd => 0b1001,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Condition {
     Equal,
@@ -350,6 +407,146 @@ impl Encoder {
 
     pub fn ldarb_w(&mut self, rt: WReg, base: AddressBase) {
         self.emit(0x08DF_FC00 | (u32::from(base.number()) << 5) | u32::from(rt.0));
+    }
+
+    /// `LDR{B,H,W,X}` with an unsigned scaled immediate offset (S6-41). The
+    /// register is `Wt` for `Byte`/`Half`/`Word` and `Xt` for `Dword`; `Zero`
+    /// selects WZR/XZR. Used by the interleaved-mode lowering of an ordinary
+    /// load, which carries no ordering.
+    pub fn ldr_sized(
+        &mut self,
+        width: AccessWidth,
+        rt: XRegOrZero,
+        base: AddressBase,
+        byte_offset: u32,
+    ) -> Result<(), EncodeError> {
+        self.validate_scaled_offset(byte_offset, width.bytes(), 4095)?;
+        self.emit(
+            0x3940_0000
+                | (width.size_bits() << 30)
+                | ((byte_offset / width.bytes()) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+        Ok(())
+    }
+
+    /// `STR{B,H,W,X}` with an unsigned scaled immediate offset (S6-41).
+    pub fn str_sized(
+        &mut self,
+        width: AccessWidth,
+        rt: XRegOrZero,
+        base: AddressBase,
+        byte_offset: u32,
+    ) -> Result<(), EncodeError> {
+        self.validate_scaled_offset(byte_offset, width.bytes(), 4095)?;
+        self.emit(
+            0x3900_0000
+                | (width.size_bits() << 30)
+                | ((byte_offset / width.bytes()) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+        Ok(())
+    }
+
+    /// `LDAR{B,H,W,X}` (load-acquire, S6-41). Register class as in
+    /// [`Encoder::ldr_sized`]. `LDAR`/`STLR` are RCsc with respect to each
+    /// other, so a pair of them gives the sequentially consistent ordering the
+    /// parallel mode requires of an ordinary access (MEMORY_MODEL, S6-32).
+    pub fn ldar(&mut self, width: AccessWidth, rt: XRegOrZero, base: AddressBase) {
+        self.emit(
+            0x08DF_FC00
+                | (width.size_bits() << 30)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+    }
+
+    /// `STLR{B,H,W,X}` (store-release, S6-41).
+    pub fn stlr(&mut self, width: AccessWidth, rt: XRegOrZero, base: AddressBase) {
+        self.emit(
+            0x089F_FC00
+                | (width.size_bits() << 30)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+    }
+
+    /// `LDADD{,A}{,L}{B,H,}` (FEAT_LSE, S6-41): `rt = [base]; [base] += rs`
+    /// as one atomic operation. `rt` is never the zero register: with
+    /// `Relaxed` or release-only forms that encoding is the `STADD` alias,
+    /// whose ordering differs, so it is rejected for every order.
+    pub fn ldadd(
+        &mut self,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: XRegOrZero,
+        rt: XReg,
+        base: AddressBase,
+    ) {
+        self.emit_lse_rmw(0x3820_0000, width, order, rs.number(), rt.0, base);
+    }
+
+    /// `SWP{,A}{,L}{B,H,}` (FEAT_LSE, S6-41): `rt = [base]; [base] = rs`.
+    pub fn swp(
+        &mut self,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: XRegOrZero,
+        rt: XReg,
+        base: AddressBase,
+    ) {
+        self.emit_lse_rmw(0x3820_8000, width, order, rs.number(), rt.0, base);
+    }
+
+    /// `CAS{,A}{,L}{B,H,}` (FEAT_LSE, S6-41): compare `[base]` with `rs`; if
+    /// equal store `rt`; `rs` always receives the old memory value (zero
+    /// extended for the sub-doubleword widths).
+    pub fn cas(
+        &mut self,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: XReg,
+        rt: XRegOrZero,
+        base: AddressBase,
+    ) {
+        let (acquire, release) = order.bits();
+        self.emit(
+            0x08A0_7C00
+                | (width.size_bits() << 30)
+                | (acquire << 22)
+                | (release << 15)
+                | (u32::from(rs.0) << 16)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+    }
+
+    /// `DMB <option>` (S6-41), the inner-shareable barriers of the fence norm.
+    pub fn dmb(&mut self, option: BarrierOption) {
+        self.emit(0xD503_30BF | (option.crm() << 8));
+    }
+
+    fn emit_lse_rmw(
+        &mut self,
+        opcode: u32,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: u8,
+        rt: u8,
+        base: AddressBase,
+    ) {
+        let (acquire, release) = order.bits();
+        self.emit(
+            opcode
+                | (width.size_bits() << 30)
+                | (acquire << 23)
+                | (release << 22)
+                | (u32::from(rs) << 16)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt),
+        );
     }
 
     pub fn stp_x(
@@ -870,5 +1067,142 @@ mod tests {
         assert_eq!(other.bind(foreign), Err(EncodeError::ForeignLabel(foreign)));
         assert_eq!(other.b(foreign), Err(EncodeError::ForeignLabel(foreign)));
         assert_eq!(other.position(), 0);
+    }
+
+    #[test]
+    fn s6_41_memory_order_forms_match_local_apple_clang_fixture() {
+        // Fixture: tests/fixtures/arm64_memory_order.s, Apple clang 21.0.0,
+        // -target arm64-apple-macosx15.0 -march=armv8.4-a, words read with
+        // `otool -tV` / `otool -t`. Order below equals the fixture order.
+        use AccessWidth::{Byte, Dword, Half, Word};
+        use AtomicOrder::{AcquireRelease as Al, Relaxed};
+        let mut e = Encoder::new();
+        let r = |n: u8| XRegOrZero::Reg(x(n));
+        let base = AddressBase::Reg(x(22));
+        let b12 = AddressBase::Reg(x(12));
+        e.ldr_sized(Byte, r(9), base, 0).unwrap();
+        e.ldr_sized(Half, r(9), base, 2).unwrap();
+        e.ldr_sized(Word, r(9), base, 4).unwrap();
+        e.ldr_sized(Dword, r(9), base, 8).unwrap();
+        e.ldr_sized(Dword, XRegOrZero::Zero, base, 0).unwrap();
+        e.str_sized(Byte, r(9), base, 1).unwrap();
+        e.str_sized(Half, r(9), base, 2).unwrap();
+        e.str_sized(Word, r(9), base, 4).unwrap();
+        e.str_sized(Dword, r(9), base, 8).unwrap();
+        e.str_sized(Word, XRegOrZero::Zero, base, 0).unwrap();
+        e.ldar(Byte, r(9), base);
+        e.ldar(Half, r(9), base);
+        e.ldar(Word, r(9), base);
+        e.ldar(Dword, r(9), base);
+        e.stlr(Byte, r(9), base);
+        e.stlr(Half, r(9), base);
+        e.stlr(Word, r(9), base);
+        e.stlr(Dword, r(9), base);
+        e.stlr(Dword, XRegOrZero::Zero, AddressBase::Sp);
+        for width in [Byte, Half, Word, Dword] {
+            e.ldadd(width, Relaxed, r(10), x(11), b12);
+        }
+        for width in [Byte, Half, Word, Dword] {
+            e.ldadd(width, Al, r(10), x(11), b12);
+        }
+        e.ldadd(Dword, Al, XRegOrZero::Zero, x(11), AddressBase::Sp);
+        for order in [Relaxed, Al] {
+            for width in [Byte, Half, Word, Dword] {
+                e.swp(width, order, r(10), x(11), b12);
+            }
+        }
+        for order in [Relaxed, Al] {
+            for width in [Byte, Half, Word, Dword] {
+                e.cas(width, order, x(10), r(11), b12);
+            }
+        }
+        e.cas(Dword, Al, x(10), XRegOrZero::Zero, b12);
+        e.dmb(BarrierOption::Ish);
+        e.dmb(BarrierOption::IshLd);
+        assert_eq!(
+            e.finish().unwrap().words(),
+            &[
+                0x3940_02c9,
+                0x7940_06c9,
+                0xb940_06c9,
+                0xf940_06c9,
+                0xf940_02df, // LDR*
+                0x3900_06c9,
+                0x7900_06c9,
+                0xb900_06c9,
+                0xf900_06c9,
+                0xb900_02df, // STR*
+                0x08df_fec9,
+                0x48df_fec9,
+                0x88df_fec9,
+                0xc8df_fec9, // LDAR*
+                0x089f_fec9,
+                0x489f_fec9,
+                0x889f_fec9,
+                0xc89f_fec9,
+                0xc89f_ffff, // STLR*
+                0x382a_018b,
+                0x782a_018b,
+                0xb82a_018b,
+                0xf82a_018b, // LDADD*
+                0x38ea_018b,
+                0x78ea_018b,
+                0xb8ea_018b,
+                0xf8ea_018b,
+                0xf8ff_03eb, // LDADDAL*
+                0x382a_818b,
+                0x782a_818b,
+                0xb82a_818b,
+                0xf82a_818b, // SWP*
+                0x38ea_818b,
+                0x78ea_818b,
+                0xb8ea_818b,
+                0xf8ea_818b, // SWPAL*
+                0x08aa_7d8b,
+                0x48aa_7d8b,
+                0x88aa_7d8b,
+                0xc8aa_7d8b, // CAS*
+                0x08ea_fd8b,
+                0x48ea_fd8b,
+                0x88ea_fd8b,
+                0xc8ea_fd8b,
+                0xc8ea_fd9f, // CASAL*
+                0xd503_3bbf,
+                0xd503_39bf, // DMB ISH, DMB ISHLD
+            ]
+        );
+    }
+
+    #[test]
+    fn s6_41_sized_loads_and_stores_scale_and_reject_bad_offsets() {
+        let mut e = Encoder::new();
+        let base = AddressBase::Reg(x(1));
+        let t = XRegOrZero::Reg(x(2));
+        // Dword forms coincide with the pre-existing X-register encoders.
+        e.ldr_sized(AccessWidth::Dword, t, base, 32).unwrap();
+        e.str_sized(AccessWidth::Dword, t, base, 32).unwrap();
+        let mut reference = Encoder::new();
+        reference.ldr_x(t, base, 32).unwrap();
+        reference.str_x(t, base, 32).unwrap();
+        assert_eq!(e.finish().unwrap(), reference.finish().unwrap());
+
+        let mut e = Encoder::new();
+        assert_eq!(
+            e.ldr_sized(AccessWidth::Word, t, base, 2),
+            Err(EncodeError::UnalignedOffset {
+                value: 2,
+                alignment: 4
+            })
+        );
+        assert_eq!(
+            e.str_sized(AccessWidth::Half, t, base, 4096 * 2),
+            Err(EncodeError::ImmediateOutOfRange {
+                value: 4096,
+                maximum: 4095
+            })
+        );
+        assert_eq!(e.position(), 0);
+        assert_eq!(AccessWidth::Byte.bytes(), 1);
+        assert_eq!(AccessWidth::Dword.bytes(), 8);
     }
 }

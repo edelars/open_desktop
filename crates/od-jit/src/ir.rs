@@ -81,6 +81,40 @@ pub enum ExitKind {
     Unsupported,
 }
 
+/// Guest read-modify-write kinds that lower to one host atomic instruction
+/// (S6-41): `Add` (`LOCK ADD/INC/DEC/XADD`), `Exchange` (`XCHG` with memory),
+/// `CompareExchange` (`LOCK CMPXCHG`). The arithmetic flags are not part of the
+/// atomic operation: they are derived by a following `Integer` effect from the
+/// old value the atomic operation defines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AtomicRmwKind {
+    Add,
+    Exchange,
+    CompareExchange,
+}
+
+/// Guest fences. Each maps to its own host barrier (MEMORY_MODEL, norm S6-32);
+/// none of them is ever dropped by the IR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FenceKind {
+    /// `MFENCE`.
+    Full,
+    /// `SFENCE`.
+    Store,
+    /// `LFENCE`.
+    Load,
+}
+
+/// The three kinds of memory effect the IR keeps apart (S6-41). No kind is a
+/// special case of another: an atomic operation is not an ordinary access with
+/// a stronger order, and a fence carries no access.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryClass {
+    Ordinary,
+    Atomic,
+    Fence,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     BeginInstruction {
@@ -107,6 +141,23 @@ pub enum Operation {
     CheckedStore {
         src: GuestGpr,
         operand: MemoryOperand,
+    },
+    /// One guest atomic read-modify-write of `width` bytes at `operand`.
+    /// `dst` is the old memory value (zero-extended); `value` is the addend,
+    /// the replacement or the new value; `expected` is present exactly for
+    /// `CompareExchange`. Not emitted by any current decoder adapter: guest
+    /// `LOCK` forms stay on the helper path (JIT_CONTRACT, S6-41).
+    AtomicRmw {
+        kind: AtomicRmwKind,
+        width: IntWidth,
+        operand: MemoryOperand,
+        value: TempId,
+        expected: Option<TempId>,
+        dst: TempId,
+    },
+    /// A guest fence. Has no operands and no result.
+    Fence {
+        kind: FenceKind,
     },
     Integer {
         kind: IntegerKind,
@@ -141,6 +192,22 @@ pub enum Operation {
         kind: ExitKind,
         target_rip: u64,
     },
+}
+
+impl Operation {
+    /// The memory class of this effect, or `None` for effects that touch no
+    /// guest memory. `CheckedLoad` and `CheckedStore` are the ordinary
+    /// accesses.
+    pub fn memory_class(&self) -> Option<MemoryClass> {
+        match self {
+            Operation::CheckedLoad { .. } | Operation::CheckedStore { .. } => {
+                Some(MemoryClass::Ordinary)
+            }
+            Operation::AtomicRmw { .. } => Some(MemoryClass::Atomic),
+            Operation::Fence { .. } => Some(MemoryClass::Fence),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,6 +291,11 @@ pub enum VerifyError {
     InvalidIntegerResult {
         operation: usize,
         kind: IntegerKind,
+    },
+    /// `AtomicRmw` whose `expected` presence does not match its kind, or whose
+    /// operand size differs from its width.
+    InvalidAtomicRmw {
+        operation: usize,
     },
     InvalidTerminalRip {
         operation: usize,
@@ -446,6 +518,37 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         operation: operation_index,
                     });
                 }
+            }
+            Operation::AtomicRmw {
+                kind,
+                width,
+                operand,
+                value,
+                expected,
+                dst,
+            } => {
+                require_active(active_instruction, operation_index)?;
+                let size_matches = matches!(
+                    (operand.size, width),
+                    (od_isa::OperandSize::Byte, IntWidth::W8)
+                        | (od_isa::OperandSize::Word, IntWidth::W16)
+                        | (od_isa::OperandSize::Dword, IntWidth::W32)
+                        | (od_isa::OperandSize::Qword, IntWidth::W64)
+                );
+                if !size_matches || (*kind == AtomicRmwKind::CompareExchange) != expected.is_some()
+                {
+                    return Err(VerifyError::InvalidAtomicRmw {
+                        operation: operation_index,
+                    });
+                }
+                require_temp(&definitions, *value, *width, operation_index)?;
+                if let Some(expected) = expected {
+                    require_temp(&definitions, *expected, *width, operation_index)?;
+                }
+                define(&mut definitions, *dst, *width, operation_index)?;
+            }
+            Operation::Fence { .. } => {
+                require_active(active_instruction, operation_index)?;
             }
             Operation::Integer {
                 kind,
@@ -2949,6 +3052,167 @@ mod tests {
                 index: 1,
                 code_end: 0x1004,
             })
+        );
+    }
+
+    fn atomic_operand(size: od_isa::OperandSize) -> MemoryOperand {
+        MemoryOperand {
+            base: AddressBase::None,
+            index: None,
+            scale: 1,
+            displacement: 0x1000,
+            address_size: od_isa::OperandSize::Qword,
+            size,
+        }
+    }
+
+    /// One atomic instruction: atomic effect, then flags derived by an `Integer`
+    /// compare from the old value, a fence, a commit. This is NOT the x86
+    /// `LOCK CMPXCHG` flag rule (x86 sets the flags from accumulator minus the
+    /// memory operand, i.e. `expected - old`); here the compare is `old - rhs` with
+    /// an arbitrary `rhs` and only exercises the IR shape (effect, then `Integer`
+    /// on `dst`). The real CMPXCHG flag derivation is S6-41b.
+    fn atomic_program(
+        kind: AtomicRmwKind,
+        width: IntWidth,
+        size: od_isa::OperandSize,
+        expected: Option<TempId>,
+    ) -> Program {
+        Program {
+            code_end: 0x1004,
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x1000,
+                next_rip: 0x1004,
+            }],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::Constant {
+                    dst: TempId(0),
+                    width,
+                    value: 7,
+                },
+                Operation::Constant {
+                    dst: TempId(1),
+                    width,
+                    value: 9,
+                },
+                Operation::AtomicRmw {
+                    kind,
+                    width,
+                    operand: atomic_operand(size),
+                    value: TempId(0),
+                    expected,
+                    dst: TempId(2),
+                },
+                Operation::Integer {
+                    kind: IntegerKind::Compare,
+                    lhs: TempId(2),
+                    rhs: TempId(1),
+                    result: None,
+                    width,
+                    flags: FlagEffect::Arithmetic,
+                },
+                Operation::Fence {
+                    kind: FenceKind::Full,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1004,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn s6_41_atomic_and_fence_effects_verify_as_their_own_kinds() {
+        use od_isa::OperandSize::{Byte, Dword, Qword, Word};
+        for (kind, expected) in [
+            (AtomicRmwKind::Add, None),
+            (AtomicRmwKind::Exchange, None),
+            (AtomicRmwKind::CompareExchange, Some(TempId(1))),
+        ] {
+            for (width, size) in [
+                (IntWidth::W8, Byte),
+                (IntWidth::W16, Word),
+                (IntWidth::W32, Dword),
+                (IntWidth::W64, Qword),
+            ] {
+                let program = atomic_program(kind, width, size, expected);
+                assert_eq!(verify(&program), Ok(()), "{kind:?} {width:?}");
+                let classes: Vec<_> = program
+                    .operations
+                    .iter()
+                    .filter_map(Operation::memory_class)
+                    .collect();
+                assert_eq!(classes, [MemoryClass::Atomic, MemoryClass::Fence]);
+            }
+        }
+    }
+
+    #[test]
+    fn s6_41_atomic_effect_rejects_inconsistent_shapes() {
+        use od_isa::OperandSize::{Dword, Qword};
+        // `expected` present without CompareExchange, and absent with it.
+        let program = atomic_program(AtomicRmwKind::Add, IntWidth::W32, Dword, Some(TempId(1)));
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidAtomicRmw { operation: 3 })
+        );
+        let program = atomic_program(AtomicRmwKind::CompareExchange, IntWidth::W32, Dword, None);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidAtomicRmw { operation: 3 })
+        );
+        // Operand size and width disagree.
+        let program = atomic_program(AtomicRmwKind::Exchange, IntWidth::W32, Qword, None);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidAtomicRmw { operation: 3 })
+        );
+        // Undefined value temporary.
+        let mut program = atomic_program(AtomicRmwKind::Add, IntWidth::W32, Dword, None);
+        if let Operation::AtomicRmw { value, .. } = &mut program.operations[3] {
+            *value = TempId(40);
+        }
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::UndefinedTemporary {
+                operation: 3,
+                temp: TempId(40)
+            })
+        );
+        // The destination must be a fresh temporary.
+        let mut program = atomic_program(AtomicRmwKind::Add, IntWidth::W32, Dword, None);
+        if let Operation::AtomicRmw { dst, .. } = &mut program.operations[3] {
+            *dst = TempId(0);
+        }
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::DuplicateTemporary {
+                operation: 3,
+                temp: TempId(0)
+            })
+        );
+    }
+
+    #[test]
+    fn s6_41_atomic_and_fence_effects_are_refused_outside_an_instruction() {
+        let mut program = atomic_program(
+            AtomicRmwKind::Add,
+            IntWidth::W32,
+            od_isa::OperandSize::Dword,
+            None,
+        );
+        program.operations.insert(
+            0,
+            Operation::Fence {
+                kind: FenceKind::Load,
+            },
+        );
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::EffectOutsideInstruction { operation: 0 })
         );
     }
 }

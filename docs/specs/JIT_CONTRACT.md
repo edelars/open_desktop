@@ -5469,3 +5469,64 @@ Summary of S4-16a-i; the tests-to-plan table and the limits list are in the
 - Arm Architecture Reference Manual (DDI 0487): последовательность `DC CVAU`/`DSB ISH`/`IC IVAU`/`DSB ISH`/`ISB`, single-copy atomicity однобайтовой загрузки, context synchronization при возврате из исключения — **по памяти, номера разделов не приводятся, проверить**.
 - Apple, «Porting just-in-time compilers to Apple Silicon» и entitlement `com.apple.security.cs.allow-jit` (ссылки — в ISSUE-038). Действие `pthread_jit_write_protect_np` на поток, необходимость `sys_icache_invalidate`, наличие или отсутствие `ISB` внутри него — **по памяти, проверить**.
 - Проектные источники: S3-25c, S3-28c/d, S4-15, S4-16 (этот файл); S6-17, S6-30b, S6-32, S6-33, S6-34, S6-35, S6-36 ([MACHINE_CONTRACT.md](MACHINE_CONTRACT.md), [MEMORY_MODEL.md](MEMORY_MODEL.md)); [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md), [ADR-0005](../decisions/ADR-0005-persistent-same-code-session.md); ISSUE-038 ([KNOWN_ISSUES.md](../KNOWN_ISSUES.md)).
+
+### S6-41: атомарные операции и барьеры в lowering ARM64
+
+Дата: 2026-11-18. Статус: реализовано частично (ревью Opus: «принять частично»; чекбокс S6-41 в `STAGE_6.md` не отмечен). Примитивы, IR, lowering, дифференциал и MP/SB на сгенерированном коде — сделаны; адаптер декодера, inline-эмиттер, допуск LOCK/XCHG/MFENCE в блок, litmus с JIT, полный набор флагов, LOCK OR/AND/BTS/BTR — S6-41b (`STAGE_6.md`). Код: `crates/od-jit/src/arm64/encoder.rs`, `crates/od-jit/src/arm64/memory_order.rs`, `crates/od-jit/src/ir.rs`; тесты — там же, `crates/od-host/tests/s6_41_atomic_lowering.rs`. Источник отображения — [MEMORY_MODEL.md](MEMORY_MODEL.md) («Выбор по замеру (S6-06)», «Норма fence (S6-32)») и [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md) (S6-31, S6-32).
+
+**Что добавлено.**
+- Энкодер: `LDR/STR{B,H,W,X}` с беззнаковым смещением (`ldr_sized`, `str_sized`), `LDAR/STLR{B,H,W,X}`, `LDADD`, `SWP`, `CAS` в формах `{B,H,W,X}` и двух порядках (`AtomicOrder::Relaxed` — без бит acquire/release, `AcquireRelease` — `…AL`), `DMB ISH` и `DMB ISHLD`. Других инструкций нет (`DMB ISHST`, `LDSET/LDCLR`, `CASP`, `LDAXP/STLXP` не добавлены: норма fence отображает `SFENCE` в `DMB ISH`, а формы `OR/AND/BTS/BTR` и 16-байтный примитив S6-31 не реализовала). `rt` у `LDADD`/`SWP` — только `XReg`: при `XZR` форма без `A` у `LDADD` — алиас `STADD` с другим порядком, поэтому такой операнд не выражается. Алиаса `STSWP` нет; довод в пользу `SWP` как самостоятельной формы — `XZR` в роли `rt` теряет acquire.
+- IR: три вида эффекта, ни один не сводится к другому. Обычный доступ — прежние `CheckedLoad`/`CheckedStore`. Атомарная операция — новый `Operation::AtomicRmw { kind: Add | Exchange | CompareExchange, width, operand, value, expected, dst }` (`dst` — прежнее значение памяти; флаги выводит отдельный `Integer` из `dst`, они не часть атомарной операции). Fence — новый `Operation::Fence { kind: Full | Store | Load }` (`MFENCE`/`SFENCE`/`LFENCE`). `Operation::memory_class()` возвращает `Ordinary | Atomic | Fence`. `verify` проверяет: эффект внутри инструкции; `expected` есть ровно у `CompareExchange`; ширина равна размеру операнда; временные определены и нужной ширины; `dst` свежий (`VerifyError::InvalidAtomicRmw` и прежние ошибки). Оптимизаций IR нет: ни один проход не удаляет и не сливает `Fence`/`AtomicRmw`. Регистровые эмиттеры (`emitter.rs`, `block_emitter.rs`) явно отказывают на новых эффектах (`InvalidOperation`/`UnsupportedShape`), а не пропускают их.
+- Lowering: `arm64::memory_order::lower_memory_effect(encoder, mode, &Operation, &HostOperands)`; режим — параметр `MemoryOrderMode { Interleaved, Parallel }` каждого вызова, не глобал.
+
+**Отображение IR → инструкции** (ширина `B/H/W/X` по размеру операнда; регистры подбирает вызывающий):
+
+| Эффект IR | `Interleaved` | `Parallel` |
+|---|---|---|
+| `CheckedLoad` | `LDR{B,H,W,X}` | `LDAR{B,H,W,X}` |
+| `CheckedStore` | `STR{B,H,W,X}` | `STLR{B,H,W,X}` |
+| `AtomicRmw::Add` (`LOCK ADD/INC/DEC/XADD`) | `LDADD{B,H,}` | `LDADDAL{B,H,}` |
+| `AtomicRmw::Exchange` (`XCHG` с памятью) | `SWP{B,H,}` | `SWPAL{B,H,}` |
+| `AtomicRmw::CompareExchange` (`LOCK CMPXCHG`) | `MOV dst, expected` (если регистры разные), `CAS` | то же, `CASAL` |
+| `Fence::Full` (`MFENCE`) | ничего | `DMB ISH` |
+| `Fence::Store` (`SFENCE`) | ничего | `DMB ISH` |
+| `Fence::Load` (`LFENCE`) | ничего | `DMB ISHLD` |
+
+`INC`/`DEC` — `Add` с константой `1` и `-1`; `ADD m, imm` — `Add` с константой. В режиме чередования нет ни бит порядка (в том числе у `LDADD`/`SWP`/`CAS`), ни `DMB` (тест `interleaved_mode_never_emits_an_ordering_bit_or_a_barrier`); `Fence` в этом режиме остаётся эффектом IR и выдаёт ноль слов. В параллельном режиме обычные доступы — `LDAR`/`STLR`, то есть `SeqCst` по AArch64 (RCsc), что не слабее нормы S6-32 и достаточно для цепочки G-XMC (`Acquire` у loads и `Release` у stores, S6-40, обязательство 2). Вывод для существующих программ: прежний код не меняется, потому что ни один адаптер декодера не выдаёт новые эффекты (проверено полным `cargo test -p od-jit`: 469 пройдено).
+
+**Предусловия вызывающего** (inline-эмиттера памяти, которого пока нет): адрес в host-регистре уже переведён, естественно выровнен по ширине (`LDAR`/`STLR`/LSE иначе fault; split `LOCK` идёт через helper и шлюз S6-34), права проверены, перед записью выполнены правила обязательства 1 S6-40 (поколение страницы, `committed_write`). Нужна FEAT_LSE (Apple M1 и новее; хост S6-06). Для `CompareExchange` регистр результата не может совпадать с регистром адреса или значения (`MemoryOrderError::CompareExchangeOverlap`); регистр `expected` не портится.
+
+**Проверки.** Байты: 47 слов в `tests/fixtures/arm64_memory_order.s` собраны Apple clang 21.0.0 (`-target arm64-apple-macosx15.0 -march=armv8.4-a`), прочитаны `otool -tV`/`otool -t`, сравнены с энкодером (`s6_41_memory_order_forms_match_local_apple_clang_fixture`); побочно — `s6_41_sized_loads_and_stores_scale_and_reject_bad_offsets`. Кодировки сверены с ассемблером, а не с текстом Arm ARM; номера разделов Arm ARM здесь не приводятся. Lowering: 8 тестов `arm64::memory_order::tests`, 3 теста `ir::tests::s6_41_*`, 1 тест эмиттера. Исполнение на хосте (`crates/od-host/tests/s6_41_atomic_lowering.rs`, Apple M3 Max): (а) дифференциал `od_isa::execute::run_with_cpl0_profile_set` против сгенерированного кода в обоих режимах на 11 формах (`LOCK XADD m32/m64`, `LOCK ADD m32/m64 reg`, `LOCK ADD m8 imm`, `LOCK INC m32`, `LOCK DEC m64`, `LOCK CMPXCHG m32/m64`, `XCHG m32/m64`), 96 входов на форму (края и случайные; у `CMPXCHG` половина — совпадающее сравнение), 2112 сравнений: байты операнда и охранной области (8 до, 16 после), прежнее значение, ZF и RAX у `CMPXCHG`; (б) четыре потока по 100 000 раз на `LDADDAL` W/X, `CASAL` W-цикл и `SWPAL` X — без потерянных обновлений; (в) litmus MP и SB на сгенерированном коде, 2 000 000 раундов на форму: `LDAR/STLR`, обычные `LDR/STR` с `DMB ISH`/`DMB ISHLD` из `lower_fence` — запрещённых исходов 0; контроль без барьеров (печатается, не проверяется) показал слабые исходы (MP 38, SB 65 977), то есть проверка способна заметить нарушение.
+
+**Отступление от таблицы S6-32 (решение по M1 ревью, принято).** В таблице S6-32 ([MACHINE_CONTRACT.md](MACHINE_CONTRACT.md), строка «`LOCK`-операции, `XCHG`, `compare_replace_u64`») для режима чередования записано `SeqCst` («не менялось»). Здесь в режиме чередования `LDADD`/`SWP`/`CAS` идут БЕЗ бит порядка — это отступление от этой строки. Обоснование: в режиме чередования все vCPU и все источники записи устройств исполняются на одном host-потоке ([MEMORY_MODEL.md](MEMORY_MODEL.md), строка 17), биты порядка там не наблюдаемы; план S6-32 требует отсутствия барьеров и порядка для чередования. Обязательство: привести к паритету с таблицей (биты `AL`), если появится многопоточное исполнение режима чередования (не ожидается). Тест `interleaved_mode_never_emits_an_ordering_bit_or_a_barrier` закрепляет текущее поведение и при таком изменении правится вместе с этим абзацем.
+
+**Норма fence и JIT-код (m2).** Норма S6-32 «только `std::sync::atomic::fence` (не inline-asm `DMB`)» относится к Rust-коду (хост-примитивы, интерпретатор). В сгенерированном JIT-коде действует строка «Отображение в хост: aarch64» той же нормы: `MFENCE` — `DMB ISH`, `SFENCE` — `DMB ISH`, `LFENCE` — `DMB ISHLD` (таблица выше). `DMB` в JIT-коде — не нарушение нормы Rust-кода.
+
+**Предусловие S6-41b и S6-42 (m4).** Код, собранный в режиме Interleaved, не исполняется в режиме Parallel: либо ключ кэша блоков включает `ExecutionMode`, либо кэш очищается при смене режима. Режим фиксируется до выдачи адаптеров (S6-32, шаг 2). Это предусловие допуска любых атомарных форм в блок; в S6-41 его нет, потому что ни один блок их не содержит.
+
+**Политика без FEAT_LSE (m7).** На `aarch64-apple-darwin` LSE — базовая (Apple M1 и новее). На ином aarch64-хосте перед параллельным JIT проверять `is_aarch64_feature_detected!("lse")`; без LSE параллельный JIT отказывает (остаётся интерпретатор и helper), LL/SC-вариант — отдельный срез, не часть S6-41/S6-41b.
+
+**Допуск `LOCK`-форм и флаги (M3).** Допуск `LOCK`-форм в блок требует сравнения полного набора флагов (CF/PF/AF/ZF/SF/OF) с интерпретатором — S6-41b. Сейчас сравнивается только ZF у `CMPXCHG`, и он выводится из прежнего значения теста (`s6_41_atomic_lowering.rs`, ветка `Returns::CmpxchgRax`: `zf == (old == expected & width_mask)`, где `zf` — флаг интерпретатора), то есть проверяет прежнее значение и RAX, а не JIT-флаг. JIT-код ZF у `CMPXCHG` не порождает (в IR флаги выводит отдельный `Integer`, в ARM-эмиттере этот путь не собран).
+
+**Замечания по формулировкам (nits).**
+- Тест `atomic_program` в `ir.rs` строит `Integer Compare` с `lhs = old`, `rhs = expected`; слова «`LOCK CMPXCHG`-shaped» в старом комментарии вводили в заблуждение: у x86 флаги `CMPXCHG` — от аккумулятора минус операнд памяти (`expected - old`), а не `old - expected`. Комментарий в коде исправлен; настоящая форма флагов — S6-41b (г).
+- «Единственное отображение `SeqCst`» в отчёте читать как: те же инструкции, что Rust `SeqCst` в интерпретаторе, а не доказанную единственность.
+- Litmus «plain + parallel fences» (обычные `LDR/STR` с `DMB ISH`/`DMB ISHLD`) — не производственная форма; производственная — `LDAR`/`STLR` и `DMB`, строго сильнее. Числа контроля без барьеров (MP 38, SB 65 977) — пример одного прогона, а не норма.
+
+**Что не сделано и не проверено (границы).**
+- Ни один адаптер декодера не выдаёт `AtomicRmw`/`Fence`, нет inline-эмиттера памяти (перевод адреса в host-указатель, проверка выравнивания и прав, повышение поколения, обработка fault), нет допуска форм `LOCK`/`XCHG`/`MFENCE` в блок. Формы `LOCK` остаются на пути helper и шлюза split `LOCK` S6-34 (обязательство 5 S6-40 не снято: host-атомарный lowering для выровненной формы доказан на уровне инструкций, но не подключён к блокам). Отсюда: «inline-формы — после S6-41b» в ограничении приёмки S6-42 требуют отдельного среза эмиттера (S6-41b); S6-41 даёт его примитивы.
+- Флаги `LOCK XADD`/`ADD`/`CMPXCHG` в дифференциале не сравниваются, кроме ZF у `CMPXCHG` (он выведен из прежнего значения, см. «Допуск `LOCK`-форм и флаги (M3)»): lowering их не считает (IR выводит их `Integer`), этот путь в ARM-эмиттере не собран — S6-41b (г).
+- litmus S6-19/S6-36 (`od-machine`, интерпретатор) с включённым JIT не запускались: JIT к ним не подключён (в `litmus_parallel.rs`, `parallel_run.rs`, `host_order_litmus.rs` нет обращений к `od_jit`). Это незакрытая часть пункта «Проверить» плана — S6-41b (к). Тесты MP/SB на сгенерированном коде — дополнительное доказательство, не замена.
+- Измерения только на Apple M3 Max, не на Mac mini. Слабые модели вне aarch64-apple-darwin не рассматривались.
+- В S6-06 `LDAR`/`STLR` «измерены, но не выбраны» как inline-asm вариант к Rust `SeqCst`; для сгенерированного кода Rust-атомиков нет, и `LDAR`/`STLR` — отображение `SeqCst` на AArch64. Это решение исполнителя; ревьюеру подтвердить.
+
+**Не закрыто (явный список; всё — S6-41b, `STAGE_6.md`).**
+- (а) адаптер декодера, выдающий `AtomicRmw`/`Fence`; (б) inline-эмиттер памяти по обязательствам 1 и 5 S6-40; (в) допуск `LOCK`/`XCHG`/`MFENCE` в блок.
+- (г) полный набор флагов CF/PF/AF/ZF/SF/OF в дифференциале (ZF у `CMPXCHG` JIT-кодом не порождается).
+- (д), (м) `LOCK OR/AND/BTS/BTR` — `LDSET`/`LDCLR` либо цикл на `CAS`, с тестами на байты.
+- (е) аллокатор (`allocator.rs`): `AtomicRmw` молча пропускается через `_ => {}` — явный учёт временных или явный отказ.
+- (ж) правило `verify` для `AtomicRmw`, аналогичное `CheckedStoreCommitOrder`.
+- (з) ключ кэша по `ExecutionMode` либо очистка при смене режима (предусловие, см. выше).
+- (и) поправка к инварианту (в) S6-30a «`unsafe` только в макросах `ram_storage.rs`», если inline-доступ идёт по сырому host-указателю.
+- (к) litmus S6-19/S6-36 с включённым JIT в обоих режимах.
+- (л) FEAT_LSE на не-Apple aarch64 (политика выше).

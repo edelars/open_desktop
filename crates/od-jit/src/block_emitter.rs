@@ -1531,7 +1531,9 @@ fn emit_runtime_block_inner(
                     instruction_index: active_instruction.unwrap_or(0),
                 });
             }
-            Operation::CheckedStore { .. } => {
+            Operation::CheckedStore { .. }
+            | Operation::AtomicRmw { .. }
+            | Operation::Fence { .. } => {
                 return Err(BlockEmitterError::UnsupportedShape {
                     instruction_index: active_instruction.unwrap_or(0),
                 });
@@ -2109,7 +2111,9 @@ fn validate_runtime_shape(
                     instruction_index: active.unwrap_or(0),
                 });
             }
-            Operation::CheckedStore { .. } => {
+            Operation::CheckedStore { .. }
+            | Operation::AtomicRmw { .. }
+            | Operation::Fence { .. } => {
                 return Err(BlockEmitterError::UnsupportedShape {
                     instruction_index: active.unwrap_or(0),
                 });
