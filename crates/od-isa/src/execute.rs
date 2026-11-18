@@ -2842,6 +2842,10 @@ pub struct PagedCpl0PioU8V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0ProbeV1;
 
+/// Explicit opt-in marker for firmware boot's bounded handoff instruction additions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0FirmwareBootV1;
+
 /// Explicit opt-in marker for the paged CPL0 probe with bounded CR3 writes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr3ProbeV1;
@@ -19062,6 +19066,37 @@ pub fn step_paged_probe<P: crate::PortIo>(
     )
 }
 
+/// Execute one instruction from the firmware boot-only extension of
+/// `PagedCpl0ProbeV1`. This separate entry admits the handoff's bare
+/// `MOV ECX,imm32` and `CALL rel32` forms; all other probe entry points keep
+/// their existing allowlist.
+pub fn step_paged_firmware_probe<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_probe_mode(
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        0,
+        true,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        None,
+    )
+}
+
 /// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
 /// an explicit time source for the exact bare `RDTSC` (`0F 31`, no prefixes).
 /// The source is called exactly once per retired `RDTSC`; it owns the TSC and
@@ -19730,6 +19765,42 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     cr0_mov_only: bool,
     allow_mov_cr0: bool,
     efer: u64,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+) -> PagedProbeResult<P::Error> {
+    step_paged_probe_mode(
+        user_mov,
+        user_load_only,
+        allow_stack_forms,
+        allow_cr3,
+        allow_cr0_wp,
+        cr0_mov_only,
+        allow_mov_cr0,
+        efer,
+        false,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        rdtsc,
+    )
+}
+
+fn step_paged_probe_mode<P: crate::PortIo>(
+    user_mov: bool,
+    user_load_only: bool,
+    allow_stack_forms: bool,
+    allow_cr3: bool,
+    allow_cr0_wp: bool,
+    cr0_mov_only: bool,
+    allow_mov_cr0: bool,
+    efer: u64,
+    firmware_boot_profile: bool,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     pio: &mut P,
@@ -22397,12 +22468,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // this profile. Reuse CALL's canonical-target and push semantics.
         Operation::Call { displacement }
             if base_profile
+                && (firmware_boot_profile
+                    || matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad))
                 && instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xe8
                 && instruction.length == 5
                 && instruction.operand_size == OperandSize::Qword
-                && instruction.prefixes == Prefixes::default()
-                && matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad) =>
+                && instruction.prefixes == Prefixes::default() =>
         {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));
             if !canonical(target) {
@@ -27336,20 +27408,22 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the firmware hands off a 64 KiB block size through EDX.
-        // Admit only `BA 00 00 01 00` in the base profile; writing the dword
-        // view zero-extends into RDX and leaves RFLAGS untouched.
+        // S7-04: EDX carries the fixed handoff size. Firmware boot also passes
+        // its supported handoff version in ECX. Both writes zero-extend.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xba
             && instruction.length == 5
             && instruction.operand_size == OperandSize::Dword
-            && destination == RegisterView::low(Register::Rdx, OperandSize::Dword)
-            && value == 0x0001_0000
-            && instruction.prefixes == Prefixes::default() =>
+            && instruction.prefixes == Prefixes::default()
+            && ((instruction.opcode.byte == 0xba
+                && destination == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                && value == 0x0001_0000)
+                || (firmware_boot_profile
+                    && instruction.opcode.byte == 0xb9
+                    && destination == RegisterView::low(Register::Rcx, OperandSize::Dword))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;

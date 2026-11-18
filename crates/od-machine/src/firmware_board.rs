@@ -31,7 +31,7 @@ use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
-use crate::paged_probe::run_paged_probe_2m_ram;
+use crate::paged_probe::{run_paged_firmware_probe, run_paged_probe_2m_ram};
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
@@ -2447,7 +2447,7 @@ impl LoadedFirmwareBoard {
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
-        self.run_quantum(false, instruction_budget, stop, committed_write)
+        self.run_quantum(false, false, instruction_budget, stop, committed_write)
     }
 
     /// [`Self::run`] with the 4 KiB walker (`large_ram = false`) or with the 2 MiB walk of the
@@ -2456,6 +2456,7 @@ impl LoadedFirmwareBoard {
     fn run_quantum(
         &mut self,
         large_ram: bool,
+        firmware_boot_profile: bool,
         instruction_budget: u64,
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
@@ -2486,6 +2487,19 @@ impl LoadedFirmwareBoard {
                 source
                     .as_mut()
                     .map(|source| source as &mut dyn FnMut() -> u64),
+            );
+        }
+        if firmware_boot_profile {
+            return run_paged_firmware_probe(
+                &mut self.vcpus[BOOT_VCPU_INDEX].state,
+                &mut self.bus,
+                self.page_table_root,
+                FIRMWARE_EFER,
+                context,
+                instruction_budget,
+                INTEGER_FLAGS,
+                stop,
+                committed_write,
             );
         }
         if let Some(tick) = self.rdtsc_tick.clone() {
@@ -3199,6 +3213,7 @@ impl LoadedFirmwareBoard {
         large_ram: bool,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
+        let firmware_boot_profile = !large_ram && !self.has_linux_profile();
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
@@ -3229,6 +3244,7 @@ impl LoadedFirmwareBoard {
             let uart = self.uart.clone();
             let report = self.run_quantum(
                 large_ram,
+                firmware_boot_profile,
                 remaining,
                 || {
                     uart.holding_occupied()
@@ -4368,6 +4384,30 @@ mod tests {
         assert_eq!(report.retired, 4);
         assert_eq!(report.com1, b"X");
         assert_eq!(report.virtual_ns, 4);
+    }
+
+    #[test]
+    fn run_boot_selects_the_narrow_handoff_cpu_profile() {
+        // MOV ECX,4; CALL rel32 to HLT, skipping the return-site NOP.
+        let image = test_image(&[0xb9, 4, 0, 0, 0, 0xe8, 1, 0, 0, 0, 0x90, 0xf4], &[]);
+        let mut board = load(&image);
+
+        let diagnostic = board.run(1, || false, |_| {});
+        assert_eq!(
+            diagnostic.exit,
+            PagedProbeExit::Unsupported { opcode: 0xb9 }
+        );
+        assert_eq!(diagnostic.instructions_executed, 0);
+
+        let report = board.run_boot(3).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 3);
+        assert_eq!(board.state().gpr[Register::Rcx as usize], 4);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4c);
+        assert_eq!(
+            board.state().gpr[Register::Rsp as usize],
+            FIRMWARE_BOOT_STACK_TOP - 8
+        );
     }
 
     #[test]

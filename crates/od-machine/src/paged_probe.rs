@@ -6,10 +6,11 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1,
-    PagedProbeExit as CpuProbeExit, PagedProbeRejection as CpuProbeRejection,
-    TranslationContextChange, step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_probe,
-    step_paged_probe_with_rdtsc, step_paged_stack_probe,
+    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0FirmwareBootV1, PagedCpl0ProbeV1,
+    PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
+    PagedProbeRejection as CpuProbeRejection, TranslationContextChange, step_paged_cr0_wp_probe,
+    step_paged_cr3_probe, step_paged_firmware_probe, step_paged_probe, step_paged_probe_with_rdtsc,
+    step_paged_stack_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -111,6 +112,7 @@ pub fn run_paged_probe(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -144,6 +146,7 @@ pub fn run_paged_probe_with_rdtsc(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -154,6 +157,38 @@ pub fn run_paged_probe_with_rdtsc(
         stop,
         committed_write,
         Some(source),
+    )
+}
+
+/// Run the normal firmware boot quantum with its two handoff-only CPU forms.
+/// It shares the base profile's 4 KiB tracked walker and stop/budget behavior.
+pub(crate) fn run_paged_firmware_probe(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        true,
+        state,
+        ProbeBus::Exclusive(bus),
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+        None,
     )
 }
 
@@ -173,6 +208,7 @@ pub fn run_paged_stack_probe(
 ) -> PagedProbeQuantumReport {
     run_paged_probe_inner(
         true,
+        false,
         false,
         false,
         false,
@@ -206,6 +242,7 @@ pub fn run_paged_cr3_probe(
     run_paged_probe_inner(
         false,
         true,
+        false,
         false,
         false,
         state,
@@ -244,6 +281,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         true,
         false,
         true,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         0,
@@ -280,6 +318,7 @@ pub(crate) fn run_paged_probe_2m_ram(
         false,
         false,
         true,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -310,6 +349,7 @@ pub fn run_paged_cr0_wp_probe(
         false,
         false,
         true,
+        false,
         false,
         state,
         ProbeBus::Exclusive(bus),
@@ -355,6 +395,7 @@ pub fn run_paged_probe_shared(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Shared(bus, vcpu),
         cr3,
@@ -373,6 +414,7 @@ fn run_paged_probe_inner(
     cpu_cr3_profile: bool,
     cpu_cr0_wp_profile: bool,
     large_ram_profile: bool,
+    firmware_boot_profile: bool,
     state: &mut LongModeState,
     mut bus: ProbeBus<'_>,
     cr3: u64,
@@ -545,6 +587,7 @@ fn run_paged_probe_inner(
             cpu_cr3_profile,
             cpu_cr0_wp_profile,
             large_ram_profile,
+            firmware_boot_profile,
             paging,
             instruction_rip,
             context,
@@ -763,6 +806,7 @@ struct ProbeStep {
     cpu_cr3_profile: bool,
     cpu_cr0_wp_profile: bool,
     large_ram_profile: bool,
+    firmware_boot_profile: bool,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     context: AccessContext,
@@ -821,6 +865,15 @@ impl ProbeStep {
         } else if self.stack_profile {
             step_paged_stack_probe(
                 PagedCpl0StackProbeV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+            )
+        } else if self.firmware_boot_profile {
+            step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
                 state,
                 &mut memory,
                 pio,

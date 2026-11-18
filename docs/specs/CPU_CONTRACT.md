@@ -536,6 +536,26 @@ Tests проверяют только изменение RDI/RIP, full state, ex
 
 Tests проверяют полный CPU state/return-address store всех четырех targets, flags/definedness, соседние displacement и CALL/JMP формы, CPL3/other-profile isolation, fetch fault и stack #SS/#PF atomicity, включая #GP priority перед stack access. Runner retired 26 инструкций, выполнил helper CALL на `0x200d10` и остановился на `48 89 F8` (`MOV RAX,RDI`, ISSUE-126, RIP `0x200d10`).
 
+
+#### Расширение S7-04: операнды входа прошивки
+
+`LoadedFirmwareBoard::run_boot` в режиме прошивки выбирает
+`PagedCpl0FirmwareBootV1` до выборки инструкции. К базовому списку
+этого режима добавлены две формы без префиксов длиной 5 байт.
+
+- `B9 imm32` записывает `ECX` с обнулением верхних 32 бит `RCX`.
+  Константа передаёт поддерживаемую версию handoff block из прошивки.
+- `E8 rel32` вызывает функцию по адресу следующего RIP плюс знаковое
+  смещение. CPU проверяет каноничность цели и записывает адрес возврата
+  через действующий механизм стека. RIP и RSP фиксируются после
+  успешной записи. Ошибка выборки инструкции, неканоническая цель или
+  ошибка стека завершает шаг без retirement.
+
+Обе формы сохраняют флаги и их определённость. Выбор режима
+сохраняет 4 KiB перевод адресов и существующий учёт записей.
+Обычный paged probe, остальные диагностические профили и Linux direct
+boot сохраняют прежние правила допуска.
+
 #### Расширение S7-04: exact Rust-entry/helper `SUB RSP,imm8`
 
 В base `PagedCpl0ProbeV1` допускаются только точные `48 83 EC 58` и helper `48 83 EC 38`: Primary opcode `83`, длина 4, qword, ровно REX.W `0x48`, операция SUB, destination RSP и sign-extended immediate строго `0x58` либо `0x38`. Используется существующая `arithmetic_result` семантика: RSP получает полное 64-битное значение `RSP - immediate`, шесть арифметических flags обновляются по SUB, остальные flags сохраняются, и эти шесть bits становятся defined. При входном RSP после firmware CALL `0x14fff8` форма `0x58` даёт `0x14ffa0`, а форма `0x38` — `0x14ffc0`. Это исключительно арифметика регистров: команда не читает/пишет стек, не проверяет canonicality результата и не может вызвать stack/page fault; дальнейшее обращение к стеку проверит соответствующий адрес по обычным правилам. Fault при fetch любого байта инструкции оставляет CPU неизменным. Другие destination/immediate/opcode/width/prefix forms, CPL3 и остальные paged profiles не допускаются.

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use od_isa::execute::{
-    self, Cr0Profile, Cr4Profile, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1,
-    PagedCpl0StackProbeV1, PagedProbeExit, PagedProbeRejection,
+    self, Cr0Profile, Cr4Profile, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1,
+    PagedCpl0FirmwareBootV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit,
+    PagedProbeRejection,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CpuActivity, GuestMemory, InstructionMode,
@@ -51040,5 +51041,197 @@ fn plain_dword_xadd_and_cmpxchg_stay_unsupported_in_the_paged_probe_profile() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_mov_ecx_imm32_zero_extends_and_preserves_flags() {
+    let mut memory = Memory::new(&[0xb9, 0x67, 0x45, 0x23, 0xf1]);
+    let mut cpu = state();
+    cpu.gpr[Register::Rcx as usize] = u64::MAX;
+    let before_flags = (cpu.rflags, DEFINED);
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cpu.gpr[Register::Rcx as usize], 0xf123_4567);
+    assert_eq!(cpu.rip, RIP + 5);
+    assert_eq!((cpu.rflags, result.rflags_defined), before_flags);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_call_accepts_signed_rel32_and_pushes_return_address() {
+    for (displacement, target) in [(4i32, RIP + 9), (-8i32, RIP - 3)] {
+        let mut memory = Memory::new(&[
+            0xe8,
+            displacement as u32 as u8,
+            (displacement as u32 >> 8) as u8,
+            (displacement as u32 >> 16) as u8,
+            (displacement as u32 >> 24) as u8,
+        ]);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let flags = cpu.rflags;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cpu.rip, target);
+        assert_eq!(cpu.gpr[Register::Rsp as usize], DATA + 0xff8);
+        assert_eq!(cpu.rflags, flags);
+        let pushed_at = memory.physical(DATA + 0xff8).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(memory.bytes[pushed_at..pushed_at + 8].try_into().unwrap()),
+            RIP + 5
+        );
+        assert_eq!(memory.writes, 1);
+    }
+}
+
+#[test]
+fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
+    let ring0 = context(InstructionMode::Long64, PrivilegeLevel::Ring0);
+
+    let mut fetch_memory = Memory::new(&[0xe8, 0, 0, 0, 0]);
+    fetch_memory.fail_fetch_at = Some((RIP + 4, page_fault(0x10, RIP + 4)));
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut fetch_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 4),
+        })
+    );
+    assert_eq!(cpu, before);
+    assert_eq!(fetch_memory.writes, 0);
+
+    let mut stack_memory = Memory::new(&[0xe8, 0, 0, 0, 0]);
+    stack_memory.fail_write = Some(page_fault(0x2, DATA + 0xff8));
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut stack_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA + 0xff8),
+        })
+    );
+    assert_eq!(cpu, before, "failed push must preserve RSP, RIP and flags");
+    assert_eq!(stack_memory.writes, 1);
+
+    let high_rip = 0x0000_7fff_ffff_fff0;
+    let mut canonical_memory = memory_with_code_at(&[0xe8, 0x20, 0, 0, 0], high_rip);
+    let mut cpu = state();
+    cpu.rip = high_rip;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut canonical_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert!(matches!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault { vector: 13, .. })
+    ));
+    assert_eq!(
+        cpu, before,
+        "noncanonical target must be rejected before stack write"
+    );
+    assert_eq!(canonical_memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
+    for bytes in [&[0xb9, 4, 0, 0, 0][..], &[0xe8, 0, 0, 0, 0][..]] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: bytes[0] }
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
+    for (bytes, opcode) in [
+        (&[0x40, 0xb9, 4, 0, 0, 0][..], 0xb9),
+        (&[0xb8, 8, 0, 0, 0][..], 0xb8),
+        (&[0x66, 0xe8, 0, 0, 0][..], 0xe8),
+        (&[0x48, 0xe8, 0, 0, 0, 0][..], 0xe8),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "encoding {bytes:02x?}"
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
     }
 }
