@@ -22292,6 +22292,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             -0x30
                                 | 0x0d
                                 | 0x11
+                                | 0x15
                                 | 0x1d
                                 | 0x26
                                 | 0x29

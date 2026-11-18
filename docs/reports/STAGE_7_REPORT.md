@@ -2883,6 +2883,15 @@ od-isa suites pass (2,322/1,591/126/29/6/1,279/7/15; zero doc tests), paged
 machine quantum passes (110/110), workspace all-targets offline cargo check
 passes with existing warnings, and scoped rustfmt and `git diff --check` pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+### ISSUE-496 — exact JZ rel8 +0x15
+The base `PagedCpl0ProbeV1` admits only exact short JZ displacement `+0x15`
+(`74 15`). Five focused `rust_helper_jz_rel8` tests pass, covering both ZF
+outcomes, flags and definedness, taken-target canonicality, atomic displacement
+fetch fault, neighboring encodings, CPL3 and other-profile isolation.
+The S7-04 firmware image recorded for prior steps was unavailable at
+`/private/tmp/od-fw-s7-04-issue256.bin`, so a confirming runner continuation
+could not be collected in this environment. The implementation awaits
+independent review; see [ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
 
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 
