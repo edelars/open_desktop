@@ -29970,3 +29970,13 @@ validation to the next fetch. A noncanonical taken target raises #GP(0).
 This fault and a displacement fetch fault commit no architectural state.
 The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-478 — bounded CMP R9W,1
+
+The base paged CPL0 profile admits `66 41 83 F9 01`. The operand-size
+override selects word width, REX.B selects R9W and opcode 83 sign-extends
+imm8 1. The word subtraction uses R9[15:0] and defines CF, PF, AF, ZF, SF
+and OF. RIP advances five bytes. All GPRs, other flags and their definedness
+are preserved. A fault on the final immediate fetch commits no architectural
+state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -5821,7 +5821,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-478 — S7-04: exact CMP R9W,1 frontier (`66 41 83 F9 01`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-477.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20144a`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `66 41 83 F9 01` (CMP R9W,1).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `66 41 83 F9 01` compares R9[15:0] with sign-extended imm8 1. It defines the arithmetic flags, advances RIP and preserves all GPRs.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x20144a` after 10,320 retired instructions. COM1 is empty. Bytes at the link-base shadow are `66 41 83 F9 01`.
-- **Следующий шаг:** admit the exact word CMP and cover operand width, arithmetic flags, the immediate fetch fault and profile isolation.
+- **Результат:** the runner retires 10,321 instructions and stops at RIP `0x20144f` on `0F 85 DD 00 00 00` (JNZ rel32 +0xdd, ISSUE-479). It reports `Unsupported { opcode: 133 }` with empty COM1.
+- **Проверка:** four focused tests cover operand width, arithmetic flags and definedness, the immediate fetch fault, neighboring encodings and the CPL3 MOV probe. The existing CMP R9W,AX and R8D immediate regressions and other CPL0 probe matrix pass. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-479 — S7-04: exact JNZ rel32 +0xdd frontier (`0F 85 DD 00 00 00`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-478.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x20144f`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `0F 85 DD 00 00 00` (JNZ rel32 +0xdd).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 133 }` at RIP `0x20144f` after 10,321 retired instructions. COM1 is empty. Bytes at the link-base shadow are `0F 85 DD 00 00 00`.
+- **Следующий шаг:** admit the exact near branch and cover the ZF condition, target canonicality, fault atomicity and profile isolation.
