@@ -6109,10 +6109,10 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата обнаружения:** 2026-11-18, firmware runner after ISSUE-495.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201939`.
-- **Статус:** срез принят после независимого ревью без замечаний и закоммичен (`161de07`); подтверждение продолжения runner остаётся открытым до появления образа.
+- **Статус:** CPU-profile срез ISSUE-496 принят после независимого ревью без замечаний и закоммичен (`161de07`); подтверждение продолжения S7-04 runner остаётся открытым до появления образа. Это ограничение повторного запуска ISSUE-496 не блокирует приёмку S7-03, который прошёл независимое ревью без замечаний.
 - **Суть и последствия:** the base firmware CPU profile stops on exact `74 15` (JZ rel8 +0x15).
 - **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 116 }` after 10,350 retired instructions at RIP `0x201939`. COM1 is empty. Bytes at the link-base shadow are `74 15`.
 - **Результат реализации:** только displacement `+0x15` добавлен к существующему allowlist `JZ rel8`; opcode variants, prefixes, neighboring displacements, CPL3 and other-profile isolation остаются unsupported.
-- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Runner rerun не подтверждён: указанный в отчёте образ `/private/tmp/od-fw-s7-04-issue256.bin` отсутствует в текущей среде.
+- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Только повторное подтверждение дальнейшего S7-04 runner frontier не выполнено: указанный в отчёте образ `/private/tmp/od-fw-s7-04-issue256.bin` отсутствует в текущей среде. Это внешнее ограничение артефакта, не дефект реализации и не незавершённый review S7-03.
 - **Ревью:** независимое ревью одобрило срез без замечаний; коммит `161de07` содержит реализацию, тесты и эту запись.
 - **Следующий шаг:** повторить firmware runner на образе с SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, если он доступен, и отметить фактическое продолжение исполнения.
