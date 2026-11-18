@@ -341,11 +341,28 @@ pub struct PhysicalMemory {
     /// accesses and of bulk copies, and the host fence of the guest fences. Set once, before the memory is shared (`&mut self`), so
     /// no access reads it through an atomic. The default is [`ExecutionMode::Interleaved`].
     mode: ExecutionMode,
-    /// S6-32: host fences issued by [`Self::fence`] in the parallel mode (the interleaving mode
-    /// issues none). Measurement and tests only.
+    /// The counters that are written while vCPU threads run, on cache lines of their own (S6-34
+    /// step 12): a write to one never invalidates the line that every access reads (`regions`,
+    /// `mode`).
+    counters: ColdCounters,
+}
+
+/// The counters of [`PhysicalMemory`] that are not read by an access. `repr(align(128))` puts
+/// them on their own cache lines (128 bytes covers the 64-byte lines of x86_64 and the 128-byte
+/// lines of Apple aarch64, where the adjacent-line prefetch pairs the 64-byte ones), so the
+/// atomic increments of one thread do not bounce the line of `regions` and `mode` that every other
+/// thread reads on every guest memory access. The struct is the last field.
+#[repr(align(128))]
+struct ColdCounters {
+    /// S6-32: host fences issued by [`PhysicalMemory::fence`] in the parallel mode (the
+    /// interleaving mode issues none). Measurement and tests only: it exists in the test
+    /// configuration alone, so a guest `MFENCE` of a parallel run does not increment a counter the
+    /// other vCPUs share (S6-34 step 12).
+    #[cfg(test)]
     host_fences: AtomicU64,
-    /// S6-31: locked operations refused because the operand was not naturally aligned (the
-    /// split-lock path of S6-34 does not exist yet). Counted, never executed non-atomically.
+    /// S6-31: locked operations refused because the operand was not naturally aligned and no
+    /// stop-all gate was there (the split-lock path of S6-34 step 8 runs on the vCPU threads of
+    /// the parallel runner, which carry the gate). Counted, never executed non-atomically.
     split_lock_refusals: AtomicU64,
 }
 
@@ -442,8 +459,11 @@ impl PhysicalMemory {
         Ok(Self {
             regions,
             mode: ExecutionMode::default(),
-            host_fences: AtomicU64::new(0),
-            split_lock_refusals: AtomicU64::new(0),
+            counters: ColdCounters {
+                #[cfg(test)]
+                host_fences: AtomicU64::new(0),
+                split_lock_refusals: AtomicU64::new(0),
+            },
         })
     }
 
@@ -468,7 +488,8 @@ impl PhysicalMemory {
     /// operation. Changes no guest RAM.
     pub fn fence(&self, kind: od_isa::FenceKind) {
         if self.mode == ExecutionMode::Parallel {
-            self.host_fences.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            self.counters.host_fences.fetch_add(1, Ordering::Relaxed);
             fence(match kind {
                 od_isa::FenceKind::Full => Ordering::SeqCst,
                 od_isa::FenceKind::Store => Ordering::Release,
@@ -478,8 +499,11 @@ impl PhysicalMemory {
     }
 
     /// S6-32: how many host fences [`Self::fence`] issued (always zero in the interleaving mode).
+    /// Test builds only (S6-34 step 12): a production build keeps no shared counter on the path of
+    /// a guest fence.
+    #[cfg(test)]
     pub fn host_fences_issued(&self) -> u64 {
-        self.host_fences.load(Ordering::Relaxed)
+        self.counters.host_fences.load(Ordering::Relaxed)
     }
 
     /// The generation of the RAM page holding `address` (starts at 1; raised once per committed
@@ -683,14 +707,16 @@ impl PhysicalMemory {
     /// inside one aligned 16-byte block is not implemented, and stopping all vCPUs is S6-34).
     /// The count only grows.
     pub fn split_lock_refusals(&self) -> u64 {
-        self.split_lock_refusals.load(Ordering::Relaxed)
+        self.counters.split_lock_refusals.load(Ordering::Relaxed)
     }
 
     /// S6-31: counts one refused misaligned locked operation. An adapter that refuses the operand
     /// before it translates the address (a linear address is not a physical one) calls this
     /// directly; the physical operations call [`Self::refuse_misaligned_lock`].
     pub(crate) fn count_split_lock_refusal(&self) {
-        self.split_lock_refusals.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .split_lock_refusals
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// S6-31: counts one refused misaligned locked operation and returns the matching error.
@@ -1104,6 +1130,38 @@ mod tests {
             RamLimits::new(1 << 20),
         )
         .unwrap()
+    }
+
+    /// S6-34 step 12: the counters that vCPU threads write sit on cache lines of their own, away
+    /// from `regions` and `mode`, which every access reads.
+    #[test]
+    fn the_write_counters_do_not_share_a_cache_line_with_the_fields_every_access_reads() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(align_of::<ColdCounters>(), 128);
+        // The compiler may place the aligned field anywhere: the cache lines (128 bytes, the
+        // struct itself is 128-aligned) of the counters and of each field an access reads must be
+        // disjoint.
+        let counters = offset_of!(PhysicalMemory, counters);
+        let counter_lines = counters / 128..=(counters + size_of::<ColdCounters>() - 1) / 128;
+        for (name, offset, size) in [
+            (
+                "regions",
+                offset_of!(PhysicalMemory, regions),
+                size_of::<Vec<Region>>(),
+            ),
+            (
+                "mode",
+                offset_of!(PhysicalMemory, mode),
+                size_of::<ExecutionMode>(),
+            ),
+        ] {
+            let lines = offset / 128..=(offset + size - 1) / 128;
+            assert!(
+                lines.end() < counter_lines.start() || lines.start() > counter_lines.end(),
+                "{name} (bytes {offset}..{}) shares a 128-byte line with the counters ({counters}..)",
+                offset + size
+            );
+        }
     }
 
     #[test]

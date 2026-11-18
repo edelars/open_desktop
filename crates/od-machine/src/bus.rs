@@ -679,7 +679,10 @@ pub(crate) struct MachineBusPortIo<'a> {
 /// sits in a `RefCell`. One instruction makes its accesses one after another, so the cell is never
 /// borrowed twice; if it ever is, that is a typed `Busy` error and not a panic.
 pub(crate) struct MachineBusSetStepIo<'a> {
-    devices: RefCell<&'a mut [Box<dyn BusDevice>]>,
+    devices: DeviceTable<'a>,
+    /// The gate of the split `LOCK` of the vCPU thread (S6-34 step 8); `None` outside the
+    /// parallel runner.
+    gate: Option<&'a dyn SplitLockGate>,
     ports: &'a [PortRegionBinding],
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
@@ -688,6 +691,38 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
     vcpu: usize,
 }
+
+/// How the set-step view of one instruction reaches the device table (S6-34). `Exclusive`: the
+/// caller owns the bus (`&mut MachineBus`, every interleaved path); the table is borrowed through
+/// a cell, no lock is taken. `Shared`: the caller holds only `&MachineBus` (a vCPU thread); every
+/// access takes the one device lock of the bus for the duration of that access and releases it
+/// before returning (MACHINE_CONTRACT.md, lock order, rule 3: never held across an instruction, a
+/// `HLT` or a wait).
+enum DeviceTable<'a> {
+    Exclusive(RefCell<&'a mut [Box<dyn BusDevice>]>),
+    Shared(&'a Mutex<Vec<Box<dyn BusDevice>>>),
+}
+
+impl DeviceTable<'_> {
+    /// Run `f` on the table for one access; `Err` when the exclusive cell is already borrowed.
+    fn with<R>(
+        &self,
+        f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> R,
+    ) -> Result<R, DeviceTableBusy> {
+        match self {
+            Self::Exclusive(cell) => {
+                let mut devices = cell.try_borrow_mut().map_err(|_| DeviceTableBusy)?;
+                Ok(f(&mut devices))
+            }
+            Self::Shared(lock) => {
+                let mut devices = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                Ok(f(&mut devices))
+            }
+        }
+    }
+}
+
+struct DeviceTableBusy;
 
 /// The port view of [`MachineBusSetStepIo`].
 pub(crate) struct SetStepPortIo<'a, 'b>(&'b MachineBusSetStepIo<'a>);
@@ -705,12 +740,37 @@ pub(crate) trait SetStepMmio {
         width: u8,
         operation: RamAccessOperation,
     ) -> Result<u64, crate::page_walk::MmioDispatchError>;
+
+    /// The gate of the split `LOCK` of the vCPU thread, if the view belongs to one (S6-34 step 8).
+    fn split_gate(&self) -> Option<&dyn SplitLockGate> {
+        None
+    }
 }
 
 impl<'a> MachineBusSetStepIo<'a> {
     pub(crate) fn port_io(&self) -> SetStepPortIo<'a, '_> {
         SetStepPortIo(self)
     }
+
+    /// The same view with the gate of the split `LOCK` of the vCPU thread (S6-34 step 8).
+    pub(crate) fn with_split_gate(mut self, gate: Option<&'a dyn SplitLockGate>) -> Self {
+        self.gate = gate;
+        self
+    }
+}
+
+/// The stop of every other vCPU around a split `LOCK` (S6-34 step 8, MEMORY_MODEL.md D8). The
+/// vCPU that executes a locked operand which is not naturally aligned (so that no host atomic
+/// covers it) calls [`Self::acquire`] before ANY visible effect of the instruction (before its
+/// first walk, so before an accessed or dirty bit is set) and [`Self::release`] when the
+/// operation is done. `acquire` returns when every other vCPU is quiet (stands on an instruction
+/// boundary, is asleep, or waits in its own `acquire` before any effect); it fails (`Err`, no
+/// effect, nothing to release) when that does not happen in the time allowed. When two vCPUs ask
+/// at once, one gets it and the other waits inside `acquire`, quiet, until the first has released,
+/// and then asks again: the instruction of the loser has had no effect, so it starts over.
+pub(crate) trait SplitLockGate {
+    fn acquire(&self) -> Result<(), String>;
+    fn release(&self);
 }
 
 /// The ECAM window: the PCI configuration device is the one MMIO device the set loop's own profile
@@ -733,6 +793,10 @@ const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
 impl SetStepMmio for MachineBusSetStepIo<'_> {
     fn windows(&self) -> &[crate::page_walk::MmioWindow] {
         self.windows
+    }
+
+    fn split_gate(&self) -> Option<&dyn SplitLockGate> {
+        self.gate
     }
 
     fn dispatch(
@@ -777,29 +841,27 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             offset: address.get() - binding.region_start.get(),
             width,
         };
-        let mut devices = self
-            .devices
-            .try_borrow_mut()
-            .map_err(|_| Backend("the device table is already borrowed".to_owned()))?;
-        let device = &mut devices[binding.device_index];
         let vcpu = self.vcpu;
+        let device_index = binding.device_index;
         match operation {
-            RamAccessOperation::Read { .. } => device
-                .read_from_cpu(vcpu, access)
+            RamAccessOperation::Read { .. } => self
+                .devices
+                .with(|devices| devices[device_index].read_from_cpu(vcpu, access))
+                .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|value| value & width.mask())
                 .map_err(|error| {
-                    Backend(format!(
-                        "MMIO device {} read failed: {error:?}",
-                        binding.device_index
-                    ))
+                    Backend(format!("MMIO device {device_index} read failed: {error:?}"))
                 }),
-            RamAccessOperation::Write { value, .. } => device
-                .write_from_cpu(vcpu, access, value & width.mask())
+            RamAccessOperation::Write { value, .. } => self
+                .devices
+                .with(|devices| {
+                    devices[device_index].write_from_cpu(vcpu, access, value & width.mask())
+                })
+                .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|()| 0)
                 .map_err(|error| {
                     Backend(format!(
-                        "MMIO device {} write failed: {error:?}",
-                        binding.device_index
+                        "MMIO device {device_index} write failed: {error:?}"
                     ))
                 }),
             RamAccessOperation::Fetch => Err(Backend(
@@ -817,17 +879,15 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
     }
 }
 
-impl<'a, 'b> SetStepPortIo<'a, 'b> {
-    fn devices(
+impl SetStepPortIo<'_, '_> {
+    fn with_devices<R>(
         &self,
-    ) -> Result<std::cell::RefMut<'b, &'a mut [Box<dyn BusDevice>]>, BusAccessError> {
-        self.0
-            .devices
-            .try_borrow_mut()
-            .map_err(|_| BusAccessError::Device {
-                device_index: usize::MAX,
-                source: DeviceError::Busy,
-            })
+        f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> Result<R, BusAccessError>,
+    ) -> Result<R, BusAccessError> {
+        self.0.devices.with(f).map_err(|_| BusAccessError::Device {
+            device_index: usize::MAX,
+            source: DeviceError::Busy,
+        })?
     }
 }
 
@@ -835,68 +895,65 @@ impl PortIo for SetStepPortIo<'_, '_> {
     type Error = BusAccessError;
 
     fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Byte,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Byte)
+        })
         .map(|value| value as u8)
     }
 
     fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Byte,
-            u32::from(value),
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Byte,
+                u32::from(value),
+            )
+        })
     }
 
     fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Word,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Word)
+        })
         .map(|value| value as u16)
     }
 
     fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Word,
-            u32::from(value),
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Word,
+                u32::from(value),
+            )
+        })
     }
 
     fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
-        let mut devices = self.devices()?;
-        read_port_from(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Dword,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Dword)
+        })
     }
 
     fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
-        let mut devices = self.devices()?;
-        write_port_to(
-            &mut devices,
-            self.0.ports,
-            PortAddress::new(port),
-            AccessWidth::Dword,
-            value,
-        )
+        let ports = self.0.ports;
+        self.with_devices(|devices| {
+            write_port_to(
+                devices,
+                ports,
+                PortAddress::new(port),
+                AccessWidth::Dword,
+                value,
+            )
+        })
     }
 }
 
@@ -925,11 +982,40 @@ impl MachineBus {
         (
             memory,
             MachineBusSetStepIo {
-                devices: RefCell::new(exclusive_devices(devices).as_mut_slice()),
+                devices: DeviceTable::Exclusive(RefCell::new(
+                    exclusive_devices(devices).as_mut_slice(),
+                )),
+                gate: None,
                 ports,
                 mmio,
                 mmio_lens,
                 windows: if *apic_mmio_windows {
+                    &SET_STEP_APIC_WINDOWS
+                } else {
+                    &SET_STEP_WINDOWS
+                },
+                vcpu,
+            },
+        )
+    }
+
+    /// [`Self::split_for_set_step_of_vcpu`] for a vCPU thread that holds only `&MachineBus`
+    /// (S6-34): the memory is the shared reference, and the MMIO dispatch and the port view of the
+    /// returned value take the one device lock for each access and release it before they
+    /// return. Nothing else of the bus is mutated.
+    pub(crate) fn split_for_set_step_shared(
+        &self,
+        vcpu: usize,
+    ) -> (&PhysicalMemory, MachineBusSetStepIo<'_>) {
+        (
+            &self.memory,
+            MachineBusSetStepIo {
+                devices: DeviceTable::Shared(&self.devices),
+                gate: None,
+                ports: &self.ports,
+                mmio: &self.mmio,
+                mmio_lens: &self.mmio_lens,
+                windows: if self.apic_mmio_windows {
                     &SET_STEP_APIC_WINDOWS
                 } else {
                     &SET_STEP_WINDOWS

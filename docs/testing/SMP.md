@@ -172,7 +172,7 @@ The following test budgets are deliberately not invented before their harnesses 
 | Task | Quantity still to calibrate | Task cannot pass until |
 |---|---|---|
 | S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
-| S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | S6-34 records repetitions, timeout, and race-window coverage from its test harness. |
+| S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | Recorded in S6-34 (implemented, awaiting review): repetitions, timeouts and race-window coverage are in the table of "S6-34 — параллельный режим" below and in the S6-34 report. |
 | S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | S6-35 records an exact matrix and expected runtime before parallel save/load acceptance. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
 
@@ -250,6 +250,41 @@ OD_S6_SMP_SEEDS=0..=9999 OD_S6_SMP_SCENARIO=shootdown OD_S6_SMP_SEEDS_OUT=docs/r
 ```
 
 **Seed ranges (scenario `shootdown`, N=2).** CI: seeds `0..=63` through the CLI (`the_shootdown_scenario_ends_ok_under_every_seed_and_leaves_the_cells_of_the_manifest`) and quanta 1, 2, 7, 100, 100000 and seeds 0..16 through the library. Proof: seeds `0..=9999` in a release build, `docs/reports/data/stage6/s6-17-smp-probe-shootdown-seeds-0-9999.json`: 10 000 runs, 152.6 seconds (15.3 ms per run), one distinct transcript, 31 distinct turn counts (40..70), 459 distinct pairs of retired counts, image SHA-256 `22e60a47...b0513`. As in v2, the expected transcript and cells come from the protocol and the SDM by hand; there is no independent oracle of the interleaving.
+
+### S6-34 — параллельный режим: потоки vCPU, kick, остановка
+
+Параллельный режим (один host-поток на vCPU, [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-34--потоки-vcpu-kick-и-остановка)) не детерминирован: seed, кванты и записанное расписание ему не нужны, и результат прогона не равен функции аргументов. Поэтому проверяется результат гостя и инварианты, а не порядок; каждый тест повторяется много раз, каждое ожидание ограничено по времени (зависание или потеря пробуждения — падение теста с причиной, а не зависание), а чувствительность каждой проверки показана заменой кода на неверный (от противного; запись в [контракте](../specs/MACHINE_CONTRACT.md#s6-34--потоки-vcpu-kick-и-остановка) и в отчёте).
+
+```
+cargo test -p od-machine --offline --lib parallel_run -- --test-threads=1      # потоки, kick, остановка, шлюз split LOCK, приёмник пробуждения
+cargo test -p od-machine --offline --lib -- fetch_translation_cache pte_rewritten set_step_view   # поколения кеша, межпоточный обход, вид набора CPL0 на &MachineBus
+cargo test -p od-machine --offline --test stage6_smp_probe parallel            # probe v2/v3 на потоках: все сценарии x кванты 1, 7, 100, 1024
+cargo test -p od-runner --offline --test stage6_smp_probe_cli parallel         # CLI --parallel
+od-runner --stage6-smp-probe work/stage6/smp_probe/probe.bin --nonce TOKEN --vcpus 2 --parallel --quantum 100 [--timeout-s 120]
+# длинная форма (release, `#[ignore]`): probe (exchange и shootdown, кванты по кругу), остановка посреди обмена, пробуждение, litmus split LOCK
+OD_S6_PAR_RUNS=2000 cargo test --release -p od-machine --offline --test stage6_smp_probe -- --ignored parallel_probe_many_runs --nocapture
+OD_S6_STOP_RUNS=1000 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::stop_in_the_middle_many_runs --nocapture
+OD_S6_WAKE_ROUNDS=50000 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::wake_up_many_rounds --nocapture
+OD_S6_LITMUS_RUNS=200 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::split_lock_litmus_many_runs --nocapture
+```
+
+Что и сколько раз (значения записаны в отчёте S6-34, раздел «Тесты»; пределы: ожидание конца прогона 60 с, остановка 5–10 с, шлюз split `LOCK` 20 с, тайм-аут теста остановки 60 мс):
+
+| Проверка | Повторы | Что должно быть |
+|---|---|---|
+| probe S6-16 на потоках (`normal`, `exchange`, `resipi`, `nmi`, `shootdown`) | 4 кванта x 6 раундов x 5 сценариев по умолчанию (`OD_S6_PAR_RUNS` меняет число раундов); длинная — 2000 пар `exchange`+`shootdown` | транскрипт и ячейки из манифеста сборщика, INIT/SIPI по одному, оба vCPU `Halted`, IRR/ISR всех LAPIC пусты |
+| обмен IPI на фикстуре машины (2 vCPU) | 6 квантов x 25 | оба счётчика обработчиков равны числу раундов, LAPIC пусты, потоки соединены |
+| остановка посреди обмена IPI (`stopping_in_the_middle_of_an_ipi_exchange_and_resuming_ends_right`) | 100, квант 1, порог остановки 40…4000 retired всех vCPU; не меньше половины остановок попадает внутрь обмена | счётчики инструкций, вызовы, ячейки и часы не растут при остановке (5 мс), после `resume` обмен кончается верно |
+| потерянное пробуждение | (а) `a_wake_up_posted_around_the_sleep_is_never_lost`: 3000 IPI спящему vCPU, задержка 0…6000 витков между счётчиком обработчика и следующей постановкой (сканирует путь от `IRETQ` до `park`); (б) `a_wake_up_posted_while_the_vcpu_is_between_its_look_and_its_park_is_never_lost`: 500 раундов, окно «просмотр LAPIC — `park`» удерживается намеренно (тестовая точка `pre_sleep`), IPI ставится внутри окна; BSP занят (`jmp .`), иначе арбитр простоя лечит потерю | каждый IPI обработан (счётчик точен), ожидание каждого ограничено 20 с; от противного: kick без флага и сброс флага после просмотра роняют тесты |
+| IPI спящему остановленному vCPU | 50 | до `resume` ни вызова, ни шага, ни часов, вектор в IRR; после — обработан и снят |
+| тайм-аут остановки | 1 (+ повтор остановки) | ошибка называет vCPU, запрос снят, вторая остановка проходит |
+| остановка спящих | 1 | подтверждение за < 1 с, оба `Asleep(Halted)`, вызовов нет за 100 мс сна |
+| состояние и RAM остановленного | 300 остановок | регистр и память согласованы (разность 0 или 1), счётчик не идёт назад |
+| конец прогона, ошибка, паника | 1 каждый | первая причина, все потоки соединены (`threads_started == threads_exited`) |
+| litmus-счётчик с `LOCK INC` | выровненный: 2 и 4 vCPU x 5 x 1500; split (через границу строки/страницы, 2 МиБ лист и два кадра): 2 и 4 vCPU x 5 x 400; смешанный (split на одних vCPU и выровненный `LOCK INC` на общих байтах у других): 2 и 4 vCPU x 5 x 300, оба режима таблиц | итог точен; `split_locks` каждого vCPU = числу операций; в гонке за шлюз проигрывает кто-то (`split_losses > 0`) |
+| кеш перевода | 20 000 переписываний PTE другим потоком | ни одного ответа старее завершённой записи |
+
+Окно гонок: тест остановки сам считает, сколько остановок попало внутрь обмена (порог ≥ 50 %); тест пробуждения заменяет «случайные попадания» сканированием окна задержкой; тест шлюза `simultaneous_split_lock_requests_have_a_loser_and_lose_nothing` проверяет, что проигравшие действительно были.
 
 ### S6-19 — litmus в режиме чередования
 

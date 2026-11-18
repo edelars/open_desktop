@@ -86,11 +86,49 @@ pub(crate) struct PendingStartup {
     pub sipi: Option<u8>,
 }
 
+/// The wake sink of the vCPU threads (S6-34): called with the index of a Local APIC every time a
+/// request is posted to it (a Fixed or timer vector in IRR, an INIT, a SIPI, an NMI), so that the
+/// thread of that vCPU, if it sleeps (`HLT`, waiting for SIPI), looks at its APIC again. It is
+/// called under the APIC lock and must take no lock of its own that is above the APIC (the sink of
+/// the thread runner sets an atomic flag and unparks a thread: nothing else). `None` in the
+/// interleaved mode and whenever no thread runner is active. Not part of the state of the device:
+/// it is neither compared nor in a snapshot, and a restore keeps the one the pair has.
+#[derive(Clone, Default)]
+pub(crate) struct WakeSink(pub(crate) Option<std::sync::Arc<dyn Fn(usize) + Send + Sync>>);
+
+impl std::fmt::Debug for WakeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "WakeSink(set)"
+        } else {
+            "WakeSink(none)"
+        })
+    }
+}
+
+impl PartialEq for WakeSink {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WakeSink {}
+
+impl WakeSink {
+    fn notify(&self, cpu: usize) {
+        if let Some(sink) = &self.0 {
+            sink(cpu);
+        }
+    }
+}
+
 /// All APIC state of the board: one [`CpuApic`] per vCPU (index = APIC ID) and the IOAPIC route.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct PairState {
     pub cpus: Vec<CpuApic>,
     pub route: Route,
+    /// The wake sink of the vCPU threads (see [`WakeSink`]).
+    pub wake: WakeSink,
 }
 
 impl Default for PairState {
@@ -213,6 +251,7 @@ impl PairState {
         Self {
             cpus,
             route: Route::default(),
+            wake: WakeSink::default(),
         }
     }
 
@@ -308,6 +347,7 @@ impl PairState {
         }
         local.pending_init = true;
         local.pending_sipi = None;
+        self.wake.notify(cpu);
         Ok(())
     }
 
@@ -319,6 +359,7 @@ impl PairState {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         local.pending_sipi.get_or_insert(vector);
+        self.wake.notify(cpu);
         Ok(())
     }
 
@@ -335,6 +376,7 @@ impl PairState {
         }
         for &cpu in targets {
             self.cpus[cpu].local.pending_nmi = true;
+            self.wake.notify(cpu);
         }
         Ok(())
     }
@@ -429,6 +471,7 @@ impl PairState {
         let local = &mut self.cpus[cpu].local;
         local.irr[i] |= bit;
         local.tmr[i] &= !bit;
+        self.wake.notify(cpu);
     }
     pub fn edge(&mut self, cpu: usize, vector: u8) -> Result<(), DeviceError> {
         if self.edge_refused(cpu, vector) {
@@ -463,6 +506,7 @@ impl PairState {
         local.irr[i] |= bit;
         local.tmr[i] |= bit;
         self.set_level_remote_irr(pin, true);
+        self.wake.notify(cpu);
         Ok(())
     }
     pub fn set_line(&mut self, high: bool) -> Result<(), DeviceError> {

@@ -180,6 +180,56 @@ fn a_fixed_quantum_run_reports_every_field_of_the_exchange() {
     assert!(x["error"].is_null());
 }
 
+/// S6-34: `--parallel` runs the same guest on one host thread per vCPU. The JSON carries the
+/// mode, the counters of the threads and the same cells; the transcript and the cells are the
+/// manifest's every time (the interleaving of the threads is not an input, so only the result of
+/// the guest is compared, over several runs and quanta). The interleaving mode is not touched: its
+/// JSON has no `mode` field.
+#[test]
+fn the_parallel_mode_runs_the_probe_on_threads_and_gives_the_manifest_result_every_time() {
+    let built = build("parallel", &["--scenario", "exchange"]);
+    for quantum in ["1", "7", "1024"] {
+        for _ in 0..3 {
+            let out = run(&built.image, &["--parallel", "--quantum", quantum]);
+            assert!(out.status.success(), "{}", json(&out));
+            let x = json(&out);
+            assert_eq!(x["mode"], "parallel");
+            assert_eq!(x["status"], "guest_idle");
+            assert_eq!(x["exit"], "all_idle");
+            assert_eq!(x["quantum"].as_u64().unwrap().to_string(), quantum);
+            assert_eq!(x["com1_text"].as_str().unwrap(), built.expected(2));
+            assert_eq!(x["activity"], serde_json::json!(["Halted", "Halted"]));
+            assert_eq!(x["lapic_vectors"], serde_json::json!([[], []]));
+            let expected = &built.manifest["expected"]["n2"];
+            assert_eq!(
+                numbers(&x["init_applied"]),
+                [0, expected["ap_init_applied"].as_u64().unwrap()]
+            );
+            assert_eq!(
+                numbers(&x["started"]),
+                [0, expected["ap_started"].as_u64().unwrap()]
+            );
+            assert_eq!(numbers(&x["calls"]).len(), 2);
+            assert!(numbers(&x["calls"]).iter().all(|&n| n > 0));
+            check_cells(&built, &x);
+        }
+    }
+    // The default mode of the CLI is still the scheduler: no `mode` in its JSON.
+    let out = run(&built.image, &["--quantum", "1024"]);
+    assert!(json(&out).get("mode").is_none());
+    // The options of the scheduler that mean nothing to threads are refused.
+    let refused: [&[&str]; 4] = [
+        &["--parallel", "--seed", "1"],
+        &["--parallel", "--schedule", "0:1"],
+        &["--parallel", "--record-schedule"],
+        &["--timeout-s", "5", "--quantum", "3"],
+    ];
+    for extra in refused {
+        let out = run(&built.image, extra);
+        assert_eq!(out.status.code(), Some(3), "{extra:?}: {}", json(&out));
+    }
+}
+
 #[test]
 fn an_explicit_schedule_replays_a_recorded_run_and_ends_with_schedule_end() {
     let built = build("schedule", &["--scenario", "exchange"]);

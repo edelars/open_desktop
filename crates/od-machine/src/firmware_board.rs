@@ -1233,6 +1233,109 @@ pub struct LoadedFirmwareBoard {
     suppress_rdtsc_tick: bool,
 }
 
+/// The NMI half of a vCPU boundary (see [`LoadedFirmwareBoard::deliver_pending_nmi`]) on what it
+/// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the board's page-table root.
+/// A vCPU thread of the parallel mode (S6-34) calls it with the shared reference to the RAM.
+pub(crate) fn deliver_pending_nmi_of(
+    apic: &LocalApicHandle,
+    vcpu: &mut Vcpu,
+    memory: &crate::PhysicalMemory,
+    page_table_root: u64,
+) -> Result<NmiBoundary, FirmwareBoardError> {
+    use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
+    use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
+    if !apic.pending_nmi() {
+        return Ok(NmiBoundary::NoPending);
+    }
+    // Holds first, only for what the architecture itself holds back: NMI blocking, and an
+    // activity that takes no NMI (`Shutdown`, `WaitForSipi`; an application processor that
+    // waits for SIPI has no paging to deliver through and must not be an error). A state the
+    // board does not model (activity `None`) is not a hold but an error, before any change.
+    if vcpu.state.nmi_blocked {
+        return Ok(NmiBoundary::Held);
+    }
+    match vcpu.state.activity {
+        Some(CpuActivity::Running | CpuActivity::Halted) => {}
+        Some(CpuActivity::Shutdown | CpuActivity::WaitForSipi) => {
+            return Ok(NmiBoundary::Held);
+        }
+        None => {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: vCPU activity not modelled",
+            ));
+        }
+    }
+    // A started application processor (or one reset by INIT) holds its state in `legacy`
+    // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
+    // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
+    // modelled (item 6(d) of S6-16: an error).
+    if vcpu.legacy.is_some() {
+        return Err(FirmwareBoardError::Config(
+            "deliver_pending_nmi: NMI in real mode not modelled",
+        ));
+    }
+    match vcpu.state.sti_shadow {
+        Some(od_isa::StiShadow::Clear) => {}
+        Some(od_isa::StiShadow::Blocking) => return Ok(NmiBoundary::Held),
+        None => {
+            return Err(FirmwareBoardError::Config(
+                "deliver_pending_nmi: STI shadow not modelled",
+            ));
+        }
+    }
+    // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
+    // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
+    // modelled CR3 uses the board's `page_table_root`.
+    let paging_root = vcpu.state.cr3.unwrap_or(page_table_root);
+    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+        .map_err(|_| FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU"))?;
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
+            PrivilegeLevel::Ring3
+        } else {
+            PrivilegeLevel::Ring0
+        },
+        origin: AccessOrigin::Explicit,
+    };
+    let failure = |vcpu: &Vcpu, failure: String| FirmwareBoardError::ExternalInterruptDelivery {
+        vector: od_isa::NMI_VECTOR,
+        failure,
+        rip: vcpu.state.rip,
+        cs_selector: vcpu.state.cs_selector,
+    };
+    match deliver_nmi_at_boundary(&mut vcpu.state, memory, &paging, context) {
+        Delivery::Delivered { .. } => {
+            apic.take_nmi();
+            Ok(NmiBoundary::Delivered)
+        }
+        // The holds above already decided these; kept as holds, never as drops.
+        Delivery::Refused(Refusal::NmiBlocked | Refusal::StiShadowActive) => Ok(NmiBoundary::Held),
+        other => Err(failure(vcpu, format!("{other:?}"))),
+    }
+}
+
+/// What the vCPU threads of the parallel mode need of a board (S6-34), split off its fields by
+/// [`LoadedFirmwareBoard::thread_parts`]: the bus by shared reference (RAM and the one device lock),
+/// every vCPU by exclusive reference (each thread owns one), the Local APICs, the devices the
+/// quantum polls, the interrupt source of the board (the boot processor's), the clock owner and the
+/// COM1 log.
+pub(crate) struct ThreadParts<'a> {
+    pub(crate) bus: &'a MachineBus,
+    pub(crate) vcpus: &'a mut [Vcpu],
+    pub(crate) lapic: LocalApicHandle,
+    pub(crate) uart: Uart16550Handle,
+    pub(crate) acpi_pm: Option<AcpiPmHandle>,
+    pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
+    pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
+    pub(crate) irq_source: &'a mut dyn BoardIrqSource,
+    pub(crate) owner: &'a mut ClockOwner,
+    pub(crate) com1: &'a mut Vec<u8>,
+    /// The board's page-table root (the walk root of a vCPU that has no CR3 of its own).
+    pub(crate) page_table_root: u64,
+}
+
 impl LoadedFirmwareBoard {
     /// S6-32: the one execution-mode switch of the machine (see [`crate::ExecutionMode`]); it is
     /// stored in the board's physical memory and the interpreter does not know it. The default is
@@ -1247,6 +1350,46 @@ impl LoadedFirmwareBoard {
     /// S6-32: the execution mode of the board.
     pub fn execution_mode(&self) -> crate::ExecutionMode {
         self.bus.execution_mode()
+    }
+
+    /// S6-34: split the board for the vCPU threads of the parallel mode. Refused (`Config`) when
+    /// the board is not in [`crate::ExecutionMode::Parallel`], has no clock owner, or has one of the
+    /// diagnostic hooks that read the COM1 stream inside the pump (`console_context_parser`,
+    /// `uart_output_context`: they sample per byte on one thread). Everything but the vCPUs, the
+    /// clock owner, the interrupt source and the log is shared.
+    pub(crate) fn thread_parts(&mut self) -> Result<ThreadParts<'_>, FirmwareBoardError> {
+        if self.bus.execution_mode() != crate::ExecutionMode::Parallel {
+            return Err(FirmwareBoardError::Config(
+                "thread_parts: the board is not in the parallel execution mode",
+            ));
+        }
+        if self.console_context_parser.is_some() || self.uart_output_context.is_some() {
+            return Err(FirmwareBoardError::Config(
+                "thread_parts: the console context hooks are single-thread diagnostics",
+            ));
+        }
+        let owner = match &mut self.clock_driver {
+            BoardClock::Owned(owner) => owner,
+            BoardClock::Standalone => {
+                return Err(FirmwareBoardError::Config(
+                    "thread_parts: the board has no clock owner (enable_clock_owner)",
+                ));
+            }
+        };
+        Ok(ThreadParts {
+            bus: &self.bus,
+            vcpus: &mut self.vcpus,
+            lapic: self.lapic.clone(),
+            uart: self.uart.clone(),
+            acpi_pm: self.acpi_pm.clone(),
+            pit: self.pit.clone(),
+            uart_irq_source: self.uart_irq_source.as_ref(),
+            uart_ioapic_source: self.uart_ioapic_source.as_ref(),
+            irq_source: &mut *self.irq_source,
+            owner,
+            com1: &mut self.com1_log,
+            page_table_root: self.page_table_root,
+        })
     }
 
     pub fn state(&self) -> &LongModeState {
@@ -1401,86 +1544,16 @@ impl LoadedFirmwareBoard {
         &mut self,
         index: usize,
     ) -> Result<NmiBoundary, FirmwareBoardError> {
-        use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
-        use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
         const NO_VCPU: FirmwareBoardError =
             FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
         let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
         let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
-        if !apic.pending_nmi() {
-            return Ok(NmiBoundary::NoPending);
-        }
-        // Holds first, only for what the architecture itself holds back: NMI blocking, and an
-        // activity that takes no NMI (`Shutdown`, `WaitForSipi`; an application processor that
-        // waits for SIPI has no paging to deliver through and must not be an error). A state the
-        // board does not model (activity `None`) is not a hold but an error, before any change.
-        if vcpu.state.nmi_blocked {
-            return Ok(NmiBoundary::Held);
-        }
-        match vcpu.state.activity {
-            Some(CpuActivity::Running | CpuActivity::Halted) => {}
-            Some(CpuActivity::Shutdown | CpuActivity::WaitForSipi) => {
-                return Ok(NmiBoundary::Held);
-            }
-            None => {
-                return Err(FirmwareBoardError::Config(
-                    "deliver_pending_nmi: vCPU activity not modelled",
-                ));
-            }
-        }
-        // A started application processor (or one reset by INIT) holds its state in `legacy`
-        // until it enters long mode; the long-mode `state` is not rewritten from it, so delivering
-        // through the long-mode IDT would be wrong. NMI delivery in real and protected mode is not
-        // modelled (item 6(d) of S6-16: an error).
-        if vcpu.legacy.is_some() {
-            return Err(FirmwareBoardError::Config(
-                "deliver_pending_nmi: NMI in real mode not modelled",
-            ));
-        }
-        match vcpu.state.sti_shadow {
-            Some(od_isa::StiShadow::Clear) => {}
-            Some(od_isa::StiShadow::Blocking) => return Ok(NmiBoundary::Held),
-            None => {
-                return Err(FirmwareBoardError::Config(
-                    "deliver_pending_nmi: STI shadow not modelled",
-                ));
-            }
-        }
-        // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
-        // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
-        // modelled CR3 uses the board's `page_table_root`.
-        let paging_root = vcpu.state.cr3.unwrap_or(self.page_table_root);
-        let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
-            .map_err(|_| {
-            FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU")
-        })?;
-        let context = AccessContext {
-            mode: InstructionMode::Long64,
-            privilege: if vcpu.state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
-                PrivilegeLevel::Ring3
-            } else {
-                PrivilegeLevel::Ring0
-            },
-            origin: AccessOrigin::Explicit,
-        };
-        let failure =
-            |vcpu: &Vcpu, failure: String| FirmwareBoardError::ExternalInterruptDelivery {
-                vector: od_isa::NMI_VECTOR,
-                failure,
-                rip: vcpu.state.rip,
-                cs_selector: vcpu.state.cs_selector,
-            };
-        match deliver_nmi_at_boundary(&mut vcpu.state, &mut self.bus, &paging, context) {
-            Delivery::Delivered { .. } => {
-                apic.take_nmi();
-                Ok(NmiBoundary::Delivered)
-            }
-            // The holds above already decided these; kept as holds, never as drops.
-            Delivery::Refused(Refusal::NmiBlocked | Refusal::StiShadowActive) => {
-                Ok(NmiBoundary::Held)
-            }
-            other => Err(failure(vcpu, format!("{other:?}"))),
-        }
+        deliver_pending_nmi_of(
+            &apic,
+            vcpu,
+            self.bus.physical_memory(),
+            self.page_table_root,
+        )
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {

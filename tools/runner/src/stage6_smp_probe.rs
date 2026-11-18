@@ -4,7 +4,16 @@
 //! ```text
 //! od-runner --stage6-smp-probe IMAGE --nonce TOKEN [--vcpus N] [--scenario NAME]
 //!           [--quantum Q | --seed S | --schedule CPU:STEPS,...] [--budget B] [--record-schedule]
+//! od-runner --stage6-smp-probe IMAGE --nonce TOKEN --parallel [--vcpus N] [--quantum Q]
+//!           [--budget B] [--timeout-s N]
 //! ```
+//!
+//! `--parallel` (S6-34) runs the same guest in the parallel mode instead of the interleaving
+//! scheduler: one host thread per vCPU over the shared machine, `Q` steps per call of the
+//! interpreter loop (default 1024), `--timeout-s` seconds (default 120) before the run is ended
+//! and reported as `timeout`. The interleaving mode stays the default. The result is not a
+//! function of the arguments (the threads race: the schedule is not recorded and `--seed`,
+//! `--schedule` and `--record-schedule` are refused); what is checked is the result of the guest.
 //!
 //! `IMAGE` is `probe.bin` of `tools/build/build_stage6_smp_probe.py`. The scenario is chosen when
 //! the image is built; `--scenario` only declares which one the caller expects, and it is checked
@@ -25,8 +34,8 @@ use od_machine::{
     STAGE6_SMP_PROBE_FLAG_GPA, STAGE6_SMP_PROBE_IMAGE_BYTES, STAGE6_SMP_PROBE_LOCK_GPA,
     STAGE6_SMP_PROBE_NMI_GPA, STAGE6_SMP_PROBE_SD_ACK_GPA, STAGE6_SMP_PROBE_SD_POST_GPA,
     STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA, STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA, Stage6SmpProbe,
-    Stage6SmpProbeCpu, Stage6SmpProbeFinish, Stage6SmpProbeQuantum, Stage6SmpProbeRunError,
-    load_stage6_smp_probe,
+    Stage6SmpProbeCpu, Stage6SmpProbeFinish, Stage6SmpProbeParallelFinish, Stage6SmpProbeQuantum,
+    Stage6SmpProbeRunError, load_stage6_smp_probe,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -60,6 +69,8 @@ struct Options {
     quantum: Stage6SmpProbeQuantum,
     budget: u64,
     record_schedule: bool,
+    parallel: bool,
+    timeout_s: u64,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -109,6 +120,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut quantum: Option<Stage6SmpProbeQuantum> = None;
     let mut budget = None;
     let mut record_schedule = false;
+    let mut parallel = false;
+    let mut timeout_s = None;
     let mut index = 0;
     let set_quantum = |slot: &mut Option<Stage6SmpProbeQuantum>, value: Stage6SmpProbeQuantum| {
         if slot.replace(value).is_some() {
@@ -121,6 +134,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         let option = args[index].as_str();
         if option == "--record-schedule" {
             record_schedule = true;
+            index += 1;
+            continue;
+        }
+        if option == "--parallel" {
+            parallel = true;
             index += 1;
             continue;
         }
@@ -166,12 +184,33 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 budget = Some(parsed);
             }
-            "--vcpus" | "--nonce" | "--scenario" | "--budget" => {
+            "--timeout-s" if timeout_s.is_none() => {
+                let parsed = parse_number(value)?;
+                if parsed == 0 || parsed > 3600 {
+                    return Err("--timeout-s must be between 1 and 3600".into());
+                }
+                timeout_s = Some(parsed);
+            }
+            "--vcpus" | "--nonce" | "--scenario" | "--budget" | "--timeout-s" => {
                 return Err(format!("{option} may be specified only once"));
             }
             other => return Err(format!("unexpected option '{other}'")),
         }
         index += 2;
+    }
+    if parallel
+        && (record_schedule
+            || matches!(
+                quantum,
+                Some(Stage6SmpProbeQuantum::Seeded(_) | Stage6SmpProbeQuantum::Schedule(_))
+            ))
+    {
+        return Err(
+            "--parallel takes --quantum only (no --seed, --schedule, --record-schedule)".into(),
+        );
+    }
+    if !parallel && timeout_s.is_some() {
+        return Err("--timeout-s needs --parallel".into());
     }
     Ok(Options {
         path: path.ok_or_else(|| "--stage6-smp-probe IMAGE is required".to_string())?,
@@ -181,6 +220,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         quantum: quantum.unwrap_or(Stage6SmpProbeQuantum::Fixed(DEFAULT_QUANTUM)),
         budget: budget.unwrap_or(DEFAULT_BUDGET),
         record_schedule,
+        parallel,
+        timeout_s: timeout_s.unwrap_or(120),
     })
 }
 
@@ -281,6 +322,9 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
                 EXIT_LOADER,
             )
         })?;
+    if options.parallel {
+        return run_parallel(probe, &options, &image, scenario);
+    }
     let outcome = if options.record_schedule {
         probe.run_recorded(options.quantum.clone(), options.budget)
     } else {
@@ -384,6 +428,110 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         }
     }
     if status == "guest_idle" || status == "schedule_end" {
+        Ok((result, 0))
+    } else {
+        Err((result, EXIT_GUEST))
+    }
+}
+
+/// The parallel mode (S6-34): the same cells and vectors as the scheduler's result, the counters
+/// the threads keep (calls of the interpreter loop, sleeps, split `LOCK` operations), and the reason
+/// the run ended.
+fn run_parallel(
+    mut probe: Stage6SmpProbe,
+    options: &Options,
+    image: &[u8],
+    scenario: Option<String>,
+) -> Result<(Value, u8), (Value, u8)> {
+    let steps = match options.quantum {
+        Stage6SmpProbeQuantum::Fixed(steps) => steps,
+        _ => unreachable!("checked in parse_args"),
+    };
+    let report = match probe.run_parallel(
+        steps,
+        options.budget,
+        std::time::Duration::from_secs(options.timeout_s),
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            return Err((
+                failure("scheduler_error", "parallel", format!("{error:?}")),
+                EXIT_GUEST,
+            ));
+        }
+    };
+    let (status, exit, error) = match &report.finished {
+        Stage6SmpProbeParallelFinish::AllIdle => ("guest_idle", "all_idle", Value::Null),
+        Stage6SmpProbeParallelFinish::BudgetExhausted => ("work_limit", "budget", Value::Null),
+        Stage6SmpProbeParallelFinish::Timeout => ("work_limit", "timeout", Value::Null),
+        Stage6SmpProbeParallelFinish::Error { cpu, error } => (
+            "guest_error",
+            "board_error",
+            json!({"kind": "board_error", "cpu": cpu, "detail": error}),
+        ),
+        Stage6SmpProbeParallelFinish::Panicked { cpu } => (
+            "guest_error",
+            "panic",
+            json!({"kind": "panic", "cpu": cpu, "detail": "the thread of the vCPU panicked"}),
+        ),
+    };
+    let cells = json!({
+        "lock_entered": cell(&mut probe, STAGE6_SMP_PROBE_LOCK_GPA),
+        "flag_ap_up": cell(&mut probe, STAGE6_SMP_PROBE_FLAG_GPA),
+        "start_count": cell(&mut probe, STAGE6_SMP_PROBE_COUNT_GPA),
+        "ap_rx": cell(&mut probe, STAGE6_SMP_PROBE_AP_RX_GPA),
+        "bsp_rx": cell(&mut probe, STAGE6_SMP_PROBE_BSP_RX_GPA),
+        "nmi_cell": cell(&mut probe, STAGE6_SMP_PROBE_NMI_GPA),
+        "sd_ack": cell(&mut probe, STAGE6_SMP_PROBE_SD_ACK_GPA),
+        "sd_post": cell(&mut probe, STAGE6_SMP_PROBE_SD_POST_GPA),
+        "sd_seen_handler": cell(&mut probe, STAGE6_SMP_PROBE_SD_SEEN_HANDLER_GPA),
+        "sd_seen_main": cell(&mut probe, STAGE6_SMP_PROBE_SD_SEEN_MAIN_GPA),
+    });
+    let lapic_vectors: Vec<Value> = (0..options.vcpus)
+        .map(|cpu| {
+            Value::Array(
+                probe
+                    .pending_vectors(cpu)
+                    .into_iter()
+                    .map(|(vector, irr, isr)| json!({"vector": vector, "irr": irr, "isr": isr}))
+                    .collect(),
+            )
+        })
+        .collect();
+    let cpus = &report.cpus;
+    let result = json!({
+        "schema_version": 1,
+        "profile": PROFILE,
+        "status": status,
+        "exit": exit,
+        "mode": "parallel",
+        "scenario": scenario,
+        "vcpus": options.vcpus,
+        "nonce": options.nonce,
+        "image": {"bytes": image.len(), "sha256": sha256_hex(image)},
+        "quantum": steps,
+        "budget": options.budget,
+        "timeout_s": options.timeout_s,
+        "retired": cpus.iter().map(|cpu| cpu.retired).collect::<Vec<_>>(),
+        "retired_total": cpus.iter().map(|cpu| cpu.retired).sum::<u64>(),
+        "calls": cpus.iter().map(|cpu| cpu.calls).collect::<Vec<_>>(),
+        "wakes": cpus.iter().map(|cpu| cpu.wakes).collect::<Vec<_>>(),
+        "sleeps": cpus.iter().map(|cpu| cpu.sleeps).collect::<Vec<_>>(),
+        "split_locks": cpus.iter().map(|cpu| cpu.split_locks).collect::<Vec<_>>(),
+        "init_applied": cpus.iter().map(|cpu| cpu.init_applied).collect::<Vec<_>>(),
+        "started": cpus.iter().map(|cpu| cpu.started).collect::<Vec<_>>(),
+        "nmi_delivered": cpus.iter().map(|cpu| cpu.nmi_delivered).collect::<Vec<_>>(),
+        "activity": cpus.iter().map(|cpu| format!("{:?}", cpu.activity)).collect::<Vec<_>>(),
+        "legacy": cpus.iter().map(|cpu| cpu.legacy).collect::<Vec<_>>(),
+        "idle_ns": report.idle_ns,
+        "idle_jumps": report.idle_jumps,
+        "com1_text": String::from_utf8_lossy(&report.com1),
+        "com1_hex": report.com1.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "cells": cells,
+        "lapic_vectors": lapic_vectors,
+        "error": error,
+    });
+    if status == "guest_idle" {
         Ok((result, 0))
     } else {
         Err((result, EXIT_GUEST))

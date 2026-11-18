@@ -1,0 +1,10 @@
+date: 2026-11-18T02:40:48Z
+ProductName:		macOS
+ProductVersion:		26.7.1
+BuildVersion:		25G241
+Apple M3 Max
+14
+38654705664
+rustc 1.99.0 (b940084d7 2026-09-28)
+Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64
+before: worktree of 049005a (release, --locked --offline, od-runner and od-bench, CARGO_TARGET_DIR=work/tmp/s634/target_before); after: working tree on top of 049005a (S6-34, final code) (release, --locked --offline, CARGO_TARGET_DIR=work/tmp/s634/target_after); other users' processes were active on the host (load 2-13), see load in the logs. Order: before, after, x3. Two Linux sessions (linux-control, linux-control-2); the first attempt of the first session lost its binaries to a temporary-directory cleanup after the first pair and was redone from the start (the log here is the redone one).

@@ -92,6 +92,12 @@ struct Entry {
     frame: RamFrame,
     /// Physical page numbers (address >> 12) of the tables on the path, [`NO_TABLE`] when unused.
     tables: [u64; 4],
+    /// The page generation of each table frame as read BEFORE the walk that made the entry read the
+    /// bytes of the tables (S6-34 step 9, MACHINE_CONTRACT.md S6-30b, the reader's rule). `None`:
+    /// not read at insert (only the test-only [`FetchTranslationCache::insert`]); [`Self::seal`]
+    /// then reads it, which is the order "bytes, then generation" that only the interleaved mode may
+    /// use.
+    generations: [Option<u64>; 4],
 }
 
 /// What one entry of the cache covers (S4-13d). The tag of an entry is the linear address shifted
@@ -194,6 +200,13 @@ pub(crate) struct FetchTranslationCache {
     /// only names the intent: the loop seals and checks every cache it is given, whatever the
     /// constructor (S4-14i, review), so that no cache loses a host event at a call boundary.
     persistent: bool,
+    /// S6-34 step 9: the cache of a vCPU thread of the parallel mode. It keeps the generation of
+    /// every table frame as read BEFORE the walk that made an entry ([`Self::insert_with_generations`])
+    /// and absorbs the generations that its own committed writes raise ([`Self::note_write`]), so
+    /// that `seal` and `revalidate` see exactly the writes of other vCPUs. `false` (every other
+    /// cache): the generations are read at the seal, after the bytes, which is exact only while
+    /// no other vCPU runs.
+    strict: bool,
     /// S4-13c: shadow caches that receive every event of this cache (diagnostics only; `None` is
     /// no sweep and costs one branch per event).
     sweep: Option<Rc<FetchCacheSweep>>,
@@ -225,6 +238,19 @@ impl FetchTranslationCache {
             persistent: true,
             ..Self::default()
         }
+    }
+
+    /// The cache of a vCPU thread of the parallel mode (S6-34 step 9, see [`Self::strict`]).
+    // Until S6-37 (the strict cache in the board's quantum): the thread's cache is `None` there.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_insert_generations(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Whether the entries keep the generations read at insert (the parallel mode's cache).
+    pub(crate) fn is_strict(&self) -> bool {
+        self.strict
     }
 
     /// The same cache with the 2 MiB leaf tag ([`FetchCacheTag::Leaf2M`], S4-13d). Off unless
@@ -361,7 +387,10 @@ impl FetchTranslationCache {
     }
 
     /// Remember the result of a completed, successful fetch walk of `address`: `frame` is the
-    /// plain-RAM frame it translated to and `tables` the physical bases of the tables walked.
+    /// plain-RAM frame it translated to and `tables` the physical bases of the tables walked. The
+    /// generations of the table frames are not known at insert: [`Self::seal`] reads them (the
+    /// interleaved mode's order). The loop uses [`Self::insert_with_generations`].
+    #[cfg(test)]
     pub(crate) fn insert(
         &self,
         address: u64,
@@ -370,9 +399,32 @@ impl FetchTranslationCache {
         frame: RamFrame,
         tables: [Option<u64>; 4],
     ) {
+        self.insert_with_generations(address, paging, context, frame, tables, [None; 4]);
+    }
+
+    /// [`Self::insert`] with the page generation of every table frame as the caller read it
+    /// BEFORE the walk that produced `frame` and `tables` read the bytes of the tables (S6-34
+    /// step 9, the reader's rule of S6-30b: generation first, bytes after). A write to a table
+    /// frame that lands between the generation and the bytes leaves the stored generation older
+    /// than the page, and the next [`Self::seal`] / [`Self::revalidate`] drops the entry: a
+    /// spurious refresh, never a stale hit. Taking the generation after the bytes (what `seal`
+    /// does for an entry without one) allows the opposite pairing, old bytes under a new
+    /// generation, which is safe only when no other vCPU can write a table between the two.
+    pub(crate) fn insert_with_generations(
+        &self,
+        address: u64,
+        paging: &Long64ProbeConfig,
+        context: AccessContext,
+        frame: RamFrame,
+        tables: [Option<u64>; 4],
+        generations: [Option<u64>; 4],
+    ) {
         if let Some(sweep) = &self.sweep {
             sweep.insert(address, paging, context, tables);
         }
+        // Only a strict cache keeps them: any other reads the generations at the seal (the order
+        // of the interleaved mode).
+        let generations = if self.strict { generations } else { [None; 4] };
         let mut inner = self.inner.borrow_mut();
         // A 2 MiB span handle makes a 2 MiB entry; only the 2 MiB tag is given one (the caller
         // asks `tag()`), and a 4 KiB handle is a 4 KiB entry in either tag.
@@ -389,6 +441,7 @@ impl FetchTranslationCache {
             context,
             frame,
             tables: tables.map(|table| table.map_or(NO_TABLE, |base| base >> 12)),
+            generations,
         };
         // A key already present is replaced in place; otherwise the oldest slot goes.
         let slot = inner
@@ -429,6 +482,19 @@ impl FetchTranslationCache {
         });
         if !touched {
             return;
+        }
+        if self.strict {
+            // This write is this vCPU's own commit: it raised the generation of each page it
+            // touched by one (`PhysicalMemory::commit_write`, before this callback). The entry
+            // expects it, so that only the writes of other vCPUs make `seal`/`revalidate` see a
+            // newer generation than the entry holds.
+            for entry in inner.entries.iter_mut().flatten() {
+                for (table, generation) in entry.tables.iter().zip(entry.generations.iter_mut()) {
+                    if *table != NO_TABLE && (first..=last).contains(table) {
+                        *generation = generation.map(|held| held + 1);
+                    }
+                }
+            }
         }
         match self.invalidation {
             FetchCacheInvalidation::WriteWatch => {
@@ -521,18 +587,36 @@ impl FetchTranslationCache {
             sweep.seal(key, generation_of);
         }
         let mut inner = self.inner.borrow_mut();
-        let mut pages: Vec<u64> = inner
-            .entries
-            .iter()
-            .flatten()
-            .flat_map(|entry| entry.tables)
-            .filter(|table| *table != NO_TABLE)
-            .collect();
-        pages.sort_unstable();
-        pages.dedup();
+        // The oldest generation any entry holds for a table frame (S6-34 step 9): the generation
+        // read at insert, before the bytes of the walk. An entry without one (the test-only
+        // `insert`) has the generation read now, after its bytes, as before.
+        let mut pages: Vec<(u64, Option<u64>)> = Vec::new();
+        for entry in inner.entries.iter().flatten() {
+            for (table, generation) in entry.tables.iter().zip(entry.generations) {
+                if *table == NO_TABLE {
+                    continue;
+                }
+                match pages.iter_mut().find(|(page, _)| page == table) {
+                    Some((_, held)) => {
+                        *held = match (*held, generation) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            // One entry without an insert-time generation: read at seal.
+                            _ => None,
+                        };
+                    }
+                    None => pages.push((*table, generation)),
+                }
+            }
+        }
+        pages.sort_unstable_by_key(|(page, _)| *page);
         let pages = pages
             .into_iter()
-            .map(|page| (page, generation_of(page).unwrap_or(0)))
+            .map(|(page, at_insert)| {
+                (
+                    page,
+                    at_insert.unwrap_or_else(|| generation_of(page).unwrap_or(0)),
+                )
+            })
             .collect();
         inner.sealed = Some(Sealed { key, pages });
     }
@@ -911,6 +995,114 @@ mod tests {
     }
 
     /// A frame whose generation cannot be read is sealed as unknown and the next check flushes.
+    /// S6-34 step 9: the generation of a table frame is read before the bytes of the walk. A write
+    /// to the table (another vCPU) after the generation and before the end of the call (the seal)
+    /// makes the next call drop the entry; the entry made by a cache that is not strict (the order
+    /// of the interleaved mode: bytes, then the generation at the seal) keeps it.
+    #[test]
+    fn the_generation_taken_at_insert_makes_a_write_before_the_seal_drop_the_entry() {
+        let memory = memory();
+        let table_base = 0x3000;
+        let table_page = table_base >> 12;
+        let ctx = key(0x1000, PrivilegeLevel::Ring0);
+        let generation_of = |page: u64| {
+            memory
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let frame = frame(&memory, 0x5000);
+        let tables = [Some(table_base), None, None, None];
+        let at_insert = generation_of(table_page).unwrap();
+        for strict in [true, false] {
+            let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::WriteWatch);
+            let cache = if strict {
+                cache.with_insert_generations()
+            } else {
+                cache
+            };
+            cache.revalidate(ctx, &generation_of);
+            cache.insert_with_generations(
+                0x40_0000,
+                &paging(0x1000),
+                context(PrivilegeLevel::Ring0),
+                frame,
+                tables,
+                [Some(generation_of(table_page).unwrap()), None, None, None],
+            );
+            // Another vCPU writes the table: no `note_write` reaches this cache (it is the other
+            // thread's callback), only the generation moves.
+            memory
+                .store_u64(GuestPhysicalAddress::new(table_base), 0xDEAD_0067, |_| {})
+                .unwrap();
+            assert!(generation_of(table_page).unwrap() > at_insert);
+            cache.seal(ctx, &generation_of);
+            cache.revalidate(ctx, &generation_of);
+            let survives = cache
+                .lookup(0x40_0000, &paging(0x1000), context(PrivilegeLevel::Ring0))
+                .is_some();
+            assert_eq!(
+                survives, !strict,
+                "a strict cache drops the stale entry; one that is not (bytes, then the generation \
+                 at the seal) keeps it, which only the interleaved mode may rely on"
+            );
+            assert_eq!(cache.stats().host_flushes, u64::from(strict));
+        }
+    }
+
+    /// A strict cache of the `GuestOnly` policy (a TLB: the guest's own table writes drop nothing)
+    /// keeps the entry over its own committed writes to the table, and drops it for a write that did
+    /// not come through its `note_write`.
+    #[test]
+    fn a_strict_cache_absorbs_its_own_table_writes_and_drops_the_entry_for_another_vcpus() {
+        let memory = memory();
+        let table_base = 0x3000;
+        let table_page = table_base >> 12;
+        let ctx = key(0x1000, PrivilegeLevel::Ring0);
+        let generation_of = |page: u64| {
+            memory
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let frame = frame(&memory, 0x5000);
+        let cache = FetchTranslationCache::persistent(FetchCacheInvalidation::GuestOnly)
+            .with_insert_generations();
+        cache.revalidate(ctx, &generation_of);
+        cache.insert_with_generations(
+            0x40_0000,
+            &paging(0x1000),
+            context(PrivilegeLevel::Ring0),
+            frame,
+            [Some(table_base), None, None, None],
+            [Some(generation_of(table_page).unwrap()), None, None, None],
+        );
+        let hit = |cache: &FetchTranslationCache| {
+            cache
+                .lookup(0x40_0000, &paging(0x1000), context(PrivilegeLevel::Ring0))
+                .is_some()
+        };
+        // Its own writes (the callback is the cache's `note_write`, as in the loop), three of them.
+        for value in [1u64, 2, 3] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(table_base), value, |range| {
+                    cache.note_write(range)
+                })
+                .unwrap();
+        }
+        cache.seal(ctx, &generation_of);
+        cache.revalidate(ctx, &generation_of);
+        assert!(hit(&cache), "the vCPU's own writes are not a host event");
+        assert_eq!(cache.stats().host_flushes, 0);
+        assert_eq!(cache.stats().ignored_table_writes, 3);
+        // Another vCPU's write (no callback here) after them.
+        memory
+            .store_u64(GuestPhysicalAddress::new(table_base), 4, |_| {})
+            .unwrap();
+        cache.seal(ctx, &generation_of);
+        cache.revalidate(ctx, &generation_of);
+        assert!(!hit(&cache), "another vCPU's write drops the entry");
+        assert_eq!(cache.stats().host_flushes, 1);
+    }
+
     #[test]
     fn a_table_frame_of_unknown_generation_is_not_trusted() {
         let memory = memory();

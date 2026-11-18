@@ -152,17 +152,35 @@ pub(crate) fn run_legacy(
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
 ) -> Result<LegacyRun, FirmwareBoardError> {
-    const NO_LEGACY: FirmwareBoardError =
-        FirmwareBoardError::Config("ap legacy: the vCPU is not in a legacy mode");
     let vcpu = board
         .vcpu_mut(cpu)
         .ok_or(FirmwareBoardError::Config("ap legacy: no such vCPU"))?;
+    // The vCPU and the RAM are two disjoint parts of the board: take the vCPU out for the call.
+    let mut taken = std::mem::replace(vcpu, crate::vcpu::Vcpu::new_ap(cpu));
+    let result = {
+        let (memory, _) = board.bus_mut().split_for_pio_step();
+        run_legacy_on(&mut taken, memory, cpu, budget, stop)
+    };
+    *board.vcpu_mut(cpu).expect("the vCPU was found above") = taken;
+    result
+}
+
+/// [`run_legacy`] on what it needs: the vCPU and the RAM (the vCPU threads of the parallel mode,
+/// S6-34, call it with the vCPU they own and the shared reference to the RAM).
+pub(crate) fn run_legacy_on(
+    vcpu: &mut crate::vcpu::Vcpu,
+    memory: &PhysicalMemory,
+    cpu: usize,
+    budget: u64,
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<LegacyRun, FirmwareBoardError> {
+    const NO_LEGACY: FirmwareBoardError =
+        FirmwareBoardError::Config("ap legacy: the vCPU is not in a legacy mode");
     let mut model = vcpu.legacy.take().ok_or(NO_LEGACY)?;
     let preserved = vcpu.state.clone();
     let mut retired = 0u64;
     let (mut handed_over, mut refusal) = (None, None);
     {
-        let (memory, _) = board.bus_mut().split_for_pio_step();
         let mut ram = BoardRam::new(memory);
         loop {
             // The transitions cost no step.
@@ -209,7 +227,6 @@ pub(crate) fn run_legacy(
             }
         }
     }
-    let vcpu = board.vcpu_mut(cpu).expect("the vCPU was found above");
     let executed = Executed {
         retired,
         ..Executed::default()

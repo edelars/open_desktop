@@ -21,7 +21,8 @@ use od_machine::{
     STAGE6_SMP_PROBE_LOCK_GPA, STAGE6_SMP_PROBE_MARKER_AP_GPA, STAGE6_SMP_PROBE_MARKER_BSP_GPA,
     STAGE6_SMP_PROBE_MARKER_MAGIC, STAGE6_SMP_PROBE_NMI_GPA, STAGE6_SMP_PROBE_NONCE_MAX,
     STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP, Stage6SmpProbe, Stage6SmpProbeFinish,
-    Stage6SmpProbeLoadError, Stage6SmpProbeQuantum, Stage6SmpProbeRunError, load_stage6_smp_probe,
+    Stage6SmpProbeLoadError, Stage6SmpProbeParallelFinish, Stage6SmpProbeQuantum,
+    Stage6SmpProbeRunError, load_stage6_smp_probe,
 };
 use od_machine::{
     STAGE6_SMP_PROBE_IDTR_BSP_GPA, STAGE6_SMP_PROBE_MAX_FIXED_QUANTUM, STAGE6_SMP_PROBE_SD_ACK_GPA,
@@ -1189,4 +1190,139 @@ fn a_snapshot_is_refused_unless_the_machine_is_stopped_and_a_restore_unless_it_s
     session.pause(1).unwrap();
     let error = session.restore(&snapshot).unwrap_err();
     assert!(error.starts_with("ClockMoved"), "{error}");
+}
+
+// ---- the parallel mode (S6-34): one host thread per vCPU ------------------------------------------
+//
+// The same image and the same expectations (the builder's manifest, from the protocol), run by the
+// thread runner instead of the interleaving scheduler. There is no schedule to name and no seed: the
+// result of the guest, not the interleaving, is what is checked, every time. Command of the long
+// form: `OD_S6_PAR_RUNS=2000 cargo test --release -p od-machine --offline --test stage6_smp_probe -- --ignored
+// parallel_probe_many_runs --nocapture`.
+
+const PARALLEL_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn parallel_quanta() -> Vec<u64> {
+    vec![1, 7, 100, 1024]
+}
+
+/// Run `built` on 2 vCPU threads with `quantum` steps per call and check the transcript, the
+/// vCPUs at the end, and every Local APIC (nothing pending or in service).
+fn parallel_run_ok(built: &Built, scenario_expected: &str, quantum: u64) -> Stage6SmpProbe {
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let report = probe
+        .run_parallel(quantum, BUDGET, PARALLEL_WAIT)
+        .unwrap_or_else(|error| panic!("quantum {quantum}: {error:?}"));
+    assert_eq!(
+        report.finished,
+        Stage6SmpProbeParallelFinish::AllIdle,
+        "quantum {quantum}: {report:?}"
+    );
+    assert_eq!(
+        String::from_utf8(report.com1.clone()).unwrap(),
+        scenario_expected,
+        "quantum {quantum}: {report:?}"
+    );
+    assert_eq!(report.cpus.len(), 2);
+    assert_eq!(report.cpus[1].init_applied, 1, "quantum {quantum}");
+    assert_eq!(report.cpus[1].started, 1, "quantum {quantum}");
+    assert_eq!(report.cpus[0].init_applied, 0);
+    assert!(!report.cpus[1].legacy, "the AP reached long mode");
+    assert_eq!(report.cpus[0].activity, od_isa::CpuActivity::Halted);
+    assert_eq!(report.cpus[1].activity, od_isa::CpuActivity::Halted);
+    probe
+}
+
+#[test]
+fn the_probe_runs_in_the_parallel_mode_in_every_scenario_under_every_quantum() {
+    let normal = build("normal");
+    let exchange = build_scenario("normal", "exchange", None);
+    let resipi = build_scenario("normal", "resipi", None);
+    let nmi = build_scenario("normal", "nmi", None);
+    let shootdown = build_scenario("normal", "shootdown", None);
+    let rounds = std::env::var("OD_S6_PAR_RUNS")
+        .ok()
+        .and_then(|text| text.parse::<usize>().ok())
+        .unwrap_or(6);
+    for quantum in parallel_quanta() {
+        for round in 0..rounds {
+            let context = format!("quantum {quantum} round {round}");
+            let mut probe = parallel_run_ok(&normal, &normal.expected(2).unwrap(), quantum);
+            assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_LOCK_GPA), 1, "{context}");
+            assert_eq!(dword(&mut probe, STAGE6_SMP_PROBE_FLAG_GPA), 1, "{context}");
+            assert_eq!(
+                dword(&mut probe, STAGE6_SMP_PROBE_COUNT_GPA),
+                1,
+                "{context}"
+            );
+            check_marker(&mut probe, STAGE6_SMP_PROBE_MARKER_BSP_GPA, 0);
+            check_marker(&mut probe, STAGE6_SMP_PROBE_MARKER_AP_GPA, 1 << 24);
+
+            let mut probe = parallel_run_ok(&exchange, &exchange.expected(2).unwrap(), quantum);
+            check_exchange_cells(&exchange, &mut probe, &context);
+            assert_lapics_quiet(&probe, 2, &context);
+
+            let mut probe = parallel_run_ok(&resipi, &resipi.expected(2).unwrap(), quantum);
+            check_exchange_cells(&resipi, &mut probe, &context);
+            assert_lapics_quiet(&probe, 2, &context);
+
+            let mut probe = parallel_run_ok(&nmi, &nmi.expected(2).unwrap(), quantum);
+            assert_eq!(
+                dword(&mut probe, STAGE6_SMP_PROBE_NMI_GPA),
+                nmi.expected_dword(2, "nmi_cell"),
+                "{context}"
+            );
+
+            let mut probe = parallel_run_ok(&shootdown, &shootdown.expected(2).unwrap(), quantum);
+            check_shootdown_cells(&shootdown, &mut probe, &context);
+            assert_lapics_quiet(&probe, 2, &context);
+        }
+    }
+}
+
+/// The long form of the test above: many runs of the exchange and the shootdown under the
+/// quanta of the parallel mode (the counts and the command are in `docs/testing/SMP.md`).
+#[test]
+#[ignore = "long: OD_S6_PAR_RUNS=2000 cargo test --release -p od-machine --offline --test stage6_smp_probe -- --ignored parallel_probe_many_runs --nocapture"]
+fn parallel_probe_many_runs() {
+    let runs = std::env::var("OD_S6_PAR_RUNS")
+        .ok()
+        .and_then(|text| text.parse::<usize>().ok())
+        .unwrap_or(1000);
+    let exchange = build_scenario("normal", "exchange", None);
+    let shootdown = build_scenario("normal", "shootdown", None);
+    let started = std::time::Instant::now();
+    for run in 0..runs {
+        let quantum = parallel_quanta()[run % parallel_quanta().len()];
+        let mut probe = parallel_run_ok(&exchange, &exchange.expected(2).unwrap(), quantum);
+        check_exchange_cells(
+            &exchange,
+            &mut probe,
+            &format!("run {run} quantum {quantum}"),
+        );
+        assert_lapics_quiet(&probe, 2, "exchange");
+        let mut probe = parallel_run_ok(&shootdown, &shootdown.expected(2).unwrap(), quantum);
+        check_shootdown_cells(
+            &shootdown,
+            &mut probe,
+            &format!("run {run} quantum {quantum}"),
+        );
+        assert_lapics_quiet(&probe, 2, "shootdown");
+    }
+    eprintln!(
+        "parallel probe: {runs} runs of exchange and shootdown, {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+}
+
+#[test]
+fn one_processor_prints_ap_absent_in_the_parallel_mode_too() {
+    let built = build_scenario("normal", "exchange", None);
+    let mut probe = load_stage6_smp_probe(&built.image, 1, NONCE).unwrap();
+    let report = probe.run_parallel(1024, BUDGET, PARALLEL_WAIT).unwrap();
+    assert_eq!(report.finished, Stage6SmpProbeParallelFinish::AllIdle);
+    assert_eq!(
+        String::from_utf8(report.com1).unwrap(),
+        built.expected(1).unwrap()
+    );
 }

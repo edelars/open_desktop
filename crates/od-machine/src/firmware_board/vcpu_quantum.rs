@@ -38,11 +38,17 @@ use super::{
     InstructionMode, IrqCounters, LoadedFirmwareBoard, PagedCpl0SetExit, PrivilegeLevel, RunExit,
     set_exit_to_probe_exit,
 };
+use crate::bus::SplitLockGate;
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook};
 use crate::lapic_irq_source::LapicIrqSource;
-use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
+use crate::paged_memory_adapter::{LoopBus, PagedCpl0SetReport, run_cpl0_set_loop};
 use crate::smp_scheduler::Executed;
+use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
+use crate::uart_pic_irq_source::UartPicIrqSource;
+use crate::vcpu::Vcpu;
+use crate::{AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle};
 use od_isa::execute::Cpl0ProfileSet;
+use std::sync::{Mutex, PoisonError};
 
 /// The source of the boot processor in the quantum of the scheduler (S6-21 step 1): the interrupt
 /// source of the board first (the line of the PIC or of the IOAPIC, as the Linux loop asks it), then
@@ -89,6 +95,157 @@ impl BoardIrqSource for BootProcessorSource<'_> {
     }
 }
 
+/// What the quantum of one vCPU needs besides the vCPU and the machine it runs on (S6-34).
+struct QuantumEnv<'a> {
+    lapic: LocalApicHandle,
+    uart: Uart16550Handle,
+    acpi_pm: Option<AcpiPmHandle>,
+    pit: Option<Pit8254Handle>,
+    /// The interrupt source of the board, offered to the boot processor only.
+    board_source: &'a mut dyn BoardIrqSource,
+    /// The gate of the split `LOCK` of a vCPU thread of the parallel mode.
+    gate: Option<&'a dyn SplitLockGate>,
+}
+
+/// What a vCPU has to have before a quantum can run (checked before anything changes).
+fn quantum_inputs(vcpu: &Vcpu) -> Result<(u64, u64, bool), FirmwareBoardError> {
+    if vcpu.legacy.is_some() {
+        return Err(FirmwareBoardError::Config(
+            "vcpu quantum: the vCPU is in a legacy mode",
+        ));
+    }
+    let cr3 = vcpu.state.cr3.ok_or(FirmwareBoardError::Config(
+        "vcpu quantum: the vCPU has no CR3",
+    ))?;
+    Ok((cr3, vcpu.guest_efer, vcpu.skip_first_boundary))
+}
+
+/// The call of the CPL0-set loop of one vCPU (see
+/// [`LoadedFirmwareBoard::run_vcpu_set_quantum`]): CR2 in and out, the interrupt source of the
+/// vCPU, the loop over `bus`, and what the call leaves in the vCPU (CR2, CR3, the REP restart
+/// mark). The caller does the rest: the ticks and the transmit pump around it, the result.
+#[allow(clippy::too_many_arguments)]
+fn quantum_loop(
+    vcpu: &mut Vcpu,
+    cpu: usize,
+    bus: LoopBus<'_>,
+    env: QuantumEnv<'_>,
+    (cr3, efer, skip_first_boundary): (u64, u64, bool),
+    budget: u64,
+    stop: &mut dyn FnMut() -> bool,
+    set: &Cpl0ProfileSet<'_>,
+) -> PagedCpl0SetReport {
+    let QuantumEnv {
+        lapic,
+        uart,
+        acpi_pm,
+        pit,
+        board_source,
+        gate,
+    } = env;
+    // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
+    let prior_cr2 = vcpu.state.cr2;
+    vcpu.state.cr2 = Some(vcpu.guest_cr2.or(prior_cr2).unwrap_or(0));
+
+    let timer_writes = lapic.timer_register_writes();
+    let mut own = LapicIrqSource::new(lapic.clone());
+    let mut boot_source;
+    let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
+        boot_source = BootProcessorSource {
+            board: board_source,
+            lapic: own.clone(),
+        };
+        &mut boot_source
+    } else {
+        &mut own
+    };
+    let mut counters = IrqCounters::default();
+    let report = run_cpl0_set_loop(
+        &mut vcpu.state,
+        bus,
+        gate,
+        cpu,
+        cr3,
+        efer,
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        },
+        budget,
+        INTEGER_FLAGS,
+        set,
+        None,
+        || {
+            stop()
+                || uart.holding_occupied()
+                || lapic.timer_register_writes() != timer_writes
+                || acpi_pm.as_ref().is_some_and(|pm| pm.timer_tick_pending())
+                || pit.as_ref().is_some_and(|pit| pit.port_tick_pending())
+        },
+        |_| {},
+        false,
+        None,
+        Some(IrqBoundaryHook {
+            source,
+            counters: &mut counters,
+            skip_first_boundary,
+        }),
+        None,
+        None,
+    );
+
+    vcpu.guest_cr2 = vcpu.state.cr2;
+    vcpu.state.cr2 = prior_cr2;
+    // The CR3 the guest left (`MOV CR3` of its own tables) is the next call's.
+    vcpu.state.cr3 = Some(report.cr3);
+    vcpu.skip_first_boundary = matches!(
+        report.exit,
+        PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
+    );
+    report
+}
+
+/// The result of a quantum from its report, after the pump and the device ticks: an exit of a
+/// quantum is benign (the budget, a halt, STOP, a REP restart) or an error that keeps the state.
+fn quantum_result(
+    report: PagedCpl0SetReport,
+    cpu: usize,
+    vcpu: &Vcpu,
+    device_ns: u64,
+) -> Result<Executed, FirmwareBoardError> {
+    let partial_rep = matches!(
+        report.exit,
+        PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
+    );
+    let benign = matches!(
+        report.exit,
+        PagedCpl0SetExit::Run(
+            RunExit::Halted
+                | RunExit::InstructionBudgetExhausted
+                | RunExit::StopRequested
+                | RunExit::RepIterationBudgetExhausted
+        )
+    );
+    if !benign {
+        let (page_fault, memory_error) = (report.page_fault, report.memory_error);
+        return match set_exit_to_probe_exit(report.exit) {
+            Err(error) => Err(error.into_board_error(&vcpu.state)),
+            Ok((_, text)) => Err(FirmwareBoardError::VcpuQuantum {
+                cpu,
+                detail: format!(
+                    "{text}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"
+                ),
+            }),
+        };
+    }
+    Ok(Executed {
+        retired: report.instructions_executed,
+        partial_rep,
+        device_ns,
+    })
+}
+
 impl LoadedFirmwareBoard {
     /// Run vCPU `cpu` (in long mode, `Running`) for at most `budget` steps (at least 1) with the
     /// CPL0 set `set`, on the RAM and devices of the board. `stop` is polled between steps.
@@ -119,16 +276,7 @@ impl LoadedFirmwareBoard {
             .vcpus
             .get(cpu)
             .ok_or(FirmwareBoardError::Config("vcpu quantum: no such vCPU"))?;
-        if vcpu.legacy.is_some() {
-            return Err(FirmwareBoardError::Config(
-                "vcpu quantum: the vCPU is in a legacy mode",
-            ));
-        }
-        let cr3 = vcpu.state.cr3.ok_or(FirmwareBoardError::Config(
-            "vcpu quantum: the vCPU has no CR3",
-        ))?;
-        let efer = vcpu.guest_efer;
-        let skip_first_boundary = vcpu.skip_first_boundary;
+        let inputs = quantum_inputs(vcpu)?;
 
         let uart = self.uart.clone();
         let acpi_pm = self.acpi_pm.clone();
@@ -144,67 +292,23 @@ impl LoadedFirmwareBoard {
         }
         self.pump_uart_transmit(0);
 
-        // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
-        let prior_cr2 = self.vcpus[cpu].state.cr2;
-        self.vcpus[cpu].state.cr2 = Some(self.vcpus[cpu].guest_cr2.or(prior_cr2).unwrap_or(0));
-
-        let timer_writes = lapic.timer_register_writes();
-        let mut own = LapicIrqSource::new(lapic.clone());
-        let mut boot_source;
-        let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
-            boot_source = BootProcessorSource {
-                board: &mut *self.irq_source,
-                lapic: own.clone(),
-            };
-            &mut boot_source
-        } else {
-            &mut own
-        };
-        let mut counters = IrqCounters::default();
-        let report = run_cpl0_set_paged_2m_ram_with_cache(
-            &mut self.vcpus[cpu].state,
-            &mut self.bus,
+        let report = quantum_loop(
+            &mut self.vcpus[cpu],
             cpu,
-            cr3,
-            efer,
-            AccessContext {
-                mode: InstructionMode::Long64,
-                privilege: PrivilegeLevel::Ring0,
-                origin: AccessOrigin::Explicit,
+            LoopBus::Exclusive(&mut self.bus),
+            QuantumEnv {
+                lapic,
+                uart,
+                acpi_pm,
+                pit,
+                board_source: &mut *self.irq_source,
+                gate: None,
             },
+            inputs,
             budget,
-            INTEGER_FLAGS,
+            stop,
             set,
-            None,
-            || {
-                stop()
-                    || uart.holding_occupied()
-                    || lapic.timer_register_writes() != timer_writes
-                    || acpi_pm.as_ref().is_some_and(|pm| pm.timer_tick_pending())
-                    || pit.as_ref().is_some_and(|pit| pit.port_tick_pending())
-            },
-            |_| {},
-            false,
-            None,
-            Some(IrqBoundaryHook {
-                source,
-                counters: &mut counters,
-                skip_first_boundary,
-            }),
-            None,
-            None,
         );
-
-        let vcpu = &mut self.vcpus[cpu];
-        vcpu.guest_cr2 = vcpu.state.cr2;
-        vcpu.state.cr2 = prior_cr2;
-        // The CR3 the guest left (`MOV CR3` of its own tables) is the next call's.
-        vcpu.state.cr3 = Some(report.cr3);
-        let partial_rep = matches!(
-            report.exit,
-            PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
-        );
-        vcpu.skip_first_boundary = partial_rep;
 
         self.pump_uart_transmit(report.instructions_executed);
         let mut device_ns = 0u64;
@@ -214,34 +318,104 @@ impl LoadedFirmwareBoard {
         if let Some(pit) = &self.pit {
             device_ns += pit.take_port_tick_ns();
         }
-
-        let benign = matches!(
-            report.exit,
-            PagedCpl0SetExit::Run(
-                RunExit::Halted
-                    | RunExit::InstructionBudgetExhausted
-                    | RunExit::StopRequested
-                    | RunExit::RepIterationBudgetExhausted
-            )
-        );
-        if !benign {
-            let (page_fault, memory_error) = (report.page_fault, report.memory_error);
-            return match set_exit_to_probe_exit(report.exit) {
-                Err(error) => Err(error.into_board_error(&self.vcpus[cpu].state)),
-                Ok((_, text)) => Err(FirmwareBoardError::VcpuQuantum {
-                    cpu,
-                    detail: format!(
-                        "{text}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"
-                    ),
-                }),
-            };
-        }
-        Ok(Executed {
-            retired: report.instructions_executed,
-            partial_rep,
-            device_ns,
-        })
+        quantum_result(report, cpu, &self.vcpus[cpu], device_ns)
     }
+}
+
+/// What a vCPU thread of the parallel mode (S6-34) runs a quantum on: the machine by shared
+/// references, the vCPU it owns, the log of COM1 behind its lock. Built by
+/// [`LoadedFirmwareBoard::thread_parts`].
+pub(crate) struct ThreadQuantumEnv<'a> {
+    pub(crate) bus: &'a MachineBus,
+    pub(crate) uart: Uart16550Handle,
+    pub(crate) acpi_pm: Option<AcpiPmHandle>,
+    pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
+    pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
+    /// The COM1 log. The lock is taken for the whole pump (it is above the UART lock: the pump
+    /// takes the UART's lock under it, nothing takes this one under the UART's).
+    pub(crate) com1: &'a Mutex<&'a mut Vec<u8>>,
+}
+
+impl ThreadQuantumEnv<'_> {
+    /// [`LoadedFirmwareBoard::pump_uart_transmit`] of the threads: every byte the guest left in
+    /// the holding register goes to the log, in the order they complete, with the log's lock held
+    /// so that two threads never interleave one byte's two steps.
+    fn pump_uart_transmit(&self) {
+        let mut log = self.com1.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(source) = self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = self.uart_ioapic_source {
+            source.sample();
+        }
+        while self.uart.transfer_holding_to_shift() {
+            if let Some(byte) = self.uart.complete_transmission() {
+                log.push(byte);
+            }
+        }
+        if let Some(source) = self.uart_irq_source {
+            source.sample();
+        }
+        if let Some(source) = self.uart_ioapic_source {
+            source.sample();
+        }
+    }
+}
+
+/// [`LoadedFirmwareBoard::run_vcpu_set_quantum`] for a vCPU thread of the parallel mode (S6-34):
+/// the same call of the CPL0-set loop, on the shared machine, for the vCPU the thread owns.
+/// `board_source` is the interrupt source of the board for the boot processor; it is not asked
+/// for any other vCPU. `gate` is the stop-all of the split `LOCK`. Nothing else differs: the
+/// device lock of the bus is taken for each device access and not across an instruction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_vcpu_set_quantum_shared(
+    env: &ThreadQuantumEnv<'_>,
+    vcpu: &mut Vcpu,
+    cpu: usize,
+    lapic: &LocalApicHandle,
+    board_source: &mut dyn BoardIrqSource,
+    gate: Option<&dyn SplitLockGate>,
+    budget: u64,
+    stop: &mut dyn FnMut() -> bool,
+    set: &Cpl0ProfileSet<'_>,
+) -> Result<Executed, FirmwareBoardError> {
+    let inputs = quantum_inputs(vcpu)?;
+    if let Some(pm) = &env.acpi_pm {
+        pm.take_timer_tick_ns();
+    }
+    if let Some(pit) = &env.pit {
+        pit.take_port_tick_ns();
+    }
+    env.pump_uart_transmit();
+
+    let report = quantum_loop(
+        vcpu,
+        cpu,
+        LoopBus::Shared(env.bus),
+        QuantumEnv {
+            lapic: lapic.clone(),
+            uart: env.uart.clone(),
+            acpi_pm: env.acpi_pm.clone(),
+            pit: env.pit.clone(),
+            board_source,
+            gate,
+        },
+        inputs,
+        budget,
+        stop,
+        set,
+    );
+
+    env.pump_uart_transmit();
+    let mut device_ns = 0u64;
+    if let Some(pm) = &env.acpi_pm {
+        device_ns += pm.take_timer_tick_ns();
+    }
+    if let Some(pit) = &env.pit {
+        device_ns += pit.take_port_tick_ns();
+    }
+    quantum_result(report, cpu, vcpu, device_ns)
 }
 
 #[cfg(test)]

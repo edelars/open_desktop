@@ -22,6 +22,10 @@
 //! [`Stage6SmpProbe::run`] drives the scheduler of S6-15 over the board and returns the COM1
 //! transcript and the scheduler counters. Every line of the transcript is written by guest code.
 
+use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
+use crate::parallel_run::{
+    ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, QuantumCall, run_threads,
+};
 use crate::smp_scheduler::{
     BoardSmpHost, Executed, Finished, QuantumPolicy, SafePoint, SmpError, SmpScheduler, StopError,
     StopRequest,
@@ -188,6 +192,50 @@ pub enum Stage6SmpProbeRunError {
 
 pub struct Stage6SmpProbe {
     board: LoadedFirmwareBoard,
+}
+
+/// How a parallel run of the probe ended.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Stage6SmpProbeParallelFinish {
+    /// Every processor halted or waits for SIPI and nothing can wake one.
+    AllIdle,
+    BudgetExhausted,
+    /// The controller ended the run (the wait for the end timed out: the run was still going).
+    Timeout,
+    /// A host call of a vCPU ended in a board error (the text of the error).
+    Error {
+        cpu: usize,
+        error: String,
+    },
+    Panicked {
+        cpu: usize,
+    },
+}
+
+/// What a vCPU thread of a parallel run did, and where the vCPU stands.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Stage6SmpProbeParallelCpu {
+    pub retired: u64,
+    pub calls: u64,
+    pub wakes: u64,
+    pub init_applied: u64,
+    pub started: u64,
+    pub nmi_delivered: u64,
+    pub sleeps: u64,
+    pub split_locks: u64,
+    pub split_losses: u64,
+    pub activity: CpuActivity,
+    pub legacy: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Stage6SmpProbeParallelReport {
+    pub finished: Stage6SmpProbeParallelFinish,
+    /// Every byte the guest wrote to COM1.
+    pub com1: Vec<u8>,
+    pub cpus: Vec<Stage6SmpProbeParallelCpu>,
+    pub idle_ns: u64,
+    pub idle_jumps: u64,
 }
 
 fn long_boot_state() -> LongModeState {
@@ -387,6 +435,117 @@ impl Stage6SmpProbe {
             .with_halt(&halt)
             .with_sti(&sti);
         board.run_vcpu_set_quantum(cpu, budget, stop, &set)
+    }
+
+    /// One quantum of one vCPU of the probe on a vCPU thread of the parallel mode: the same CPL0
+    /// set as [`Self::probe_quantum`], on the shared machine (S6-34).
+    fn probe_quantum_shared(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+        let (cli, sti, halt) = (
+            CliProfile::NonPviLong64V1,
+            StiProfile::NonPviLong64V1,
+            HaltProfile::Long64V1,
+        );
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(&cli)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+            .with_pio_u8()
+            .with_halt(&halt)
+            .with_sti(&sti);
+        run_vcpu_set_quantum_shared(
+            call.env,
+            call.vcpu,
+            call.cpu,
+            call.lapic,
+            call.source,
+            Some(call.gate),
+            call.budget,
+            call.stop,
+            &set,
+        )
+    }
+
+    /// Run the probe in the parallel mode (S6-34): one host thread per vCPU over the shared
+    /// machine, `quantum` steps per call, `budget` retired instructions of all vCPUs together,
+    /// until nothing can run, the budget is used up, a vCPU fails, or `timeout` passes (then every
+    /// thread is stopped at its next boundary and the run is reported as `Timeout`). Every thread
+    /// has been joined when this returns. The interleaved scheduler (`run`) stays the default and
+    /// is not changed by this.
+    pub fn run_parallel(
+        &mut self,
+        quantum: u64,
+        budget: u64,
+        timeout: std::time::Duration,
+    ) -> Result<Stage6SmpProbeParallelReport, Stage6SmpProbeRunError> {
+        let config = ParallelConfig {
+            quantum,
+            budget,
+            ..ParallelConfig::default()
+        };
+        let (report, ended) = self
+            .parallel(config, |control| control.wait_finished(timeout))
+            .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+        Ok(self.parallel_report(report, ended))
+    }
+
+    /// The parallel run with a controller of the caller's (the tests of S6-34 stop, look and
+    /// resume from it).
+    pub(crate) fn parallel<R>(
+        &mut self,
+        config: ParallelConfig,
+        controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+    ) -> Result<(ParallelReport, R), FirmwareBoardError> {
+        run_threads(
+            &mut self.board,
+            config,
+            &Self::probe_quantum_shared,
+            controller,
+        )
+    }
+
+    pub(crate) fn parallel_report(
+        &self,
+        report: ParallelReport,
+        ended: bool,
+    ) -> Stage6SmpProbeParallelReport {
+        let finished = match report.finished {
+            ParallelFinish::AllIdle => Stage6SmpProbeParallelFinish::AllIdle,
+            ParallelFinish::BudgetExhausted => Stage6SmpProbeParallelFinish::BudgetExhausted,
+            ParallelFinish::Stopped if !ended => Stage6SmpProbeParallelFinish::Timeout,
+            ParallelFinish::Stopped => Stage6SmpProbeParallelFinish::AllIdle,
+            ParallelFinish::Error { cpu, error } => Stage6SmpProbeParallelFinish::Error {
+                cpu,
+                error: format!("{error:?}"),
+            },
+            ParallelFinish::Panicked { cpu } => Stage6SmpProbeParallelFinish::Panicked { cpu },
+        };
+        let cpus = report
+            .cpus
+            .iter()
+            .enumerate()
+            .map(|(cpu, counters)| {
+                let vcpu = self.board.vcpu(cpu).expect("a vCPU of the board");
+                Stage6SmpProbeParallelCpu {
+                    retired: counters.retired,
+                    calls: counters.calls,
+                    wakes: counters.wakes,
+                    init_applied: counters.init_applied,
+                    started: counters.started,
+                    nmi_delivered: counters.nmi_delivered,
+                    sleeps: counters.sleeps,
+                    split_locks: counters.split_locks,
+                    split_losses: counters.split_losses,
+                    activity: vcpu.activity(),
+                    legacy: vcpu.legacy.is_some(),
+                }
+            })
+            .collect();
+        Stage6SmpProbeParallelReport {
+            finished,
+            com1: self.board.com1_transcript().to_vec(),
+            cpus,
+            idle_ns: report.idle_ns,
+            idle_jumps: report.idle_jumps,
+        }
     }
 
     fn policy_of(quantum: Stage6SmpProbeQuantum) -> QuantumPolicy {

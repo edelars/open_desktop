@@ -1,0 +1,2192 @@
+//! The parallel mode: one host thread per vCPU, over a shared machine (S6-34).
+//!
+//! [`run_threads`] splits a board into what the threads share (the bus: RAM without a lock, devices
+//! behind their one lock, the Local APICs, the clock owner behind a lock, the COM1 log) and the
+//! vCPUs (each thread owns exactly one, behind a mutex that the thread holds only while the vCPU is
+//! running). Every thread runs the loop below for its vCPU; the caller's thread is the controller
+//! ([`ParallelControl`]): it can stop every vCPU, look at the stopped machine, resume it, and end
+//! the run. Nothing here is an asynchronous runtime, and no thread is ever stopped from outside in
+//! the middle of an instruction: every stop is requested through an atomic that the interpreter
+//! polls between instructions.
+//!
+//! **One pass of a vCPU thread.** (1) The barrier: end of run, stop-all request, or another vCPU's
+//! split `LOCK` make the thread stand still (a stop is acknowledged here); (2) the thread takes
+//! its vCPU, applies the INIT and SIPI waiting in its own Local APIC, then its NMI (the boundary of
+//! SMP_CONTRACT.md 3, as the interleaved scheduler does for every vCPU); (3) `Running`: one call of
+//! the interpreter loop for at most the quantum (cut by the nearest timer deadline and by the
+//! shared budget), then the retired instructions and device time are charged to the clock owner;
+//! `Halted`: woken when IF = 1 and a vector is acceptable, else the thread sleeps; `WaitForSipi` and
+//! `Shutdown`: the thread sleeps.
+//!
+//! **Kick and sleep.** A thread that has nothing to run parks (`thread::park`): it does not spin.
+//! Whatever gives its vCPU work posts it in the vCPU's Local APIC, and the APIC calls the wake
+//! sink ([`crate::apic_pair::WakeSink`]) under its lock: the sink sets the vCPU's `kick` flag and
+//! unparks its thread. The thread clears the flag BEFORE it looks at its APIC and sleeps only if
+//! the flag is still clear: an event posted after the look sets the flag after the clear, so the
+//! sleep ends at once; an event posted before the look is seen by it. A wake-up between the check
+//! and the park is the park token of `unpark`: it is not lost. `park` may return without a kick;
+//! the loop checks the flag again.
+//!
+//! **Stop.** [`ParallelControl::stop_all`] sets the request, kicks the vCPUs that have not yet
+//! acknowledged, and waits (with a deadline) for the acknowledgement of each. A thread
+//! acknowledges at the barrier (a completed instruction, or the restart point of a partly executed
+//! `REP`: the interpreter returns from the call on the poll between instructions) or when it goes to
+//! sleep: a vCPU asleep in `HLT` or waiting for SIPI acknowledges at once and stays asleep, with no
+//! guest instruction. The acknowledgement waits for no lock held by a stopped or sleeping vCPU:
+//! no thread holds a device lock, the APIC lock or the clock owner's lock across `HLT`, the wait for
+//! SIPI, a sleep or a barrier (MACHINE_CONTRACT.md, lock order, rule 3). A sleeper that is kicked
+//! (an IPI arrived) and a thread that comes out of the sleep look at the stop request first, so a
+//! stopped machine does not start a vCPU whatever arrives: the request stays in the Local APIC.
+//!
+//! **Order.** The acknowledgement is `Release` (`SeqCst`) after every write the thread made to its
+//! vCPU (the mutex of the vCPU is released first), to RAM and to the devices; the controller reads
+//! it with `Acquire` (`SeqCst`) and takes the vCPU's mutex: it sees all of them. The resume is the
+//! same in the other direction (the controller's writes, then the request cleared with `Release`;
+//! the thread reads the request with `Acquire`). The handshake that decides who stands still
+//! (a thread clears its `safe` and `quiet` flags and only then reads the requests; a requester sets
+//! its request and only then reads the flags) is `SeqCst` on both sides: Dekker's pattern needs the
+//! single total order.
+//!
+//! **Time.** Virtual time stands while a stop is in force: a thread charges the clock only inside
+//! its pass, before its acknowledgement, and the idle jump takes the clock owner's lock and reads
+//! the stop request under it; the controller takes that lock once after the acknowledgements.
+//! In motion the clock is moved only by the clock owner (D7, S6-15/S6-21), which is one object
+//! behind a lock: a thread calls `account_retired`/`account_device_ns` after its call, and the idle
+//! jump (`idle_step`, one jump per decision) is taken by the thread that goes to sleep last, when no
+//! other thread is awake (S6-34 decision, SMP_CONTRACT.md 8).
+//!
+//! **Split `LOCK`** (step 8): see [`SharedState::split_acquire`].
+
+// The module is exercised by the tests and by the probe session of S6-34; no other production
+// caller yet.
+#![cfg_attr(not(test), allow(dead_code))]
+
+use crate::bus::SplitLockGate;
+use crate::clock_owner::{ClockOwner, IdleOutcome};
+use crate::firmware_board::vcpu_quantum::ThreadQuantumEnv;
+use crate::firmware_board::{
+    FirmwareBoardError, LoadedFirmwareBoard, ThreadParts, deliver_pending_nmi_of,
+};
+use crate::idle_arbiter::{SchedActivity, WakeView};
+use crate::irq_source::{BoardIrqSource, NoIrqSource};
+use crate::smp_scheduler::{Executed, StopAck};
+use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary, Vcpu};
+use crate::{ExecutionMode, LocalApicHandle, PhysicalMemory};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
+
+const SEQ: Ordering = Ordering::SeqCst;
+/// `split_owner` while no vCPU holds the split-lock gate.
+const NO_OWNER: usize = usize::MAX;
+
+/// The inputs of a parallel run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParallelConfig {
+    /// Steps of one call of the interpreter loop of a thread (at least 1), before the cut by the
+    /// nearest timer deadline and by the budget.
+    pub(crate) quantum: u64,
+    /// Retired instructions of all vCPUs together after which the run ends.
+    pub(crate) budget: u64,
+    /// How long a vCPU waits for the other vCPUs to stand still around a split `LOCK` before the
+    /// instruction fails (no effect).
+    pub(crate) split_timeout: Duration,
+    /// End the run when nothing can run and nothing can wake (the interleaved scheduler's
+    /// `Finished::AllIdle`). `false`: the threads sleep and the run goes on until the controller
+    /// ends it or something from outside (an IPI posted by the controller, a device) wakes a
+    /// vCPU. The default is `true`.
+    pub(crate) end_when_idle: bool,
+    /// Test injection: called by a thread at the very start of its sleep, after it has looked at
+    /// its Local APIC and decided to sleep and before it parks, with the index of its vCPU. The
+    /// tests hold the thread there and post an event, which is the window of the lost wake-up.
+    #[cfg(test)]
+    pub(crate) pre_sleep: Option<fn(usize)>,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            quantum: crate::smp_scheduler::DEFAULT_QUANTUM,
+            budget: u64::MAX,
+            split_timeout: Duration::from_secs(30),
+            end_when_idle: true,
+            #[cfg(test)]
+            pre_sleep: None,
+        }
+    }
+}
+
+/// Why a parallel run ended.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ParallelFinish {
+    /// The controller asked for the end (or its closure returned).
+    Stopped,
+    BudgetExhausted,
+    /// Every vCPU waits for SIPI, has shut down, or is halted with nothing that could wake it.
+    AllIdle,
+    /// A vCPU's host call, boundary or clock charge failed; every thread was stopped.
+    Error {
+        cpu: usize,
+        error: FirmwareBoardError,
+    },
+    /// The thread of vCPU `cpu` panicked; every thread was stopped.
+    Panicked {
+        cpu: usize,
+    },
+}
+
+/// What one vCPU's thread did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ParallelCpuReport {
+    pub(crate) retired: u64,
+    /// Calls of the interpreter loop (the quantum calls).
+    pub(crate) calls: u64,
+    pub(crate) wakes: u64,
+    pub(crate) init_applied: u64,
+    pub(crate) started: u64,
+    pub(crate) nmi_delivered: u64,
+    /// How many times the thread parked to sleep.
+    pub(crate) sleeps: u64,
+    /// How many times the vCPU held the split-lock gate (split `LOCK` operations executed).
+    pub(crate) split_locks: u64,
+    /// How many times the vCPU asked for the gate while another vCPU held it or won the exchange,
+    /// stood still before any effect of its instruction and asked again (the loser of S6-34 step 8).
+    pub(crate) split_losses: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ParallelReport {
+    pub(crate) finished: ParallelFinish,
+    pub(crate) cpus: Vec<ParallelCpuReport>,
+    /// Virtual nanoseconds the idle jumps skipped, and the number of jumps.
+    pub(crate) idle_ns: u64,
+    pub(crate) idle_jumps: u64,
+    /// Threads started and threads that ran to their end: both are the number of vCPUs when the
+    /// run returns (every thread has been joined; none is left running).
+    pub(crate) threads_started: usize,
+    pub(crate) threads_exited: usize,
+}
+
+/// The proof of a stop of every vCPU (SMP_CONTRACT.md 9).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StopProof {
+    pub(crate) acks: Vec<StopAck>,
+    /// The virtual time at which the machine stood still.
+    pub(crate) now_ns: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ParallelStopError {
+    /// These vCPUs (index order) did not reach a safe point in time. The request was withdrawn and
+    /// every vCPU went on with what it had: no state, pending event or deadline changed.
+    Timeout { unacked: Vec<usize> },
+    /// The run is already over.
+    Finished,
+}
+
+/// One kick cell: the flag the sleeping thread watches and the thread to unpark.
+struct KickCell {
+    flag: AtomicBool,
+    thread: OnceLock<Thread>,
+}
+
+/// The kicks of all vCPUs. `'static` (behind an `Arc`) because the wake sink of the Local APICs
+/// holds it.
+struct Kicks {
+    cells: Vec<KickCell>,
+}
+
+impl Kicks {
+    fn new(count: usize) -> Self {
+        Self {
+            cells: (0..count)
+                .map(|_| KickCell {
+                    flag: AtomicBool::new(false),
+                    thread: OnceLock::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Kick vCPU `cpu`: set its flag, then unpark its thread. Called under the APIC lock by the
+    /// wake sink: takes no lock.
+    fn kick(&self, cpu: usize) {
+        let cell = &self.cells[cpu];
+        cell.flag.store(true, SEQ);
+        if let Some(thread) = cell.thread.get() {
+            thread.unpark();
+        }
+    }
+
+    fn kick_all(&self) {
+        for cpu in 0..self.cells.len() {
+            self.kick(cpu);
+        }
+    }
+
+    /// Unpark without a kick (a thread waits for a condition other than its flag).
+    fn unpark(&self, cpu: usize) {
+        if let Some(thread) = self.cells[cpu].thread.get() {
+            thread.unpark();
+        }
+    }
+
+    fn flag(&self, cpu: usize) -> bool {
+        self.cells[cpu].flag.load(SEQ)
+    }
+}
+
+fn encode_activity(activity: SchedActivity) -> u8 {
+    match activity {
+        SchedActivity::Running => 0,
+        SchedActivity::Halted => 1,
+        SchedActivity::WaitForSipi => 2,
+        SchedActivity::Shutdown => 3,
+    }
+}
+
+fn decode_activity(code: u8) -> SchedActivity {
+    match code {
+        0 => SchedActivity::Running,
+        1 => SchedActivity::Halted,
+        2 => SchedActivity::WaitForSipi,
+        _ => SchedActivity::Shutdown,
+    }
+}
+
+/// What the other threads (and the controller) may know of a vCPU between its passes: published by
+/// the owner thread at every change, read by the idle arbiter and by the stop.
+struct Cell {
+    /// The thread is doing something other than sleeping or standing still. The idle arbiter
+    /// concludes "nobody runs" only when no thread is busy and no kick is pending.
+    busy: AtomicBool,
+    activity: AtomicU8,
+    if_set: AtomicBool,
+    /// The vCPU stands on the restart point of a `REP` (its last call ended inside one).
+    rep_restart: AtomicBool,
+    /// The thread has acknowledged a stop: the vCPU's state is quiescent and its mutex is free.
+    safe: AtomicBool,
+    /// The thread touches no RAM: it stands on a boundary, sleeps, or waits inside its own
+    /// `split_acquire` before any effect of its instruction.
+    quiet: AtomicBool,
+    retired: AtomicU64,
+    calls: AtomicU64,
+    wakes: AtomicU64,
+    init_applied: AtomicU64,
+    started: AtomicU64,
+    nmi_delivered: AtomicU64,
+    sleeps: AtomicU64,
+    split_locks: AtomicU64,
+    split_losses: AtomicU64,
+}
+
+impl Cell {
+    fn new() -> Self {
+        Self {
+            busy: AtomicBool::new(true),
+            activity: AtomicU8::new(0),
+            if_set: AtomicBool::new(false),
+            rep_restart: AtomicBool::new(false),
+            safe: AtomicBool::new(false),
+            quiet: AtomicBool::new(false),
+            retired: AtomicU64::new(0),
+            calls: AtomicU64::new(0),
+            wakes: AtomicU64::new(0),
+            init_applied: AtomicU64::new(0),
+            started: AtomicU64::new(0),
+            nmi_delivered: AtomicU64::new(0),
+            sleeps: AtomicU64::new(0),
+            split_locks: AtomicU64::new(0),
+            split_losses: AtomicU64::new(0),
+        }
+    }
+
+    fn report(&self) -> ParallelCpuReport {
+        ParallelCpuReport {
+            retired: self.retired.load(SEQ),
+            calls: self.calls.load(SEQ),
+            wakes: self.wakes.load(SEQ),
+            init_applied: self.init_applied.load(SEQ),
+            started: self.started.load(SEQ),
+            nmi_delivered: self.nmi_delivered.load(SEQ),
+            sleeps: self.sleeps.load(SEQ),
+            split_locks: self.split_locks.load(SEQ),
+            split_losses: self.split_losses.load(SEQ),
+        }
+    }
+}
+
+/// What a quantum function of the run is handed.
+pub(crate) struct QuantumCall<'a, 'b> {
+    pub(crate) env: &'a ThreadQuantumEnv<'b>,
+    pub(crate) vcpu: &'a mut Vcpu,
+    pub(crate) cpu: usize,
+    pub(crate) lapic: &'a LocalApicHandle,
+    /// The interrupt source of the board for the boot processor; an inert source for every other
+    /// vCPU.
+    pub(crate) source: &'a mut dyn BoardIrqSource,
+    pub(crate) gate: &'a dyn SplitLockGate,
+    pub(crate) budget: u64,
+    pub(crate) stop: &'a mut dyn FnMut() -> bool,
+}
+
+/// One quantum of a vCPU: the caller builds its CPL0 set and calls
+/// [`run_vcpu_set_quantum_shared`] with the parts of the call (the set borrows local profile
+/// values, so it cannot be built outside the call).
+pub(crate) type QuantumFn<'f> =
+    dyn Fn(QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> + Sync + 'f;
+
+/// State shared by the threads and the controller.
+struct SharedState<'a> {
+    count: usize,
+    config: ParallelConfig,
+    kicks: Arc<Kicks>,
+    cells: Vec<Cell>,
+    /// The controller asks every vCPU to stand still.
+    stop_all: AtomicBool,
+    /// The run is over: every thread ends at its next boundary.
+    finish: AtomicBool,
+    /// The first reason the run ended.
+    reason: Mutex<Option<ParallelFinish>>,
+    /// The vCPU that holds the split-lock gate, or [`NO_OWNER`].
+    split_owner: AtomicUsize,
+    controller: OnceLock<Thread>,
+    /// The single clock owner (D7): the lock is above the APIC lock in the order (a charge takes
+    /// the APIC lock under it); nothing takes it under the APIC lock.
+    owner: Mutex<&'a mut ClockOwner>,
+    /// The interrupt source of the board, used by the boot processor's thread for its quantum, its
+    /// deadline and its wake test, and by the idle arbiter only when every thread is idle.
+    irq: Mutex<&'a mut dyn BoardIrqSource>,
+    /// Retired instructions left in the shared budget.
+    remaining: AtomicU64,
+    idle_ns: AtomicU64,
+    idle_jumps: AtomicU64,
+    started: AtomicUsize,
+    exited: AtomicUsize,
+    lapics: Vec<LocalApicHandle>,
+    vcpus: Vec<Mutex<&'a mut Vcpu>>,
+}
+
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl SharedState<'_> {
+    fn other_split(&self, cpu: usize) -> bool {
+        let owner = self.split_owner.load(SEQ);
+        owner != NO_OWNER && owner != cpu
+    }
+
+    /// The interpreter's stop poll for the call of `cpu`: the end of the run, a stop-all request,
+    /// or another vCPU's split `LOCK`. Only atomics.
+    fn call_must_end(&self, cpu: usize) -> bool {
+        self.finish.load(Ordering::Acquire)
+            || self.stop_all.load(Ordering::Acquire)
+            || self.other_split(cpu)
+    }
+
+    /// The interrupt source of the board is not in a Local APIC, so nothing posts to the boot
+    /// processor when its line becomes deliverable as the clock moves: a thread that moved the
+    /// clock looks, only if the boot processor sleeps in `HLT` with IF = 1, and kicks it.
+    fn kick_boot_if_board_wakes(&self) {
+        let boot = &self.cells[BOOT_VCPU_INDEX];
+        if decode_activity(boot.activity.load(SEQ)) != SchedActivity::Halted
+            || !boot.if_set.load(SEQ)
+        {
+            return;
+        }
+        let now = lock(&self.owner).now_ns();
+        match self.irq.try_lock() {
+            Ok(source) => {
+                if source.wake_ns().is_some_and(|wake| wake <= now) {
+                    self.kicks.kick(BOOT_VCPU_INDEX);
+                }
+            }
+            // A thread holds the source and may be about to move its deadline: the look is lost,
+            // so wake the boot processor anyway (a spurious wake-up is harmless; a lost one
+            // leaves the line unserved while the others sleep).
+            Err(std::sync::TryLockError::WouldBlock) => self.kicks.kick(BOOT_VCPU_INDEX),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                if poisoned
+                    .into_inner()
+                    .wake_ns()
+                    .is_some_and(|wake| wake <= now)
+                {
+                    self.kicks.kick(BOOT_VCPU_INDEX);
+                }
+            }
+        }
+    }
+
+    fn wake_controller(&self) {
+        if let Some(thread) = self.controller.get() {
+            thread.unpark();
+        }
+    }
+
+    /// The first reason wins; every thread is told to end.
+    fn finish_with(&self, reason: ParallelFinish) {
+        lock(&self.reason).get_or_insert(reason);
+        self.finish.store(true, SEQ);
+        self.kicks.kick_all();
+        self.wake_controller();
+    }
+
+    fn fail(&self, cpu: usize, error: FirmwareBoardError) {
+        self.finish_with(ParallelFinish::Error { cpu, error });
+    }
+
+    fn publish(&self, cpu: usize, vcpu: &Vcpu) {
+        let cell = &self.cells[cpu];
+        cell.activity
+            .store(encode_activity(SchedActivity::from(vcpu.activity())), SEQ);
+        cell.if_set.store(vcpu.interrupts_enabled(), SEQ);
+        cell.rep_restart.store(vcpu.skip_first_boundary, SEQ);
+    }
+
+    fn ack_of(&self, cpu: usize) -> StopAck {
+        let cell = &self.cells[cpu];
+        match decode_activity(cell.activity.load(SEQ)) {
+            SchedActivity::Running if cell.rep_restart.load(SEQ) => StopAck::RepRestart,
+            SchedActivity::Running => StopAck::Boundary,
+            asleep => StopAck::Asleep(asleep),
+        }
+    }
+
+    /// The barrier at the top of a pass: `true` when the run is over. The thread stands still while
+    /// a stop-all is in force or another vCPU holds the split-lock gate, and says so (`safe` for a
+    /// stop, `quiet` for both). Leaving it clears the flags FIRST and reads the requests AFTER
+    /// (`SeqCst` both ways): a requester that read a stale `safe`/`quiet` has set its request
+    /// before the thread's clear, so the thread's read sees the request.
+    fn barrier(&self, cpu: usize) -> bool {
+        let cell = &self.cells[cpu];
+        loop {
+            if self.finish.load(SEQ) {
+                return true;
+            }
+            cell.safe.store(false, SEQ);
+            cell.quiet.store(false, SEQ);
+            let stopping = self.stop_all.load(SEQ);
+            let other_split = self.other_split(cpu);
+            if !stopping && !other_split {
+                return false;
+            }
+            cell.quiet.store(true, SEQ);
+            if stopping {
+                cell.safe.store(true, SEQ);
+                self.wake_controller();
+            }
+            let owner = self.split_owner.load(SEQ);
+            if owner != NO_OWNER {
+                self.kicks.unpark(owner);
+            }
+            while !self.finish.load(SEQ) && (self.stop_all.load(SEQ) || self.other_split(cpu)) {
+                thread::park();
+            }
+        }
+    }
+
+    /// Whether every vCPU thread other than `cpu` is quiet (see [`Cell::quiet`]).
+    fn others_quiet(&self, cpu: usize) -> bool {
+        (0..self.count)
+            .filter(|&other| other != cpu)
+            .all(|other| self.cells[other].quiet.load(SEQ))
+    }
+
+    /// The gate of the split `LOCK` for vCPU `cpu` (S6-34 step 8, MEMORY_MODEL.md D8): called by
+    /// the vCPU in the middle of its instruction BEFORE any visible effect of it.
+    ///
+    /// The vCPU asks to be the one owner (`split_owner`, compare-exchange). The owner then waits
+    /// until every other vCPU is quiet: the others poll the owner in their interpreter loop and end
+    /// their call on the next boundary, go to the barrier, and say `quiet`; sleeping vCPUs are
+    /// quiet already. A vCPU that asks while another owns, or that loses the exchange, is the
+    /// loser: it has had no effect, so it says `quiet` itself (it stands where the plan says "back
+    /// at the start of its instruction": nothing of the instruction has happened), waits until the
+    /// owner releases, and asks again. No vCPU waits for another to move while being itself
+    /// needed to be quiet: an owner is not waited for, and a waiting vCPU is quiet.
+    ///
+    /// An owner that does not get every other vCPU quiet within the configured time gives the gate
+    /// back and fails the instruction (no effect); every vCPU that waited goes on.
+    fn split_acquire(&self, cpu: usize) -> Result<(), String> {
+        let cell = &self.cells[cpu];
+        let deadline = Instant::now() + self.config.split_timeout;
+        loop {
+            if self.finish.load(SEQ) {
+                return Err("the run is ending".to_owned());
+            }
+            match self.split_owner.compare_exchange(NO_OWNER, cpu, SEQ, SEQ) {
+                Ok(_) => {
+                    // The owner. Kick the others (they read the owner in their stop poll), then
+                    // wait for their `quiet`.
+                    self.kicks.kick_all();
+                    loop {
+                        if self.others_quiet(cpu) {
+                            cell.split_locks.fetch_add(1, SEQ);
+                            return Ok(());
+                        }
+                        if self.finish.load(SEQ) || Instant::now() >= deadline {
+                            self.split_owner.store(NO_OWNER, SEQ);
+                            self.kicks.kick_all();
+                            return Err(if self.finish.load(SEQ) {
+                                "the run is ending".to_owned()
+                            } else {
+                                "the other vCPUs did not stand still in time".to_owned()
+                            });
+                        }
+                        thread::park_timeout(Duration::from_micros(200));
+                    }
+                }
+                Err(owner) => {
+                    // The loser: nothing of the instruction has happened. Stand still.
+                    cell.split_losses.fetch_add(1, SEQ);
+                    cell.quiet.store(true, SEQ);
+                    self.kicks.unpark(owner);
+                    while self.split_owner.load(SEQ) != NO_OWNER {
+                        if self.finish.load(SEQ) {
+                            cell.quiet.store(false, SEQ);
+                            return Err("the run is ending".to_owned());
+                        }
+                        if Instant::now() >= deadline {
+                            cell.quiet.store(false, SEQ);
+                            return Err("the split-lock owner did not release in time".to_owned());
+                        }
+                        thread::park_timeout(Duration::from_micros(200));
+                    }
+                    cell.quiet.store(false, SEQ);
+                }
+            }
+        }
+    }
+
+    fn split_release(&self, cpu: usize) {
+        debug_assert_eq!(self.split_owner.load(SEQ), cpu);
+        self.split_owner.store(NO_OWNER, SEQ);
+        self.kicks.kick_all();
+    }
+
+    /// Go to sleep (`HLT`, the wait for SIPI, `Shutdown`): say `safe` and `quiet` (a sleeper
+    /// acknowledges a stop and a split `LOCK` without a guest instruction), stop being `busy`, let
+    /// the idle arbiter decide whether this was the last thread awake, and park until kicked.
+    fn sleep(&self, cpu: usize) {
+        #[cfg(test)]
+        if let Some(hook) = self.config.pre_sleep {
+            hook(cpu);
+        }
+        let cell = &self.cells[cpu];
+        cell.sleeps.fetch_add(1, SEQ);
+        cell.quiet.store(true, SEQ);
+        cell.safe.store(true, SEQ);
+        cell.busy.store(false, SEQ);
+        self.wake_controller();
+        let owner = self.split_owner.load(SEQ);
+        if owner != NO_OWNER {
+            self.kicks.unpark(owner);
+        }
+        self.idle_check();
+        while !self.kicks.flag(cpu) && !self.finish.load(SEQ) {
+            thread::park();
+        }
+    }
+
+    /// One decision of the idle arbiter when the last awake thread is going to sleep (S6-34;
+    /// the interleaved scheduler's `idle_step`): nobody is busy, no kick is pending, no stop is in
+    /// force -> `ClockOwner::idle_step` (at most one jump per decision, repeated while it only
+    /// advanced). A wake-up makes the woken thread's own pass wake its vCPU (the kick is set by
+    /// the dispatch itself, through the wake sink). "Nothing can wake" ends the run.
+    fn idle_check(&self) {
+        if !self.quiescent_for_idle() {
+            return;
+        }
+        let mut owner = lock(&self.owner);
+        for _ in 0..64 {
+            // Under the owner's lock: a stop-all that was requested meanwhile is not crossed (the
+            // clock stands while stopped).
+            if !self.quiescent_for_idle() {
+                return;
+            }
+            let views: Vec<WakeView> = (0..self.count)
+                .map(|cpu| WakeView {
+                    activity: decode_activity(self.cells[cpu].activity.load(SEQ)),
+                    if_set: self.cells[cpu].if_set.load(SEQ),
+                    apic: self.lapics[cpu].clone(),
+                })
+                .collect();
+            let now = owner.now_ns();
+            let boot_halted = views[BOOT_VCPU_INDEX].activity == SchedActivity::Halted
+                && views[BOOT_VCPU_INDEX].if_set;
+            let deadlines: Vec<u64> = match self.irq.try_lock() {
+                Ok(source) => {
+                    if boot_halted {
+                        match source.wake_ns() {
+                            // The line is deliverable now and the boot processor sleeps in HLT
+                            // with IF = 1: the wake-up was lost (the look of the thread that moved
+                            // the clock found the source busy). Wake it; do not decide AllIdle.
+                            Some(wake) if wake <= now => {
+                                drop(source);
+                                self.kicks.kick(BOOT_VCPU_INDEX);
+                                return;
+                            }
+                            wake => wake.into_iter().collect(),
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                }
+                // A thread has the source: it is not idle.
+                Err(std::sync::TryLockError::WouldBlock) => return,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
+                    .into_inner()
+                    .wake_ns()
+                    .filter(|wake| *wake > now)
+                    .into_iter()
+                    .collect(),
+            };
+            let step = match owner.idle_step(false, &views, &deadlines) {
+                Ok(step) => step,
+                Err(error) => {
+                    drop(owner);
+                    self.fail(
+                        BOOT_VCPU_INDEX,
+                        FirmwareBoardError::Config(match error {
+                            crate::clock_owner::ClockOwnerError::Clock(_) => {
+                                "parallel idle: the clock refused the jump"
+                            }
+                            crate::clock_owner::ClockOwnerError::Dispatch { .. } => {
+                                "parallel idle: a timer dispatch failed"
+                            }
+                        }),
+                    );
+                    return;
+                }
+            };
+            self.idle_ns.fetch_add(step.idle_ns, SEQ);
+            self.idle_jumps.fetch_add(u64::from(step.idle_ns > 0), SEQ);
+            if step.idle_ns > 0 {
+                // The board's source (the PIT line of the boot processor) is not in a Local APIC:
+                // nothing kicks the boot processor for it, so a jump does.
+                self.kicks.kick(BOOT_VCPU_INDEX);
+            }
+            match step.outcome {
+                IdleOutcome::Stopped | IdleOutcome::Runnable(_) => return,
+                IdleOutcome::Woken(_) => {
+                    self.kicks.kick_all();
+                    return;
+                }
+                IdleOutcome::Advanced(_) => {}
+                IdleOutcome::AllIdle => {
+                    drop(owner);
+                    if self.config.end_when_idle {
+                        self.finish_with(ParallelFinish::AllIdle);
+                    }
+                    return;
+                }
+                IdleOutcome::NoProgress => {
+                    if step.idle_ns > 0 && !deadlines.is_empty() {
+                        self.kicks.kick(BOOT_VCPU_INDEX);
+                        return;
+                    }
+                    drop(owner);
+                    self.fail(
+                        BOOT_VCPU_INDEX,
+                        FirmwareBoardError::Config("parallel idle: a due deadline nobody takes"),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// No thread is busy, no kick is pending, no stop or split gate or end is in force.
+    fn quiescent_for_idle(&self) -> bool {
+        !self.finish.load(SEQ)
+            && !self.stop_all.load(SEQ)
+            && self.split_owner.load(SEQ) == NO_OWNER
+            && (0..self.count).all(|cpu| !self.cells[cpu].busy.load(SEQ) && !self.kicks.flag(cpu))
+    }
+}
+
+struct WorkerGate<'s, 'a> {
+    shared: &'s SharedState<'a>,
+    cpu: usize,
+}
+
+impl SplitLockGate for WorkerGate<'_, '_> {
+    fn acquire(&self) -> Result<(), String> {
+        self.shared.split_acquire(self.cpu)
+    }
+
+    fn release(&self) {
+        self.shared.split_release(self.cpu);
+    }
+}
+
+/// What a thread has besides the shared state.
+struct Worker<'s, 'a, 'e, 'b> {
+    shared: &'s SharedState<'a>,
+    env: &'e ThreadQuantumEnv<'b>,
+    run: &'e QuantumFn<'e>,
+    page_table_root: u64,
+    cpu: usize,
+}
+
+impl Worker<'_, '_, '_, '_> {
+    fn memory(&self) -> &PhysicalMemory {
+        self.env.bus.physical_memory()
+    }
+
+    /// The loop of the thread of one vCPU.
+    fn run(&self) {
+        let sh = self.shared;
+        let cpu = self.cpu;
+        let cell = &sh.cells[cpu];
+        let apic = sh.lapics[cpu].clone();
+        loop {
+            cell.busy.store(true, SEQ);
+            if sh.barrier(cpu) {
+                break;
+            }
+            // Clear the kick BEFORE looking at the APIC (see the module documentation).
+            sh.kicks.cells[cpu].flag.store(false, SEQ);
+            let mut slot = lock(&sh.vcpus[cpu]);
+            let vcpu: &mut Vcpu = &mut slot;
+
+            // The boundary: INIT and SIPI, then NMI (SMP_CONTRACT.md 3, 5; the order of
+            // `BoardSmpHost::boundary`).
+            let pending = match apic.take_startup() {
+                Ok(pending) => pending,
+                Err(_) => {
+                    drop(slot);
+                    sh.fail(
+                        cpu,
+                        FirmwareBoardError::Config("apply_pending_startup: INIT reset failed"),
+                    );
+                    break;
+                }
+            };
+            let applied = vcpu.apply_startup(pending);
+            cell.init_applied.fetch_add(u64::from(applied.init), SEQ);
+            cell.started.fetch_add(u64::from(applied.started), SEQ);
+            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root) {
+                Ok(nmi) => {
+                    cell.nmi_delivered
+                        .fetch_add(u64::from(nmi == NmiBoundary::Delivered), SEQ);
+                }
+                Err(error) => {
+                    sh.publish(cpu, vcpu);
+                    drop(slot);
+                    sh.fail(cpu, error);
+                    break;
+                }
+            }
+            sh.publish(cpu, vcpu);
+
+            match SchedActivity::from(vcpu.activity()) {
+                SchedActivity::Running => {
+                    if let Err(error) = self.call(vcpu, &apic) {
+                        sh.publish(cpu, vcpu);
+                        drop(slot);
+                        sh.fail(cpu, error);
+                        break;
+                    }
+                    sh.publish(cpu, vcpu);
+                    drop(slot);
+                }
+                SchedActivity::Halted => {
+                    let wake = vcpu.interrupts_enabled()
+                        && (apic.eligible().is_some() || self.board_wakes());
+                    if wake {
+                        vcpu.state.activity = Some(od_isa::CpuActivity::Running);
+                        cell.wakes.fetch_add(1, SEQ);
+                        sh.publish(cpu, vcpu);
+                        drop(slot);
+                        continue;
+                    }
+                    sh.publish(cpu, vcpu);
+                    drop(slot);
+                    sh.sleep(cpu);
+                }
+                SchedActivity::WaitForSipi | SchedActivity::Shutdown => {
+                    drop(slot);
+                    sh.sleep(cpu);
+                }
+            }
+        }
+        // The thread is leaving: nobody waits for it.
+        cell.safe.store(true, SEQ);
+        cell.quiet.store(true, SEQ);
+        cell.busy.store(false, SEQ);
+        sh.wake_controller();
+        let owner = sh.split_owner.load(SEQ);
+        if owner != NO_OWNER {
+            sh.kicks.unpark(owner);
+        }
+    }
+
+    /// Whether the board's source has a vector for the halted boot processor now.
+    fn board_wakes(&self) -> bool {
+        if self.cpu != BOOT_VCPU_INDEX {
+            return false;
+        }
+        let now = lock(&self.shared.owner).now_ns();
+        lock(&self.shared.irq)
+            .wake_ns()
+            .is_some_and(|wake| wake <= now)
+    }
+
+    /// One call of the interpreter loop of the running vCPU and its charge to the clock.
+    fn call(&self, vcpu: &mut Vcpu, apic: &LocalApicHandle) -> Result<(), FirmwareBoardError> {
+        let sh = self.shared;
+        let cpu = self.cpu;
+        let cell = &sh.cells[cpu];
+        let left = sh.config.quantum.max(1).min(sh.remaining.load(SEQ));
+        if left == 0 {
+            sh.finish_with(ParallelFinish::BudgetExhausted);
+            return Ok(());
+        }
+        let gate = WorkerGate { shared: sh, cpu };
+        let mut stop = || sh.call_must_end(cpu);
+        let mut inert = NoIrqSource;
+        let executed = if cpu == BOOT_VCPU_INDEX {
+            let mut source = lock(&sh.irq);
+            let budget = {
+                let owner = lock(&sh.owner);
+                let now = owner.now_ns();
+                let deadline = source.next_deadline_ns().filter(|deadline| *deadline > now);
+                owner.step_budget(left, deadline)
+            };
+            self.dispatch(vcpu, apic, &mut **source, &gate, budget, &mut stop)?
+        } else {
+            let budget = lock(&sh.owner).step_budget(left, None);
+            self.dispatch(vcpu, apic, &mut inert, &gate, budget, &mut stop)?
+        };
+        // The charge: the clock owner is the only mover of time (D7).
+        {
+            let mut owner = lock(&sh.owner);
+            if executed.retired != 0 {
+                owner.account_retired(executed.retired).map_err(|_| {
+                    FirmwareBoardError::Config("parallel: the clock refused the retired charge")
+                })?;
+            }
+            if executed.device_ns != 0 {
+                owner.account_device_ns(executed.device_ns).map_err(|_| {
+                    FirmwareBoardError::Config("parallel: the clock refused the device charge")
+                })?;
+            }
+        }
+        if cpu != BOOT_VCPU_INDEX {
+            sh.kick_boot_if_board_wakes();
+        }
+        cell.calls.fetch_add(1, SEQ);
+        cell.retired.fetch_add(executed.retired, SEQ);
+        let left_after = sh
+            .remaining
+            .try_update(SEQ, SEQ, |left| Some(left.saturating_sub(executed.retired)))
+            .map_or(0, |before| before.saturating_sub(executed.retired));
+        if left_after == 0 {
+            sh.finish_with(ParallelFinish::BudgetExhausted);
+        }
+        Ok(())
+    }
+
+    /// The host call for a vCPU in a legacy model or in long mode (what `BoardSmpHost::run` does):
+    /// the trampoline of an application processor runs on the RAM; when its 64-bit jump has
+    /// retired the rest of the budget is the long-mode quantum in the same call.
+    fn dispatch(
+        &self,
+        vcpu: &mut Vcpu,
+        apic: &LocalApicHandle,
+        source: &mut dyn BoardIrqSource,
+        gate: &WorkerGate<'_, '_>,
+        budget: u64,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Result<Executed, FirmwareBoardError> {
+        let cpu = self.cpu;
+        let quantum = |vcpu: &mut Vcpu,
+                       source: &mut dyn BoardIrqSource,
+                       budget: u64,
+                       stop: &mut dyn FnMut() -> bool| {
+            (self.run)(QuantumCall {
+                env: self.env,
+                vcpu,
+                cpu,
+                lapic: apic,
+                source,
+                gate,
+                budget,
+                stop,
+            })
+        };
+        if vcpu.legacy.is_none() {
+            return quantum(vcpu, source, budget, stop);
+        }
+        let legacy = crate::ap_legacy_exec::run_legacy_on(vcpu, self.memory(), cpu, budget, stop)?;
+        let mut executed = legacy.executed;
+        let left = budget.saturating_sub(executed.retired);
+        if legacy.entered_long_mode && left > 0 {
+            let rest = quantum(vcpu, source, left, stop)?;
+            executed.retired += rest.retired;
+            executed.partial_rep = rest.partial_rep;
+            executed.device_ns += rest.device_ns;
+        }
+        Ok(executed)
+    }
+}
+
+/// The controller's side of a parallel run (the caller's thread).
+pub(crate) struct ParallelControl<'s, 'a> {
+    shared: &'s SharedState<'a>,
+    bus: &'s crate::MachineBus,
+}
+
+impl ParallelControl<'_, '_> {
+    /// The bus of the machine (RAM by shared reference, devices behind their lock).
+    pub(crate) fn bus(&self) -> &crate::MachineBus {
+        self.bus
+    }
+
+    /// Whether the run is over (every thread is leaving or has left).
+    pub(crate) fn is_finished(&self) -> bool {
+        self.shared.finish.load(SEQ)
+    }
+
+    /// The counters of vCPU `cpu` so far (atomics: a running vCPU's are a moment old).
+    pub(crate) fn cpu_report(&self, cpu: usize) -> ParallelCpuReport {
+        self.shared.cells[cpu].report()
+    }
+
+    /// Retired instructions of every vCPU so far.
+    pub(crate) fn retired(&self) -> Vec<u64> {
+        self.shared
+            .cells
+            .iter()
+            .map(|c| c.retired.load(SEQ))
+            .collect()
+    }
+
+    /// The virtual time (ns).
+    pub(crate) fn now_ns(&self) -> u64 {
+        lock(&self.shared.owner).now_ns()
+    }
+
+    /// End the run: every thread ends at its next boundary.
+    pub(crate) fn finish(&self) {
+        self.shared.finish_with(ParallelFinish::Stopped);
+    }
+
+    /// Wait until the run is over or `timeout` has passed. `true` when it is over.
+    pub(crate) fn wait_finished(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.shared.finish.load(SEQ) {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            thread::park_timeout((deadline - now).min(Duration::from_millis(5)));
+        }
+    }
+
+    /// Wait until `condition` is true or `timeout` has passed or the run is over. `true` when the
+    /// condition held.
+    pub(crate) fn wait_until(
+        &self,
+        timeout: Duration,
+        mut condition: impl FnMut() -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if condition() {
+                return true;
+            }
+            if self.shared.finish.load(SEQ) {
+                return condition();
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            thread::park_timeout((deadline - now).min(Duration::from_micros(500)));
+        }
+    }
+
+    /// Stop every vCPU (SMP_CONTRACT.md 9): set the request, kick each vCPU that has not
+    /// acknowledged, wait for the acknowledgement of each until `timeout`. On success the stop
+    /// stays in force until [`Self::resume`]: no vCPU starts, an IPI that arrives stays pending in
+    /// its Local APIC, the clock stands. On a timeout the request is withdrawn and nothing has
+    /// changed.
+    pub(crate) fn stop_all(&self, timeout: Duration) -> Result<StopProof, ParallelStopError> {
+        let sh = self.shared;
+        if sh.finish.load(SEQ) {
+            return Err(ParallelStopError::Finished);
+        }
+        sh.stop_all.store(true, SEQ);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let unacked: Vec<usize> = (0..sh.count)
+                .filter(|&cpu| !sh.cells[cpu].safe.load(SEQ))
+                .collect();
+            if unacked.is_empty() {
+                // The idle jump that may have been in progress finishes under the owner's lock
+                // and takes no further step while the request stands: read the time under it.
+                let now_ns = lock(&sh.owner).now_ns();
+                let acks = (0..sh.count).map(|cpu| sh.ack_of(cpu)).collect();
+                return Ok(StopProof { acks, now_ns });
+            }
+            if sh.finish.load(SEQ) {
+                sh.stop_all.store(false, SEQ);
+                return Err(ParallelStopError::Finished);
+            }
+            if Instant::now() >= deadline {
+                sh.stop_all.store(false, SEQ);
+                sh.kicks.kick_all();
+                return Err(ParallelStopError::Timeout { unacked });
+            }
+            for &cpu in &unacked {
+                sh.kicks.kick(cpu);
+            }
+            thread::park_timeout(Duration::from_micros(200));
+        }
+    }
+
+    /// The explicit command that lets the guest run again after [`Self::stop_all`].
+    pub(crate) fn resume(&self) {
+        let sh = self.shared;
+        sh.stop_all.store(false, Ordering::Release);
+        sh.kicks.kick_all();
+        // If every vCPU was asleep at the stop, nobody runs the idle arbiter: do it here.
+        sh.idle_check();
+    }
+
+    /// Whether a stop is in force.
+    pub(crate) fn stopped(&self) -> bool {
+        self.shared.stop_all.load(SEQ)
+    }
+
+    /// Look at (or change) vCPU `cpu` while the machine is stopped. `None` when no stop is in
+    /// force or the vCPU has not acknowledged it.
+    pub(crate) fn with_vcpu<R>(&self, cpu: usize, f: impl FnOnce(&mut Vcpu) -> R) -> Option<R> {
+        let sh = self.shared;
+        if !sh.stop_all.load(SEQ) || !sh.cells[cpu].safe.load(SEQ) {
+            return None;
+        }
+        let mut guard = lock(&sh.vcpus[cpu]);
+        Some(f(&mut guard))
+    }
+
+    /// The activity vCPU `cpu` last published.
+    pub(crate) fn activity(&self, cpu: usize) -> SchedActivity {
+        decode_activity(self.shared.cells[cpu].activity.load(SEQ))
+    }
+}
+
+/// Run the vCPUs of `board` on one thread each (the parallel mode), with the caller's thread as the
+/// controller: `controller` runs while the vCPUs run, and when it returns the run is ended (if it
+/// is not over yet) and every thread is joined before this function returns. The board is put in
+/// [`ExecutionMode::Parallel`] for the run (ordinary RAM accesses `SeqCst`, host fences for the
+/// guest fences) and back to the mode it had when the run is over.
+///
+/// `run` is the quantum of a vCPU (the caller's CPL0 set); it is called by every thread. A vCPU
+/// that is not `Running` is not run: the boot processor starts `Running` as the loader left it and
+/// the others wait for SIPI.
+pub(crate) fn run_threads<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: ParallelConfig,
+    run: &QuantumFn<'_>,
+    controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+) -> Result<(ParallelReport, R), FirmwareBoardError> {
+    if config.quantum == 0 {
+        return Err(FirmwareBoardError::Config("parallel run: quantum 0"));
+    }
+    let previous_mode = board.execution_mode();
+    board.set_execution_mode(ExecutionMode::Parallel);
+    let outcome = run_threads_inner(board, config, run, controller);
+    board.set_execution_mode(previous_mode);
+    outcome
+}
+
+fn run_threads_inner<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: ParallelConfig,
+    run: &QuantumFn<'_>,
+    controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+) -> Result<(ParallelReport, R), FirmwareBoardError> {
+    let parts = board.thread_parts()?;
+    let ThreadParts {
+        bus,
+        vcpus,
+        lapic,
+        uart,
+        acpi_pm,
+        pit,
+        uart_irq_source,
+        uart_ioapic_source,
+        irq_source,
+        owner,
+        com1,
+        page_table_root,
+    } = parts;
+    let count = vcpus.len();
+    let lapics: Vec<LocalApicHandle> = (0..count)
+        .map(|cpu| {
+            lapic.for_cpu(cpu).ok_or(FirmwareBoardError::Config(
+                "parallel run: a vCPU without a Local APIC",
+            ))
+        })
+        .collect::<Result<_, _>>()?;
+    let kicks = Arc::new(Kicks::new(count));
+    let com1 = Mutex::new(com1);
+    let env = ThreadQuantumEnv {
+        bus,
+        uart,
+        acpi_pm,
+        pit,
+        uart_irq_source,
+        uart_ioapic_source,
+        com1: &com1,
+    };
+    let shared = SharedState {
+        count,
+        config,
+        kicks: Arc::clone(&kicks),
+        cells: (0..count).map(|_| Cell::new()).collect(),
+        stop_all: AtomicBool::new(false),
+        finish: AtomicBool::new(false),
+        reason: Mutex::new(None),
+        split_owner: AtomicUsize::new(NO_OWNER),
+        controller: OnceLock::new(),
+        owner: Mutex::new(owner),
+        irq: Mutex::new(irq_source),
+        remaining: AtomicU64::new(config.budget),
+        idle_ns: AtomicU64::new(0),
+        idle_jumps: AtomicU64::new(0),
+        started: AtomicUsize::new(0),
+        exited: AtomicUsize::new(0),
+        lapics: lapics.clone(),
+        vcpus: vcpus.iter_mut().map(Mutex::new).collect(),
+    };
+    {
+        let sink_kicks = Arc::clone(&kicks);
+        lapics[0].set_wake_sink(Some(Arc::new(move |cpu| sink_kicks.kick(cpu))));
+    }
+    let _ = shared.controller.set(thread::current());
+    let result = thread::scope(|scope| {
+        for cpu in 0..count {
+            let worker = Worker {
+                shared: &shared,
+                env: &env,
+                run,
+                page_table_root,
+                cpu,
+            };
+            thread::Builder::new()
+                .name(format!("od-vcpu-{cpu}"))
+                .spawn_scoped(scope, move || {
+                    let shared = worker.shared;
+                    let _ = shared.kicks.cells[cpu].thread.set(thread::current());
+                    shared.started.fetch_add(1, SEQ);
+                    let cpu = worker.cpu;
+                    if catch_unwind(AssertUnwindSafe(|| worker.run())).is_err() {
+                        shared.finish_with(ParallelFinish::Panicked { cpu });
+                        let cell = &shared.cells[cpu];
+                        cell.safe.store(true, SEQ);
+                        cell.quiet.store(true, SEQ);
+                        cell.busy.store(false, SEQ);
+                        shared.wake_controller();
+                    }
+                    shared.exited.fetch_add(1, SEQ);
+                })
+                .expect("a thread of the parallel run starts");
+        }
+        let control = ParallelControl {
+            shared: &shared,
+            bus,
+        };
+        let value = catch_unwind(AssertUnwindSafe(|| controller(&control)));
+        // The run ends when the controller is done (the first reason stays if there is one).
+        shared.finish_with(ParallelFinish::Stopped);
+        value
+    });
+    lapics[0].set_wake_sink(None);
+    let finished = lock(&shared.reason)
+        .take()
+        .unwrap_or(ParallelFinish::Stopped);
+    let report = ParallelReport {
+        finished,
+        cpus: shared.cells.iter().map(Cell::report).collect(),
+        idle_ns: shared.idle_ns.load(SEQ),
+        idle_jumps: shared.idle_jumps.load(SEQ),
+        threads_started: shared.started.load(SEQ),
+        threads_exited: shared.exited.load(SEQ),
+    };
+    match result {
+        Ok(value) => Ok((report, value)),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::firmware_board::vcpu_quantum::{fixture::*, run_vcpu_set_quantum_shared};
+    use crate::{GuestPhysicalAddress, LOCAL_APIC_MMIO_BASE};
+    use od_isa::{CpuActivity, Register};
+    use std::sync::atomic::AtomicBool;
+
+    /// The quantum of the fixture guests on a vCPU thread: the CPL0 set of the S6-16d tests.
+    fn fixture_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+        with_set(|set| {
+            run_vcpu_set_quantum_shared(
+                call.env,
+                call.vcpu,
+                call.cpu,
+                call.lapic,
+                call.source,
+                Some(call.gate),
+                call.budget,
+                call.stop,
+                set,
+            )
+        })
+    }
+
+    fn config(quantum: u64, budget: u64) -> ParallelConfig {
+        ParallelConfig {
+            quantum,
+            budget,
+            split_timeout: Duration::from_secs(20),
+            end_when_idle: true,
+            pre_sleep: None,
+        }
+    }
+
+    /// The run does not end when everything sleeps: the test posts the events itself.
+    fn open_config(quantum: u64) -> ParallelConfig {
+        ParallelConfig {
+            end_when_idle: false,
+            ..config(quantum, u64::MAX)
+        }
+    }
+
+    fn run<R>(
+        board: &mut LoadedFirmwareBoard,
+        config: ParallelConfig,
+        controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
+    ) -> (ParallelReport, R) {
+        run_threads(board, config, &fixture_quantum, controller).expect("the board splits")
+    }
+
+    fn assert_joined(report: &ParallelReport, vcpus: usize) {
+        assert_eq!(report.threads_started, vcpus, "{report:?}");
+        assert_eq!(
+            report.threads_exited, vcpus,
+            "no vCPU thread is left: {report:?}"
+        );
+    }
+
+    fn cell(control: &ParallelControl<'_, '_>, at: u64) -> u32 {
+        control
+            .bus()
+            .physical_memory()
+            .load_u32(GuestPhysicalAddress::new(at))
+            .unwrap()
+    }
+
+    const WAIT: Duration = Duration::from_secs(60);
+
+    /// The wake sink hears every request posted to a Local APIC (a Fixed vector from a device or
+    /// an IPI, INIT, SIPI, NMI), with the index of the target, and nothing the vCPU does to itself
+    /// by reading; a snapshot restore keeps it; with no sink nothing is called.
+    #[test]
+    fn the_wake_sink_hears_every_request_posted_to_a_local_apic() {
+        let lapic = crate::LocalApic::with_cpus(2).unwrap();
+        let (a0, a1) = (lapic.handle_for(0).unwrap(), lapic.handle_for(1).unwrap());
+        a0.set_global_enabled(true).unwrap();
+        a1.set_global_enabled(true).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |cpu: usize| lock(&seen).push(cpu))
+        };
+        a0.set_wake_sink(Some(sink));
+        let heard = || std::mem::take(&mut *lock(&seen));
+        a1.request_fixed_edge(0x40).unwrap();
+        assert_eq!(heard(), vec![1], "a device vector");
+        a0.write_icr(0, 1, 0x41).unwrap();
+        assert_eq!(heard(), vec![1], "a Fixed IPI");
+        a0.write_icr(0, 0, 0x42).unwrap();
+        assert_eq!(heard(), vec![0], "a Fixed IPI to itself");
+        a0.write_icr(0, 1, 0xC500).unwrap();
+        assert_eq!(heard(), vec![1], "INIT");
+        a0.write_icr(0, 1, 0x0608).unwrap();
+        assert_eq!(heard(), vec![1], "SIPI");
+        a0.write_icr(0, 1, 0x0400).unwrap();
+        assert_eq!(heard(), vec![1], "NMI");
+        let _ = (
+            a1.pending(),
+            a1.eligible(),
+            a1.vector_state(0x40),
+            a1.pending_nmi(),
+        );
+        assert_eq!(heard(), Vec::<usize>::new(), "reading posts nothing");
+        let state = a0.snapshot_pair();
+        a0.restore_pair(&state).unwrap();
+        a1.request_fixed_edge(0x43).unwrap();
+        assert_eq!(heard(), vec![1], "a restore keeps the sink");
+        a0.set_wake_sink(None);
+        a1.request_fixed_edge(0x44).unwrap();
+        assert_eq!(heard(), Vec::<usize>::new(), "no sink, no call");
+    }
+
+    #[test]
+    fn two_vcpu_threads_exchange_fixed_ipis_and_end_asleep() {
+        let mut board = exchange_board();
+        let (report, ()) = run(&mut board, config(32, 1_000_000), |control| {
+            assert!(control.wait_finished(WAIT), "the run does not end");
+        });
+        assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+        assert_joined(&report, 2);
+        assert_eq!(board.vcpu(0).unwrap().activity(), CpuActivity::Halted);
+        assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Halted);
+        assert_eq!(dword(&mut board, COUNTER_1), ROUNDS);
+        assert_eq!(dword(&mut board, COUNTER_0), ROUNDS);
+        for cpu in 0..2 {
+            for vector in [TO_AP, TO_BSP] {
+                assert_eq!(
+                    board.local_apic_of(cpu).unwrap().vector_state(vector),
+                    (false, false),
+                    "cpu {cpu} vector {vector:#x}"
+                );
+            }
+        }
+        // The wake sink and the execution mode are back to what the board had.
+        assert_eq!(board.execution_mode(), ExecutionMode::Interleaved);
+    }
+
+    #[test]
+    fn the_exchange_is_right_every_time_under_every_quantum() {
+        for quantum in [1u64, 2, 3, 7, 100, 1024] {
+            for _ in 0..25 {
+                let mut board = exchange_board();
+                let (report, ()) = run(&mut board, config(quantum, 1_000_000), |control| {
+                    assert!(control.wait_finished(WAIT), "quantum {quantum}: no end");
+                });
+                assert_eq!(
+                    report.finished,
+                    ParallelFinish::AllIdle,
+                    "quantum {quantum}: {report:?}"
+                );
+                assert_joined(&report, 2);
+                assert_eq!(dword(&mut board, COUNTER_1), ROUNDS, "quantum {quantum}");
+                assert_eq!(dword(&mut board, COUNTER_0), ROUNDS, "quantum {quantum}");
+            }
+        }
+    }
+
+    /// A vCPU asleep in `HLT` with IF = 1 and its Local APIC enabled, the boot processor asleep for
+    /// good (IF = 0): the fixture of the wake-up tests.
+    fn sleeping_ap_board() -> LoadedFirmwareBoard {
+        let mut board = board(2);
+        system(&mut board, false);
+        patch(&mut board, CODE_1, &ap_program(false));
+        let cr3_1 = tables(&mut board, TABLES_1, 0x80_0000, 0);
+        install(
+            &mut board,
+            1,
+            long_state(CODE_1, STACK_1, cr3_1, true),
+            0xD01,
+        );
+        let mut sleeper = long_state(CODE_0, STACK_0, cr3_1, false);
+        sleeper.rflags = 2;
+        sleeper.activity = Some(CpuActivity::Halted);
+        install(&mut board, 0, sleeper, 0xD01);
+        board
+    }
+
+    /// The same, but the boot processor runs a loop (`jmp .`, IF = 0) for good: the machine is never
+    /// all idle, so the idle arbiter cannot heal a lost wake-up by finding the pending vector of a
+    /// sleeper (it does when everything sleeps), and a thread that sleeps through a post stays
+    /// asleep.
+    fn sleeping_ap_board_with_a_busy_boot_processor() -> LoadedFirmwareBoard {
+        let mut board = sleeping_ap_board();
+        patch(&mut board, CODE_0, &[0xEB, 0xFE]);
+        let cr3_1 = board.vcpu(1).unwrap().state.cr3.unwrap();
+        install(
+            &mut board,
+            0,
+            {
+                let mut spinner = long_state(CODE_0, STACK_0, cr3_1, false);
+                spinner.rflags = 2;
+                spinner
+            },
+            0xD01,
+        );
+        board
+    }
+
+    fn wait_for_sleep(control: &ParallelControl<'_, '_>, cpu: usize) {
+        assert!(
+            control.wait_until(WAIT, || {
+                control.activity(cpu) == SchedActivity::Halted && control.cpu_report(cpu).sleeps > 0
+            }),
+            "vCPU {cpu} does not go to sleep"
+        );
+    }
+
+    /// Step 2: a kick that comes right before the vCPU falls asleep is not lost. The controller
+    /// posts the next IPI after a delay of a different length every round, the moment it sees the
+    /// handler's count, so the post sweeps the path of the AP from the `IRETQ` to the park (some
+    /// IPIs come before the AP has halted and need no wake, some after it sleeps): thousands of
+    /// times, each wait bounded. The window itself is held open by the test below.
+    #[test]
+    fn a_wake_up_posted_around_the_sleep_is_never_lost() {
+        wake_up_around_the_sleep(3000);
+    }
+
+    /// The long form: `OD_S6_WAKE_ROUNDS` rounds (default 50 000).
+    #[test]
+    #[ignore = "long: OD_S6_WAKE_ROUNDS=50000 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::wake_up_many_rounds --nocapture"]
+    fn wake_up_many_rounds() {
+        let rounds = std::env::var("OD_S6_WAKE_ROUNDS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(50_000);
+        wake_up_around_the_sleep(rounds);
+        wake_up_between_the_look_and_the_park(rounds / 10);
+    }
+
+    fn wake_up_around_the_sleep(rounds: u32) {
+        let mut board = sleeping_ap_board_with_a_busy_boot_processor();
+        let lapic = board.local_apic_of(1).unwrap();
+        let sender = board.local_apic_of(0).unwrap();
+        let rounds_total = rounds;
+        let (report, ()) = run(&mut board, open_config(8), |control| {
+            wait_for_sleep(control, 1);
+            for round in 1..=rounds_total {
+                let jitter = u64::from(round).wrapping_mul(2_654_435_761) % 6000;
+                for _ in 0..jitter {
+                    std::hint::spin_loop();
+                }
+                sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+                // A tight poll, so that the next post follows the handler's count at once.
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while cell(control, COUNTER_1) < round {
+                    assert!(
+                        Instant::now() < deadline,
+                        "round {round}: the IPI was lost (counter {}, vectors {:?})",
+                        cell(control, COUNTER_1),
+                        lapic.vector_state(TO_AP)
+                    );
+                    std::hint::spin_loop();
+                }
+            }
+            // The last handler counts first and then writes its EOI: let it finish.
+            assert!(
+                control.wait_until(Duration::from_secs(20), || {
+                    lapic.vector_state(TO_AP) == (false, false)
+                        && control.activity(1) == SchedActivity::Halted
+                }),
+                "the last handler does not end"
+            );
+        });
+        assert_joined(&report, 2);
+        assert_eq!(dword(&mut board, COUNTER_1), rounds_total);
+        assert_eq!(
+            board.local_apic_of(1).unwrap().vector_state(TO_AP),
+            (false, false)
+        );
+    }
+
+    // The state of the injection of the test below (a plain `fn` hook cannot capture).
+    static HOLD_AT_SLEEP: AtomicBool = AtomicBool::new(false);
+    static HELD_AT_SLEEP: AtomicBool = AtomicBool::new(false);
+    static RELEASE_SLEEP: AtomicBool = AtomicBool::new(false);
+    static TEST_INJECTION: Mutex<()> = Mutex::new(());
+
+    fn hold_vcpu_1_at_the_start_of_its_sleep(cpu: usize) {
+        if cpu == 1 && HOLD_AT_SLEEP.load(Ordering::SeqCst) {
+            HELD_AT_SLEEP.store(true, Ordering::SeqCst);
+            while !RELEASE_SLEEP.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            HELD_AT_SLEEP.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Step 2, the window held open: the AP has looked at its Local APIC, found nothing and gone to
+    /// sleep; the test holds it there (before the park), posts the IPI, and releases it. The kick
+    /// that the post made (the flag, and the `unpark` token) must end the sleep at once: 500 rounds,
+    /// each bounded. A kick that sets only the `unpark` token, or a flag that the sleeper clears
+    /// after its look, loses it (the mutations recorded in MACHINE_CONTRACT.md, S6-34).
+    #[test]
+    fn a_wake_up_posted_while_the_vcpu_is_between_its_look_and_its_park_is_never_lost() {
+        wake_up_between_the_look_and_the_park(500);
+    }
+
+    fn wake_up_between_the_look_and_the_park(rounds: u32) {
+        let _injection = lock(&TEST_INJECTION);
+        let mut board = sleeping_ap_board_with_a_busy_boot_processor();
+        let sender = board.local_apic_of(0).unwrap();
+        let config = ParallelConfig {
+            pre_sleep: Some(hold_vcpu_1_at_the_start_of_its_sleep),
+            ..open_config(8)
+        };
+        let rounds_total = rounds;
+        HOLD_AT_SLEEP.store(false, Ordering::SeqCst);
+        RELEASE_SLEEP.store(false, Ordering::SeqCst);
+        let (report, ()) = run_threads(&mut board, config, &fixture_quantum, |control| {
+            // Let the first sleep (the start) pass, then hold every later one.
+            wait_for_sleep(control, 1);
+            for round in 1..=rounds_total {
+                RELEASE_SLEEP.store(false, Ordering::SeqCst);
+                HELD_AT_SLEEP.store(false, Ordering::SeqCst);
+                HOLD_AT_SLEEP.store(true, Ordering::SeqCst);
+                // Wake the AP once, so that it comes round to its sleep and is held there.
+                sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !HELD_AT_SLEEP.load(Ordering::SeqCst) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "round {round}: the AP does not come to sleep"
+                    );
+                    std::hint::spin_loop();
+                }
+                // It has handled the IPI of this round and looked at its APIC; post the next one
+                // now: between the look and the park.
+                let handled = cell(control, COUNTER_1);
+                sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+                HOLD_AT_SLEEP.store(false, Ordering::SeqCst);
+                RELEASE_SLEEP.store(true, Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while cell(control, COUNTER_1) < handled + 1 {
+                    assert!(
+                        Instant::now() < deadline,
+                        "round {round}: the IPI posted between the look and the park was lost"
+                    );
+                    std::hint::spin_loop();
+                }
+                // Back to sleep (held by the next round).
+                assert!(control.wait_until(Duration::from_secs(20), || {
+                    control.activity(1) == SchedActivity::Halted
+                }));
+            }
+        })
+        .unwrap();
+        HOLD_AT_SLEEP.store(false, Ordering::SeqCst);
+        RELEASE_SLEEP.store(true, Ordering::SeqCst);
+        assert_joined(&report, 2);
+        assert!(dword(&mut board, COUNTER_1) >= rounds_total, "{report:?}");
+    }
+
+    /// A vCPU asleep in `HLT` does not spin: while nothing is posted it makes no call and no step.
+    #[test]
+    fn a_sleeping_vcpu_runs_nothing_and_acknowledges_a_stop_at_once() {
+        let mut board = sleeping_ap_board();
+        let (report, ()) = run(&mut board, open_config(8), |control| {
+            wait_for_sleep(control, 1);
+            let before = (control.cpu_report(1), control.retired());
+            thread::sleep(Duration::from_millis(100));
+            assert_eq!(
+                (control.cpu_report(1), control.retired()),
+                before,
+                "a sleeper makes no call and retires nothing"
+            );
+            let started = Instant::now();
+            let proof = control
+                .stop_all(Duration::from_secs(5))
+                .expect("both vCPUs sleep");
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(
+                proof.acks,
+                vec![
+                    StopAck::Asleep(SchedActivity::Halted),
+                    StopAck::Asleep(SchedActivity::Halted)
+                ]
+            );
+            control.resume();
+        });
+        assert_joined(&report, 2);
+        assert_eq!(report.cpus[1].calls, report.cpus[1].calls.max(1));
+    }
+
+    /// An IPI to a vCPU that sleeps while the machine is stopped does not start it before the
+    /// resume, and is not lost: it stays in its Local APIC and is taken after the resume.
+    #[test]
+    fn an_ipi_to_a_sleeping_stopped_vcpu_waits_for_the_resume_and_is_not_lost() {
+        for _ in 0..50 {
+            let mut board = sleeping_ap_board();
+            let lapic = board.local_apic_of(1).unwrap();
+            let sender = board.local_apic_of(0).unwrap();
+            let (report, ()) = run(&mut board, open_config(8), |control| {
+                wait_for_sleep(control, 1);
+                control.stop_all(Duration::from_secs(5)).expect("stop");
+                let (calls, retired, now) = (
+                    control.cpu_report(1).calls,
+                    control.retired(),
+                    control.now_ns(),
+                );
+                sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+                sender
+                    .write_icr(0, 1, FIXED | u32::from(TO_AP + 1))
+                    .unwrap();
+                thread::sleep(Duration::from_millis(30));
+                // Not started: no call, no step, the vector still waits in the IRR, the vCPU is
+                // still halted, the clock stands.
+                assert_eq!(control.cpu_report(1).calls, calls);
+                assert_eq!(control.retired(), retired);
+                assert_eq!(control.now_ns(), now);
+                assert_eq!(cell(control, COUNTER_1), 0);
+                assert_eq!(lapic.vector_state(TO_AP), (true, false));
+                assert_eq!(control.activity(1), SchedActivity::Halted);
+                control.resume();
+                assert!(
+                    control.wait_until(Duration::from_secs(20), || cell(control, COUNTER_1) >= 1),
+                    "the IPI posted during the stop was lost"
+                );
+            });
+            assert_joined(&report, 2);
+            assert_eq!(dword(&mut board, COUNTER_1), 1);
+            assert_eq!(
+                board.local_apic_of(1).unwrap().vector_state(TO_AP),
+                (false, false)
+            );
+        }
+    }
+
+    /// A vCPU that cannot reach a safe point (its call is stuck for a while): the stop times out
+    /// with the vCPU named, the request is withdrawn, and nothing is lost; a later stop succeeds.
+    #[test]
+    fn a_stop_that_times_out_names_the_stuck_vcpu_changes_nothing_and_can_be_repeated() {
+        let mut board = exchange_board();
+        let stuck = AtomicBool::new(true);
+        let entered = AtomicBool::new(false);
+        let quantum = |call: QuantumCall<'_, '_>| {
+            if call.cpu == 1 && stuck.swap(false, Ordering::SeqCst) {
+                entered.store(true, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(400));
+            }
+            fixture_quantum(call)
+        };
+        let (report, ()) = run_threads(&mut board, config(32, 1_000_000), &quantum, |control| {
+            assert!(control.wait_until(WAIT, || entered.load(Ordering::SeqCst)));
+            let error = control.stop_all(Duration::from_millis(60)).unwrap_err();
+            assert_eq!(error, ParallelStopError::Timeout { unacked: vec![1] });
+            assert!(!control.stopped(), "the request is withdrawn");
+            let proof = control
+                .stop_all(Duration::from_secs(20))
+                .expect("the second stop");
+            assert_eq!(proof.acks.len(), 2);
+            control.resume();
+            assert!(control.wait_finished(WAIT));
+        })
+        .unwrap();
+        assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+        assert_joined(&report, 2);
+        assert_eq!(dword(&mut board, COUNTER_1), ROUNDS);
+        assert_eq!(dword(&mut board, COUNTER_0), ROUNDS);
+    }
+
+    /// The exchange with `rounds` (at most 127) replies, so that a stop can land in the middle.
+    fn long_exchange_board(rounds: u8) -> LoadedFirmwareBoard {
+        let mut board = exchange_board();
+        let mut code = count_and_eoi(COUNTER_0);
+        let send = send_ipi_from_r8(TO_AP, 1);
+        code.extend([0x41, 0x83, 0xF9, rounds]); // cmp r9d, rounds
+        code.extend([0x73, send.len() as u8]); // jae over the send
+        code.extend(send);
+        code.extend([0x48, 0xCF]);
+        patch(&mut board, HANDLER_0, &code);
+        board
+    }
+
+    /// Stop in the middle of the IPI exchange: no counter grows while stopped, the clock stands,
+    /// the vCPUs are where they were; after the resume the exchange ends right. Repeated.
+    #[test]
+    fn stopping_in_the_middle_of_an_ipi_exchange_and_resuming_ends_right() {
+        stop_in_the_middle_of_an_exchange(100);
+    }
+
+    /// The long form: `OD_S6_STOP_RUNS` attempts (default 1000), results in the report of S6-34.
+    #[test]
+    #[ignore = "long: OD_S6_STOP_RUNS=1000 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::stop_in_the_middle_many_runs --nocapture"]
+    fn stop_in_the_middle_many_runs() {
+        let attempts = std::env::var("OD_S6_STOP_RUNS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1000);
+        stop_in_the_middle_of_an_exchange(attempts);
+    }
+
+    fn stop_in_the_middle_of_an_exchange(attempts: usize) {
+        const ROUNDS_: u8 = 100;
+
+        let mut landed_inside = 0;
+        for attempt in 0..attempts {
+            let mut board = long_exchange_board(ROUNDS_);
+            let threshold = 40 + (attempt as u64 * 37) % 4000;
+            let (report, inside) = run(&mut board, config(1, 10_000_000), |control| {
+                let seen = control.wait_until(WAIT, || {
+                    control.retired().iter().sum::<u64>() >= threshold || control.is_finished()
+                });
+                assert!(seen);
+                let stop = control.stop_all(Duration::from_secs(10));
+                let Ok(proof) = stop else {
+                    // The exchange was already over: nothing to stop.
+                    assert!(control.wait_finished(WAIT));
+                    return false;
+                };
+                let snapshot = |c: &ParallelControl<'_, '_>| {
+                    (
+                        c.retired(),
+                        (0..2)
+                            .map(|cpu| c.cpu_report(cpu).calls)
+                            .collect::<Vec<_>>(),
+                        cell(c, COUNTER_0),
+                        cell(c, COUNTER_1),
+                        c.now_ns(),
+                    )
+                };
+                let first = snapshot(control);
+                assert_eq!(first.4, proof.now_ns);
+                thread::sleep(Duration::from_millis(5));
+                assert_eq!(snapshot(control), first, "nothing moves while stopped");
+                control.resume();
+                assert!(control.wait_finished(WAIT), "the exchange does not end");
+                first.2 < u32::from(ROUNDS_) || first.3 < u32::from(ROUNDS_)
+            });
+            if inside {
+                landed_inside += 1;
+            }
+            assert_eq!(
+                report.finished,
+                ParallelFinish::AllIdle,
+                "attempt {attempt}: {report:?}"
+            );
+            assert_joined(&report, 2);
+            assert_eq!(
+                dword(&mut board, COUNTER_1),
+                u32::from(ROUNDS_),
+                "attempt {attempt}"
+            );
+            assert_eq!(
+                dword(&mut board, COUNTER_0),
+                u32::from(ROUNDS_),
+                "attempt {attempt}"
+            );
+            for cpu in 0..2 {
+                for vector in [TO_AP, TO_BSP] {
+                    assert_eq!(
+                        board.local_apic_of(cpu).unwrap().vector_state(vector),
+                        (false, false)
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "stop in the middle: {landed_inside} of {attempts} stops landed inside the exchange"
+        );
+        assert!(
+            landed_inside >= attempts / 2,
+            "only {landed_inside} of {attempts} stops landed inside the exchange"
+        );
+    }
+
+    /// Step 5: what the controller reads after the acknowledgement is what the vCPU left: a guest
+    /// that stores a counter and then increments the register shows `register - memory` of 0 or 1
+    /// at every boundary, never anything else.
+    #[test]
+    fn the_stopped_state_and_the_ram_the_controller_reads_agree_with_what_the_vcpu_left() {
+        let mut board = board(2);
+        system(&mut board, false);
+        let cr3 = tables(&mut board, TABLES_1, 0x80_0000, 0);
+        // mov ebx, DATA; xor eax, eax; again: mov [rbx], eax; inc eax; jmp again
+        let mut code = mov_ebx(DATA as u32);
+        code.extend([0x31, 0xC0, 0x89, 0x03, 0xFF, 0xC0, 0xEB, 0xFA]);
+        patch(&mut board, CODE_1, &code);
+        install(
+            &mut board,
+            1,
+            long_state(CODE_1, STACK_1, cr3, false),
+            0xD01,
+        );
+        let mut sleeper = long_state(CODE_0, STACK_0, cr3, false);
+        sleeper.rflags = 2;
+        sleeper.activity = Some(CpuActivity::Halted);
+        install(&mut board, 0, sleeper, 0xD01);
+        let (report, ()) = run(&mut board, open_config(5), |control| {
+            let mut last = 0u64;
+            for round in 0..300 {
+                thread::sleep(Duration::from_micros(100 + (round * 53) % 400));
+                control.stop_all(Duration::from_secs(10)).expect("stop");
+                let memory = u64::from(cell(control, DATA));
+                let register = control
+                    .with_vcpu(1, |vcpu| vcpu.state.gpr[Register::Rax as usize])
+                    .expect("a stopped vCPU can be read");
+                assert!(
+                    register == memory || register == memory + 1,
+                    "round {round}: eax {register} memory {memory}"
+                );
+                assert!(memory >= last, "round {round}: the counter went back");
+                last = memory;
+                control.resume();
+            }
+            assert!(last > 0);
+        });
+        assert_joined(&report, 2);
+    }
+
+    /// Step 7: the controller ending the run, with a vCPU that never stops by itself, joins every
+    /// thread.
+    #[test]
+    fn the_end_of_the_run_stops_a_vcpu_in_a_loop_and_joins_every_thread() {
+        let mut board = board(2);
+        system(&mut board, false);
+        let cr3 = tables(&mut board, TABLES_1, 0x80_0000, 0);
+        patch(&mut board, CODE_1, &[0xEB, 0xFE]); // jmp .
+        patch(&mut board, CODE_0, &[0xEB, 0xFE]);
+        install(
+            &mut board,
+            1,
+            long_state(CODE_1, STACK_1, cr3, false),
+            0xD01,
+        );
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xD01,
+        );
+        let (report, ()) = run(&mut board, config(1024, u64::MAX), |control| {
+            thread::sleep(Duration::from_millis(50));
+            assert!(!control.is_finished());
+            control.finish();
+        });
+        assert_eq!(report.finished, ParallelFinish::Stopped);
+        assert_joined(&report, 2);
+        assert!(report.cpus[0].retired > 0 && report.cpus[1].retired > 0);
+        // The budget ends a run as well.
+        let (report, ()) = run(&mut board, config(1024, 50_000), |control| {
+            assert!(control.wait_finished(WAIT));
+        });
+        assert_eq!(report.finished, ParallelFinish::BudgetExhausted);
+        assert_joined(&report, 2);
+        let total: u64 = report.cpus.iter().map(|cpu| cpu.retired).sum();
+        assert!((50_000..50_000 + 2 * 1024).contains(&total), "{total}");
+    }
+
+    /// Step 7: the error of one vCPU (here an instruction outside the set) stops every thread and
+    /// is the result; a panic in one thread the same.
+    #[test]
+    fn the_error_or_the_panic_of_one_vcpu_ends_the_run_for_all() {
+        let mut board = board(2);
+        system(&mut board, false);
+        let cr3 = tables(&mut board, TABLES_1, 0x80_0000, 0);
+        patch(&mut board, CODE_1, &[0x0F, 0x0B]); // ud2
+        patch(&mut board, CODE_0, &[0xEB, 0xFE]);
+        install(
+            &mut board,
+            1,
+            long_state(CODE_1, STACK_1, cr3, false),
+            0xD01,
+        );
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xD01,
+        );
+        let (report, ()) = run(&mut board, config(64, u64::MAX), |control| {
+            assert!(
+                control.wait_finished(WAIT),
+                "the error does not end the run"
+            );
+        });
+        assert!(
+            matches!(report.finished, ParallelFinish::Error { cpu: 1, .. }),
+            "{report:?}"
+        );
+        assert_joined(&report, 2);
+
+        let panicking = |call: QuantumCall<'_, '_>| {
+            if call.cpu == 1 {
+                panic!("vCPU 1 panics (expected by the test)");
+            }
+            fixture_quantum(call)
+        };
+        let (report, ()) = run_threads(&mut board, config(64, u64::MAX), &panicking, |control| {
+            assert!(
+                control.wait_finished(WAIT),
+                "the panic does not end the run"
+            );
+        })
+        .unwrap();
+        assert_eq!(report.finished, ParallelFinish::Panicked { cpu: 1 });
+        assert_joined(&report, 2);
+    }
+
+    // ---- the split LOCK (step 8) -------------------------------------------------------------
+
+    /// The operand of the split `LOCK` tests: a dword that starts two bytes before the end of the
+    /// 4 KiB page at linear 0x40_0000.
+    const SPLIT_LINEAR: u64 = 0x40_0FFE;
+    const DONE_LINEAR: u64 = 0x40_0100;
+
+    fn lock_inc_program(operand: u64, repeat: u32) -> Vec<u8> {
+        let mut code = mov_ebx(operand as u32);
+        code.extend(imm(&[0xB9], repeat)); // mov ecx, repeat
+        code.extend([0xF0, 0xFF, 0x03]); // again: lock inc dword [rbx]
+        code.extend([0xFF, 0xC9]); // dec ecx
+        code.extend([0x75, 0xF9]); // jnz again
+        code.extend(mov_ebx(DONE_LINEAR as u32));
+        code.extend([0xF0, 0xFF, 0x03]); // lock inc dword [rbx]
+        code.push(0xF4); // hlt
+        code
+    }
+
+    /// `vcpus` processors on one table set; the operand page is a 2 MiB leaf (`pages = false`) or
+    /// two 4 KiB pages in distant frames (`pages = true`: the operand crosses the page).
+    fn counter_board(vcpus: usize, operand: u64, repeat: u32, pages: bool) -> LoadedFirmwareBoard {
+        let mut board = board(vcpus);
+        system(&mut board, false);
+        let cr3 = tables(&mut board, TABLES_0, 0x60_0000, 0);
+        if pages {
+            // PD entry 2 -> a page table whose entries 0 and 1 are two distant frames.
+            let pt = TABLES_0 + 0x5000;
+            let pd = TABLES_0 + 0x2000;
+            patch(&mut board, pd + 2 * 8, &(pt | 3).to_le_bytes());
+            patch(&mut board, pt, &(0x10_0000u64 | 3).to_le_bytes());
+            patch(&mut board, pt + 8, &(0x30_0000u64 | 3).to_le_bytes());
+        }
+        patch(&mut board, CODE_0, &lock_inc_program(operand, repeat));
+        for cpu in 0..vcpus {
+            install(
+                &mut board,
+                cpu,
+                long_state(CODE_0, STACK_0 - 0x1000 * cpu as u64, cr3, false),
+                0xD01,
+            );
+        }
+        board
+    }
+
+    fn operand_value(board: &mut LoadedFirmwareBoard, operand: u64, pages: bool) -> u32 {
+        if pages {
+            // The two bytes at the end of the first frame, the two at the start of the second.
+            let low = read(board, 0x10_0000 + (operand & 0xFFF), 2);
+            let high = read(board, 0x30_0000, 2);
+            u32::from_le_bytes([low[0], low[1], high[0], high[1]])
+        } else {
+            dword(board, 0x60_0000 + (operand - 0x40_0000))
+        }
+    }
+
+    fn done_value(board: &mut LoadedFirmwareBoard, pages: bool) -> u32 {
+        dword(board, if pages { 0x10_0100 } else { 0x60_0100 })
+    }
+
+    /// The litmus counter: every vCPU does `repeat` times `LOCK INC dword [operand]`; the final
+    /// count is exact. With the operand split (the unaligned dword across a cache line and a page,
+    /// in one 2 MiB leaf or in two frames) the executing vCPU stops every other one around each
+    /// operation (step 8); aligned it is one host atomic.
+    fn litmus_counter(vcpus: usize, operand: u64, repeat: u32, pages: bool) -> ParallelReport {
+        let mut board = counter_board(vcpus, operand, repeat, pages);
+        let (report, ()) = run(&mut board, config(64, u64::MAX), |control| {
+            assert!(control.wait_finished(WAIT), "the counters do not finish");
+        });
+        assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+        assert_joined(&report, vcpus);
+        assert_eq!(
+            operand_value(&mut board, operand, pages),
+            vcpus as u32 * repeat,
+            "{vcpus} vCPUs x {repeat}: the counter lost an update ({report:?})"
+        );
+        assert_eq!(done_value(&mut board, pages), vcpus as u32);
+        assert_eq!(board.execution_mode(), ExecutionMode::Interleaved);
+        report
+    }
+
+    #[test]
+    fn the_aligned_lock_counter_is_exact_on_two_and_four_vcpus() {
+        for vcpus in [2usize, 4] {
+            for _ in 0..5 {
+                let report = litmus_counter(vcpus, 0x40_0F00, 1500, false);
+                assert!(
+                    report.cpus.iter().all(|cpu| cpu.split_locks == 0),
+                    "{report:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_split_lock_counter_through_a_page_is_exact_on_two_and_four_vcpus() {
+        for pages in [false, true] {
+            for vcpus in [2usize, 4] {
+                for _ in 0..5 {
+                    let report = litmus_counter(vcpus, SPLIT_LINEAR, 400, pages);
+                    for cpu in &report.cpus {
+                        assert_eq!(cpu.split_locks, 400, "pages {pages}: {report:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The split operand and an aligned operand overlap: `LOCK INC dword [0x40_0FFE]` on some vCPUs
+    /// (bytes FFE..1001) and `LOCK INC dword [0x40_1000]` on the others (bytes 1000..1003, one host
+    /// atomic). The two touch the bytes 1000 and 1001 in common; the operations of the first kind
+    /// are atomic with respect to the second only because the vCPU that executes one stops the
+    /// others around it (step 8). The final bytes are exact for both counters, in one 2 MiB leaf
+    /// and across two frames, on two and four vCPUs. (The count of the split operand stays below
+    /// 65536, so it never carries into the aligned one.)
+    #[test]
+    fn a_split_lock_is_atomic_against_an_aligned_lock_on_the_bytes_they_share() {
+        for pages in [false, true] {
+            for vcpus in [2usize, 4] {
+                for _ in 0..5 {
+                    mixed_litmus(vcpus, pages, 300);
+                }
+            }
+        }
+    }
+
+    /// The long form of the two litmus counters (the split one and the mixed one): `OD_S6_LITMUS_RUNS`
+    /// rounds (default 200) over 2 and 4 vCPUs, both table layouts.
+    #[test]
+    #[ignore = "long: OD_S6_LITMUS_RUNS=200 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::split_lock_litmus_many_runs --nocapture"]
+    fn split_lock_litmus_many_runs() {
+        let runs: usize = std::env::var("OD_S6_LITMUS_RUNS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(200);
+        let started = Instant::now();
+        let mut losses = 0;
+        for _ in 0..runs {
+            for pages in [false, true] {
+                for vcpus in [2usize, 4] {
+                    let report = litmus_counter(vcpus, SPLIT_LINEAR, 1000, pages);
+                    losses += report.cpus.iter().map(|cpu| cpu.split_losses).sum::<u64>();
+                    mixed_litmus(vcpus, pages, 1000);
+                }
+            }
+        }
+        eprintln!(
+            "split lock litmus: {runs} rounds x 2 and 4 vCPUs x 2 layouts x 2 counters, \
+             {losses} lost requests for the gate, {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+
+    fn mixed_litmus(vcpus: usize, pages: bool, repeat: u32) {
+        let mut board = counter_board(vcpus, SPLIT_LINEAR, repeat, pages);
+        // The odd vCPUs run the aligned counter (the code page 1 of the fixture).
+        patch(&mut board, CODE_1, &lock_inc_program(0x40_1000, repeat));
+        let cr3 = board.vcpu(0).unwrap().state.cr3.unwrap();
+        for cpu in (1..vcpus).step_by(2) {
+            install(
+                &mut board,
+                cpu,
+                long_state(CODE_1, STACK_0 - 0x1000 * cpu as u64, cr3, false),
+                0xD01,
+            );
+        }
+        let (report, ()) = run(&mut board, config(64, u64::MAX), |control| {
+            assert!(control.wait_finished(WAIT));
+        });
+        assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+        assert_joined(&report, vcpus);
+        let (splitters, aligned) = (vcpus.div_ceil(2) as u32, (vcpus / 2) as u32);
+        let (low, high) = if pages {
+            (
+                read(&mut board, 0x10_0000 + 0xFFE, 2),
+                read(&mut board, 0x30_0000, 4),
+            )
+        } else {
+            let all = read(&mut board, 0x60_0FFE, 6);
+            (all[..2].to_vec(), all[2..].to_vec())
+        };
+        assert_eq!(
+            u32::from(u16::from_le_bytes([low[0], low[1]])),
+            splitters * repeat,
+            "pages {pages}, {vcpus} vCPUs: the split counter ({report:?})"
+        );
+        assert_eq!(
+            u32::from_le_bytes([high[0], high[1], high[2], high[3]]),
+            aligned * repeat,
+            "pages {pages}, {vcpus} vCPUs: the aligned counter lost an update ({report:?})"
+        );
+        assert_eq!(done_value(&mut board, pages), vcpus as u32);
+    }
+
+    /// With four vCPUs hammering one split operand the exchange for the gate is lost by somebody:
+    /// the losers stood still before any effect and asked again (no operation twice, none lost:
+    /// the exact count above proves it, the counter below proves the race really happened).
+    #[test]
+    fn simultaneous_split_lock_requests_have_a_loser_and_lose_nothing() {
+        let mut losses = 0;
+        for _ in 0..10 {
+            let report = litmus_counter(4, SPLIT_LINEAR, 300, true);
+            losses += report.cpus.iter().map(|cpu| cpu.split_losses).sum::<u64>();
+        }
+        assert!(
+            losses > 0,
+            "no request ever lost the gate: the race was not exercised"
+        );
+    }
+
+    /// A split `LOCK` that cannot get the others quiet in time fails before any effect (a typed
+    /// error, the run ends in an error); it does not run as two host accesses.
+    #[test]
+    fn a_split_lock_that_cannot_stop_the_others_fails_before_any_effect() {
+        let mut board = counter_board(2, SPLIT_LINEAR, 5, false);
+        let one_in_its_call = AtomicBool::new(false);
+        let quantum = |call: QuantumCall<'_, '_>| {
+            if call.cpu == 1 {
+                // vCPU 1 never comes back from its call within the time allowed.
+                one_in_its_call.store(true, SEQ);
+                thread::sleep(Duration::from_millis(800));
+            } else {
+                // vCPU 0 asks for the gate only once vCPU 1 is inside its call: a vCPU 1 that has
+                // not started yet stands at the barrier, which is quiet (a race of the thread
+                // start, not of the gate).
+                let until = Instant::now() + Duration::from_secs(5);
+                while !one_in_its_call.load(SEQ) && Instant::now() < until {
+                    thread::yield_now();
+                }
+            }
+            fixture_quantum(call)
+        };
+        let config = ParallelConfig {
+            split_timeout: Duration::from_millis(100),
+            ..config(64, u64::MAX)
+        };
+        let (report, ()) = run_threads(&mut board, config, &quantum, |control| {
+            assert!(control.wait_finished(WAIT));
+        })
+        .unwrap();
+        assert!(
+            matches!(report.finished, ParallelFinish::Error { cpu: 0, .. }),
+            "{report:?}"
+        );
+        assert_joined(&report, 2);
+        assert_eq!(
+            operand_value(&mut board, SPLIT_LINEAR, false),
+            0,
+            "no effect before the gate"
+        );
+    }
+
+    #[test]
+    fn without_a_gate_the_parallel_split_lock_is_still_refused_and_counted() {
+        // The interleaved scheduler, the memory in the parallel mode, no gate: S6-31/S6-32.
+        let mut board = counter_board(1, SPLIT_LINEAR, 1, false);
+        board.set_execution_mode(ExecutionMode::Parallel);
+        let result = quantum(&mut board, 0, 100);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(board.bus_mut().physical_memory().split_lock_refusals(), 1);
+        let _ = LOCAL_APIC_MMIO_BASE;
+    }
+}

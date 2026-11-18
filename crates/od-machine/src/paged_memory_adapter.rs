@@ -974,12 +974,11 @@ const fn is_cpuid_peek_prefix(byte: u8) -> bool {
 /// but RAM is read.
 fn cpuid_leaf_at_rip(
     state: &LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> Option<u32> {
-    let (memory, _) = bus.split_for_pio_step();
     let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
@@ -1021,11 +1020,10 @@ fn cpuid_leaf_at_rip(
 /// (no accessed/dirty bit), RAM only. Shorter bytes when one does not translate.
 fn observed_fetch_view(
     rip: u64,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
 ) -> (Option<u64>, Vec<u8>) {
-    let (memory, _) = bus.split_for_pio_step();
     let mut first = None;
     let mut bytes = Vec::with_capacity(16);
     for offset in 0..16u64 {
@@ -1056,12 +1054,11 @@ fn observed_fetch_view(
 /// clear it afterwards.
 fn iretq_at_rip(
     state: &LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
-    let (memory, _) = bus.split_for_pio_step();
     let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
@@ -1093,12 +1090,11 @@ fn iretq_at_rip(
 /// retires nothing and flushes nothing.
 pub(crate) fn invlpg_at_rip(
     state: &LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
-    let (memory, _) = bus.split_for_pio_step();
     let byte_at = |offset: u64| -> Option<u8> {
         let linear = state.rip.wrapping_add(offset);
         if let Some(byte) = cache
@@ -1140,12 +1136,11 @@ pub(crate) fn invlpg_at_rip(
 /// SYSRET of a system call from an `IRETQ`.
 fn sysretq_at(
     rip: u64,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     cache: Option<&FetchTranslationCache>,
 ) -> bool {
-    let (memory, _) = bus.split_for_pio_step();
     let byte_at = |offset: u64| -> Option<u8> {
         let linear = rip.wrapping_add(offset);
         if let Some(byte) = cache
@@ -1507,6 +1502,86 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     instruction_budget: u64,
     rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
+    cache: Option<&FetchTranslationCache>,
+    irq: Option<IrqBoundaryHook<'_>>,
+    checkpoints: Option<&mut CheckpointRecorder>,
+    execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_loop(
+        state,
+        LoopBus::Exclusive(bus),
+        None,
+        vcpu,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        cpuid_boundary,
+        cache,
+        irq,
+        checkpoints,
+        execution_observations,
+    )
+}
+
+/// What the set loop reaches the machine through (S6-34). `Exclusive`: the caller owns the bus
+/// (`&mut MachineBus`, every interleaved path): the device table is taken without a lock.
+/// `Shared`: a vCPU thread holds only `&MachineBus`: RAM is the shared reference and every device
+/// access takes the one device lock of the bus for that access alone.
+pub(crate) enum LoopBus<'a> {
+    Exclusive(&'a mut MachineBus),
+    Shared(&'a MachineBus),
+}
+
+impl LoopBus<'_> {
+    fn ram(&self) -> &crate::PhysicalMemory {
+        match self {
+            Self::Exclusive(bus) => bus.physical_memory(),
+            Self::Shared(bus) => bus.physical_memory(),
+        }
+    }
+
+    fn split_for_set_step_of_vcpu<'b>(
+        &'b mut self,
+        vcpu: usize,
+        gate: Option<&'b dyn crate::bus::SplitLockGate>,
+    ) -> (
+        &'b crate::PhysicalMemory,
+        crate::bus::MachineBusSetStepIo<'b>,
+    ) {
+        let (ram, io) = match self {
+            Self::Exclusive(bus) => bus.split_for_set_step_of_vcpu(vcpu),
+            Self::Shared(bus) => bus.split_for_set_step_shared(vcpu),
+        };
+        (ram, io.with_split_gate(gate))
+    }
+}
+
+/// The set loop of one vCPU over a [`LoopBus`]: the body of
+/// [`run_cpl0_set_paged_2m_ram_with_cache`] (see its documentation) with the machine given as
+/// an enum and, for a vCPU thread of the parallel mode, the gate of the split `LOCK`
+/// (`split_gate`, S6-34 step 8; `None` keeps the refusal of S6-31/S6-32).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_loop(
+    state: &mut LongModeState,
+    mut bus: LoopBus<'_>,
+    split_gate: Option<&dyn crate::bus::SplitLockGate>,
+    vcpu: usize,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
     mut rdtsc: Option<&mut dyn FnMut() -> u64>,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
@@ -1524,7 +1599,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     // the loop since its last call (one-shot caches have no seal yet, so nothing changes for them).
     if let Some(cache) = cache {
         cache.revalidate(continuation_key(state, cr3, efer, context), &|page| {
-            bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+            bus.ram()
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
                 .ok()
         });
     }
@@ -1634,7 +1710,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             context
         };
         if let Some(hook) = irq.as_mut() {
-            match deliver_pending_irq(hook, state, bus, &paging, context, &mut watch, cache) {
+            match deliver_pending_irq(hook, state, bus.ram(), &paging, context, &mut watch, cache) {
                 IrqBoundaryOutcome::None => {}
                 IrqBoundaryOutcome::Delivered => {
                     if let Some(observations) = execution_observations.as_deref_mut() {
@@ -1648,7 +1724,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
         // written; the cache statistics move, see the doc of this function).
         let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
-            cpuid_leaf_at_rip(state, bus, &paging, context, cache)
+            cpuid_leaf_at_rip(state, bus.ram(), &paging, context, cache)
         } else {
             None
         };
@@ -1662,7 +1738,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                 cpuid_leaf,
             };
             recorder.boundary(&view, &mut || {
-                observed_fetch_view(state.rip, bus, &paging, context)
+                observed_fetch_view(state.rip, bus.ram(), &paging, context)
             });
             // S4-13b: the boundary at which C5 is recorded splits the phases of the report.
             if !c5_at_call_start && c5_split.is_none() && recorder.is_recorded(C5_CHECKPOINT) {
@@ -1695,25 +1771,25 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
             .as_deref()
             .and_then(LinuxExecutionObservationCollector::pending_post_iret);
         let resume_flag_is_iretq =
-            resume_flag_before && iretq_at_rip(state, bus, &paging, context, cache);
+            resume_flag_before && iretq_at_rip(state, bus.ram(), &paging, context, cache);
         // The selected diagnostic uses the same opcode check but bypasses the fetch cache so it
         // does not perturb cache hit/miss counters while waiting for the selected return.
         let selected_return_is_iretq =
-            pending_post_iret.is_some() && iretq_at_rip(state, bus, &paging, context, None);
+            pending_post_iret.is_some() && iretq_at_rip(state, bus.ram(), &paging, context, None);
         let iretq_detected = resume_flag_is_iretq || selected_return_is_iretq;
         let clear_resume_flag = resume_flag_before && !resume_flag_is_iretq;
         // S4-14h: under `GuestOnly` the guest's own invalidations flush the cache. `INVLPG` is
         // peeked before the step (read-only, through the cache like the fetch itself); CR0/CR4
         // are compared around it.
-        let invlpg_pending = guest_only && invlpg_at_rip(state, bus, &paging, context, cache);
+        let invlpg_pending = guest_only && invlpg_at_rip(state, bus.ram(), &paging, context, cache);
         // S4-13c: the shadows of a `WriteWatch` cache learn of a retired `INVLPG` too. The peek
         // bypasses the cache (read-only walk), so neither the counters nor the order of the cache
         // move; a `GuestOnly` cache tells them itself.
         let sweep_invlpg_pending = !guest_only
             && cache.is_some_and(FetchTranslationCache::sweep_active)
-            && invlpg_at_rip(state, bus, &paging, context, None);
+            && invlpg_at_rip(state, bus.ram(), &paging, context, None);
         let control_before = (state.cr0, state.cr4);
-        let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu);
+        let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
         let mut port = PitWriteWatch {
             inner: io.port_io(),
             pit_written: false,
@@ -1966,7 +2042,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
                         rip: state.gpr[od_isa::Register::Rcx as usize],
                     })
             } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
-                && sysretq_at(instruction_rip, bus, &paging, context, cache)
+                && sysretq_at(instruction_rip, bus.ram(), &paging, context, cache)
             {
                 Some(SyscallEvent::Exit {
                     rax: state.gpr[od_isa::Register::Rax as usize],
@@ -2035,7 +2111,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         cache.seal(
             continuation_key(state, reported_cr3, efer, context),
             &|page| {
-                bus.code_page_generation(GuestPhysicalAddress::new(page << 12))
+                bus.ram()
+                    .code_page_generation(GuestPhysicalAddress::new(page << 12))
                     .ok()
             },
         );
@@ -2211,7 +2288,7 @@ enum IrqBoundaryOutcome {
 fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
     watch: &mut dyn FnMut(GuestPhysicalRange),
@@ -2232,7 +2309,7 @@ fn deliver_pending_irq(
         hook.counters.irq_refused_shadow += 1;
         return IrqBoundaryOutcome::None;
     }
-    let (ram, _port) = bus.split_for_pio_step();
+    let ram = memory;
     let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache, None);
     let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
     let failure = match delivery {
@@ -2269,11 +2346,11 @@ fn deliver_pending_irq(
 /// hold the NMI pending for, and every refusal and abort leaves `state` unchanged.
 pub(crate) fn deliver_nmi_at_boundary(
     state: &mut LongModeState,
-    bus: &mut MachineBus,
+    memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
 ) -> Cpl0ExternalInterruptDelivery {
-    let (ram, _port) = bus.split_for_pio_step();
+    let ram = memory;
     let mut committed_write = |_: GuestPhysicalRange| {};
     let mut memory = set_loop_adapter(
         ram,
@@ -2650,6 +2727,20 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
     }
 }
 
+impl<'a> AdapterBus<'a> {
+    /// The gate of the split `LOCK` of the vCPU thread this adapter belongs to (S6-34 step 8):
+    /// only the set loop's form (`RamMmio`) can carry one.
+    fn split_gate(&self) -> Option<&'a dyn crate::bus::SplitLockGate> {
+        match self {
+            Self::RamMmio(_, mmio, _) => {
+                let mmio: &'a dyn crate::bus::SetStepMmio = *mmio;
+                mmio.split_gate()
+            }
+            Self::Machine(..) | Self::Ram(_) => None,
+        }
+    }
+}
+
 impl AdapterBus<'_> {
     /// Index of the vCPU that owns this adapter: its MMIO accesses reach the per-processor
     /// devices (the Local APIC window, S6-11) as that vCPU's. Only the `Machine` form carries
@@ -2889,7 +2980,7 @@ fn post_iret_context_matches(pending: &PendingPostIretObservation, state: &LongM
         && state.gpr[od_isa::Register::Rsp as usize] == pending.fault_rsp
 }
 
-impl PagedMovMemoryAdapter<'_> {
+impl<'a> PagedMovMemoryAdapter<'a> {
     fn capture_post_iret_page_walk(
         &mut self,
         pending: PendingPostIretObservation,
@@ -3142,8 +3233,30 @@ impl PagedMovMemoryAdapter<'_> {
             TrackedAccessOutcome::Fetched(value) => value,
             _ => return Err(Self::unsupported("non-fetch result")),
         };
-        if let Some(memory) = self.bus.ram_ref()
-            && let Ok((physical, tables)) = translate_long64_2m_ram_read_only_with_tables(
+        self.remember_fetch_translation(cache, address, context);
+        Ok(byte)
+    }
+
+    /// S4-13 / S6-34 step 9: remember the translation of a fetch that just succeeded. For the
+    /// cache of a vCPU thread of the parallel mode (`FetchTranslationCache::is_strict`) three
+    /// steps, in this order, so that the generation of every table frame is read BEFORE the walk
+    /// whose bytes make the entry (the reader's rule of S6-30b): (1) a read-only walk names the
+    /// table frames; (2) the page generation of each is read; (3) a second read-only walk makes the
+    /// entry, and the entry is kept only if it walked the same frames. A write to a table frame by
+    /// another vCPU after (2) leaves the stored generation older than the page, and the next
+    /// `seal`/`revalidate` drops the entry. Any other cache takes the one walk of (3) and reads the
+    /// generations at the seal. The walks write nothing.
+    fn remember_fetch_translation(
+        &self,
+        cache: &FetchTranslationCache,
+        address: u64,
+        context: AccessContext,
+    ) {
+        let Some(memory) = self.bus.ram_ref() else {
+            return;
+        };
+        let walk = |memory: &crate::PhysicalMemory| {
+            translate_long64_2m_ram_read_only_with_tables(
                 memory,
                 &self.paging,
                 self.instruction_rip,
@@ -3151,34 +3264,57 @@ impl PagedMovMemoryAdapter<'_> {
                 context,
                 od_isa::memory::AccessKind::Fetch,
             )
-        {
-            // Only plain RAM is cached: a write to it always notifies the cache, and the byte of
-            // the frame reads exactly as the walk's fetch read it.
-            let is_ram = |base: u64| {
-                matches!(
-                    memory.locate_region_kind(GuestPhysicalAddress::new(base), 0x1000),
-                    Ok(MemoryRegionKind::Ram)
-                )
+        };
+        // A cache that is not strict reads the generations at the seal and needs the one walk of
+        // (3): the order of the interleaved mode, as before S6-34.
+        let strict = cache.is_strict();
+        let (first_tables, generations) = if strict {
+            let Ok((_, first_tables)) = walk(memory) else {
+                return;
             };
-            let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
-            // S4-13d: with the 2 MiB tag a walk that ended at a 2 MiB leaf (three tables) whose
-            // whole 2 MiB span is plain RAM is remembered for the whole leaf; the span's base is
-            // the physical address minus the offset of the request inside the leaf. Anything else
-            // (a 4 KiB leaf, a span that is not wholly RAM, a base that is not 2 MiB aligned)
-            // stays a 4 KiB entry, as without the tag.
-            let leaf_frame = (cache.tag() == FetchCacheTag::Leaf2M
-                && tables[2].is_some()
-                && tables[3].is_none())
-            .then(|| physical.get().wrapping_sub(address & 0x1f_ffff))
-            .and_then(|base| memory.ram_leaf_2m(GuestPhysicalAddress::new(base)));
-            if let Some(frame) = leaf_frame
-                .or_else(|| memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)))
-                && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
-            {
-                cache.insert(address, &self.paging, context, frame, tables);
-            }
+            let generations = first_tables
+                .map(|table| table.and_then(|base| memory.code_page_generation(base).ok()));
+            (first_tables, generations)
+        } else {
+            ([None; 4], [None; 4])
+        };
+        let Ok((physical, tables)) = walk(memory) else {
+            return;
+        };
+        if strict && tables != first_tables {
+            return;
         }
-        Ok(byte)
+        // Only plain RAM is cached: a write to it always notifies the cache, and the byte of
+        // the frame reads exactly as the walk's fetch read it.
+        let is_ram = |base: u64| {
+            matches!(
+                memory.locate_region_kind(GuestPhysicalAddress::new(base), 0x1000),
+                Ok(MemoryRegionKind::Ram)
+            )
+        };
+        let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
+        // S4-13d: with the 2 MiB tag a walk that ended at a 2 MiB leaf (three tables) whose
+        // whole 2 MiB span is plain RAM is remembered for the whole leaf; the span's base is
+        // the physical address minus the offset of the request inside the leaf. Anything else
+        // (a 4 KiB leaf, a span that is not wholly RAM, a base that is not 2 MiB aligned)
+        // stays a 4 KiB entry, as without the tag.
+        let leaf_frame =
+            (cache.tag() == FetchCacheTag::Leaf2M && tables[2].is_some() && tables[3].is_none())
+                .then(|| physical.get().wrapping_sub(address & 0x1f_ffff))
+                .and_then(|base| memory.ram_leaf_2m(GuestPhysicalAddress::new(base)));
+        if let Some(frame) = leaf_frame
+            .or_else(|| memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)))
+            && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
+        {
+            cache.insert_with_generations(
+                address,
+                &self.paging,
+                context,
+                frame,
+                tables,
+                generations,
+            );
+        }
     }
 
     fn access_cross_page_read(
@@ -3350,23 +3486,73 @@ impl PagedMovMemoryAdapter<'_> {
         address: u64,
         context: AccessContext,
         size: od_isa::OperandSize,
-    ) -> Result<LockedTarget, MemoryError> {
+    ) -> Result<LockedTarget<'a>, MemoryError> {
         let width = self.locked_width(size)?;
         if address % u64::from(width.bytes()) != 0 {
             if self.bus.locked_memory().execution_mode() == crate::ExecutionMode::Interleaved {
                 return Ok(LockedTarget::Serial);
             }
+            // S6-34 step 8: a vCPU thread of the parallel mode carries the gate that stops every
+            // other vCPU around the operation; without one the refusal of S6-31 stays.
+            if let Some(gate) = self.bus.split_gate() {
+                return Ok(LockedTarget::Stopped(gate));
+            }
             self.bus.locked_memory().count_split_lock_refusal();
             return Err(MemoryError::Backend(format!(
                 "locked operation of {} bytes at {address:#x} is not naturally aligned: a split \
-                 lock is refused in the parallel mode (S6-31: no 16-byte primitive, stop-all is \
-                 S6-34 step 8)",
+                 lock is refused in the parallel mode without the stop-all gate of the vCPU \
+                 threads (S6-31: no 16-byte primitive; S6-34 step 8)",
                 width.bytes()
             )));
         }
         match self.access(address, context, RamAccessOperation::AtomicTarget { width })? {
             TrackedAccessOutcome::Located(physical) => Ok(LockedTarget::Host { width, physical }),
             _ => Err(Self::unsupported("non-locate result")),
+        }
+    }
+
+    /// S6-34 step 8: the split `LOCK` of the parallel mode. [`SplitLockGate::acquire`] returns
+    /// when every other vCPU is quiet and no visible effect of this instruction has happened yet;
+    /// the serial pair of S6-32 then runs with nobody else touching RAM; the gate is released
+    /// when the operation is over, whatever its result. If the gate cannot be had in time the
+    /// instruction fails before any effect (a typed backend error, never a half operation).
+    fn locked_stopped(
+        &mut self,
+        gate: &dyn crate::bus::SplitLockGate,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        struct Release<'g>(&'g dyn crate::bus::SplitLockGate);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        gate.acquire()
+            .map_err(|error| MemoryError::Backend(format!("split lock gate: {error}")))?;
+        let _release = Release(gate);
+        self.locked_serial(address, context, size, update)
+    }
+
+    /// The operation of a locked operand that no host atomic covers: the serial pair of the
+    /// interleaving mode, or the same pair under the gate of the parallel mode.
+    fn locked_split(
+        &mut self,
+        target: LockedTarget<'_>,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        match target {
+            LockedTarget::Stopped(gate) => {
+                self.locked_stopped(gate, address, context, size, update)
+            }
+            LockedTarget::Serial | LockedTarget::Host { .. } => {
+                self.locked_serial(address, context, size, update)
+            }
         }
     }
 
@@ -3443,7 +3629,8 @@ impl PagedMovMemoryAdapter<'_> {
 }
 
 /// S6-32: what [`PagedMovMemoryAdapter::locked_target`] decided for a locked operand.
-enum LockedTarget {
+#[derive(Clone, Copy)]
+enum LockedTarget<'g> {
     /// Naturally aligned: one host atomic operation on the cell at `physical`.
     Host {
         width: crate::AccessWidth,
@@ -3451,9 +3638,12 @@ enum LockedTarget {
     },
     /// Misaligned in the interleaving mode: the serial read-update-write pair.
     Serial,
+    /// Misaligned in the parallel mode on a vCPU thread: the serial pair under the gate that
+    /// stops every other vCPU (S6-34 step 8).
+    Stopped(&'g dyn crate::bus::SplitLockGate),
 }
 
-impl GuestMemory for PagedMovMemoryAdapter<'_> {
+impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         if self.read_only_qword {
             return Err(Self::unsupported("instruction fetch"));
@@ -3635,9 +3825,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         size: od_isa::OperandSize,
         replacement: u64,
     ) -> Result<u64, MemoryError> {
-        let LockedTarget::Host { width, physical } = self.locked_target(address, context, size)?
-        else {
-            return self.locked_serial(address, context, size, &mut |_| replacement);
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, &mut |_| replacement);
         };
         self.locked_finish(physical, |memory, committed| {
             memory.atomic_swap(physical, width, replacement, committed)
@@ -3651,9 +3841,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         size: od_isa::OperandSize,
         addend: u64,
     ) -> Result<u64, MemoryError> {
-        let LockedTarget::Host { width, physical } = self.locked_target(address, context, size)?
-        else {
-            return self.locked_serial(address, context, size, &mut |old| {
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, &mut |old| {
                 old.wrapping_add(addend) & size.mask()
             });
         };
@@ -3670,10 +3860,10 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         expected: u64,
         replacement: u64,
     ) -> Result<u64, MemoryError> {
-        let LockedTarget::Host { width, physical } = self.locked_target(address, context, size)?
-        else {
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
             let expected = expected & size.mask();
-            return self.locked_serial(address, context, size, &mut |old| {
+            return self.locked_split(target, address, context, size, &mut |old| {
                 if old == expected {
                     replacement & size.mask()
                 } else {
@@ -3693,9 +3883,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         size: od_isa::OperandSize,
         update: &mut dyn FnMut(u64) -> u64,
     ) -> Result<u64, MemoryError> {
-        let LockedTarget::Host { width, physical } = self.locked_target(address, context, size)?
-        else {
-            return self.locked_serial(address, context, size, update);
+        let target = self.locked_target(address, context, size)?;
+        let LockedTarget::Host { width, physical } = target else {
+            return self.locked_split(target, address, context, size, update);
         };
         self.locked_finish(physical, |memory, committed| {
             memory.atomic_rmw(physical, width, update, committed)
@@ -4250,6 +4440,128 @@ mod tests {
                 Ok(thread << 32 | 199)
             );
         }
+    }
+
+    /// S6-34 step 9, with a real second thread (not a `join` after the fact): one thread rewrites
+    /// the PTE of the code page again and again (each version maps another frame, whose bytes name
+    /// the version) while the reader runs the loop's own sequence on a cache with the `WriteWatch`
+    /// policy: `revalidate` at the start of a call, a fetch through the cache (a hit, or a walk and
+    /// an insert), `seal` at the end. The reader reads the number of the last write that has
+    /// completed BEFORE it starts the call; the byte it fetches must come from that version or a
+    /// later one. A stale entry (the bytes of an older version) that survived the write would be
+    /// the failure of the order "bytes, then generation": the entry was made from the old PTE, the
+    /// write came after, and the generation taken at the seal already counted it. The cache takes
+    /// the generation before the bytes of the walk (`insert_with_generations`), so the write is
+    /// always seen as newer than the entry.
+    #[test]
+    fn a_pte_rewritten_by_another_thread_is_never_served_stale_from_the_fetch_cache() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        const FRAMES: u64 = 256;
+        const WRITES: u64 = 20_000;
+        const LEN: u64 = 0x1_0000 + FRAMES * 0x1000;
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), LEN).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut physical = crate::PhysicalMemory::new(&map, RamLimits::new(LEN)).unwrap();
+        physical.set_execution_mode(crate::ExecutionMode::Parallel);
+        let pte = |version: u64| 0x1_0000 + (version % FRAMES) * 0x1000 + 0x67;
+        for (address, value) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3020, 0x5027),
+            (0x5000, pte(0)),
+        ] {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        for frame in 0..FRAMES {
+            // The byte at offset 0 of the frame names the version it belongs to.
+            physical
+                .store_u8(
+                    GuestPhysicalAddress::new(0x1_0000 + frame * 0x1000),
+                    frame as u8,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let key = Some(crate::fetch_translation_cache::TranslationKey::new(
+            paging,
+            context(),
+        ));
+        let generation_of = |page: u64| {
+            physical
+                .code_page_generation(GuestPhysicalAddress::new(page << 12))
+                .ok()
+        };
+        let published = AtomicU64::new(0);
+        let cache = FetchTranslationCache::with_invalidation(FetchCacheInvalidation::WriteWatch)
+            .with_insert_generations();
+        let mut stale = 0u64;
+        let mut hits_after_write = 0u64;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for version in 1..=WRITES {
+                    physical
+                        .store_u64(GuestPhysicalAddress::new(0x5000), pte(version), |_| {})
+                        .unwrap();
+                    published.store(version, Ordering::Release);
+                    // Let the reader run a call between most writes.
+                    std::thread::yield_now();
+                    for _ in 0..(version % 7) * 20 {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+            loop {
+                let seen = published.load(Ordering::Acquire);
+                cache.revalidate(key, &generation_of);
+                let mut committed = |_| {};
+                let mut adapter = set_loop_adapter(
+                    &physical,
+                    None,
+                    paging,
+                    DATA_LINEAR,
+                    &mut committed,
+                    Some(&cache),
+                    None,
+                );
+                // Twice: the second is a hit unless the first walk was refused.
+                for _ in 0..2 {
+                    let byte = u64::from(adapter.fetch(DATA_LINEAR, context()).unwrap());
+                    let after = published.load(Ordering::Acquire);
+                    // The byte names a version modulo the frames; it must be one in the window
+                    // `seen..=after + 1` (the writes that completed before the call, the ones that
+                    // came during it, and the one whose store is done but not yet published: the
+                    // writer is preempted between the two). A window as wide as the ring cannot
+                    // tell: not judged.
+                    if after + 1 - seen < FRAMES {
+                        let in_window = (seen..=after + 1).any(|version| version % FRAMES == byte);
+                        if !in_window {
+                            stale += 1;
+                        }
+                    }
+                }
+                drop(adapter);
+                cache.seal(key, &generation_of);
+                if seen >= WRITES {
+                    break;
+                }
+            }
+        });
+        hits_after_write += cache.stats().hits;
+        assert_eq!(
+            stale, 0,
+            "a fetch was served from a PTE older than a completed write"
+        );
+        assert!(
+            hits_after_write > 0,
+            "the cache served nothing: the test did not use it"
+        );
+        assert!(cache.stats().inserts > WRITES / 20, "{:?}", cache.stats());
+        eprintln!("fetch cache stress: {:?}", cache.stats());
     }
 
     fn invlpg_state(target: u64) -> LongModeState {

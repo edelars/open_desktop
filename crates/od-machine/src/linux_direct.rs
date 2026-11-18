@@ -13175,7 +13175,13 @@ mod tests {
             window.resize(8, 0x90);
             write_phys(&mut boot, ENTRY, &window);
             assert_eq!(
-                invlpg_at_rip(&state, boot.board.bus_mut(), &paging, long64(), None),
+                invlpg_at_rip(
+                    &state,
+                    boot.board.bus_mut().physical_memory(),
+                    &paging,
+                    long64(),
+                    None
+                ),
                 expected,
                 "{bytes:02x?}"
             );

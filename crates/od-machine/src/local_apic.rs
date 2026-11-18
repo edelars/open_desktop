@@ -300,8 +300,16 @@ impl LocalApicHandle {
         if !same_timers {
             return Err(DeviceError::UnsupportedConfiguration);
         }
+        let wake = pair.wake.clone();
         *pair = state.clone();
+        pair.wake = wake;
         Ok(())
+    }
+    /// Install (or with `None` remove) the wake sink of the vCPU threads (S6-34, see
+    /// [`crate::apic_pair::WakeSink`]): called with the index of the Local APIC every time a
+    /// request is posted to it, under the APIC lock.
+    pub(crate) fn set_wake_sink(&self, sink: Option<std::sync::Arc<dyn Fn(usize) + Send + Sync>>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).wake = crate::apic_pair::WakeSink(sink);
     }
     /// The power-on reset of every Local APIC and of the IOAPIC route (S6-24, see
     /// [`PairState::reset_all`]); the board reset uses it. [`Self::reset_checked`] and

@@ -581,3 +581,126 @@ fn sources_and_device_writes_from_several_threads_finish() {
         writer.join().unwrap();
     });
 }
+
+// ---- the set-step view of a vCPU thread (S6-34) ---------------------------------------------------
+
+/// A bus with the APIC windows of the set loop on, owned by the test alone (so that the exclusive
+/// view can be had too).
+fn owned_rig() -> Rig {
+    let mut rig = rig();
+    Arc::get_mut(&mut rig.bus)
+        .expect("the rig owns its bus")
+        .enable_apic_mmio_windows();
+    rig
+}
+
+/// The view a vCPU thread gets from `&MachineBus` does what the exclusive view of the interleaved
+/// mode does: the same ports and the same MMIO dispatch, as the vCPU asks.
+#[test]
+fn the_shared_set_step_view_gives_what_the_exclusive_view_gives() {
+    use crate::page_walk::MmioDispatchError;
+    let mut exclusive = owned_rig();
+    let shared = owned_rig();
+    let ask = |view: &MachineBusSetStepIo<'_>| {
+        let mut port = view.port_io();
+        port.write_u32(LATCH_PORT, 0xABCD_1234).unwrap();
+        let latched = port.read_u32(LATCH_PORT).unwrap();
+        let byte = port.read_u8(LATCH_PORT + 1).unwrap();
+        let unmapped = port.read_u32(0x7000).is_err();
+        // The Local APIC of vCPU 1: the SVR the rig software-enabled; the ID register.
+        let svr = view
+            .dispatch(
+                GuestPhysicalAddress::new(MMIO + 0xF0),
+                4,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Dword,
+                },
+            )
+            .unwrap();
+        let id = view
+            .dispatch(
+                GuestPhysicalAddress::new(MMIO + 0x20),
+                4,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Dword,
+                },
+            )
+            .unwrap();
+        // An address outside the windows, and one inside no region, are the same refusals.
+        let outside = matches!(
+            view.dispatch(
+                GuestPhysicalAddress::new(0x4000),
+                4,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Dword
+                },
+            ),
+            Err(MmioDispatchError::Backend(_))
+        );
+        (latched, byte, unmapped, svr, id, outside)
+    };
+    let by_exclusive = {
+        let bus = Arc::get_mut(&mut exclusive.bus).unwrap();
+        let (_, view) = bus.split_for_set_step_of_vcpu(1);
+        ask(&view)
+    };
+    let by_shared = {
+        let (_, view) = shared.bus.split_for_set_step_shared(1);
+        ask(&view)
+    };
+    assert_eq!(by_shared, by_exclusive);
+    assert_eq!(by_shared.0, 0xABCD_1234);
+    assert_eq!(by_shared.3, 0x1FF);
+    assert_eq!(
+        by_shared.4,
+        1 << 24,
+        "the ID register of the Local APIC of vCPU 1"
+    );
+}
+
+/// The shared view takes the one device lock for each access and gives it back before the access
+/// returns (lock-order rule 3): a view that stays alive blocks nobody between its accesses, and an
+/// access waits for a lock that another thread holds.
+#[test]
+fn the_shared_set_step_view_holds_the_device_lock_for_one_access_only() {
+    let rig = owned_rig();
+    let bus = rig.bus.clone();
+    finishes_in_time("the shared view", move || {
+        let (_, view) = bus.split_for_set_step_shared(0);
+        let mut port = view.port_io();
+        port.write_u32(LATCH_PORT, 1).unwrap();
+        // Between two accesses of the live view another thread takes the lock at once.
+        {
+            let other = bus.clone();
+            let taken = std::thread::spawn(move || {
+                let guard = other.lock_devices();
+                drop(guard);
+            });
+            taken.join().unwrap();
+        }
+        port.write_u32(LATCH_PORT, 2).unwrap();
+        // While another thread holds the lock, an access of the view waits for it.
+        let held_for = Duration::from_millis(150);
+        let holder = {
+            let other = bus.clone();
+            let (locked_tx, locked_rx) = mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                let guard = other.lock_devices();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(held_for);
+                drop(guard);
+            });
+            locked_rx.recv().unwrap();
+            handle
+        };
+        let started = Instant::now();
+        port.write_u32(LATCH_PORT, 3).unwrap();
+        assert!(
+            started.elapsed() >= held_for / 2,
+            "the write did not wait for the device lock ({:?})",
+            started.elapsed()
+        );
+        holder.join().unwrap();
+        assert_eq!(port.read_u32(LATCH_PORT).unwrap(), 3);
+    });
+}
