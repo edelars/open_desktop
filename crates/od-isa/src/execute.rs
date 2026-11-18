@@ -20039,6 +20039,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        // S7-04: compiler alignment pads use bare `0F 1F /0`. The decoder
+        // consumes the address bytes, and execution never reads the operand.
+        Operation::NopModrm
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x1f
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.rip = next_rip;
+        }
         // S7-04: admit only the firmware helper's operand-size-prefixed NOP
         // (`66 90`) in the base paged profile. This is intentionally local to
         // this profile and does not widen generic/JIT NOP admission.
@@ -23540,8 +23550,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the helper copies RSI into RAX with exact `48 89 F0`.
-        // Opcode 89 stores the ModRM reg source into the r/m destination.
+        // S7-04: the helper copies RSI into RAX with `48 89 F0`.
+        // The firmware boot path also copies RCX with `48 89 C8`.
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Register(source),
@@ -23556,7 +23566,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 })
             && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
-            && source == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
+            && (source == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                || (firmware_boot_profile
+                    && source == RegisterView::low(Register::Rcx, OperandSize::Qword))) =>
         {
             let value = state.read(source);
             state.write(destination, value);
@@ -26267,8 +26279,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         }
         // S7-04/S7-05: exact immediate stores initialize [RDI], clear
         // [RSP+0x10], and write the sign-extended imm32 zero to qword
-        // [RSP+8]. Pin each address/width/value tuple and route the store
-        // through tracked memory.
+        // [RSP+8]. The firmware boot path also clears dword [RSP+0x0f].
+        // Pin each address/width/value tuple and route the store through tracked memory.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
             value,
@@ -26310,7 +26322,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     && destination.size == OperandSize::Qword
                     && value == 0
                     && destination.base == AddressBase::Register(Register::Rsp)
-                    && destination.displacement == 0x08)) =>
+                    && destination.displacement == 0x08)
+                || (firmware_boot_profile
+                    && instruction.length == 8
+                    && instruction.operand_size == OperandSize::Dword
+                    && instruction.prefixes == Prefixes::default()
+                    && destination.size == OperandSize::Dword
+                    && value == 0
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.displacement == 0x0f)) =>
         {
             if let Err(error) = write_operand(
                 state,

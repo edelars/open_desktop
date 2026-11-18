@@ -51186,6 +51186,9 @@ fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
 #[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),
+        (&[0x48, 0x89, 0xc8][..], 0x89),
+        (&[0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0][..], 0xc7),
         (&[0x89, 0xc9][..], 0x89),
         (&[0xff, 0x24, 0xcd, 0xb8, 0x26, 0x20, 0][..], 0xff),
         (&[0xb9, 4, 0, 0, 0][..], 0xb9),
@@ -51209,6 +51212,94 @@ fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
         assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode });
         assert_eq!(cpu, before);
         assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_executes_alignment_padding_and_parser_cleanup() {
+    let code = [
+        0x0f, 0x1f, 0x44, 0, 0, // NOP [RAX + RAX]
+        0x48, 0x89, 0xc8, // MOV RAX,RCX
+        0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0, // MOV dword [RSP + 0x0f],0
+    ];
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 0x20].fill(0xa5);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rax as usize] = 1 << 46; // The NOP's ignored address is noncanonical.
+    cpu.gpr[Register::Rcx as usize] = 0xfedc_ba98_7654_3210;
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    let mut expected = cpu.clone();
+    let mut pio = Pio::default();
+
+    for (offset, rax, writes) in [
+        (5, 1 << 46, 0),
+        (8, 0xfedc_ba98_7654_3210, 0),
+        (16, 0xfedc_ba98_7654_3210, 1),
+    ] {
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        expected.rip = RIP + offset;
+        expected.gpr[Register::Rax as usize] = rax;
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, writes));
+    }
+    let mut expected_bytes = [0xa5; 0x20];
+    expected_bytes[0x0f..0x13].fill(0);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 0x20],
+        expected_bytes
+    );
+    assert_eq!(memory.write_addresses, [DATA + 0x0f]);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_boot_cleanup_store_preserves_state_on_fault() {
+    let code = [0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0];
+    let pf = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(DATA + 0x0f),
+    };
+    let ss = od_isa::ArchitecturalFault {
+        vector: 12,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (rsp, fault, expected_writes) in [(DATA, pf, 1), (1 << 47, ss, 0)] {
+        let mut memory = Memory::new(&code);
+        memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        let bytes = memory.bytes.clone();
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = rsp;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, expected_writes));
+        assert_eq!(memory.bytes, bytes);
     }
 }
 
@@ -51610,12 +51701,17 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
-        (&[0x89, 0xc0][..], 0x89),                                  // MOV EAX,EAX
-        (&[0x48, 0x89, 0xc9][..], 0x89),                            // MOV RCX,RCX
-        (&[0xff, 0xe1][..], 0xff),                                  // JMP RCX
-        (&[0xff, 0x24, 0xc5, 0xb8, 0x26, 0x20, 0][..], 0xff),       // RAX index
-        (&[0xff, 0x24, 0x8d, 0xb8, 0x26, 0x20, 0][..], 0xff),       // scale four
-        (&[0xff, 0xa4, 0xc8, 0xb8, 0x26, 0x20, 0][..], 0xff),       // RAX base
+        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // prefixed NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),             // PREFETCHNTA
+        (&[0x48, 0x8b, 0xc1][..], 0x8b),             // reverse MOV opcode
+        (&[0xc7, 0x44, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // nonzero dword
+        (&[0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // different displacement
+        (&[0x89, 0xc0][..], 0x89),                   // MOV EAX,EAX
+        (&[0x48, 0x89, 0xc9][..], 0x89),             // MOV RCX,RCX
+        (&[0xff, 0xe1][..], 0xff),                   // JMP RCX
+        (&[0xff, 0x24, 0xc5, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX index
+        (&[0xff, 0x24, 0x8d, 0xb8, 0x26, 0x20, 0][..], 0xff), // scale four
+        (&[0xff, 0xa4, 0xc8, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX base
         (&[0x67, 0xff, 0x24, 0xcd, 0xb8, 0x26, 0x20, 0][..], 0xff), // address override
         (&[0x40, 0xb9, 4, 0, 0, 0][..], 0xb9),
         (&[0xb8, 8, 0, 0, 0][..], 0xb8),
