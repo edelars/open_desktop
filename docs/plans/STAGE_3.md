@@ -4650,6 +4650,15 @@ timeout 600 секунд, временные fixture-каталоги в ignored
 selector attempt exceeded the 240-second context RPC window without a final
 summary, so its result remains unconfirmed and S3-41 stays open.
 
+**Обновление, 18 ноября 2026 года.** Local selector на `3ece775`
+(`stage3-20261118-221234-a03bfcd2f6`) остановился на семи устаревших
+проверках счётчиков [ISSUE-060](../KNOWN_ISSUES.md#issue-060). В self-tests
+сведены в одно место ожидаемые 152 self-tests, 326 Rust gates и 344 local
+steps. Проверки точных имён, команд и дубликатов сохранены. Отдельно прошли
+7 регрессий, а повторный selector `stage3-20261118-221625-51e161ab59`
+прошёл `harness_self_tests` (152 из 152). Этот результат закрывает
+ISSUE-060. Для S3-41 требуется итог полного прогона.
+
 ## 10. Матрица приёмки
 
 | Область | Обязательное доказательство | Что не засчитывается |
