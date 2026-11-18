@@ -4350,6 +4350,8 @@ the broader V1, Mini, or Stage 3 gates. See the
 
 **Где:** `crates/od-host/src/` (рядом с `PagedFetchedLoadSession`, допустим новый модуль), тесты `od-host`. Не трогать: `crates/od-isa/src/` (линия S4-38; интерпретатор — только через существующий публичный API), `crates/od-host/src/storage_abi_v1.rs`, VMHost/Swift, C ABI V0/V1.
 
+Замечание Д2 закрыто детерминированной регрессией цикла на ARM64. Тест поднимает STOP между записью RAM и проверкой байта в сгенерированном блоке. Проверены один retired store, выход на следующей безопасной точке и продолжение с нужной инструкции для обычной записи и записи в активную страницу кода. Результаты приведены в [отчёте S3-38o](../reports/STAGE_3_S3-38o_2026-11-18.md#deterministic-post-commit-stop-regression).
+
 **Сделать:**
 1. Цикл сессии одного vCPU. Каждая итерация начинается на safe point S3-25c: результат и счётчики проверены, уведомления `committed_write` применены, следующий lookup не начат. Затем один шаг: JIT-путь `PagedFetchedLoadSession` для допущенных форм. Если сессия отказала без эффектов инструкции, делается ровно один шаг общего paged-интерпретатора — того же, которым плата исполняет гостя (`run_paged_probe`, `FirmwareBoard::run_quantum`). MOV-only `step_paged_mov` для общей программы недостаточен. Все записи RAM обоих путей идут через `commit_write` (поколение растёт).
 2. Внешний STOP. `AtomicU8` принадлежит вызывающему, а не сессии, и передаётся в `RuntimeContextV1::stop_requested` каждого native-вызова. Выход `StopRequested` одноинструкционного блока — штатный исход без повтора, а не `JitHostFailure(InvalidOutcome)`.

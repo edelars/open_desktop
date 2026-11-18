@@ -1424,6 +1424,10 @@ impl PublishedCode {
         let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
             .map_err(PagedMemoryLoadV2Error::Paging)?;
         let mut scope = od_machine::with_paged_mov_store_memory(bus, paging, state.rip, |memory| {
+            #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+            let mut stop_on_write = store_invalidates_active_code_tests::StopOnWrite(memory);
+            #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+            let memory = &mut stop_on_write;
             // SAFETY: `execute_memory_store_v2` requires synchronous ordinary
             // RAM, every access to which is atomic per access (shared RAM of
             // the parallel mode is allowed), with no devices or re-entry.
@@ -120368,6 +120372,57 @@ mod store_invalidates_active_code_tests {
         store_invalidates_active_code,
     };
     use od_machine::{GuestPhysicalAddress, GuestPhysicalRange};
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) use stop_on_write::{STOP_ON_PAGED_STORE, StopOnWrite};
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod stop_on_write {
+        use crate::paged_host_loop::PagedHostLoopControl;
+        use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
+        use std::{cell::Cell, sync::Arc};
+
+        thread_local! {
+            pub(crate) static STOP_ON_PAGED_STORE: Cell<Option<Arc<PagedHostLoopControl>>> =
+                const { Cell::new(None) };
+        }
+
+        pub(crate) struct StopOnWrite<'a>(pub(crate) &'a mut dyn GuestMemory);
+
+        impl GuestMemory for StopOnWrite<'_> {
+            fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+                self.0.fetch(address, context)
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                context: AccessContext,
+                destination: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.0.read(address, context, destination)
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                context: AccessContext,
+                source: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.0.write(address, context, source)?;
+                // The committed write is visible, but the native helper has
+                // not returned to the generated post-commit STOP poll yet.
+                if let Some(control) = STOP_ON_PAGED_STORE.with(Cell::take) {
+                    control.request_stop();
+                }
+                Ok(())
+            }
+
+            fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+                self.0.mfence(context)
+            }
+        }
+    }
 
     fn result(exit: Exit, retired_instructions: u64) -> MemoryOperationExecutionResultV2 {
         MemoryOperationExecutionResultV2 {
