@@ -37,3 +37,55 @@ Harness run `stage1-harness-20261026-174338-1ac20fc0` завершился со 
 - После того как параллельные изменения этапа 2 стабилизируют поведение и соответствующие ожидания тестов, повторить local и oracle suites на одном зафиксированном fingerprint. Отдельно сохранить успешные локальные результаты и physical oracle evidence; затем измерять только доступные на этой ревизии workloads.
 
 Сырые harness outputs и manifest сохранены локально вне Git в `work/stage1-harness/` и `work/stage1-oracle/`; они не являются долговременным доказательством успешного oracle.
+
+## Повтор на исходниках 3476780, 18 ноября 2026
+
+Проверяемая ревизия `3476780`. Source fingerprint официального oracle:
+`f3a3a351d5729f362a670a6893fd43a8a149d775c989d8d8c333892135e1d1a1`.
+Локальный harness `stage1-harness-20261118-215920-57e8d0e1` завершился
+успешно на macOS 26.7.1 ARM64 с Rust 1.99.0. Прошли форматирование,
+workspace check, 7 586 Rust tests (5 ignored), 25 Python tests harness и
+проверка SHA-256 16 фикстур.
+
+```sh
+python3 tests/cpu/stage1_harness.py --suite local \
+  --generated-count 1000 --seed 0x5eedcafe --repeats 2
+python3 tests/cpu/stage1_harness.py --suite oracle \
+  --remote-root /path/to/matching/checkout \
+  --generated-count 1000 --seed 0x5eedcafe --repeats 2
+```
+
+Локальный preflight на `s0_09_add_overflow`
+(`input_sha256=12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729`)
+сверил interpreter, legacy fragment, one-block JIT и dispatcher. Во всех
+случаях совпали полный snapshot, `reached_code_end` и одна выполненная
+инструкция. Команды и границы измерений описаны в [BENCHMARKS](../testing/BENCHMARKS.md#jit-этапа-3-workload-и-уровни-прогрева).
+Раздельные cold и warm серии для одного пятислучайного register-only корпуса
+сохранены в [S3-56](STAGE_3_CORE_REPORT.md#9-s3-56--измерения-generic-пути).
+Каждая из шести серий содержит 20 пар с одинаковым sweep count внутри пары
+и минимумом 200 ms измеренного времени для каждой стороны. Это замеры на
+исторических исходниках, указанных в отчёте линии.
+
+[S2-09](STAGE_2_REPORT.md#s2-09--native-v2-и-физическая-проверка) принят
+для трёх положительных v2 MOV/memory cases с физическим сравнением
+interpreter/native на своём fingerprint. В нём подтверждены 16 GPR, RIP,
+определённые флаги и fixture memory. Тройное сравнение memory JIT относится
+к S3-21 и остаётся отдельной проверкой.
+
+### Физический preflight
+
+Исходники на Linux x86_64 совпали по fingerprint. На всех попытках
+использовались seed `0x5eedcafe`, 1 000 generated cases и два
+запрошенных повтора. Ни одна из перечисленных попыток не дошла до
+физического сравнения.
+
+| Oracle run | Наблюдение |
+| --- | --- |
+| `stage1-20261118-215524-3c8bf74d` | Первый минимальный архив не включал 192 compile-time test fixtures. Preflight остановился на их отсутствии. |
+| `stage1-20261118-215739-b41e8f80` | Дополненный архив собрал тесты. Preflight достиг лимита 1 800 с во время `od-runner` tests. |
+| `stage1-20261118-222826-c967f904` | Повтор с `opt-level=1` только для профиля Cargo test достиг того же лимита на холодной компиляции. |
+
+Предел и возобновление проверки отслеживаются в
+[ISSUE-519](../KNOWN_ISSUES.md#issue-519). S3-01 остаётся открытой до
+результата физического oracle. Идентификаторы соответствуют каталогам
+`work/stage1-oracle/`, где сохранены manifest и логи preflight.

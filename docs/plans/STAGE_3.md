@@ -500,6 +500,13 @@ Event, поднятый memory callback, опрашивается только �
 
 **Готово:** воспроизводимый протокол позволяет сравнивать решения до их окончательного выбора. Отсутствующие workloads отмечены, старые fragment numbers не перенесены на block JIT.
 
+Повтор от 18 ноября 2026 года подтвердил локальный baseline Stage 1 и
+совпадение результата на общем register-only входе у interpreter, legacy
+fragment, block JIT и dispatcher. Обновлена [методика измерений](../testing/BENCHMARKS.md#jit-этапа-3-workload-и-уровни-прогрева).
+Физический x86 preflight на совпадающем fingerprint достиг лимита 1 800 с.
+S3-01 остаётся открытой. См. [baseline report](../reports/STAGE_3_BASELINE_2026-10-26.md#повтор-на-исходниках-3476780-18-ноября-2026)
+и [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
+
 ### S3-02. Определить runtime contract
 
 **Файлы:** od-jit, od-host interface boundary, JIT_CONTRACT.

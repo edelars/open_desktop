@@ -303,20 +303,18 @@ tests and independent code review passed. See the [bounded S3-31c report](../rep
 
 ## JIT этапа 3: workload и уровни прогрева
 
-Старые значения S0-13 характеризуют direct fragment path и host wrapper на
-конкретной машине. Они остаются историческим baseline и не переносятся на
-будущий block JIT. Перед выбором lowering/allocator сохранить текущие fixture
-и corpus fingerprints. Текущий runner сравнивает interpreter и legacy fragment
-JIT; новый block JIT включается после S3-13.
+Замеры S0-13 относятся к direct fragment path и host wrapper на указанной
+машине. Для block JIT используются отдельные серии `od-bench`. При сравнении
+вариантов сохранять fingerprints исходников, фикстур и порядка обхода корпуса.
 
 | Workload | Состав | Доступность сравнения |
 |---|---|---|
-| Linear integer | Повторяемые `MOV`/`ADD`/`SUB`/`CMP` из S0-09 без memory | Interpreter и legacy fragment path; новый block JIT после S3-13 |
-| Conditional branch | Короткая программа с `JZ`/`JNZ`, одинаковыми taken/not-taken inputs | Одноблочные cases после S3-13; полный Stage 1 corpus после dispatcher S3-15 |
-| Short/long loop | Одни и те же guest instructions с разным числом loop iterations | Legacy path — только для его собственного сравнения; block JIT требует S3-15 и точной interpreter semantics |
-| Multi-block | Несколько связанных basic blocks и повторные переходы между ними | После dispatcher и cache lookup; не включать в ранний one-block result |
-| Helper-heavy | Частые `ADD`/`SUB`/`CMP` и eager materialization flags через helper | Только при одинаковой x86 flag semantics и измерении фактических helper calls |
-| Memory/fallback/invalidation | Checked accesses, interpreter exits, изменённый guest code | Добавлять вместе с соответствующей реализацией и correctness evidence; сейчас не измерять |
+| Linear integer | `MOV`/`ADD`/`SUB`/`CMP` из S0-09 без memory | Interpreter и legacy fragment через `od-runner`; сравнения block JIT ограничены корпусами конкретных серий |
+| Conditional branch | `JZ`/`JNZ`, taken и not taken | [S3-36b](#s3-36b-bounded-branchhelper-warm-profile) использует замороженный набор из пяти S3-14 cases |
+| Short/long loop | Одни и те же guest instructions с разным числом итераций | [S3-36f](#s3-36f-cached-nativeregisterv1-register-recurrence-full-call-profile) проверяет две register recurrences при 1, 64 и 4 096 итерациях |
+| Multi-block | Связанные basic blocks и повторные переходы | [S3-35a](#s3-35a-cold-first-full-corpus-execution) измерял dispatcher на замороженном S3-17 trace; оригинальные list и trace требуются для повтора |
+| Helper-heavy | Частые записи флагов с одинаковой x86 semantics | S3-36b покрывает только свои branch/helper cases; общий helper-heavy workload и сопоставимые счётчики для всех вариантов не измерены |
+| Memory/fallback/invalidation | Checked accesses, interpreter exits, изменённый guest code | Использовать узкие серии с собственной проверкой корректности. Например, [S3-35c](#s3-35c-cold-direct-entry-checked-memory-comparison) измеряет direct-entry memory, а [S3-36c](#s3-36c-resident-warm-nop-fallback-comparison) — resident NOP fallback |
 
 Для каждого workload сохранить exact guest bytes, initial CPU state, число
 исполняемых guest instructions, instruction budget, exit/branch behavior и
@@ -325,18 +323,33 @@ JIT; новый block JIT включается после S3-13.
 проверка там, где её требует план, но его время на отдельной Ubuntu-машине не
 является прямым A/B performance comparison с ARM64 host.
 
+Для проверки общего register-only входа можно прогнать одну и ту же
+[S0-09 fixture](../../tests/fixtures/x86/s0_09_add_overflow.case.json).
+
+```sh
+cargo build --release --offline -p od-runner
+for engine in interpreter jit jit-block jit-dispatch; do
+  target/release/od-runner --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
+    --engine "$engine" --json
+done
+```
+
+Сверять `input_sha256`, `status`, `exit_reason`, `instructions_executed` и
+`snapshot`; поле `backend` подтверждает путь каждого прогона. Этот preflight
+проверяет общий вход и выход для поддержанной формы и оставляет таймеры
+самим benchmark-командам.
+
 Различать три измеряемых уровня:
 
 1. **Cold process:** отдельный запуск и startup целевого runner; измерять
    внешним supervisor, поскольку `od-runner --benchmark` не включает старт
    процесса.
-2. **Cold compilation/code cache:** программа при пустом in-process cache,
-   включая decode/build/lowering, ARM64 emission, publication и первое
-   исполнение. Текущий `od-runner --benchmark` отдельно измеряет translation и
-   compile/publish/drop, но не исполняет код в этой cold-серии; полная
-   cold-compilation-plus-first-execution метрика пока недоступна. Не получать
-   её сложением медиан отдельных серий. Для legacy fragment path явно указывать
-   отсутствие постоянного block cache.
+2. **Cold compilation/code cache:** `od-bench cold-first-run` измеряет первый
+   sweep при пустом in-process cache, в том числе decode, compilation, ARM64
+   emission, publication и guest execution. Поле compile/publish/drop у
+   `od-runner --benchmark` относится к legacy fragment без постоянного block
+   cache и покрывает подготовку и освобождение mapping. Первое исполнение
+   требует отдельного замера с соответствующими границами таймера.
 3. **Warm execution:** уже опубликованный код и одинаковые повторные inputs.
    Время нового block JIT включает предусмотренные dispatcher/cache lookup и
    state materialization; время interpreter включает decode при каждом вызове,
