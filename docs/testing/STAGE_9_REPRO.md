@@ -28,7 +28,7 @@ tools/stage9/run_checks.sh
 | Case | Команда | Ожидание |
 |---|---|---|
 | `fmt_check` | `cargo fmt --all -- --check` | код 0 |
-| `od_storage` | `cargo test -p od-storage` | 210 passed, 1 ignored (`write_fixture`), 0 failed (на `3719cc9`) |
+| `od_storage` | `cargo test -p od-storage` | 219 passed, 1 ignored (`write_fixture`), 0 failed (2026-11-18, с матрицей S9-38 уровня 0) |
 | `od_host_storage_policy` | `cargo test -p od-host --lib storage_policy` | 24 passed |
 | `od_host_storage_io` | `cargo test -p od-host --lib storage_io` | 36 passed |
 | `od_host_raw_file_tests` | `cargo test -p od-host --lib raw_file_tests` | 9 passed |
@@ -45,7 +45,7 @@ tools/stage9/run_checks.sh
 
 Словарь: `passed`, `failed`, `not_run`, `blocked`. Подсостояния `not_started` и `partial` пишутся в `note`; в `results.tsv` статус при этом `not_run`, а если остаток заблокирован зависимостью — `blocked`.
 
-Последний полный запуск: run-id `20261118-s9-43`, HEAD `cdf8361` с изменениями среза S9-43 в рабочем дереве (вошли в его коммит; `persistent_nvme` снова параллельно после закрытия ISSUE-513), macOS 26.7.1 (25G241, Apple Silicon), rustc/cargo 1.99.0, бюджет по умолчанию 840 с, 151 с. Итог: 11 passed, 0 failed, 2 not_run, 6 blocked.
+Последний полный запуск: run-id `20261118-s9-38a`, HEAD `191562f` с изменениями среза S9-38 (уровень 0) в рабочем дереве, macOS 26.7.1 (25G241, Apple Silicon), rustc/cargo 1.99.0, бюджет по умолчанию 840 с, 127 с. Итог: 11 passed, 0 failed, 2 not_run, 7 blocked (строка S9-38 разделена на storage и VM). Предыдущий: `20261118-s9-43` — 11 / 0 / 2 / 6.
 
 Промежуточные запуски того же дня:
 - `20261118-s9-42` — бюджет 1800, до добавления S9-38 и смены статусов: 11 / 0 / 3 / 4;
@@ -58,7 +58,8 @@ tools/stage9/run_checks.sh
 |---|---|---|
 | `fmt_check`, `od_storage`, `od_host_storage_policy`, `od_host_storage_io`, `od_host_raw_file_tests`, `od_host_persistent_nvme`, `od_image_tool`, `workspace_check`, `git_diff_check`, `s9_40_bench_once` | `passed` | Выполнено реально, код 0. Это тесты модели отказов (`FaultBackend`), реальных локальных файлов и двух процессов; не power-loss и не guest |
 | `layout_check` | `passed` (с baseline) | 45 ERROR = baseline, рост отсутствует; код выхода 1 ожидаем |
-| `S9-38_corruption_matrix` | `not_run` (`partial`) | Полной fault/corruption matrix S9-38 нет; в `od_storage` входят только тесты модели отказов и повреждений (`FaultBackend`), не матрица по реальным носителям |
+| `S9-38_storage_matrix` | `not_run` (`partial`) | Уровень 0 (`FaultBackend`) полный и выполняется в `od_storage` ([STORAGE_RECOVERY.md §4.1](STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18)); уровень 1 (kill процесса по операциям) не сделан |
+| `S9-38_vm_matrix` | `blocked` | VM-часть S9-38 заблокирована S9-37, S9-29…31, S9-13 |
 | `S9-39_power_loss` | `blocked` | Испытания выполнены вне скрипта: процедура принята, 15 прогонов `verify ok` ([S9_39_POWER_LOSS_PLAN.md §7](S9_39_POWER_LOSS_PLAN.md)), N сокращено с 20 до 5 на стадию; приём результатов не выполнен, точки между барьерами 1 и 2 не покрыты. Kill процесса и fault-инъекция стенд не заменяют (G5) |
 | `windows_vtpm_uefi` | `blocked` | Нет Windows guest, UEFI variables store (этап 7, S7-09/S7-10) и vTPM (S9-26/27/28) |
 | `linux_mini_guest` | `blocked` | Реальный Linux guest с диском этого этапа не запускался: образ этапа 9 гостю не подключён (S9-13 `blocked`) |

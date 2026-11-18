@@ -877,3 +877,96 @@ fn a_target_that_cannot_be_durable_is_refused_before_any_write() {
     let out = run(&dst, true, true);
     assert_eq!(out.report.copy, CopyStatus::Published);
 }
+
+/// S9-38: every fault of every kind at every mutating call of the copy ×
+/// every crash policy. A failing fault never publishes; after the crash the
+/// copy either does not open as an image or is the complete head; a published
+/// copy always opens complete; the source never changes.
+#[test]
+fn salvage_copy_full_fault_matrix() {
+    use crate::cow_proto_tests::{OpKind, faults_for, is_failing, parse_kind, policies};
+    let b = base(0x38);
+    let source = b.h.durable_bytes();
+    let run = |dst: &FaultHandle| {
+        salvage_to_copy(
+            st(&b.h),
+            &mut NoParents,
+            &SalvageOptions {
+                selection: StateSelection::Head,
+                publish_partial: false,
+            },
+            5,
+            || Ok(st(dst)),
+        )
+        .expect("analysis")
+    };
+    let clean = FaultHandle::new(&[], 0x386);
+    assert_eq!(run(&clean).report.copy, CopyStatus::Published);
+    let kinds: Vec<OpKind> = clean
+        .trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .map(|(_, k)| k)
+        .collect();
+    let (mut cases, mut complete, mut absent) = (0u64, 0u64, 0u64);
+    for (k, kind) in kinds.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            for policy in policies() {
+                cases += 1;
+                let dst = FaultHandle::new(&[], 0x386);
+                dst.script(k as u64, fault);
+                let out = run(&dst);
+                let label = format!("step {k} {fault:?} {policy:?}");
+                let published = out.report.copy == CopyStatus::Published;
+                if is_failing(fault) {
+                    assert!(!published, "{}", dst.report(&format!("{label}: published")));
+                }
+                drop(out);
+                dst.crash(policy);
+                match SnapFile::open(st(&dst), &mut NoParents) {
+                    Ok((img, _)) => {
+                        let mut back = vec![0u8; img.disk_size() as usize];
+                        img.read_at(0, &mut back).expect("read");
+                        assert_eq!(
+                            back,
+                            b.head().bytes,
+                            "{}",
+                            dst.report(&format!("{label}: partial copy"))
+                        );
+                        complete += 1;
+                    }
+                    Err(e) => {
+                        assert!(
+                            !published,
+                            "{}",
+                            dst.report(&format!("{label}: published copy lost {e:?}"))
+                        );
+                        assert!(
+                            crate::cow_snapshot_tests::is_absent(&e),
+                            "{}",
+                            dst.report(&format!("{label}: {e:?}"))
+                        );
+                        absent += 1;
+                    }
+                }
+                assert_eq!(b.h.durable_bytes(), source, "{label}: source changed");
+            }
+        }
+    }
+    // Power cut after the last call of a published copy.
+    for policy in policies() {
+        cases += 1;
+        let dst = FaultHandle::new(&[], 0x386);
+        assert_eq!(run(&dst).report.copy, CopyStatus::Published);
+        dst.crash(policy);
+        let (img, _) = SnapFile::open(st(&dst), &mut NoParents).expect("published copy");
+        let mut back = vec![0u8; img.disk_size() as usize];
+        img.read_at(0, &mut back).expect("read");
+        assert_eq!(back, b.head().bytes, "clean {policy:?}");
+        complete += 1;
+    }
+    assert!(
+        cases >= 50 && complete > 0 && absent > 0,
+        "{cases} {complete} {absent}"
+    );
+}
