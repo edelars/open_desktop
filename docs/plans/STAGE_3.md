@@ -2596,6 +2596,13 @@ S3-25 и S3-28 приняты с ограничениями (gate-ревью Cla
 
 **Готово:** все предусмотренные guest faults имеют тот же определённый snapshot, что interpreter и доступный physical oracle; runtime failures однозначно отделены.
 
+Локальная регрессия PC map закрепляет одинаковую проверку host PC для
+`PcMap::lookup` и `snapshot_admissibility_at`. До исправления смещение
+`1` давало `CanonicalBoundary`. Теперь невыровненные PC, конец кода и
+смещения за ним возвращают `None`; допустимые PC сохраняют свою
+классификацию. Проверка запускается через `cargo test --offline -p od-jit
+--lib statepoints::tests`. Общая S3-27 остаётся открытой.
+
 #### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
 
 Native execution of either exact pair returns its canonical `A+6` CPU/RAM

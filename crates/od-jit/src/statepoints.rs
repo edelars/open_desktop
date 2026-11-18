@@ -158,13 +158,9 @@ pub struct PcMap {
 }
 
 impl PcMap {
-    /// Return the mapping classification for a host byte offset. This is used
-    /// by recovery code to establish whether instruction replay is permitted.
+    /// Return the snapshot classification only for a valid host instruction PC.
     pub fn snapshot_admissibility_at(&self, offset: u32) -> Option<SnapshotAdmissibility> {
-        self.ranges
-            .iter()
-            .find(|point| point.range.contains(offset))
-            .map(|point| point.snapshot)
+        self.lookup(offset).map(|point| point.snapshot)
     }
     pub(crate) fn new(
         code_len: usize,
@@ -304,7 +300,7 @@ impl PcMap {
             )
     }
 
-    /// Lookup only a byte in emitted code. The exclusive end, misaligned PCs,
+    /// Look up an instruction PC in emitted code. The exclusive end, misaligned PCs,
     /// and code-adjacent padding never map to a guest instruction.
     pub fn lookup(&self, offset: u32) -> Option<&StatePointRange> {
         if offset % 4 != 0 || offset >= self.code_len {
@@ -377,6 +373,13 @@ mod tests {
         assert_eq!(map.lookup(8).unwrap().phase, StatePhase::CommitInProgress);
         assert_eq!(map.lookup(16), None);
         assert_eq!(map.lookup(6), None);
+        assert_eq!(
+            map.snapshot_admissibility_at(4),
+            Some(SnapshotAdmissibility::CanonicalBoundary)
+        );
+        for offset in [1, 6, 15, 16, 20, u32::MAX] {
+            assert_eq!(map.snapshot_admissibility_at(offset), None, "PC {offset}");
+        }
         assert_eq!(map.boundary_at(12).count(), 1);
     }
 

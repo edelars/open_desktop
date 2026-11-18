@@ -2846,6 +2846,9 @@ guest RIP or the canonical RIP at that runtime point, optional instruction
 index, phase and snapshot admissibility. The Jcc terminal transfer, its return
 stub and shared epilogue use canonical-RIP metadata because taken, fallthrough,
 and earlier planned exits can reach those ranges with different committed RIPs.
+Both `lookup` and `snapshot_admissibility_at` classify only aligned ARM64
+instruction PCs within emitted code. A misaligned offset, the exclusive
+code end or trailing padding has no snapshot classification.
 Per-instruction guard/helper failure stubs retain their fixed faulting guest
 RIP. Helper call
 failure has an instruction-specific return stub and map range; it returns a
