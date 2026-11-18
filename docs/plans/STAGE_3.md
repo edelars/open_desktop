@@ -504,7 +504,10 @@ Event, поднятый memory callback, опрашивается только �
 совпадение результата на общем register-only входе у interpreter, legacy
 fragment, block JIT и dispatcher. Обновлена [методика измерений](../testing/BENCHMARKS.md#jit-этапа-3-workload-и-уровни-прогрева).
 Физический x86 preflight на совпадающем fingerprint достиг лимита 1 800 с.
-S3-01 остаётся открытой. См. [baseline report](../reports/STAGE_3_BASELINE_2026-10-26.md#повтор-на-исходниках-3476780-18-ноября-2026)
+В следующем завершившемся preflight два теста `od-runner` остановились на
+отсутствующих файлах отчётов в изолированном checkout. Физические проверки
+этапа 3 отложены по решению владельца. S3-01 остаётся открытой.
+См. [baseline report](../reports/STAGE_3_BASELINE_2026-10-26.md#повтор-на-исходниках-3476780-18-ноября-2026)
 и [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
 
 ### S3-02. Определить runtime contract
@@ -2302,6 +2305,8 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 Приёмка: обе операции × data RAX..RBP × RSI/RDI × все scales × mod00/disp8/disp32, direct V2/shared IR/interpreter parity и полное CPU/RAM/callback/retirement сравнение. Подтвердить truncation high halves, modulo-2^32 product/add wrap, один contiguous qword callback на crossing 4 GiB, byte9 disp32 target identity, архитектурную/backend atomicity, store+STOP, entry stop-RIP/STOP/zero-budget, partial windows, invalid neighbors и actual-RIP continuation через 5/6/9-byte singleton без replay. Отчёт: [S3-20bu report](../reports/STAGE_3_S3-20bu_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance вне среза.
 
 ### S3-21. Подтвердить memory slice на физическом x86
+
+Физический прогон отложен по решению владельца. Условия приёмки сохраняются.
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
 2. Добавить ручные и generated load/store cases, пересечения regions/pages, ошибки доступов и неполное наблюдение fault metadata.

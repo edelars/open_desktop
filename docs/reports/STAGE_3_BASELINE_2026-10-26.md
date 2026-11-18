@@ -84,8 +84,13 @@ interpreter/native на своём fingerprint. В нём подтвержден
 | `stage1-20261118-215524-3c8bf74d` | Первый минимальный архив не включал 192 compile-time test fixtures. Preflight остановился на их отсутствии. |
 | `stage1-20261118-215739-b41e8f80` | Дополненный архив собрал тесты. Preflight достиг лимита 1 800 с во время `od-runner` tests. |
 | `stage1-20261118-222826-c967f904` | Повтор с `opt-level=1` только для профиля Cargo test достиг того же лимита на холодной компиляции. |
+| `stage1-20261118-225937-76b441e5` | Тёплый повтор завершил preflight с кодом 101. В `od-runner --bin od-runner` прошли 338 тестов, два теста `linux_gate` завершились с `NotFound`, четыре пропущены. Подготовленный checkout не содержал трёх файлов из `docs/reports/data/stage4/`, на которые ссылаются эти тесты. |
 
-Предел и возобновление проверки отслеживаются в
-[ISSUE-519](../KNOWN_ISSUES.md#issue-519). S3-01 остаётся открытой до
-результата физического oracle. Идентификаторы соответствуют каталогам
+В последнем прогоне остановились
+`s4_40_the_real_counted_cold_reports_pass_without_flags` и
+`the_real_s4_39i_diagnostic_report_is_diagnostic_pass_only`. Следующий
+preflight требует оригиналы `s4-39i-uart-irq4-stage4a-run.json` и
+`s4-39j-gate-counted-cold{1,2}-stage4a-run.json` из проверяемого снимка.
+По решению владельца физические проверки отложены. S3-01 и
+[ISSUE-519](../KNOWN_ISSUES.md#issue-519) остаются открытыми. Идентификаторы соответствуют каталогам
 `work/stage1-oracle/`, где сохранены manifest и логи preflight.
