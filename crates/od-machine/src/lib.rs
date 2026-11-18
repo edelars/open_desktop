@@ -45,6 +45,8 @@ mod paged_probe;
 mod paged_pump_backend;
 mod paged_vcpu_session;
 mod parallel_run;
+#[cfg(test)]
+mod parallel_snapshot_tests;
 mod pci_ecam;
 mod physical_memory;
 mod pic_8259;
@@ -413,9 +415,9 @@ pub use stage6_smp_probe::{
     STAGE6_SMP_PROBE_TRAMPOLINE_GPA, STAGE6_SMP_PROBE_VECTOR_AP, STAGE6_SMP_PROBE_VECTOR_BSP,
     STAGE6_SMP_PROBE_VECTOR_SHOOTDOWN, Stage6SmpProbe, Stage6SmpProbeCpu, Stage6SmpProbeFinish,
     Stage6SmpProbeLoadError, Stage6SmpProbeParallelCpu, Stage6SmpProbeParallelFinish,
-    Stage6SmpProbeParallelReport, Stage6SmpProbeQuantum, Stage6SmpProbeReport,
-    Stage6SmpProbeRunError, Stage6SmpProbeSession, Stage6SmpProbeSnapshot, Stage6SmpProbeStopError,
-    load_stage6_smp_probe,
+    Stage6SmpProbeParallelReport, Stage6SmpProbeParallelStop, Stage6SmpProbeQuantum,
+    Stage6SmpProbeReport, Stage6SmpProbeRunError, Stage6SmpProbeSession, Stage6SmpProbeSnapshot,
+    Stage6SmpProbeStopError, load_stage6_smp_probe,
 };
 
 pub use nvme::{

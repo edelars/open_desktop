@@ -24,7 +24,8 @@
 
 use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
 use crate::parallel_run::{
-    ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, QuantumCall, run_threads,
+    ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, ParallelStopError,
+    QuantumCall, run_threads,
 };
 use crate::smp_scheduler::{
     BoardSmpHost, Executed, Finished, QuantumPolicy, SafePoint, SmpError, SmpScheduler, StopError,
@@ -97,6 +98,8 @@ const GDT_LIMIT: u16 = 0x1F;
 /// leaves in the application processor).
 const PROBE_EFER: u64 = 0xD01;
 const PAGE_TABLE_BYTES: u64 = 0x5000;
+/// The work limit of a parallel run that is stopped by its controller (the probe ends far below it).
+const BUDGET_OF_A_STOPPED_RUN: u64 = 20_000_000;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Stage6SmpProbeLoadError {
@@ -487,6 +490,78 @@ impl Stage6SmpProbe {
         Ok(self.parallel_report(report, ended))
     }
 
+    /// Run the probe in the parallel mode until the vCPUs together have retired
+    /// `stop_after_retired` instructions, stop every vCPU on a safe point (S6-34), take the state
+    /// of the processors there ([`VmSnapshot::take_parallel`]) and end the run (S6-35). The machine
+    /// then stands exactly where it was stopped: no vCPU moved after its acknowledgement, RAM and
+    /// the devices are what the guest left. A session ([`Self::session`]) can then reset the CPU
+    /// complex and put the snapshot back, and the guest goes on in the interleaved mode with
+    /// `continue_with`: the snapshot carries the scheduler of that run at its start. The result of
+    /// the guest is checked, not the interleaving: the parallel mode is not deterministic. Not a
+    /// snapshot of the machine and not a file (`S9-24`/`S9-25`).
+    pub fn run_parallel_to_a_stop(
+        &mut self,
+        quantum: u64,
+        stop_after_retired: u64,
+        timeout: std::time::Duration,
+        continue_with: Stage6SmpProbeQuantum,
+    ) -> Result<Stage6SmpProbeParallelStop, Stage6SmpProbeRunError> {
+        const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+        let scheduler = SmpScheduler::new(
+            self.board.vcpu_count(),
+            Self::policy_of(continue_with),
+            StopRequest::new(),
+        )
+        .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+        let lapic = self.board.local_apic();
+        let config = ParallelConfig {
+            quantum,
+            budget: BUDGET_OF_A_STOPPED_RUN,
+            ..ParallelConfig::default()
+        };
+        let (report, outcome) = self
+            .parallel(config, |control| {
+                let reached = control.wait_until(timeout, || {
+                    control.is_finished()
+                        || control.retired().iter().sum::<u64>() >= stop_after_retired
+                });
+                if !reached {
+                    return Err(format!(
+                        "the probe did not retire {stop_after_retired} instructions in {timeout:?}"
+                    ));
+                }
+                match control.stop_all(STOP_TIMEOUT) {
+                    Ok(proof) => VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+                        .map(Some)
+                        .map_err(|error| format!("{error:?}")),
+                    Err(ParallelStopError::Finished) => Ok(None),
+                    Err(error) => Err(format!("{error:?}")),
+                }
+            })
+            .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
+        let threads_joined = report.threads_started == report.threads_exited;
+        match report.finished {
+            ParallelFinish::Error { cpu, error } => {
+                return Err(Stage6SmpProbeRunError::Scheduler(format!(
+                    "vCPU {cpu} failed: {error:?}"
+                )));
+            }
+            ParallelFinish::Panicked { cpu } => {
+                return Err(Stage6SmpProbeRunError::Scheduler(format!(
+                    "vCPU {cpu} panicked"
+                )));
+            }
+            _ => {}
+        }
+        let snapshot = outcome.map_err(Stage6SmpProbeRunError::Scheduler)?;
+        Ok(Stage6SmpProbeParallelStop {
+            snapshot: snapshot.map(|inner| Stage6SmpProbeSnapshot { inner }),
+            retired: report.cpus.iter().map(|cpu| cpu.retired).collect(),
+            com1: self.board.com1_transcript().to_vec(),
+            threads_joined,
+        })
+    }
+
     /// The parallel run with a controller of the caller's (the tests of S6-34 stop, look and
     /// resume from it).
     pub(crate) fn parallel<R>(
@@ -642,6 +717,47 @@ impl Stage6SmpProbeSnapshot {
     pub fn now_ns(&self) -> u64 {
         self.inner.now_ns()
     }
+
+    /// Whether the other snapshot holds the same processors: every vCPU, every Local APIC (IRR,
+    /// ISR, pending INIT/SIPI/NMI, the timers with their event queues) and the virtual time. The
+    /// scheduler is not compared: a snapshot taken on a machine stopped by the parallel mode
+    /// carries the scheduler of the interleaved run that follows, which has not run yet.
+    pub fn same_processor_state(&self, other: &Self) -> bool {
+        self.inner.vcpus() == other.inner.vcpus()
+            && self.inner.apic() == other.inner.apic()
+            && self.inner.now_ns() == other.inner.now_ns()
+    }
+
+    /// The `(vector, irr, isr)` bits that are set in Local APIC `cpu` at the snapshot (see
+    /// [`Stage6SmpProbe::pending_vectors`]).
+    pub fn pending_vectors(&self, cpu: usize) -> Vec<(u8, bool, bool)> {
+        let Some(apic) = self.inner.apic().cpus.get(cpu) else {
+            return Vec::new();
+        };
+        let bit = |words: &[u32; 8], vector: u8| {
+            words[usize::from(vector / 32)] >> (vector % 32) & 1 != 0
+        };
+        (0..=255u8)
+            .filter_map(|vector| {
+                let (irr, isr) = (bit(&apic.local.irr, vector), bit(&apic.local.isr, vector));
+                (irr || isr).then_some((vector, irr, isr))
+            })
+            .collect()
+    }
+}
+
+/// What a parallel run of the probe found when it was stopped (S6-35).
+#[derive(Debug)]
+pub struct Stage6SmpProbeParallelStop {
+    /// The state of the processors at the stop; `None` when the probe had ended by itself before
+    /// the stop was asked for (there was nothing to stop).
+    pub snapshot: Option<Stage6SmpProbeSnapshot>,
+    /// Retired instructions of each vCPU when the run ended (at the stop, if there was one).
+    pub retired: Vec<u64>,
+    /// The bytes the guest had written to COM1 by then.
+    pub com1: Vec<u8>,
+    /// Every thread of the run has been joined (the run does not outlive this call).
+    pub threads_joined: bool,
 }
 
 /// A run of the probe in several steps over one scheduler (S6-24): run, stop every vCPU, take the

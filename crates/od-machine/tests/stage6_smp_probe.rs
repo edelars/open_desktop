@@ -1326,3 +1326,205 @@ fn one_processor_prints_ap_absent_in_the_parallel_mode_too() {
         built.expected(1).unwrap()
     );
 }
+
+// ---- S6-35: the state of the processors on a machine the parallel mode has stopped ------------------
+//
+// The probe runs on one thread per vCPU, every vCPU is stopped on a safe point after a number of
+// retired instructions drawn from the seed (S6-34), the state of the vCPUs and of the Local APICs is
+// taken there, the run ends and the machine stands where it was stopped. Then, in the same machine,
+// the CPU complex is reset to power-on (RAM and devices untouched), the state is put back, and the
+// guest goes on in the INTERLEAVED mode with a fixed seed. What is checked is the result of the
+// guest (the transcript, the cells of the protocol, the Local APICs quiet) and the state itself,
+// before and after the restore; the byte-for-byte equality with an uninterrupted run is not asked:
+// the parallel mode is not deterministic. This is not a snapshot of the machine: no RAM, no devices,
+// no file (`S9-24`/`S9-25`). Long form: `OD_S6_SNAP_RUNS=500 cargo test --release -p od-machine --offline
+// --test stage6_smp_probe -- --ignored parallel_stop_and_restore_many_runs --nocapture`.
+
+/// SplitMix64 finaliser: the stop point and the quantum of a round come from its seed.
+fn mix(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+#[derive(Default, Debug)]
+struct StopRoundStats {
+    rounds: usize,
+    /// The probe had ended before the stop was asked for.
+    ended_before_the_stop: usize,
+    /// The stop found the AP started and the exchange not finished.
+    inside_the_exchange: usize,
+    /// The stop found a request in the IRR or ISR of some Local APIC.
+    with_a_pending_request: usize,
+    /// The stop found the AP not started yet (INIT/SIPI possibly still pending).
+    before_the_ap_started: usize,
+}
+
+/// One round: `seed` gives the quantum of the threads, the retired count at which the run is
+/// stopped and the seed of the interleaved run that goes on.
+fn parallel_stop_round(
+    built: &Built,
+    expected: &str,
+    check_cells: &dyn Fn(&Built, &mut Stage6SmpProbe, &str),
+    seed: u64,
+    stats: &mut StopRoundStats,
+) {
+    let context = format!("seed {seed}");
+    let quantum = [1u64, 7, 100][(mix(seed) % 3) as usize];
+    let stop_after = 1 + mix(seed ^ 0xA5A5) % 1800;
+    let mut probe = load_stage6_smp_probe(&built.image, 2, NONCE).unwrap();
+    let stop = probe
+        .run_parallel_to_a_stop(
+            quantum,
+            stop_after,
+            PARALLEL_WAIT,
+            Stage6SmpProbeQuantum::Seeded(seed),
+        )
+        .unwrap_or_else(|error| panic!("{context} quantum {quantum}: {error:?}"));
+    assert!(stop.threads_joined, "{context}: no thread is left");
+    stats.rounds += 1;
+    let Some(snapshot) = stop.snapshot else {
+        // The probe was over before the stop: the guest did its work on threads, as in S6-34.
+        stats.ended_before_the_stop += 1;
+        assert_eq!(
+            String::from_utf8(stop.com1).unwrap(),
+            expected,
+            "{context} (ended before the stop)"
+        );
+        return;
+    };
+    // What the guest had done by the stop, read from the machine as it stands.
+    let flag = dword(&mut probe, STAGE6_SMP_PROBE_FLAG_GPA);
+    let bsp_rx = dword(&mut probe, STAGE6_SMP_PROBE_BSP_RX_GPA);
+    stats.before_the_ap_started += usize::from(flag == 0);
+    stats.inside_the_exchange += usize::from(flag == 1 && bsp_rx < ROUNDS);
+    let pending: Vec<_> = (0..2).map(|cpu| snapshot.pending_vectors(cpu)).collect();
+    stats.with_a_pending_request += usize::from(pending.iter().any(|vectors| !vectors.is_empty()));
+
+    let mut session = probe
+        .session(Stage6SmpProbeQuantum::Seeded(seed), false)
+        .unwrap();
+    // The machine stands as the controller saw it at the stop: the interleaved stop of the same
+    // machine finds the same vCPUs, Local APICs and clock.
+    session.pause(8).unwrap();
+    let at_rest = session.snapshot().unwrap();
+    assert!(
+        snapshot.same_processor_state(&at_rest),
+        "{context}: the machine moved after the stop"
+    );
+    assert_eq!(snapshot.now_ns(), at_rest.now_ns(), "{context}");
+    // The pending requests (IRR/ISR): the same before the reset as in the snapshot ...
+    for (cpu, vectors) in pending.iter().enumerate() {
+        assert_eq!(
+            &session.pending_vectors(cpu),
+            vectors,
+            "{context}: IRR/ISR of LAPIC {cpu} before the reset"
+        );
+    }
+    // ... gone after the reset of the CPU complex (RAM and devices stay) ...
+    let activities: Vec<_> = (0..2).map(|cpu| session.activity(cpu)).collect();
+    session.reset().unwrap();
+    assert_eq!(
+        session.activity(1),
+        Some(od_isa::CpuActivity::WaitForSipi),
+        "{context}"
+    );
+    for cpu in 0..2 {
+        assert_eq!(session.lapic_pending(cpu), Some(false), "{context}");
+        assert_eq!(session.pending_vectors(cpu), vec![], "{context}");
+    }
+    // ... and all of them back after the restore, none twice and none missing.
+    session.restore(&snapshot).unwrap();
+    assert_eq!(
+        (0..2).map(|cpu| session.activity(cpu)).collect::<Vec<_>>(),
+        activities,
+        "{context}"
+    );
+    for (cpu, vectors) in pending.iter().enumerate() {
+        assert_eq!(
+            &session.pending_vectors(cpu),
+            vectors,
+            "{context}: IRR/ISR of LAPIC {cpu} after the restore"
+        );
+    }
+    assert!(
+        snapshot.same_processor_state(&session.snapshot().unwrap()),
+        "{context}: the restored state is not the state at the stop"
+    );
+    // The guest goes on in the interleaved mode, and ends right.
+    session.resume();
+    let report = session.run(BUDGET).unwrap();
+    assert_eq!(report.finished, Stage6SmpProbeFinish::AllIdle, "{context}");
+    assert_eq!(
+        String::from_utf8(report.com1).unwrap(),
+        expected,
+        "{context} quantum {quantum} stop after {stop_after}"
+    );
+    assert!(report.cpus.iter().all(|cpu| !cpu.legacy), "{context}");
+    for cpu in 0..2 {
+        assert_eq!(
+            session.activity(cpu),
+            Some(od_isa::CpuActivity::Halted),
+            "{context}"
+        );
+    }
+    drop(session);
+    check_cells(built, &mut probe, &context);
+    assert_lapics_quiet(&probe, 2, &context);
+}
+
+fn parallel_stop_rounds(rounds: usize) -> StopRoundStats {
+    let exchange = build_scenario("normal", "exchange", None);
+    let shootdown = build_scenario("normal", "shootdown", None);
+    let exchange_expected = exchange.expected(2).unwrap();
+    let shootdown_expected = shootdown.expected(2).unwrap();
+    let mut stats = StopRoundStats::default();
+    for seed in 0..rounds as u64 {
+        if seed % 2 == 0 {
+            parallel_stop_round(
+                &exchange,
+                &exchange_expected,
+                &|built, probe, context| check_exchange_cells(built, probe, context),
+                seed,
+                &mut stats,
+            );
+        } else {
+            parallel_stop_round(
+                &shootdown,
+                &shootdown_expected,
+                &|built, probe, context| check_shootdown_cells(built, probe, context),
+                seed,
+                &mut stats,
+            );
+        }
+    }
+    stats
+}
+
+#[test]
+fn a_parallel_run_stopped_at_a_random_moment_is_reset_restored_and_finished_in_the_interleaved_mode()
+ {
+    let stats = parallel_stop_rounds(8);
+    eprintln!("parallel stop and restore: {stats:?}");
+    assert!(stats.rounds - stats.ended_before_the_stop >= 4, "{stats:?}");
+}
+
+/// The long form (50 rounds by default, `OD_S6_SNAP_RUNS` changes it; exchange and shootdown by
+/// turns, seeds `0..rounds`): the stop must land inside the exchange in a good part of the rounds.
+#[test]
+#[ignore = "long: OD_S6_SNAP_RUNS=500 cargo test --release -p od-machine --offline --test stage6_smp_probe -- --ignored parallel_stop_and_restore_many_runs --nocapture"]
+fn parallel_stop_and_restore_many_runs() {
+    let rounds = std::env::var("OD_S6_SNAP_RUNS")
+        .ok()
+        .and_then(|text| text.parse::<usize>().ok())
+        .unwrap_or(50);
+    let started = std::time::Instant::now();
+    let stats = parallel_stop_rounds(rounds);
+    eprintln!(
+        "parallel stop and restore: {rounds} rounds, {:.1} s, {stats:?}",
+        started.elapsed().as_secs_f64()
+    );
+    assert!(stats.inside_the_exchange >= rounds / 4, "{stats:?}");
+    assert!(stats.with_a_pending_request >= 1, "{stats:?}");
+}

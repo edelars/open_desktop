@@ -173,7 +173,7 @@ The following test budgets are deliberately not invented before their harnesses 
 |---|---|---|
 | S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | Recorded in S6-34 (implemented, awaiting review): repetitions, timeouts and race-window coverage are in the table of "S6-34 — параллельный режим" below and in the S6-34 report. |
-| S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | S6-35 records an exact matrix and expected runtime before parallel save/load acceptance. |
+| S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | Recorded in S6-35 (steps 1–3 implemented, awaiting review): the matrix and the expected runtime are in "S6-35 — состояние на остановленной параллельной машине" below. The part with a snapshot format is blocked until S9-24, S9-25. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
 
 ### probe v1 (S6-16e)
@@ -285,6 +285,27 @@ OD_S6_LITMUS_RUNS=200 cargo test --release -p od-machine --offline --lib -- --ig
 | кеш перевода | 20 000 переписываний PTE другим потоком | ни одного ответа старее завершённой записи |
 
 Окно гонок: тест остановки сам считает, сколько остановок попало внутрь обмена (порог ≥ 50 %); тест пробуждения заменяет «случайные попадания» сканированием окна задержкой; тест шлюза `simultaneous_split_lock_requests_have_a_loser_and_lose_nothing` проверяет, что проигравшие действительно были.
+
+### S6-35 — состояние на остановленной параллельной машине
+
+Параллельный режим не детерминирован, поэтому проверяется итог гостя и сама остановка, а не побайтное равенство с непрерывным прогоном. Контракт: [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-35--состояние-на-остановленной-параллельной-машине). Это состояние vCPU и Local APIC в одной машине, а не снимок машины и не файл (формат — `S9-24`, `S9-25`).
+
+```
+cargo test -p od-machine --offline --lib -- parallel_snapshot_tests vm_snapshot                     # таймеры, IRR, отказы, kick остановленного спящего AP, S6-24
+cargo test -p od-machine --offline --test stage6_smp_probe -- a_parallel_run_stopped_at_a_random_moment   # probe v2/v3: остановка на потоках, сброс, restore, продолжение в режиме чередования
+# длинная форма (release, `#[ignore]`), 50 раундов (seed 0..50), число меняется переменной
+OD_S6_SNAP_RUNS=50 cargo test --release -p od-machine --offline --test stage6_smp_probe -- --ignored parallel_stop_and_restore_many_runs --nocapture
+OD_S6_SNAP_TIMER_RUNS=50 cargo test --release -p od-machine --offline --lib -- --ignored parallel_snapshot_tests::timers_across_the_stop_many_runs --nocapture
+```
+
+Число повторов в `SMP.md` для S6-35 раньше не было задано (строка таблицы «Numeric gates» ссылалась на этот раздел); записано здесь: длинная форма — **50 раундов, seed `0..50`** (probe: exchange и shootdown по очереди; фикстура платы: seed задаёт квант потоков 1/7/64 и момент остановки 5000…100000 ns), обычный прогон — 8 раундов probe и 6 раундов фикстуры. Ожидаемое время: см. раздел S6-35 отчёта (измерено). Моменты остановки и квант потоков берутся из seed; продолжение идёт в режиме чередования с `Seeded(seed)`.
+
+| Проверка | Повторы | Что должно быть |
+|---|---|---|
+| probe v2 `exchange` и v3 `shootdown` на потоках, остановка по числу retired из seed, сброс комплекса, восстановление, продолжение в режиме чередования | 8 (обычный), 50 (`#[ignore]`) | состояние на остановке == состояние машины после прогона; IRR/ISR до сброса == в снимке, после сброса пусто, после `restore` равно снятому; итог — транскрипт и ячейки из манифеста сборщика, LAPIC пусты, оба vCPU `Halted`; в длинной форме не меньше четверти остановок внутри обмена |
+| фикстура платы: таймеры (периодический на BSP, одноразовый на AP) и IPI остановленному спящему AP, сброс, восстановление | 6 (обычный), 50 (`#[ignore]`) | сроки до сброса == после `restore`, очереди после сброса пусты; обработчик AP вызван ровно 2 раза; обработчик BSP + запрос в полёте == `now / период`; одноразовый таймер израсходован |
+| снимок без остановки, по `proof` снятой остановки, по `proof` более ранней остановки | в каждом раунде фикстуры | `NotStopped`, `NotStopped`, `StaleSafePoint` |
+| kick остановленного спящего AP во время снимка (m2 ревью S6-34) | 300 остановок | окно m2 не воспроизводится; точный тест — S6-36. Снимок взят каждый раз, IPI не потерян |
 
 ### S6-19 — litmus в режиме чередования
 

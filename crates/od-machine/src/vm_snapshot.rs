@@ -3,7 +3,10 @@
 //!
 //! A [`VmSnapshot`] is taken on a machine that [`SmpScheduler::stop_all`] has stopped (every vCPU
 //! acknowledged, the [`SafePoint`] is the proof) and is put back into the same machine by
-//! [`VmSnapshot::restore`]. It holds
+//! [`VmSnapshot::restore`]. The same value is taken on a machine that the parallel mode has stopped
+//! ([`ParallelControl::stop_all`], one thread per vCPU, S6-34): [`VmSnapshot::take_parallel`] reads
+//! the vCPUs and the Local APICs after every vCPU acknowledged, and refuses to read them otherwise
+//! (S6-35). It holds
 //!
 //! * every vCPU: the architectural state of the processor model it runs on (`LongModeState` or
 //!   the real/protected legacy model of an application processor started by SIPI), its activity
@@ -25,10 +28,16 @@
 //! consistent processor complex over a different memory. The restore is into the same machine,
 //! not into a new one.
 
-use crate::LoadedFirmwareBoard;
 use crate::apic_pair::PairState;
+use crate::parallel_run::{ParallelControl, StopProof};
 use crate::smp_scheduler::{SafePoint, SchedulerState, SmpScheduler, StopAck};
 use crate::vcpu::Vcpu;
+use crate::{LoadedFirmwareBoard, LocalApicHandle};
+use std::time::{Duration, Instant};
+
+/// How long [`VmSnapshot::take_parallel`] waits for the acknowledgement flag of one vCPU that is
+/// between two of its stores (see there); the flag comes back within microseconds.
+const READ_WAIT: Duration = Duration::from_secs(2);
 
 /// What the stopped complex of vCPUs, Local APICs and the scheduler looked like.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,21 +86,7 @@ impl VmSnapshot {
         let mut vcpus = Vec::with_capacity(count);
         for (cpu, ack) in point.acks.iter().enumerate() {
             let vcpu = board.vcpu(cpu).ok_or(SnapshotError::StaleSafePoint)?;
-            let held = match ack {
-                // The two kinds of a running vCPU agree with the REP restart flag the host reads
-                // them from (`SmpHost::stop_ack`): a restart point is exactly a vCPU that is to
-                // skip its first boundary.
-                StopAck::Boundary => {
-                    vcpu.activity() == od_isa::CpuActivity::Running && !vcpu.skip_first_boundary
-                }
-                StopAck::RepRestart => {
-                    vcpu.activity() == od_isa::CpuActivity::Running && vcpu.skip_first_boundary
-                }
-                StopAck::Asleep(activity) => {
-                    crate::idle_arbiter::SchedActivity::from(vcpu.activity()) == *activity
-                }
-            };
-            if !held {
+            if !Self::holds(vcpu, ack) {
                 return Err(SnapshotError::StaleSafePoint);
             }
             vcpus.push(vcpu.clone());
@@ -100,6 +95,92 @@ impl VmSnapshot {
             vcpus,
             apic: board.local_apic().snapshot_pair(),
             now_ns,
+            scheduler: scheduler.state(),
+        })
+    }
+
+    /// Whether `vcpu` stands as it acknowledged the stop.
+    fn holds(vcpu: &Vcpu, ack: &StopAck) -> bool {
+        match ack {
+            // The two kinds of a running vCPU agree with the REP restart flag the host reads
+            // them from (`SmpHost::stop_ack`): a restart point is exactly a vCPU that is to
+            // skip its first boundary.
+            StopAck::Boundary => {
+                vcpu.activity() == od_isa::CpuActivity::Running && !vcpu.skip_first_boundary
+            }
+            StopAck::RepRestart => {
+                vcpu.activity() == od_isa::CpuActivity::Running && vcpu.skip_first_boundary
+            }
+            StopAck::Asleep(activity) => {
+                crate::idle_arbiter::SchedActivity::from(vcpu.activity()) == *activity
+            }
+        }
+    }
+
+    /// Take the state of a machine that the parallel mode has stopped (S6-35): the controller of a
+    /// parallel run calls it between [`ParallelControl::stop_all`] and [`ParallelControl::resume`],
+    /// with the [`StopProof`] that `stop_all` returned and the handle of the Local APIC set of the
+    /// machine (taken before the run: the board is lent to the threads). Nothing is changed in the
+    /// machine. Refused ([`SnapshotError::NotStopped`]) when no stop is in force, and
+    /// ([`SnapshotError::StaleSafePoint`]) when the proof is not of the stop that is in force: the
+    /// clock moved, a vCPU is not as it acknowledged, a vCPU cannot be read. Every vCPU has
+    /// acknowledged, so no instruction is half done, nothing writes to a Local APIC but the
+    /// controller itself, and what is read here is the state at one safe point, ordered after the
+    /// acknowledgement of every vCPU (MACHINE_CONTRACT S6-34, rule 5).
+    ///
+    /// Assumption: called only by the controller of the run, between `stop_all` and `resume`;
+    /// there is no concurrent `resume` (the controller is one thread and does both).
+    ///
+    /// `scheduler` is the scheduler of the interleaved run that goes on after a restore: the
+    /// parallel mode has none, so its state is the state of power-on of that scheduler (the
+    /// generator at its seed, no turn cut). Not a snapshot of the machine: no RAM, no devices,
+    /// no file format (`S9-24`/`S9-25`).
+    pub(crate) fn take_parallel(
+        control: &ParallelControl<'_, '_>,
+        lapic: &LocalApicHandle,
+        proof: &StopProof,
+        scheduler: &SmpScheduler,
+    ) -> Result<Self, SnapshotError> {
+        if !control.stopped() {
+            return Err(SnapshotError::NotStopped);
+        }
+        // The proof must have one acknowledgement for every thread of the run (review of S6-35,
+        // m-1): one more would index past the vCPUs, one less would be a partial snapshot.
+        let count = control.vcpu_count();
+        if proof.acks.len() != count
+            || control.now_ns() != proof.now_ns
+            || scheduler.vcpu_count() != count
+        {
+            return Err(SnapshotError::StaleSafePoint);
+        }
+        let mut vcpus = Vec::with_capacity(count);
+        for (cpu, ack) in proof.acks.iter().enumerate() {
+            // A sleeping vCPU that a request woke while the stop is in force goes through the
+            // barrier of its thread again and lowers its `safe` flag for a moment (review of
+            // S6-34, m2: the barrier is not changed by S6-35). It touches nothing in that moment,
+            // so the reader waits for the flag instead of failing, within a bound.
+            let deadline = Instant::now() + READ_WAIT;
+            let vcpu = loop {
+                if let Some(vcpu) = control.with_vcpu(cpu, |vcpu| vcpu.clone()) {
+                    break vcpu;
+                }
+                if !control.stopped() {
+                    return Err(SnapshotError::NotStopped);
+                }
+                if Instant::now() >= deadline {
+                    return Err(SnapshotError::StaleSafePoint);
+                }
+                std::thread::yield_now();
+            };
+            if !Self::holds(&vcpu, ack) {
+                return Err(SnapshotError::StaleSafePoint);
+            }
+            vcpus.push(vcpu);
+        }
+        Ok(Self {
+            vcpus,
+            apic: lapic.snapshot_pair(),
+            now_ns: proof.now_ns,
             scheduler: scheduler.state(),
         })
     }

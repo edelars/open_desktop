@@ -965,6 +965,11 @@ impl ParallelControl<'_, '_> {
             .collect()
     }
 
+    /// The number of vCPU threads of the run.
+    pub(crate) fn vcpu_count(&self) -> usize {
+        self.shared.cells.len()
+    }
+
     /// The virtual time (ns).
     pub(crate) fn now_ns(&self) -> u64 {
         lock(&self.shared.owner).now_ns()
