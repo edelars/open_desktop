@@ -22474,6 +22474,39 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
+        // S7-04: the handoff parser dispatches through a linked jump table.
+        Operation::IndirectJump {
+            operand:
+                operand @ Operand::Memory(MemoryOperand {
+                    base: AddressBase::None,
+                    index: Some(Register::Rcx),
+                    scale: 8,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                    ..
+                }),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xff
+            && instruction.length == 7
+            && instruction.prefixes == Prefixes::default() =>
+        {
+            let target = match read_operand(state, memory, context, next_rip, operand) {
+                Ok(target) => target,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            if !canonical(target) {
+                let MemoryError::Architectural(fault) = general_protection() else {
+                    unreachable!()
+                };
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            state.rip = target;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: firmware and its helper use exact rel32 CALL encodings in
         // this profile. Reuse CALL's canonical-target and push semantics.
         Operation::Call { displacement }
@@ -23261,6 +23294,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 })
             && destination == RegisterView::low(Register::R8, OperandSize::Qword)
             && source == RegisterView::low(Register::Rdi, OperandSize::Qword) =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
+        // S7-04: `89 C9` clears the high half of the jump-table index.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && source == destination =>
         {
             let value = state.read(source);
             state.write(destination, value);
