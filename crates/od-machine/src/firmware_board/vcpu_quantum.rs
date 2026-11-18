@@ -351,7 +351,7 @@ impl ThreadQuantumEnv<'_> {
     /// [`LoadedFirmwareBoard::pump_uart_transmit`] of the threads: every byte the guest left in
     /// the holding register goes to the log, in the order they complete, with the log's lock held
     /// so that two threads never interleave one byte's two steps.
-    fn pump_uart_transmit(&self) {
+    pub(crate) fn pump_uart_transmit(&self) {
         let mut log = self.com1.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(source) = self.uart_irq_source {
             source.sample();

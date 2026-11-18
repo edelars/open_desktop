@@ -419,6 +419,7 @@ fn s6_42d_a_pending_irq_waits_for_partial_rep_across_a_stop() {
             PagedHostSetEnv {
                 lapic: &lapic,
                 board_irq: HostBoardIrqSource::none(),
+                devices: od_machine::HostDeviceServices::none(),
                 gate: HostSplitGate::none(),
                 set: &set,
                 skip_first_boundary: &mut skip_boundary,
@@ -544,6 +545,76 @@ fn s6_42d_the_pit_pic_source_wakes_the_bsp_and_cuts_guest_pit_writes_short() {
         board.clock().now_ns() >= (handled - 1) * 8381,
         "successive PIT periods"
     );
+}
+
+#[test]
+fn s6_42d_cpl0_host_services_com1_and_charges_pit_and_pm_port_ticks() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    let start_ns = board.clock().now_ns();
+    board
+        .bus_mut()
+        .read_port(od_machine::PortAddress::new(0x61), AccessWidth::Byte)
+        .unwrap();
+    let program = [
+        0x66, 0xBA, 0xF8, 0x03, // MOV DX, COM1
+        0xB0, 0x00, 0xEE, // MOV AL, 0; OUT DX, AL
+        0xB0, 0x0A, 0xEE, // MOV AL, newline; OUT DX, AL
+        0xB0, 0xFF, 0xEE, // MOV AL, 0xff; OUT DX, AL
+        0xE4, 0x61, // IN AL, PIT port B
+        0x66, 0xBA, 0x08, 0x06, // MOV DX, PM timer
+        0xEC, 0xEC, 0xF4, // IN AL, DX twice; HLT
+    ];
+    install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(
+        report.finished,
+        HostParallelFinish::AllIdle,
+        "{report:?}, {:?}",
+        quantum.last_failure()
+    );
+    assert_eq!(board.com1_transcript(), [0x00, 0x0A, 0xFF]);
+    assert_eq!(quantum.stats(0).device_boundaries, 7);
+    assert_eq!(board.clock().now_ns() - start_ns, report.retired[0] + 4_000);
+}
+
+#[test]
+fn s6_42d_port_ticks_from_two_host_workers_are_charged_once() {
+    let _guard = jit_guard();
+    let mut board = board(2);
+    let start_ns = board.clock().now_ns();
+    let program = [0xE4, 0x61, 0x66, 0xBA, 0x08, 0x06, 0xEC, 0xF4];
+    install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
+    install(&mut board, 1, &program, CODE_1, STACK_TOP_1);
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(
+        report.finished,
+        HostParallelFinish::AllIdle,
+        "{report:?}, {:?}",
+        quantum.last_failure()
+    );
+    assert_eq!(report.retired, [4, 4]);
+    assert_eq!(board.clock().now_ns() - start_ns, 4_008);
 }
 
 /// The one-shot timer of the vCPU's own Local APIC (the clock owner dispatches it on a charge)
@@ -737,6 +808,7 @@ fn atomic_host_step(
             PagedHostSetEnv {
                 lapic: &lapic,
                 board_irq: HostBoardIrqSource::none(),
+                devices: od_machine::HostDeviceServices::none(),
                 gate: HostSplitGate::none(),
                 set: &set,
                 skip_first_boundary: &mut false,
@@ -1052,6 +1124,7 @@ fn s6_42d_mov_cr3_with_no_flush_bit_faults_without_changing_the_root() {
         PagedHostSetEnv {
             lapic: &lapic,
             board_irq: HostBoardIrqSource::none(),
+            devices: od_machine::HostDeviceServices::none(),
             gate: HostSplitGate::none(),
             set: &set,
             skip_first_boundary: &mut false,

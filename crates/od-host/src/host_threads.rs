@@ -60,7 +60,7 @@ pub struct HostJitVcpuStats {
     pub jit_faults_delivered: u64,
     /// Retirements via the V4 atomic JIT, included in `retired_jit`.
     pub atomic_jit_steps: u64,
-    /// Calls ended by a write that may change the Local APIC or PIT timer deadline.
+    /// Calls ended to reconcile a timer deadline or queued device work.
     pub device_boundaries: u64,
     /// Blocks compiled and published by the session so far.
     pub admissions: u64,
@@ -298,6 +298,7 @@ impl JitHostQuantum {
                     PagedHostSetEnv {
                         lapic: call.lapic,
                         board_irq: call.board_irq.reborrow(),
+                        devices: call.devices,
                         gate: call.gate,
                         set: &set,
                         skip_first_boundary: &mut thread.skip_first_boundary,
@@ -401,7 +402,16 @@ impl JitHostQuantum {
                     return Err("host JIT quantum: invalid definedness mask");
                 }
             };
-            Ok(HostQuantumResult { retired, exit })
+            let device_ns = if self.cpl0_set {
+                call.devices.service()
+            } else {
+                0
+            };
+            Ok(HostQuantumResult {
+                retired,
+                exit,
+                device_ns,
+            })
         })
     }
 }

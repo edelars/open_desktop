@@ -317,8 +317,7 @@ pub enum PagedHostLoopExit {
     /// S6-42c (set mode only): the interpreter step could not be resumed from (an integration
     /// error of the CPL0 set); the text is the mapping error.
     InterpreterIntegration(String),
-    /// A Local APIC timer write or a PIT programming write can change the scheduler's deadline.
-    /// The call ends after that instruction in CPL0 set mode.
+    /// The CPL0 quantum returns to reconcile a timer deadline or queued device work.
     DeviceBoundary,
 }
 
@@ -485,6 +484,8 @@ pub struct PagedHostSetEnv<'a, 's> {
     pub lapic: &'a od_machine::LocalApicHandle,
     /// The board interrupt source lent to the boot processor for this call.
     pub board_irq: od_machine::HostBoardIrqSource<'a>,
+    /// The board's COM1 and timer work at host-call boundaries.
+    pub devices: od_machine::HostDeviceServices<'a>,
     /// The gate of the split `LOCK` of the thread (`od_machine::HostQuantumCall::gate`).
     pub gate: od_machine::HostSplitGate<'a>,
     /// The CPL0 profile set of the interpreter step, optionally owning the vCPU's CR3.
@@ -766,6 +767,10 @@ pub(crate) fn run_paged_host_loop_core(
         };
         // Deliver IRQs before native and interpreted steps. A delivery retires nothing.
         if let LoopBusRef::SharedSet(machine, _, env) = &mut bus {
+            if steps_started == 0 && env.devices.pending() {
+                report.exit = PagedHostLoopExit::DeviceBoundary;
+                return report;
+            }
             match env.board_irq.deliver_pending(
                 state,
                 machine,
@@ -963,7 +968,8 @@ pub(crate) fn run_paged_host_loop_core(
                             step.partial_rep,
                             step.delivered_exceptions,
                             step.timer_register_written
-                                || (step.pit_written && env.board_irq.pit_write_ends_quantum()),
+                                || (step.pit_written && env.board_irq.pit_write_ends_quantum())
+                                || (step.port_accessed && env.devices.pending()),
                         ));
                         step.report
                     }

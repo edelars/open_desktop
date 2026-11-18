@@ -36,11 +36,11 @@
 //! gate, delivering a guest `#PF` or `#GP(0)` through the guest IDT as the set loop does. The base
 //! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
 //! The boot processor also asks the board's interrupt source. The source lock covers the query
-//! and acknowledgment separately. The COM1 pump, device ticks, NVMe doorbell and PM stop request
-//! are tracked separately in S6-42d.
+//! and acknowledgment separately. The host quantum can service queued COM1 transmission and port
+//! ticks between calls. The worker charges device time to the clock owner.
 
 use crate::bus::SplitLockGate;
-use crate::firmware_board::vcpu_quantum::BootProcessorSource;
+use crate::firmware_board::vcpu_quantum::{BootProcessorSource, ThreadQuantumEnv};
 use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
 use crate::lapic_irq_source::LapicIrqSource;
@@ -128,6 +128,8 @@ pub struct HostQuantumCall<'a> {
     pub lapic: &'a LocalApicHandle,
     /// The boot processor's source of board vectors. Other vCPUs have only their Local APIC.
     pub board_irq: HostBoardIrqSource<'a>,
+    /// Board device work available at a quantum boundary.
+    pub devices: HostDeviceServices<'a>,
     /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
     pub gate: HostSplitGate<'a>,
 }
@@ -148,6 +150,55 @@ pub enum HostQuantumExit {
 pub struct HostQuantumResult {
     pub retired: u64,
     pub exit: HostQuantumExit,
+    /// Port-device time collected by this quantum, to be charged by the clock owner.
+    pub device_ns: u64,
+}
+
+trait HostDeviceWork {
+    fn pending(&self) -> bool;
+    fn service(&self) -> u64;
+}
+
+impl HostDeviceWork for ThreadQuantumEnv<'_> {
+    fn pending(&self) -> bool {
+        self.uart.holding_occupied()
+            || self
+                .acpi_pm
+                .as_ref()
+                .is_some_and(|pm| pm.timer_tick_pending())
+            || self.pit.as_ref().is_some_and(|pit| pit.port_tick_pending())
+    }
+
+    fn service(&self) -> u64 {
+        self.pump_uart_transmit();
+        let pm = self
+            .acpi_pm
+            .as_ref()
+            .map_or(0, |pm| pm.take_timer_tick_ns());
+        let pit = self.pit.as_ref().map_or(0, |pit| pit.take_port_tick_ns());
+        pm + pit
+    }
+}
+
+/// Access to queued COM1 transmission and port-device time in a running host quantum.
+#[derive(Clone, Copy)]
+pub struct HostDeviceServices<'a>(Option<&'a dyn HostDeviceWork>);
+
+impl HostDeviceServices<'_> {
+    /// Use the instruction loop without servicing board devices.
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    pub fn pending(&self) -> bool {
+        self.0.is_some_and(HostDeviceWork::pending)
+    }
+
+    /// Complete any COM1 transmission and take pending port ticks. Return the ticks with the
+    /// quantum result so that the worker charges their time exactly once.
+    pub fn service(&self) -> u64 {
+        self.0.map_or(0, HostDeviceWork::service)
+    }
 }
 
 /// The quantum of every vCPU thread of a host run. Called by every thread (so `Sync`); state that
@@ -372,6 +423,7 @@ fn run_host_threads_inner<R>(
             native_stop: call.native_stop,
             lapic: call.lapic,
             board_irq: HostBoardIrqSource((call.cpu == BOOT_VCPU_INDEX).then_some(call.source)),
+            devices: HostDeviceServices(Some(call.env)),
             gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
@@ -383,7 +435,7 @@ fn run_host_threads_inner<R>(
         Ok(Executed {
             retired: result.retired,
             partial_rep: false,
-            device_ns: 0,
+            device_ns: result.device_ns,
         })
     };
     let (report, value) = run_threads_rooted(
@@ -630,6 +682,8 @@ pub struct HostSetStepReport {
     pub timer_register_written: bool,
     /// The guest successfully wrote to a PIT programming port.
     pub pit_written: bool,
+    /// The guest successfully accessed a port. The caller can check for queued device work.
+    pub port_accessed: bool,
 }
 
 /// One instruction of vCPU `step.vcpu` through the CPL0 profile set `set` over `&MachineBus`
@@ -687,6 +741,7 @@ pub fn run_host_set_step(
         delivered_exceptions: report.delivered_exceptions,
         timer_register_written,
         pit_written: report.pit_written,
+        port_accessed: report.port_accessed,
     })
 }
 
@@ -848,6 +903,7 @@ mod tests {
                 Ok(HostQuantumResult {
                     retired: 1,
                     exit: HostQuantumExit::Running,
+                    device_ns: 0,
                 })
             };
             let (report, ()) = run_host_threads(

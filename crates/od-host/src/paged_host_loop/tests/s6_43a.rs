@@ -282,6 +282,7 @@ impl Stepper for Quantum<'_, '_> {
                 native_stop: self.call.native_stop,
                 lapic: self.call.lapic,
                 board_irq: self.call.board_irq.reborrow(),
+                devices: self.call.devices,
                 gate: self.call.gate,
             })
             .map_err(str::to_owned)?;
@@ -859,6 +860,7 @@ fn drive(
         return Ok(HostQuantumResult {
             retired: 0,
             exit: HostQuantumExit::Halted,
+            device_ns: 0,
         });
     }
     let bus = call.bus;
@@ -923,7 +925,11 @@ fn drive(
         shared.finished_cpus.fetch_add(1, Ordering::Release);
         exit = HostQuantumExit::Halted;
     }
-    Ok(HostQuantumResult { retired, exit })
+    Ok(HostQuantumResult {
+        retired,
+        exit,
+        device_ns: 0,
+    })
 }
 
 /// The parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, the bus by shared reference.
