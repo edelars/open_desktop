@@ -20039,6 +20039,33 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        // S7-04: use the shared transfers for compiler-selected qword
+        // register stores and LEAs in the firmware profile.
+        operation @ (Operation::Mov {
+            dst: Operand::Memory(_),
+            src: Operand::Register(_),
+        }
+        | Operation::Lea { .. })
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && matches!(instruction.opcode.byte, 0x89 | 0x8d)
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            if let Err(error) = transfer(state, memory, context, next_rip, operation) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
         // S7-04: compiler alignment pads use bare `0F 1F /0`. The decoder
         // consumes the address bytes, and execution never reads the operand.
         Operation::NopModrm
