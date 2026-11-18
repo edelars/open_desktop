@@ -613,6 +613,7 @@ fn doorbell_value_not_below_the_queue_size_is_logged_and_ignored() {
     assert_eq!(u64_at(&page, 0), 1, "error count");
     assert_eq!(u16_at(&page, 8), u16::MAX, "no command-specific SQID");
     assert_eq!(u16_at(&page, 10), 0xFFFF, "no command id");
+    assert_eq!(u16_at(&page, 14), 0xFFFF, "no command parameter");
     assert_eq!(u32_at(&page, 24), 0xFFFF_FFFF, "no namespace");
 }
 
@@ -1441,7 +1442,7 @@ fn error_information_log_records_failed_commands_newest_first() {
     assert_eq!((status >> 14) & 1, 1, "M");
     assert_eq!(status & 1, u16::from(b.phase), "P");
     assert_eq!(status >> 15, 1, "DNR");
-    assert_eq!(u16_at(&page, 14), 0xFFFF, "parameter location not tracked");
+    assert_eq!(u16_at(&page, 14), 4, "NSID starts at byte 4, bit 0");
     assert_eq!(u32_at(&page, 24), 7, "NSID of the failed command");
     assert_eq!(u64_at(&page, 64), 1);
     assert_eq!(u16_at(&page, 64 + 10), cid_a);
@@ -1450,6 +1451,60 @@ fn error_information_log_records_failed_commands_newest_first() {
     // A short read returns the prefix.
     let (_, short) = rig.log_page(0x01, 64, 0, true);
     assert_eq!(short, page[..64].to_vec());
+}
+
+#[test]
+fn error_information_log_locates_invalid_command_parameters() {
+    let mut rig = Rig::enabled();
+    let cases = [
+        (Sqe::new(OPC_IDENTIFY).cdw(0x77, 0), (0, 0x02), 40), // CNS
+        (Sqe::new(OPC_IDENTIFY).cdw(6, 2 << 24), (0, 0x02), 47), // CSI
+        (Sqe::new(OPC_IDENTIFY).cdw(1, 0).psdt(1), (0, 0x02), 0x0601), // PSDT
+        (Sqe::new(OPC_CREATE_CQ).cdw(1, 1), (1, 0x02), 42),   // QSIZE
+        (
+            Sqe::new(OPC_SET_FEATURES).cdw(1 | (1 << 31), 0),
+            (0, 0x02),
+            0x072B,
+        ), // SV
+        (
+            Sqe::new(OPC_IDENTIFY).prp(DATA + 2, 0).cdw(1, 0),
+            (0, 0x02),
+            24,
+        ), // PRP1
+        (Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 0x101), (0, 0x02), 45), // AEC bit 8, not bit 0
+    ];
+    for (sqe, status, location) in cases {
+        let cqe = rig.admin(sqe);
+        assert_eq!(cqe.status(), status);
+        assert!(cqe.more);
+        let (_, entry) = rig.log_page(0x01, 64, 0, true);
+        assert_eq!(u16_at(&entry, 14), location);
+        assert_eq!(u64_at(&entry, 16), 0, "admin error has no LBA");
+    }
+}
+
+#[test]
+fn error_information_log_reports_the_first_invalid_lba() {
+    let (mut rig, _) = Rig::with_disk();
+    for (start, nlb, location, lba) in [
+        (DISK_SECTORS - 1, 1, 48, DISK_SECTORS), // NLB extends past NSZE
+        (DISK_SECTORS + 7, 0, 40, DISK_SECTORS + 7), // SLBA outside the namespace
+        (u64::MAX, 1, 40, u64::MAX),             // overflowing range
+    ] {
+        let cqe = rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_A, 0).rw(start, nlb));
+        assert_eq!(cqe.status(), (0, 0x80));
+        assert!(cqe.more);
+        let (_, entry) = rig.log_page(0x01, 64, 0, true);
+        assert_eq!(u16_at(&entry, 8), 1, "I/O SQID");
+        assert_eq!(u16_at(&entry, 14), location);
+        assert_eq!(u64_at(&entry, 16), lba);
+    }
+
+    let cqe = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0).cdw13(7));
+    assert_eq!(cqe.status(), (0, 0x02));
+    let (_, entry) = rig.log_page(0x01, 64, 0, true);
+    assert_eq!(u16_at(&entry, 14), 52, "DSM.AF starts at byte 52, bit 0");
+    assert_eq!(u64_at(&entry, 16), 0, "invalid hint has no failed LBA");
 }
 
 #[test]

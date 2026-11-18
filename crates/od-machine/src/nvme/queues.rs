@@ -26,27 +26,23 @@ pub(crate) const MAX_QUEUE_ENTRIES: u32 = 1024;
 /// NVMe status: status code type and status code of a completion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Status {
-    pub(crate) sct: u8,
-    pub(crate) sc: u8,
-    pub(crate) dnr: bool,
-    more: bool,
+    field: u16,
+    parameter_error_location: u16,
 }
 
 impl Status {
     const fn generic(sc: u8, dnr: bool) -> Self {
-        Self {
-            sct: 0,
-            sc,
-            dnr,
-            more: false,
-        }
+        Self::new(0, sc, dnr)
     }
+
     const fn command_specific(sc: u8) -> Self {
+        Self::new(1, sc, true)
+    }
+
+    const fn new(sct: u8, sc: u8, dnr: bool) -> Self {
         Self {
-            sct: 1,
-            sc,
-            dnr: true,
-            more: false,
+            field: ((sc as u16) << 1) | ((sct as u16) << 9) | ((dnr as u16) << 15),
+            parameter_error_location: 0,
         }
     }
 
@@ -74,20 +70,34 @@ impl Status {
     pub(crate) const INVALID_QUEUE_DELETION: Self = Self::command_specific(0x0C);
 
     pub(crate) const fn is_success(self) -> bool {
-        self.sct == 0 && self.sc == 0
+        self.same_code(Self::SUCCESS)
+    }
+
+    pub(super) const fn same_code(self, other: Self) -> bool {
+        const CODE_MASK: u16 = 0x0FFE; // SCT and SC
+        self.field & CODE_MASK == other.field & CODE_MASK
     }
 
     pub(super) fn with_more(mut self) -> Self {
-        self.more = true;
+        self.field |= 1 << 14;
         self
+    }
+
+    /// Records the least significant bit of a parameter in the given SQE dword.
+    pub(super) fn at_field(mut self, dword: u8, bit: u8) -> Self {
+        debug_assert!(usize::from(dword) < SQE_BYTES / 4 && bit < 32);
+        let byte = dword * 4 + bit / 8;
+        self.parameter_error_location = (u16::from(bit % 8) << 8) | u16::from(byte);
+        self
+    }
+
+    pub(super) const fn parameter_error_location(self) -> u16 {
+        self.parameter_error_location
     }
 
     /// Bits `[15:1]` of the CQE `DW3[31:16]` status field (without the phase tag).
     pub(crate) const fn field(self) -> u16 {
-        ((self.sc as u16) << 1)
-            | ((self.sct as u16) << 9)
-            | ((self.more as u16) << 14)
-            | ((self.dnr as u16) << 15)
+        self.field
     }
 }
 
@@ -136,6 +146,20 @@ pub(crate) struct Command {
 }
 
 impl Command {
+    /// Fused operations and SGLs are outside the controller's profile.
+    pub(super) fn unsupported_format(&self) -> Option<Status> {
+        let bit = match (self.fuse, self.psdt) {
+            (0, 0) => return None,
+            (0, _) => 14, // PSDT
+            _ => 8,       // FUSE
+        };
+        Some(Status::INVALID_FIELD.at_field(0, bit))
+    }
+
+    pub(super) fn start_lba(&self) -> u64 {
+        u64::from(self.cdw10) | (u64::from(self.cdw11) << 32)
+    }
+
     pub(crate) fn decode(raw: &[u8; SQE_BYTES]) -> Self {
         let dword = |index: usize| {
             u32::from_le_bytes([
@@ -336,7 +360,7 @@ pub(crate) fn prp_segments(
         return Ok(Vec::new());
     }
     if prp1 & 3 != 0 {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(6, 0));
     }
     let mut remaining = len as u64;
     let first = remaining.min(PAGE_BYTES - prp1 % PAGE_BYTES);
@@ -347,14 +371,14 @@ pub(crate) fn prp_segments(
     }
     if remaining <= PAGE_BYTES {
         if !prp2.is_multiple_of(PAGE_BYTES) {
-            return Err(Status::PRP_OFFSET_INVALID);
+            return Err(Status::PRP_OFFSET_INVALID.at_field(8, 0));
         }
         segments.push((prp2, remaining as usize));
         return Ok(segments);
     }
     // PRP2 points to a PRP list; the pointer itself only has to be qword aligned.
     if prp2 & 7 != 0 {
-        return Err(Status::PRP_OFFSET_INVALID);
+        return Err(Status::PRP_OFFSET_INVALID.at_field(8, 0));
     }
     let mut pages_left = remaining.div_ceil(PAGE_BYTES);
     if pages_left > MAX_PRP_PAGES {
@@ -503,7 +527,7 @@ mod tests {
         let mut dma = MockDma::new(1 << 20);
         assert_eq!(
             prp_segments(&mut dma, 0x2E00, 0x9004, 0x400),
-            Err(Status::PRP_OFFSET_INVALID)
+            Err(Status::PRP_OFFSET_INVALID.at_field(8, 0))
         );
     }
 
@@ -575,7 +599,7 @@ mod tests {
         let mut dma = MockDma::new(1 << 20);
         assert_eq!(
             prp_segments(&mut dma, 0x2002, 0, 16),
-            Err(Status::INVALID_FIELD)
+            Err(Status::INVALID_FIELD.at_field(6, 0))
         );
     }
 

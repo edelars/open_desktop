@@ -49,11 +49,11 @@ pub(super) fn execute(state: &mut NvmeState, command: &Command, dma: &mut dyn Gu
 /// Checks common to the three commands: no fused operation, no SGL, NSID 1,
 /// backend attached (otherwise `Namespace Not Ready`).
 fn check_common(state: &NvmeState, command: &Command) -> Result<(), Status> {
-    if command.fuse != 0 || command.psdt != 0 {
-        return Err(Status::INVALID_FIELD);
+    if let Some(status) = command.unsupported_format() {
+        return Err(status);
     }
     if command.nsid != NAMESPACE_ID {
-        return Err(Status::INVALID_NAMESPACE);
+        return Err(Status::INVALID_NAMESPACE.at_field(1, 0));
     }
     if state.backend.is_none() {
         return Err(Status::NAMESPACE_NOT_READY);
@@ -89,22 +89,38 @@ fn check_transfer(state: &NvmeState, command: &Command) -> Result<Transfer, Stat
     } else {
         (common_control, DSM_MASK, 8)
     };
-    if command.cdw12 & !cdw12_mask != 0
-        || command.cdw13 & !cdw13_mask != 0
-        || command.cdw13 & 0xF > max_access_frequency
-    {
-        return Err(Status::INVALID_FIELD);
+    let invalid_control = command.cdw12 & !cdw12_mask;
+    if invalid_control != 0 {
+        let first_bit = invalid_control.trailing_zeros() as u8;
+        let field_bit = match first_bit {
+            16..=19 => 16, // CETYPE
+            20..=23 => 20, // reserved in Read
+            26..=29 => 26, // PRINFO
+            _ => first_bit,
+        };
+        return Err(Status::INVALID_FIELD.at_field(12, field_bit));
+    }
+    if command.cdw13 & !cdw13_mask != 0 {
+        return Err(Status::INVALID_FIELD.at_field(13, 8));
+    }
+    if command.cdw13 & 0xF > max_access_frequency {
+        return Err(Status::INVALID_FIELD.at_field(13, 0)); // DSM.AF
     }
     let sectors = u64::from(command.cdw12 & NLB_MASK) + 1;
     if sectors > MAX_SECTORS {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(12, 0)); // NLB
     }
-    let lba = u64::from(command.cdw10) | (u64::from(command.cdw11) << 32);
+    let lba = command.start_lba();
     let in_range = lba
         .checked_add(sectors)
         .is_some_and(|end| end <= state.config.namespace_sectors);
     if !in_range {
-        return Err(Status::LBA_OUT_OF_RANGE);
+        let dword = if lba >= state.config.namespace_sectors {
+            10 // SLBA itself is outside the namespace.
+        } else {
+            12 // SLBA is valid, but NLB extends the range past the end.
+        };
+        return Err(Status::LBA_OUT_OF_RANGE.at_field(dword, 0));
     }
     Ok(Transfer { lba, sectors })
 }

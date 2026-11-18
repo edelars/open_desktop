@@ -118,6 +118,8 @@ struct ErrorEntry {
     sqid: u16,
     cid: u16,
     status_field: u16,
+    parameter_error_location: u16,
+    lba: u64,
     nsid: u32,
 }
 
@@ -132,7 +134,15 @@ pub(super) struct ErrorLog {
 }
 
 impl ErrorLog {
-    fn push(&mut self, sqid: u16, cid: u16, status_field: u16, nsid: u32) {
+    fn push(
+        &mut self,
+        sqid: u16,
+        cid: u16,
+        status_field: u16,
+        parameter_error_location: u16,
+        lba: u64,
+        nsid: u32,
+    ) {
         self.count = self.count.wrapping_add(1).max(1);
         self.total = self.total.saturating_add(1);
         self.entries.push_front(ErrorEntry {
@@ -140,6 +150,8 @@ impl ErrorLog {
             sqid,
             cid,
             status_field,
+            parameter_error_location,
+            lba,
             nsid,
         });
         self.entries.truncate(ERROR_LOG_ENTRIES);
@@ -157,8 +169,8 @@ impl ErrorLog {
             raw[8..10].copy_from_slice(&entry.sqid.to_le_bytes());
             raw[10..12].copy_from_slice(&entry.cid.to_le_bytes());
             raw[12..14].copy_from_slice(&entry.status_field.to_le_bytes());
-            // Parameter Error Location: not tracked, 0xFFFF.
-            raw[14..16].copy_from_slice(&0xFFFFu16.to_le_bytes());
+            raw[14..16].copy_from_slice(&entry.parameter_error_location.to_le_bytes());
+            raw[16..24].copy_from_slice(&entry.lba.to_le_bytes());
             raw[24..28].copy_from_slice(&entry.nsid.to_le_bytes());
             // Transport Type 0 = no transport specific information (PCIe has none here).
         }
@@ -225,15 +237,31 @@ pub(super) fn log_command_error(
     } else {
         command.nsid
     };
-    state
-        .errors
-        .push(sqid, command.cid, status.field() | u16::from(phase), nsid);
+    let lba = if status.same_code(Status::LBA_OUT_OF_RANGE) {
+        // The first invalid LBA is either SLBA itself or the namespace end.
+        command.start_lba().max(state.config.namespace_sectors)
+    } else {
+        0
+    };
+    state.errors.push(
+        sqid,
+        command.cid,
+        status.field() | u16::from(phase),
+        status.parameter_error_location(),
+        lba,
+        nsid,
+    );
 }
 
 fn report_doorbell_error(state: &mut NvmeState, info: u8) {
-    state
-        .errors
-        .push(0xFFFF, 0xFFFF, Status::INVALID_FIELD.field(), 0xFFFF_FFFF);
+    state.errors.push(
+        0xFFFF,
+        0xFFFF,
+        Status::INVALID_FIELD.field(),
+        0xFFFF,
+        0,
+        0xFFFF_FFFF,
+    );
     state
         .aer
         .raise(EVENT_TYPE_ERROR, info, LID_ERROR_INFORMATION);
@@ -277,12 +305,11 @@ pub(super) fn execute(
     if !admin_opcode_supported(command.opcode) {
         return Outcome::Done(Completion::error(Status::INVALID_OPCODE));
     }
-    // Fused operations and SGLs are not supported (ONCS.FUSES = 0, SGLS = 0).
-    if command.fuse != 0 || command.psdt != 0 {
-        return Outcome::Done(Completion::error(Status::INVALID_FIELD));
+    if let Some(status) = command.unsupported_format() {
+        return Outcome::Done(Completion::error(status));
     }
     if requires_zero_nsid(command) && command.nsid != 0 {
-        return Outcome::Done(Completion::error(Status::INVALID_FIELD));
+        return Outcome::Done(Completion::error(Status::INVALID_FIELD.at_field(1, 0)));
     }
     let result = match command.opcode {
         OPC_DELETE_SQ => delete_sq(state, command, dma, report),
@@ -321,7 +348,7 @@ fn requires_zero_nsid(command: &Command) -> bool {
 fn new_queue_id(command: &Command, allocated: u16) -> Result<usize, Status> {
     let qid = (command.cdw10 & 0xFFFF) as usize;
     if qid == 0 || qid > usize::from(allocated) + 1 || qid >= QUEUE_SLOTS {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     Ok(qid)
 }
@@ -330,11 +357,14 @@ fn new_queue_id(command: &Command, allocated: u16) -> Result<usize, Status> {
 fn queue_geometry(command: &Command) -> Result<u16, Status> {
     let entries = (command.cdw10 >> 16) + 1;
     if !(2..=MAX_QUEUE_ENTRIES).contains(&entries) {
-        return Err(Status::INVALID_QUEUE_SIZE);
+        return Err(Status::INVALID_QUEUE_SIZE.at_field(10, 16));
     }
     // CAP.CQR = 1: queues must be physically contiguous (PC = 1).
-    if command.cdw11 & 1 == 0 || !command.prp1.is_multiple_of(PAGE_BYTES) {
-        return Err(Status::INVALID_FIELD);
+    if command.cdw11 & 1 == 0 {
+        return Err(Status::INVALID_FIELD.at_field(11, 0)); // PC
+    }
+    if !command.prp1.is_multiple_of(PAGE_BYTES) {
+        return Err(Status::INVALID_FIELD.at_field(6, 0)); // PRP1
     }
     Ok(entries as u16)
 }
@@ -342,7 +372,7 @@ fn queue_geometry(command: &Command) -> Result<u16, Status> {
 fn create_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     let qid = new_queue_id(command, state.features.allocated_queues().1)?;
     if state.cqs[qid].is_some() {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     if !state.io_cq_entry_size_configured() {
         return Err(Status::INVALID_QUEUE_SIZE);
@@ -351,7 +381,7 @@ fn create_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
     let interrupt_enabled = command.cdw11 & 0b10 != 0;
     let interrupt_vector = (command.cdw11 >> 16) as u16;
     if interrupt_enabled && interrupt_vector >= state.interrupt_vector_count() {
-        return Err(Status::INVALID_INTERRUPT_VECTOR);
+        return Err(Status::INVALID_INTERRUPT_VECTOR.at_field(11, 16));
     }
     state.cqs[qid] = Some(CompletionQueue::new(
         command.prp1,
@@ -365,11 +395,11 @@ fn create_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
 fn create_sq(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     let qid = new_queue_id(command, state.features.allocated_queues().0)?;
     if state.sqs[qid].is_some() {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     let cqid = (command.cdw11 >> 16) as usize;
     if cqid == 0 || cqid >= QUEUE_SLOTS || state.cqs[cqid].is_none() {
-        return Err(Status::COMPLETION_QUEUE_INVALID);
+        return Err(Status::COMPLETION_QUEUE_INVALID.at_field(11, 16));
     }
     if !state.io_sq_entry_size_configured() {
         return Err(Status::INVALID_QUEUE_SIZE);
@@ -382,7 +412,7 @@ fn create_sq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
 fn existing_io_queue_id(command: &Command) -> Result<usize, Status> {
     let qid = (command.cdw10 & 0xFFFF) as usize;
     if qid == 0 || qid >= QUEUE_SLOTS {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     Ok(qid)
 }
@@ -395,7 +425,7 @@ fn delete_sq(
 ) -> Result<Completion, Status> {
     let qid = existing_io_queue_id(command)?;
     if state.sqs[qid].is_none() {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     state.drain_io_queue_for_delete(qid, dma, report)?;
     state.sqs[qid] = None;
@@ -405,7 +435,7 @@ fn delete_sq(
 fn delete_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     let qid = existing_io_queue_id(command)?;
     if state.cqs[qid].is_none() {
-        return Err(Status::INVALID_QUEUE_IDENTIFIER);
+        return Err(Status::INVALID_QUEUE_IDENTIFIER.at_field(10, 0));
     }
     let in_use = state
         .sqs
@@ -426,7 +456,7 @@ fn delete_cq(state: &mut NvmeState, command: &Command) -> Result<Completion, Sta
 fn abort(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     let sqid = (command.cdw10 & 0xFFFF) as usize;
     if sqid >= QUEUE_SLOTS || state.sqs[sqid].is_none() {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(10, 0)); // SQID
     }
     Ok(Completion::ok(1))
 }
@@ -442,13 +472,13 @@ fn identify(
         CNS_NVM_NAMESPACE | CNS_NVM_CONTROLLER | CNS_NVM_ACTIVE_NAMESPACES
     ) && command.cdw11 >> 24 != CSI_NVM
     {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(11, 24)); // CSI
     }
     let namespace_valid = |nsid: u32| -> Result<(), Status> {
         if nsid == NAMESPACE_ID {
             Ok(())
         } else {
-            Err(Status::INVALID_NAMESPACE)
+            Err(Status::INVALID_NAMESPACE.at_field(1, 0))
         }
     };
     let data = match cns {
@@ -459,7 +489,7 @@ fn identify(
         CNS_CONTROLLER => identify_controller(state),
         CNS_ACTIVE_NAMESPACES | CNS_NVM_ACTIVE_NAMESPACES => {
             if command.nsid >= 0xFFFF_FFFE {
-                return Err(Status::INVALID_NAMESPACE);
+                return Err(Status::INVALID_NAMESPACE.at_field(1, 0));
             }
             let mut list = vec![0; IDENTIFY_BYTES];
             if command.nsid < NAMESPACE_ID {
@@ -487,7 +517,7 @@ fn identify(
             page[14] = u8::from(state.backend.is_some()); // NSTAT.NRDY
             page
         }
-        _ => return Err(Status::INVALID_FIELD),
+        _ => return Err(Status::INVALID_FIELD.at_field(10, 0)), // CNS
     };
     write_to_host(dma, command.prp1, command.prp2, &data)?;
     Ok(Completion::ok(0))
@@ -579,8 +609,14 @@ fn get_log_page(
     let dwords = (u64::from(command.cdw11 & 0xFFFF) << 16 | u64::from(command.cdw10 >> 16)) + 1;
     let length = dwords * 4;
     let offset = u64::from(command.cdw13) << 32 | u64::from(command.cdw12);
-    if offset % 4 != 0 || command.cdw14 & (1 << 23) != 0 || length > PAGE_BYTES << MDTS {
-        return Err(Status::INVALID_FIELD);
+    if offset % 4 != 0 {
+        return Err(Status::INVALID_FIELD.at_field(12, 0)); // LPO
+    }
+    if command.cdw14 & (1 << 23) != 0 {
+        return Err(Status::INVALID_FIELD.at_field(14, 23)); // OT
+    }
+    if length > PAGE_BYTES << MDTS {
+        return Err(Status::INVALID_FIELD.at_field(10, 16)); // NUMD
     }
     let discovery_log = matches!(
         lid,
@@ -588,7 +624,7 @@ fn get_log_page(
     );
     // CSI is ignored when CC.CSS selects the NVM command set directly.
     if discovery_log && command.cdw14 & 0x7F != 0 {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(14, 0)); // UUID index
     }
     // The supported logs are controller-wide (SMART per namespace is disabled).
     let controller_wide = matches!(command.nsid, 0 | 0xFFFF_FFFF);
@@ -604,11 +640,11 @@ fn get_log_page(
         | LID_FIRMWARE_SLOT
         | LID_SUPPORTED_LOG_PAGES
         | LID_COMMAND_EFFECTS
-        | LID_FEATURE_EFFECTS => return Err(Status::INVALID_FIELD),
-        _ => return Err(Status::INVALID_LOG_PAGE),
+        | LID_FEATURE_EFFECTS => return Err(Status::INVALID_FIELD.at_field(1, 0)),
+        _ => return Err(Status::INVALID_LOG_PAGE.at_field(10, 0)),
     };
     if offset > page.len() as u64 {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(12, 0)); // LPO
     }
     let end = offset + length;
     if end > page.len() as u64 {
@@ -724,7 +760,7 @@ fn firmware_slot_page(state: &NvmeState) -> Vec<u8> {
 fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     // Save (bit 31) is not supported: no feature is persistent (ONCS bit 4 = 0).
     if command.cdw10 >> 31 != 0 {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(10, 31));
     }
     let value = command.cdw11;
     let interrupt_vectors = state.interrupt_vector_count();
@@ -734,7 +770,12 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         FID_POWER_MANAGEMENT => {
             // NPSS = 0: only power state 0, no workload hint.
             if value != 0 {
-                return Err(Status::INVALID_FIELD);
+                let bit = match value.trailing_zeros() {
+                    0..=4 => 0, // PS
+                    5..=7 => 5, // WH
+                    _ => 8,     // Reserved
+                };
+                return Err(Status::INVALID_FIELD.at_field(11, bit));
             }
         }
         FID_TEMPERATURE_THRESHOLD => {
@@ -748,7 +789,8 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
             namespace_or_all(command.nsid)?;
             // DULBE (bit 16) is not supported.
             if value >> 16 != 0 {
-                return Err(Status::INVALID_FIELD);
+                let bit = if value & (1 << 16) != 0 { 16 } else { 17 };
+                return Err(Status::INVALID_FIELD.at_field(11, bit));
             }
             features.error_recovery_tler = value as u16;
         }
@@ -756,7 +798,8 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
             let requested_sq = (value & 0xFFFF) as u16;
             let requested_cq = (value >> 16) as u16;
             if requested_sq == 0xFFFF || requested_cq == 0xFFFF {
-                return Err(Status::INVALID_FIELD);
+                let bit = if requested_sq == 0xFFFF { 0 } else { 16 };
+                return Err(Status::INVALID_FIELD.at_field(11, bit)); // NSQR or NCQR
             }
             // The count can only change before any I/O queue exists.
             if state.sqs.iter().skip(1).any(Option::is_some)
@@ -774,8 +817,11 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         FID_INTERRUPT_COALESCING => features.interrupt_coalescing = (value & 0xFFFF) as u16,
         FID_INTERRUPT_VECTOR_CONFIG => {
             let vector = value as u16;
-            if vector >= interrupt_vectors || value >> 17 != 0 {
-                return Err(Status::INVALID_FIELD);
+            if vector >= interrupt_vectors {
+                return Err(Status::INVALID_FIELD.at_field(11, 0));
+            }
+            if value >> 17 != 0 {
+                return Err(Status::INVALID_FIELD.at_field(11, 17));
             }
             if interrupt_vectors > 1
                 && !state.cqs[1..]
@@ -783,7 +829,7 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
                     .flatten()
                     .any(|cq| cq.interrupt_enabled && cq.interrupt_vector == vector)
             {
-                return Err(Status::INVALID_FIELD);
+                return Err(Status::INVALID_FIELD.at_field(11, 0));
             }
             let disable = (value >> 16) << vector;
             features.interrupt_vector_disable =
@@ -792,12 +838,13 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
         FID_WRITE_ATOMICITY => features.write_atomicity = value & 1,
         FID_ASYNC_EVENT_CONFIG => {
             // Only the SMART/Health critical-warning bits exist (OAES = 0).
-            if value >> 8 != 0 {
-                return Err(Status::INVALID_FIELD);
+            let invalid = value & !0xFF;
+            if invalid != 0 {
+                return Err(Status::INVALID_FIELD.at_field(11, invalid.trailing_zeros() as u8));
             }
             features.async_event_config = value;
         }
-        _ => return Err(Status::INVALID_FIELD),
+        _ => return Err(Status::INVALID_FIELD.at_field(10, 0)), // FID
     }
     Ok(Completion::ok(0))
 }
@@ -807,8 +854,11 @@ fn set_features(state: &mut NvmeState, command: &Command) -> Result<Completion, 
 fn temperature_selector(value: u32) -> Result<bool, Status> {
     let select = ((value >> 16) & 0xF) as u8;
     let threshold = (value >> 20) & 0x3;
-    if select != 0 || threshold > 1 {
-        return Err(Status::INVALID_FIELD);
+    if select != 0 {
+        return Err(Status::INVALID_FIELD.at_field(11, 16)); // TMPSEL
+    }
+    if threshold > 1 {
+        return Err(Status::INVALID_FIELD.at_field(11, 20)); // THSEL
     }
     Ok(threshold == 0)
 }
@@ -818,7 +868,7 @@ fn namespace_or_all(nsid: u32) -> Result<(), Status> {
     if matches!(nsid, 0 | NAMESPACE_ID | 0xFFFF_FFFF) {
         Ok(())
     } else {
-        Err(Status::INVALID_NAMESPACE)
+        Err(Status::INVALID_NAMESPACE.at_field(1, 0))
     }
 }
 
@@ -828,7 +878,7 @@ fn get_features(state: &NvmeState, command: &Command) -> Result<Completion, Stat
     let features = match (command.cdw10 >> 8) & 0x7 {
         0 => &state.features,
         1 => &defaults,
-        _ => return Err(Status::INVALID_FIELD),
+        _ => return Err(Status::INVALID_FIELD.at_field(10, 8)), // SEL
     };
     let value = command.cdw11;
     let dw0 = match (command.cdw10 & 0xFF) as u8 {
@@ -851,13 +901,13 @@ fn get_features(state: &NvmeState, command: &Command) -> Result<Completion, Stat
         FID_INTERRUPT_VECTOR_CONFIG => {
             let vector = value as u16;
             if vector >= state.interrupt_vector_count() {
-                return Err(Status::INVALID_FIELD);
+                return Err(Status::INVALID_FIELD.at_field(11, 0));
             }
             u32::from(vector) | (((features.interrupt_vector_disable >> vector) & 1) << 16)
         }
         FID_WRITE_ATOMICITY => features.write_atomicity,
         FID_ASYNC_EVENT_CONFIG => features.async_event_config,
-        _ => return Err(Status::INVALID_FIELD),
+        _ => return Err(Status::INVALID_FIELD.at_field(10, 0)), // FID
     };
     Ok(Completion::ok(dw0))
 }

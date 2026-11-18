@@ -1903,7 +1903,8 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 - **Исправление арбитража.** Контроллер обслуживает по одной команде каждой активной SQ, включая Admin SQ. Тест через `MachineBus` проверяет точный порядок шести CQE из трёх очередей. [Отчёт](reports/STAGE_7_REPORT.md#арбитраж-round-robin).
 - **Исправление Identify.** Добавлены обязательные CNS `0x05`–`0x08` для единственного NVM namespace. Бит `VWC.VWCP` остаётся нулём, `VWC.FB = 10b` явно сообщает об отказе на широковещательный `Flush`. [Отчёт](reports/STAGE_7_REPORT.md#структуры-identify-для-nvm).
 - **Исправление Read/Write.** Команды принимают FUA, LR и допустимые подсказки DSM. FUA использует имеющийся контракт write-through. При выключенных директивах поля DTYPE и DSPEC команды Write игнорируются. [Отчёт](reports/STAGE_7_REPORT.md#поля-read-и-write).
-- **Следующий шаг.** Проверить прерывания в госте и заполнить `Parameter Error Location` и LBA при соответствующих ошибках. Размеры записей очередей исправлены отдельно. [Пункты сверки](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно), [ISSUE-519](#issue-519).
+- **Диагностика команды.** Журнал записывает применимый байт и бит поля SQE и первый недопустимый LBA для `LBA Out of Range`. Для doorbell вне команды `Parameter Error Location = 0xFFFF`. [Отчёт](reports/STAGE_7_REPORT.md#поле-параметра-и-lba-в-журнале-ошибок).
+- **Следующий шаг.** Проверить прерывания в госте и применимость оставшихся расширенных полей Error Information. Размеры записей очередей исправлены отдельно. [Пункты сверки](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно), [ISSUE-519](#issue-519).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
