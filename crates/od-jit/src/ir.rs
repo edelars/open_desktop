@@ -86,11 +86,65 @@ pub enum ExitKind {
 /// `CompareExchange` (`LOCK CMPXCHG`). The arithmetic flags are not part of the
 /// atomic operation: they are derived by a following `Integer` effect from the
 /// old value the atomic operation defines.
+///
+/// S6-41b adds `Or` (`LOCK OR`, `LOCK BTS`: memory |= `value`) and
+/// `ClearBits` (`LOCK AND` with the complement of the guest mask as `value`,
+/// `LOCK BTR` with the bit mask as `value`: memory &= !`value`). They lower to
+/// `LDSET`/`LDCLR`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AtomicRmwKind {
     Add,
     Exchange,
     CompareExchange,
+    Or,
+    ClearBits,
+}
+
+/// Flag derivation after an atomic read-modify-write (S6-41b). The arithmetic
+/// flags are not part of the atomic operation: they are a pure function of the
+/// old memory value the operation returned and of the guest operand, computed
+/// by [`Operation::AtomicFlags`] with the semantics of the shared interpreter
+/// helpers (`arithmetic_result`, `logic_result`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AtomicFlagsKind {
+    /// `ADD`, `XADD`: CF/PF/AF/ZF/SF/OF of `lhs + rhs`.
+    Add,
+    /// `INC`: as `Add` with `rhs = 1`; CF is not written.
+    AddKeepCarry,
+    /// `CMPXCHG`: flags of `lhs - rhs` (accumulator minus memory).
+    Subtract,
+    /// `DEC`: flags of `lhs - rhs` with `rhs = 1`; CF is not written.
+    SubtractKeepCarry,
+    /// `AND`: CF = OF = 0, PF/ZF/SF of `lhs & rhs`; AF is not written.
+    And,
+    /// `OR`: CF = OF = 0, PF/ZF/SF of `lhs | rhs`; AF is not written.
+    Or,
+    /// `BTS`/`BTR` with an immediate bit index: only CF, set to bit
+    /// `bit % width` of `lhs`; no `rhs`.
+    BitTest { bit: u8 },
+}
+
+impl AtomicFlagsKind {
+    /// RFLAGS bits this derivation writes; every other bit is preserved.
+    pub const fn written_mask(self) -> u64 {
+        const CF: u64 = 1;
+        const PF: u64 = 1 << 2;
+        const AF: u64 = 1 << 4;
+        const ZF: u64 = 1 << 6;
+        const SF: u64 = 1 << 7;
+        const OF: u64 = 1 << 11;
+        match self {
+            Self::Add | Self::Subtract => CF | PF | AF | ZF | SF | OF,
+            Self::AddKeepCarry | Self::SubtractKeepCarry => PF | AF | ZF | SF | OF,
+            Self::And | Self::Or => CF | PF | ZF | SF | OF,
+            Self::BitTest { .. } => CF,
+        }
+    }
+
+    /// Whether the derivation takes a second operand.
+    pub const fn has_rhs(self) -> bool {
+        !matches!(self, Self::BitTest { .. })
+    }
 }
 
 /// Guest fences. Each maps to its own host barrier (MEMORY_MODEL, norm S6-32);
@@ -145,8 +199,10 @@ pub enum Operation {
     /// One guest atomic read-modify-write of `width` bytes at `operand`.
     /// `dst` is the old memory value (zero-extended); `value` is the addend,
     /// the replacement or the new value; `expected` is present exactly for
-    /// `CompareExchange`. Not emitted by any current decoder adapter: guest
-    /// `LOCK` forms stay on the helper path (JIT_CONTRACT, S6-41).
+    /// `CompareExchange`. Produced only by `atomic_adapter` (S6-41b (а)); no
+    /// block emitter or allocator accepts it (they refuse it explicitly, S6-41b
+    /// (в)/(е)), so guest `LOCK` forms stay on the helper path in blocks
+    /// (JIT_CONTRACT, S6-41, S6-41b).
     AtomicRmw {
         kind: AtomicRmwKind,
         width: IntWidth,
@@ -158,6 +214,26 @@ pub enum Operation {
     /// A guest fence. Has no operands and no result.
     Fence {
         kind: FenceKind,
+    },
+    /// S6-41b: derive and write guest RFLAGS after an atomic read-modify-write
+    /// from the old memory value (`lhs`) and the guest operand (`rhs`, absent
+    /// for `BitTest`). Writes exactly `kind.written_mask()` of RFLAGS. Both
+    /// temporaries have `width`. Not a memory effect.
+    AtomicFlags {
+        kind: AtomicFlagsKind,
+        width: IntWidth,
+        lhs: TempId,
+        rhs: Option<TempId>,
+    },
+    /// S6-41b: write `src` (`W32`: zero-extended into the 64-bit register,
+    /// `W64`: whole register) to `register` only when `src != compare`
+    /// (`CMPXCHG`: the accumulator receives the observed value only on a
+    /// mismatch; on a match it is not touched).
+    WriteGprIfNotEqual {
+        register: GuestGpr,
+        src: TempId,
+        compare: TempId,
+        width: IntWidth,
     },
     Integer {
         kind: IntegerKind,
@@ -295,6 +371,24 @@ pub enum VerifyError {
     /// `AtomicRmw` whose `expected` presence does not match its kind, or whose
     /// operand size differs from its width.
     InvalidAtomicRmw {
+        operation: usize,
+    },
+    /// `AtomicFlags` whose `rhs` presence does not match its kind, or whose
+    /// operands are not `width`-wide temporaries (S6-41b).
+    InvalidAtomicFlags {
+        operation: usize,
+    },
+    /// `WriteGprIfNotEqual` with a width other than `W32`/`W64` (S6-41b).
+    InvalidConditionalWrite {
+        operation: usize,
+    },
+    /// An `AtomicRmw` followed, inside its guest instruction, by another
+    /// fallible effect (`CheckedLoad`, `CheckedStore`, `AtomicRmw`), or sharing
+    /// its instruction with a `CheckedStore` (S6-41b, the analogue of
+    /// `CheckedStoreCommitOrder`): once the atomic operation has changed
+    /// memory, nothing in the instruction may fail, so the instruction can
+    /// neither be replayed nor leave memory changed on a fault.
+    AtomicRmwOrder {
         operation: usize,
     },
     InvalidTerminalRip {
@@ -545,10 +639,71 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 if let Some(expected) = expected {
                     require_temp(&definitions, *expected, *width, operation_index)?;
                 }
+                // S6-41b: ordering inside the instruction. Memory changes at
+                // this operation, so no store may share the instruction and
+                // nothing fallible may follow.
+                let begin = program.operations[..operation_index]
+                    .iter()
+                    .rposition(|operation| matches!(operation, Operation::BeginInstruction { .. }))
+                    .unwrap_or(0);
+                let store_before = program.operations[begin..operation_index]
+                    .iter()
+                    .any(|operation| matches!(operation, Operation::CheckedStore { .. }));
+                let fallible_after = program.operations[operation_index + 1..]
+                    .iter()
+                    .take_while(|operation| {
+                        !matches!(operation, Operation::CommitInstruction { .. })
+                    })
+                    .any(|operation| {
+                        matches!(
+                            operation,
+                            Operation::CheckedLoad { .. }
+                                | Operation::CheckedStore { .. }
+                                | Operation::AtomicRmw { .. }
+                        )
+                    });
+                if store_before || fallible_after {
+                    return Err(VerifyError::AtomicRmwOrder {
+                        operation: operation_index,
+                    });
+                }
                 define(&mut definitions, *dst, *width, operation_index)?;
             }
             Operation::Fence { .. } => {
                 require_active(active_instruction, operation_index)?;
+            }
+            Operation::AtomicFlags {
+                kind,
+                width,
+                lhs,
+                rhs,
+            } => {
+                require_active(active_instruction, operation_index)?;
+                if kind.has_rhs() != rhs.is_some() {
+                    return Err(VerifyError::InvalidAtomicFlags {
+                        operation: operation_index,
+                    });
+                }
+                require_temp(&definitions, *lhs, *width, operation_index)?;
+                if let Some(rhs) = rhs {
+                    require_temp(&definitions, *rhs, *width, operation_index)?;
+                }
+            }
+            Operation::WriteGprIfNotEqual {
+                register,
+                src,
+                compare,
+                width,
+            } => {
+                require_active(active_instruction, operation_index)?;
+                validate_gpr(*register, operation_index)?;
+                if !matches!(width, IntWidth::W32 | IntWidth::W64) {
+                    return Err(VerifyError::InvalidConditionalWrite {
+                        operation: operation_index,
+                    });
+                }
+                require_temp(&definitions, *src, *width, operation_index)?;
+                require_temp(&definitions, *compare, *width, operation_index)?;
             }
             Operation::Integer {
                 kind,
@@ -3194,6 +3349,206 @@ mod tests {
                 temp: TempId(0)
             })
         );
+    }
+
+    /// A one-instruction program: constant addend, one atomic effect, then the
+    /// given effects, then commit.
+    fn atomic_then(effects: Vec<Operation>) -> Program {
+        let mut operations = vec![
+            Operation::BeginInstruction { index: 0 },
+            Operation::Constant {
+                dst: TempId(0),
+                width: IntWidth::W32,
+                value: 7,
+            },
+            Operation::AtomicRmw {
+                kind: AtomicRmwKind::Or,
+                width: IntWidth::W32,
+                operand: atomic_operand(od_isa::OperandSize::Dword),
+                value: TempId(0),
+                expected: None,
+                dst: TempId(1),
+            },
+        ];
+        operations.extend(effects);
+        operations.push(Operation::CommitInstruction { index: 0 });
+        operations.push(Operation::Exit {
+            kind: ExitKind::BlockComplete,
+            target_rip: 0x1004,
+        });
+        Program {
+            code_end: 0x1004,
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x1000,
+                next_rip: 0x1004,
+            }],
+            operations,
+        }
+    }
+
+    #[test]
+    fn s6_41b_atomic_rmw_allows_flags_register_writes_and_fences_after_it() {
+        let program = atomic_then(vec![
+            Operation::AtomicFlags {
+                kind: AtomicFlagsKind::Or,
+                width: IntWidth::W32,
+                lhs: TempId(1),
+                rhs: Some(TempId(0)),
+            },
+            Operation::WriteGpr {
+                register: GuestGpr(0),
+                src: TempId(1),
+                width: IntWidth::W32,
+            },
+            Operation::Fence {
+                kind: FenceKind::Full,
+            },
+        ]);
+        assert_eq!(verify(&program), Ok(()));
+    }
+
+    #[test]
+    fn s6_41b_no_fallible_effect_may_follow_an_atomic_rmw_in_its_instruction() {
+        let later_load = Operation::CheckedLoad {
+            dst: TempId(2),
+            operand: atomic_operand(od_isa::OperandSize::Qword),
+        };
+        let later_store = Operation::CheckedStore {
+            src: GuestGpr(0),
+            operand: atomic_operand(od_isa::OperandSize::Qword),
+        };
+        let later_atomic = Operation::AtomicRmw {
+            kind: AtomicRmwKind::Add,
+            width: IntWidth::W32,
+            operand: atomic_operand(od_isa::OperandSize::Dword),
+            value: TempId(0),
+            expected: None,
+            dst: TempId(2),
+        };
+        for effect in [later_load, later_store, later_atomic] {
+            let program = atomic_then(vec![effect.clone()]);
+            assert_eq!(
+                verify(&program),
+                Err(VerifyError::AtomicRmwOrder { operation: 2 }),
+                "{effect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn s6_41b_atomic_rmw_and_checked_store_never_share_an_instruction() {
+        let mut program = atomic_then(vec![]);
+        // A store before the atomic effect, in the same instruction.
+        program.operations.insert(
+            1,
+            Operation::CheckedStore {
+                src: GuestGpr(0),
+                operand: atomic_operand(od_isa::OperandSize::Qword),
+            },
+        );
+        // The store rules (a store must be the last effect before commit,
+        // `CheckedStoreCommitOrder`, and must have a valid descriptor) fire
+        // first on the store; whichever fires, the program is rejected. The
+        // `AtomicRmwOrder` store-before check is the belt for the same shape.
+        assert!(verify(&program).is_err());
+    }
+
+    #[test]
+    fn s6_41b_atomic_rmw_of_the_previous_instruction_does_not_constrain_the_next() {
+        // Two instructions: the first ends with an atomic effect, the second
+        // is a checked load. The rule is per instruction.
+        let program = Program {
+            code_end: 0x1008,
+            guest_instructions: vec![
+                GuestInstruction {
+                    guest_rip: 0x1000,
+                    next_rip: 0x1004,
+                },
+                GuestInstruction {
+                    guest_rip: 0x1004,
+                    next_rip: 0x1008,
+                },
+            ],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::Constant {
+                    dst: TempId(0),
+                    width: IntWidth::W32,
+                    value: 7,
+                },
+                Operation::AtomicRmw {
+                    kind: AtomicRmwKind::Exchange,
+                    width: IntWidth::W32,
+                    operand: atomic_operand(od_isa::OperandSize::Dword),
+                    value: TempId(0),
+                    expected: None,
+                    dst: TempId(1),
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                Operation::Fence {
+                    kind: FenceKind::Load,
+                },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1008,
+                },
+            ],
+        };
+        assert_eq!(verify(&program), Ok(()));
+    }
+
+    #[test]
+    fn s6_41b_atomic_flags_and_conditional_write_reject_inconsistent_shapes() {
+        // BitTest has no rhs; every other kind has one.
+        let program = atomic_then(vec![Operation::AtomicFlags {
+            kind: AtomicFlagsKind::BitTest { bit: 3 },
+            width: IntWidth::W32,
+            lhs: TempId(1),
+            rhs: Some(TempId(0)),
+        }]);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidAtomicFlags { operation: 3 })
+        );
+        let program = atomic_then(vec![Operation::AtomicFlags {
+            kind: AtomicFlagsKind::Add,
+            width: IntWidth::W32,
+            lhs: TempId(1),
+            rhs: None,
+        }]);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidAtomicFlags { operation: 3 })
+        );
+        // A flags operand of the wrong width.
+        let program = atomic_then(vec![Operation::AtomicFlags {
+            kind: AtomicFlagsKind::Add,
+            width: IntWidth::W64,
+            lhs: TempId(1),
+            rhs: Some(TempId(0)),
+        }]);
+        assert!(matches!(
+            verify(&program),
+            Err(VerifyError::WidthMismatch { operation: 3, .. })
+        ));
+        // The conditional register write is W32/W64 only.
+        let program = atomic_then(vec![Operation::WriteGprIfNotEqual {
+            register: GuestGpr(0),
+            src: TempId(1),
+            compare: TempId(0),
+            width: IntWidth::W8,
+        }]);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InvalidConditionalWrite { operation: 3 })
+        );
+        // Masks: INC/DEC keep CF, logic kinds keep AF, BTS/BTR write only CF.
+        assert_eq!(AtomicFlagsKind::Add.written_mask(), 0x8d5);
+        assert_eq!(AtomicFlagsKind::AddKeepCarry.written_mask(), 0x8d4);
+        assert_eq!(AtomicFlagsKind::Or.written_mask(), 0x8c5);
+        assert_eq!(AtomicFlagsKind::BitTest { bit: 0 }.written_mask(), 1);
     }
 
     #[test]

@@ -1533,7 +1533,9 @@ fn emit_runtime_block_inner(
             }
             Operation::CheckedStore { .. }
             | Operation::AtomicRmw { .. }
-            | Operation::Fence { .. } => {
+            | Operation::Fence { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. } => {
                 return Err(BlockEmitterError::UnsupportedShape {
                     instruction_index: active_instruction.unwrap_or(0),
                 });
@@ -2113,7 +2115,9 @@ fn validate_runtime_shape(
             }
             Operation::CheckedStore { .. }
             | Operation::AtomicRmw { .. }
-            | Operation::Fence { .. } => {
+            | Operation::Fence { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. } => {
                 return Err(BlockEmitterError::UnsupportedShape {
                     instruction_index: active.unwrap_or(0),
                 });

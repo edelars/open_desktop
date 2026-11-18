@@ -238,7 +238,9 @@ pub fn emit_data_effects(
             }
             Operation::CheckedStore { .. }
             | Operation::AtomicRmw { .. }
-            | Operation::Fence { .. } => {
+            | Operation::Fence { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. } => {
                 return Err(EmitterError::InvalidOperation {
                     operation: operation_index,
                 });
@@ -447,7 +449,9 @@ pub fn emit_data_effects(
             }
             Operation::CheckedStore { .. }
             | Operation::AtomicRmw { .. }
-            | Operation::Fence { .. } => {
+            | Operation::Fence { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. } => {
                 return Err(EmitterError::InvalidOperation {
                     operation: operation_index,
                 });
@@ -949,6 +953,20 @@ mod tests {
             };
             program.operations.insert(position, inserted);
             ir::verify(&program).unwrap();
+            if kind == 1 {
+                // S6-41b (е): the allocator refuses an atomic effect (it cannot home its
+                // `dst`/`value`/`expected` temporaries) instead of skipping it, so an atomic
+                // program never reaches the emitter.
+                assert!(matches!(
+                    Allocation::build(
+                        &program,
+                        crate::allocator::AllocatorConfig::default(),
+                        &[]
+                    ),
+                    Err(AllocatorError::UnsupportedEffect { operation }) if operation == position
+                ));
+                continue;
+            }
             let allocation = allocation(&program, 4);
             assert!(matches!(
                 emit_data_effects(

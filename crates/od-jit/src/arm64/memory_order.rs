@@ -10,6 +10,8 @@
 //! | `AtomicRmw::Add` | `LDADD{B,H,}` | `LDADDAL{B,H,}` |
 //! | `AtomicRmw::Exchange` | `SWP{B,H,}` | `SWPAL{B,H,}` |
 //! | `AtomicRmw::CompareExchange` | `CAS{B,H,}` | `CASAL{B,H,}` |
+//! | `AtomicRmw::Or` (S6-41b: `LOCK OR`, `LOCK BTS`) | `LDSET{B,H,}` | `LDSETAL{B,H,}` |
+//! | `AtomicRmw::ClearBits` (S6-41b: `LOCK AND`, `LOCK BTR`) | `LDCLR{B,H,}` | `LDCLRAL{B,H,}` |
 //! | `Fence::Full` (`MFENCE`) | no instruction | `DMB ISH` |
 //! | `Fence::Store` (`SFENCE`) | no instruction | `DMB ISH` |
 //! | `Fence::Load` (`LFENCE`) | no instruction | `DMB ISHLD` |
@@ -38,13 +40,45 @@ use crate::arm64::{
 use crate::ir::{AtomicRmwKind, FenceKind, IntWidth, MemoryClass, Operation};
 use od_isa::OperandSize;
 
-/// Memory-ordering mode of one compilation (S6-15 / S6-34).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Memory-ordering mode of one compilation (S6-15 / S6-34). It is part of the
+/// translation key (`ExecutionProfile::memory_order`, S6-41b (з)): code emitted
+/// for one mode is never served for the other.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MemoryOrderMode {
     /// All vCPUs on one host thread: no ordering bits, no barriers.
     Interleaved,
     /// One host thread per vCPU: sequentially consistent accesses and fences.
     Parallel,
+}
+
+/// Whether the host provides FEAT_LSE (S6-41b (л), JIT_CONTRACT S6-41 policy).
+/// On `aarch64-apple-darwin` LSE is baseline (Apple M1 and later): no probe.
+/// On any other aarch64 host it is detected at run time. On a non-aarch64 host
+/// there is nothing to run the generated code on and the answer is `false`.
+pub fn host_has_lse() -> bool {
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    {
+        true
+    }
+    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+    {
+        std::arch::is_aarch64_feature_detected!("lse")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
+/// Whether atomic-family code may be generated and run for `mode` on this host.
+/// Every atomic lowering of this module is an LSE instruction in both modes
+/// (`LDADD`, `SWP`, `CAS`, `LDSET`, `LDCLR`; the interleaved forms only drop
+/// the ordering bits), so without LSE the answer is `false` for both: parallel
+/// JIT is refused (the interpreter and the helper path remain), and so are the
+/// inline atomic forms of the interleaved mode. An LL/SC lowering is a separate
+/// slice, not part of S6-41b.
+pub fn mode_admitted_on_host(_mode: MemoryOrderMode) -> bool {
+    host_has_lse()
 }
 
 /// Host registers bound to the temporaries of one IR effect. Register
@@ -185,6 +219,8 @@ pub fn lower_atomic_rmw(
     match kind {
         AtomicRmwKind::Add => encoder.ldadd(width, order, value, dst, host.address),
         AtomicRmwKind::Exchange => encoder.swp(width, order, value, dst, host.address),
+        AtomicRmwKind::Or => encoder.ldset(width, order, value, dst, host.address),
+        AtomicRmwKind::ClearBits => encoder.ldclr(width, order, value, dst, host.address),
         AtomicRmwKind::CompareExchange => {
             let expected = host
                 .expected
@@ -392,6 +428,53 @@ mod tests {
     }
 
     #[test]
+    fn s6_41b_lse_policy_matches_the_host() {
+        // On this project's host (aarch64-apple-darwin) LSE is baseline, and the
+        // run-time detector agrees; elsewhere the policy is the detector.
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            assert!(host_has_lse());
+            assert!(std::arch::is_aarch64_feature_detected!("lse"));
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        assert!(!host_has_lse());
+        for mode in [MemoryOrderMode::Interleaved, MemoryOrderMode::Parallel] {
+            assert_eq!(mode_admitted_on_host(mode), host_has_lse());
+        }
+    }
+
+    #[test]
+    fn s6_41b_or_and_clear_bits_lower_to_ldset_and_ldclr_by_mode_and_width() {
+        // base x0, value (Rs) x1, dst (Rt) x3; bytes are checked against the
+        // assembler in `encoder::tests` (arm64_atomic_logic.s).
+        for (width, size, hi) in [
+            (IntWidth::W8, OperandSize::Byte, 0x0000_0000u32),
+            (IntWidth::W16, OperandSize::Word, 0x4000_0000),
+            (IntWidth::W32, OperandSize::Dword, 0x8000_0000),
+            (IntWidth::W64, OperandSize::Qword, 0xc000_0000),
+        ] {
+            let or = rmw(AtomicRmwKind::Or, width, size);
+            assert_eq!(
+                lowered(MemoryOrderMode::Interleaved, &or, &host()),
+                [hi | 0x3820_3000 | (1 << 16) | 3]
+            );
+            assert_eq!(
+                lowered(MemoryOrderMode::Parallel, &or, &host()),
+                [hi | 0x38e0_3000 | (1 << 16) | 3]
+            );
+            let clear = rmw(AtomicRmwKind::ClearBits, width, size);
+            assert_eq!(
+                lowered(MemoryOrderMode::Interleaved, &clear, &host()),
+                [hi | 0x3820_1000 | (1 << 16) | 3]
+            );
+            assert_eq!(
+                lowered(MemoryOrderMode::Parallel, &clear, &host()),
+                [hi | 0x38e0_1000 | (1 << 16) | 3]
+            );
+        }
+    }
+
+    #[test]
     fn compare_exchange_skips_the_copy_when_expected_is_the_result_register() {
         let cmpxchg = rmw(
             AtomicRmwKind::CompareExchange,
@@ -454,6 +537,8 @@ mod tests {
             },
             rmw(AtomicRmwKind::Add, IntWidth::W64, OperandSize::Qword),
             rmw(AtomicRmwKind::Exchange, IntWidth::W32, OperandSize::Dword),
+            rmw(AtomicRmwKind::Or, IntWidth::W32, OperandSize::Dword),
+            rmw(AtomicRmwKind::ClearBits, IntWidth::W8, OperandSize::Byte),
             rmw(
                 AtomicRmwKind::CompareExchange,
                 IntWidth::W32,

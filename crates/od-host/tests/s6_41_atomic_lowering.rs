@@ -5,9 +5,14 @@
 //!    `GuestMemory::atomic_rmw_integer` (S6-20) is run once via
 //!    `od_isa::execute::run_with_cpl0_profile_set` and once as the generated host sequence, in both modes, on the same initial memory; the final memory
 //!    bytes (operand and a guard region around it) and the value the instruction returns to the
-//!    guest (`XADD`/`XCHG` source register, `CMPXCHG` ZF and accumulator) must be equal. Flags
-//!    other than the `CMPXCHG` ZF are not compared: the lowering does not compute them (the IR
-//!    derives them with a separate `Integer` effect), so that part is not covered here.
+//!    guest (`XADD`/`XCHG` source register, `CMPXCHG` ZF and accumulator) must be equal (S6-41,
+//!    `s6_41_lock_forms_generated_code_equals_the_interpreter_in_both_modes`; the flags there are
+//!    not compared, which is what the next item closes).
+//! 1b. S6-41b differential (`s6_41b_*`): the instruction bytes are decoded, lowered by
+//!    `od_jit::atomic_adapter` to IR, and emitted by `od_jit::arm64::atomic_sequence`
+//!    (the atomic instruction, the six arithmetic flags computed inline, the register writes); the
+//!    final memory, ALL guest GPRs and the whole RFLAGS must equal the interpreter's, from random
+//!    initial flags, in both modes, for the S6-41 forms and for `LOCK OR/AND/BTS/BTR`.
 //! 2. Atomicity: several host threads run the generated parallel-mode sequences on one cell.
 //! 3. Ordering: message passing (MP) and store buffering (SB) on generated code, with the parallel
 //!    lowering of the accesses and with plain accesses plus the parallel lowering of the fences.
@@ -17,21 +22,26 @@
 //! test takes `JIT_LOCK` and publishes one buffer at a time.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Barrier, Mutex};
 
 use od_host::PublishedCode;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, RunConfig, RunExit,
 };
-use od_isa::long_decode::{AddressBase as GuestBase, MemoryOperand};
+use od_isa::long_decode::{self, AddressBase as GuestBase, MemoryOperand};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CpuActivity, GuestMemory, InstructionMode,
     LongModeState, MemoryError, OperandSize, PrivilegeLevel, StiShadow,
 };
+use od_jit::arm64::atomic_sequence::{SequenceEnv, emit_atomic_program};
 use od_jit::arm64::memory_order::{HostOperands, MemoryOrderMode, lower_memory_effect};
 use od_jit::arm64::{AddressBase, Encoder, WReg, XReg, XRegOrZero};
-use od_jit::ir::{AtomicRmwKind, FenceKind, GuestGpr, IntWidth, Operation, TempId};
+use od_jit::atomic_adapter::lower_atomic_instruction;
+use od_jit::ir::{
+    AtomicFlagsKind, AtomicRmwKind, FenceKind, GuestGpr, IntWidth, Operation, Program, TempId,
+};
+use od_jit::runtime::LONG_MODE_GPR_OFFSET;
 
 static JIT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -472,9 +482,10 @@ fn s6_41_lock_forms_generated_code_equals_the_interpreter_in_both_modes() {
                     }
                     Returns::CmpxchgRax => {
                         // This ZF is the interpreter's flag, checked against the expected
-                        // value derived from the old memory value; the JIT sequence does
-                        // not produce ZF for CMPXCHG, so this checks the old value and
-                        // RAX, not a JIT-computed flag (full flag set: S6-41b).
+                        // value derived from the old memory value; this bare `rmw` sequence
+                        // does not produce flags, so this checks the old value and RAX, not
+                        // a JIT-computed flag. The JIT-computed ZF and the other five flags
+                        // are compared in `s6_41b_adapted_atomic_sequences_equal_...`.
                         let zf = state.rflags & (1 << 6) != 0;
                         assert_eq!(zf, old == expected & width_mask, "ZF: {label}");
                         if !zf {
@@ -851,4 +862,576 @@ fn s6_41_ordering_litmus_on_generated_code() {
             assert_eq!(forbidden, 0, "SB forbidden outcome with {name}");
         }
     }
+}
+
+// ---- S6-41b: adapter -> IR -> atomic sequence, against the interpreter, with all flags ----
+
+/// Absolute `[0x1000]` operand through SIB: `prefix opcode modrm(reg) sib disp32 suffix`.
+fn abs_form(prefix: &[u8], opcode: &[u8], reg: u8, suffix: &[u8]) -> Vec<u8> {
+    let mut code = prefix.to_vec();
+    code.extend_from_slice(opcode);
+    code.extend_from_slice(&[(reg << 3) | 0x04, 0x25, 0, 0x10, 0, 0]);
+    code.extend_from_slice(suffix);
+    code
+}
+
+const LOCK: &[u8] = &[0xf0];
+const LOCK_W: &[u8] = &[0xf0, 0x48];
+const REG_RCX: u8 = 1;
+const REG_RBX: u8 = 3;
+
+fn s6_41b_forms() -> Vec<(String, Vec<u8>)> {
+    let mut forms: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut add = |name: &str, code: Vec<u8>| forms.push((name.to_string(), code));
+    // The S6-41 forms (flags are compared here for the first time).
+    add(
+        "lock xadd m32, ebx",
+        abs_form(LOCK, &[0x0f, 0xc1], REG_RBX, &[]),
+    );
+    add(
+        "lock xadd m64, rcx",
+        abs_form(LOCK_W, &[0x0f, 0xc1], REG_RCX, &[]),
+    );
+    add("lock add m32, ebx", abs_form(LOCK, &[0x01], REG_RBX, &[]));
+    add("lock add m64, rbx", abs_form(LOCK_W, &[0x01], REG_RBX, &[]));
+    add("lock inc m32", abs_form(LOCK, &[0xff], 0, &[]));
+    add("lock inc m64", abs_form(LOCK_W, &[0xff], 0, &[]));
+    add("lock dec m32", abs_form(LOCK, &[0xff], 1, &[]));
+    add("lock dec m64", abs_form(LOCK_W, &[0xff], 1, &[]));
+    add(
+        "lock cmpxchg m32, ebx",
+        abs_form(LOCK, &[0x0f, 0xb1], REG_RBX, &[]),
+    );
+    add(
+        "lock cmpxchg m64, rcx",
+        abs_form(LOCK_W, &[0x0f, 0xb1], REG_RCX, &[]),
+    );
+    add("xchg m32, ebx", abs_form(&[], &[0x87], REG_RBX, &[]));
+    add("xchg m64, rcx", abs_form(&[0x48], &[0x87], REG_RCX, &[]));
+    for imm in [0x01u8, 0x7f, 0x80, 0xf5, 0xff] {
+        add(
+            &format!("lock add m8, {imm:#x}"),
+            abs_form(LOCK, &[0x80], 0, &[imm]),
+        );
+    }
+    add(
+        "lock add m32, imm32 0x7fffffff",
+        abs_form(LOCK, &[0x81], 0, &0x7fff_ffffu32.to_le_bytes()),
+    );
+    add(
+        "lock add m64, imm8 sx 0xf0",
+        abs_form(LOCK_W, &[0x83], 0, &[0xf0]),
+    );
+    // S6-41b (д): OR, AND, BTS, BTR.
+    for imm in [0x0fu8, 0x80, 0xff, 0x00] {
+        add(
+            &format!("lock or m8, {imm:#x}"),
+            abs_form(LOCK, &[0x80], 1, &[imm]),
+        );
+    }
+    add(
+        "lock or m32, imm32 0x80000000",
+        abs_form(LOCK, &[0x81], 1, &0x8000_0000u32.to_le_bytes()),
+    );
+    add(
+        "lock or m32, imm8 sx 0xf0",
+        abs_form(LOCK, &[0x83], 1, &[0xf0]),
+    );
+    add(
+        "lock or m64, imm8 sx 0xff",
+        abs_form(LOCK_W, &[0x83], 1, &[0xff]),
+    );
+    for imm in [0x0fu8, 0xf0, 0x00, 0xff, 0x7f] {
+        add(
+            &format!("lock and m8, {imm:#x}"),
+            abs_form(LOCK, &[0x80], 4, &[imm]),
+        );
+    }
+    for bit in [0u8, 5, 31, 33, 63, 200] {
+        add(
+            &format!("lock bts m32, {bit}"),
+            abs_form(LOCK, &[0x0f, 0xba], 5, &[bit]),
+        );
+        add(
+            &format!("lock btr m32, {bit}"),
+            abs_form(LOCK, &[0x0f, 0xba], 6, &[bit]),
+        );
+        add(
+            &format!("lock bts m64, {bit}"),
+            abs_form(LOCK_W, &[0x0f, 0xba], 5, &[bit]),
+        );
+        add(
+            &format!("lock btr m64, {bit}"),
+            abs_form(LOCK_W, &[0x0f, 0xba], 6, &[bit]),
+        );
+    }
+    // Width 16 is not here: the decoder (S4-38) produces no LOCK ADD/OR/INC/DEC m16 with 0x66
+    // (checked: `66 f0 ff /0`, `f0 66 ff /0`, `f0 66 81 /0` are refused), so the adapter's W16
+    // acceptance is unreachable from decoded code and is not differentially verified (S6-41c/d).
+    // Fences.
+    add("mfence", vec![0x0f, 0xae, 0xf0]);
+    add("lfence", vec![0x0f, 0xae, 0xe8]);
+    add("sfence", vec![0x0f, 0xae, 0xf8]);
+    forms
+}
+
+struct CodeBytes(Vec<u8>);
+
+impl GuestMemory for CodeBytes {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.0
+            .get(address as usize)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
+    }
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Write,
+        })
+    }
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Ok(())
+    }
+}
+
+fn adapted(code: &[u8]) -> Program {
+    let mut memory = CodeBytes(code.to_vec());
+    let decoded = long_decode::decode(&mut memory, 0, AccessContext::default())
+        .unwrap_or_else(|error| panic!("{code:02x?} does not decode: {error:?}"));
+    assert_eq!(decoded.length as usize, code.len(), "{code:02x?}");
+    lower_atomic_instruction(&decoded, CODE)
+        .unwrap_or_else(|error| panic!("{code:02x?}: {error:?}"))
+}
+
+/// Operand width in bytes (0 for a fence) and the flags kind of an adapted program.
+fn program_shape(program: &Program) -> (usize, Option<AtomicFlagsKind>) {
+    let mut bytes = 0;
+    let mut flags = None;
+    for operation in &program.operations {
+        match operation {
+            Operation::AtomicRmw { operand, .. } => bytes = operand.size.bytes(),
+            Operation::AtomicFlags { kind, .. } => flags = Some(*kind),
+            _ => {}
+        }
+    }
+    (bytes, flags)
+}
+
+type SequenceFn = unsafe extern "C" fn(*mut LongModeState, *mut u8);
+
+fn sequence_fn(address: usize) -> SequenceFn {
+    // SAFETY: an entry of a live `PublishedCode` built from `emit_atomic_program` followed by
+    // `ret`, signature `fn(state: x0, address: x1)`.
+    unsafe { std::mem::transmute::<usize, SequenceFn>(address) }
+}
+
+fn emit_sequence(image: &mut Image, name: &str, mode: MemoryOrderMode, program: &Program) {
+    image.begin(name);
+    let env = SequenceEnv {
+        mode,
+        state: x(0),
+        address: x(1),
+    };
+    emit_atomic_program(&mut image.encoder, &env, program)
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    image.encoder.ret(x(30));
+}
+
+const DEFINED_FLAGS: u64 = 0x8d5;
+
+#[test]
+fn s6_41b_adapted_atomic_sequences_equal_the_interpreter_with_all_flags_in_both_modes() {
+    let _guard = JIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let forms = s6_41b_forms();
+    let programs: Vec<Program> = forms.iter().map(|(_, code)| adapted(code)).collect();
+    let mut image = Image::new();
+    for ((name, _), program) in forms.iter().zip(&programs) {
+        for mode in MODES {
+            emit_sequence(
+                &mut image,
+                &format!("{name}/{}", mode_name(mode)),
+                mode,
+                program,
+            );
+        }
+    }
+    let (bytes, entries) = image.finish();
+    let code = PublishedCode::publish(&bytes).unwrap();
+
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut cases = 0usize;
+    // For the arithmetic kinds: which (flag, value) pairs the interpreter produced.
+    let mut seen_add = [[false; 2]; 6];
+    let mut seen_sub = [[false; 2]; 6];
+    // Logical forms (OR/AND): PF, ZF, SF; bit test (BTS/BTR): CF. CF of INC/DEC is preserved, so
+    // it is excluded from the arithmetic teeth (it would take both values from the random input).
+    let mut seen_logic = [[false; 2]; 3];
+    let mut seen_bit = [false; 2];
+    const LOGIC_BITS: [u64; 3] = [1 << 2, 1 << 6, 1 << 7];
+    const FLAG_BITS: [u64; 6] = [1, 1 << 2, 1 << 4, 1 << 6, 1 << 7, 1 << 11];
+    for ((name, code_bytes), program) in forms.iter().zip(&programs) {
+        let (operand_bytes, flags_kind) = program_shape(program);
+        for round in 0..400usize {
+            let pick = |rng: &mut Rng| {
+                if rng.next() % 3 == 0 {
+                    EDGES[(rng.next() % EDGES.len() as u64) as usize]
+                } else {
+                    rng.next()
+                }
+            };
+            // The first 100 rounds sweep the edge cross product, the rest are random.
+            let (initial, source) = if round < EDGES.len() * EDGES.len() {
+                (EDGES[round / EDGES.len()], EDGES[round % EDGES.len()])
+            } else {
+                (pick(&mut rng), pick(&mut rng))
+            };
+            let expected = if round % 2 == 0 {
+                initial
+            } else {
+                pick(&mut rng)
+            };
+            let flags_in = DEFINED_FLAGS & rng.next();
+
+            let mut ram = Ram {
+                bytes: vec![0; 0x4000],
+            };
+            ram.bytes[CODE as usize..CODE as usize + code_bytes.len()].copy_from_slice(code_bytes);
+            for offset in 0..GUARD_BEFORE + 8 + GUARD_AFTER {
+                ram.bytes[CELL as usize - GUARD_BEFORE + offset] = 0xa5 ^ (offset as u8);
+            }
+            ram.bytes[CELL as usize..CELL as usize + operand_bytes]
+                .copy_from_slice(&initial.to_le_bytes()[..operand_bytes]);
+            let mut state = LongModeState {
+                rip: CODE,
+                rflags: 2 | (1 << 9) | flags_in,
+                cr0: Some(0x8001_0033),
+                cr4: Some(0x20),
+                activity: Some(CpuActivity::Running),
+                sti_shadow: Some(StiShadow::Clear),
+                ds_selector: 0x18,
+                es_selector: 0x18,
+                ..LongModeState::default()
+            };
+            state.gpr[0] = expected; // RAX
+            state.gpr[1] = source ^ 0x0123_4567_89ab_cdef; // RCX
+            state.gpr[2] = rng.next(); // RDX (untouched by every form)
+            state.gpr[3] = source; // RBX
+            let before = state.clone();
+            let result = od_isa::execute::run_with_cpl0_profile_set(
+                &mut state,
+                &mut ram,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: ring0(),
+                },
+                od_isa::INTEGER_FLAGS,
+                &Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
+                None,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert!(
+                matches!(
+                    result.exit,
+                    Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                ),
+                "{name}: {:?}",
+                result.exit
+            );
+            let reference =
+                &ram.bytes[CELL as usize - GUARD_BEFORE..CELL as usize + 8 + GUARD_AFTER];
+
+            // Only the flags the form writes count towards the teeth (INC/DEC keep CF).
+            let keeps_carry = matches!(
+                flags_kind,
+                Some(AtomicFlagsKind::AddKeepCarry | AtomicFlagsKind::SubtractKeepCarry)
+            );
+            match flags_kind {
+                Some(AtomicFlagsKind::Add | AtomicFlagsKind::AddKeepCarry) => {
+                    for (index, bit) in FLAG_BITS.iter().enumerate() {
+                        if !(keeps_carry && *bit == 1) {
+                            seen_add[index][usize::from(state.rflags & bit != 0)] = true;
+                        }
+                    }
+                }
+                Some(AtomicFlagsKind::Subtract | AtomicFlagsKind::SubtractKeepCarry) => {
+                    for (index, bit) in FLAG_BITS.iter().enumerate() {
+                        if !(keeps_carry && *bit == 1) {
+                            seen_sub[index][usize::from(state.rflags & bit != 0)] = true;
+                        }
+                    }
+                }
+                Some(AtomicFlagsKind::Or | AtomicFlagsKind::And) => {
+                    for (index, bit) in LOGIC_BITS.iter().enumerate() {
+                        seen_logic[index][usize::from(state.rflags & bit != 0)] = true;
+                    }
+                }
+                Some(AtomicFlagsKind::BitTest { .. }) => {
+                    seen_bit[usize::from(state.rflags & 1 != 0)] = true;
+                }
+                _ => {}
+            }
+
+            for mode in MODES {
+                let mut buffer = Buffer([0; 32]);
+                for (offset, byte) in buffer
+                    .0
+                    .iter_mut()
+                    .enumerate()
+                    .take(GUARD_BEFORE + 8 + GUARD_AFTER)
+                {
+                    *byte = 0xa5 ^ (offset as u8);
+                }
+                buffer.0[GUARD_BEFORE..GUARD_BEFORE + operand_bytes]
+                    .copy_from_slice(&initial.to_le_bytes()[..operand_bytes]);
+                let mut jit = before.clone();
+                // SAFETY: the entry is the sequence for this (form, mode) followed by `ret`;
+                // `jit` is a live `LongModeState` of the layout the offsets come from; the cell
+                // is naturally aligned (offset 8 of a 16-aligned buffer).
+                unsafe {
+                    sequence_fn(entry(
+                        &code,
+                        &entries,
+                        &format!("{name}/{}", mode_name(mode)),
+                    ))(&mut jit, buffer.0.as_mut_ptr().add(GUARD_BEFORE));
+                }
+                let label = format!(
+                    "{name} [{}] round={round} initial={initial:#x} source={source:#x} \
+                     expected={expected:#x} flags_in={flags_in:#x}",
+                    mode_name(mode)
+                );
+                assert_eq!(
+                    &buffer.0[..GUARD_BEFORE + 8 + GUARD_AFTER],
+                    reference,
+                    "memory: {label}"
+                );
+                assert_eq!(jit.gpr, state.gpr, "GPRs: {label}");
+                assert_eq!(
+                    jit.rflags, state.rflags,
+                    "RFLAGS: {label} (jit {:#x} interpreter {:#x})",
+                    jit.rflags, state.rflags
+                );
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, forms.len() * 400 * 2);
+    // The differential must have teeth: every flag a form writes took both values: the six
+    // arithmetic flags for ADD-like and SUB-like (CMPXCHG, DEC) forms (CF of INC/DEC is kept and
+    // not counted), PF/ZF/SF for OR/AND, CF for BTS/BTR; a wrong flag formula cannot hide
+    // behind a constant.
+    for (index, pairs) in seen_add.iter().enumerate() {
+        assert_eq!(
+            *pairs,
+            [true, true],
+            "add-like flag bit {:#x}",
+            FLAG_BITS[index]
+        );
+    }
+    for (index, pairs) in seen_sub.iter().enumerate() {
+        assert_eq!(
+            *pairs,
+            [true, true],
+            "sub-like flag bit {:#x}",
+            FLAG_BITS[index]
+        );
+    }
+    for (index, pairs) in seen_logic.iter().enumerate() {
+        assert_eq!(
+            *pairs,
+            [true, true],
+            "logical flag bit {:#x}",
+            LOGIC_BITS[index]
+        );
+    }
+    assert_eq!(seen_bit, [true, true], "bit-test CF");
+    eprintln!(
+        "s6_41b differential: {} forms, {cases} cases (forms x rounds x modes); memory, all GPRs and \
+         RFLAGS equal the interpreter",
+        forms.len()
+    );
+}
+
+#[test]
+fn s6_41b_or_and_clear_bits_claim_each_bit_exactly_once_across_threads() {
+    let _guard = JIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut image = Image::new();
+    image.rmw(
+        "set64",
+        MemoryOrderMode::Parallel,
+        AtomicRmwKind::Or,
+        OperandSize::Qword,
+    );
+    image.rmw(
+        "clear64",
+        MemoryOrderMode::Parallel,
+        AtomicRmwKind::ClearBits,
+        OperandSize::Qword,
+    );
+    let (bytes, entries) = image.finish();
+    let code = PublishedCode::publish(&bytes).unwrap();
+    let set = entry(&code, &entries, "set64");
+    let clear = entry(&code, &entries, "clear64");
+
+    // A pool of threads that lives for the whole test: every round starts at a `Barrier`, so
+    // the threads begin the 64 operations of a round together instead of being spawned one
+    // after another (spawning costs tens of microseconds, the 64 operations about one). The
+    // overlap is by the barrier and is not guaranteed on every run: on a loaded host a thread
+    // can still be late. A round is a full cycle on one cell: every bit is set by LDSET (the
+    // cell goes 0 -> all ones, each bit claimed once), a second barrier, then every bit is
+    // cleared by LDCLR (all ones -> 0, each bit claimed once).
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 5000;
+    #[repr(align(16))]
+    struct Cell64(AtomicU64);
+    let cells: Vec<Cell64> = (0..ROUNDS).map(|_| Cell64(AtomicU64::new(0))).collect();
+    // winners[phase][round][bit]: how many threads saw the bit in its pre-change state.
+    let winners: Vec<Vec<AtomicU64>> = (0..2)
+        .map(|_| (0..ROUNDS * 64).map(|_| AtomicU64::new(0)).collect())
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for thread in 0..THREADS {
+            let (cells, winners, barrier) = (&cells, &winners, &barrier);
+            scope.spawn(move || {
+                let phases = [(set, 0u64), (clear, 1u64)];
+                for round in 0..ROUNDS {
+                    for (phase, (function, claimed_old_bit)) in phases.iter().enumerate() {
+                        let function = rmw_fn(*function);
+                        barrier.wait();
+                        // Each thread walks the bits from a different start so they collide.
+                        for step in 0..64 {
+                            let bit = (step + thread * 16 + round) % 64;
+                            // SAFETY: the cell is 16-aligned and outlives the scope.
+                            let old =
+                                unsafe { function(cells[round].0.as_ptr().cast(), 1u64 << bit, 0) };
+                            if (old >> bit) & 1 == *claimed_old_bit {
+                                winners[phase][round * 64 + bit].fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    for (phase, name) in ["LDSET", "LDCLR"].iter().enumerate() {
+        for round in 0..ROUNDS {
+            for bit in 0..64 {
+                let count = winners[phase][round * 64 + bit].load(Ordering::Relaxed);
+                assert_eq!(
+                    count, 1,
+                    "{name} round {round}: bit {bit} was claimed {count} times"
+                );
+            }
+        }
+    }
+    for (round, cell) in cells.iter().enumerate() {
+        assert_eq!(
+            cell.0.load(Ordering::SeqCst),
+            0,
+            "round {round}: set then clear leaves the cell empty"
+        );
+    }
+}
+
+/// SB with `XCHG`: each thread exchanges 1 into its own variable (adapter -> IR -> sequence,
+/// parallel mode), then loads the other with `LDAR`. On x86 an `XCHG` is a full barrier, so
+/// (0, 0) is forbidden.
+#[test]
+fn s6_41b_store_buffering_with_xchg_in_parallel_mode_has_no_forbidden_outcome() {
+    let _guard = JIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    const ROUNDS: u64 = 1_000_000;
+    // `xchg [mem], ebx` with RBX = 1: the instruction bytes use the absolute form, but the
+    // sequence takes the host address from x0, so only the operand width matters here.
+    let program = adapted(&abs_form(&[], &[0x87], REG_RBX, &[]));
+    let mut states = [
+        Box::new(LongModeState::default()),
+        Box::new(LongModeState::default()),
+    ];
+    let mut image = Image::new();
+    for (index, state) in states.iter_mut().enumerate() {
+        image.begin(&format!("sb_xchg{index}"));
+        // x17 = this thread's state; RBX = 1 for every round.
+        let pointer = (&mut **state as *mut LongModeState) as u64;
+        image
+            .encoder
+            .movz_x(x(17), (pointer & 0xffff) as u16, 0)
+            .unwrap();
+        image
+            .encoder
+            .movk_x(x(17), ((pointer >> 16) & 0xffff) as u16, 1)
+            .unwrap();
+        image
+            .encoder
+            .movk_x(x(17), ((pointer >> 32) & 0xffff) as u16, 2)
+            .unwrap();
+        image
+            .encoder
+            .movk_x(x(17), ((pointer >> 48) & 0xffff) as u16, 3)
+            .unwrap();
+        image.encoder.movz_x(x(2), 1, 0).unwrap();
+        image
+            .encoder
+            .str_x(
+                XRegOrZero::Reg(x(2)),
+                AddressBase::Reg(x(17)),
+                (LONG_MODE_GPR_OFFSET + 8 * usize::from(REG_RBX)) as u32,
+            )
+            .unwrap();
+        // The address register is x0 (mine); x1 (other) is not clobbered by the sequence.
+        let env = SequenceEnv {
+            mode: MemoryOrderMode::Parallel,
+            state: x(17),
+            address: x(0),
+        };
+        emit_atomic_program(&mut image.encoder, &env, &program).unwrap();
+        load(&mut image, MemoryOrderMode::Parallel, 1, 3);
+        ret_with(&mut image, 3);
+    }
+    let (bytes, entries) = image.finish();
+    let code = PublishedCode::publish(&bytes).unwrap();
+
+    let data = Cell(AtomicU32::new(0));
+    let flag = Cell(AtomicU32::new(0));
+    let data_ptr = data.0.as_ptr();
+    let flag_ptr = flag.0.as_ptr();
+    let mut forbidden = 0u64;
+    let mut ones = 0u64;
+    race(
+        ROUNDS,
+        pair_fn(entry(&code, &entries, "sb_xchg0")),
+        (data_ptr, flag_ptr),
+        pair_fn(entry(&code, &entries, "sb_xchg1")),
+        (flag_ptr, data_ptr),
+        [&data, &flag],
+        |main, worker| {
+            if main == 0 && worker == 0 {
+                forbidden += 1;
+            }
+            ones += main + worker;
+        },
+    );
+    eprintln!(
+        "s6_41b litmus SB with XCHG [parallel]: rounds={ROUNDS} loads_that_saw_1={ones} forbidden(0,0)={forbidden}"
+    );
+    assert_eq!(forbidden, 0, "SB forbidden outcome with XCHG");
+    drop(states);
 }

@@ -122,6 +122,22 @@ impl BarrierOption {
     }
 }
 
+/// Shift of the shifted-register logical forms of S6-41b (`LSL`, `LSR`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Shift {
+    Lsl,
+    Lsr,
+}
+
+impl Shift {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Lsl => 0,
+            Self::Lsr => 1,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Condition {
     Equal,
@@ -341,6 +357,126 @@ impl Encoder {
         );
     }
 
+    /// `ORR Xd, Xn, Xm, <shift> #amount` (S6-41b). `amount` is 0..=63.
+    pub fn orr_x(
+        &mut self,
+        dst: XReg,
+        lhs: XRegOrZero,
+        rhs: XRegOrZero,
+        shift: Shift,
+        amount: u8,
+    ) -> Result<(), EncodeError> {
+        self.emit_logical_shifted(0xAA00_0000, dst, lhs, rhs, shift, amount)
+    }
+
+    /// `EOR Xd, Xn, Xm, <shift> #amount` (S6-41b).
+    pub fn eor_x(
+        &mut self,
+        dst: XReg,
+        lhs: XRegOrZero,
+        rhs: XRegOrZero,
+        shift: Shift,
+        amount: u8,
+    ) -> Result<(), EncodeError> {
+        self.emit_logical_shifted(0xCA00_0000, dst, lhs, rhs, shift, amount)
+    }
+
+    /// `ORN Xd, Xn, Xm, <shift> #amount` (S6-41b); with `lhs = Zero` it is
+    /// `MVN Xd, Xm`.
+    pub fn orn_x(
+        &mut self,
+        dst: XReg,
+        lhs: XRegOrZero,
+        rhs: XRegOrZero,
+        shift: Shift,
+        amount: u8,
+    ) -> Result<(), EncodeError> {
+        self.emit_logical_shifted(0xAA20_0000, dst, lhs, rhs, shift, amount)
+    }
+
+    /// `UBFM Xd, Xn, #immr, #imms` (S6-41b), the base of `LSL`/`LSR`/`UBFX`.
+    pub fn ubfm_x(&mut self, dst: XReg, src: XReg, immr: u8, imms: u8) -> Result<(), EncodeError> {
+        if immr > 63 || imms > 63 {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: u32::from(immr.max(imms)),
+                maximum: 63,
+            });
+        }
+        self.emit(
+            0xD340_0000
+                | (u32::from(immr) << 16)
+                | (u32::from(imms) << 10)
+                | (u32::from(src.0) << 5)
+                | u32::from(dst.0),
+        );
+        Ok(())
+    }
+
+    /// `LSL Xd, Xn, #amount` (alias of `UBFM`), `amount` 1..=63.
+    pub fn lsl_imm_x(&mut self, dst: XReg, src: XReg, amount: u8) -> Result<(), EncodeError> {
+        if !(1..=63).contains(&amount) {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: u32::from(amount),
+                maximum: 63,
+            });
+        }
+        self.ubfm_x(dst, src, 64 - amount, 63 - amount)
+    }
+
+    /// `LSR Xd, Xn, #amount` (alias of `UBFM`), `amount` 1..=63.
+    pub fn lsr_imm_x(&mut self, dst: XReg, src: XReg, amount: u8) -> Result<(), EncodeError> {
+        if !(1..=63).contains(&amount) {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: u32::from(amount),
+                maximum: 63,
+            });
+        }
+        self.ubfm_x(dst, src, amount, 63)
+    }
+
+    /// `UBFX Xd, Xn, #lsb, #width` (alias of `UBFM`): the `width` bits of
+    /// `src` starting at `lsb`, zero-extended.
+    pub fn ubfx_x(&mut self, dst: XReg, src: XReg, lsb: u8, width: u8) -> Result<(), EncodeError> {
+        if width == 0 || u32::from(lsb) + u32::from(width) > 64 {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: u32::from(lsb) + u32::from(width),
+                maximum: 64,
+            });
+        }
+        self.ubfm_x(dst, src, lsb, lsb + width - 1)
+    }
+
+    /// `CSET Xd, <cond>` (alias of `CSINC Xd, XZR, XZR, !cond`, S6-41b).
+    pub fn cset_x(&mut self, dst: XReg, condition: Condition) {
+        self.emit(0x9A9F_07E0 | ((condition.bits() ^ 1) << 12) | u32::from(dst.0));
+    }
+
+    fn emit_logical_shifted(
+        &mut self,
+        opcode: u32,
+        dst: XReg,
+        lhs: XRegOrZero,
+        rhs: XRegOrZero,
+        shift: Shift,
+        amount: u8,
+    ) -> Result<(), EncodeError> {
+        if amount > 63 {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: u32::from(amount),
+                maximum: 63,
+            });
+        }
+        self.emit(
+            opcode
+                | (shift.bits() << 22)
+                | (u32::from(rhs.number()) << 16)
+                | (u32::from(amount) << 10)
+                | (u32::from(lhs.number()) << 5)
+                | u32::from(dst.0),
+        );
+        Ok(())
+    }
+
     pub fn adds_imm_x(
         &mut self,
         dst: XRegOrZero,
@@ -521,6 +657,33 @@ impl Encoder {
                 | (u32::from(base.number()) << 5)
                 | u32::from(rt.number()),
         );
+    }
+
+    /// `LDSET{,A}{,L}{B,H,}` (FEAT_LSE, S6-41b): `rt = [base]; [base] |= rs`
+    /// as one atomic operation (`LOCK OR`, `LOCK BTS`). `rt` is never the zero
+    /// register, for the same reason as in [`Encoder::ldadd`] (`STSET` alias).
+    pub fn ldset(
+        &mut self,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: XRegOrZero,
+        rt: XReg,
+        base: AddressBase,
+    ) {
+        self.emit_lse_rmw(0x3820_3000, width, order, rs.number(), rt.0, base);
+    }
+
+    /// `LDCLR{,A}{,L}{B,H,}` (FEAT_LSE, S6-41b): `rt = [base]; [base] &= !rs`
+    /// as one atomic operation (`LOCK AND` with an inverted mask, `LOCK BTR`).
+    pub fn ldclr(
+        &mut self,
+        width: AccessWidth,
+        order: AtomicOrder,
+        rs: XRegOrZero,
+        rt: XReg,
+        base: AddressBase,
+    ) {
+        self.emit_lse_rmw(0x3820_1000, width, order, rs.number(), rt.0, base);
     }
 
     /// `DMB <option>` (S6-41), the inner-shareable barriers of the fence norm.
@@ -1171,6 +1334,111 @@ mod tests {
                 0xd503_39bf, // DMB ISH, DMB ISHLD
             ]
         );
+    }
+
+    #[test]
+    fn s6_41b_atomic_logic_and_flag_forms_match_local_apple_clang_fixture() {
+        // Fixture: tests/fixtures/arm64_atomic_logic.s, Apple clang 21.0.0,
+        // -target arm64-apple-macosx15.0 -march=armv8.4-a, words read with
+        // `otool -tV` / `otool -t`. Order below equals the fixture order.
+        use AccessWidth::{Byte, Dword, Half, Word};
+        use AtomicOrder::{AcquireRelease as Al, Relaxed};
+        use Shift::{Lsl, Lsr};
+        let mut e = Encoder::new();
+        let r = |n: u8| XRegOrZero::Reg(x(n));
+        let z = XRegOrZero::Zero;
+        let b12 = AddressBase::Reg(x(12));
+        for order in [Relaxed, Al] {
+            for width in [Byte, Half, Word, Dword] {
+                e.ldset(width, order, r(10), x(11), b12);
+            }
+        }
+        e.ldset(Dword, Al, z, x(11), AddressBase::Sp);
+        for order in [Relaxed, Al] {
+            for width in [Byte, Half, Word, Dword] {
+                e.ldclr(width, order, r(10), x(11), b12);
+            }
+        }
+        e.orr_x(x(9), r(10), r(11), Lsl, 0).unwrap();
+        e.orr_x(x(9), r(10), r(11), Lsl, 7).unwrap();
+        e.orr_x(x(9), z, r(11), Lsr, 3).unwrap();
+        e.eor_x(x(9), r(10), r(11), Lsl, 0).unwrap();
+        e.eor_x(x(9), r(9), r(9), Lsr, 4).unwrap();
+        e.eor_x(x(9), r(10), z, Lsl, 63).unwrap();
+        e.orn_x(x(9), z, r(11), Lsl, 0).unwrap();
+        e.orn_x(x(9), r(10), r(11), Lsr, 1).unwrap();
+        e.lsl_imm_x(x(9), x(10), 1).unwrap();
+        e.lsl_imm_x(x(9), x(10), 56).unwrap();
+        e.lsl_imm_x(x(9), x(10), 63).unwrap();
+        e.lsr_imm_x(x(9), x(10), 1).unwrap();
+        e.lsr_imm_x(x(9), x(10), 32).unwrap();
+        e.lsr_imm_x(x(9), x(10), 63).unwrap();
+        e.ubfx_x(x(9), x(10), 0, 1).unwrap();
+        e.ubfx_x(x(9), x(10), 4, 1).unwrap();
+        e.ubfx_x(x(9), x(10), 7, 1).unwrap();
+        e.ubfx_x(x(9), x(10), 0, 8).unwrap();
+        e.ubfx_x(x(9), x(10), 31, 1).unwrap();
+        e.ubfx_x(x(9), x(10), 63, 1).unwrap();
+        e.cset_x(x(9), Condition::Equal);
+        e.cset_x(x(9), Condition::Lower);
+        e.cset_x(x(15), Condition::Equal);
+        assert_eq!(
+            e.finish().unwrap().words(),
+            &[
+                0x382a_318b,
+                0x782a_318b,
+                0xb82a_318b,
+                0xf82a_318b, // LDSET*
+                0x38ea_318b,
+                0x78ea_318b,
+                0xb8ea_318b,
+                0xf8ea_318b,
+                0xf8ff_33eb, // LDSETAL*
+                0x382a_118b,
+                0x782a_118b,
+                0xb82a_118b,
+                0xf82a_118b, // LDCLR*
+                0x38ea_118b,
+                0x78ea_118b,
+                0xb8ea_118b,
+                0xf8ea_118b, // LDCLRAL*
+                0xaa0b_0149,
+                0xaa0b_1d49,
+                0xaa4b_0fe9, // ORR
+                0xca0b_0149,
+                0xca49_1129,
+                0xca1f_fd49, // EOR
+                0xaa2b_03e9,
+                0xaa6b_0549, // ORN / MVN
+                0xd37f_f949,
+                0xd348_1d49,
+                0xd341_0149, // LSL
+                0xd341_fd49,
+                0xd360_fd49,
+                0xd37f_fd49, // LSR
+                0xd340_0149,
+                0xd344_1149,
+                0xd347_1d49,
+                0xd340_1d49,
+                0xd35f_7d49,
+                0xd37f_fd49, // UBFX
+                0x9a9f_17e9,
+                0x9a9f_27e9,
+                0x9a9f_17ef, // CSET
+            ]
+        );
+    }
+
+    #[test]
+    fn s6_41b_shift_and_bitfield_forms_reject_out_of_range_operands() {
+        let mut e = Encoder::new();
+        let r = XRegOrZero::Reg(x(1));
+        assert!(e.orr_x(x(0), r, r, Shift::Lsl, 64).is_err());
+        assert!(e.lsl_imm_x(x(0), x(1), 0).is_err());
+        assert!(e.lsr_imm_x(x(0), x(1), 64).is_err());
+        assert!(e.ubfx_x(x(0), x(1), 63, 2).is_err());
+        assert!(e.ubfx_x(x(0), x(1), 0, 0).is_err());
+        assert_eq!(e.position(), 0);
     }
 
     #[test]
