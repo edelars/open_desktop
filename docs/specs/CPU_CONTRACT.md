@@ -29842,3 +29842,15 @@ and the paged CPL3 MOV probe refuse this form. The dword EBP pair requires
 immediate 1. The existing word form `66 B8 04 00` writes AX and preserves
 RAX[63:16].
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-467 — bounded CMP byte ptr [RSP+0xc],1
+
+The base paged CPL0 profile admits exact unprefixed `80 7C 24 0C 01`. The
+unindexed stack forms use the exact (disp8, imm8) pairs (+9, 0), (+0xa, 1),
+(+0xb, 1) and (+0xc, 1). The executor forms the 64-bit stack address and
+reads one byte through the memory adapter. It defines CF, PF, AF, ZF, SF and
+OF from byte minus one and advances RIP by five bytes. GPRs and memory
+contents are preserved. A noncanonical stack address raises #SS(0) before
+the read. Data and final-immediate fetch page faults commit no architectural
+state. The other CPL0 probes and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

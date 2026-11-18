@@ -2623,3 +2623,13 @@ runner reaches `80 7C 24 0C 01` (CMP byte ptr [RSP+0xc],1, ISSUE-467) at RIP
 128 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-467 runner frontier
+
+Exact base-profile `80 7C 24 0C 01` (CMP byte ptr [RSP+0xc],1) reads one byte
+and advances RIP after updating arithmetic flags. With budget 20000 the
+runner reaches `75 4D` (JNZ rel8 +0x4d, ISSUE-468) at RIP `0x201424` after
+10,310 retired instructions. It reports Unsupported opcode 117 with empty
+COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
