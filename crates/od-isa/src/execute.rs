@@ -23852,9 +23852,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
-        // S7-04: the firmware entry loads __bss_start into RDI with exactly
-        // `48 8D 3D 09 2B 00 00` (LEA RDI,[RIP+0x2b09]). Reuse the decoder's
-        // next-RIP-relative effective-address calculation without a data read.
+        // S7-04: firmware entry loads link-derived `.bss` boundaries into RDI
+        // and RCX with RIP-relative LEA. The signed disp32 changes with link
+        // layout; keep admission to the exact REX.W/register/addressing shape.
         Operation::Lea { dst, src }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -23866,11 +23866,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         rex: Some(0x48),
                         ..Prefixes::default()
                     })
-                && dst == RegisterView::low(Register::Rdi, OperandSize::Qword)
+                && (dst == RegisterView::low(Register::Rdi, OperandSize::Qword)
+                    || dst == RegisterView::low(Register::Rcx, OperandSize::Qword))
                 && src.base == AddressBase::NextRip
                 && src.index.is_none()
                 && src.scale == 1
-                && src.displacement == 0x2b09
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Qword =>
         {
@@ -24250,30 +24250,6 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && src.displacement == -0x0d
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Dword =>
-        {
-            state.write(dst, src.effective_address(state, next_rip));
-            state.rip = next_rip;
-        }
-        // S7-04: `_start` loads __bss_end into RCX with exactly
-        // `48 8D 0D 02 2B 00 00` (LEA RCX,[RIP+0x2b02]).
-        Operation::Lea { dst, src }
-            if base_profile
-                && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0x8d
-                && instruction.length == 7
-                && instruction.operand_size == OperandSize::Qword
-                && instruction.prefixes
-                    == (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                && dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                && src.base == AddressBase::NextRip
-                && src.index.is_none()
-                && src.scale == 1
-                && src.displacement == 0x2b02
-                && src.address_size == OperandSize::Qword
-                && src.size == OperandSize::Qword =>
         {
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;

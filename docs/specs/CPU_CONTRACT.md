@@ -451,7 +451,7 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 - `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
 - `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.); исключение для одной точной entry-формы `48 C7 C0 id` описано в расширении S7-04 ниже.
 
-Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD` и точные формы `48 C7 C0 id`, `48 39 C7`, `75 24`, `49 89 F8` и `48 8D 3D 09 2B 00 00` и `48 8D 0D 02 2B 00 00` и `48 29 F9` (`SUB RCX,RDI`) и `31 C0` (`XOR EAX,EAX`), точную `F3 AA` (`REP STOSB`, count до 1024) и `4C 89 C7` (`MOV RDI,R8`) в базовый профиль; прочие `MOV`/`CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. S7-04 отдельно добавляет bare `CLD` и формы `48 C7 C0 id`, `48 39 C7`, `75 24`, `49 89 F8` и два RIP-relative `LEA` (`48 8D 3D id`, `48 8D 0D id`) и `48 29 F9` (`SUB RCX,RDI`) и `31 C0` (`XOR EAX,EAX`), точную `F3 AA` (`REP STOSB`, count до 1024) и `4C 89 C7` (`MOV RDI,R8`) в базовый профиль; прочие `MOV`/`CMP`, branches/calls, CR4, сегментные переходы и `LRETQ`/`IRETQ` остаются вне allowlist ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 5 и 7).
 
 Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
 
@@ -483,20 +483,28 @@ vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 
 `step_paged_probe` принимает только Primary `49 89 F8`: длина 3, точный REX `0x49` (REX.W+B), qword register destination R8, source RDI и только базовый `PagedCpl0ProbeV1`. Переиспользуется существующая операция MOV: копируется значение RDI в R8, RIP увеличивается на 3; все остальные GPR, flags и `rflags_defined` сохраняются. Данные и порты не затрагиваются. Другие направления/регистры/ширины/префиксы/memory forms и прочие paged profiles остаются `Unsupported`. Fetch fault до полного decode не фиксирует состояние CPU.
 
-Проверки в `paged_probe_profile`: полное состояние подтверждает изменение только R8 и RIP; соседние формы, fetch fault на ModRM через границу страницы, CPL3 и stack/CR3/CR0.WP profiles отвергаются без commit. Runtime после пяти retired instructions остановился на LEA RDI (ISSUE-105), которая затем допущена узкой формой; текущая граница — `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`, ISSUE-106, RIP `0x200057`). Rust entry и parser не проверены в машине.
+Проверки в `paged_probe_profile`: полное состояние подтверждает изменение только R8 и RIP; соседние формы, fetch fault на ModRM через границу страницы, CPL3 и stack/CR3/CR0.WP profiles отвергаются без commit. Исторический прогон после пяти инструкций остановился на `LEA RDI` (ISSUE-105). Допуск двух форм `LEA` описан ниже.
 
 
-#### Расширение S7-04: точный `LEA RDI,[RIP+0x2b09]` из entry прошивки
+#### Расширение S7-04: RIP-relative `LEA` для границ BSS
 
-В базовом `PagedCpl0ProbeV1` допускается только `48 8D 3D 09 2B 00 00`: Primary `8D`, длина 7, ровно REX.W `48`, qword-операнд, приёмник RDI и RIP-relative адрес без индекса с displacement `0x2b09`. Используется существующий `MemoryOperand::effective_address(state, next_rip)`; чтения памяти нет. Изменяются только RDI и RIP, flags и definedness сохраняются. Другие назначения, displacement, базовые/индексированные формы и префиксы остаются `Unsupported`; остальные paged profiles и CPL3 не получают это разрешение. Неполный fetch через границу страницы не фиксирует CPU state.
+Базовый `PagedCpl0ProbeV1` допускает `48 8D 3D disp32`
+(`LEA RDI,[RIP+disp32]`) и `48 8D 0D disp32`
+(`LEA RCX,[RIP+disp32]`). Смещение от следующего RIP до каждой границы
+BSS задаёт линковщик. Обе формы имеют длину 7 байт, ровно REX `48`,
+операнд и адрес шириной 64 бита, базу NextRip и отсутствующий индекс.
 
-`paged_probe_profile` покрывает точную цель, полное состояние, флаги/definedness, соседние формы, fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner на образе SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` retired шесть инструкций и остановился на `48 8D 0D 02 2B 00 00` (`LEA RCX,[RIP+0x2b02]`) при `RIP=0x200057` (ISSUE-106).
+Декодер знаково расширяет `disp32`.
+`MemoryOperand::effective_address(state, next_rip)` вычисляет сумму по модулю 2⁶⁴.
+Результат записывается в регистр без проверки каноничности и чтения данных.
+Меняются только регистр назначения и RIP. Ошибка чтения байтов инструкции
+предшествует записи. Другие регистры, варианты адресации, ширины и префиксы
+сохраняют прежние ограничения, остальные профили сохраняют свои списки допуска.
 
-#### Расширение S7-04: точный `LEA RCX,[RIP+0x2b02]` из entry прошивки
-
-В базовом `PagedCpl0ProbeV1` допускается только `48 8D 0D 02 2B 00 00`: Primary `8D`, длина 7, ровно REX.W `48`, qword-операнд, приёмник RCX и RIP-relative адрес без индекса с displacement `0x2b02`. Переиспользуется `MemoryOperand::effective_address(state, next_rip)` без чтения памяти; меняются только RCX и RIP, flags/definedness сохраняются. Соседние регистры, смещения, адресация и префиксы, прочие paged profiles и CPL3 остаются вне допуска. Fetch fault до последнего байта не фиксирует CPU state.
-
-`paged_probe_profile` проверяет exact target/full state, definedness, neighbors, cross-page fetch fault, CPL3 и stack/CR3/CR0.WP isolation. Runner после семи retired инструкций остановился на `48 29 F9` (`SUB RCX,RDI`, ISSUE-107, RIP `0x20005e`).
+Исторические смещения `0x2b09` и `0x2b02` соответствуют образу
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`
+(ISSUE-105 и ISSUE-106). Проверки обеих раскладок и знаковых смещений
+находятся в `paged_probe_profile`.
 
 #### Расширение S7-04: точный `SUB RCX,RDI` из entry прошивки
 

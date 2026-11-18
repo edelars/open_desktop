@@ -2916,11 +2916,64 @@ The base `PagedCpl0ProbeV1` admits only exact short JZ displacement `+0x15`
 outcomes, flags and definedness, taken-target canonicality, atomic displacement
 fetch fault, neighboring encodings, CPL3 and other-profile isolation.
 Independent review approved the implementation with no findings; commit
-`161de07` contains the implementation and focused tests. The S7-04 firmware
-image recorded for prior steps was unavailable at
-`/private/tmp/od-fw-s7-04-issue256.bin`, so a confirming runner continuation
-could not be collected in this environment; see
-[ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
+`161de07` contains the implementation and focused tests. On 2026-11-18
+the original ROM became available at `/private/tmp/od-fw-s7-04-issue256.bin`.
+Its SHA-256 matched the recorded `9517c060…febe`. With a 20,000-instruction
+budget, the runner passed the JZ at `0x201939` and stopped after 10,351
+instructions at `0x20193b` on the five-byte NOP `0F 1F 44 00 00`.
+COM1 was empty. [ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15) is closed.
+
+### S7-04 — RIP-relative LEA для границ BSS
+
+Свежая сборка ROM освободилась от зависимости двух инструкций `_start` от
+раскладки линковки. Базовый `PagedCpl0ProbeV1` допускает знаковое `disp32`
+для `48 8D 3D disp32` и `48 8D 0D disp32`. Обе формы используют прежнее
+вычисление адреса через следующий RIP. Обновляются регистр назначения и
+RIP. Значения флагов и их определённость сохраняются. Прочие формы и
+профили сохраняют прежние ограничения.
+
+Для воспроизведения текущего прогона используйте команды из корня рабочей копии.
+
+```sh
+python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
+cargo run --offline -p od-runner -- boot-firmware --image work/stage7/firmware.bin --com1-out work/stage7/firmware_com1.txt --budget 20000
+```
+
+| Образ | До изменения | После изменения |
+|---|---|---|
+| Свежий `ea4cf5eb…16f4` | 5 инструкций, `0x200050`, `48 8D 3D 69 2C 00 00` | 18 инструкций, `0x20020c`, `B9 04 00 00 00` (`MOV ECX,4`) |
+| Исторический `9517c060…febe` | 10 351 инструкция, `0x20193b`, `0F 1F 44 00 00` (NOP) | 10 351 инструкция, тот же RIP и NOP |
+
+В обоих прогонах после изменения итог `Unsupported`, COM1 пуст.
+S7-04 остаётся в работе. Дальнейшие остановки описаны в
+[ISSUE-513](../KNOWN_ISSUES.md#issue-513).
+
+Парный замер выполнен на Apple M3 Max (14 ядер), macOS 26.7.1,
+Rust 1.99.0. Обе версии runner собраны по очереди в одном checkout командой
+`cargo build --release --offline -p od-runner`. Вторая отличается от
+`1fc0a61` изменением допуска LEA. Для каждой версии использован исторический
+образ из ISSUE-496 и `--budget 10351`. Все прогоны исчерпали бюджет на
+`0x20193b` с пустым COM1. Засекалось полное время процесса. Первую пару
+отбросили, в следующих 20 парах порядок версий чередовался.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 41,24 | 41,96 | 40,21–42,43 |
+| После изменения | 41,02 | 42,29 | 40,11–43,36 |
+
+Разница медиан укладывается в наблюдаемый разброс. Вариант принят ради
+корректной работы с линковочными смещениями.
+
+- `cargo test --offline -p od-isa` — 6 003 теста, включая 1 578 тестов
+  paged probe. Покрыты обе раскладки, границы `i32`, нецелевые формы,
+  ошибка выборки последнего байта и изоляция профилей.
+- `cargo test --offline -p od-machine --lib firmware_board::tests` —
+  102 теста. `cargo test --offline -p od-runner --test firmware_boot_cli` —
+  5 тестов. `cargo check --workspace --all-targets --offline` и
+  `cargo fmt --all -- --check` прошли.
+- Независимое архитектурное ревью и ревью изменений
+  `gpt-6.1-sol` / `high` одобрили ограниченный допуск и результаты
+  проверок. Замечаний нет. `graphify update .` завершился успешно.
 
 ## S7-14 RTC/CMOS, текущий срез
 

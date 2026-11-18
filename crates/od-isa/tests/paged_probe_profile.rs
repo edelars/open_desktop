@@ -39670,55 +39670,43 @@ fn rust_helper_cmp_edi_imm32_0x80_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn firmware_entry_lea_rdi_rip_disp32_sets_exact_target_only() {
-    let code = [0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.gpr = gpr_patterns();
-    cpu.rip = RIP;
-    cpu.gpr[Register::Rdi as usize] = 0x1122_3344_5566_7788;
-    cpu.rflags = 0xd5a;
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let defined = DEFINED & !(1 << 2);
+fn firmware_entry_lea_rip_disp32_accepts_link_values_and_signed_boundaries() {
+    for (modrm, destination, link_displacements) in [
+        (0x3d, Register::Rdi, [0x2b09, 0x2c69]),
+        (0x0d, Register::Rcx, [0x2b02, 0x2c62]),
+    ] {
+        for displacement in link_displacements
+            .into_iter()
+            .chain([i32::MIN, i32::MAX, 0, -1])
+        {
+            let mut code = vec![0x48, 0x8d, modrm];
+            code.extend_from_slice(&displacement.to_le_bytes());
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rip = RIP;
+            cpu.gpr[destination as usize] = 0x1122_3344_5566_7788;
+            cpu.rflags = 0xd5a;
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+            let defined = DEFINED & !(1 << 2);
 
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, defined);
-    let mut expected = before;
-    expected.gpr[Register::Rdi as usize] = RIP + code.len() as u64 + 0x2b09;
-    expected.rip += code.len() as u64;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
-}
-
-#[test]
-fn firmware_entry_lea_rcx_rip_disp32_sets_exact_target_only() {
-    let code = [0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.gpr = gpr_patterns();
-    cpu.rip = RIP;
-    cpu.gpr[Register::Rcx as usize] = 0x1122_3344_5566_7788;
-    cpu.rflags = 0xd5a;
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let defined = DEFINED & !(1 << 2);
-
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
-
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, defined);
-    let mut expected = before;
-    expected.gpr[Register::Rcx as usize] = RIP + code.len() as u64 + 0x2b02;
-    expected.rip += code.len() as u64;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            assert_eq!(result.exit, PagedProbeExit::Retired, "disp={displacement}");
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.gpr[destination as usize] = RIP
+                .wrapping_add(code.len() as u64)
+                .wrapping_add_signed(i64::from(displacement));
+            expected.rip += code.len() as u64;
+            assert_eq!(cpu, expected, "disp={displacement}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(memory.write_addresses.is_empty());
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -39759,9 +39747,7 @@ fn firmware_entry_lea_rcx_fetch_fault_does_not_commit() {
 #[test]
 fn firmware_entry_lea_rcx_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x48, 0x8d, 0x0d, 0x01, 0x2b, 0, 0], 0x8d), // displacement differs
         (&[0x48, 0x8d, 0x15, 0x02, 0x2b, 0, 0], 0x8d), // RDX destination
-        (&[0x48, 0x8d, 0x3d, 0x02, 0x2b, 0, 0], 0x8d), // RDI destination
         (&[0x40, 0x8d, 0x0d, 0x02, 0x2b, 0, 0], 0x8d), // no REX.W
         (&[0x48, 0x8d, 0x0f], 0x8d),                   // register base, not RIP-relative
         (&[0x67, 0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0], 0x8d), // address override
@@ -39990,7 +39976,6 @@ fn firmware_entry_lea_fetch_fault_does_not_commit() {
 #[test]
 fn firmware_entry_lea_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x48, 0x8d, 0x3d, 0x08, 0x2b, 0, 0], 0x8d), // displacement differs
         (&[0x48, 0x8d, 0x35, 0x09, 0x2b, 0, 0], 0x8d), // RSI destination
         (&[0x48, 0x8d, 0x05, 0x09, 0x2b, 0, 0], 0x8d), // RAX destination
         (&[0x40, 0x8d, 0x3d, 0x09, 0x2b, 0, 0], 0x8d), // no REX.W

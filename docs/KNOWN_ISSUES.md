@@ -6221,13 +6221,13 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата обнаружения:** 2026-11-18, firmware runner after ISSUE-495.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201939`.
-- **Статус:** CPU-profile срез ISSUE-496 принят после независимого ревью без замечаний и закоммичен (`161de07`); подтверждение продолжения S7-04 runner остаётся открытым до появления образа. Это ограничение повторного запуска ISSUE-496 не блокирует приёмку S7-03, который прошёл независимое ревью без замечаний.
+- **Статус:** закрыто. Реализация `161de07` принята независимым ревью. Повторный прогон 2026-11-18 подтвердил переход через `0x201939` на исходном образе.
 - **Суть и последствия:** the base firmware CPU profile stops on exact `74 15` (JZ rel8 +0x15).
 - **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 116 }` after 10,350 retired instructions at RIP `0x201939`. COM1 is empty. Bytes at the link-base shadow are `74 15`.
 - **Результат реализации:** только displacement `+0x15` добавлен к существующему allowlist `JZ rel8`; opcode variants, prefixes, neighboring displacements, CPL3 and other-profile isolation остаются unsupported.
-- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Только повторное подтверждение дальнейшего S7-04 runner frontier не выполнено: указанный в отчёте образ `/private/tmp/od-fw-s7-04-issue256.bin` отсутствует в текущей среде. Это внешнее ограничение артефакта, не дефект реализации и не незавершённый review S7-03.
+- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Образ `/private/tmp/od-fw-s7-04-issue256.bin` найден и сверён по SHA-256. При бюджете 20 000 runner выполнил 10 351 инструкцию и остановился на `0F 1F 44 00 00` по `0x20193b`. COM1 пуст.
 - **Ревью:** независимое ревью одобрило срез без замечаний; коммит `161de07` содержит реализацию, тесты и эту запись.
-- **Следующий шаг:** повторить firmware runner на образе с SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, если он доступен, и отметить фактическое продолжение исполнения.
+- **Результат зафиксирован** в [отчёте этапа 7](reports/STAGE_7_REPORT.md#issue-496--exact-jz-rel8-0x15).
 
 <a id="issue-509-s7-14-rtc-interrupts-and-intra-quantum-time"></a>
 
@@ -6261,3 +6261,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Суть и последствия:** пользовательский ISO доступен вне Git; его размер и SHA-256 повторно проверены. `bootx64.efi`, `bootmgfw.efi` и `winload.efi` из обоих `boot.wim` индексов извлечены во временный каталог и статически просканированы по 18 опубликованным UEFI/TCG GUID-кандидатам. В кандидаты включены все U-11/U-12 протоколы; Decompress/EBC не найдены, Simple Text Input Ex найден. EBC отмечен только как условный протокол, не обязательный с UEFI 2.8, если не реализован. Две копии `winload.efi` (3 358 408 байт) идентичны, SHA-256 `1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda`. Совпадения и отсутствия записаны в manifest. Статическое присутствие GUID само по себе не доказывает, что загрузчик находит или использует протокол. Runtime trace относится к S7-32 и в этой задаче не подтверждён.
 - **Основание:** read-only `shasum -a 256`/`stat` по `/Users/senya/projects/open_desktop/iso/Windows11_Client_x64_en-us_26300_9457.iso`; `7zz 26.05` извлёк boot EFI-файлы и WIM в `/private/tmp/open-desktop-s730`, затем только `Windows/System32/winload.efi` из индексов 1 и 2 во временные подкаталоги; `cmp` подтвердил одинаковые boot EFI и winload файлы. `7zz l -slt` перечислил полные пути обоих WIM-индексов (1: 25 797, 2: 26 332 path records) и оба содержат `Windows/System32/winload.efi`; Python `uuid.UUID(...).bytes_le` raw-byte search и offsets сохранены в `tests/fixtures/firmware/windows_media_manifest.json`. Audit items A8/A11 и §10.2/10.12 [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md) содержат пределы проверки.
 - **Результат закрытия:** media evidence blocker устранён и отражён в [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md), [windows_media_manifest.json](../tests/fixtures/firmware/windows_media_manifest.json) и S7-30 отчёте. Не закрывает и не подразумевает фактические runtime обращения; трассу протоколов, ACPI и TPM выполняет S7-32. ISO и Windows binaries в Git не добавлялись.
+
+### ISSUE-512 — S7-04: остановка свежего ROM на смещениях границ BSS
+
+- **Дата и компонент:** 2026-11-18, базовый paged CPL0 CPU-профиль.
+- **Причина:** старый допуск проверял точные значения `disp32` у двух инструкций `LEA` из `_start`. Свежая сборка (SHA-256 `ea4cf5eb7d1d679c1c8df272f8ca9e0b69624c0b907ebda371265b26373916f4`) использует `0x2c69` и `0x2c62` вместо `0x2b09` и `0x2b02`. Runner останавливался на `0x200050` после пяти инструкций.
+- **Статус:** устранено для этих двух форм. Знаковое смещение теперь декодируется для `LEA RDI,[RIP+disp32]` и `LEA RCX,[RIP+disp32]` в базовом профиле.
+- **Проверка:** свежий ROM прошёл оба `LEA` и остановился в Rust-точке входа после 18 инструкций. Оставшиеся остановки приведены в [ISSUE-513](#issue-513).
+
+<a id="issue-513"></a>
+
+### ISSUE-513 — S7-04: дальнейшие остановки свежего и исторического ROM
+
+- **Дата и компонент:** 2026-11-18, `boot-firmware` и базовый paged CPL0 CPU-профиль.
+- **Статус:** открыто. Оба прогона завершились с `Unsupported` при бюджете 20 000, COM1 пуст.
+- **Воспроизведение:** собранный ROM из ISSUE-512 останавливается после 18 инструкций на `B9 04 00 00 00` (`MOV ECX,4`, RIP `0x20020c`). Исторический образ из ISSUE-496 останавливается после 10 351 инструкции на `0F 1F 44 00 00` (NOP, RIP `0x20193b`).
+- **Следующий шаг:** продолжить S7-04 на свежем образе и использовать исторический как контроль. Команды прогона указаны в [отчёте](reports/STAGE_7_REPORT.md#s7-04--rip-relative-lea-для-границ-bss).
