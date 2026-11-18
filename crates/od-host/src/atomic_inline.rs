@@ -32,11 +32,9 @@ use std::ffi::c_void;
 use std::sync::atomic::AtomicU8;
 
 use od_isa::LongModeState;
-use od_isa::memory::{AccessContext, MemoryError, PageFaultRecord};
+use od_isa::memory::{AccessContext, ArchitecturalFault, MemoryError, PageFaultRecord};
 use od_jit::atomic_block::AtomicBlock;
-use od_jit::memory_bridge::{
-    CheckedMemoryOutcomeV1, MEMORY_HELPER_ARCHITECTURAL_FAULT, classify_error,
-};
+use od_jit::memory_bridge::{CheckedMemoryOutcomeV1, classify_error};
 use od_jit::runtime::{
     AtomicLocateHelperV4, AtomicSiteV4, BlockEntryV4, RUNTIME_EXIT_V4_ATOMIC_DECLINED,
     RUNTIME_EXIT_V4_ATOMIC_FAULT, RUNTIME_EXIT_V4_CODE_INVALIDATED, RUNTIME_EXIT_V4_HELPER_FAILURE,
@@ -80,6 +78,8 @@ pub struct AtomicInlineReport {
     pub exit: AtomicInlineExit,
     pub retired: u64,
     pub remaining_budget: u64,
+    /// Architectural exception identified by the Rust helper before the operand's effects.
+    pub fault: Option<ArchitecturalFault>,
     /// The page fault of a `Fault` exit (with `CR2` and the error code), if it was a `#PF`.
     pub page_fault: Option<PageFaultRecord>,
     /// The fault or decline details written by the helper.
@@ -120,6 +120,7 @@ struct HelperHost<'a> {
     paging: Long64ProbeConfig,
     access_context: AccessContext,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    fault: Option<ArchitecturalFault>,
     page_fault: Option<PageFaultRecord>,
     declined: Option<MemoryError>,
     helper_calls: u32,
@@ -177,7 +178,8 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
         Ok(linear) => linear,
         Err(error) => {
             classify_error(error.clone(), &mut context.outcome);
-            if context.outcome.status == MEMORY_HELPER_ARCHITECTURAL_FAULT {
+            if let MemoryError::Architectural(fault) = error {
+                host.fault = Some(fault);
                 return RUNTIME_EXIT_V4_ATOMIC_FAULT;
             }
             host.declined = Some(error);
@@ -227,7 +229,11 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
             RUNTIME_EXIT_V4_ATOMIC_DECLINED
         }
         PagedAtomicOperand::Fault(fault) => {
-            classify_error(MemoryError::Architectural(fault), &mut context.outcome);
+            classify_error(
+                MemoryError::Architectural(fault.clone()),
+                &mut context.outcome,
+            );
+            host.fault = Some(fault);
             host.page_fault = page_fault;
             RUNTIME_EXIT_V4_ATOMIC_FAULT
         }
@@ -365,12 +371,13 @@ impl AtomicInlineBlock {
         let paging = Long64ProbeConfig::from_cpu_state(state, env.cr3, env.efer)
             .map_err(AtomicInlineError::Paging)?;
         let mut context = self.new_context(state, budget, stop);
-        let (status, page_fault, declined, helper_calls, located) = {
+        let (status, fault, page_fault, declined, helper_calls, located) = {
             let mut host = HelperHost {
                 memory,
                 paging,
                 access_context: env.access_context,
                 committed_write: &mut *committed_write,
+                fault: None,
                 page_fault: None,
                 declined: None,
                 helper_calls: 0,
@@ -387,6 +394,7 @@ impl AtomicInlineBlock {
             context.host = std::ptr::null_mut();
             (
                 status,
+                host.fault.take(),
                 host.page_fault.take(),
                 host.declined.take(),
                 host.helper_calls,
@@ -417,6 +425,7 @@ impl AtomicInlineBlock {
             exit,
             retired: context.base.retired_instructions,
             remaining_budget: context.base.remaining_budget,
+            fault,
             page_fault,
             outcome: context.outcome,
             declined,

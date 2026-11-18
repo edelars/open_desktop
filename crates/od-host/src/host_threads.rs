@@ -56,8 +56,10 @@ pub struct HostJitVcpuStats {
     pub irqs_delivered: u64,
     /// S6-42c: guest `#PF`/`#GP(0)` delivered through the guest IDT.
     pub exceptions_delivered: u64,
-    /// S6-42c: native steps that reported a guest fault and were redone by the interpreter step.
-    pub jit_faults_redone: u64,
+    /// Native faults delivered through the guest IDT from their original fault records.
+    pub jit_faults_delivered: u64,
+    /// Retirements via the V4 atomic JIT, included in `retired_jit`.
+    pub atomic_jit_steps: u64,
     /// S6-42c: calls that ended on a device boundary (a write to a timer register of the Local APIC).
     pub device_boundaries: u64,
     /// Blocks compiled and published by the session so far.
@@ -334,7 +336,8 @@ impl JitHostQuantum {
                 stats.stop_exits += u64::from(report.exit == PagedHostLoopExit::StopRequested);
                 stats.irqs_delivered += report.irqs_delivered;
                 stats.exceptions_delivered += report.exceptions_delivered;
-                stats.jit_faults_redone += report.jit_faults_redone;
+                stats.jit_faults_delivered += report.jit_faults_delivered;
+                stats.atomic_jit_steps += report.atomic_jit_steps;
                 stats.device_boundaries +=
                     u64::from(report.exit == PagedHostLoopExit::DeviceBoundary);
                 stats.admissions = thread.session.admissions();
@@ -353,6 +356,7 @@ impl JitHostQuantum {
                 {
                     Some(format!("{exit:?}; page_fault: {:?}", report.page_fault))
                 }
+                PagedHostLoopExit::AtomicHostFailure(error) => Some(format!("{error:?}")),
                 _ => None,
             };
             if let Some(detail) = detail {
@@ -387,7 +391,7 @@ impl JitHostQuantum {
                 PagedHostLoopExit::InterpreterIntegration(_) => {
                     return Err("host JIT quantum: the CPL0 set returned an exit it cannot resume");
                 }
-                PagedHostLoopExit::JitHostFailure(_) => {
+                PagedHostLoopExit::JitHostFailure(_) | PagedHostLoopExit::AtomicHostFailure(_) => {
                     return Err("host JIT quantum: the JIT boundary failed");
                 }
                 PagedHostLoopExit::InvalidRflagsDefined { .. } => {

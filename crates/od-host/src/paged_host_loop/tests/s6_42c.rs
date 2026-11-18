@@ -12,6 +12,7 @@
 use super::*;
 use crate::host_threads::JitHostQuantum;
 use crate::jit_region::SharedJitRegion;
+use od_isa::integer_flags::{AUXILIARY_CARRY_FLAG, CARRY_FLAG};
 use od_isa::state::{Gdtr, Idtr, StiShadow};
 use od_isa::{CodeSegmentDescriptorCache, CpuActivity, StackSegmentDescriptorCache};
 use od_machine::{
@@ -478,7 +479,7 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
         assert_eq!(report.finished, HostParallelFinish::Stopped, "{report:?}");
         let stats = quantum.stats(0);
         assert_eq!(stats.exceptions_delivered, 1, "{stats:?}");
-        assert_eq!(stats.jit_faults_redone, 1, "{stats:?}");
+        assert_eq!(stats.jit_faults_delivered, 1, "{stats:?}");
         assert_eq!(quantum.last_failure(), None);
         drop(quantum);
         drop(region);
@@ -534,6 +535,190 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
 }
 
 // ---- B: the split LOCK ------------------------------------------------------------------------
+
+fn atomic_host_step(
+    session: &mut PagedFetchedLoadSession,
+    board: &mut LoadedFirmwareBoard,
+    state: &mut LongModeState,
+    defined: &mut u64,
+    before_step: impl FnMut(&PagedHostLoopControl, u64),
+) -> PagedHostLoopReport {
+    let lapic = board.local_apic_of(0).unwrap();
+    let set = Cpl0ProfileSet::new(od_isa::execute::ControlRegisterPolicy::Cpl0BaseLong64V1);
+    run_paged_host_loop_core(
+        session,
+        &PagedHostLoopControl::new(),
+        config(),
+        state,
+        LoopBusRef::SharedSet(
+            board.bus_mut(),
+            0,
+            PagedHostSetEnv {
+                lapic: &lapic,
+                gate: HostSplitGate::none(),
+                set: &set,
+                skip_first_boundary: &mut false,
+            },
+        ),
+        defined,
+        1,
+        |_| {},
+        before_step,
+        || false,
+        None,
+    )
+}
+
+#[test]
+fn s6_42d_atomic_steps_share_the_budget_and_definedness_with_the_interpreter() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    for native in [true, false] {
+        let mut board = board(1);
+        put(
+            &mut board,
+            CODE_0,
+            &[
+                0xf0, 0xff, 0x03, // LOCK INC dword [RBX]
+                0xf0, 0x83, 0x0b, 2, // LOCK OR dword [RBX],2
+                0x0f, 0xae, 0xf0, // MFENCE
+            ],
+        );
+        put_u64(&mut board, DATA, 0);
+        let mut state = state(CODE_0, STACK_TOP_0);
+        state.gpr[Register::Rbx as usize] = DATA;
+        state.rflags |= RFLAGS_RF;
+        let mut defined = 0;
+        let mut session = PagedFetchedLoadSession::with_region_part(region.take_part().unwrap());
+        if !native {
+            session.set_atomic_mode_policy(Some(|_| false));
+        }
+        for (offset, value, cf, af) in [
+            (3, 1, false, true),
+            (7, 3, true, false),
+            (10, 3, true, false),
+        ] {
+            let report = atomic_host_step(
+                &mut session,
+                &mut board,
+                &mut state,
+                &mut defined,
+                |_, _| {},
+            );
+            assert_eq!(
+                report.exit,
+                PagedHostLoopExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.atomic_jit_steps, u64::from(native), "{report:?}");
+            assert_eq!(report.retired_interpreter, u64::from(!native), "{report:?}");
+            assert_eq!(state.rip, CODE_0 + offset);
+            assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+            assert_eq!(state.rflags & RFLAGS_RF, 0);
+            assert_eq!(defined & CARRY_FLAG != 0, cf);
+            assert_eq!(defined & AUXILIARY_CARRY_FLAG != 0, af);
+            let actual = board
+                .bus_mut()
+                .atomic_inline_memory()
+                .load_u64(GuestPhysicalAddress::new(DATA))
+                .unwrap();
+            assert_eq!(actual, value);
+        }
+    }
+}
+
+#[test]
+fn s6_42d_atomic_step_preserves_the_cpl0_sti_shadow_refusal() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xf0, 0xff, 0x03]);
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rbx as usize] = DATA;
+    state.sti_shadow = Some(StiShadow::Blocking);
+    let before = state.clone();
+    let mut session = PagedFetchedLoadSession::new();
+    let report = atomic_host_step(&mut session, &mut board, &mut state, &mut 0, |_, _| {});
+    assert!(matches!(report.exit, PagedHostLoopExit::Interpreter(_)));
+    assert_eq!(report.remaining_budget, 1);
+    assert_eq!(report.atomic_jit_steps, 0);
+    assert_eq!(state, before);
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(DATA))
+            .unwrap(),
+        MARKER,
+    );
+}
+
+#[test]
+fn s6_42d_atomic_stop_before_entry_keeps_the_instruction_unretired() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xf0, 0xff, 0x03]);
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rbx as usize] = DATA;
+    let before = state.clone();
+    let mut session = PagedFetchedLoadSession::new();
+    let report = atomic_host_step(
+        &mut session,
+        &mut board,
+        &mut state,
+        &mut 0,
+        |control, _| {
+            control.request_stop();
+        },
+    );
+    assert_eq!(report.exit, PagedHostLoopExit::StopRequested, "{report:?}");
+    assert_eq!(report.native_stop_exits, 1);
+    assert_eq!(report.retired_total(), 0);
+    assert_eq!(state, before);
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(DATA))
+            .unwrap(),
+        MARKER,
+    );
+}
+
+#[test]
+fn s6_42d_native_atomic_fault_reaches_the_guest_idt_and_restarts_once() {
+    let _guard = jit_guard();
+    for (vector, address) in [(14, UNMAPPED), (13, 0x0000_8000_0000_0000)] {
+        let region = SharedJitRegion::new(1, 4).unwrap();
+        let quantum = quantum_of(&region, 1);
+        let mut board = board(1);
+        put_u64(&mut board, DATA, 0);
+        if vector == 13 {
+            put(&mut board, IDT_AT + 14 * 16, &[0; 16]);
+            put(&mut board, IDT_AT + 13 * 16, &gate(HANDLER_PF));
+        }
+        put(&mut board, CODE_0, &[0xf0, 0xff, 0x03, 0xf4]);
+        let mut cpu = state(CODE_0, STACK_TOP_0);
+        cpu.gpr[Register::Rbx as usize] = address;
+        assert!(host_install_vcpu(&mut board, 0, cpu));
+        let (report, ()) = run_host_threads_with_nmi_paging(
+            &mut board,
+            host_config(true),
+            &quantum.nmi_paging(),
+            &|call| quantum.run(call),
+            &|_| quantum.thread_exit(),
+            |control| {
+                assert!(control.wait_finished(WAIT));
+                assert_eq!(cell(control, COUNTER_PF), 1, "vector {vector}");
+                assert_eq!(cell(control, DATA), 1, "vector {vector}");
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, HostParallelFinish::AllIdle, "{report:?}");
+        let stats = quantum.stats(0);
+        assert_eq!(stats.jit_faults_delivered, 1, "{stats:?}");
+        assert_eq!(stats.atomic_jit_steps, 1, "{stats:?}");
+    }
+}
 
 /// `mov ebx, SPLIT; mov ecx, repeat; again: lock inc dword [rbx]; dec ecx; jnz again;
 /// mov ebx, DONE; lock inc dword [rbx]; hlt`.
@@ -610,6 +795,9 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
             )
             .unwrap();
         assert_eq!(done, 2);
+        for cpu in 0..2 {
+            assert_eq!(quantum.stats(cpu).atomic_jit_steps, 1);
+        }
         assert_eq!(quantum.last_failure(), None);
         drop(quantum);
         drop(region);

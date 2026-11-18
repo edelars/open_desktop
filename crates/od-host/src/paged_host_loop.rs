@@ -74,9 +74,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::{
-    MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadSession,
+    MemoryOperationExecutionErrorV2, MemoryOperationExecutionExitV2, PagedFetchedLoadErrorKind,
+    PagedFetchedLoadSession, atomic_inline::AtomicInlineExit,
 };
 use od_isa::execute::Cpl0ProfileSet;
+use od_isa::memory::{ArchitecturalFault, PageFaultRecord};
+
+const RFLAGS_RF: u64 = 1 << 16;
 
 /// The request flags of one vCPU loop, as one value read after the STOP byte was
 /// taken down.
@@ -301,6 +305,8 @@ pub enum PagedHostLoopExit {
     /// The JIT boundary failed in a way that does not prove the CPU state is
     /// unchanged. The step is not retried.
     JitHostFailure(MemoryOperationExecutionErrorV2),
+    /// A V4 atomic invocation failed at the host boundary.
+    AtomicHostFailure(PagedFetchedLoadErrorKind),
     /// `rflags_defined` has bits outside `INTEGER_FLAGS`; nothing ran.
     InvalidRflagsDefined {
         value: u64,
@@ -349,11 +355,12 @@ pub struct PagedHostLoopReport {
     pub page_fault: Option<od_isa::memory::PageFaultRecord>,
     /// S6-42c (set mode): external interrupts delivered to the guest through its IDT.
     pub irqs_delivered: u64,
-    /// S6-42c (set mode): guest `#PF`/`#GP(0)` delivered through its IDT by the interpreter step.
+    /// S6-42c (set mode): guest `#PF`/`#GP(0)` delivered through its IDT.
     pub exceptions_delivered: u64,
-    /// S6-42c (set mode): native steps that reported a guest fault, redone by the interpreter step
-    /// (which raised and delivered it). Nothing of such a step was retired.
-    pub jit_faults_redone: u64,
+    /// Native faults delivered through the guest IDT from their original fault records.
+    pub jit_faults_delivered: u64,
+    /// Retirements via the V4 atomic JIT, included in `retired_jit`.
+    pub atomic_jit_steps: u64,
 }
 
 impl PagedHostLoopReport {
@@ -373,7 +380,8 @@ impl PagedHostLoopReport {
             page_fault: None,
             irqs_delivered: 0,
             exceptions_delivered: 0,
-            jit_faults_redone: 0,
+            jit_faults_delivered: 0,
+            atomic_jit_steps: 0,
         }
     }
 
@@ -553,6 +561,124 @@ pub fn run_paged_host_loop_shared_set(
     )
 }
 
+fn deliver_native_fault(
+    report: &mut PagedHostLoopReport,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    config: PagedHostLoopConfig,
+    fault: &ArchitecturalFault,
+    page_fault: Option<&PageFaultRecord>,
+    consecutive: u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> bool {
+    let Ok(paging) = od_machine::Long64ProbeConfig::from_cpu_state(state, config.cr3, config.efer)
+    else {
+        return false;
+    };
+    if !od_machine::deliver_host_native_fault(
+        state,
+        bus,
+        &paging,
+        config.access_context,
+        fault,
+        page_fault,
+        consecutive,
+        committed_write,
+    ) {
+        return false;
+    }
+    report.exceptions_delivered += 1;
+    report.jit_faults_delivered += 1;
+    true
+}
+
+/// True when the loop must return to its instruction boundary. A pre-entry
+/// refusal or operand decline leaves the instruction to the CPL0 interpreter.
+fn try_atomic_step(
+    session: &mut PagedFetchedLoadSession,
+    state: &mut od_isa::LongModeState,
+    bus: &od_machine::MachineBus,
+    config: PagedHostLoopConfig,
+    stop_byte: &AtomicU8,
+    rflags_defined: &mut u64,
+    report: &mut PagedHostLoopReport,
+    consecutive_native_faults: &mut u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> Result<bool, PagedHostLoopExit> {
+    let jit = match session.execute_atomic_with_stop(
+        state,
+        bus,
+        config.cr3,
+        config.efer,
+        config.access_context,
+        1,
+        stop_byte,
+        1,
+    ) {
+        Ok(jit) => jit,
+        Err(refusal) => {
+            for range in refusal.fetch_committed_writes {
+                committed_write(range);
+            }
+            if matches!(refusal.kind, PagedFetchedLoadErrorKind::AtomicRun(_)) {
+                return Err(PagedHostLoopExit::AtomicHostFailure(refusal.kind));
+            }
+            return Ok(false);
+        }
+    };
+    for range in jit
+        .fetch_committed_writes
+        .into_iter()
+        .chain(jit.committed_writes)
+    {
+        committed_write(range);
+    }
+    let run = jit.run;
+    let invalid =
+        PagedHostLoopExit::JitHostFailure(MemoryOperationExecutionErrorV2::InvalidAccounting);
+    if jit.block_instructions != 1 || 1u64.checked_sub(run.retired) != Some(run.remaining_budget) {
+        return Err(invalid);
+    }
+    match (run.exit, run.retired) {
+        (AtomicInlineExit::Complete | AtomicInlineExit::CodeInvalidated, 1) => {
+            *rflags_defined = jit.first_flags.apply(*rflags_defined);
+            state.rflags &= !RFLAGS_RF;
+            report.retired_jit += 1;
+            report.steps_jit += 1;
+            report.atomic_jit_steps += 1;
+            report.remaining_budget -= 1;
+            *consecutive_native_faults = 0;
+            Ok(true)
+        }
+        (AtomicInlineExit::StopRequested, 0) => {
+            report.native_stop_exits += 1;
+            Ok(true)
+        }
+        (AtomicInlineExit::Declined, 0) => Ok(false),
+        (AtomicInlineExit::Fault, 0) => {
+            let fault = run.fault.ok_or(PagedHostLoopExit::JitHostFailure(
+                MemoryOperationExecutionErrorV2::InvalidOutcome,
+            ))?;
+            if deliver_native_fault(
+                report,
+                state,
+                bus,
+                config,
+                &fault,
+                run.page_fault.as_ref(),
+                *consecutive_native_faults,
+                committed_write,
+            ) {
+                *consecutive_native_faults += 1;
+                return Ok(true);
+            }
+            report.page_fault = run.page_fault;
+            Err(PagedHostLoopExit::GuestFault(fault))
+        }
+        _ => Err(invalid),
+    }
+}
+
 pub(crate) fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
@@ -575,6 +701,8 @@ pub(crate) fn run_paged_host_loop_core(
     }
     let stop_byte = native_stop.unwrap_or_else(|| control.stop_byte());
     let mut steps_started = 0u64;
+    let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
+    let mut consecutive_native_faults = 0;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
         // session applies the slot releases it deferred (A4).
@@ -681,20 +809,33 @@ pub(crate) fn run_paged_host_loop_core(
                             report.retired_jit += retired;
                             report.remaining_budget -= retired;
                             report.steps_jit += retired;
+                            if retired != 0 {
+                                consecutive_native_faults = 0;
+                                if cpl0_set {
+                                    state.rflags &= !RFLAGS_RF;
+                                }
+                            }
                             continue;
                         }
                         MemoryOperationExecutionExitV2::GuestFault(fault) => {
-                            if matches!(bus, LoopBusRef::SharedSet(..)) {
-                                // S6-42c: nothing of the instruction retired; the interpreter
-                                // step below takes it again, raises the same fault and delivers
-                                // it through the guest IDT (a fault the IDT cannot take is the
-                                // `GuestFault` exit of that step).
-                                report.jit_faults_redone += 1;
-                            } else {
-                                report.page_fault = jit.execution.page_fault.clone();
-                                report.exit = PagedHostLoopExit::GuestFault(fault.clone());
-                                return report;
+                            if cpl0_set
+                                && deliver_native_fault(
+                                    &mut report,
+                                    state,
+                                    bus.machine(),
+                                    config,
+                                    fault,
+                                    jit.execution.page_fault.as_ref(),
+                                    consecutive_native_faults,
+                                    &mut committed_write,
+                                )
+                            {
+                                consecutive_native_faults += 1;
+                                continue;
                             }
+                            report.page_fault = jit.execution.page_fault.clone();
+                            report.exit = PagedHostLoopExit::GuestFault(fault.clone());
+                            return report;
                         }
                         // A single-instruction block never ends this way.
                         MemoryOperationExecutionExitV2::BudgetExhausted
@@ -711,6 +852,30 @@ pub(crate) fn run_paged_host_loop_core(
             Err(refusal) => {
                 for range in &refusal.fetch_committed_writes {
                     committed_write(*range);
+                }
+                if cpl0_set
+                    && matches!(&refusal.kind,
+                    PagedFetchedLoadErrorKind::UnsupportedForm { bytes }
+                        if od_jit::atomic_adapter::could_start_atomic(bytes))
+                {
+                    match try_atomic_step(
+                        session,
+                        state,
+                        bus.machine(),
+                        config,
+                        stop_byte,
+                        rflags_defined,
+                        &mut report,
+                        &mut consecutive_native_faults,
+                        &mut committed_write,
+                    ) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(exit) => {
+                            report.exit = exit;
+                            return report;
+                        }
+                    }
                 }
             }
         }
@@ -784,6 +949,9 @@ pub(crate) fn run_paged_host_loop_core(
             return report;
         }
         report.retired_interpreter += retired;
+        if retired != 0 {
+            consecutive_native_faults = 0;
+        }
         report.remaining_budget -= retired;
         report.steps_interpreter += retired;
         if let Some((_, delivered, _)) = set_step {

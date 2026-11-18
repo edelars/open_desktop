@@ -3599,6 +3599,46 @@ pub(crate) fn deliver_pending_irq(
     ))
 }
 
+/// Deliver a native instruction's already observed CPL0 fault without executing it again.
+/// As in the CPL0 set loop, only #PF with its walk record and #GP(0) enter the guest IDT.
+pub fn deliver_host_native_fault(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    fault: &ArchitecturalFault,
+    page_fault: Option<&PageFaultRecord>,
+    consecutive: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> bool {
+    if state.idtr.is_none() || consecutive >= MAX_DELIVERIES_WITHOUT_RETIREMENT {
+        return false;
+    }
+    let mut memory = set_loop_adapter(
+        bus.physical_memory(),
+        None,
+        *paging,
+        state.rip,
+        &mut committed_write,
+        None,
+        None,
+    );
+    match (fault.vector, fault.error_code) {
+        (14, _) => page_fault.is_some_and(|record| {
+            record.fault() == fault
+                && matches!(
+                    deliver_page_fault_cpl0_set(state, &mut memory, record, context),
+                    Cpl0PageFaultDelivery::Delivered { .. }
+                )
+        }),
+        (13, Some(0)) => matches!(
+            deliver_general_protection_cpl0_set(state, &mut memory, fault, context),
+            Cpl0GeneralProtectionDelivery::Delivered { .. }
+        ),
+        _ => false,
+    }
+}
+
 /// Deliver a non-maskable interrupt through vector 2 at an instruction boundary outside a run of
 /// the set loop (S6-12b), through the same RAM-only paged adapter as [`deliver_pending_irq`]: the
 /// frame goes onto the guest stack, `state` enters the handler of the IDT gate of vector 2 and
