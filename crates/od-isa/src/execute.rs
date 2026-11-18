@@ -26938,8 +26938,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: helpers compare `DI,1` / `BX,2` / `BX,3` / `R9W,1` with exact word forms,
-        // `EDI,0x20` with exact `83 FF 20`, `R8D,0x30` with exact
+        // S7-04: exact word comparisons of DI with 1, BX with 2 or 3, and
+        // R9W with 1 or 2. The exact dword forms include
+        // `EDI,0x20` with `83 FF 20`, `R8D,0x30` with
         // `41 83 F8 30`, `R10D,0x0b` / `R10D,6` with exact `41 83 FA 0B` /
         // `41 83 FA 06`, and
         // `R15D,-0x0c` with exact `41 83 FF F4`, `R13D,-1/-0x0c` with exact
@@ -27014,7 +27015,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                             rex: Some(0x41),
                             ..Prefixes::default()
                         })
-                    && immediate == 1
+                    && matches!(immediate, 1 | 2)
                     && destination == RegisterView::low(Register::R9, OperandSize::Word))
                 || (instruction.length == 3
                     && instruction.operand_size == OperandSize::Dword

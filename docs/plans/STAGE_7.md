@@ -2978,3 +2978,14 @@ takes the branch and stops after 10,322 retired instructions at RIP
 `0x201532` on `66 41 83 F9 02` (CMP R9W,2, ISSUE-480). It reports
 Unsupported opcode 131 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-480 — exact CMP R9W,2 (`66 41 83 F9 02`)
+
+Base `PagedCpl0ProbeV1` admits the exact operand-size override and REX.B
+word compare with sign-extended imm8 2. The subtraction defines CF, PF, AF,
+ZF, SF and OF, advances RIP and preserves GPRs. Tests cover word width, flags
+and definedness, the final-immediate fetch fault, neighboring encodings and
+profile isolation. With budget 20000 the runner retires 10,323 instructions
+and stops at RIP `0x201537` on `75 18` (JNZ rel8 +0x18, ISSUE-481). It
+reports Unsupported opcode 117 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
