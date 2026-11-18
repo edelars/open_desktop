@@ -338,6 +338,7 @@ impl Driver<'_> {
         let placement = &self.placements[(round % self.placements.len() as u64) as usize];
         let memory = env.bus.physical_memory();
         let mut retired = 0u64;
+        let mut retired_by_hook = 0u64;
         match placement[cpu] {
             Some(thread) => {
                 let spec = &self.case.threads[thread];
@@ -419,7 +420,7 @@ impl Driver<'_> {
                             }
                             Ok(LitmusStepOutcome::Executed { retired: done }) if done > 0 => {
                                 retired += done;
-                                self.hooked_retired.fetch_add(done, SEQ);
+                                retired_by_hook += done;
                                 continue;
                             }
                             Ok(_) => {}
@@ -459,7 +460,6 @@ impl Driver<'_> {
                         }
                     };
                     retired += executed.retired;
-                    self.interpreted_retired.fetch_add(executed.retired, SEQ);
                     if executed.retired == 0 {
                         break;
                     }
@@ -512,6 +512,15 @@ impl Driver<'_> {
                     return Err(FirmwareBoardError::Config("litmus parallel: aborted"));
                 }
             }
+        }
+        // Publish accounting between rounds so it cannot order the guest accesses.
+        if retired_by_hook != 0 {
+            self.hooked_retired.fetch_add(retired_by_hook, SEQ);
+        }
+        let retired_by_interpreter = retired - retired_by_hook;
+        if retired_by_interpreter != 0 {
+            self.interpreted_retired
+                .fetch_add(retired_by_interpreter, SEQ);
         }
         Ok(Executed {
             retired,
