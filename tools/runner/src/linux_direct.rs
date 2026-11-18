@@ -1314,7 +1314,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         ));
     }
     // The board loop accepts both observers, but the public execution-observation runs of
-    // od-machine do not take a checkpoint table and the pair is untested (ISSUE-108); refuse it
+    // od-machine do not take a checkpoint table and the pair is untested (ISSUE-505); refuse it
     // explicitly rather than drop one of the two.
     if execution_observations_out.is_some() && checkpoint_table.is_some() {
         return Err(format!(
