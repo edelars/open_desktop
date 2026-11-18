@@ -1376,6 +1376,76 @@ mod tests {
         assert!(board.clock().now_ns() >= u64::from(handled - 1) * 8381);
     }
 
+    fn pit_ioapic_ap_board(bsp_if: bool) -> LoadedFirmwareBoard {
+        use crate::{AccessWidth, GuestPhysicalAddress, IO_APIC_MMIO_BASE, PortAddress};
+
+        let mut board = board(2);
+        assert!(board.enable_pit_ioapic_irq());
+        system(&mut board, false);
+        patch(&mut board, CODE_1, &[0xfa, 0xf4]); // CLI; HLT
+        let mut handler = count_and_eoi(COUNTER_1);
+        handler.extend([0x48, 0xcf]); // IRETQ
+        patch(&mut board, HANDLER_AP_BOARD, &handler);
+        gate(&mut board, IDT_AT, BOARD_VECTOR, HANDLER_AP_BOARD);
+        for (cpu, code, stack, tables_at) in [
+            (0, CODE_0, STACK_0, TABLES_0),
+            (1, CODE_1, STACK_1, TABLES_1),
+        ] {
+            let cr3 = tables(&mut board, tables_at, 0x60_0000 + cpu as u64 * 0x20_0000, 0);
+            let mut state = long_state(code, stack, cr3, true);
+            state.activity = Some(CpuActivity::Halted);
+            if cpu == 0 && !bsp_if {
+                state.rflags = 2;
+            }
+            install(&mut board, cpu, state, 0xd01);
+        }
+        let bus = board.bus_mut();
+        bus.write_mmio_shared(
+            1,
+            GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
+            AccessWidth::Dword,
+            0x1ff,
+        )
+        .unwrap();
+        // INTIN2 high dword selects APIC ID 1. The low dword unmasks the edge.
+        for (offset, value) in [
+            (0, 0x15),
+            (0x10, 1 << 24),
+            (0, 0x14),
+            (0x10, u64::from(BOARD_VECTOR)),
+        ] {
+            bus.write_mmio_shared(
+                0,
+                GuestPhysicalAddress::new(IO_APIC_MMIO_BASE + offset),
+                AccessWidth::Dword,
+                value,
+            )
+            .unwrap();
+        }
+        for (port, value) in [(0x43, 0x34), (0x40, 10), (0x40, 0)] {
+            bus.write_port(PortAddress::new(port), AccessWidth::Byte, value)
+                .unwrap();
+        }
+        board
+    }
+
+    #[test]
+    fn the_idle_jump_wakes_the_ap_targeted_by_the_pit_ioapic_route() {
+        for bsp_if in [false, true] {
+            let mut board = pit_ioapic_ap_board(bsp_if);
+            let (finished, counters, _) = run_scheduler(&mut board, QuantumPolicy::Fixed(20), 200);
+            assert_eq!(finished, Finished::AllIdle);
+            assert_eq!(
+                (counters[0].wakes, counters[1].wakes),
+                (0, 1),
+                "BSP.IF={bsp_if}"
+            );
+            assert_eq!(dword(&mut board, COUNTER_1), 1);
+            assert_eq!(vector_state(&board, 1, BOARD_VECTOR), (false, false));
+            assert!(board.clock().now_ns() >= 8381);
+        }
+    }
+
     /// A source with one vector, pending until it was acknowledged once.
     struct OneShot {
         vector: u8,

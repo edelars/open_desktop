@@ -113,6 +113,29 @@ struct Inner {
 }
 
 impl Inner {
+    /// Time at which this LAPIC can accept a pending request or the next PIT edge.
+    fn wake_ns_for(&mut self, cpu: usize) -> Option<u64> {
+        self.catch_up();
+        let target;
+        let lapic = if cpu == self.lapic.cpu_index() {
+            &self.lapic
+        } else {
+            target = self.lapic.for_cpu(cpu)?;
+            &target
+        };
+        if lapic.eligible().is_some() {
+            return Some(self.clock.snapshot().now_ns());
+        }
+        let (destination, vector) = self.io_apic.intin2_route()?;
+        if cpu != destination || !lapic.would_accept(vector) || self.stats.queue_faults != 0 {
+            return None;
+        }
+        let now = self.clock.snapshot().now_ns();
+        self.queue
+            .next_deadline()
+            .filter(|deadline| *deadline > now)
+    }
+
     fn schedule_after(&mut self, after_tick: u64) {
         let channel = self.pit.snapshot().channel0;
         let Some(tick) = next_out0_rising_tick(&channel, after_tick) else {
@@ -202,6 +225,11 @@ impl Inner {
 pub(crate) struct PitIoapicIrqSource(Arc<Mutex<Inner>>);
 
 impl PitIoapicIrqSource {
+    /// Deadline for the LAPIC of `cpu`, including a PIT edge routed to an AP.
+    pub(crate) fn wake_ns_for(&self, cpu: usize) -> Option<u64> {
+        self.inner().wake_ns_for(cpu)
+    }
+
     /// The source state. Its lock is taken before every device lock it reaches (PIT, PIC, APIC,
     /// clock; MACHINE_CONTRACT.md, S6-33 lock order) and no device ever takes it.
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -297,23 +325,8 @@ impl BoardIrqSource for PitIoapicIrqSource {
     /// the CPU would pass its `HLT` with no interrupt.
     fn wake_ns(&self) -> Option<u64> {
         let mut inner = self.inner();
-        inner.catch_up();
-        if inner.lapic.eligible().is_some() {
-            return Some(inner.clock.snapshot().now_ns());
-        }
-        let (cpu, vector) = inner.io_apic.intin2_route()?;
-        if cpu != inner.lapic.cpu_index() || !inner.lapic.would_accept(vector) {
-            return None;
-        }
-        // After a queue fault (never expected) the source has stopped: no wake time.
-        if inner.stats.queue_faults != 0 {
-            return None;
-        }
-        let now = inner.clock.snapshot().now_ns();
-        inner
-            .queue
-            .next_deadline()
-            .filter(|deadline| *deadline > now)
+        let cpu = inner.lapic.cpu_index();
+        inner.wake_ns_for(cpu)
     }
 }
 

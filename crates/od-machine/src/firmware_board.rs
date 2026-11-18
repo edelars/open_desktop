@@ -2240,6 +2240,11 @@ impl LoadedFirmwareBoard {
         self.irq_source.wake_ns()
     }
 
+    /// An AP receives a board PIT edge only through its own LAPIC.
+    pub(crate) fn ap_pit_wake_ns(&self, cpu: usize) -> Option<u64> {
+        self.pit_ioapic_source.as_ref()?.wake_ns_for(cpu)
+    }
+
     /// Charge `retired` instructions to the clock of the CPL0-set loop (one ns each, D7).
     fn charge_retired(&mut self, retired: u64) -> Result<(), FirmwareBoardError> {
         match &mut self.clock_driver {

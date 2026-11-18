@@ -998,6 +998,8 @@ KVM с подменённой CPUID: принял `EFER.LME|NXE|SCE`, `CR4 = 0x6
 
 **Независимое ревью `gpt-6.1-sol/high` (2026-11-18).** Принята часть шага 1 для BSP из `3473617`. На `92ca05c` прошли 15 тестов `vcpu_quantum` и 30 тестов `smp_scheduler`. Доказательство на устройствах охватывает PIT → PIC → BSP. Сквозные прогоны IOAPIC и UART и одновременная конкуренция векторов источника платы и LAPIC остаются вне этой проверки. Граница пробуждения AP в общем простое записана в [ISSUE-512](../KNOWN_ISSUES.md#issue-512-s6-21-ioapic-wake).
 
+**Проверка маршрута PIT → IOAPIC → AP (ISSUE-512).** Тестовая плата направляет INTIN2 на AP, оба vCPU начинают в `HLT`. До исправления `AllIdle` наступал с нулём пробуждений. Теперь при обоих значениях IF у BSP планировщик продвигает часы до фронта. AP просыпается один раз, выполняет обработчик и EOI и снова останавливается с IF = 0. Прошли 64 теста по фильтрам `vcpu_quantum pit_ioapic_irq_source smp_scheduler`. Подключение к циклу Linux и сверка S6-10 остаются частью шага 1.
+
 ### S6-19 — litmus в режиме чередования (реализовано, ожидает ревью)
 
 Дата: 2026-11-17. Чекбокс не отмечен. Срез: драйвер перебора расписаний в `crates/od-machine/src/litmus_interleaving.rs` (`cfg(test)`; 18 тестов, один `#[ignore]` — прогон-доказательство), `serde_json` как dev-зависимость `od-machine`, данные [`s6-19-litmus-interleaving.json`](data/stage6/s6-19-litmus-interleaving.json) (77 КБ), разделы в [SMP.md](../testing/SMP.md) и [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-19--litmus-в-режиме-чередования).
