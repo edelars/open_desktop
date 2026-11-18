@@ -3122,3 +3122,16 @@ isolation. The existing EAX imm8 1 and 9 remain supported. With budget
 `0x2018e7` on `76 21` (JBE rel8 +0x21, ISSUE-492). It reports
 Unsupported opcode 118 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-492 — exact JBE rel8 +0x21 (`76 21`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short branch. With CF=1
+or ZF=1, it adds signed rel8 +0x21 to next RIP and checks the taken
+target for canonicality. With CF=ZF=0, it advances to next RIP. Flags
+and definedness are preserved. Tests cover the CF/ZF truth table,
+target and fetch faults, neighbors and profile isolation, including the
+prior `76 22` form. With budget 20000 the runner takes the branch and
+stops after 10,347 retired instructions at RIP `0x20190a` on
+`66 85 C0` (TEST AX,AX, ISSUE-493). It reports Unsupported opcode 133
+with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

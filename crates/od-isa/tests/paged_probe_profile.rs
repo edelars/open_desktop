@@ -23593,33 +23593,34 @@ fn rust_helper_ja_plus_1a_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn rust_helper_jbe_plus_22_obeys_cf_zf_truth_table_and_preserves_state() {
-    let code = [0x76, 0x22]; // JBE/JNA +0x22
-    for defined in [DEFINED, DEFINED & !((1 << 0) | (1 << 6))] {
-        for carry in [false, true] {
-            for zero in [false, true] {
+fn rust_helper_jbe_plus_21_or_22_obeys_cf_zf_truth_table_and_preserves_state() {
+    const CF: u64 = 1 << 0;
+    const ZF: u64 = 1 << 6;
+    for displacement in [0x21, 0x22] {
+        let code = [0x76, displacement];
+        for defined in [DEFINED, DEFINED & !(CF | ZF)] {
+            for (flags, taken) in [(0, false), (CF, true), (ZF, true), (CF | ZF, true)] {
                 let mut memory = Memory::new(&code);
                 let mut cpu = state();
                 cpu.gpr = gpr_patterns();
-                cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18);
-                if carry {
-                    cpu.rflags |= 1;
-                }
-                if zero {
-                    cpu.rflags |= 1 << 6;
-                }
-                let before = cpu.clone();
+                cpu.rflags = 0x2 | (1 << 9) | (1 << 10) | (1 << 18) | flags;
+                let mut expected = cpu.clone();
+                expected.rip += if taken {
+                    2 + u64::from(displacement)
+                } else {
+                    2
+                };
                 let mut pio = Pio::default();
-                let taken = carry || zero;
 
                 let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
                 assert_eq!(result.exit, PagedProbeExit::Retired);
                 assert_eq!(result.instructions_executed, 1);
                 assert_eq!(result.rflags_defined, defined);
-                let mut expected = before;
-                expected.rip = if taken { RIP + 2 + 0x22 } else { RIP + 2 };
-                assert_eq!(cpu, expected, "CF={carry}, ZF={zero}, defined={defined:#x}");
+                assert_eq!(
+                    cpu, expected,
+                    "disp={displacement:#04x}, CF/ZF bits={flags:#04x}, defined={defined:#x}"
+                );
                 assert_eq!((memory.reads, memory.writes), (0, 0));
                 assert!(memory.write_addresses.is_empty());
                 assert!(pio.reads.is_empty() && pio.writes.is_empty());
@@ -23629,55 +23630,52 @@ fn rust_helper_jbe_plus_22_obeys_cf_zf_truth_table_and_preserves_state() {
 }
 
 #[test]
-fn rust_helper_jbe_plus_22_checks_canonicality_only_when_taken() {
-    let start = 0x0000_7fff_ffff_fffe;
-    let code = [0x76, 0x22];
+fn rust_helper_jbe_plus_21_or_22_checks_canonicality_only_when_taken() {
     let defined = DEFINED & !((1 << 0) | (1 << 6));
-
-    // CF=ZF=0 makes JBE false; the noncanonical fall-through is not checked.
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
-    let mut cpu = state();
-    cpu.rip = start;
-    cpu.rflags &= !((1 << 0) | (1 << 6));
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, defined);
-    let mut expected = before;
-    expected.rip = 0x0000_8000_0000_0000;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-
-    // CF=1 takes JBE; its noncanonical target faults without retirement.
-    let mut memory = Memory::new(&[]);
-    memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
-    memory.bytes[CODE_PHYSICAL + 0xffe..CODE_PHYSICAL + 0x1000].copy_from_slice(&code);
-    let mut cpu = state();
-    cpu.rip = start;
-    cpu.rflags |= 1;
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
-    assert_eq!(
-        result.exit,
-        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
-            vector: 13,
-            error_code: Some(0),
-            linear_address: None,
-        })
-    );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, defined);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+    for displacement in [0x21, 0x22] {
+        let last_rip = 0x0000_7fff_ffff_fffe;
+        for start in [last_rip - u64::from(displacement), last_rip] {
+            let fall_through = start + 2;
+            let code = [0x76, displacement];
+            for (flags, taken) in [(0, false), (1, true), (1 << 6, true)] {
+                let mut memory = Memory::new(&[]);
+                memory.pages.insert(start & !0xfff, CODE_PHYSICAL);
+                let offset = CODE_PHYSICAL + (start as usize & 0xfff);
+                memory.bytes[offset..offset + code.len()].copy_from_slice(&code);
+                let mut cpu = state();
+                cpu.rip = start;
+                cpu.rflags = 0x602 | flags;
+                let before = cpu.clone();
+                let mut pio = Pio::default();
+                let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+                if taken {
+                    assert_eq!(
+                        result.exit,
+                        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(cpu, before);
+                } else {
+                    assert_eq!(result.exit, PagedProbeExit::Retired);
+                    assert_eq!(result.instructions_executed, 1);
+                    let mut expected = before;
+                    expected.rip = fall_through;
+                    assert_eq!(cpu, expected);
+                }
+                assert_eq!(result.rflags_defined, defined);
+                assert_eq!((memory.reads, memory.writes), (0, 0));
+                assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            }
+        }
+    }
 }
 
 #[test]
-fn rust_helper_jbe_plus_22_fetch_fault_does_not_commit() {
+fn rust_helper_jbe_plus_21_or_22_fetch_fault_does_not_commit() {
     let mut memory = Memory::new(&[]);
     memory.bytes[CODE_PHYSICAL + 0xfff] = 0x76;
     let mut cpu = state();
@@ -23705,10 +23703,19 @@ fn rust_helper_jbe_plus_22_fetch_fault_does_not_commit() {
 }
 
 #[test]
-fn rust_helper_jbe_plus_22_neighbours_stay_unsupported() {
+fn rust_helper_jbe_plus_21_or_22_neighbours_stay_unsupported() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x76, 0x21], 0x76),                // adjacent JBE displacement
+        (&[0x76, 0x20], 0x76),                // adjacent JBE displacement
         (&[0x76, 0x23], 0x76),                // adjacent JBE displacement
+        (&[0x76, 0xdf], 0x76),                // Negative displacement.
+        (&[0x77, 0x21], 0x77),                // JA at same displacement.
+        (&[0x72, 0x21], 0x72),                // JB at same displacement.
+        (&[0x74, 0x21], 0x74),                // JZ at same displacement.
+        (&[0x75, 0x21], 0x75),                // JNZ at same displacement.
+        (&[0x0f, 0x86, 0x21, 0, 0, 0], 0x86), // Near JBE.
+        (&[0x66, 0x76, 0x21], 0x76),          // Operand-size prefix.
+        (&[0x67, 0x76, 0x21], 0x76),          // Address-size prefix.
+        (&[0x40, 0x76, 0x21], 0x76),          // REX prefix.
         (&[0x77, 0x22], 0x77),                // JA at same displacement
         (&[0x73, 0x22], 0x73),                // JAE at same displacement
         (&[0x72, 0x22], 0x72),                // JB at same displacement
@@ -23740,24 +23747,26 @@ fn rust_helper_jbe_plus_22_neighbours_stay_unsupported() {
 }
 
 #[test]
-fn rust_helper_jbe_plus_22_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x76, 0x22];
-    let mut memory = Memory::new(&bytes);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    let before = cpu.clone();
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x76 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+fn rust_helper_jbe_plus_21_or_22_is_unsupported_in_cpl3_profile() {
+    for displacement in [0x21, 0x22] {
+        let bytes = [0x76, displacement];
+        let mut memory = Memory::new(&bytes);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        let before = cpu.clone();
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x76 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -49309,6 +49318,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x77, 0x3d][..], 0x77),
         (&[0x77, 0x1a][..], 0x77),
         (&[0x4c, 0x39, 0xef][..], 0x39),
+        (&[0x76, 0x21][..], 0x76),
         (&[0x76, 0x22][..], 0x76),
         (&[0xe9, 0x9e, 0xfe, 0xff, 0xff][..], 0xe9),
         (&[0xe9, 0x66, 0xff, 0xff, 0xff][..], 0xe9),

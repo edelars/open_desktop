@@ -5078,3 +5078,36 @@ and zero doctests). The paged machine quantum suite passes 110/110. The
 workspace all-targets offline check passes with existing warnings.
 Scoped rustfmt and diff checks pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-492 — exact JBE rel8 +0x21
+
+Five focused tests cover the two exact unprefixed JBE displacements +0x21
+and +0x22. They check all four CF/ZF pairs and preservation of flags and
+their definedness, taken-target canonicality, the displacement fetch page
+fault, nearby encodings and CPL3 MOV probe isolation. The other CPL0
+probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue492.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,346 | `0x2018e7` | `76 21`, JBE rel8 +0x21 |
+| 10,347 | `0x20190a` | `66 85 C0`, TEST AX,AX (ISSUE-493) |
+
+Both boundary runs report BudgetExhausted and empty COM1. CF=1 or ZF=1
+selects the target `0x2018e7 + 2 + 0x21 = 0x20190a`. CF=ZF=0 selects
+fall-through `0x2018e9`, whose bytes begin `66 C7 07 1B 00`. The observed
+firmware run took the branch to `0x20190a`. At budget 20000 it exits 5 on
+the TEST after 10,347 retired instructions, reporting Unsupported opcode
+133, the decimal value of `0x85` after the `0x66` operand-size prefix.
+The previous stop reported 118 for JBE opcode `0x76`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,575/7/15
+and zero doctests). The paged machine quantum suite passes 110/110. The
+workspace all-targets offline check passes with existing warnings.
+Scoped rustfmt and diff checks pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

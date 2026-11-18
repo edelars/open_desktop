@@ -30134,3 +30134,14 @@ existing exact EAX imm8 1 and 9 comparisons retain their dword width.
 The other CPL0 probes and the paged CPL3 MOV probe refuse the qword
 encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-492 — bounded JBE rel8 +0x21
+
+The base paged CPL0 profile admits exact unprefixed `76 21` in Long64.
+With CF=1 or ZF=1, it adds signed rel8 0x21 to next RIP and checks
+canonicality of that taken target. With CF=ZF=0, it advances to next RIP.
+Both outcomes preserve RFLAGS, flag definedness, GPRs and memory
+contents. A noncanonical taken target raises #GP(0). That fault and a
+displacement fetch fault commit no CPU state or retirement. The other
+CPL0 probes and the paged CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
