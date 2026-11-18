@@ -2888,10 +2888,12 @@ The base `PagedCpl0ProbeV1` admits only exact short JZ displacement `+0x15`
 (`74 15`). Five focused `rust_helper_jz_rel8` tests pass, covering both ZF
 outcomes, flags and definedness, taken-target canonicality, atomic displacement
 fetch fault, neighboring encodings, CPL3 and other-profile isolation.
-The S7-04 firmware image recorded for prior steps was unavailable at
+Independent review approved the implementation with no findings; commit
+`161de07` contains the implementation and focused tests. The S7-04 firmware
+image recorded for prior steps was unavailable at
 `/private/tmp/od-fw-s7-04-issue256.bin`, so a confirming runner continuation
-could not be collected in this environment. The implementation awaits
-independent review; see [ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
+could not be collected in this environment; see
+[ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
 
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 
