@@ -664,10 +664,12 @@ impl NvmeState {
         }
         loop {
             let mut progressed = self.flush_events(dma, &mut report);
+            // Round robin with one command per queue, including the admin SQ.
             for slot in 0..QUEUE_SLOTS {
-                while self.ready() && self.run_one(slot, dma, &mut report) {
-                    progressed = true;
+                if !self.ready() {
+                    break;
                 }
+                progressed |= self.run_one(slot, dma, &mut report);
             }
             if !progressed || !self.ready() {
                 break;

@@ -964,6 +964,78 @@ fn deleting_a_cq_that_a_sq_uses_is_invalid_queue_deletion() {
 }
 
 #[test]
+fn round_robin_visits_admin_and_io_queues_once_per_round() {
+    let mut rig = rig();
+    rig.nvme
+        .attach_backend(Box::new(InMemoryBackend::new(8).unwrap()))
+        .unwrap();
+    rig.enable();
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x01, 0)).status(),
+        (0, 0)
+    );
+    rig.create_io_queues();
+    let sq2 = IO_SQ + 0x1000;
+    let cq2 = IO_CQ + 0x1000;
+    let qsize = 2 | (3 << 16);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_CREATE_CQ).prp(cq2, 0).cdw(qsize, 1))
+            .status(),
+        (0, 0)
+    );
+    assert_eq!(
+        rig.admin(
+            Sqe::new(OPC_CREATE_SQ)
+                .prp(sq2, 0)
+                .cdw(qsize, 1 | (2 << 16))
+        )
+        .status(),
+        (0, 0)
+    );
+
+    let admin_cq = ACQ + u64::from(rig.cq_head) * CQE_BYTES as u64;
+    for index in 0..2u16 {
+        let admin_sqe = ASQ + u64::from(rig.sq_tail + index) * SQE_BYTES as u64;
+        rig.mem_write(
+            admin_sqe,
+            &Sqe::new(OPC_GET_FEATURES).cdw(0x07, 0).raw(0x30 + index),
+        );
+        let offset = u64::from(index) * SQE_BYTES as u64;
+        rig.mem_write(IO_SQ + offset, &Sqe::new(0x00).nsid(1).raw(0x40 + index));
+        rig.mem_write(sq2 + offset, &Sqe::new(0x00).nsid(1).raw(0x50 + index));
+    }
+    rig.set_dword(ADMIN_SQ_DOORBELL, u32::from(rig.sq_tail + 2));
+    rig.set_dword(IO1_SQ_DOORBELL, 2);
+    rig.set_dword(IO1_SQ_DOORBELL + 8, 2);
+
+    let mut committed = Vec::new();
+    let report = rig
+        .nvme
+        .service(&mut rig.bus, |range| committed.push(range.start().get()));
+    let cqe_bytes = CQE_BYTES as u64;
+    assert_eq!((report.commands, report.completions), (6, 6));
+    assert_eq!(
+        committed,
+        [
+            admin_cq,
+            IO_CQ,
+            cq2,
+            admin_cq + cqe_bytes,
+            IO_CQ + cqe_bytes,
+            cq2 + cqe_bytes
+        ]
+    );
+    for (address, cid) in committed
+        .into_iter()
+        .zip([0x30, 0x40, 0x50, 0x31, 0x41, 0x51])
+    {
+        let raw = rig.mem_read(address, CQE_BYTES).try_into().unwrap();
+        let completion = Cqe::parse(&raw);
+        assert_eq!((completion.cid, completion.status()), (cid, (0, 0)));
+    }
+}
+
+#[test]
 fn delete_sq_services_tail_submitted_io_before_posting_its_admin_completion() {
     let mut rig = Rig::enabled();
     rig.create_io_queues();
