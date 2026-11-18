@@ -10,6 +10,7 @@ od-isa = { path = "../../crates/od-isa" }
 od-jit = { path = "../../crates/od-jit", features = ["phase-observation"] }
 od-machine = { path = "../../crates/od-machine", features = ["experimental-translation-probe-cache"] }
 od-testkit = { path = "../../crates/od-testkit" }
+od-storage = { path = "../../crates/od-storage", features = ["test-support"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 
