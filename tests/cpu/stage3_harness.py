@@ -1586,6 +1586,7 @@ LOCAL_VMHOST_RESULT_TIMEOUTS = {
     "local_s38d_launcher_entitlements": 120,
     "local_s38d_result_state": 900,
 }
+VMHOST_LINUX_DIRECT_SOURCE = "apps/vmhost/Sources/LinuxDirectRunner.swift"
 LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
     "Cargo.lock",
     "Cargo.toml",
@@ -1598,6 +1599,7 @@ LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
     "apps/macos/Sources/Shared/InputProtocol.swift",
     "apps/macos/Sources/Shared/InputQueue.swift",
     "apps/vmhost/Sources/VMHostMain.swift",
+    VMHOST_LINUX_DIRECT_SOURCE,
     "apps/macos/Sources/Shared/ControlV2.swift",
     "apps/vmhost/Sources/BundleLock.swift",
     "apps/vmhost/Sources/Lifecycle.swift",
@@ -1768,6 +1770,7 @@ PROCESS_SOURCE_PATHS = (
     "apps/macos/Sources/Shared/InputQueue.swift",
     "apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h",
     "apps/vmhost/Sources/VMHostMain.swift",
+    VMHOST_LINUX_DIRECT_SOURCE,
     "apps/macos/Sources/Shared/ControlV2.swift",
     "apps/vmhost/Sources/BundleLock.swift",
     "apps/vmhost/Sources/Lifecycle.swift",
@@ -2393,6 +2396,7 @@ def vmhost_process_commands(
             *swift_common, "apps/macos/Sources/Shared/InputProtocol.swift", "apps/macos/Sources/Shared/InputQueue.swift",
             "apps/macos/Sources/Shared/ControlV2.swift", "apps/vmhost/Sources/BundleLock.swift", "apps/vmhost/Sources/Lifecycle.swift", "apps/vmhost/Sources/ControlV2Host.swift",
             "apps/vmhost/Sources/InputChannel.swift", "apps/vmhost/Sources/FrameTransport.swift", "apps/vmhost/Sources/VMHostMain.swift",
+            VMHOST_LINUX_DIRECT_SOURCE,
             str(paths["od_host_library"]), *link_args, "-o", str(paths["vmhost"]),
         ],
         "process_sign_vmhost": [

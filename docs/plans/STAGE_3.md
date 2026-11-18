@@ -4162,6 +4162,11 @@ VMHost process suite. Принят только финальный прогон,
 Stage 2 и ISSUE-044 не запускался; Mini остаётся отложенным до конца Stage 3.
 S3-38 и Stage 3 остаются открытыми. См. [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
 
+Повтор 18 ноября 2026 года восстановил проверку на текущем VMHost. Harness
+компилирует `LinuxDirectRunner.swift` вместе с `VMHostMain.swift` и фиксирует
+его digest в обоих VMHost manifests. Селектор `vmhost-result-state` прошёл
+14 из 14 шагов. См. [результат повтора](../reports/STAGE_3_S3-38d-local_2026-11-01.md#vmhost-build-regression-2026-11-18).
+
 #### S3-38e. Bounded local Rust session owner
 
 The opt-in `od-host::session::Session` owns a copied S0-09 code fragment and

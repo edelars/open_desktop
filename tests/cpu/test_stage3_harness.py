@@ -4868,8 +4868,21 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h",
                 commands["process_compile_vmhost"],
             )
+            linux_direct_source = "apps/vmhost/Sources/LinuxDirectRunner.swift"
+            source_pin = {
+                "path": linux_direct_source,
+                "sha256": harness.sha256_file(harness.ROOT / linux_direct_source),
+            }
+            inputs = harness.input_manifest()
+            self.assertEqual(commands["process_compile_vmhost"].count(linux_direct_source), 1)
+            self.assertEqual(inputs["vmhost_process"]["inputs"].count(source_pin), 1)
+            local_commands = harness.local_vmhost_result_commands(run_root)
             self.assertEqual(
-                harness.input_manifest()["vmhost_process"]["success_markers"],
+                local_commands["local_s38d_compile_vmhost"].count(linux_direct_source), 1
+            )
+            self.assertEqual(inputs["local_vmhost_result_state"]["inputs"].count(source_pin), 1)
+            self.assertEqual(
+                inputs["vmhost_process"]["success_markers"],
                 harness.PROCESS_SUCCESS_MARKERS,
             )
             self.assertEqual(
