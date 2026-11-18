@@ -729,6 +729,8 @@ pub struct HostCpl0Step<'a> {
     pub context: AccessContext,
     /// The interpreter's definedness mask of the flags, read and returned across steps.
     pub rflags_defined: u64,
+    /// Consecutive faults delivered before this step, without a guest retirement.
+    pub consecutive_faults: u64,
 }
 
 /// What [`run_host_set_step`] reports.
@@ -736,8 +738,8 @@ pub struct HostCpl0Step<'a> {
 pub struct HostSetStepReport {
     /// The step as the base probe reports it: the exit (a `Fault` is a `#PF`/`#GP` the guest IDT did
     /// not take: no IDT, or a delivery that failed; the record is in `page_fault`), the instructions
-    /// retired (at most 1; a delivery of an exception retires nothing and is followed, in the same
-    /// call, by the handler's first instruction), the flags mask and the walker's records.
+    /// retired (at most 1), the flags mask and the walker's records. A delivered exception
+    /// returns `Stopped` with zero retirements so the host can poll interrupts at handler entry.
     pub report: PagedProbeQuantumReport,
     /// The call ended inside a `REP` that made progress: the next boundary is inside it and takes no
     /// interrupt (`skip_first_boundary`).
@@ -789,6 +791,7 @@ pub fn run_host_set_step(
         None,
         None,
         None,
+        Some(step.consecutive_faults),
     );
     let partial_rep = matches!(
         report.exit,

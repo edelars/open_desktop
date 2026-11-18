@@ -622,7 +622,7 @@ fn try_atomic_step(
     stop_byte: &AtomicU8,
     rflags_defined: &mut u64,
     report: &mut PagedHostLoopReport,
-    consecutive_native_faults: &mut u64,
+    consecutive_faults: &mut u64,
     committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
 ) -> Result<bool, PagedHostLoopExit> {
     let jit = with_native_paging(state, cpu_owns_cr3, |state| {
@@ -670,7 +670,7 @@ fn try_atomic_step(
             report.steps_jit += 1;
             report.atomic_jit_steps += 1;
             report.remaining_budget -= 1;
-            *consecutive_native_faults = 0;
+            *consecutive_faults = 0;
             Ok(true)
         }
         (AtomicInlineExit::StopRequested, 0) => {
@@ -689,10 +689,10 @@ fn try_atomic_step(
                 config,
                 &fault,
                 run.page_fault.as_ref(),
-                *consecutive_native_faults,
+                *consecutive_faults,
                 committed_write,
             ) {
-                *consecutive_native_faults += 1;
+                *consecutive_faults += 1;
                 return Ok(true);
             }
             report.page_fault = run.page_fault;
@@ -733,7 +733,7 @@ pub(crate) fn run_paged_host_loop_core(
     let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
     let cpu_owns_cr3 =
         matches!(&bus, LoopBusRef::SharedSet(_, _, env) if env.set.has_cpu_owned_cr3());
-    let mut consecutive_native_faults = 0;
+    let mut consecutive_faults = 0;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
         // session applies the slot releases it deferred (A4).
@@ -863,7 +863,7 @@ pub(crate) fn run_paged_host_loop_core(
                             report.remaining_budget -= retired;
                             report.steps_jit += retired;
                             if retired != 0 {
-                                consecutive_native_faults = 0;
+                                consecutive_faults = 0;
                                 if cpl0_set {
                                     state.rflags &= !RFLAGS_RF;
                                 }
@@ -879,11 +879,11 @@ pub(crate) fn run_paged_host_loop_core(
                                     config,
                                     fault,
                                     jit.execution.page_fault.as_ref(),
-                                    consecutive_native_faults,
+                                    consecutive_faults,
                                     &mut committed_write,
                                 )
                             {
-                                consecutive_native_faults += 1;
+                                consecutive_faults += 1;
                                 continue;
                             }
                             report.page_fault = jit.execution.page_fault.clone();
@@ -920,7 +920,7 @@ pub(crate) fn run_paged_host_loop_core(
                         stop_byte,
                         rflags_defined,
                         &mut report,
-                        &mut consecutive_native_faults,
+                        &mut consecutive_faults,
                         &mut committed_write,
                     ) {
                         Ok(true) => continue,
@@ -976,6 +976,7 @@ pub(crate) fn run_paged_host_loop_core(
                         efer: config.efer,
                         context: config.access_context,
                         rflags_defined: *rflags_defined,
+                        consecutive_faults,
                     },
                     env.set,
                     &mut committed_write,
@@ -1012,12 +1013,13 @@ pub(crate) fn run_paged_host_loop_core(
         }
         report.retired_interpreter += retired;
         if retired != 0 {
-            consecutive_native_faults = 0;
+            consecutive_faults = 0;
         }
         report.remaining_budget -= retired;
         report.steps_interpreter += retired;
         if let Some((_, delivered, _)) = set_step {
             report.exceptions_delivered += delivered;
+            consecutive_faults += delivered;
         }
         if let Some(reason) = machine_stop {
             report.exit = PagedHostLoopExit::MachineStop(reason);
@@ -1039,6 +1041,10 @@ pub(crate) fn run_paged_host_loop_core(
             // S6-42c: a REP that made progress without finishing: the call goes on at the same
             // instruction (the next boundary takes no interrupt, see `skip_first_boundary`).
             od_machine::PagedProbeExit::Stopped if matches!(set_step, Some((true, _, _))) => {}
+            // A synchronous exception completed without executing the handler. Restart at the
+            // host IRQ boundary, where a trap gate may already permit a pending interrupt.
+            od_machine::PagedProbeExit::Stopped
+                if retired == 0 && matches!(set_step, Some((false, 1, _))) => {}
             od_machine::PagedProbeExit::Fault(fault) => {
                 report.page_fault = quantum.page_fault;
                 report.exit = PagedHostLoopExit::GuestFault(fault);

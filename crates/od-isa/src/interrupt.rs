@@ -937,6 +937,7 @@ fn commit_cpl0_gate(
         state.ss_unusable = true;
     }
     state.rip = gate.target_rip;
+    state.sti_shadow = Some(crate::StiShadow::Clear);
     let mut cleared = GATE_CLEARED_FLAGS;
     if !gate.trap_gate {
         cleared |= 1 << 9;
@@ -1032,7 +1033,7 @@ pub fn deliver_page_fault_cpl0_set(
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !fault_shadow_admitted(state, from_cpl3) {
         return refuse(Refusal::StiShadowActive);
     }
     let mut gate = match resolve_cpl0_gate(state, memory, context, 14, from_cpl3, false) {
@@ -1108,6 +1109,16 @@ fn delivery_source(state: &LongModeState, context: AccessContext) -> Option<bool
         PrivilegeLevel::Ring0 => Some(false),
         PrivilegeLevel::Ring3 if state.cs_selector.is_some_and(|cs| cs & 3 == 3) => Some(true),
         _ => None,
+    }
+}
+
+fn fault_shadow_admitted(state: &LongModeState, from_cpl3: bool) -> bool {
+    match state.sti_shadow {
+        Some(crate::StiShadow::Clear) => true,
+        // In this CPL0 profile, a blocking shadow with IF set can only come from STI.
+        // Intel SDM Vol. 2B, STI: successful exception delivery ends that inhibition.
+        Some(crate::StiShadow::Blocking) => !from_cpl3 && state.rflags & (1 << 9) != 0,
+        None => false,
     }
 }
 
@@ -1255,7 +1266,7 @@ pub fn deliver_general_protection_cpl0_set(
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !fault_shadow_admitted(state, from_cpl3) {
         return refuse(Refusal::StiShadowActive);
     }
     let mut gate = match resolve_cpl0_gate(state, memory, context, 13, from_cpl3, false) {

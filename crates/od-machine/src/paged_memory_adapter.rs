@@ -2442,6 +2442,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         irq,
         checkpoints,
         execution_observations,
+        None,
     )
 }
 
@@ -2488,6 +2489,8 @@ impl LoopBus<'_> {
 /// [`run_cpl0_set_paged_2m_ram_with_cache`] (see its documentation) with the machine given as
 /// an enum and, for a vCPU thread of the parallel mode, the gate of the split `LOCK`
 /// (`split_gate`, S6-34 step 8; `None` keeps the refusal of S6-31/S6-32).
+/// The host passes the number of consecutive delivered faults and resumes at its own
+/// IRQ boundary after each new delivery. Other callers continue within this loop.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_loop(
     state: &mut LongModeState,
@@ -2508,6 +2511,7 @@ pub(crate) fn run_cpl0_set_loop(
     irq: Option<IrqBoundaryHook<'_>>,
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    host_exception_count: Option<u64>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2535,6 +2539,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
+            host_exception_count,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false>(
             state,
@@ -2555,6 +2560,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
+            host_exception_count,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true>(
             state,
@@ -2575,6 +2581,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
+            host_exception_count,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false>(
             state,
@@ -2595,6 +2602,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
+            host_exception_count,
         ),
     }
 }
@@ -2619,6 +2627,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     mut irq: Option<IrqBoundaryHook<'_>>,
     mut checkpoints: Option<&mut CheckpointRecorder>,
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    host_exception_count: Option<u64>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -2691,7 +2700,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     let mut delivered_page_faults = 0u64;
     let mut delivered_general_protection_faults = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
-    let mut deliveries_without_retirement = 0u64;
+    let mut deliveries_without_retirement = host_exception_count.unwrap_or(0);
     let mut last_instruction_rip = None;
     // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
     // depends on the PIT), so that the board asks the source for its deadline again.
@@ -3064,6 +3073,9 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                         if let Some(recorder) = checkpoints.as_deref_mut() {
                             recorder.note_page_fault_delivered();
                         }
+                        if host_exception_count.is_some() {
+                            break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
+                        }
                         continue;
                     }
                     Some(failure) => {
@@ -3123,6 +3135,9 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                             observations.note_nested_delivery();
                         }
                         deliveries_without_retirement += 1;
+                        if host_exception_count.is_some() {
+                            break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
+                        }
                         continue;
                     }
                     Some(failure) => {

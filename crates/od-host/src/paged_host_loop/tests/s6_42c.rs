@@ -1396,6 +1396,132 @@ fn s6_42d_lock_retires_in_sti_shadow_before_a_pending_irq() {
 }
 
 #[test]
+fn s6_42d_page_fault_ends_sti_shadow_without_losing_the_pending_irq() {
+    const IRQ_RETURN_RIP: u64 = COUNTER_TIMER + 8;
+    const OPERAND_AT_IRQ: u64 = IRQ_RETURN_RIP + 8;
+    let _guard = jit_guard();
+
+    let handler = [
+        vec![0x44, 0x8b, 0x0c, 0x24], // mov r9d, [rsp]: IRQ frame's saved RIP
+        imm(&[0x41, 0xb8], IRQ_RETURN_RIP as u32),
+        vec![0x45, 0x89, 0x08], // mov [r8], r9d
+        imm(&[0x41, 0xb8], DATA as u32),
+        vec![0x45, 0x8b, 0x08], // mov r9d, [r8]
+        imm(&[0x41, 0xb8], OPERAND_AT_IRQ as u32),
+        vec![0x45, 0x89, 0x08], // mov [r8], r9d
+        irq_handler(COUNTER_IRQ),
+    ]
+    .concat();
+
+    for (trap_gate, return_rip) in [(false, CODE_0 + 1), (true, HANDLER_PF)] {
+        let region = SharedJitRegion::new(1, 4).unwrap();
+        let quantum = quantum_of(&region, 1);
+        let mut board = board(1);
+        put(&mut board, CODE_0, &[0xfb, 0xf0, 0xff, 0x03, 0xf4]); // STI; LOCK INC [RBX]; HLT
+        put(&mut board, HANDLER_IRQ, &handler);
+        if trap_gate {
+            let mut pf_gate = gate(HANDLER_PF);
+            pf_gate[5] = 0x8f;
+            put(&mut board, IDT_AT + 14 * 16, &pf_gate);
+        }
+        let mut guest = state(CODE_0, STACK_TOP_0);
+        guest.rflags &= !(1 << 9);
+        guest.gpr[Register::Rbx as usize] = UNMAPPED;
+        assert!(host_install_vcpu(&mut board, 0, guest));
+        board
+            .bus_mut()
+            .write_mmio_shared(
+                0,
+                GuestPhysicalAddress::new(LOCAL_APIC + 0xf0),
+                AccessWidth::Dword,
+                0x1ff,
+            )
+            .unwrap();
+        let lapic = board.local_apic_of(0).unwrap();
+        lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
+
+        let (report, ()) = run_host_threads_with_nmi_paging(
+            &mut board,
+            HostParallelConfig {
+                budget: 64,
+                ..host_config(true)
+            },
+            &quantum.nmi_paging(),
+            &|call| quantum.run(call),
+            &|_| quantum.thread_exit(),
+            |control| assert!(control.wait_finished(WAIT)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.finished,
+            HostParallelFinish::AllIdle,
+            "{report:?}, {:?}",
+            quantum.last_failure()
+        );
+        let stats = quantum.stats(0);
+        assert_eq!(stats.exceptions_delivered, 1);
+        assert_eq!(stats.irqs_delivered, 1);
+        assert_eq!(board.state().cr2, Some(UNMAPPED));
+        assert_eq!(board.state().rip, CODE_0 + 5);
+        assert_eq!(board.state().gpr[Register::Rsp as usize], STACK_TOP_0);
+        assert_eq!(board.state().sti_shadow, Some(StiShadow::Clear));
+        assert_eq!(lapic.vector_state(VECTOR_IRQ), (false, false));
+        let ram = board.bus_mut().atomic_inline_memory();
+        let load = |address| ram.load_u64(GuestPhysicalAddress::new(address)).unwrap();
+        assert_eq!(load(COUNTER_PF), 1);
+        assert_eq!(load(COUNTER_IRQ), 1);
+        assert_eq!(load(IRQ_RETURN_RIP), return_rip, "trap gate {trap_gate}");
+        assert_eq!(load(OPERAND_AT_IRQ), u64::from(MARKER as u32));
+        assert_eq!(load(DATA), MARKER + 1);
+    }
+}
+
+#[test]
+fn s6_42d_repeated_faults_share_one_limit_across_interpreter_and_jit() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xfb, 0xf0, 0xff, 0x03]); // STI; LOCK INC [RBX]
+    // The handler faults on the same instruction. The first delivery is interpreted
+    // under the STI shadow, and subsequent deliveries come from native steps.
+    put(&mut board, IDT_AT + 14 * 16, &gate(CODE_0 + 1));
+    let mut guest = state(CODE_0, STACK_TOP_0);
+    guest.rflags &= !(1 << 9);
+    guest.gpr[Register::Rbx as usize] = UNMAPPED;
+    assert!(host_install_vcpu(&mut board, 0, guest));
+
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        HostParallelConfig {
+            budget: 16,
+            ..host_config(true)
+        },
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(report.finished, HostParallelFinish::Error { cpu: 0, .. }),
+        "{report:?}"
+    );
+    let stats = quantum.stats(0);
+    assert_eq!(stats.retired_interpreter, 1); // STI
+    assert_eq!(stats.retired_jit, 0);
+    assert_eq!(stats.exceptions_delivered, 256);
+    assert_eq!(stats.jit_faults_delivered, 255);
+    assert_eq!(board.state().cr2, Some(UNMAPPED));
+    assert_eq!(
+        board.state().gpr[Register::Rsp as usize],
+        STACK_TOP_0 - 48 * 256
+    );
+}
+
+#[test]
 fn s6_42d_atomic_stop_before_entry_keeps_the_instruction_unretired() {
     let _guard = jit_guard();
     let mut board = board(1);

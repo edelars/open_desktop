@@ -7285,6 +7285,7 @@ fn pf_qword(memory: &LretqMemory, address: u64) -> u64 {
 #[test]
 fn pf_delivery_writes_the_frame_and_enters_the_handler() {
     let (mut state, mut memory) = pf_state();
+    state.sti_shadow = Some(StiShadow::Blocking);
     // A live TF/NT (RF = 0) and AC in the image; the handler sees TF/NT cleared and AC kept.
     state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
     let before = state.clone();
@@ -7327,6 +7328,7 @@ fn pf_delivery_writes_the_frame_and_enters_the_handler() {
     expected.rip = PF_HANDLER;
     expected.gpr[Register::Rsp as usize] = PF_RSP - 48;
     expected.rflags = 2 | 0x1 | 0x40 | PF_AC;
+    expected.sti_shadow = Some(StiShadow::Clear);
     expected.cr2 = Some(PF_FAULT_ADDRESS);
     assert_eq!(state, expected);
     assert_eq!(state.rflags & (IF | PF_FLAGS_ALL | (1 << 17)), 0);
@@ -7567,9 +7569,12 @@ fn pf_delivery_refuses_unmodeled_state_without_any_write() {
         "halted",
     );
     assert_pf_refused(
-        |state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        |state, _| {
+            state.sti_shadow = Some(StiShadow::Blocking);
+            state.rflags &= !IF;
+        },
         R::StiShadowActive,
-        "interrupt shadow",
+        "MOV SS shadow",
     );
     assert_pf_refused(
         |state, _| state.cs_cache = None,
@@ -8195,6 +8200,7 @@ fn external_interrupt_from_cpl3_checks_tss_before_writing_the_frame() {
 fn pf_delivery_stack_write_failure_leaves_the_cpu_unchanged() {
     // The first store (SS, the highest word) fails: nothing is stored at all.
     let (mut state, mut memory) = pf_state();
+    state.sti_shadow = Some(StiShadow::Blocking);
     memory.fail_write_number = Some(1);
     let before = state.clone();
     let ram = memory.ram.clone();
@@ -8219,6 +8225,7 @@ fn pf_delivery_stack_write_failure_leaves_the_cpu_unchanged() {
     // the old RSP (dead stack), CR2 is not written.
     for failing in 2..=6usize {
         let (mut state, mut memory) = pf_state();
+        state.sti_shadow = Some(StiShadow::Blocking);
         memory.fail_write_number = Some(failing);
         let before = state.clone();
         let delivered = pf_deliver(&mut state, &mut memory);
@@ -51902,6 +51909,7 @@ fn gp_delivery_aligns_rsp_down_to_16_and_keeps_the_old_rsp_in_the_frame() {
 fn gp_delivery_through_a_trap_gate_keeps_if_and_through_an_interrupt_gate_clears_it() {
     for (attributes, if_after) in [(0x8e, 0), (0xee, 0), (0x8f, IF), (0xef, IF)] {
         let (mut state, mut memory) = gp_state();
+        state.sti_shadow = Some(StiShadow::Blocking);
         ext_put_gate(
             &mut memory,
             GP_VECTOR,
@@ -51918,6 +51926,7 @@ fn gp_delivery_through_a_trap_gate_keeps_if_and_through_an_interrupt_gate_clears
             "{attributes:#x}"
         );
         assert_eq!(state.rflags & IF, if_after, "{attributes:#x}");
+        assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
         assert_eq!(state.rflags & ((1 << 8) | (1 << 14) | (1 << 16)), 0);
         // The saved image keeps IF = 1 and has RF = 1.
         assert_eq!(
@@ -52001,6 +52010,7 @@ fn gp_delivery_refusals_leave_state_and_memory_untouched() {
     }
     let (mut state, mut memory) = gp_state();
     state.sti_shadow = Some(StiShadow::Blocking);
+    state.rflags &= !IF;
     assert_eq!(
         gp_deliver(&mut state, &mut memory),
         od_isa::Cpl0GeneralProtectionDelivery::Refused(Refusal::StiShadowActive)

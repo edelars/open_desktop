@@ -204,6 +204,7 @@ fn quantum_loop(
         }),
         None,
         None,
+        None,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
