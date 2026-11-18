@@ -2105,6 +2105,7 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) delivered_page_faults: u64,
     /// Successfully delivered guest `#GP(0)` exceptions in this call.
     pub(crate) delivered_general_protection_faults: u64,
+    pub(crate) pit_written: bool,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
@@ -2654,6 +2655,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 delivered_exceptions: 0,
                 delivered_page_faults: 0,
                 delivered_general_protection_faults: 0,
+                pit_written: false,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
                 syscall_events: Vec::new(),
@@ -2693,6 +2695,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         .as_ref()
         .is_some_and(|hook| hook.source.pit_write_ends_quantum());
     let mut pit_write_pending = false;
+    let mut pit_written = false;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
@@ -2933,9 +2936,8 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 || false,
             )
         };
-        if pit_write_ends_quantum && port.pit_written {
-            pit_write_pending = true;
-        }
+        pit_written |= port.pit_written;
+        pit_write_pending |= pit_write_ends_quantum && port.pit_written;
         if let Ok(done) = &result {
             if iretq_detected && done.instructions_executed == 1 {
                 if let Some(pending) = pending_post_iret.as_ref() {
@@ -3292,6 +3294,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
+        pit_written,
         fetch_cache_stats: cache.map(FetchTranslationCache::stats),
         cpl3_retired,
         syscall_events: syscall_events.into_iter().collect(),

@@ -1866,9 +1866,9 @@ impl LoadedFirmwareBoard {
 
     /// S4-39g: install the PIT channel 0 -> 8259 master IR0 source as the board's interrupt
     /// source (once; a second call keeps the installed one and its state). `false` and nothing
-    /// installed without the Linux-profile PIT and PIC. Called by the user-mode run of the
-    /// Linux board only; the default board keeps [`NoIrqSource`].
-    pub(crate) fn enable_pit_pic_irq(&mut self) -> bool {
+    /// installed without the Linux-profile PIT and PIC, or if the IOAPIC route is active.
+    /// Call during board configuration, before executing the guest.
+    pub fn enable_pit_pic_irq(&mut self) -> bool {
         if self.pit_pic_source.is_some() {
             return true;
         }

@@ -57,10 +57,20 @@ use std::sync::{Mutex, PoisonError};
 /// APIC's vectors (the IOAPIC source) answers first, so the Local APIC is asked only for what the
 /// board's source does not have. Only the boot processor gets it; an application processor keeps the
 /// [`LapicIrqSource`] alone.
-struct BootProcessorSource<'a> {
+pub(crate) struct BootProcessorSource<'a> {
     board: &'a mut dyn BoardIrqSource,
     lapic: LapicIrqSource,
     selected_board_vector: Cell<Option<u8>>,
+}
+
+impl<'a> BootProcessorSource<'a> {
+    pub(crate) fn new(board: &'a mut dyn BoardIrqSource, lapic: LapicIrqSource) -> Self {
+        Self {
+            board,
+            lapic,
+            selected_board_vector: Cell::new(None),
+        }
+    }
 }
 
 impl BoardIrqSource for BootProcessorSource<'_> {
@@ -153,11 +163,7 @@ fn quantum_loop(
     let mut own = LapicIrqSource::new(lapic.clone());
     let mut boot_source;
     let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
-        boot_source = BootProcessorSource {
-            board: board_source,
-            lapic: own.clone(),
-            selected_board_vector: Cell::new(None),
-        };
+        boot_source = BootProcessorSource::new(board_source, own.clone());
         &mut boot_source
     } else {
         &mut own

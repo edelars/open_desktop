@@ -272,11 +272,11 @@ pub use page_walk::{
 };
 
 pub use host_parallel::{
-    HostCpl0Step, HostIrqBoundary, HostParallelConfig, HostParallelControl, HostParallelFinish,
-    HostParallelReport, HostQuantumCall, HostQuantumExit, HostQuantumFn, HostQuantumResult,
-    HostSetStepReport, HostSplitGate, HostStopError, HostStopProof, HostThreadExitFn,
-    host_deliver_pending_irq, host_install_vcpu, host_parallel_board, run_host_set_step,
-    run_host_threads, run_host_threads_with_nmi_paging,
+    HostBoardIrqSource, HostCpl0Step, HostIrqBoundary, HostParallelConfig, HostParallelControl,
+    HostParallelFinish, HostParallelReport, HostQuantumCall, HostQuantumExit, HostQuantumFn,
+    HostQuantumResult, HostSetStepReport, HostSplitGate, HostStopError, HostStopProof,
+    HostThreadExitFn, host_deliver_pending_irq, host_install_vcpu, host_parallel_board,
+    run_host_set_step, run_host_threads, run_host_threads_with_nmi_paging,
 };
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{

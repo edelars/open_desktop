@@ -366,13 +366,42 @@ pub(crate) type QuantumFn<'f> =
 /// thread (and not by a `thread_local!` destructor, which `thread::scope` does not wait for).
 pub(crate) type ThreadExitFn<'f> = dyn Fn(usize) + Sync + 'f;
 
+/// The host quantum borrows the board source through this adapter. The source lock ends at
+/// each method return, before the guest interrupt frame or an instruction can run.
+struct ScopedBoardSource<'a, 'board>(&'a Mutex<&'board mut dyn BoardIrqSource>);
+
+impl BoardIrqSource for ScopedBoardSource<'_, '_> {
+    fn pending_vector(&self) -> Option<u8> {
+        lock(self.0).pending_vector()
+    }
+
+    fn acknowledge(&mut self, vector: u8) {
+        lock(self.0).acknowledge(vector);
+    }
+
+    fn next_deadline_ns(&self) -> Option<u64> {
+        lock(self.0).next_deadline_ns()
+    }
+
+    fn pit_write_ends_quantum(&self) -> bool {
+        lock(self.0).pit_write_ends_quantum()
+    }
+
+    fn irq0_edges(&self) -> u64 {
+        lock(self.0).irq0_edges()
+    }
+
+    fn wake_ns(&self) -> Option<u64> {
+        lock(self.0).wake_ns()
+    }
+}
+
 /// State shared by the threads and the controller.
 struct SharedState<'a> {
     count: usize,
     config: ParallelConfig,
-    /// S6-42b (A7 of S6-40): the quantum does not use the board's interrupt source (a host quantum
-    /// such as the JIT loop of `od-host`), so the boot processor's thread takes the source's lock
-    /// only to compute its budget and not across the call.
+    /// A7 of S6-40: the boot processor locks the board interrupt source per operation during a
+    /// host quantum. The ordinary interpreter quantum takes the lock across the call.
     source_free: bool,
     kicks: Arc<Kicks>,
     cells: Vec<Cell>,
@@ -926,7 +955,8 @@ impl Worker<'_, '_, '_, '_> {
                 let deadline = source.next_deadline_ns().filter(|deadline| *deadline > now);
                 owner.step_budget(left, deadline)
             };
-            self.dispatch(vcpu, apic, &mut inert, &gate, budget, &mut stop)?
+            let mut source = ScopedBoardSource(&sh.irq);
+            self.dispatch(vcpu, apic, &mut source, &gate, budget, &mut stop)?
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
             let budget = {
@@ -1194,8 +1224,8 @@ pub(crate) fn run_threads<R>(
     run_threads_with(board, config, false, run, None, controller)
 }
 
-/// [`run_threads`] with `source_free`: the quantum does not use the board's interrupt source (a
-/// host quantum, S6-42b), so no thread holds that source's lock across a call (A7 of S6-40).
+/// [`run_threads`] with `source_free`: the host quantum receives a board source adapter that locks
+/// each source operation for its duration (A7 of S6-40).
 pub(crate) fn run_threads_with<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
@@ -2424,16 +2454,15 @@ mod tests {
         assert_eq!(board.bus_mut().physical_memory().split_lock_refusals(), 1);
         let _ = LOCAL_APIC_MMIO_BASE;
     }
-    /// S6-42b, A7 of S6-40: a run whose quantum does not use the board's interrupt source
-    /// (`source_free`, the host quantum of the JIT loop) holds no lock of the board across the call
-    /// of the quantum: not the source's lock and not the clock owner's. The ordinary run keeps the
-    /// source's lock across the boot processor's call (the control run proves the probe can see it).
+    /// The JIT host quantum can query the board source while leaving the source and clock locks
+    /// available to another thread between operations. The ordinary run is the control.
     #[test]
     fn a_source_free_run_holds_no_board_lock_across_the_quantum_call() {
         use std::sync::atomic::AtomicBool;
         for source_free in [false, true] {
             let mut board = board(1);
             system(&mut board, false);
+            assert!(board.enable_pit_pic_irq());
             install(
                 &mut board,
                 0,
@@ -2443,6 +2472,7 @@ mod tests {
             let inside = AtomicBool::new(false);
             let release = AtomicBool::new(false);
             let quantum = |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+                assert!(call.source.pit_write_ends_quantum(), "real PIT source");
                 inside.store(true, SEQ);
                 while !release.load(SEQ) && !(call.stop)() {
                     std::hint::spin_loop();

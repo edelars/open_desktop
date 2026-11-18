@@ -56,8 +56,8 @@
 //! step is one instruction of the CPL0 profile set (`od_machine::run_host_set_step`: the profile of
 //! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, `#PF` and `#GP(0)` delivered through
 //! the guest IDT, the split `LOCK` behind the gate of the run) and, before every step, the loop
-//! asks the interrupt boundary of the vCPU's own Local APIC (`od_machine::host_deliver_pending_irq`:
-//! a delivery retires nothing and is followed by the next iteration's checks). The loop delivers
+//! asks the board source on the BSP and the Local APIC source. A delivery retires nothing and is
+//! followed by the next iteration's checks. The loop delivers
 //! a native guest fault using its original fault record. The CPL0 set may own CR3, in which case
 //! every instruction boundary and native memory invocation uses the CPU's current CR3.
 //!
@@ -317,9 +317,8 @@ pub enum PagedHostLoopExit {
     /// S6-42c (set mode only): the interpreter step could not be resumed from (an integration
     /// error of the CPL0 set); the text is the mapping error.
     InterpreterIntegration(String),
-    /// S6-42c (set mode only): the instruction wrote a timer register of the vCPU's Local APIC, so
-    /// the deadline of the clock owner the call was budgeted for may be stale; the call ends after
-    /// the instruction (as the set quantum of the interpreter ends).
+    /// A Local APIC timer write or a PIT programming write can change the scheduler's deadline.
+    /// The call ends after that instruction in CPL0 set mode.
     DeviceBoundary,
 }
 
@@ -484,6 +483,8 @@ impl LoopBusRef<'_, '_> {
 pub struct PagedHostSetEnv<'a, 's> {
     /// The Local APIC of the vCPU (`od_machine::HostQuantumCall::lapic`).
     pub lapic: &'a od_machine::LocalApicHandle,
+    /// The board interrupt source lent to the boot processor for this call.
+    pub board_irq: od_machine::HostBoardIrqSource<'a>,
     /// The gate of the split `LOCK` of the thread (`od_machine::HostQuantumCall::gate`).
     pub gate: od_machine::HostSplitGate<'a>,
     /// The CPL0 profile set of the interpreter step, optionally owning the vCPU's CR3.
@@ -531,14 +532,14 @@ pub fn run_paged_host_loop_shared(
 /// documentation): interrupts of the vCPU's Local APIC delivered through the guest IDT before every
 /// step, the interpreter step the CPL0 profile set of `env`, guest faults delivered, the split
 /// `LOCK` behind the gate. Nothing else differs.
-pub fn run_paged_host_loop_shared_set(
+pub fn run_paged_host_loop_shared_set<'a>(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
     config: PagedHostLoopConfig,
     state: &mut od_isa::LongModeState,
-    bus: &od_machine::MachineBus,
+    bus: &'a od_machine::MachineBus,
     vcpu: usize,
-    env: PagedHostSetEnv<'_, '_>,
+    env: PagedHostSetEnv<'a, '_>,
     rflags_defined: &mut u64,
     incoming_budget: u64,
     committed_write: impl FnMut(od_machine::GuestPhysicalRange),
@@ -763,11 +764,9 @@ pub(crate) fn run_paged_host_loop_core(
         } else {
             config
         };
-        // S6-42c: the interrupt boundary of the vCPU's own Local APIC, before the step (and before
-        // the native attempt). A delivery retires nothing; the next iteration checks again.
-        if let LoopBusRef::SharedSet(machine, vcpu, env) = &mut bus {
-            let _ = vcpu;
-            match od_machine::host_deliver_pending_irq(
+        // Deliver IRQs before native and interpreted steps. A delivery retires nothing.
+        if let LoopBusRef::SharedSet(machine, _, env) = &mut bus {
+            match env.board_irq.deliver_pending(
                 state,
                 machine,
                 env.lapic,
@@ -963,7 +962,8 @@ pub(crate) fn run_paged_host_loop_core(
                         set_step = Some((
                             step.partial_rep,
                             step.delivered_exceptions,
-                            step.timer_register_written,
+                            step.timer_register_written
+                                || (step.pit_written && env.board_irq.pit_write_ends_quantum()),
                         ));
                         step.report
                     }
@@ -2169,7 +2169,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn run_after_stop_is_posted(
         quantum: &crate::host_threads::JitHostQuantum,
-        call: od_machine::HostQuantumCall<'_>,
+        mut call: od_machine::HostQuantumCall<'_>,
         at_poll: &AtomicBool,
         timeout: std::time::Duration,
     ) -> Result<od_machine::HostQuantumResult, &'static str> {
@@ -2193,6 +2193,7 @@ mod tests {
         };
         quantum.run(od_machine::HostQuantumCall {
             stop: &mut delay_first_poll,
+            board_irq: call.board_irq.reborrow(),
             ..call
         })
     }

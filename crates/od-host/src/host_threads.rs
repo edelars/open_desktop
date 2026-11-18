@@ -60,7 +60,7 @@ pub struct HostJitVcpuStats {
     pub jit_faults_delivered: u64,
     /// Retirements via the V4 atomic JIT, included in `retired_jit`.
     pub atomic_jit_steps: u64,
-    /// S6-42c: calls that ended on a device boundary (a write to a timer register of the Local APIC).
+    /// Calls ended by a write that may change the Local APIC or PIT timer deadline.
     pub device_boundaries: u64,
     /// Blocks compiled and published by the session so far.
     pub admissions: u64,
@@ -239,7 +239,7 @@ impl JitHostQuantum {
 
     /// One call of the quantum on the vCPU thread: pass this as `run` of
     /// `od_machine::run_host_threads` (`&|call| quantum.run(call)`).
-    pub fn run(&self, call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
+    pub fn run(&self, mut call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
         let cpu = call.cpu;
         let config = *self
             .configs
@@ -297,6 +297,7 @@ impl JitHostQuantum {
                     cpu,
                     PagedHostSetEnv {
                         lapic: call.lapic,
+                        board_irq: call.board_irq.reborrow(),
                         gate: call.gate,
                         set: &set,
                         skip_first_boundary: &mut thread.skip_first_boundary,

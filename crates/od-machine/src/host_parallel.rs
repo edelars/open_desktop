@@ -17,9 +17,9 @@
 //!
 //! A7 of S6-40: no thread holds a lock of the board across a call of the host quantum. The bus is
 //! handed out by shared reference (no lock of the bus; the devices behind their one lock, taken by
-//! the callee for one access), the quantum does not use the board's interrupt source, so the boot
-//! processor's thread takes that source's lock and the clock owner's lock only to compute its
-//! budget (`run_threads_with`, `source_free`), and the APIC lock is not held either.
+//! the callee for one access). The boot processor's thread takes the source lock and clock owner's
+//! lock to compute its budget. It borrows the source through a per-operation lock while executing
+//! the quantum (`run_threads_with`, `source_free`).
 //!
 //! The quantum polls [`HostQuantumCall::stop`] between instructions (and the run polls it at the
 //! barrier): the stop is acknowledged on the safe point after the quantum returned, never inside
@@ -35,13 +35,14 @@
 //! [`run_host_set_step`] runs ONE instruction of the CPL0 profile set over `&MachineBus` with the
 //! gate, delivering a guest `#PF` or `#GP(0)` through the guest IDT as the set loop does. The base
 //! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
-//! Not here (S6-42d): the interrupt source of the board for the boot processor (PIC, PIT), the
-//! COM1 transmit pump and the device ticks of the interpreter quantum, the NVMe doorbell and the PM
-//! stop request.
+//! The boot processor also asks the board's interrupt source. The source lock covers the query
+//! and acknowledgment separately. The COM1 pump, device ticks, NVMe doorbell and PM stop request
+//! are tracked separately in S6-42d.
 
 use crate::bus::SplitLockGate;
+use crate::firmware_board::vcpu_quantum::BootProcessorSource;
 use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
-use crate::irq_source::{IrqBoundaryHook, IrqCounters};
+use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
 use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::{
     IrqBoundaryOutcome, LoopBus, PagedCpl0SetExit, deliver_pending_irq, run_cpl0_set_loop,
@@ -51,6 +52,7 @@ use crate::parallel_run::{
     ParallelStopError, QuantumCall, run_threads_rooted,
 };
 use crate::smp_scheduler::Executed;
+use crate::vcpu::BOOT_VCPU_INDEX;
 use crate::{
     FirmwareBoardConfig, GuestPhysicalRange, LoadedFirmwareBoard, LocalApicHandle,
     Long64ProbeConfig, MachineBus, PagedProbeQuantumReport, PciEcam,
@@ -124,6 +126,8 @@ pub struct HostQuantumCall<'a> {
     pub native_stop: Option<&'a AtomicU8>,
     /// The Local APIC of this vCPU (S6-42c): the source of the vectors the quantum delivers.
     pub lapic: &'a LocalApicHandle,
+    /// The boot processor's source of board vectors. Other vCPUs have only their Local APIC.
+    pub board_irq: HostBoardIrqSource<'a>,
     /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
     pub gate: HostSplitGate<'a>,
 }
@@ -367,6 +371,7 @@ fn run_host_threads_inner<R>(
             stop: call.stop,
             native_stop: call.native_stop,
             lapic: call.lapic,
+            board_irq: HostBoardIrqSource((call.cpu == BOOT_VCPU_INDEX).then_some(call.source)),
             gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
@@ -489,48 +494,106 @@ pub fn host_deliver_pending_irq(
     efer: u64,
     context: AccessContext,
     skip_first_boundary: &mut bool,
-    mut committed_write: impl FnMut(GuestPhysicalRange),
+    committed_write: impl FnMut(GuestPhysicalRange),
 ) -> HostIrqBoundary {
-    use crate::irq_source::BoardIrqSource;
-    let mut source = LapicIrqSource::new(lapic.clone());
-    // The cheap question first: the paging configuration is built only when something can be
-    // delivered (or the REP rule has a flag to clear).
-    if !*skip_first_boundary && source.pending_vector().is_none() {
-        return HostIrqBoundary::None;
-    }
-    let context = AccessContext {
-        origin: od_isa::memory::AccessOrigin::Explicit,
-        ..context
-    };
-    let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
-        Ok(paging) => paging,
-        Err(error) => {
-            return HostIrqBoundary::Failed(format!("paging configuration refused: {error:?}"));
-        }
-    };
-    let mut counters = IrqCounters::default();
-    let mut hook = IrqBoundaryHook {
-        source: &mut source,
-        counters: &mut counters,
-        delivered_mirror: None,
-        skip_first_boundary: *skip_first_boundary,
-    };
-    let outcome = deliver_pending_irq(
-        &mut hook,
+    HostBoardIrqSource::none().deliver_pending(
         state,
-        bus.physical_memory(),
-        &paging,
+        bus,
+        lapic,
+        cr3,
+        efer,
         context,
-        &mut committed_write,
-        None,
-    );
-    *skip_first_boundary = hook.skip_first_boundary;
-    match outcome {
-        IrqBoundaryOutcome::None => HostIrqBoundary::None,
-        IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,
-        IrqBoundaryOutcome::Failed((exit, page_fault, memory_error)) => HostIrqBoundary::Failed(
-            format!("{exit:?}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"),
-        ),
+        skip_first_boundary,
+        committed_write,
+    )
+}
+
+/// The interrupt source lent to the boot processor for this quantum. Selection and acknowledgment
+/// use the same board-first routing as the interpreter. Each source operation has its own lock scope.
+pub struct HostBoardIrqSource<'a>(Option<&'a mut dyn BoardIrqSource>);
+
+impl HostBoardIrqSource<'_> {
+    /// Use only the Local APIC at the instruction boundary.
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// Borrow the source for an instruction loop with shorter-lived state.
+    pub fn reborrow(&mut self) -> HostBoardIrqSource<'_> {
+        match self.0.as_mut() {
+            Some(source) => HostBoardIrqSource(Some(&mut **source)),
+            None => HostBoardIrqSource::none(),
+        }
+    }
+
+    /// Whether a successful guest write to the PIT ports calls for a new scheduler deadline.
+    pub fn pit_write_ends_quantum(&self) -> bool {
+        self.0
+            .as_deref()
+            .is_some_and(BoardIrqSource::pit_write_ends_quantum)
+    }
+
+    /// Deliver an eligible board or Local APIC vector through the guest IDT.
+    pub fn deliver_pending(
+        &mut self,
+        state: &mut LongModeState,
+        bus: &MachineBus,
+        lapic: &LocalApicHandle,
+        cr3: u64,
+        efer: u64,
+        context: AccessContext,
+        skip_first_boundary: &mut bool,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> HostIrqBoundary {
+        let mut lapic = LapicIrqSource::new(lapic.clone());
+        let mut boot;
+        let source: &mut dyn BoardIrqSource = if let Some(board) = self.0.as_deref_mut() {
+            boot = BootProcessorSource::new(board, lapic);
+            &mut boot
+        } else {
+            &mut lapic
+        };
+        // The cheap question first: the paging configuration is built only when something can be
+        // delivered (or the REP rule has a flag to clear).
+        if !*skip_first_boundary && source.pending_vector().is_none() {
+            return HostIrqBoundary::None;
+        }
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
+            Ok(paging) => paging,
+            Err(error) => {
+                return HostIrqBoundary::Failed(format!("paging configuration refused: {error:?}"));
+            }
+        };
+        let mut counters = IrqCounters::default();
+        let mut hook = IrqBoundaryHook {
+            source,
+            counters: &mut counters,
+            delivered_mirror: None,
+            skip_first_boundary: *skip_first_boundary,
+        };
+        let outcome = deliver_pending_irq(
+            &mut hook,
+            state,
+            bus.physical_memory(),
+            &paging,
+            context,
+            &mut committed_write,
+            None,
+        );
+        *skip_first_boundary = hook.skip_first_boundary;
+        match outcome {
+            IrqBoundaryOutcome::None => HostIrqBoundary::None,
+            IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,
+            IrqBoundaryOutcome::Failed((exit, page_fault, memory_error)) => {
+                HostIrqBoundary::Failed(format!(
+                    "{exit:?}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"
+                ))
+            }
+        }
     }
 }
 
@@ -565,6 +628,8 @@ pub struct HostSetStepReport {
     /// The guest wrote a timer register of its Local APIC (`0x320`, `0x380`, `0x3E0`): the deadline
     /// the call was budgeted for may be stale, so the caller ends its call (as the set quantum does).
     pub timer_register_written: bool,
+    /// The guest successfully wrote to a PIT programming port.
+    pub pit_written: bool,
 }
 
 /// One instruction of vCPU `step.vcpu` through the CPL0 profile set `set` over `&MachineBus`
@@ -621,6 +686,7 @@ pub fn run_host_set_step(
         partial_rep,
         delivered_exceptions: report.delivered_exceptions,
         timer_register_written,
+        pit_written: report.pit_written,
     })
 }
 

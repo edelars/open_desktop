@@ -281,6 +281,7 @@ impl Stepper for Quantum<'_, '_> {
                 stop: &mut *self.call.stop,
                 native_stop: self.call.native_stop,
                 lapic: self.call.lapic,
+                board_irq: self.call.board_irq.reborrow(),
                 gate: self.call.gate,
             })
             .map_err(str::to_owned)?;

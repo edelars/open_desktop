@@ -16,8 +16,8 @@ use od_isa::integer_flags::{AUXILIARY_CARRY_FLAG, CARRY_FLAG};
 use od_isa::state::{Gdtr, Idtr, StiShadow};
 use od_isa::{CodeSegmentDescriptorCache, CpuActivity, StackSegmentDescriptorCache};
 use od_machine::{
-    HostParallelConfig, HostParallelFinish, HostQuantumCall, HostSplitGate, LoadedFirmwareBoard,
-    host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
+    HostBoardIrqSource, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostSplitGate,
+    LoadedFirmwareBoard, host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
 };
 use std::time::Duration;
 
@@ -418,6 +418,7 @@ fn s6_42d_a_pending_irq_waits_for_partial_rep_across_a_stop() {
             0,
             PagedHostSetEnv {
                 lapic: &lapic,
+                board_irq: HostBoardIrqSource::none(),
                 gate: HostSplitGate::none(),
                 set: &set,
                 skip_first_boundary: &mut skip_boundary,
@@ -467,6 +468,82 @@ fn s6_42d_a_pending_irq_waits_for_partial_rep_across_a_stop() {
     assert_eq!(handler.irqs_delivered, 1);
     assert_eq!(state.rip, HANDLER_IRQ + 6);
     assert_eq!(lapic.vector_state(VECTOR_IRQ), (false, true));
+}
+
+#[test]
+fn s6_42d_the_pit_pic_source_wakes_the_bsp_and_cuts_guest_pit_writes_short() {
+    let _guard = jit_guard();
+    const VECTOR_PIT: u8 = 0x30;
+    const COUNTER_PIT: u64 = COUNTER_TIMER + 8;
+    const BUDGET: u64 = 200;
+    let mut board = board(2);
+    assert!(board.enable_pit_pic_irq());
+    let mut program = mov_ebx(DATA as u32);
+    program.extend([0x48, 0x8B, 0x03]); // native MOV RAX, [RBX]
+    for (port, value) in [
+        (0x20, 0x11),
+        (0x21, VECTOR_PIT),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xFE),
+        (0x43, 0x34),
+        (0x40, 10),
+        (0x40, 0),
+    ] {
+        program.extend([0xB0, value, 0xE6, port]); // MOV AL, value; OUT port, AL
+    }
+    program.push(0xFB); // STI
+    program.extend(SLEEP);
+    put(&mut board, CODE_0, &program);
+    let handler = [count(COUNTER_PIT), vec![0xB0, 0x20, 0xE6, 0x20, 0x48, 0xCF]].concat();
+    put(&mut board, HANDLER_TIMER, &handler);
+    put(
+        &mut board,
+        IDT_AT + u64::from(VECTOR_PIT) * 16,
+        &gate(HANDLER_TIMER),
+    );
+    let mut bsp = state(CODE_0, STACK_TOP_0);
+    bsp.rflags = 2;
+    assert!(host_install_vcpu(&mut board, 0, bsp));
+    let mut ap = state(CODE_1, STACK_TOP_1);
+    ap.rflags = 2;
+    ap.activity = Some(CpuActivity::Halted);
+    assert!(host_install_vcpu(&mut board, 1, ap));
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        HostParallelConfig {
+            budget: BUDGET,
+            ..host_config(true)
+        },
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(
+        report.finished,
+        HostParallelFinish::BudgetExhausted,
+        "{report:?}, {:?}",
+        quantum.last_failure()
+    );
+    assert_eq!(report.retired, [BUDGET, 0]);
+    let stats = quantum.stats(0);
+    assert_eq!(stats.retired_jit, 1);
+    assert_eq!(stats.device_boundaries, 3, "one boundary per PIT write");
+    let handled = board
+        .bus_mut()
+        .atomic_inline_memory()
+        .load_u64(GuestPhysicalAddress::new(COUNTER_PIT))
+        .unwrap();
+    assert!(handled >= 5, "only {handled} IRQ0 handler entries");
+    assert!((handled..=handled + 1).contains(&stats.irqs_delivered));
+    assert!(
+        board.clock().now_ns() >= (handled - 1) * 8381,
+        "successive PIT periods"
+    );
 }
 
 /// The one-shot timer of the vCPU's own Local APIC (the clock owner dispatches it on a charge)
@@ -659,6 +736,7 @@ fn atomic_host_step(
             0,
             PagedHostSetEnv {
                 lapic: &lapic,
+                board_irq: HostBoardIrqSource::none(),
                 gate: HostSplitGate::none(),
                 set: &set,
                 skip_first_boundary: &mut false,
@@ -973,6 +1051,7 @@ fn s6_42d_mov_cr3_with_no_flush_bit_faults_without_changing_the_root() {
         0,
         PagedHostSetEnv {
             lapic: &lapic,
+            board_irq: HostBoardIrqSource::none(),
             gate: HostSplitGate::none(),
             set: &set,
             skip_first_boundary: &mut false,
