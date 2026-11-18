@@ -199,10 +199,12 @@ pub enum Operation {
     /// One guest atomic read-modify-write of `width` bytes at `operand`.
     /// `dst` is the old memory value (zero-extended); `value` is the addend,
     /// the replacement or the new value; `expected` is present exactly for
-    /// `CompareExchange`. Produced only by `atomic_adapter` (S6-41b (а)); no
-    /// block emitter or allocator accepts it (they refuse it explicitly, S6-41b
-    /// (в)/(е)), so guest `LOCK` forms stay on the helper path in blocks
-    /// (JIT_CONTRACT, S6-41, S6-41b).
+    /// `CompareExchange`. Produced only by `atomic_adapter` (S6-41b (а)). The
+    /// general block emitters and their register allocator refuse it
+    /// explicitly (S6-41b (в)/(е)); the block that executes it inline is
+    /// `atomic_block::compile_atomic_block` (S6-41c, S6-41d: up to
+    /// `MAX_ATOMIC_BLOCK_INSTRUCTIONS` atomic forms and fences, own register
+    /// plan, the V4 locate helper) (JIT_CONTRACT, S6-41, S6-41b, S6-41d).
     AtomicRmw {
         kind: AtomicRmwKind,
         width: IntWidth,
@@ -3497,6 +3499,87 @@ mod tests {
             ],
         };
         assert_eq!(verify(&program), Ok(()));
+    }
+
+    /// S6-41d: the order rules of `AtomicRmwOrder` are per guest instruction in a block of several.
+    /// Between instructions anything may follow an atomic effect (an ordinary load or store of the
+    /// next instruction, another atomic effect); inside one instruction nothing fallible may.
+    #[test]
+    fn s6_41d_the_atomic_order_rules_hold_per_instruction_in_a_multi_instruction_block() {
+        let atomic = |index: usize, value: u32, dst: u32| {
+            [
+                Operation::BeginInstruction { index },
+                Operation::Constant {
+                    dst: TempId(value),
+                    width: IntWidth::W32,
+                    value: 7,
+                },
+                Operation::AtomicRmw {
+                    kind: AtomicRmwKind::Exchange,
+                    width: IntWidth::W32,
+                    operand: atomic_operand(od_isa::OperandSize::Dword),
+                    value: TempId(value),
+                    expected: None,
+                    dst: TempId(dst),
+                },
+            ]
+        };
+        let program = |tail_of_second: Vec<Operation>| {
+            let mut operations = Vec::new();
+            operations.extend(atomic(0, 0, 1));
+            operations.push(Operation::CommitInstruction { index: 0 });
+            operations.extend(atomic(1, 2, 3));
+            operations.extend(tail_of_second);
+            operations.push(Operation::CommitInstruction { index: 1 });
+            operations.push(Operation::BeginInstruction { index: 2 });
+            operations.push(Operation::Fence {
+                kind: FenceKind::Full,
+            });
+            operations.push(Operation::CommitInstruction { index: 2 });
+            operations.push(Operation::Exit {
+                kind: ExitKind::BlockComplete,
+                target_rip: 0x100c,
+            });
+            Program {
+                code_end: 0x100c,
+                guest_instructions: vec![
+                    GuestInstruction {
+                        guest_rip: 0x1000,
+                        next_rip: 0x1004,
+                    },
+                    GuestInstruction {
+                        guest_rip: 0x1004,
+                        next_rip: 0x1008,
+                    },
+                    GuestInstruction {
+                        guest_rip: 0x1008,
+                        next_rip: 0x100c,
+                    },
+                ],
+                operations,
+            }
+        };
+        // Atomic, atomic, fence: each instruction on its own is in order.
+        assert_eq!(verify(&program(vec![])), Ok(()));
+        // The second instruction's flags and register write after its atomic effect: allowed.
+        assert_eq!(
+            verify(&program(vec![Operation::WriteGpr {
+                register: GuestGpr(0),
+                src: TempId(3),
+                width: IntWidth::W32,
+            }])),
+            Ok(())
+        );
+        // A checked load after the second instruction's own atomic effect: the rule fires on that
+        // effect (operation 6 of the program), not on the first instruction.
+        let rejected = program(vec![Operation::CheckedLoad {
+            dst: TempId(4),
+            operand: atomic_operand(od_isa::OperandSize::Qword),
+        }]);
+        assert_eq!(
+            verify(&rejected),
+            Err(VerifyError::AtomicRmwOrder { operation: 6 })
+        );
     }
 
     #[test]

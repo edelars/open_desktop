@@ -7,9 +7,11 @@
 //! shared interpreter helpers; the lowering in `arm64::atomic_sequence` mirrors
 //! them and is checked against the interpreter by differential tests).
 //!
-//! Output is one verified single-instruction `Program`. Admission of that
-//! program into a published block is a separate decision (S6-41b (в)): no
-//! block emitter accepts these effects yet, they refuse them explicitly.
+//! Output is one verified `Program`: one instruction (`lower_atomic_instruction`)
+//! or a contiguous run of them (`lower_atomic_sequence`, S6-41d). The block that
+//! executes it is `atomic_block::compile_atomic_block`; the general block
+//! emitters and their allocator still refuse these effects explicitly
+//! (S6-41b (в)/(е), S6-41d).
 //!
 //! Not adapted, each with an explicit `AtomicAdapterError`:
 //! - forms whose address is not a static `MemoryOperand`: `LOCK BTS/BTR m, r`
@@ -170,11 +172,51 @@ pub fn lower_atomic_instruction(
     instruction: &Instruction,
     guest_rip: u64,
 ) -> Result<Program, AtomicAdapterError> {
-    let next_rip = guest_rip + u64::from(instruction.length);
+    lower_atomic_sequence(&[instruction], guest_rip)
+}
+
+/// S6-41d: lower a contiguous run of decoded atomic-family instructions, the first at `guest_rip`,
+/// to one verified multi-instruction program (terminated by `Exit::BlockComplete` at the RIP after
+/// the last instruction). Temporaries are numbered across the whole program; every instruction
+/// keeps its own `BeginInstruction`/`CommitInstruction` pair, so the order rules of `ir::verify`
+/// (`AtomicRmwOrder`) apply per guest instruction. An instruction the adapter refuses refuses the
+/// whole run, with the error of that instruction.
+pub fn lower_atomic_sequence(
+    instructions: &[&Instruction],
+    guest_rip: u64,
+) -> Result<Program, AtomicAdapterError> {
     let mut b = Builder {
-        operations: vec![Operation::BeginInstruction { index: 0 }],
+        operations: Vec::new(),
         next_temp: 0,
     };
+    let mut guest_instructions = Vec::with_capacity(instructions.len());
+    let mut rip = guest_rip;
+    for (index, instruction) in instructions.iter().enumerate() {
+        let next_rip = rip + u64::from(instruction.length);
+        b.operations.push(Operation::BeginInstruction { index });
+        lower_one(instruction, &mut b)?;
+        b.operations.push(Operation::CommitInstruction { index });
+        guest_instructions.push(GuestInstruction {
+            guest_rip: rip,
+            next_rip,
+        });
+        rip = next_rip;
+    }
+    b.operations.push(Operation::Exit {
+        kind: ExitKind::BlockComplete,
+        target_rip: rip,
+    });
+    let program = Program {
+        guest_instructions,
+        operations: b.operations,
+        code_end: rip,
+    };
+    ir::verify(&program).map_err(AtomicAdapterError::Verification)?;
+    Ok(program)
+}
+
+/// The effects of one instruction, between its `BeginInstruction` and `CommitInstruction`.
+fn lower_one(instruction: &Instruction, b: &mut Builder) -> Result<(), AtomicAdapterError> {
     match instruction.operation {
         // LOCK ADD m, r  (F0 [REX.W] 01 /r)
         Decoded::LockAddMemReg {
@@ -348,21 +390,7 @@ pub fn lower_atomic_instruction(
         }),
         _ => return Err(AtomicAdapterError::NotAnAtomicForm),
     }
-    b.operations.push(Operation::CommitInstruction { index: 0 });
-    b.operations.push(Operation::Exit {
-        kind: ExitKind::BlockComplete,
-        target_rip: next_rip,
-    });
-    let program = Program {
-        guest_instructions: vec![GuestInstruction {
-            guest_rip,
-            next_rip,
-        }],
-        operations: b.operations,
-        code_end: next_rip,
-    };
-    ir::verify(&program).map_err(AtomicAdapterError::Verification)?;
-    Ok(program)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -625,7 +653,8 @@ mod tests {
 
     #[test]
     fn atomic_programs_are_refused_by_the_block_emitters() {
-        // S6-41b (в): no admission before the inline memory emitter exists.
+        // The general allocator keeps its explicit refusal (S6-41b (е), S6-41d): atomic programs
+        // are compiled by `atomic_block`, which has its own register plan.
         let program = lower(&[0xf0, 0x48, 0x0f, 0xc1, 0x1c, 0x25, 0, 0x10, 0, 0]).unwrap();
         assert!(matches!(
             crate::allocator::Allocation::build(
@@ -635,5 +664,67 @@ mod tests {
             ),
             Err(crate::allocator::AllocatorError::UnsupportedEffect { .. })
         ));
+    }
+
+    fn decode_run(forms: &[&[u8]]) -> Vec<Instruction> {
+        forms
+            .iter()
+            .map(|bytes| {
+                let mut memory = Code(bytes.to_vec());
+                long_decode::decode(&mut memory, 0, AccessContext::default())
+                    .expect("the form decodes")
+            })
+            .collect()
+    }
+
+    /// S6-41d: a run of decoded forms is one multi-instruction program with contiguous RIPs,
+    /// temporaries numbered across it and one `Begin`/`Commit` pair per instruction.
+    #[test]
+    fn s6_41d_a_run_of_atomic_forms_lowers_to_one_verified_multi_instruction_program() {
+        let decoded = decode_run(&[
+            // lock add m32, ebx
+            &[0xf0, 0x01, 0x1c, 0x25, 0, 0x10, 0, 0],
+            // xchg m64, rcx
+            &[0x48, 0x87, 0x0c, 0x25, 0x40, 0x10, 0, 0],
+            // mfence
+            &[0x0f, 0xae, 0xf0],
+            // lock cmpxchg m32, ebx
+            &[0xf0, 0x0f, 0xb1, 0x1c, 0x25, 0x80, 0x10, 0, 0],
+        ]);
+        let refs: Vec<&Instruction> = decoded.iter().collect();
+        let program = lower_atomic_sequence(&refs, 0x2000).unwrap();
+        assert_eq!(ir::verify(&program), Ok(()));
+        assert_eq!(program.guest_instructions.len(), 4);
+        let mut rip = 0x2000;
+        for (instruction, decoded) in program.guest_instructions.iter().zip(&decoded) {
+            assert_eq!(instruction.guest_rip, rip);
+            rip += u64::from(decoded.length);
+            assert_eq!(instruction.next_rip, rip);
+        }
+        assert_eq!(program.code_end, rip);
+        assert_eq!(
+            rmw_kinds(&program),
+            [
+                AtomicRmwKind::Add,
+                AtomicRmwKind::Exchange,
+                AtomicRmwKind::CompareExchange
+            ]
+        );
+        // One instruction of the run that the adapter refuses refuses the run.
+        let decoded = decode_run(&[
+            &[0xf0, 0x01, 0x1c, 0x25, 0, 0x10, 0, 0],
+            &[0x48, 0x89, 0xd8],
+        ]);
+        let refs: Vec<&Instruction> = decoded.iter().collect();
+        assert_eq!(
+            lower_atomic_sequence(&refs, 0x2000),
+            Err(AtomicAdapterError::NotAnAtomicForm)
+        );
+        // A run of one is the old single-instruction lowering.
+        let single = decode_run(&[&[0xf0, 0x01, 0x1c, 0x25, 0, 0x10, 0, 0]]);
+        assert_eq!(
+            lower_atomic_sequence(&[&single[0]], 0x2000).unwrap(),
+            lower_atomic_instruction(&single[0], 0x2000).unwrap()
+        );
     }
 }

@@ -2224,6 +2224,21 @@ pub enum PagedFetchedLoadErrorKind {
     },
     Compile(od_jit::memory_load_v2::MemoryLoadCompileErrorV2),
     Publish(ExecutableMemoryError),
+    /// S6-41d (`execute_atomic`): the first instruction at RIP is not an atomic form the adapter
+    /// lowers (`MOV`, an FS/GS form, `LOCK BTS/BTR m, r`, a register outside RAX..RBX, ...), or
+    /// does not decode inside the fetched window. Nothing was executed. When the admitted atomic
+    /// block could not be reused (its key no longer matched), it and the S4-15 forms block were
+    /// both dropped before the decode, so this refusal also destroys the forms block (a
+    /// limitation: the session holds one block); a reusable atomic block is not touched.
+    AtomicForm(od_jit::atomic_adapter::AtomicAdapterError),
+    /// S6-41d: the host policy (`mode_admitted_on_host`, FEAT_LSE) refuses the execution mode of
+    /// the bus. Refused before the instruction fetch: no page walk happened.
+    AtomicModeUnavailable(od_machine::ExecutionMode),
+    /// S6-41d: the atomic block did not compile (the profile, the host policy).
+    AtomicCompile(od_jit::atomic_block::AtomicBlockError),
+    /// S6-41d: the block's host boundary failed after it ran (`AtomicInlineError`): not a guest
+    /// outcome, and never retried.
+    AtomicRun(atomic_inline::AtomicInlineError),
 }
 
 /// Refusal plus every page-walk write the instruction fetch had already
@@ -2267,6 +2282,22 @@ struct AdmittedFetchedLoad {
     published: PublishedCode,
 }
 
+/// S6-41d: the published block of one or more atomic forms and its key.
+struct AdmittedAtomic {
+    linear_base: u64,
+    physical_page: od_machine::GuestPhysicalAddress,
+    generation: u64,
+    /// Exactly the bytes of the instructions of the block.
+    bytes: Vec<u8>,
+    /// The memory-ordering mode the code was generated for: part of the key.
+    mode: od_jit::arm64::memory_order::MemoryOrderMode,
+    /// Set once an instruction of the block wrote into the block's own code bytes
+    /// (`CodeInvalidated`): never reused, whatever the key says.
+    retired: bool,
+    instructions: usize,
+    block: atomic_inline::AtomicInlineBlock,
+}
+
 /// S4-15b: a JIT session whose block is compiled from bytes read out of guest
 /// RAM. Every call performs a tracked instruction fetch of the code bytes at
 /// RIP (execute/NX/U/S checked for the caller's CPL, code Accessed bits
@@ -2281,6 +2312,15 @@ struct AdmittedFetchedLoad {
 #[derive(Default)]
 pub struct PagedFetchedLoadSession {
     admitted: Option<AdmittedFetchedLoad>,
+    /// S6-41d: the block of atomic forms (`execute_atomic`), keyed by the memory-ordering mode
+    /// as well as by the bytes and the page generation. The session holds one published block
+    /// at a time: admitting one kind drops the other.
+    admitted_atomic: Option<AdmittedAtomic>,
+    /// S6-41d: how many times a change of the execution mode of the bus dropped the admitted
+    /// atomic block (code of one mode never runs in the other).
+    atomic_mode_drops: u64,
+    /// S6-41d: the host policy `execute_atomic` asks; `None` is `mode_admitted_on_host`.
+    atomic_mode_policy: Option<fn(od_jit::arm64::memory_order::MemoryOrderMode) -> bool>,
     admissions: u64,
     resets: u64,
     /// S6-42: the vCPU's part of the process `MAP_JIT` region. With a part the
@@ -2364,7 +2404,9 @@ impl PagedFetchedLoadSession {
     /// state and RAM are not touched. Single vCPU, synchronous only: deferred
     /// retirement for other vCPUs is not part of this contract.
     pub fn reset(&mut self) -> bool {
-        let released = self.admitted.take().is_some();
+        let released_forms = self.admitted.take().is_some();
+        let released_atomic = self.admitted_atomic.take().is_some();
+        let released = released_forms || released_atomic;
         if released {
             self.resets += 1;
         }
@@ -2511,6 +2553,7 @@ impl PagedFetchedLoadSession {
             // new bytes, and its executable memory (a slot of the part, or a
             // mapping of its own without a part) must be free for the new one.
             self.admitted = None;
+            self.admitted_atomic = None;
             let part = self.publish_part();
             let part = part.as_ref();
             let is_store = fetched_bytes == PAGED_FETCHED_STORE_V2_BYTES;
@@ -2842,6 +2885,7 @@ impl PagedFetchedLoadSession {
             // new bytes, and its executable memory (a slot of the part, or a
             // mapping of its own without a part) must be free for the new one.
             self.admitted = None;
+            self.admitted_atomic = None;
             let part = self.publish_part();
             let part = part.as_ref();
             let view = od_jit::block::CodeView::new(rip, &snapshot.bytes).map_err(|_| {
@@ -2973,6 +3017,398 @@ impl PagedFetchedLoadSession {
             admission,
             execution,
             store_refusal,
+        })
+    }
+}
+
+/// The most bytes `execute_atomic` fetches from RIP (inside the 4 KiB page of RIP): the longest
+/// x86 instruction is 15 bytes, so the window holds the largest block of atomic forms.
+pub const PAGED_ATOMIC_FETCH_WINDOW: usize =
+    od_jit::atomic_block::MAX_ATOMIC_BLOCK_INSTRUCTIONS * 15;
+
+/// Report of one [`PagedFetchedLoadSession::execute_atomic`] call.
+#[derive(Debug)]
+pub struct PagedFetchedAtomicReport {
+    pub fetched_linear_base: u64,
+    pub fetched_physical_page: od_machine::GuestPhysicalAddress,
+    pub fetched_generation: u64,
+    /// Exactly the bytes of the instructions of the block.
+    pub fetched_code: Vec<u8>,
+    /// How many guest instructions the block holds (not how many ran: see `run.retired`).
+    pub block_instructions: usize,
+    pub fetch_committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    pub admission: PagedFetchAdmission,
+    /// The memory-ordering mode of the code that ran (the mode of the bus at the call).
+    pub mode: od_machine::ExecutionMode,
+    pub run: atomic_inline::AtomicInlineReport,
+    /// Every committed write of the call after the fetch, in order: the page-table writes of the
+    /// walks of each instruction, then the operand writes (after their data and generation).
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+}
+
+/// Byte view of the fetched window for the decoder: instruction bytes only, nothing else is
+/// reachable through it.
+struct FetchedWindow<'a>(&'a [u8]);
+
+impl od_isa::memory::GuestMemory for FetchedWindow<'_> {
+    fn fetch(
+        &mut self,
+        address: u64,
+        _: od_isa::memory::AccessContext,
+    ) -> Result<u8, od_isa::memory::MemoryError> {
+        usize::try_from(address)
+            .ok()
+            .and_then(|index| self.0.get(index))
+            .copied()
+            .ok_or(od_isa::memory::MemoryError::Unmapped {
+                address,
+                access: od_isa::memory::AccessKind::Fetch,
+            })
+    }
+    fn read(
+        &mut self,
+        address: u64,
+        _: od_isa::memory::AccessContext,
+        _: &mut [u8],
+    ) -> Result<(), od_isa::memory::MemoryError> {
+        Err(od_isa::memory::MemoryError::Unmapped {
+            address,
+            access: od_isa::memory::AccessKind::Read,
+        })
+    }
+    fn write(
+        &mut self,
+        address: u64,
+        _: od_isa::memory::AccessContext,
+        _: &[u8],
+    ) -> Result<(), od_isa::memory::MemoryError> {
+        Err(od_isa::memory::MemoryError::Unmapped {
+            address,
+            access: od_isa::memory::AccessKind::Write,
+        })
+    }
+    fn mfence(
+        &mut self,
+        _: od_isa::memory::AccessContext,
+    ) -> Result<(), od_isa::memory::MemoryError> {
+        Ok(())
+    }
+}
+
+fn memory_order_of(
+    mode: od_machine::ExecutionMode,
+) -> od_jit::arm64::memory_order::MemoryOrderMode {
+    match mode {
+        od_machine::ExecutionMode::Interleaved => {
+            od_jit::arm64::memory_order::MemoryOrderMode::Interleaved
+        }
+        od_machine::ExecutionMode::Parallel => {
+            od_jit::arm64::memory_order::MemoryOrderMode::Parallel
+        }
+    }
+}
+
+impl PagedFetchedLoadSession {
+    /// S6-41d: the host policy `execute_atomic` asks before it fetches or compiles anything.
+    /// Passing `None` restores `mode_admitted_on_host`. A test stands for a host without FEAT_LSE
+    /// with a policy that refuses; production code never calls this.
+    #[doc(hidden)]
+    pub fn set_atomic_mode_policy(
+        &mut self,
+        policy: Option<fn(od_jit::arm64::memory_order::MemoryOrderMode) -> bool>,
+    ) {
+        self.atomic_mode_policy = policy;
+    }
+
+    /// Whether an atomic block is admitted now.
+    pub fn has_admitted_atomic_block(&self) -> bool {
+        self.admitted_atomic.is_some()
+    }
+
+    /// The mode the admitted atomic block was generated for, if one is admitted.
+    pub fn admitted_atomic_mode(&self) -> Option<od_jit::arm64::memory_order::MemoryOrderMode> {
+        self.admitted_atomic.as_ref().map(|admitted| admitted.mode)
+    }
+
+    /// The words of the admitted atomic block (for tests and diagnostics).
+    pub fn admitted_atomic_words(&self) -> Option<&[u32]> {
+        self.admitted_atomic
+            .as_ref()
+            .map(|admitted| admitted.block.block().words.as_slice())
+    }
+
+    /// How many times a change of the execution mode of the bus dropped the admitted atomic
+    /// block (S6-41d (з): code generated for one mode is never run in the other).
+    pub fn atomic_mode_drops(&self) -> u64 {
+        self.atomic_mode_drops
+    }
+
+    /// S6-41d: executes the atomic guest instructions at RIP as one native block, at most
+    /// `budget` of them.
+    ///
+    /// Every call performs the tracked instruction fetch of up to
+    /// [`PAGED_ATOMIC_FETCH_WINDOW`] bytes of the code page of RIP (execute/NX/U/S checked for
+    /// the caller's CPL, the code Accessed bit committed), then decodes from them the leading run of
+    /// instructions the atomic adapter lowers (`LOCK`/`XCHG`/`XADD`/`CMPXCHG` forms and fences:
+    /// `atomic_adapter`), up to `MAX_ATOMIC_BLOCK_INSTRUCTIONS`. The first instruction that is not
+    /// one (an ordinary load or store, a branch, an FS/GS form) ends the block; an ordinary
+    /// instruction next to the block stays with the interpreter, the caller steps it.
+    ///
+    /// **Key.** A block admitted earlier is reused only while the linear address, the physical
+    /// code page, the page's write generation, the instruction bytes and the **memory-ordering
+    /// mode** of the bus (`MachineBus::execution_mode`) are all unchanged. A change of the mode
+    /// drops the block and counts in [`Self::atomic_mode_drops`]: code generated for
+    /// `Interleaved` (no ordering bits, no barrier) never runs when the bus is `Parallel`, and
+    /// the reverse (S6-41b (з)). The host policy (`mode_admitted_on_host`, FEAT_LSE) is asked
+    /// before the fetch: a refused mode ends the call with [`PagedFetchedLoadErrorKind::
+    /// AtomicModeUnavailable`] and nothing is walked.
+    ///
+    /// **Run.** The block is called with the V4 helper over the bus memory: the operand is
+    /// translated with the intent to write (the interpreter's locked-operation walks), the host
+    /// atomic runs on the RAM, the page generation is raised with a release and the committed
+    /// write is reported after it. A fault or a decline of an instruction leaves the earlier
+    /// instructions retired and the faulting one untouched (`run.exit`, `run.retired`). **Code
+    /// invalidation:** an operand overlapping the block's own code bytes is written, the
+    /// instruction retires and the call ends in `AtomicInlineExit::CodeInvalidated`; the block
+    /// is retired, never reused, and the next call fetches the new bytes (S4-16i; the rule is the
+    /// store's: a committed write into the 4 KiB page the block was fetched from, whether or not
+    /// it touches the block's own bytes).
+    ///
+    /// A decline (misaligned or split operand, non-RAM operand) is the caller's to execute on
+    /// the interpreter; the session has no interpreter fallback for these forms (the paged MOV
+    /// step of `execute_or_interpret` does not run them).
+    pub fn execute_atomic(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        budget: u64,
+    ) -> Result<PagedFetchedAtomicReport, PagedFetchedLoadError> {
+        let stop_requested = AtomicU8::new(0);
+        self.execute_atomic_with_stop(
+            state,
+            bus,
+            cr3,
+            efer,
+            access_context,
+            budget,
+            &stop_requested,
+        )
+    }
+
+    /// [`Self::execute_atomic`] with a STOP byte owned by the caller (read only here, as in
+    /// [`Self::execute_forms_with_stop`]): a raised byte ends the block before the next
+    /// instruction, the retired ones stay retired.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_atomic_with_stop(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+        budget: u64,
+        stop_requested: &AtomicU8,
+    ) -> Result<PagedFetchedAtomicReport, PagedFetchedLoadError> {
+        let refuse = |kind| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: Vec::new(),
+        };
+        let load = |error| refuse(PagedFetchedLoadErrorKind::Load(error));
+        check_paged_load_v2_context(state, access_context).map_err(load)?;
+        if let Some(value) = state.cr3 {
+            return Err(load(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value }));
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(|error| load(PagedMemoryLoadV2Error::Paging(error)))?;
+
+        // The key's mode and the host policy come before any walk.
+        let mode = bus.execution_mode();
+        let order = memory_order_of(mode);
+        let policy = self
+            .atomic_mode_policy
+            .unwrap_or(od_jit::arm64::memory_order::mode_admitted_on_host);
+        if !policy(order) {
+            return Err(refuse(PagedFetchedLoadErrorKind::AtomicModeUnavailable(
+                mode,
+            )));
+        }
+        if self
+            .admitted_atomic
+            .as_ref()
+            .is_some_and(|admitted| admitted.mode != order)
+        {
+            // The code of one mode never runs in the other.
+            self.admitted_atomic = None;
+            self.atomic_mode_drops += 1;
+        }
+
+        let rip = state.rip;
+        let window = PAGED_ATOMIC_FETCH_WINDOW.min(0x1000 - (rip & 0xfff) as usize);
+        let mut fetch_committed_writes = Vec::new();
+        let snapshot = bus
+            .tracked_code_snapshot_with_callback(&paging, rip, window, access_context, |range| {
+                fetch_committed_writes.push(range)
+            })
+            .map_err(|error| PagedFetchedLoadError {
+                kind: PagedFetchedLoadErrorKind::Fetch(error),
+                fetch_committed_writes: fetch_committed_writes.clone(),
+            })?;
+        let fail = |kind, writes: &Vec<_>| PagedFetchedLoadError {
+            kind,
+            fetch_committed_writes: writes.clone(),
+        };
+
+        let reusable = self.admitted_atomic.as_ref().is_some_and(|admitted| {
+            !admitted.retired
+                && admitted.mode == order
+                && admitted.linear_base == snapshot.linear_base
+                && admitted.physical_page == snapshot.physical_base
+                && admitted.generation == snapshot.backing_generation
+                && snapshot.bytes.starts_with(&admitted.bytes)
+        });
+        let admission = if reusable {
+            PagedFetchAdmission::Reused
+        } else {
+            // Drop the stale block first: it must never run against new bytes, and its
+            // executable memory must be free for the new one (the session holds one block).
+            self.admitted = None;
+            self.admitted_atomic = None;
+            let part = self.publish_part();
+            let part = part.as_ref();
+
+            let mut window_bytes = FetchedWindow(&snapshot.bytes);
+            let mut decoded = Vec::new();
+            let mut offset = 0usize;
+            let mut stopped_by = None;
+            while decoded.len() < od_jit::atomic_block::MAX_ATOMIC_BLOCK_INSTRUCTIONS {
+                let instruction = match od_isa::long_decode::decode(
+                    &mut window_bytes,
+                    offset as u64,
+                    od_isa::memory::AccessContext::default(),
+                ) {
+                    Ok(instruction) => instruction,
+                    Err(_) => {
+                        // The window ends inside an instruction, or the bytes are not an
+                        // instruction: the block ends here (or, for the first one, is refused).
+                        stopped_by =
+                            Some(od_jit::atomic_adapter::AtomicAdapterError::NotAnAtomicForm);
+                        break;
+                    }
+                };
+                let at = rip.wrapping_add(offset as u64);
+                if let Err(error) =
+                    od_jit::atomic_adapter::lower_atomic_instruction(&instruction, at)
+                {
+                    stopped_by = Some(error);
+                    break;
+                }
+                offset += usize::from(instruction.length);
+                decoded.push(instruction);
+            }
+            if decoded.is_empty() {
+                let error = stopped_by
+                    .unwrap_or(od_jit::atomic_adapter::AtomicAdapterError::NotAnAtomicForm);
+                return Err(fail(
+                    PagedFetchedLoadErrorKind::AtomicForm(error),
+                    &fetch_committed_writes,
+                ));
+            }
+            let refs: Vec<&od_isa::long_decode::Instruction> = decoded.iter().collect();
+            let program =
+                od_jit::atomic_adapter::lower_atomic_sequence(&refs, rip).map_err(|error| {
+                    fail(
+                        PagedFetchedLoadErrorKind::AtomicForm(error),
+                        &fetch_committed_writes,
+                    )
+                })?;
+            let compiled = od_jit::atomic_block::compile_atomic_block_with(
+                &program, order, &policy,
+            )
+            .map_err(|error| {
+                fail(
+                    PagedFetchedLoadErrorKind::AtomicCompile(error),
+                    &fetch_committed_writes,
+                )
+            })?;
+            let block =
+                atomic_inline::AtomicInlineBlock::publish_in(compiled, part).map_err(|error| {
+                    fail(
+                        PagedFetchedLoadErrorKind::Publish(error),
+                        &fetch_committed_writes,
+                    )
+                })?;
+            self.admitted_atomic = Some(AdmittedAtomic {
+                linear_base: snapshot.linear_base,
+                physical_page: snapshot.physical_base,
+                generation: snapshot.backing_generation,
+                bytes: snapshot.bytes[..offset].to_vec(),
+                mode: order,
+                retired: false,
+                instructions: decoded.len(),
+                block,
+            });
+            self.admissions += 1;
+            PagedFetchAdmission::Admitted
+        };
+
+        let admitted = self
+            .admitted_atomic
+            .as_ref()
+            .expect("an admitted atomic block is present after admission or reuse");
+        // S4-16i granularity: a write into the 4 KiB page the block was fetched from.
+        let code_range = od_machine::GuestPhysicalRange::new(
+            od_machine::GuestPhysicalAddress::new(snapshot.physical_base.get() & !0xfff),
+            0x1000,
+        )
+        .map_err(|_| {
+            fail(
+                PagedFetchedLoadErrorKind::Load(PagedMemoryLoadV2Error::UnsupportedBlock),
+                &fetch_committed_writes,
+            )
+        })?;
+        let mut committed_writes = Vec::new();
+        let run = admitted
+            .block
+            .run_guarded(
+                state,
+                bus.atomic_inline_memory(),
+                atomic_inline::AtomicInlineEnv {
+                    cr3,
+                    efer,
+                    access_context,
+                },
+                budget,
+                Some(stop_requested),
+                Some(code_range),
+                &mut |range| committed_writes.push(range),
+            )
+            .map_err(|error| {
+                fail(
+                    PagedFetchedLoadErrorKind::AtomicRun(error),
+                    &fetch_committed_writes,
+                )
+            })?;
+        let block_instructions = admitted.instructions;
+        let fetched_code = admitted.bytes.clone();
+        if run.exit == atomic_inline::AtomicInlineExit::CodeInvalidated
+            && let Some(admitted) = self.admitted_atomic.as_mut()
+        {
+            admitted.retired = true;
+        }
+        Ok(PagedFetchedAtomicReport {
+            fetched_linear_base: snapshot.linear_base,
+            fetched_physical_page: snapshot.physical_base,
+            fetched_generation: snapshot.backing_generation,
+            fetched_code,
+            block_instructions,
+            fetch_committed_writes,
+            admission,
+            mode,
+            run,
+            committed_writes,
         })
     }
 }

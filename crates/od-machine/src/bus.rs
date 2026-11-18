@@ -1190,6 +1190,16 @@ impl MachineBus {
         &self.memory
     }
 
+    /// S6-41d: the machine memory as the shared reference the inline atomic helper of `od-host`
+    /// works on (`locate_paged_atomic_operand` translates and checks with the walks of the
+    /// interpreter's locked operation, hands out the host pointer of a RAM operand, and the
+    /// generated host atomic operation runs on it). It is the same memory the locked operations
+    /// of the adapters use ([`Self::physical_memory`]); the shared reference does not let the
+    /// caller change the memory map or the execution mode (`set_execution_mode` needs `&mut`).
+    pub fn atomic_inline_memory(&self) -> &PhysicalMemory {
+        &self.memory
+    }
+
     pub(crate) fn tracked_physical_range_is_ram(&self, range: GuestPhysicalRange) -> bool {
         self.memory
             .locate_region_kind(range.start(), range.len())

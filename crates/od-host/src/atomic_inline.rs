@@ -10,10 +10,18 @@
 //! atomic operation, raises the counter with a release read-modify-write and sets the report flag;
 //! after the block returned, this module reports `committed_write` for the operand.
 //!
-//! What this module does not do: it is not admitted into `PagedFetchedLoadSession` (S6-41d), it
-//! runs one instruction per call, it does not retry or fall back (a declined or faulting
-//! instruction is returned to the caller, who owns the interpreter step), and it holds no state
-//! between calls: the pointer the helper hands out lives in the call record of one invocation.
+//! S6-41d: a block holds up to `MAX_ATOMIC_BLOCK_INSTRUCTIONS` instructions; the helper serves one
+//! site per memory instruction (the block stores the index before each call), the report of the
+//! call lists every operand written (`committed_writes`, in program order, after the block
+//! returned), and a write into the physical range `run_guarded` guards (the code page of the
+//! block) ends the call in [`AtomicInlineExit::CodeInvalidated`] with the instruction retired.
+//!
+//! What this module does not do: it does not retry or fall back (a declined or faulting
+//! instruction is returned to the caller, who owns the interpreter step; the instructions that
+//! retired before it stay retired), and it holds no state between calls: the pointer the helper
+//! hands out lives in the call record of one invocation. Admission into
+//! `PagedFetchedLoadSession` (the key, the mode, `CodeInvalidated` of the session) is the
+//! session's (`PagedFetchedLoadSession::execute_atomic`).
 //!
 //! `unsafe` here is the call of published code and the `extern "C"` helper dereferencing its
 //! call record (the same category as `memory_site_helper_v2`); none of it touches RAM bytes: the
@@ -31,12 +39,12 @@ use od_jit::memory_bridge::{
 };
 use od_jit::runtime::{
     AtomicLocateHelperV4, AtomicSiteV4, BlockEntryV4, RUNTIME_EXIT_V4_ATOMIC_DECLINED,
-    RUNTIME_EXIT_V4_ATOMIC_FAULT, RUNTIME_EXIT_V4_HELPER_FAILURE, RuntimeContextV1,
-    RuntimeContextV4, RuntimeExitTag,
+    RUNTIME_EXIT_V4_ATOMIC_FAULT, RUNTIME_EXIT_V4_CODE_INVALIDATED, RUNTIME_EXIT_V4_HELPER_FAILURE,
+    RuntimeContextV1, RuntimeContextV4, RuntimeExitTag,
 };
 use od_machine::{
-    GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, PagedAtomicOperand,
-    PhysicalMemory, ProbeConfigError, locate_paged_atomic_operand,
+    GuestPhysicalRange, Long64ProbeConfig, PagedAtomicOperand, PhysicalMemory, ProbeConfigError,
+    locate_paged_atomic_operand,
 };
 
 use crate::{ExecutableMemoryError, PublishedCode};
@@ -44,19 +52,26 @@ use crate::{ExecutableMemoryError, PublishedCode};
 /// What the block returned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AtomicInlineExit {
-    /// The instruction retired (`retired == 1`, RIP is the next instruction).
+    /// Every instruction of the block retired (`retired == instruction count`).
     Complete,
-    /// The budget was zero: nothing ran.
+    /// The budget ran out before an instruction: that instruction did not run.
     BudgetExhausted,
-    /// The STOP byte was raised before the instruction: nothing ran.
+    /// The STOP byte was raised before an instruction: that instruction did not run (the ones
+    /// before it, if any, retired).
     StopRequested,
-    /// The helper reported a guest fault: nothing was changed (the walk's accessed and dirty
-    /// bits are committed, as for the interpreter), `retired == 0`.
+    /// The helper reported a guest fault: nothing of the faulting instruction was changed (the
+    /// walk's accessed and dirty bits are committed, as for the interpreter); the instructions
+    /// before it retired (`retired` counts them) and RIP is the faulting instruction's.
     Fault,
     /// The helper declined the operand (misaligned or split, not plain RAM, ...): nothing was
-    /// changed by the instruction, `retired == 0`; the interpreter owns the instruction.
+    /// changed by that instruction; the interpreter owns it.
     Declined,
-    /// The helper contract was violated: nothing was changed.
+    /// S6-41d: an instruction wrote into the range `run_guarded` guards (the code page): it and
+    /// every instruction before it retired, the later ones did not run, and the block must not
+    /// run again (the exit of the store into its own code, S4-16i).
+    CodeInvalidated,
+    /// The helper contract was violated. The instructions before the failing one completed (and
+    /// retired); the failing one did not change the state.
     HelperFailure,
 }
 
@@ -71,14 +86,16 @@ pub struct AtomicInlineReport {
     pub outcome: CheckedMemoryOutcomeV1,
     /// Why the operand was declined, when the helper kept a reason.
     pub declined: Option<MemoryError>,
-    /// The range reported through `committed_write` after the block returned (the operand, after
-    /// the data and the generation raise), `None` when the block wrote nothing.
+    /// The last range reported through `committed_write` after the block returned (the operand,
+    /// after the data and the generation raise), `None` when the block wrote nothing.
     pub committed: Option<GuestPhysicalRange>,
-    /// How many times the block called the helper (0 for a fence).
+    /// Every range reported that way, in program order (one per memory instruction that ran).
+    pub committed_writes: Vec<GuestPhysicalRange>,
+    /// How many times the block called the helper (0 for fences only).
     pub helper_calls: u32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AtomicInlineError {
     Paging(ProbeConfigError),
     /// The block returned a value outside the V4 exit namespace.
@@ -106,6 +123,18 @@ struct HelperHost<'a> {
     page_fault: Option<PageFaultRecord>,
     declined: Option<MemoryError>,
     helper_calls: u32,
+    /// The physical range the caller guards (S6-41d; the session names the 4 KiB code page of the
+    /// block, the granularity of S4-16i): a write of the walk or of the operand into it ends the
+    /// call in `CodeInvalidated`.
+    code_range: Option<GuestPhysicalRange>,
+    /// The operand ranges of every successful locate, in program order. A located operand is
+    /// always written by the block (nothing can fail between the helper and the data word).
+    located: Vec<GuestPhysicalRange>,
+}
+
+fn ranges_overlap(a: GuestPhysicalRange, b: GuestPhysicalRange) -> bool {
+    u128::from(a.start().get()) < b.end_exclusive()
+        && u128::from(b.start().get()) < a.end_exclusive()
 }
 
 /// The "translate and check with the intent to write" helper of V4 blocks.
@@ -113,7 +142,8 @@ struct HelperHost<'a> {
 /// # Safety
 /// `context` must point to a live, exclusively borrowed `RuntimeContextV4` whose `state` points
 /// to a live `LongModeState`, whose `host` points to the `HelperHost` of this invocation and
-/// whose `site` points to the immutable site of the block, all valid for the whole call. The
+/// whose `site` is the base of an array of `site_count` immutable sites of the block (a
+/// `Box<[_]>`; the index is checked against `site_count`), all valid for the whole call. The
 /// helper does not re-enter generated code and does not unwind.
 pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
     if context.is_null() {
@@ -125,13 +155,18 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
     context.generation_count = 0;
     context.generation = [std::ptr::null(); 2];
     context.operand_host = std::ptr::null_mut();
-    if context.host.is_null() || context.site.is_null() || context.base.state.is_null() {
+    if context.host.is_null()
+        || context.site.is_null()
+        || context.base.state.is_null()
+        || context.site_index >= context.site_count
+    {
         return RUNTIME_EXIT_V4_HELPER_FAILURE;
     }
     // SAFETY: the caller contract above; the three pointers are checked non-null.
     let host = unsafe { &mut *context.host.cast::<HelperHost<'_>>() };
-    // SAFETY: as above.
-    let site = unsafe { *context.site };
+    // SAFETY: the caller contract above: `site` is the base of `site_count` immutable sites, and
+    // the index was checked against the count.
+    let site = unsafe { *context.site.add(context.site_index as usize) };
     // SAFETY: as above.
     let state = unsafe { &*context.base.state };
     host.helper_calls += 1;
@@ -149,6 +184,15 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
             return RUNTIME_EXIT_V4_ATOMIC_DECLINED;
         }
     };
+    // A write of the walk (accessed and dirty bits) into the guarded range counts as a write
+    // into it, as it does for the store of S4-16i (the committed writes of the whole call).
+    let guarded = host.code_range;
+    let mut walk_hit = false;
+    let committed_write = &mut *host.committed_write;
+    let mut note = |range: GuestPhysicalRange| {
+        walk_hit |= guarded.is_some_and(|code| ranges_overlap(code, range));
+        committed_write(range);
+    };
     let (operand, page_fault) = locate_paged_atomic_operand(
         host.memory,
         host.paging,
@@ -156,7 +200,7 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
         host.access_context,
         linear,
         site.operand.size,
-        &mut *host.committed_write,
+        &mut note,
     );
     match operand {
         PagedAtomicOperand::Located(window) => {
@@ -165,6 +209,14 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
             context.generation_count = 1;
             context.committed_start = window.range().start().get();
             context.committed_len = window.range().len();
+            host.located.push(window.range());
+            if walk_hit
+                || host
+                    .code_range
+                    .is_some_and(|code| ranges_overlap(code, window.range()))
+            {
+                context.code_dirty = 1;
+            }
             0
         }
         PagedAtomicOperand::Misaligned => {
@@ -190,22 +242,32 @@ pub unsafe extern "C" fn locate_helper(context: *mut RuntimeContextV4) -> u32 {
 pub struct AtomicInlineBlock {
     code: PublishedCode,
     block: AtomicBlock,
-    /// The site the helper reads; boxed so its address is stable for the context pointers.
-    site: Option<Box<AtomicSiteV4>>,
+    /// The sites the helper reads (one per memory instruction); boxed so their address is stable
+    /// for the context pointers.
+    sites: Box<[AtomicSiteV4]>,
 }
 
 impl AtomicInlineBlock {
     /// Publishes the block into the process `MAP_JIT` region (one live owner at a time, as
     /// everywhere in this crate).
     pub fn publish(block: AtomicBlock) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_in(block, None)
+    }
+
+    /// [`Self::publish`] into a slot of `part` (S6-42), when the caller has one, instead of a
+    /// region of its own.
+    pub fn publish_in(
+        block: AtomicBlock,
+        part: Option<&crate::jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
         let bytes: Vec<u8> = block
             .words
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
-        let code = PublishedCode::publish(&bytes)?;
-        let site = block.site.map(Box::new);
-        Ok(Self { code, block, site })
+        let code = PublishedCode::publish_with_metadata_in(&bytes, None, None, part)?;
+        let sites = block.sites.clone().into_boxed_slice();
+        Ok(Self { code, block, sites })
     }
 
     pub fn block(&self) -> &AtomicBlock {
@@ -249,26 +311,30 @@ impl AtomicInlineBlock {
             },
             locate_helper: Some(locate_helper as AtomicLocateHelperV4),
             host: std::ptr::null_mut(),
-            site: self
-                .site
-                .as_deref()
-                .map_or(std::ptr::null(), |site| site as *const AtomicSiteV4),
+            site: if self.sites.is_empty() {
+                std::ptr::null()
+            } else {
+                self.sites.as_ptr()
+            },
             operand_host: std::ptr::null_mut(),
             generation: [std::ptr::null(); 2],
             generation_count: 0,
-            reserved: 0,
+            site_index: 0,
             committed_start: 0,
             committed_len: 0,
             committed_valid: 0,
+            site_count: self.sites.len() as u32,
+            code_dirty: 0,
             reserved2: 0,
             outcome: CheckedMemoryOutcomeV1::default(),
         }
     }
 
-    /// Runs the one instruction of the block on `state` over `memory`. `budget` is the
-    /// instruction budget of the call (0 runs nothing, 1 runs the instruction), `stop` the
-    /// cooperative STOP byte. Page-table writes of the walk and the committed write of the
-    /// operand go to `committed_write`, the latter after the data and the generation raise.
+    /// Runs the instructions of the block on `state` over `memory`. `budget` is the instruction
+    /// budget of the call (0 runs nothing; every instruction costs 1), `stop` the cooperative
+    /// STOP byte. Page-table writes of the walks go to `committed_write` as they happen; the
+    /// committed writes of the operands follow, in program order, after the data and the
+    /// generation raises (all done by the block).
     pub fn run(
         &self,
         state: &mut LongModeState,
@@ -278,10 +344,28 @@ impl AtomicInlineBlock {
         stop: Option<&AtomicU8>,
         committed_write: &mut dyn FnMut(GuestPhysicalRange),
     ) -> Result<AtomicInlineReport, AtomicInlineError> {
+        self.run_guarded(state, memory, env, budget, stop, None, committed_write)
+    }
+
+    /// [`Self::run`] with a guarded physical range named (S6-41d; the code page of the block): a
+    /// write of the walk or an operand that overlaps it is committed, the instruction retires,
+    /// and the call ends in
+    /// [`AtomicInlineExit::CodeInvalidated`] without running the later instructions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_guarded(
+        &self,
+        state: &mut LongModeState,
+        memory: &PhysicalMemory,
+        env: AtomicInlineEnv,
+        budget: u64,
+        stop: Option<&AtomicU8>,
+        code_range: Option<GuestPhysicalRange>,
+        committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    ) -> Result<AtomicInlineReport, AtomicInlineError> {
         let paging = Long64ProbeConfig::from_cpu_state(state, env.cr3, env.efer)
             .map_err(AtomicInlineError::Paging)?;
         let mut context = self.new_context(state, budget, stop);
-        let (status, page_fault, declined, helper_calls) = {
+        let (status, page_fault, declined, helper_calls, located) = {
             let mut host = HelperHost {
                 memory,
                 paging,
@@ -290,13 +374,15 @@ impl AtomicInlineBlock {
                 page_fault: None,
                 declined: None,
                 helper_calls: 0,
+                code_range,
+                located: Vec::new(),
             };
             context.host = (&mut host as *mut HelperHost<'_>).cast::<c_void>();
             // SAFETY: `context` is the record of a block built by `compile_atomic_block`: the
             // state pointer is the caller's live `&mut LongModeState` (not used by the caller
             // during the call), the stop byte is a live atomic byte or null, `locate_helper` is
             // this module's helper, `host` points to the live `host` above and `site` to the
-            // boxed site that outlives the call.
+            // boxed sites that outlive the call.
             let status = unsafe { self.call_raw(&mut context) };
             context.host = std::ptr::null_mut();
             (
@@ -304,6 +390,7 @@ impl AtomicInlineBlock {
                 host.page_fault.take(),
                 host.declined.take(),
                 host.helper_calls,
+                std::mem::take(&mut host.located),
             )
         };
         let exit = match status {
@@ -313,21 +400,18 @@ impl AtomicInlineBlock {
             RUNTIME_EXIT_V4_ATOMIC_FAULT => AtomicInlineExit::Fault,
             RUNTIME_EXIT_V4_ATOMIC_DECLINED => AtomicInlineExit::Declined,
             RUNTIME_EXIT_V4_HELPER_FAILURE => AtomicInlineExit::HelperFailure,
+            RUNTIME_EXIT_V4_CODE_INVALIDATED => AtomicInlineExit::CodeInvalidated,
             other => return Err(AtomicInlineError::UnknownExit(other)),
         };
-        let mut committed = None;
-        if exit == AtomicInlineExit::Complete && self.site.is_some() {
-            if context.committed_valid != 1 {
-                return Err(AtomicInlineError::MissingCommittedReport);
-            }
-            let range = GuestPhysicalRange::new(
-                GuestPhysicalAddress::new(context.committed_start),
-                context.committed_len,
-            )
-            .map_err(|_| AtomicInlineError::MissingCommittedReport)?;
-            // After the data and the generation raise (both done by the block): the report.
-            committed_write(range);
-            committed = Some(range);
+        // Every successful locate was followed by the data word and the generation raise of its
+        // instruction (nothing can fail in between), so every located operand is reported, also
+        // when a later instruction faulted, was declined or was stopped. The report comes after
+        // the data and the generation raise (S6-30b order).
+        if !located.is_empty() && context.committed_valid != 1 {
+            return Err(AtomicInlineError::MissingCommittedReport);
+        }
+        for range in &located {
+            committed_write(*range);
         }
         Ok(AtomicInlineReport {
             exit,
@@ -336,7 +420,8 @@ impl AtomicInlineBlock {
             page_fault,
             outcome: context.outcome,
             declined,
-            committed,
+            committed: located.last().copied(),
+            committed_writes: located,
             helper_calls,
         })
     }
