@@ -6260,3 +6260,14 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Суть и последствия:** выбранный Windows ISO и файлы `bootx64.efi`, `bootmgfw.efi`, `winload.efi` отсутствуют в текущем workspace. Ранее сохранённые размер/хеш ISO и `bootmgfw.efi` есть в `SUPPORT_MATRIX.md`/audit item A7, но не были пересчитаны в этом срезе. `windows_media_manifest.json` явно помечает их `available=false`/`reverified=false`; static known-GUID search имеет статус `not_performed`. Нельзя делать выводы о GUID, протоколах или runtime использовании.
 - **Основание:** targeted file search в `tests/fixtures/firmware`, `work` и tracked workspace не нашёл Windows ISO/WIM/boot binaries; найден только собственный EFI probe, не являющийся компонентом Windows. Audit item A8 и §10.2/10.12 [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md) уже фиксировали, что GUID scan не выполнялся.
 - **Следующий шаг:** предоставить/получить выбранный официальный ISO вне Git, записать независимо проверяемый URL/дату/размер/SHA-256, выполнить только статический поиск известных UEFI GUID в boot binaries без дизассемблирования или запуска, сохранить воспроизводимые результаты и обновить manifest/аудит. После этого повторить S7-30 review. Не хранить ISO или чужие Windows binaries в Git.
+
+<a id="issue-512-s6-21-ioapic-wake"></a>
+
+### ISSUE-512 — S6-21: срок PIT через IOAPIC при простое всех vCPU
+
+- **Дата обнаружения:** 2026-11-17, при реализации доставки IRQ платы для BSP.
+- **Компонент:** `BoardSmpHost::idle_deadline`, `PitIoapicIrqSource::wake_ns`.
+- **Статус:** открыта. Доставка и пробуждение BSP приняты в рамках части шага 1 S6-21.
+- **Суть и последствия:** когда все vCPU находятся в `HLT`, будущий фронт PIT по INTIN2 может не попасть в арбитраж простоя, если IOAPIC направляет его на AP. Прогон может завершиться как `AllIdle`, хотя фронт должен разбудить AP.
+- **Основание:** срок простоя вычисляется для BSP, а источник IOAPIC ограничивает запросы сроков по индексу LAPIC. Условия описаны в [контракте машины](specs/MACHINE_CONTRACT.md#s6-21-шаг-1--источник-платы-и-срок-платы-в-планировщике). Вывод получен из кода, отдельный сквозной прогон этого маршрута отсутствует.
+- **Следующий шаг:** учесть адресата INTIN2 при определении срока простоя до включения двух vCPU в Linux. Проверить маршрут PIT → IOAPIC → AP при `HLT` всех vCPU, пробуждение адресата и доставку одного IRQ.
