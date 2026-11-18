@@ -2888,3 +2888,12 @@ reaches `74 26` (JZ rel8 +0x26, ISSUE-494) at RIP `0x20190d` after 10,348
 retired instructions, reporting Unsupported opcode 116 with empty COM1.
 Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-494 runner frontier
+
+Exact base-profile `74 26` (JZ rel8 +0x26) branches when ZF=1. With budget
+20000 the runner takes the branch from `0x20190d` and reaches
+`66 83 F8 40` (CMP AX,0x40, ISSUE-495) at RIP `0x201935` after 10,349
+retired instructions. It reports Unsupported opcode 131 with empty COM1.
+Image SHA-256 is `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

@@ -30157,3 +30157,14 @@ preserved. A final ModR/M fetch fault commits no CPU state or
 retirement. The other CPL0 probes refuse the word encoding with opcode
 `0x85`. The paged CPL3 MOV probe stops at the first byte `0x66`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-494 — bounded JZ rel8 +0x26
+
+The base paged CPL0 profile admits exact unprefixed `74 26` in Long64.
+With ZF=1, it adds signed rel8 0x26 to next RIP and checks that target
+for canonicality. With ZF=0, it advances to next RIP. Both outcomes
+preserve RFLAGS, flag definedness, GPRs and memory contents. A
+noncanonical taken target raises #GP(0). That fault and a displacement
+fetch fault commit no CPU state or retirement. The other CPL0 probes
+and the paged CPL3 MOV probe refuse this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

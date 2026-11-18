@@ -3147,3 +3147,15 @@ after 10,348 retired instructions at RIP `0x20190d` on `74 26`
 (JZ rel8 +0x26, ISSUE-494). It reports Unsupported opcode 116 with empty
 COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-494 — exact JZ rel8 +0x26 (`74 26`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short branch. With ZF=1,
+it adds signed rel8 +0x26 to next RIP and checks the taken target for
+canonicality. With ZF=0, it advances to next RIP. Flags and definedness
+are preserved. Tests cover both paths, target and fetch faults, neighbors
+and profile isolation. With budget 20000 the runner takes the branch and
+stops after 10,349 retired instructions at RIP `0x201935` on
+`66 83 F8 40` (CMP AX,0x40, ISSUE-495). It reports Unsupported opcode
+131 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

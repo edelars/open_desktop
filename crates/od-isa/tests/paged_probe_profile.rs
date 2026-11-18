@@ -16283,7 +16283,7 @@ fn rust_helper_jnz_rel8_is_unsupported_in_cpl3_profile() {
 #[test]
 fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
     for displacement in [
-        0x0d_i8, 0x11, 0x1d, 0x29, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
+        0x0d_i8, 0x11, 0x1d, 0x26, 0x29, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
     ] {
         let code = [0x74, displacement as u8]; // observed exact JZ rel8 forms
         for zero in [false, true] {
@@ -16327,7 +16327,7 @@ fn rust_helper_jz_rel8_obeys_zf_and_preserves_flags_and_definedness() {
 #[test]
 fn rust_helper_jz_rel8_checks_canonicality_only_when_taken() {
     for displacement in [
-        0x0d_i8, 0x11, 0x1d, 0x29, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
+        0x0d_i8, 0x11, 0x1d, 0x26, 0x29, 0x33, 0x35, 0x3b, 0x59, 0x64, 0x71, -0x30,
     ] {
         let code = [0x74, displacement as u8];
 
@@ -16424,6 +16424,13 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
         (&[0x66, 0x74, 0x11], 0x74),                   // operand-size prefix
         (&[0x40, 0x74, 0x11], 0x74),                   // REX prefix
         (&[0x0f, 0x84, 0x11, 0, 0, 0], 0x84),          // near JZ
+        (&[0x74, 0x25], 0x74),                         // Displacement below +0x26.
+        (&[0x74, 0x27], 0x74),                         // Displacement above +0x26.
+        (&[0x75, 0x26], 0x75),                         // JNZ with same displacement.
+        (&[0x66, 0x74, 0x26], 0x74),                   // Operand-size prefix.
+        (&[0x67, 0x74, 0x26], 0x74),                   // Address-size prefix.
+        (&[0x40, 0x74, 0x26], 0x74),                   // REX prefix.
+        (&[0x0f, 0x84, 0x26, 0, 0, 0], 0x84),          // Near JZ.
         (&[0x74, 0x28], 0x74),                         // displacement below +0x29
         (&[0x74, 0x2a], 0x74),                         // displacement above +0x29
         (&[0x75, 0x29], 0x75),                         // JNZ with same displacement
@@ -16501,7 +16508,7 @@ fn rust_helper_jz_rel8_neighbours_stay_unsupported_without_mutation() {
 
 #[test]
 fn rust_helper_jz_rel8_is_unsupported_in_cpl3_profile() {
-    for displacement in [0x0d, 0x29, 0x71] {
+    for displacement in [0x0d, 0x26, 0x29, 0x71] {
         let bytes = [0x74, displacement];
         let mut memory = Memory::new(&bytes);
         let mut cpu = state();
@@ -49419,6 +49426,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x72, 0x34][..], 0x72),
         (&[0x74, 0x11][..], 0x74),
         (&[0x74, 0x0d][..], 0x74),
+        (&[0x74, 0x26][..], 0x74),
         (&[0x74, 0x29][..], 0x74),
         (&[0x74, 0x3b][..], 0x74),
         (&[0x74, 0x64][..], 0x74),

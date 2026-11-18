@@ -5143,3 +5143,35 @@ and zero doctests). The paged machine quantum suite passes 110/110. The
 workspace all-targets offline check passes with existing warnings.
 Scoped rustfmt and diff checks pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-494 — exact JZ rel8 +0x26
+
+Five focused short JZ tests pass. They cover both ZF outcomes, flag
+definedness, taken-target canonicality, the displacement fetch page
+fault, neighbors and CPL3 MOV probe isolation. The other CPL0 probe
+matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue494.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,348 | `0x20190d` | `74 26`, JZ rel8 +0x26 |
+| 10,349 | `0x201935` | `66 83 F8 40`, CMP AX,0x40 (ISSUE-495) |
+
+Both boundary runs report BudgetExhausted and empty COM1. ZF=1 selects
+`0x20190d + 2 + 0x26 = 0x201935`. The observed firmware run took that
+path, establishing ZF=1 after the preceding TEST AX,AX. ZF=0 selects
+`0x20190f`, whose image bytes begin `31 C9`. At budget 20000 the runner
+exits 5 on the CMP after 10,349 retired instructions. Unsupported opcode
+131 is the decimal value of `0x83` after the `0x66` operand-size prefix.
+The previous stop reported 116 for JZ opcode byte `0x74`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,579/7/15
+and zero doctests). The paged machine quantum suite passes 110/110. The
+workspace all-targets offline check passes with existing warnings.
+Scoped rustfmt and diff checks pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
