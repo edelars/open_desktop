@@ -273,6 +273,7 @@ impl Stepper for Quantum<'_, '_> {
                 state: &mut *self.call.state,
                 bus: self.call.bus,
                 budget: 1,
+                consecutive_faults: &mut *self.call.consecutive_faults,
                 stop: &mut *self.call.stop,
                 native_stop: self.call.native_stop,
                 lapic: self.call.lapic,

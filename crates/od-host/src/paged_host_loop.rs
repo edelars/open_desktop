@@ -298,6 +298,11 @@ pub enum PagedHostLoopExit {
     /// `Fault` exit: nothing of the instruction retired. See
     /// [`PagedHostLoopReport::page_fault`].
     GuestFault(od_isa::memory::ArchitecturalFault),
+    /// The instruction faulted, and its handler entry aborted in the guest IDT path.
+    FaultDeliveryFailed {
+        fault: ArchitecturalFault,
+        failure: od_machine::PagedCpl0ExceptionFailure,
+    },
     /// A terminal exit of the shared interpreter (`Halted`, `Shutdown`,
     /// `Unsupported`, `Backend`, `PortIo`, `Rejected`, `IntegrationError`).
     Interpreter(od_machine::PagedProbeExit),
@@ -449,6 +454,7 @@ pub(crate) fn run_paged_host_loop_with_hook(
         state,
         LoopBusRef::Exclusive(bus),
         rflags_defined,
+        &mut 0,
         incoming_budget,
         committed_write,
         before_step,
@@ -475,6 +481,13 @@ impl LoopBusRef<'_, '_> {
         match self {
             Self::Exclusive(bus) => bus,
             Self::Shared(bus, _) | Self::SharedSet(bus, _, _) => bus,
+        }
+    }
+
+    fn descriptor_gate(&self) -> od_machine::HostSplitGate<'_> {
+        match self {
+            Self::SharedSet(_, _, env) => env.gate,
+            Self::Exclusive(_) | Self::Shared(..) => od_machine::HostSplitGate::none(),
         }
     }
 }
@@ -523,6 +536,7 @@ pub fn run_paged_host_loop_shared(
         state,
         LoopBusRef::Shared(bus, vcpu),
         rflags_defined,
+        &mut 0,
         incoming_budget,
         committed_write,
         |_, _| {},
@@ -555,6 +569,7 @@ pub fn run_paged_host_loop_shared_set<'a>(
         state,
         LoopBusRef::SharedSet(bus, vcpu, env),
         rflags_defined,
+        &mut 0,
         incoming_budget,
         committed_write,
         |_, _| {},
@@ -588,27 +603,36 @@ fn deliver_native_fault(
     fault: &ArchitecturalFault,
     page_fault: Option<&PageFaultRecord>,
     consecutive: u64,
+    gate: od_machine::HostSplitGate<'_>,
     committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
-) -> bool {
+) -> Result<bool, PagedHostLoopExit> {
     let Ok(paging) = od_machine::Long64ProbeConfig::from_cpu_state(state, config.cr3, config.efer)
     else {
-        return false;
+        return Ok(false);
     };
-    if !od_machine::deliver_host_native_fault(
-        state,
-        bus,
-        &paging,
-        config.access_context,
-        fault,
-        page_fault,
-        consecutive,
-        committed_write,
-    ) {
-        return false;
+    let delivered = gate
+        .deliver_native_fault(
+            state,
+            bus,
+            &paging,
+            config.access_context,
+            fault,
+            page_fault,
+            consecutive,
+            committed_write,
+        )
+        .map_err(|failure| {
+            report.page_fault = page_fault.cloned();
+            PagedHostLoopExit::FaultDeliveryFailed {
+                fault: fault.clone(),
+                failure,
+            }
+        })?;
+    if delivered {
+        report.exceptions_delivered += 1;
+        report.jit_faults_delivered += 1;
     }
-    report.exceptions_delivered += 1;
-    report.jit_faults_delivered += 1;
-    true
+    Ok(delivered)
 }
 
 /// True when the loop must return to its instruction boundary. A pre-entry
@@ -623,6 +647,7 @@ fn try_atomic_step(
     rflags_defined: &mut u64,
     report: &mut PagedHostLoopReport,
     consecutive_faults: &mut u64,
+    gate: od_machine::HostSplitGate<'_>,
     committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
 ) -> Result<bool, PagedHostLoopExit> {
     let jit = with_native_paging(state, cpu_owns_cr3, |state| {
@@ -690,8 +715,9 @@ fn try_atomic_step(
                 &fault,
                 run.page_fault.as_ref(),
                 *consecutive_faults,
+                gate,
                 committed_write,
-            ) {
+            )? {
                 *consecutive_faults += 1;
                 return Ok(true);
             }
@@ -709,6 +735,7 @@ pub(crate) fn run_paged_host_loop_core(
     state: &mut od_isa::LongModeState,
     mut bus: LoopBusRef<'_, '_>,
     rflags_defined: &mut u64,
+    consecutive_faults: &mut u64,
     incoming_budget: u64,
     mut committed_write: impl FnMut(od_machine::GuestPhysicalRange),
     mut before_step: impl FnMut(&PagedHostLoopControl, u64),
@@ -733,7 +760,6 @@ pub(crate) fn run_paged_host_loop_core(
     let cpl0_set = matches!(bus, LoopBusRef::SharedSet(..));
     let cpu_owns_cr3 =
         matches!(&bus, LoopBusRef::SharedSet(_, _, env) if env.set.has_cpu_owned_cr3());
-    let mut consecutive_faults = 0;
     loop {
         // Safe point (S3-25c): nothing is executing, no lookup has started. The
         // session applies the slot releases it deferred (A4).
@@ -863,7 +889,7 @@ pub(crate) fn run_paged_host_loop_core(
                             report.remaining_budget -= retired;
                             report.steps_jit += retired;
                             if retired != 0 {
-                                consecutive_faults = 0;
+                                *consecutive_faults = 0;
                                 if cpl0_set {
                                     state.rflags &= !RFLAGS_RF;
                                 }
@@ -871,20 +897,28 @@ pub(crate) fn run_paged_host_loop_core(
                             continue;
                         }
                         MemoryOperationExecutionExitV2::GuestFault(fault) => {
-                            if cpl0_set
-                                && deliver_native_fault(
+                            if cpl0_set {
+                                match deliver_native_fault(
                                     &mut report,
                                     state,
                                     bus.machine(),
                                     config,
                                     fault,
                                     jit.execution.page_fault.as_ref(),
-                                    consecutive_faults,
+                                    *consecutive_faults,
+                                    bus.descriptor_gate(),
                                     &mut committed_write,
-                                )
-                            {
-                                consecutive_faults += 1;
-                                continue;
+                                ) {
+                                    Ok(true) => {
+                                        *consecutive_faults += 1;
+                                        continue;
+                                    }
+                                    Ok(false) => {}
+                                    Err(exit) => {
+                                        report.exit = exit;
+                                        return report;
+                                    }
+                                }
                             }
                             report.page_fault = jit.execution.page_fault.clone();
                             report.exit = PagedHostLoopExit::GuestFault(fault.clone());
@@ -920,7 +954,8 @@ pub(crate) fn run_paged_host_loop_core(
                         stop_byte,
                         rflags_defined,
                         &mut report,
-                        &mut consecutive_faults,
+                        consecutive_faults,
+                        bus.descriptor_gate(),
                         &mut committed_write,
                     ) {
                         Ok(true) => continue,
@@ -939,6 +974,7 @@ pub(crate) fn run_paged_host_loop_core(
         report.jit_refusals += 1;
         // S6-42c: what the CPL0-set step adds to the probe report (set mode only).
         let mut set_step: Option<(bool, u64, bool)> = None;
+        let mut fault_delivery_failure = None;
         let mut machine_stop = None;
         let quantum = match &mut bus {
             LoopBusRef::Exclusive(bus) => od_machine::run_paged_probe(
@@ -976,12 +1012,13 @@ pub(crate) fn run_paged_host_loop_core(
                         efer: config.efer,
                         context: config.access_context,
                         rflags_defined: *rflags_defined,
-                        consecutive_faults,
+                        consecutive_faults: *consecutive_faults,
                     },
                     env.set,
                     &mut committed_write,
                 ) {
                     Ok(step) => {
+                        fault_delivery_failure = step.fault_delivery_failure;
                         *env.skip_first_boundary = step.partial_rep;
                         if step.port_accessed {
                             machine_stop = env.devices.stop_request();
@@ -1013,13 +1050,13 @@ pub(crate) fn run_paged_host_loop_core(
         }
         report.retired_interpreter += retired;
         if retired != 0 {
-            consecutive_faults = 0;
+            *consecutive_faults = 0;
         }
         report.remaining_budget -= retired;
         report.steps_interpreter += retired;
         if let Some((_, delivered, _)) = set_step {
             report.exceptions_delivered += delivered;
-            consecutive_faults += delivered;
+            *consecutive_faults += delivered;
         }
         if let Some(reason) = machine_stop {
             report.exit = PagedHostLoopExit::MachineStop(reason);
@@ -1047,7 +1084,10 @@ pub(crate) fn run_paged_host_loop_core(
                 if retired == 0 && matches!(set_step, Some((false, 1, _))) => {}
             od_machine::PagedProbeExit::Fault(fault) => {
                 report.page_fault = quantum.page_fault;
-                report.exit = PagedHostLoopExit::GuestFault(fault);
+                report.exit = match fault_delivery_failure {
+                    Some(failure) => PagedHostLoopExit::FaultDeliveryFailed { fault, failure },
+                    None => PagedHostLoopExit::GuestFault(fault),
+                };
                 return report;
             }
             other => {

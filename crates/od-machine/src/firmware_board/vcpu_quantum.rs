@@ -41,7 +41,9 @@ use super::{
 use crate::bus::SplitLockGate;
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook};
 use crate::lapic_irq_source::LapicIrqSource;
-use crate::paged_memory_adapter::{LoopBus, PagedCpl0SetReport, run_cpl0_set_loop};
+use crate::paged_memory_adapter::{
+    ExceptionDeliveryMode, LoopBus, PagedCpl0SetReport, run_cpl0_set_loop,
+};
 use crate::smp_scheduler::Executed;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
@@ -146,6 +148,7 @@ fn quantum_loop(
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
+    exception_delivery: ExceptionDeliveryMode<'_>,
 ) -> PagedCpl0SetReport {
     let QuantumEnv {
         lapic,
@@ -204,7 +207,7 @@ fn quantum_loop(
         }),
         None,
         None,
-        None,
+        exception_delivery,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -320,6 +323,7 @@ impl LoadedFirmwareBoard {
             budget,
             stop,
             set,
+            ExceptionDeliveryMode::Quantum,
         );
 
         self.pump_uart_transmit(report.instructions_executed);
@@ -392,6 +396,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
+    consecutive_faults: &mut u64,
 ) -> Result<Executed, FirmwareBoardError> {
     let inputs = quantum_inputs(vcpu)?;
     if let Some(pm) = &env.acpi_pm {
@@ -418,6 +423,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
         budget,
         stop,
         set,
+        ExceptionDeliveryMode::Thread(consecutive_faults),
     );
 
     env.pump_uart_transmit();

@@ -1162,6 +1162,7 @@ fn atomic_host_step(
             },
         ),
         defined,
+        &mut 0,
         1,
         |_| {},
         before_step,
@@ -1514,6 +1515,10 @@ fn s6_42d_repeated_faults_share_one_limit_across_interpreter_and_jit() {
     let stats = quantum.stats(0);
     assert_eq!(stats.retired_interpreter, 1); // STI
     assert_eq!(stats.retired_jit, 0);
+    assert!(
+        stats.calls > 1,
+        "the gate ends the quantum, not the fault streak"
+    );
     assert_eq!(stats.exceptions_delivered, 256);
     assert_eq!(stats.jit_faults_delivered, 255);
     assert_eq!(board.state().cr2, Some(UNMAPPED));
@@ -1562,6 +1567,7 @@ fn s6_42d_native_atomic_fault_reaches_the_guest_idt_and_restarts_once() {
         let region = SharedJitRegion::new(1, 4).unwrap();
         let quantum = quantum_of(&region, 1);
         let mut board = board(1);
+        put_u64(&mut board, GDT_AT + 8, 0x00AF_9A00_0000_FFFF);
         put_u64(&mut board, DATA, 0);
         if vector == 13 {
             put(&mut board, IDT_AT + 14 * 16, &[0; 16]);
@@ -1588,6 +1594,83 @@ fn s6_42d_native_atomic_fault_reaches_the_guest_idt_and_restarts_once() {
         let stats = quantum.stats(0);
         assert_eq!(stats.jit_faults_delivered, 1, "{stats:?}");
         assert_eq!(stats.atomic_jit_steps, 1, "{stats:?}");
+        assert_eq!(
+            board
+                .bus_mut()
+                .atomic_inline_memory()
+                .load_u64(GuestPhysicalAddress::new(GDT_AT + 8))
+                .unwrap(),
+            0x00AF_9B00_0000_FFFF,
+        );
+    }
+}
+
+#[test]
+fn s6_42d_fault_delivery_keeps_the_original_fault_when_its_frame_changes_the_descriptor() {
+    let _guard = jit_guard();
+    for (vector, address) in [(14, UNMAPPED), (13, 0x0000_8000_0000_0000)] {
+        for native in [false, true] {
+            let region = SharedJitRegion::new(1, 4).unwrap();
+            let part = native.then(|| region.take_part().unwrap());
+            let quantum =
+                JitHostQuantum::new(vec![part], vec![config()], RFLAGS_DEFINED).with_cpl0_set();
+            let mut board = board(1);
+            put_u64(&mut board, GDT_AT + 8, 0x00AF_9A00_0000_FFFF);
+            put(&mut board, IDT_AT + vector * 16, &gate(HANDLER_PF));
+            put(&mut board, CODE_0, &[0xf0, 0xff, 0x03, 0xf4]);
+            let mut before = state(CODE_0, GDT_AT + 16);
+            before.gpr[Register::Rbx as usize] = address;
+            assert!(host_install_vcpu(&mut board, 0, before.clone()));
+
+            let (report, ()) = run_host_threads_with_nmi_paging(
+                &mut board,
+                HostParallelConfig {
+                    budget: 16,
+                    ..host_config(true)
+                },
+                &quantum.nmi_paging(),
+                &|call| quantum.run(call),
+                &|_| quantum.thread_exit(),
+                |control| assert!(control.wait_finished(WAIT)),
+            )
+            .unwrap();
+
+            assert!(
+                matches!(report.finished, HostParallelFinish::Error { cpu: 0, .. }),
+                "{report:?}"
+            );
+            let failure = quantum
+                .last_failure()
+                .expect("the delivery abort is reported");
+            assert!(failure.contains(&format!("vector: {vector}")), "{failure}");
+            assert!(
+                failure.contains("TargetCodeDescriptorAccessedWrite"),
+                "{failure}"
+            );
+            assert!(
+                failure.contains("descriptor or its translation changed"),
+                "{failure}"
+            );
+            assert_eq!(
+                failure.contains("page_fault: Some"),
+                vector == 14,
+                "{failure}"
+            );
+            assert_eq!(report.retired, vec![0]);
+            assert_eq!(quantum.stats(0).exceptions_delivered, 0);
+            assert_eq!(board.state().rip, before.rip);
+            assert_eq!(board.state().gpr, before.gpr);
+            assert_eq!(board.state().cr2, before.cr2);
+            assert_eq!(board.state().cs_cache, before.cs_cache);
+            assert_eq!(
+                board
+                    .bus_mut()
+                    .atomic_inline_memory()
+                    .load_u64(GuestPhysicalAddress::new(GDT_AT + 8))
+                    .unwrap(),
+                u64::from(before.ss_selector.unwrap()),
+            );
+        }
     }
 }
 

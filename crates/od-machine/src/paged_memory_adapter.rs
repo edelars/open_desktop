@@ -925,9 +925,9 @@ pub(crate) enum IrqDeliveryFailure {
     },
 }
 
-/// Why a `#PF` of the guest was not delivered (S4-38L5c).
+/// Why a guest `#PF` or `#GP(0)` did not enter its CPL0 handler.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum PagedCpl0ExceptionFailure {
+pub enum PagedCpl0ExceptionFailure {
     /// The walker left no precise `PageFaultRecord` for the fault (integration error).
     NoPageFaultRecord,
     /// The delivery was refused before any write (see `Cpl0PageFaultRefusal`).
@@ -2442,7 +2442,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         irq,
         checkpoints,
         execution_observations,
-        None,
+        ExceptionDeliveryMode::Quantum,
     )
 }
 
@@ -2485,6 +2485,15 @@ impl LoopBus<'_> {
     }
 }
 
+pub(crate) enum ExceptionDeliveryMode<'a> {
+    /// The caller owns the machine and uses a fresh limit for this quantum.
+    Quantum,
+    /// The vCPU thread keeps the streak across scheduler boundaries.
+    Thread(&'a mut u64),
+    /// One step in a host loop that accounts for the streak and observes handler entry.
+    HostStep(u64),
+}
+
 /// The set loop of one vCPU over a [`LoopBus`]: the body of
 /// [`run_cpl0_set_paged_2m_ram_with_cache`] (see its documentation) with the machine given as
 /// an enum and, for a vCPU thread of the parallel mode, the gate of the split `LOCK`
@@ -2511,7 +2520,7 @@ pub(crate) fn run_cpl0_set_loop(
     irq: Option<IrqBoundaryHook<'_>>,
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
-    host_exception_count: Option<u64>,
+    exception_delivery: ExceptionDeliveryMode<'_>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2539,7 +2548,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
-            host_exception_count,
+            exception_delivery,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false>(
             state,
@@ -2560,7 +2569,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
-            host_exception_count,
+            exception_delivery,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true>(
             state,
@@ -2581,7 +2590,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
-            host_exception_count,
+            exception_delivery,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false>(
             state,
@@ -2602,7 +2611,7 @@ pub(crate) fn run_cpl0_set_loop(
             irq,
             checkpoints,
             execution_observations,
-            host_exception_count,
+            exception_delivery,
         ),
     }
 }
@@ -2627,7 +2636,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     mut irq: Option<IrqBoundaryHook<'_>>,
     mut checkpoints: Option<&mut CheckpointRecorder>,
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
-    host_exception_count: Option<u64>,
+    exception_delivery: ExceptionDeliveryMode<'_>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -2700,7 +2709,14 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     let mut delivered_page_faults = 0u64;
     let mut delivered_general_protection_faults = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
-    let mut deliveries_without_retirement = host_exception_count.unwrap_or(0);
+    let (mut local_faults, yield_after_delivery) = match &exception_delivery {
+        ExceptionDeliveryMode::HostStep(faults) => (*faults, true),
+        _ => (0, false),
+    };
+    let deliveries_without_retirement = match exception_delivery {
+        ExceptionDeliveryMode::Thread(faults) => faults,
+        _ => &mut local_faults,
+    };
     let mut last_instruction_rip = None;
     // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
     // depends on the PIT), so that the board asks the source for its deadline again.
@@ -2989,7 +3005,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                         finish_instruction_path_record(before, state),
                     );
                 }
-                deliveries_without_retirement = 0;
+                *deliveries_without_retirement = 0;
                 if clear_resume_flag {
                     state.rflags &= !RFLAGS_RF;
                 }
@@ -3019,13 +3035,21 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 });
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
-                let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
+                let failure = if *deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
                 {
                     Some(PagedCpl0ExceptionFailure::RepeatLimit)
                 } else {
                     match &original_record {
                         Some(record) if record.fault() == &fault => {
-                            match deliver_page_fault_cpl0_set(state, &mut memory, record, context) {
+                            match with_gated_cpl0_delivery(&mut memory, split_gate, |memory| {
+                                deliver_page_fault_cpl0_set(state, memory, record, context)
+                            })
+                            .unwrap_or_else(|cause| {
+                                Cpl0PageFaultDelivery::Aborted {
+                                    phase: Cpl0PageFaultDeliveryPhase::IdtGateRead,
+                                    cause,
+                                }
+                            }) {
                                 Cpl0PageFaultDelivery::Delivered { .. } => None,
                                 Cpl0PageFaultDelivery::Refused(reason) => {
                                     Some(PagedCpl0ExceptionFailure::Refused(reason))
@@ -3078,11 +3102,11 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                                 faulting_context,
                             });
                         }
-                        deliveries_without_retirement += 1;
+                        *deliveries_without_retirement += 1;
                         if let Some(recorder) = checkpoints.as_deref_mut() {
                             recorder.note_page_fault_delivered();
                         }
-                        if host_exception_count.is_some() {
+                        if yield_after_delivery {
                             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
                         }
                         continue;
@@ -3111,11 +3135,19 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             {
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
-                let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
+                let failure = if *deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
                 {
                     Some(PagedCpl0ExceptionFailure::RepeatLimit)
                 } else {
-                    match deliver_general_protection_cpl0_set(state, &mut memory, &fault, context) {
+                    match with_gated_cpl0_delivery(&mut memory, split_gate, |memory| {
+                        deliver_general_protection_cpl0_set(state, memory, &fault, context)
+                    })
+                    .unwrap_or_else(|cause| {
+                        Cpl0GeneralProtectionDelivery::Aborted {
+                            phase: Cpl0GeneralProtectionPhase::IdtGateRead,
+                            cause,
+                        }
+                    }) {
                         Cpl0GeneralProtectionDelivery::Delivered { .. } => None,
                         Cpl0GeneralProtectionDelivery::Refused(reason) => {
                             Some(PagedCpl0ExceptionFailure::GeneralProtectionRefused(reason))
@@ -3143,8 +3175,8 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                         {
                             observations.note_nested_delivery();
                         }
-                        deliveries_without_retirement += 1;
-                        if host_exception_count.is_some() {
+                        *deliveries_without_retirement += 1;
+                        if yield_after_delivery {
                             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
                         }
                         continue;
@@ -3735,6 +3767,45 @@ impl GuestMemory for Cpl0GateMemory<'_, '_> {
     }
 }
 
+fn with_gated_cpl0_delivery<T>(
+    memory: &mut PagedMovMemoryAdapter<'_>,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
+    deliver: impl FnOnce(&mut Cpl0GateMemory<'_, '_>) -> T,
+) -> Result<T, MemoryError> {
+    let gate = gate.map(DescriptorGate::acquire).transpose()?;
+    if gate.is_some() {
+        // The per-step/entry adapter is not a JIT effects collector. Use its write journal while
+        // the other workers are quiet, keeping the original access/trace state and observer.
+        // Set-loop crossing reads use the journaled byte path. Gate frame slots are aligned,
+        // and Cpl0GateMemory refuses a crossing descriptor store before its preflight.
+        debug_assert!(memory.large_ram_profile && memory.cpl0_set_cross_page_read);
+        debug_assert!(!memory.capture_effects);
+        debug_assert!(memory.committed_writes.is_none() && memory.committed_ad_updates.is_none());
+        memory.capture_effects = true;
+        memory.committed_writes = Some(Vec::new());
+        memory.committed_ad_updates = Some(Vec::new());
+    }
+    let mut delivery_memory = Cpl0GateMemory {
+        memory,
+        descriptor_reads: gate.is_some().then(Vec::new),
+    };
+    let result = deliver(&mut delivery_memory);
+    if let Some(gate) = gate {
+        let memory = delivery_memory.memory;
+        memory.capture_effects = false;
+        memory.committed_ad_updates = None;
+        let writes = memory
+            .committed_writes
+            .take()
+            .expect("delivery write journal");
+        drop(gate);
+        for range in writes {
+            (memory.committed_write)(range);
+        }
+    }
+    Ok(result)
+}
+
 fn with_cpl0_gate_memory<T>(
     ram: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -3744,26 +3815,9 @@ fn with_cpl0_gate_memory<T>(
     gate: Option<&dyn crate::bus::SplitLockGate>,
     deliver: impl FnOnce(&mut Cpl0GateMemory<'_, '_>) -> T,
 ) -> Result<(T, Option<PageFaultRecord>, Option<TrackedAccessError>), MemoryError> {
-    let gate = gate.map(DescriptorGate::acquire).transpose()?;
-    let mut writes = Vec::new();
-    let result = {
-        let mut record = |range| match gate {
-            Some(_) => writes.push(range),
-            None => watch(range),
-        };
-        let mut memory = set_loop_adapter(ram, None, *paging, rip, &mut record, cache, None);
-        let mut delivery_memory = Cpl0GateMemory {
-            memory: &mut memory,
-            descriptor_reads: gate.is_some().then(Vec::new),
-        };
-        let delivery = deliver(&mut delivery_memory);
-        (delivery, memory.page_fault, memory.memory_error)
-    };
-    drop(gate);
-    for range in writes {
-        watch(range);
-    }
-    Ok(result)
+    let mut memory = set_loop_adapter(ram, None, *paging, rip, watch, cache, None);
+    let delivery = with_gated_cpl0_delivery(&mut memory, gate, deliver)?;
+    Ok((delivery, memory.page_fault, memory.memory_error))
 }
 
 pub(crate) fn deliver_pending_irq(
@@ -3834,6 +3888,7 @@ fn gate_acquisition_failure(cause: MemoryError) -> Cpl0ExternalInterruptDelivery
 
 /// Deliver a native instruction's already observed CPL0 fault without executing it again.
 /// As in the CPL0 set loop, only #PF with its walk record and #GP(0) enter the guest IDT.
+/// The caller holds exclusive guest RAM access. Running workers use their `HostSplitGate`.
 pub fn deliver_host_native_fault(
     state: &mut LongModeState,
     bus: &MachineBus,
@@ -3842,10 +3897,35 @@ pub fn deliver_host_native_fault(
     fault: &ArchitecturalFault,
     page_fault: Option<&PageFaultRecord>,
     consecutive: u64,
-    mut committed_write: impl FnMut(GuestPhysicalRange),
+    committed_write: impl FnMut(GuestPhysicalRange),
 ) -> bool {
+    deliver_host_native_fault_gated(
+        state,
+        bus,
+        paging,
+        context,
+        fault,
+        page_fault,
+        consecutive,
+        None,
+        committed_write,
+    )
+    .unwrap_or(false)
+}
+
+pub(crate) fn deliver_host_native_fault_gated(
+    state: &mut LongModeState,
+    bus: &MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    fault: &ArchitecturalFault,
+    page_fault: Option<&PageFaultRecord>,
+    consecutive: u64,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<bool, PagedCpl0ExceptionFailure> {
     if state.idtr.is_none() || consecutive >= MAX_DELIVERIES_WITHOUT_RETIREMENT {
-        return false;
+        return Ok(false);
     }
     let mut memory = set_loop_adapter(
         bus.physical_memory(),
@@ -3857,18 +3937,42 @@ pub fn deliver_host_native_fault(
         None,
     );
     match (fault.vector, fault.error_code) {
-        (14, _) => page_fault.is_some_and(|record| {
-            record.fault() == fault
-                && matches!(
-                    deliver_page_fault_cpl0_set(state, &mut memory, record, context),
-                    Cpl0PageFaultDelivery::Delivered { .. }
-                )
-        }),
-        (13, Some(0)) => matches!(
-            deliver_general_protection_cpl0_set(state, &mut memory, fault, context),
-            Cpl0GeneralProtectionDelivery::Delivered { .. }
-        ),
-        _ => false,
+        (14, _) => {
+            let Some(record) = page_fault.filter(|record| record.fault() == fault) else {
+                return Ok(false);
+            };
+            let delivery = with_gated_cpl0_delivery(&mut memory, gate, |memory| {
+                deliver_page_fault_cpl0_set(state, memory, record, context)
+            })
+            .unwrap_or_else(|cause| Cpl0PageFaultDelivery::Aborted {
+                phase: Cpl0PageFaultDeliveryPhase::IdtGateRead,
+                cause,
+            });
+            match delivery {
+                Cpl0PageFaultDelivery::Delivered { .. } => Ok(true),
+                Cpl0PageFaultDelivery::Aborted { phase, cause } if gate.is_some() => {
+                    Err(PagedCpl0ExceptionFailure::Aborted { phase, cause })
+                }
+                _ => Ok(false),
+            }
+        }
+        (13, Some(0)) => {
+            let delivery = with_gated_cpl0_delivery(&mut memory, gate, |memory| {
+                deliver_general_protection_cpl0_set(state, memory, fault, context)
+            })
+            .unwrap_or_else(|cause| Cpl0GeneralProtectionDelivery::Aborted {
+                phase: Cpl0GeneralProtectionPhase::IdtGateRead,
+                cause,
+            });
+            match delivery {
+                Cpl0GeneralProtectionDelivery::Delivered { .. } => Ok(true),
+                Cpl0GeneralProtectionDelivery::Aborted { phase, cause } if gate.is_some() => {
+                    Err(PagedCpl0ExceptionFailure::GeneralProtectionAborted { phase, cause })
+                }
+                _ => Ok(false),
+            }
+        }
+        _ => Ok(false),
     }
 }
 
@@ -5559,6 +5663,7 @@ mod tests {
 
         let mut bus = bus(0x8007);
         put(&mut bus, 0x4000, 0x5007); // 4 MiB aliases the PTE for DATA_LINEAR.
+        put(&mut bus, 0x5008, 0xa007);
         let descriptor = 0x00AF_9A00_0000_FFFF;
         put(&mut bus, 0x8000, descriptor);
         put(&mut bus, 0x9000, descriptor);
@@ -5581,6 +5686,7 @@ mod tests {
                 assert!(gate.0.get());
                 let table = context().descriptor_table();
                 let mut bytes = [0; 8];
+                memory.read(DATA_LINEAR + 4092, table, &mut bytes).unwrap();
                 memory.read(DATA_LINEAR, table, &mut bytes).unwrap();
                 assert_eq!(u64::from_le_bytes(bytes), descriptor);
                 memory
@@ -5596,6 +5702,7 @@ mod tests {
             matches!(result, Err(MemoryError::Backend(message)) if message.contains("translation changed"))
         );
         assert!(notified.contains(&range(0x5000)));
+        assert!(notified.contains(&range(0x5008)));
         assert!(!notified.contains(&range(0x8000)));
         assert!(!notified.contains(&range(0x9000)));
         assert_eq!(

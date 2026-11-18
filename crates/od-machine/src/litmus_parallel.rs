@@ -325,6 +325,7 @@ impl Driver<'_> {
             source,
             gate,
             budget,
+            consecutive_faults,
             stop,
             ..
         } = call;
@@ -451,6 +452,7 @@ impl Driver<'_> {
                         interpreter_budget,
                         &mut poll,
                         &set,
+                        consecutive_faults,
                     );
                     let executed = match executed {
                         Ok(executed) => executed,

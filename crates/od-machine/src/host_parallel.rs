@@ -45,7 +45,8 @@ use crate::firmware_board::{FirmwareBoardError, set_exit_to_probe_exit};
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
 use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::{
-    IrqBoundaryOutcome, LoopBus, PagedCpl0SetExit, deliver_pending_irq, run_cpl0_set_loop,
+    ExceptionDeliveryMode, IrqBoundaryOutcome, LoopBus, PagedCpl0ExceptionFailure,
+    PagedCpl0SetExit, deliver_host_native_fault_gated, deliver_pending_irq, run_cpl0_set_loop,
 };
 use crate::parallel_run::{
     HostNmiPaging, NmiPaging, ParallelConfig, ParallelControl, ParallelFinish, ParallelReport,
@@ -58,7 +59,7 @@ use crate::{
     Long64ProbeConfig, MachineBus, MachineStopReason, PagedProbeQuantumReport, PciEcam,
 };
 use od_isa::execute::{Cpl0ProfileSet, RunExit};
-use od_isa::memory::AccessContext;
+use od_isa::memory::{AccessContext, ArchitecturalFault, PageFaultRecord};
 use od_isa::{CpuActivity, LongModeState};
 use std::sync::atomic::AtomicU8;
 use std::time::Duration;
@@ -98,6 +99,35 @@ impl HostSplitGate<'static> {
     }
 }
 
+impl HostSplitGate<'_> {
+    /// Enter the handler for a native `#PF` or `#GP(0)` under the worker gate.
+    /// Delivery failures carry the handler phase and the access error.
+    /// A caller without a gate must have exclusive access to guest RAM.
+    pub fn deliver_native_fault(
+        self,
+        state: &mut LongModeState,
+        bus: &MachineBus,
+        paging: &Long64ProbeConfig,
+        context: AccessContext,
+        fault: &ArchitecturalFault,
+        page_fault: Option<&PageFaultRecord>,
+        consecutive: u64,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<bool, PagedCpl0ExceptionFailure> {
+        deliver_host_native_fault_gated(
+            state,
+            bus,
+            paging,
+            context,
+            fault,
+            page_fault,
+            consecutive,
+            self.0,
+            committed_write,
+        )
+    }
+}
+
 impl std::fmt::Debug for HostSplitGate<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.is_some() {
@@ -118,6 +148,9 @@ pub struct HostQuantumCall<'a> {
     pub bus: &'a MachineBus,
     /// At most this many instructions (the shared budget and the timer deadline cut it).
     pub budget: u64,
+    /// Synchronous exceptions delivered since the last instruction retirement on this vCPU.
+    /// A guest executor resets it on retirement and increments it after each successful entry.
+    pub consecutive_faults: &'a mut u64,
     /// The run's stop poll: the end of the run, a `stop_all` request or another vCPU's split
     /// `LOCK` or a kick. The quantum polls it between instructions and returns when it is true.
     pub stop: &'a mut dyn FnMut() -> bool,
@@ -470,6 +503,7 @@ fn run_host_threads_inner<R>(
             state: &mut call.vcpu.state,
             bus: call.env.bus,
             budget: call.budget,
+            consecutive_faults: call.consecutive_faults,
             stop: call.stop,
             native_stop: call.native_stop,
             lapic: call.lapic,
@@ -760,6 +794,8 @@ pub struct HostSetStepReport {
     /// retired (at most 1), the flags mask and the walker's records. A delivered exception
     /// returns `Stopped` with zero retirements so the host can poll interrupts at handler entry.
     pub report: PagedProbeQuantumReport,
+    /// The secondary error when a guarded fault delivery aborts after the original guest fault.
+    pub fault_delivery_failure: Option<PagedCpl0ExceptionFailure>,
     /// The call ended inside a `REP` that made progress: the next boundary is inside it and takes no
     /// interrupt (`skip_first_boundary`).
     pub partial_rep: bool,
@@ -810,15 +846,26 @@ pub fn run_host_set_step(
         None,
         None,
         None,
-        Some(step.consecutive_faults),
+        ExceptionDeliveryMode::HostStep(step.consecutive_faults),
     );
     let partial_rep = matches!(
         report.exit,
         PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
     );
     let timer_register_written = step.lapic.timer_register_writes() != timer_writes;
-    let (exit, _) = set_exit_to_probe_exit(report.exit)
-        .map_err(|error| format!("host CPL0 step: {error:?}"))?;
+    let (exit, fault_delivery_failure) = match report.exit {
+        PagedCpl0SetExit::ExceptionDeliveryFailed {
+            fault,
+            failure:
+                failure @ (PagedCpl0ExceptionFailure::Aborted { .. }
+                | PagedCpl0ExceptionFailure::GeneralProtectionAborted { .. }),
+        } if step.gate.0.is_some() => (crate::PagedProbeExit::Fault(fault), Some(failure)),
+        exit => {
+            let (exit, _) = set_exit_to_probe_exit(exit)
+                .map_err(|error| format!("host CPL0 step: {error:?}"))?;
+            (exit, None)
+        }
+    };
     Ok(HostSetStepReport {
         report: PagedProbeQuantumReport {
             exit,
@@ -828,6 +875,7 @@ pub fn run_host_set_step(
             memory_error: report.memory_error,
             translation_context_changes: report.translation_context_changes,
         },
+        fault_delivery_failure,
         partial_rep,
         delivered_exceptions: report.delivered_exceptions,
         timer_register_written,

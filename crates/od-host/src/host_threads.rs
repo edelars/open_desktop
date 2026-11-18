@@ -329,6 +329,7 @@ impl JitHostQuantum {
                 call.state,
                 bus,
                 &mut thread.rflags_defined,
+                call.consecutive_faults,
                 call.budget,
                 &mut record,
                 |_, _| {},
@@ -362,6 +363,10 @@ impl JitHostQuantum {
                 | PagedHostLoopExit::InterpreterIntegration(text) => Some(text.clone()),
                 PagedHostLoopExit::GuestFault(fault) => Some(format!(
                     "{fault:?}; page_fault: {:?}; rip {:#x}",
+                    report.page_fault, call.state.rip
+                )),
+                PagedHostLoopExit::FaultDeliveryFailed { fault, failure } => Some(format!(
+                    "{fault:?}; delivery: {failure:?}; page_fault: {:?}; rip {:#x}",
                     report.page_fault, call.state.rip
                 )),
                 PagedHostLoopExit::Interpreter(exit)
@@ -407,6 +412,9 @@ impl JitHostQuantum {
                 }),
                 PagedHostLoopExit::IrqDeliveryFailed(_) => {
                     Err("host JIT quantum: an interrupt could not be delivered")
+                }
+                PagedHostLoopExit::FaultDeliveryFailed { .. } => {
+                    Err("host JIT quantum: a fault could not be delivered")
                 }
                 PagedHostLoopExit::InterpreterIntegration(_) => {
                     Err("host JIT quantum: the CPL0 set returned an exit it cannot resume")

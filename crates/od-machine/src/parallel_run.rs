@@ -362,6 +362,7 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) source: &'a mut dyn BoardIrqSource,
     pub(crate) gate: &'a dyn SplitLockGate,
     pub(crate) budget: u64,
+    pub(crate) consecutive_faults: &'a mut u64,
     pub(crate) stop: &'a mut dyn FnMut() -> bool,
     pub(crate) native_stop: Option<&'a AtomicU8>,
     /// A guest machine stop requested by the host quantum, published after its charge.
@@ -867,6 +868,7 @@ impl Worker<'_, '_, '_, '_> {
         let cpu = self.cpu;
         let cell = &sh.cells[cpu];
         let apic = sh.lapics[cpu].clone();
+        let mut consecutive_faults = 0;
         loop {
             cell.busy.store(true, SEQ);
             if sh.barrier(cpu) {
@@ -891,6 +893,9 @@ impl Worker<'_, '_, '_, '_> {
                 }
             };
             let applied = vcpu.apply_startup(pending);
+            if applied.init {
+                consecutive_faults = 0;
+            }
             cell.init_applied.fetch_add(u64::from(applied.init), SEQ);
             cell.started.fetch_add(u64::from(applied.started), SEQ);
             let efer = self.nmi_efer.unwrap_or(vcpu.guest_efer);
@@ -918,7 +923,7 @@ impl Worker<'_, '_, '_, '_> {
 
             match SchedActivity::from(vcpu.activity()) {
                 SchedActivity::Running => {
-                    if let Err(error) = self.call(vcpu, &apic) {
+                    if let Err(error) = self.call(vcpu, &apic, &mut consecutive_faults) {
                         sh.publish(cpu, vcpu);
                         drop(slot);
                         sh.fail(cpu, error);
@@ -970,7 +975,12 @@ impl Worker<'_, '_, '_, '_> {
     }
 
     /// One call of the interpreter loop of the running vCPU and its charge to the clock.
-    fn call(&self, vcpu: &mut Vcpu, apic: &LocalApicHandle) -> Result<(), FirmwareBoardError> {
+    fn call(
+        &self,
+        vcpu: &mut Vcpu,
+        apic: &LocalApicHandle,
+        consecutive_faults: &mut u64,
+    ) -> Result<(), FirmwareBoardError> {
         let sh = self.shared;
         let cpu = self.cpu;
         let cell = &sh.cells[cpu];
@@ -993,7 +1003,15 @@ impl Worker<'_, '_, '_, '_> {
                 owner.step_budget(left, deadline)
             };
             let mut source = ScopedBoardSource(&sh.irq);
-            self.dispatch(vcpu, apic, &mut source, &gate, budget, &mut stop)?
+            self.dispatch(
+                vcpu,
+                apic,
+                &mut source,
+                &gate,
+                budget,
+                consecutive_faults,
+                &mut stop,
+            )?
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
             let budget = {
@@ -1002,10 +1020,26 @@ impl Worker<'_, '_, '_, '_> {
                 let deadline = source.next_deadline_ns().filter(|deadline| *deadline > now);
                 owner.step_budget(left, deadline)
             };
-            self.dispatch(vcpu, apic, &mut **source, &gate, budget, &mut stop)?
+            self.dispatch(
+                vcpu,
+                apic,
+                &mut **source,
+                &gate,
+                budget,
+                consecutive_faults,
+                &mut stop,
+            )?
         } else {
             let budget = lock(&sh.owner).step_budget(left, None);
-            self.dispatch(vcpu, apic, &mut inert, &gate, budget, &mut stop)?
+            self.dispatch(
+                vcpu,
+                apic,
+                &mut inert,
+                &gate,
+                budget,
+                consecutive_faults,
+                &mut stop,
+            )?
         };
         // The charge: the clock owner is the only mover of time (D7).
         {
@@ -1048,6 +1082,7 @@ impl Worker<'_, '_, '_, '_> {
         source: &mut dyn BoardIrqSource,
         gate: &WorkerGate<'_, '_>,
         budget: u64,
+        consecutive_faults: &mut u64,
         stop: &mut dyn FnMut() -> bool,
     ) -> Result<(Executed, Option<MachineStopReason>), FirmwareBoardError> {
         let cpu = self.cpu;
@@ -1055,6 +1090,7 @@ impl Worker<'_, '_, '_, '_> {
         let mut quantum = |vcpu: &mut Vcpu,
                            source: &mut dyn BoardIrqSource,
                            budget: u64,
+                           consecutive_faults: &mut u64,
                            stop: &mut dyn FnMut() -> bool| {
             (self.run)(QuantumCall {
                 env: self.env,
@@ -1064,20 +1100,24 @@ impl Worker<'_, '_, '_, '_> {
                 source,
                 gate,
                 budget,
+                consecutive_faults,
                 stop,
                 native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
                 machine_stop: &mut machine_stop,
             })
         };
         if vcpu.legacy.is_none() {
-            let executed = quantum(vcpu, source, budget, stop)?;
+            let executed = quantum(vcpu, source, budget, consecutive_faults, stop)?;
             return Ok((executed, machine_stop));
         }
         let legacy = crate::ap_legacy_exec::run_legacy_on(vcpu, self.memory(), cpu, budget, stop)?;
         let mut executed = legacy.executed;
+        if executed.retired != 0 {
+            *consecutive_faults = 0;
+        }
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
-            let rest = quantum(vcpu, source, left, stop)?;
+            let rest = quantum(vcpu, source, left, consecutive_faults, stop)?;
             executed.retired += rest.retired;
             executed.partial_rep = rest.partial_rep;
             executed.device_ns += rest.device_ns;
@@ -1493,8 +1533,69 @@ mod tests {
                 call.budget,
                 call.stop,
                 set,
+                call.consecutive_faults,
             )
         })
+    }
+
+    #[test]
+    fn interpreter_keeps_the_fault_limit_across_quantum_boundaries() {
+        const LIMIT: u64 = 256;
+        const STACK_TOP: u64 = STACK_0 + 0x4800;
+        let mut board = board(1);
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        system(&mut board, false);
+        let mut gate = read(&mut board, IDT_AT + u64::from(TO_BSP) * 16, 16);
+        gate[..2].copy_from_slice(&(CODE_0 as u16).to_le_bytes());
+        gate[6..8].copy_from_slice(&((CODE_0 >> 16) as u16).to_le_bytes());
+        patch(&mut board, IDT_AT + 14 * 16, &gate);
+        patch(&mut board, CODE_0, &[0xf0, 0xff, 0x03]); // LOCK INC dword [RBX]
+        let mut state = long_state(CODE_0, STACK_TOP, cr3, true);
+        state.gpr[Register::Rbx as usize] = 0x4000_0000; // An absent PDPT entry.
+        install(&mut board, 0, state, 0xd01);
+
+        let (report, ()) = run_threads(
+            &mut board,
+            config(64, 1024),
+            &|call| {
+                let memory = call.env.bus.physical_memory();
+                let frame =
+                    GuestPhysicalAddress::new(call.vcpu.state.gpr[Register::Rsp as usize] - 8);
+                let before = memory.code_page_generation(frame).unwrap();
+                // Split the fault chain at each newly written frame without retiring a step.
+                let mut stop =
+                    || (call.stop)() || memory.code_page_generation(frame).unwrap() != before;
+                with_set(|set| {
+                    run_vcpu_set_quantum_shared(
+                        call.env,
+                        call.vcpu,
+                        call.cpu,
+                        call.lapic,
+                        call.source,
+                        Some(call.gate),
+                        call.budget,
+                        &mut stop,
+                        set,
+                        call.consecutive_faults,
+                    )
+                })
+            },
+            |control| assert!(control.wait_finished(Duration::from_secs(60))),
+        )
+        .unwrap();
+
+        assert!(
+            matches!(&report.finished, ParallelFinish::Error {
+            cpu: 0, error: FirmwareBoardError::VcpuQuantum { detail, .. }
+        } if detail.contains("RepeatLimit")),
+            "{report:?}"
+        );
+        assert_eq!(report.cpus[0].calls, LIMIT);
+        assert_eq!(report.cpus[0].retired, 0);
+        assert_eq!(
+            board.state().gpr[Register::Rsp as usize],
+            STACK_TOP - 48 * LIMIT
+        );
     }
 
     fn config(quantum: u64, budget: u64) -> ParallelConfig {

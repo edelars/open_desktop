@@ -46,6 +46,7 @@ fn parallel_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoard
             call.budget,
             call.stop,
             set,
+            call.consecutive_faults,
         )
     })
 }
