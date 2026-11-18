@@ -12,7 +12,7 @@
 |---|---|---|
 | RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализован `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs), `4fcd5c4`), ревью S9-05 пройдено, power-loss не проверен |
 | Собственный CoW disk image | `crates/od-storage/src/` | **CoW v1 — нормативен (принято владельцем 2026-11-06)**: layout и правила — §9; реализация [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); S9-40 (throughput, чтение, WA, recovery, память) остаётся незавершённым и не отменяется этим решением |
-| Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен, формат не принят (S9-40); resolver цепочки только в офлайн-CLI image-tool (`PathResolver`, `1590c9e`), VMHost цепочку не открывает |
+| Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен (§9.8), в отличие от CoW v1; resolver цепочки только в офлайн-CLI image-tool (`PathResolver`, `1590c9e`), VMHost цепочку не открывает |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
 | UEFI variable store artifact | семантика — `firmware/uefi/src/`, persistence — `od-storage` | **TBD S9-26**; variable store отсутствует (этап 7, S7-09/S7-10) |
 | vTPM persistent state | state — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | **TBD S9-27**; vTPM отсутствует |
@@ -54,13 +54,13 @@ Offline-профили не зависят от CPU, Windows или vTPM. Ни �
 
 | Параметр | Правило | Начальное значение | Статус |
 |---|---|---|---|
-| Guest logical block (LBA) size | Фиксируется при create, не меняется; все guest-visible смещения кратны ему | 512 B кандидат; 4096 B — альтернатива для S9-13 по требованиям NVMe/Windows | Гипотеза до S9-13 |
+| Guest logical block (LBA) size | Фиксируется при create, не меняется; все guest-visible смещения кратны ему | 512 B: NVMe-контроллер S7-16 ([NVME_DEVICE.md §13.3](NVME_DEVICE.md#133-backend-и-namespace)) объявляет один формат LBA в 512 B; образ этапа 9 гостю ещё не подключён | Выбрано для NVMe-профиля; применение к образу — S9-13 |
 | Logical size RAW | Кратен LBA size; `> 0`; checked arithmetic до любого I/O | В [`raw.rs`](../../crates/od-storage/src/raw.rs) проверяются `size > 0`, block size — степень двойки и кратность; явного верхнего лимита профиля нет, действует только `max_len` backend (`StorageCapabilities`). S9-05 лимит не задал | Открытый вопрос; владелец решения — S9-00 (границы профиля), применение в `RawImage` — S9-05 |
-| CoW block size | Степень двойки, кратна LBA size, фиксирована на image | Выбирается замерами S9-08 | Гипотеза |
-| Virtual capacity CoW | Явный maximum в header; map bounded | S9-08 | TBD |
+| CoW block size | Степень двойки, кратна LBA size, фиксирована на image | 512 Б (`BLOCK_SIZE`) | Нормативно в CoW v1 (§9); замеры S9-40 не дали основания менять |
+| Virtual capacity CoW | Явный maximum в header; map bounded | `MAX_BLOCKS = 1 << 16` блоков, `MAX_FILE_BYTES = 1 << 32` (§9.3) | Нормативно в v1 |
 | Глубина snapshot chain | Явный maximum; превышение — отказ open/create, не обход | S9-14 | `MAX_CHAIN_DEPTH = 8` (параметр snapshot-слоя, не нормативен в v1) |
-| Число snapshots/roots | Явный maximum | S9-14 | TBD |
-| Размер metadata structures | Каждая длина проверяется против лимита до allocation/read | S9-08/S9-09 | TBD |
+| Число snapshots/roots | Явный maximum | S9-14: `MAX_SNAPSHOTS = 8`; roots v1 — два slot (§9) | Snapshots — параметр snapshot-слоя, не нормативен (§9.8) |
+| Размер metadata structures | Каждая длина проверяется против лимита до allocation/read | `MAX_MAP_BYTES = MAX_BLOCKS × 12`, корень 512 Б (§9.2–9.3) | Нормативно в v1 |
 
 Guest page size (4 KiB) не равен host page size (16 KiB на основном Mac); формат и I/O не опираются на их равенство.
 
@@ -91,7 +91,7 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 
 Правила:
 
-1. `durable_ack` выдаётся только после всех persistent dependencies. Порядок в прототипе CoW ([`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), S9-08): data/map и копия корня поколения N+1 (последний сектор файла) записываются до первого barrier → barrier 1 → корень в неактивный slot → barrier 2 → ack; create записывает пустой корень поколения 1 (slot 1) и пустой корень поколения 2 (slot 0) под одним barrier до ack; первый пользовательский commit — поколение 3. Правило: после подтверждённого create пустой слот означает повреждение, а не норму. Порядок проверен только на модели отказов (fault backend) и не принят как нормативный (S9-40).
+1. `durable_ack` выдаётся только после всех persistent dependencies. Порядок в CoW v1 ([`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), S9-08): data/map и копия корня поколения N+1 (последний сектор файла) записываются до первого barrier → barrier 1 → корень в неактивный slot → barrier 2 → ack; create записывает пустой корень поколения 1 (slot 1) и пустой корень поколения 2 (slot 0) под одним barrier до ack; первый пользовательский commit — поколение 3. Правило: после подтверждённого create пустой слот означает повреждение, а не норму. Порядок нормативен в v1 (§9.4); проверен на модели отказов (fault backend); испытания отключения питания S9-39 точки между барьерами 1 и 2 не покрывают.
 2. Многосекторная guest-запись не становится atomic transaction автоматически; атомарность data write задаётся контрактом guest device (S9-13). Атомарность публикации root не заменяет data durability.
 3. `uncertain` переводит writer в состояние `reconcile_required`: новые writes запрещены, image переоткрывается/инспектируется, исход определяется по generation/operation ID. Blind retry запрещён.
 4. Законные последующие overwrite/discard учитываются; требование не означает вечного хранения старых версий. Referenced snapshots сохраняют свои данные.
@@ -128,13 +128,13 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 
 Обязательные свойства recovery:
 
-- Recovery не возвращает состояние старше последнего `durable_ack`. В прототипе CoW это достигается так: create заполняет оба слота (пустой слот после ack — повреждение, ISSUE-057 закрыт `01ef35d`), writable open с необъяснимым повреждением отклоняется (`DamagedOtherSlot`), salvage показывает предыдущее поколение с `possible_lost_commit`. Повреждение вне модели §8 обнаруживается и не заявляется как покрытое.
+- Recovery не возвращает состояние старше последнего `durable_ack`. В CoW v1 это достигается так: create заполняет оба слота (пустой слот после ack — повреждение, ISSUE-057 закрыт `01ef35d`), writable open с необъяснимым повреждением отклоняется (`DamagedOtherSlot`), salvage показывает предыдущее поколение с `possible_lost_commit`. Повреждение вне модели §8 обнаруживается и не заявляется как покрытое.
 - Interrupted unpublished candidate и corruption опубликованного durable state различаются. Нельзя молча откатиться на старую валидную копию, потеряв подтверждённые данные. При невозможности доказать нормальный исход — diagnostic/read-only open или отказ; salvage — отдельная операция в новый target (S9-21).
 - Самый большой generation с валидным header ещё не гарантирует пригодный root.
 
 ## 9. CoW v1 (нормативно с 2026-11-06)
 
-Статус: принят владельцем проекта как нормативный (решение пользователя, 2026-11-06). Нормативна часть v1: раскладка корня, карта, лимиты, протокол коммита, create и выбор корня (§9.1–9.7). Слой snapshot-метаданных (ODSNAP, бит building, правила цепочек) **в принятие не входит**: он описан в коде, но нормативных bytes не имеет (§9.8). S9-40 не завершён: throughput и чтение измерены, recovery и память — нет. Это пределы v1, а не гарантии. Реализация: [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs).
+Статус: принят владельцем проекта как нормативный (решение пользователя, 2026-11-06). Нормативна часть v1: раскладка корня, карта, лимиты, протокол коммита, create и выбор корня (§9.1–9.7). Слой snapshot-метаданных (ODSNAP, бит building, правила цепочек) **в принятие не входит**: он описан в коде, но нормативных bytes не имеет (§9.8). S9-40 частичный: throughput, чтение, open/roll-forward, память, цепочки, export и compaction измерены, структуры по данным не меняются; checkpoint/restore заблокированы S9-29…31. Это пределы v1, а не гарантии. Реализация: [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs).
 
 ### 9.1 Раскладка файла
 
@@ -216,8 +216,8 @@ Salvage ([`cow_salvage.rs`](../../crates/od-storage/src/cow_salvage.rs)) чит�
 ## 10. Checksum scope
 
 - Checksum обнаруживает случайное повреждение в заявленных пределах выбранного алгоритма; он не является authentication, confidentiality или доказательством целостности всего reachable graph.
-- Scope первой версии (кандидат, уточняется S9-08): header/superblock, root descriptors, каждая map/metadata structure. Покрытие data extents — решение S9-08 с замерами; если data не покрыта, inspect/check сообщают это явно.
-- Алгоритм выбирается в S9-08 по политике зависимостей; general-purpose checksum library допустима.
+- Scope v1 (нормативно, §9.2): CRC-32 корня, CRC-32 карты и `block_crc` каждого блока данных в записи карты. Snapshot-метаданные ODSNAP — по реализации, не нормативно (§9.8).
+- Алгоритм v1 — CRC-32 IEEE (§9.2), собственная реализация `crc32` в `cow_proto.rs`.
 - Секреты vTPM и чувствительное состояние требуют отдельной защиты (S9-27); checksum её не даёт.
 
 ## 11. Явные результаты ошибок
@@ -230,6 +230,6 @@ Storage API возвращает типизированные результат
 |---|---|---|
 | Namespace durability на APFS; подтверждение `F_FULLFSYNC` испытаниями и источником | S9-06 (приёмка) и `durable_ack` для создания/публикации | Источник + испытания уровней 1–3; иначе гарантия остаётся открытой |
 | VMHost lifecycle (две VMHost на одном backing) | S9-04 (приёмка) | Заблокировано: VMHost не подключает гостю диски; `flock`, alias identity, read lease и путь `PersistentNvmeBackend::open` покрыты multiprocess tests (`ba77773`, `31b8c2a`, 2026-11-18). Resolver цепочки есть только в офлайн-CLI (`PathResolver` с `ParentLease`); non-advisory lock на сетевых ФС не поддерживается (вне scope) |
-| LBA size guest device | S9-13 | Решить по требованиям выбранного NVMe профиля |
+| LBA size guest device | S9-13 | NVMe-контроллер S7-16 ([NVME_DEVICE.md §13.3](NVME_DEVICE.md#133-backend-и-namespace)) — 512 B; подтвердить при подключении образа этапа 9 гостю (S9-13) |
 | CoW block size, map layout, checksum алгоритм | Решено: формат v1 принят как нормативный владельцем 2026-11-06 (§9). Остаётся открытым только влияние на производительность | Измерено (S9-40): commit-latency ≈4 мс на барьер ([S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)), throughput/WA/чтение/open/память против RAW ([S9_40_THROUGHPUT.md](../testing/S9_40_THROUGHPUT.md)), цепочки, export и compaction ([S9_40_CHAIN_EXPORT_COMPACT.md](../testing/S9_40_CHAIN_EXPORT_COMPACT.md)); решение по данным — структуры v1 не меняются, WA commit по расчёту линейна по размеру карты (известный предел), open цепочки определяется объёмом проверяемых данных, а не глубиной; checkpoint/restore не измерены (S9-29…31) |
 | Модель накопителя/контроллера внутреннего SSD | S9-39 claim | Зафиксировать при подготовке стенда |

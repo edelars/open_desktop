@@ -1,32 +1,35 @@
 //! Disk backends, storage metadata, and snapshot containers.
 //!
-//! Implemented so far: the narrow storage I/O contract in [`io`] and the
-//! headerless RAW image in [`raw`]. CoW disk format, metadata, and snapshot
-//! containers have not started. This crate never imports `od-host`; a host
-//! layer implements [`io::StorageBackend`].
+//! Always built: the narrow storage I/O contract in [`io`] and the headerless
+//! RAW image in [`raw`]. Behind `cfg(any(test, feature = "test-support"))`:
+//! the CoW v1 commit protocol, parser and transaction (`cow_proto`,
+//! `cow_parse`, `cow_tx`; normative since 2026-11-06, see
+//! `docs/specs/STORAGE_FORMAT.md` §9), and the non-normative snapshot layer
+//! with inspect, export/import and salvage on top of it. This crate never
+//! imports `od-host`; a host layer implements [`io::StorageBackend`].
 
 pub mod io;
 pub mod raw;
 
-/// Prototype of a minimal CoW commit protocol (S9-08). Not a normative format.
+/// CoW v1 commit protocol (S9-08); normative layout since 2026-11-06
+/// (`STORAGE_FORMAT.md` §9).
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_proto;
 
-/// Strict read-only parser for the prototype layout (S9-09). Not normative.
+/// Strict read-only parser for the CoW v1 layout (S9-09).
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_parse;
 
-/// Byte-addressed write transaction over the prototype commit (S9-11). Not
-/// normative.
+/// Byte-addressed write transaction over the CoW v1 commit (S9-11).
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_tx;
 
 /// Immutable snapshots, bounded parent chains and writable children over the
-/// prototype commit (S9-14). Not normative.
+/// CoW v1 commit (S9-14). The snapshot layer itself is not normative.
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_snapshot;
 
-/// Read-only inspection and check of a prototype image (S9-19). Not normative.
+/// Read-only inspection and check of an image (S9-19).
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_inspect;
 
