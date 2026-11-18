@@ -54,3 +54,33 @@ OD_S6_41E_ROUNDS=1000000 OD_S6_41E_OUT=<abs>.json cargo test --release -p od-hos
 ```
 
 Проверки: `cargo check -p od-host --features od-machine/weak-host-ordering --all-targets --offline` собирается; `cargo check --workspace --all-targets --offline` собирается; `cargo test -p od-host --offline --lib -- s6_41e s6_42b`: 10 passed; `cargo fmt --check` по od-jit, od-host, od-machine: замечание только в чужом `storage_abi_v1.rs`. `weak-host-ordering` не входит в `default` (`crates/od-machine/Cargo.toml`: `weak-host-ordering = []`, раздела `default` нет). Одна ARM64-машина.
+
+## 6. Контроль чувствительности на ARM64
+
+На Apple M3 Max (Mac15,11, 10 производительных и 4 энергоэффективных ядра), macOS 26.7.1 `25G241`, Apple clang 21.0.0 (`clang-2100.3.34.2`) запущены три парных прогона по 1 000 000 раундов на режим. В каждом процессе два pthread выполняют запись `1` в свою ячейку и чтение другой. Ячейки разнесены по отдельным областям с выравниванием 128 байт. Начало и конец раунда согласованы через Release/Acquire за пределами пары доступов. Планировщик macOS выбирает ядра.
+
+Для одного режима пара состоит из `STR` и `LDR`, для второго между ними вставлен `DMB ISH`. Последовательности проверены в Mach-O через `otool -tvV`. Исходник и команда воспроизведения доступны из корня проекта. [stage6_host_sb.c](../../tools/bench/stage6_host_sb.c).
+
+```sh
+bench_dir=$(mktemp -d)
+cc -std=c11 -O3 -Wall -Wextra -Werror -pthread tools/bench/stage6_host_sb.c -o "$bench_dir/stage6_host_sb"
+for run in 1 2 3; do
+    "$bench_dir/stage6_host_sb" 1000000 relaxed
+    "$bench_dir/stage6_host_sb" 1000000 dmb
+done
+```
+
+| Пара | Режим | (0,0) | (0,1) | (1,0) | (1,1) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | `relaxed` | 9 | 287991 | 711988 | 12 |
+| 1 | `dmb` | 0 | 84008 | 915973 | 19 |
+| 2 | `relaxed` | 1 | 553502 | 446497 | 0 |
+| 2 | `dmb` | 0 | 246501 | 753474 | 25 |
+| 3 | `relaxed` | 3 | 750053 | 249944 | 0 |
+| 3 | `dmb` | 0 | 579288 | 420699 | 13 |
+
+Исход `(0,0)` наблюдался во всех трёх процессах `relaxed`, суммарно 13 из 3 000 000 раундов. Для `dmb` счётчик равен нулю. Опыт подтверждает чувствительность этого изолированного контроля на измеренной машине. Критерий S6-41e по-прежнему требует чувствительного исполнения гостевого litmus и проверку мутации JIT-барьера.
+
+В драйвере с хуком между гостевыми инструкциями есть общие `SeqCst` RMW для счётчиков и опрос COM1 под замком. Они добавляют упорядочивание внутри измеряемой пары. Вклад каждого фактора и достаточность его устранения требуют парных прогонов в самом драйвере. [Драйвер litmus](../../crates/od-machine/src/litmus_parallel.rs), [квант платы](../../crates/od-machine/src/firmware_board/vcpu_quantum.rs), [ISSUE-516](../KNOWN_ISSUES.md#issue-516-s6-41e-sb-observer-ordering).
+
+`tools/check_layout.py` в рабочем каталоге возвращает `Unmapped root directory: .claude` для существующего каталога, исключённого из Git. Исходник прогона размещён внутри описанного `tools/bench/`. Проверка пробелов и компиляция по приведённой команде прошли.
