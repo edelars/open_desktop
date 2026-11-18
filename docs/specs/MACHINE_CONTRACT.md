@@ -4182,7 +4182,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **CPUID на vCPU.** Для платы из `N` vCPU `CPUID.01H:EBX` вычисляется как `(ebx профиля & 0xFFFF) | N << 16 | APIC_ID << 24` при `N > 1`; при `N = 1` — байты профиля без изменений (`0x100`). APIC ID — индекс vCPU. Листья `0xB`, `0x1F`, `0x80000026` остаются нулевыми при любом `N` (так сказано в `SMP_CONTRACT.md`, раздел 2); остальные листы и EDX (включая бит HTT, 28) не меняются. Открыто: по SDM EBX[23:16] определён только при HTT = 1, а профиль HTT не объявляет; Linux читает поле всегда, использует только при HTT. Бит не добавлен: профиль признаков принадлежит `CPU_CONTRACT.md`, решение по topology domains — S6-18 (`SMP_CONTRACT.md` раздел 2), с S6-21.
 
-**Где применено.** К legacy-моделям (`RealModeCpu`) каждого vCPU: поле `Vcpu::cpuid: VcpuCpuid { profile, apic_id, cpu_count }`; `VcpuCpuid::source()` — `CpuidSource::Profile(profile)` при `N = 1` и `CpuidSource::ProfileOnVcpu { .. }` при `N > 1`. Исполнение в long mode (`Cpl0ProfileSet::with_cpuid(&CpuidProfile)`, путь BSP и AP после перехода) **не изменено**: профиль там не знает ни APIC ID, ни `N`, поэтому CPUID в long mode одинаков на всех vCPU (EBX = `0x100`). Подвести `query_for_vcpu` к этому пути — условие S6-21 (набор над ячейками vCPU).
+**Где применено.** К legacy-моделям (`RealModeCpu`) каждого vCPU: поле `Vcpu::cpuid: VcpuCpuid { profile, apic_id, cpu_count }`; `VcpuCpuid::source()` — `CpuidSource::Profile(profile)` при `N = 1` и `CpuidSource::ProfileOnVcpu { .. }` при `N > 1`. Для long mode путь S6-21 использует тот же APIC ID и `N` из `VcpuCpuid` и профиль `Cpl0ProfileSet`, выбранный для BSP и AP.
 
 **EDX после INIT** (SDM Vol. 3A Table 12-1) = `CPUID.01H:EAX` профиля vCPU (`VcpuCpuid::init_edx`), а не константа. У всех четырёх профилей `cpuid.rs` EAX листа 1 равен `0x600`, поэтому значение и ожидания тестов S6-13/S6-16c прежние; константа `AP_INIT_EDX` осталась значением для профиля по умолчанию (используется в тестах). `init_cpu(old_cr0)` — прежняя функция для одиночного процессора (профиль `DiagnosticV1`, индекс 0, `N = 1`); плата использует `init_cpu_for(old_cr0, vcpu.cpuid)`.
 
@@ -4239,7 +4239,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **Отличие от цикла Linux (осознанное).** В цикле Linux под источником PIC вектор LAPIC, который разбудил бы процессор, — `Config`-ошибка (`idle_to`); в кванте планировщика BSP при том же источнике доставляет вектор LAPIC запасной ветвью составного источника. Счётчики `IrqCounters` вызова локальны и не накапливаются; свидетельство доставки — счётчики самого источника (`PitPicStats`) и память гостя.
 
-**Осталось в S6-21.** Перевод цикла Linux на планировщик со сверкой с контрольным прогоном S6-10 входит в шаг 1. Параметры `od-runner linux-direct` (число vCPU и seed) входят в шаг 2. Однородность CPUID AP и BSP в long mode проверяется в шаге 6. Источник RDTSC, NVMe doorbell и запрос остановки PM в кванте описаны в S6-16d.
+**Осталось в S6-21.** Перевод цикла Linux на планировщик со сверкой с контрольным прогоном S6-10 входит в шаг 1. Параметры `od-runner linux-direct` (число vCPU и seed) входят в шаг 2. Проверка реальной Linux на предупреждения CPUID и APIC ID остаётся в шаге 6. Источник RDTSC, NVMe doorbell и запрос остановки PM в кванте описаны в S6-16d.
 
 ## S6-24 — остановка всех vCPU, снимок и сброс
 

@@ -158,6 +158,7 @@ fn quantum_loop(
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
     vcpu.state.cr2 = Some(vcpu.guest_cr2.or(prior_cr2).unwrap_or(0));
+    let set = set.with_cpuid_topology(vcpu.cpuid.apic_id, vcpu.cpuid.cpu_count);
 
     let timer_writes = lapic.timer_register_writes();
     let mut own = LapicIrqSource::new(lapic.clone());
@@ -183,7 +184,7 @@ fn quantum_loop(
         },
         budget,
         INTEGER_FLAGS,
-        set,
+        &set,
         None,
         || {
             stop()

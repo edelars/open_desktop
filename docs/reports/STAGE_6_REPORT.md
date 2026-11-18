@@ -1000,6 +1000,15 @@ KVM с подменённой CPUID: принял `EFER.LME|NXE|SCE`, `CR4 = 0x6
 
 **Проверка маршрута PIT → IOAPIC → AP (ISSUE-512).** Тестовая плата направляет INTIN2 на AP, оба vCPU начинают в `HLT`. До исправления `AllIdle` наступал с нулём пробуждений. Теперь при обоих значениях IF у BSP планировщик продвигает часы до фронта. AP просыпается один раз, выполняет обработчик и EOI и снова останавливается с IF = 0. Прошли 64 теста по фильтрам `vcpu_quantum pit_ioapic_irq_source smp_scheduler`. Подключение к циклу Linux и сверка S6-10 остаются частью шага 1.
 
+
+### S6-21 шаг 6а — CPUID BSP и AP в long mode
+
+CPL0-набор использует общий выбранный профиль и получает APIC ID и число vCPU от платы. Топология передаётся в прямом цикле BSP и в кванте платы. Legacy-профиль AP применяется до перехода в long mode. Профиль без CPUID сохраняет прежний допуск инструкций.
+
+Фикстура `s6_21_long_mode_cpuid_uses_one_profile_and_each_vcpus_topology` исполняет гостевой `0F A2` на BSP в прямом Linux-цикле и на AP, поднятом через INIT/SIPI и trampoline. Проверены BSP на платах с 1, 2 и 4 vCPU, AP1 при двух и AP3 при четырёх vCPU. В 70 исполнениях совпали результаты стандартных, расширенных и отсутствующих листьев с учётом полей EBX листа 1. Проверены обнуление старших 32 бит выходных регистров, неизменность RFLAGS, RIP + 2 и единичный retirement. При одном vCPU сохранены прежние значения.
+
+Прошли 21 тест CPUID в `od-isa` и 40 тестов AP и CPUID в `od-machine`. Реальная загрузка Linux, online AP, guest IPI и проверка предупреждений ядра остаются частью приёмки S6-21. [Контракт CPU](../specs/CPU_CONTRACT.md), [контракт машины](../specs/MACHINE_CONTRACT.md#s6-18a--cpuid-на-каждом-vcpu-и-профиль-ap).
+
 ### S6-19 — litmus в режиме чередования (реализовано, ожидает ревью)
 
 Дата: 2026-11-17. Чекбокс не отмечен. Срез: драйвер перебора расписаний в `crates/od-machine/src/litmus_interleaving.rs` (`cfg(test)`; 18 тестов, один `#[ignore]` — прогон-доказательство), `serde_json` как dev-зависимость `od-machine`, данные [`s6-19-litmus-interleaving.json`](data/stage6/s6-19-litmus-interleaving.json) (77 КБ), разделы в [SMP.md](../testing/SMP.md) и [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md#s6-19--litmus-в-режиме-чередования).

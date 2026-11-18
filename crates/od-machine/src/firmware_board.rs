@@ -2720,6 +2720,8 @@ impl LoadedFirmwareBoard {
             privilege: PrivilegeLevel::Ring0,
             origin: AccessOrigin::Explicit,
         };
+        let cpuid = self.vcpus[BOOT_VCPU_INDEX].cpuid;
+        let set = set.with_cpuid_topology(cpuid.apic_id, cpuid.cpu_count);
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
@@ -2915,7 +2917,7 @@ impl LoadedFirmwareBoard {
                 context,
                 quantum_budget,
                 INTEGER_FLAGS,
-                set,
+                &set,
                 source
                     .as_mut()
                     .map(|source| source as &mut dyn FnMut() -> u64),
