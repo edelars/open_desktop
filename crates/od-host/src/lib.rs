@@ -11,6 +11,8 @@ pub mod jit_region {
         _unsupported: (),
     }
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod atomic_inline;
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;

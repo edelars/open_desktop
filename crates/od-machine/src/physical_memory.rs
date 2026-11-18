@@ -295,6 +295,40 @@ struct Region {
     page_generations: Vec<AtomicU64>,
 }
 
+/// S6-41c: what generated code needs for one inline atomic operation on a RAM operand
+/// ([`PhysicalMemory::atomic_operand_window`]). It borrows the memory, so it cannot outlive it;
+/// the raw pointer it carries is for one synchronous call and is accessed only by host-atomic
+/// instructions of the operand's width (amendment (в′) of S6-30a).
+#[derive(Clone, Copy, Debug)]
+pub struct AtomicOperandWindow<'m> {
+    host: *mut u8,
+    generation: &'m AtomicU64,
+    range: GuestPhysicalRange,
+}
+
+impl<'m> AtomicOperandWindow<'m> {
+    /// Host address of the operand: naturally aligned for `range().len()`.
+    pub fn host_ptr(&self) -> *mut u8 {
+        self.host
+    }
+
+    /// The generation counter of the page of the operand, to be raised with a `Release`
+    /// read-modify-write after the data (the pointer is valid as long as the memory lives).
+    pub fn generation_ptr(&self) -> *const AtomicU64 {
+        self.generation
+    }
+
+    /// The generation counter, for a caller that raises it itself.
+    pub fn generation(&self) -> &'m AtomicU64 {
+        self.generation
+    }
+
+    /// The guest physical range of the operand (what `committed_write` is told after the write).
+    pub fn range(&self) -> GuestPhysicalRange {
+        self.range
+    }
+}
+
 /// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`),
 /// or, with `large` set, to one 2 MiB-aligned plain-RAM span (`PhysicalMemory::ram_leaf_2m`, S4-13d).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -714,6 +748,76 @@ impl PhysicalMemory {
             },
             committed_write,
         )
+    }
+
+    /// S6-41c: the window for one inline atomic operation of generated code on the naturally
+    /// aligned RAM operand of `width` (1, 2, 4 or 8) bytes at `address`: the host pointer of the
+    /// operand (`RamStorage::operand_ptr`, amendment (в′) of S6-30a) and the page-generation
+    /// counter of the one page it lies in (an aligned operand of at most 8 bytes never crosses a
+    /// page). The generated code does the host-atomic data access itself, then raises the counter
+    /// with a `Release` read-modify-write, then reports the write (the order of
+    /// [`Self::commit_write`], S6-40 obligation 1); this function writes nothing and raises
+    /// nothing.
+    ///
+    /// Errors, all before any effect and none counted: the region errors of a write (`Unmapped`,
+    /// `AccessCrossesRegion`, `AddressOverflow`), `ReadOnlyRegion` for ROM, holes and the
+    /// framebuffer (device-owned memory has no generations, the interpreter owns it),
+    /// `MisalignedAtomic` for a misaligned operand (the caller sends it to the split-lock path of
+    /// S6-34, it never runs inline), `CodeGenerationExhausted`.
+    ///
+    /// The window must be used for one synchronous call only: the pointer is valid while `self`
+    /// is alive and the window borrows `self` for exactly that reason.
+    pub fn atomic_operand_window(
+        &self,
+        address: GuestPhysicalAddress,
+        width: usize,
+    ) -> Result<AtomicOperandWindow<'_>, MemoryAccessError> {
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return Err(MemoryAccessError::InvalidPhysicalWidth(
+                u8::try_from(width).unwrap_or(u8::MAX),
+            ));
+        }
+        let bytes = width as u64;
+        let (region_index, offset) = self.locate_index(address, bytes)?;
+        let region = &self.regions[region_index];
+        if region.spec.kind != MemoryRegionKind::Ram {
+            return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
+        }
+        if address.get() % bytes != 0 {
+            return Err(MemoryAccessError::MisalignedAtomic {
+                address,
+                width: width as u8,
+            });
+        }
+        let backing = region
+            .backing
+            .as_ref()
+            .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
+        let page_index =
+            usize::try_from((address.get() >> 12) - (region.spec.range.start.get() >> 12))
+                .map_err(|_| MemoryAccessError::AddressOverflow)?;
+        let generation = region
+            .page_generations
+            .get(page_index)
+            .ok_or(MemoryAccessError::AddressOverflow)?;
+        if generation.load(Ordering::Relaxed) == u64::MAX {
+            return Err(MemoryAccessError::CodeGenerationExhausted);
+        }
+        let host =
+            backing
+                .operand_ptr(offset, width)
+                .ok_or(MemoryAccessError::MisalignedAtomic {
+                    address,
+                    width: width as u8,
+                })?;
+        Ok(AtomicOperandWindow {
+            host,
+            generation,
+            range: GuestPhysicalRange {
+                start: address,
+                len: bytes,
+            },
+        })
     }
 
     /// S6-31: how many locked operations were refused because the operand was not naturally
@@ -2471,6 +2575,83 @@ mod tests {
         let memory = memory(&[(0x1000, 0x1000, MemoryRegionKind::Ram)]);
         memory.regions[0].page_generations[0].store(u64::MAX, Ordering::Relaxed);
         memory
+    }
+
+    /// S6-41c: the atomic operand window of RAM is the host cell of the operand with the counter
+    /// of its page; everything it refuses is refused before any effect and without counting.
+    #[test]
+    fn the_atomic_operand_window_serves_aligned_ram_and_refuses_the_rest() {
+        use std::sync::atomic::AtomicU32;
+        let memory = memory(&[
+            (0x1003, 0x2000, MemoryRegionKind::Ram),
+            (0x4000, 0x1000, MemoryRegionKind::Rom),
+            (0x6000, 0x1000, MemoryRegionKind::Mmio),
+            (0x8000, 0x1000, MemoryRegionKind::Framebuffer),
+        ]);
+        let at = GuestPhysicalAddress::new;
+        // An aligned 4-byte operand: the pointer reaches the bytes the safe API sees, and the
+        // counter is that of its page.
+        let window = memory.atomic_operand_window(at(0x1010), 4).unwrap();
+        assert_eq!(window.range(), range(0x1010, 4));
+        // SAFETY: the pointer is a naturally aligned `u32` cell of the live memory.
+        unsafe { AtomicU32::from_ptr(window.host_ptr().cast::<u32>()) }
+            .store(0x0102_0304, Ordering::SeqCst);
+        assert_eq!(memory.load_u32(at(0x1010)), Ok(0x0102_0304));
+        assert_eq!(window.generation().load(Ordering::Acquire), 1);
+        // The write above went around `commit_write`: nothing raised the counter (the generated
+        // code does), and nothing was notified.
+        assert_eq!(memory.code_page_generation(at(0x1010)), Ok(1));
+        window.generation().fetch_add(1, Ordering::Release);
+        assert_eq!(memory.code_page_generation(at(0x1010)), Ok(2));
+        // The page of the next operand is a different counter (the region starts at 0x1003).
+        let second = memory.atomic_operand_window(at(0x2008), 8).unwrap();
+        assert_eq!(second.generation().load(Ordering::Acquire), 1);
+        assert_eq!(memory.code_page_generation(at(0x2008)), Ok(1));
+
+        for width in [1usize, 2, 4, 8] {
+            assert!(memory.atomic_operand_window(at(0x1040), width).is_ok());
+        }
+        assert_eq!(
+            memory.atomic_operand_window(at(0x1010), 3).unwrap_err(),
+            MemoryAccessError::InvalidPhysicalWidth(3)
+        );
+        // Misaligned: never inline, not counted (the split-lock path owns it).
+        for (address, width) in [(0x1011u64, 2usize), (0x1012, 4), (0x1014, 8), (0x1005, 2)] {
+            assert_eq!(
+                memory
+                    .atomic_operand_window(at(address), width)
+                    .unwrap_err(),
+                MemoryAccessError::MisalignedAtomic {
+                    address: at(address),
+                    width: width as u8
+                },
+                "{address:#x}+{width}"
+            );
+        }
+        assert_eq!(memory.split_lock_refusals(), 0);
+        // Not plain RAM, not mapped, crossing the end of the region.
+        for address in [0x4000u64, 0x8000] {
+            assert!(matches!(
+                memory.atomic_operand_window(at(address), 4),
+                Err(MemoryAccessError::ReadOnlyRegion(_))
+            ));
+        }
+        assert!(memory.atomic_operand_window(at(0x6000), 4).is_err());
+        assert!(matches!(
+            memory.atomic_operand_window(at(0x9000), 4),
+            Err(MemoryAccessError::Unmapped(_))
+        ));
+        assert!(matches!(
+            memory.atomic_operand_window(at(0x3000), 8),
+            Err(MemoryAccessError::AccessCrossesRegion(_) | MemoryAccessError::Unmapped(_))
+        ));
+        // An exhausted counter: refused (the write would not be recordable).
+        assert_eq!(
+            memory_with_exhausted_generation()
+                .atomic_operand_window(at(0x1000), 4)
+                .unwrap_err(),
+            MemoryAccessError::CodeGenerationExhausted
+        );
     }
 
     /// S6-31: four host threads on one memory: for every width the fetch-add sum is exact, a

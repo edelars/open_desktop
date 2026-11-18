@@ -424,7 +424,7 @@ pub fn emit_atomic_program(
 }
 
 /// Load a 64-bit constant with `MOVZ` and `MOVK`.
-fn materialize(encoder: &mut Encoder, dst: XReg, value: u64) -> Result<(), EncodeError> {
+pub(crate) fn materialize(encoder: &mut Encoder, dst: XReg, value: u64) -> Result<(), EncodeError> {
     let mut first = true;
     for halfword in 0..4u8 {
         let part = ((value >> (16 * halfword)) & 0xffff) as u16;

@@ -2208,6 +2208,100 @@ fn set_loop_adapter<'a>(
     }
 }
 
+/// S6-41c: the outcome of [`locate_paged_atomic_operand`].
+#[derive(Debug)]
+pub enum PagedAtomicOperand<'m> {
+    /// The operand is naturally aligned plain RAM; the walk has been done and its effects
+    /// (accessed and dirty bits, in the order and with the notifications of the interpreter's
+    /// locked operation) are committed. The window gives the host cell and the page counter.
+    Located(crate::AtomicOperandWindow<'m>),
+    /// The operand is not naturally aligned for its width: nothing was walked, counted or
+    /// changed. A split `LOCK` is the business of the interpreter step, which carries the gate of
+    /// S6-34 step 8 (JIT_CONTRACT S6-41c: the inline path declines it).
+    Misaligned,
+    /// The walk raised an architectural fault (`#PF` with the effects of the walk before the
+    /// fault, as for the interpreter; `#GP`/`#SS` for a non-canonical operand is raised before
+    /// this function, by the address computation). No data byte was touched.
+    Fault(od_isa::memory::ArchitecturalFault),
+    /// The operand is not inline-able (MMIO, ROM, framebuffer, a hole, an exhausted page counter,
+    /// a backend error of the walk): the interpreter owns the instruction. The walk may have set
+    /// accessed bits, exactly as the interpreter's own walk would.
+    Declined(MemoryError),
+}
+
+/// S6-41c: the translation half of an inline atomic operation (JIT_CONTRACT S6-41c). One call is
+/// the "translate and check with the intent to write" of a `LOCK` form, `XCHG` or `CMPXCHG` on
+/// the linear address `linear` of `size` bytes: the walks of [`PagedMovMemoryAdapter`]'s locked
+/// operations (a read walk, then a write walk: present, write, user and reserved-bit checks,
+/// accessed and dirty bits, the faults of a write) on the whole CPL0-set profile, and then the
+/// window of the operand. The write intent applies to every outcome of the operation, so the
+/// unequal branch of `CMPXCHG` (x86 writes the destination back, ARM `CAS` does not) takes the
+/// same `#PF` on a read-only page and sets the same dirty bit as the interpreter. No data byte is
+/// read or written here. `committed_write` receives the page-table writes of the walk.
+pub fn locate_paged_atomic_operand<'m>(
+    memory: &'m crate::PhysicalMemory,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    context: AccessContext,
+    linear: u64,
+    size: od_isa::OperandSize,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> (PagedAtomicOperand<'m>, Option<PageFaultRecord>) {
+    let bytes = size.bytes() as u64;
+    if linear % bytes != 0 {
+        return (PagedAtomicOperand::Misaligned, None);
+    }
+    let mut adapter = set_loop_adapter(
+        memory,
+        None,
+        paging,
+        instruction_rip,
+        committed_write,
+        None,
+        None,
+    );
+    let operand = match adapter.locked_target(linear, context, size) {
+        Ok(LockedTarget::Host { width, physical }) => {
+            match memory.atomic_operand_window(physical, width.bytes() as usize) {
+                Ok(window) => PagedAtomicOperand::Located(window),
+                Err(error) => PagedAtomicOperand::Declined(MemoryError::Backend(format!(
+                    "atomic operand window of {physical:?}: {error:?}"
+                ))),
+            }
+        }
+        // Not reachable for an aligned operand; declined rather than guessed.
+        Ok(LockedTarget::Serial | LockedTarget::Stopped(_)) => PagedAtomicOperand::Misaligned,
+        Err(MemoryError::Architectural(fault)) => PagedAtomicOperand::Fault(fault),
+        Err(error) => PagedAtomicOperand::Declined(error),
+    };
+    (operand, adapter.page_fault.take())
+}
+
+/// S6-41c: runs `callback` with the adapter of the CPL0 profile set over `memory` (the form the
+/// board's interpreter uses: RAM only, every set width, locked operations on the host atomics of
+/// the RAM). It is the interpreter-side reference of [`locate_paged_atomic_operand`] for tests and
+/// differential runs: the same tables, the same walks, the same notifications. Returns the
+/// callback's result and the page fault record of the last fault, if any.
+pub fn with_paged_cpl0_set_memory<R>(
+    memory: &crate::PhysicalMemory,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    callback: impl FnOnce(&mut PagedMovMemoryAdapter<'_>) -> R,
+) -> (R, Option<PageFaultRecord>) {
+    let mut adapter = set_loop_adapter(
+        memory,
+        None,
+        paging,
+        instruction_rip,
+        committed_write,
+        None,
+        None,
+    );
+    let result = callback(&mut adapter);
+    (result, adapter.page_fault.take())
+}
+
 /// The port view of one set call that notes a retired write to the PIT ports `0x40..=0x43`
 /// (S4-38L8b). Reads and every other port pass through untouched.
 struct PitWriteWatch<P> {
@@ -5822,6 +5916,154 @@ mod tests {
             None,
             None,
         )
+    }
+
+    /// S6-41c: the translation half of an inline atomic operation does to the page tables, the
+    /// notifications and the fault exactly what the interpreter's locked operation did, also for
+    /// the unequal branch of `CMPXCHG` (the interpreter's compare that does not match still takes
+    /// the write walk: `#PF` on a read-only page, dirty bit set on a writable one); the window it
+    /// returns is the cell the interpreter's operation would have used.
+    #[test]
+    fn locating_an_atomic_operand_leaves_what_the_interpreters_unequal_cmpxchg_left() {
+        use od_isa::OperandSize::{Byte, Dword, Qword, Word};
+        let mut located = 0;
+        let mut faulted = 0;
+        for ad in [0, AD] {
+            for data_pte in [0x7007u64, 0x7027, 0x7067, 0x7005, 0x7006, 0x7025, 0x0] {
+                for size in [Byte, Word, Dword, Qword] {
+                    let address = DATA_LINEAR + 0x40 + size.bytes() as u64 * 2;
+                    let (memory_a, memory_b) =
+                        (lock_memory(ad, data_pte), lock_memory(ad, data_pte));
+                    let (mut log_a, mut log_b) = (Vec::new(), Vec::new());
+                    let mut note_a = |range| log_a.push(range);
+                    let mut note_b = |range| log_b.push(range);
+                    let config = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+                    let (operand, fault_a) = locate_paged_atomic_operand(
+                        &memory_a,
+                        config,
+                        0x0040_0000,
+                        context(),
+                        address,
+                        size,
+                        &mut note_a,
+                    );
+                    let (result_b, fault_b) = {
+                        let mut b = lock_adapter(&memory_b, &mut note_b);
+                        // A compare that cannot match: x86 still writes the destination back.
+                        let result = b.atomic_compare_exchange_integer(
+                            address,
+                            context(),
+                            size,
+                            !0x0101_0101_0101_0101u64,
+                            0x55,
+                        );
+                        (result, b.page_fault.take())
+                    };
+                    let label = format!("ad {ad:#x} pte {data_pte:#x} size {}", size.bytes());
+                    assert_eq!(
+                        table_entries(&memory_a),
+                        table_entries(&memory_b),
+                        "{label}"
+                    );
+                    assert_eq!(format!("{fault_a:?}"), format!("{fault_b:?}"), "{label}");
+                    // The interpreter's compare writes the unchanged value back and notifies it;
+                    // the walk part of the log is the common prefix.
+                    assert!(
+                        log_b.starts_with(&log_a) && log_b.len() <= log_a.len() + 1,
+                        "{label}: walk notifications {log_a:?} vs {log_b:?}"
+                    );
+                    match (&operand, &result_b) {
+                        (PagedAtomicOperand::Located(window), Ok(_)) => {
+                            located += 1;
+                            // The window is the cell the interpreter used: bytes of frame 0x7000.
+                            let physical = 0x7000 + (address & 0xfff);
+                            assert_eq!(window.range().start().get(), physical, "{label}");
+                            assert_eq!(window.range().len(), size.bytes() as u64, "{label}");
+                            // Locating raises no counter. The interpreter's unequal compare
+                            // does: `PhysicalMemory::atomic_compare_exchange` reports a write
+                            // always (x86 writes the destination back), so the page counter
+                            // grows by one and one range is notified. The inline sequence does
+                            // the same after its atomic operation, unconditionally.
+                            let counter = |memory: &crate::PhysicalMemory| {
+                                memory
+                                    .code_page_generation(GuestPhysicalAddress::new(physical))
+                                    .unwrap()
+                            };
+                            assert_eq!(counter(&memory_b), counter(&memory_a) + 1, "{label}");
+                            assert_eq!(data_frame(&memory_a), data_frame(&memory_b), "{label}");
+                        }
+                        (
+                            PagedAtomicOperand::Fault(fault),
+                            Err(MemoryError::Architectural(other)),
+                        ) => {
+                            faulted += 1;
+                            assert_eq!(fault, other, "{label}");
+                            assert_eq!(data_frame(&memory_a), data_frame(&memory_b), "{label}");
+                        }
+                        other => panic!("{label}: located vs interpreter disagree: {other:?}"),
+                    }
+                }
+            }
+        }
+        assert!(
+            located > 0 && faulted > 0,
+            "{located} located, {faulted} faulted"
+        );
+    }
+
+    /// S6-41c: a misaligned operand is declined with no walk at all: no accessed or dirty bit, no
+    /// notification, no split-lock refusal counted; a located operand sets the dirty bit a write
+    /// sets and leaves the data alone.
+    #[test]
+    fn a_misaligned_atomic_operand_is_declined_before_any_walk() {
+        use od_isa::OperandSize::{Dword, Qword, Word};
+        let memory = lock_memory(0, 0x7027);
+        let before = table_entries(&memory);
+        let config = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        for (offset, size) in [
+            (1u64, Word),
+            (2, Dword),
+            (4, Qword),
+            (0x3d, Qword),
+            (0xfff, Word),
+        ] {
+            let mut log = Vec::new();
+            let mut note = |range| log.push(range);
+            let (operand, fault) = locate_paged_atomic_operand(
+                &memory,
+                config,
+                0x0040_0000,
+                context(),
+                DATA_LINEAR + offset,
+                size,
+                &mut note,
+            );
+            assert!(
+                matches!(operand, PagedAtomicOperand::Misaligned),
+                "{offset} {size:?}"
+            );
+            assert!(fault.is_none() && log.is_empty());
+            assert_eq!(table_entries(&memory), before, "no accessed or dirty bit");
+            assert_eq!(memory.split_lock_refusals(), 0, "not counted");
+        }
+        let mut log = Vec::new();
+        let mut note = |range| log.push(range);
+        let (operand, _) = locate_paged_atomic_operand(
+            &memory,
+            config,
+            0x0040_0000,
+            context(),
+            DATA_LINEAR + 0x40,
+            Dword,
+            &mut note,
+        );
+        assert!(matches!(operand, PagedAtomicOperand::Located(_)));
+        assert_ne!(
+            table_entries(&memory),
+            before,
+            "the write walk set the dirty bit"
+        );
+        assert_eq!(table_entries(&memory)[5] & 0x60, 0x60);
     }
 
     /// The serial S6-20 sequence a locked operation replaced: an ordinary read of the operand,
