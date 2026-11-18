@@ -1,6 +1,17 @@
 # Контракт собственного vTPM 2.0
 
-**Дата:** 7 ноября 2026 года. **Статус:** **фаза A принята в ограниченном объёме после независимого ревью 2026-11-18 (264 теста; соответствие TPM/PTP не заявляется), срез A фазы B (иерархии, HMAC-сессии, NV-база) — коммит `435d7f6`, срез B фазы B (объекты и ключи RSA-2048/ECC P-256: `CreatePrimary`, `Create`, `Load`, `LoadExternal`, `ReadPublic`, `Unseal`, `EvictControl`, `Sign`, `VerifySignature`) и срез C1 (`RSA_Encrypt`, `RSA_Decrypt`, `ECDH_ZGen`, защита от подбора (DA): `DictionaryAttackLockReset`, `DictionaryAttackParameters`, snapshot `ODTPMSTA` v2 с auth иерархий, NV и persistent-объектами) выполнены исполнителем (S7-23), ждут ревью, коммита нет; срез C2 (policy-сессии и 7 команд `Policy*`, `ContextSave/Load`, `TPM2_HMAC` с keyed-hash ключами, `Quote`, `Certify`) выполнен исполнителем (S7-23), ждёт ревью, коммита нет; срез C3 (шифрование параметров XOR/AES-CFB, `GetTime`, NV counters/`Extend`/`SetBits`, `signHandle` = `TPM_RH_NULL`, snapshot v3) выполнен исполнителем (S7-23), ждёт ревью, коммита нет.** Остальное — не реализовано: CRB, таблица TPM2, TCG2, measured boot и event log (S7-22); шаблоны EK и сертификат EK (ждёт решения владельца); `PolicyTicket`, `PolicySigned`, `PolicyNV` и прочие не реализованные `Policy*`; `SetPrimaryPolicy`; `PolicySecret` с `expiration` ≠ 0 (раздел «Фаза B, срез C3»; S7-23 не принимается целиком). Раздел «Состояние и границы» создан задачей S7-20 по [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (принят после архитектурного ревью 2026-11-18). Остаточные caveats phase A — [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope). Соответствие и сертификация TCG не заявляются.
+Дата создания 7 ноября 2026 года. Ограниченный профиль фазы A принят по
+результатам независимого ревью 2026-11-18.
+
+Срезы фазы B входят в текущую ветку. Коммиты и результаты проверок сведены
+в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+Для завершения S7-23 требуется решение по редакции TCG EK Credential Profile
+и источнику сертификата EK (T-04). Открытые результаты ревью C1–C3 и TPM Restart
+записаны в реестре [ISSUE-514](../KNOWN_ISSUES.md#issue-514)–[ISSUE-518](../KNOWN_ISSUES.md#issue-518).
+Реализация CRB, таблицы TPM2, TCG2,
+measured boot и журнала событий относится к S7-22. Границы TPM/PTP для
+фазы A перечислены в [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope).
+Раздел «Состояние и границы» закреплён [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md).
 
 Нормативные редакции: TPM 2.0 Library version 185, PC Client Platform TPM Profile 1.07 Errata 1.1 ([VIRTUAL_BOARD.md](VIRTUAL_BOARD.md), «Нормативные источники и редакции»). Что именно из них сверено — раздел «Источники и сверка» ниже.
 
@@ -97,7 +108,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Фаза B, срез A: иерархии, HMAC-сессии, NV-база (S7-23)
 
-Реализовано исполнителем, коммит `435d7f6`, ждёт ревью. Не входило в срез A: ключи RSA/ECC и команды с объектами (срез B — раздел ниже; `RSA_*`, `ECDH_ZGen`, `TPM2_HMAC` — срез C), policy-сессии и `Policy*`, шифрование параметров (AES-CFB, XOR), salted-сессии, `ContextSave/Load`, `NV_Increment/Extend/SetBits` и счётчики, DA (`DictionaryAttack*`), `SetPrimaryPolicy`, `ChangePPS/EPS`, EK-шаблоны, `Quote/Certify/GetTime`, persistent state v1 (hierarchy auth и NV пока **не входят в snapshot**).
+Исходная реализация среза в коммите `435d7f6`. Независимое ревью `gpt-6.1-sol` / `high` от 2026-11-18 одобрило заявленный объём. Не входило в срез A: ключи RSA/ECC и команды с объектами (срез B — раздел ниже; `RSA_*`, `ECDH_ZGen`, `TPM2_HMAC` — срез C), policy-сессии и `Policy*`, шифрование параметров (AES-CFB, XOR), salted-сессии, `ContextSave/Load`, `NV_Increment/Extend/SetBits` и счётчики, DA (`DictionaryAttack*`), `SetPrimaryPolicy`, `ChangePPS/EPS`, EK-шаблоны, `Quote/Certify/GetTime`, persistent state v1 (hierarchy auth и NV пока **не входят в snapshot**).
 
 | Команда | Код | Авторизация | Границы среза A |
 |---|---|---|---|
@@ -125,7 +136,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Фаза B, срез B: объекты и ключи (S7-23)
 
-Реализовано исполнителем, ждёт ревью; коммита нет. Код: `crates/od-tpm/src/{object.rs,object_cmd.rs}`, маршалинг — `marshal.rs`, примитивы — `crypto.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 14, 20.3–20.5, 24.3–24.5, 25.4–25.9; Part 2: Tables 11, 12, 23, 36, 38, 39, 41, 52, 78–84, 109, 110, 160, 168, 169, 172, 189, 193–216, 219, 220, 224, 225, 246, 247; Part 3: 12.1–12.4, 12.7, 20.1, 20.2, 24.1, 24.2, 24.6, 28.5, 30.2), прочитано 2026-11-07; **v185 недоступна**, всё ниже — «по v184, NOT VERIFIED против v185». Part 4 (коды ответа по командам) в открытом виде не использовалась: коды, которых нет в тексте Part 2/3, перечислены в «NOT VERIFIED», пп. 21–32.
+Исходная реализация среза в коммите `454f351`. Независимое ревью `gpt-6.1-sol` / `high` завершено без новых дефектов в объёме среза. Код: `crates/od-tpm/src/{object.rs,object_cmd.rs}`, маршалинг — `marshal.rs`, примитивы — `crypto.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 14, 20.3–20.5, 24.3–24.5, 25.4–25.9; Part 2: Tables 11, 12, 23, 36, 38, 39, 41, 52, 78–84, 109, 110, 160, 168, 169, 172, 189, 193–216, 219, 220, 224, 225, 246, 247; Part 3: 12.1–12.4, 12.7, 20.1, 20.2, 24.1, 24.2, 24.6, 28.5, 30.2), прочитано 2026-11-07; **v185 недоступна**, всё ниже — «по v184, NOT VERIFIED против v185». Part 4 (коды ответа по командам) в открытом виде не использовалась: коды, которых нет в тексте Part 2/3, перечислены в «NOT VERIFIED», пп. 21–32.
 
 | Команда | Код | Авторизация | Границы среза B |
 |---|---|---|---|
@@ -153,7 +164,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Фаза B, срез C1: RSA_Encrypt/Decrypt, ECDH_ZGen, DA, persistent state v2 (S7-23)
 
-Реализовано исполнителем (Claude Sonnet), ждёт ревью; коммита нет. Код: `crates/od-tpm/src/{asym.rs,da.rs,snapshot.rs}`; изменены `dispatch.rs` (таблица, DA вокруг проверки авторизации), `state.rs` (snapshot v2), `marshal.rs`/`object.rs` (схемы RSAES/OAEP/ECDH в шаблонах ключей), `crypto.rs`, `capability.rs`, `hierarchy.rs`, `startup.rs`, `nv.rs`; тесты — `src/tests_c1.rs`. Соответствие и сертификация TCG не заявляются. **Не входит в срез C1 (срез C2 или вне профиля):** policy-сессии и `Policy*`, шифрование параметров, `ContextSave/Load`, `Quote/Certify/GetTime`, `TPM2_HMAC`, шаблоны EK, NV counters/Extend/SetBits, `ECDH_KeyGen`, `ObjectChangeAuth`, CRB (S7-22).
+Исходная реализация среза в коммите `46f0300`. Код: `crates/od-tpm/src/{asym.rs,da.rs,snapshot.rs}`; изменены `dispatch.rs` (таблица, DA вокруг проверки авторизации), `state.rs` (snapshot v2), `marshal.rs`/`object.rs` (схемы RSAES/OAEP/ECDH в шаблонах ключей), `crypto.rs`, `capability.rs`, `hierarchy.rs`, `startup.rs`, `nv.rs`; тесты — `src/tests_c1.rs`. Соответствие и сертификация TCG не заявляются. **Не входит в срез C1 (срез C2 или вне профиля):** policy-сессии и `Policy*`, шифрование параметров, `ContextSave/Load`, `Quote/Certify/GetTime`, `TPM2_HMAC`, шаблоны EK, NV counters/Extend/SetBits, `ECDH_KeyGen`, `ObjectChangeAuth`, CRB (S7-22).
 
 | Команда | Код | Авторизация | Границы среза C1 |
 |---|---|---|---|
@@ -190,7 +201,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Фаза B, срез C2: policy-сессии, ContextSave/Load, TPM2_HMAC, Quote, Certify (S7-23)
 
-Реализовано исполнителем (Claude Sonnet), ждёт ревью; коммита нет. Код: новые модули `crates/od-tpm/src/{policy.rs,context.rs,attest.rs}` и `src/tests_c2.rs`; изменены `dispatch.rs` (таблица 56 команд, проверка авторизации policy-сессией, роль USER/ADMIN), `session.rs` (виды сессий, сохранённые сессии), `object.rs`/`object_cmd.rs`/`marshal.rs` (keyed-hash ключи с HMAC-схемой, `userWithAuth`/`adminWithPolicy` при авторизации), `state.rs`/`startup.rs` (состояние контекстов), `capability.rs`, `codes.rs`, `response.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 17.7.1–17.7.8, 17.8.3, 28.2–28.6 (Equations 50–52); Part 2: Table 14, Table 20 (`TPM_RC_POLICY_FAIL/POLICY_CC/PCR_CHANGED/CPHASH/EXPIRED/POLICY`), Tables 23, 25, 241–245, 10.12.2–10.12.13 (Tables 142, 143, 151, 152), 14.1–14.7; Part 3: 5.6, 11.1, 11.2, 15.5, 18.1, 18.2, 18.4, 23.1–23.7, 23.11, 23.17–23.19, 28.2–28.4, 30.2), прочитано 2026-11-07; **v185 недоступна**: всё ниже «по v184, NOT VERIFIED против v185». Part 4 не использовалась.
+Исходная реализация среза в коммите `2da9887`. Код: новые модули `crates/od-tpm/src/{policy.rs,context.rs,attest.rs}` и `src/tests_c2.rs`; изменены `dispatch.rs` (таблица 56 команд, проверка авторизации policy-сессией, роль USER/ADMIN), `session.rs` (виды сессий, сохранённые сессии), `object.rs`/`object_cmd.rs`/`marshal.rs` (keyed-hash ключи с HMAC-схемой, `userWithAuth`/`adminWithPolicy` при авторизации), `state.rs`/`startup.rs` (состояние контекстов), `capability.rs`, `codes.rs`, `response.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 17.7.1–17.7.8, 17.8.3, 28.2–28.6 (Equations 50–52); Part 2: Table 14, Table 20 (`TPM_RC_POLICY_FAIL/POLICY_CC/PCR_CHANGED/CPHASH/EXPIRED/POLICY`), Tables 23, 25, 241–245, 10.12.2–10.12.13 (Tables 142, 143, 151, 152), 14.1–14.7; Part 3: 5.6, 11.1, 11.2, 15.5, 18.1, 18.2, 18.4, 23.1–23.7, 23.11, 23.17–23.19, 28.2–28.4, 30.2), прочитано 2026-11-07; **v185 недоступна**: всё ниже «по v184, NOT VERIFIED против v185». Part 4 не использовалась.
 
 | Команда | Код | Авторизация | Границы среза C2 |
 |---|---|---|---|
@@ -225,7 +236,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Фаза B, срез C3: NV counter/bits/extend, GetTime, signHandle NULL, шифрование параметров, snapshot v3 (S7-23)
 
-Реализовано исполнителем (Claude Sonnet), ждёт ревью; коммита нет. Код: `crates/od-tpm/src/nv.rs` (типы индексов, `Increment`/`Extend`/`SetBits`), `attest.rs` (`GetTime`, NULL-подпись), новый модуль `paramenc.rs` (шифрование параметров), `session.rs`/`context.rs` (`symmetric` сессии, в контексте сессии), `dispatch.rs` (таблица 60 команд, проверка и применение `decrypt`/`encrypt`), `snapshot.rs`/`state.rs` (snapshot v3), `marshal.rs` (`TpmtSignature::Null`), `capability.rs` (`TPM_ALG_XOR`); тесты — `src/tests_c3.rs`, unit-тесты `paramenc.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 19.1–19.3, 9.4.7.3, 17.7; Part 2: Table 11, 13.2 (Tables 231, 233), 10.11.6, 10.12.2 (Tables 140, 141), 11.1.3–11.1.6 (Tables 156–159), Table 14 (коды `NV_Increment` 0x134, `NV_SetBits` 0x135, `NV_Extend` 0x136, `GetTime` 0x14C), Table 23 (`TPM_ST_ATTEST_TIME` 0x8019); Part 3: 11.1.1, 18.1, 18.7, 23.2.2–23.2.5, 23.4, 31.2, 31.3.1, 31.7–31.10).
+Исходная реализация среза в коммите `9c7f46c`. Код: `crates/od-tpm/src/nv.rs` (типы индексов, `Increment`/`Extend`/`SetBits`), `attest.rs` (`GetTime`, NULL-подпись), новый модуль `paramenc.rs` (шифрование параметров), `session.rs`/`context.rs` (`symmetric` сессии, в контексте сессии), `dispatch.rs` (таблица 60 команд, проверка и применение `decrypt`/`encrypt`), `snapshot.rs`/`state.rs` (snapshot v3), `marshal.rs` (`TpmtSignature::Null`), `capability.rs` (`TPM_ALG_XOR`); тесты — `src/tests_c3.rs`, unit-тесты `paramenc.rs`. Соответствие и сертификация TCG не заявляются. Источник: Library v184 (Part 1: 19.1–19.3, 9.4.7.3, 17.7; Part 2: Table 11, 13.2 (Tables 231, 233), 10.11.6, 10.12.2 (Tables 140, 141), 11.1.3–11.1.6 (Tables 156–159), Table 14 (коды `NV_Increment` 0x134, `NV_SetBits` 0x135, `NV_Extend` 0x136, `GetTime` 0x14C), Table 23 (`TPM_ST_ATTEST_TIME` 0x8019); Part 3: 11.1.1, 18.1, 18.7, 23.2.2–23.2.5, 23.4, 31.2, 31.3.1, 31.7–31.10).
 
 | Команда | Код | Авторизация | Границы среза C3 |
 |---|---|---|---|
