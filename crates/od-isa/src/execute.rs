@@ -26762,22 +26762,32 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             };
         }
         // S7-04: exact `83 F8 01` and `83 F8 09` compare EAX with sign-extended imm8.
-        // CMP updates the dword subtraction flags and preserves the accumulator.
+        // Exact `48 83 F8 40` compares RAX with sign-extended imm8 0x40.
+        // CMP updates subtraction flags at the matched width and preserves the accumulator.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(immediate @ (1 | 9)),
+            src: Operand::Immediate(immediate @ (1 | 9 | 0x40)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
-            && instruction.length == 3
-            && instruction.operand_size == OperandSize::Dword
-            && instruction.prefixes == Prefixes::default()
-            && destination == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+            && destination == RegisterView::low(Register::Rax, instruction.operand_size)
+            && ((matches!(immediate, 1 | 9)
+                && instruction.length == 3
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes == Prefixes::default())
+                || (immediate == 0x40
+                    && instruction.length == 4
+                    && instruction.operand_size == OperandSize::Qword
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x48),
+                            ..Prefixes::default()
+                        }))) =>
         {
             let lhs = state.read(destination);
             let (_, flags) = arithmetic_result(
-                OperandSize::Dword,
+                instruction.operand_size,
                 ArithmeticKind::Cmp,
                 lhs,
                 immediate,

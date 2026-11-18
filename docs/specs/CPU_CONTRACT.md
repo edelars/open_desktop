@@ -30122,3 +30122,15 @@ the read. Data-read and final-displacement fetch page faults commit no
 CPU state or retirement. The other CPL0 probes and the paged CPL3 MOV
 probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-491 — bounded CMP RAX,0x40
+
+The base paged CPL0 profile admits exact `48 83 F8 40` in Long64.
+Subtraction of the sign-extended imm8 value 0x40 from RAX defines CF,
+PF, AF, ZF, SF and OF at qword width. RIP advances four bytes. All
+GPRs, memory contents, other flags and their definedness are preserved.
+A final-immediate fetch fault commits no CPU state or retirement. The
+existing exact EAX imm8 1 and 9 comparisons retain their dword width.
+The other CPL0 probes and the paged CPL3 MOV probe refuse the qword
+encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

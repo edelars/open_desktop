@@ -2860,3 +2860,13 @@ word, zero-extends it into RAX and advances RIP by four. With budget
 opcode 131 with empty COM1. Image SHA-256 is
 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-491 runner frontier
+
+Exact base-profile `48 83 F8 40` (CMP RAX,0x40) defines the arithmetic
+flags at qword width and advances RIP by four. With budget 20000 the
+runner reaches `76 21` (JBE rel8 +0x21, ISSUE-492) at RIP `0x2018e7`
+after 10,346 retired instructions, reporting Unsupported opcode 118
+with empty COM1. Image SHA-256 is
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

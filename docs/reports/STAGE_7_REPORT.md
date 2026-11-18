@@ -5045,3 +5045,36 @@ and zero doctests). The paged machine quantum suite passes 110/110. The
 workspace all-targets offline check passes with existing warnings.
 Scoped rustfmt and diff checks pass.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-491 — exact CMP RAX,0x40
+
+Four focused tests check the exact qword register compare, including
+literal arithmetic flag vectors for equality, unsigned borrow, signed
+overflow and the full 64-bit RAX input, flag definedness, GPR preservation,
+the final-immediate fetch page fault, neighbors and CPL3 MOV probe
+isolation. The existing EAX immediate compare group passes 4/4 and
+the other CPL0 probe matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue491.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,345 | `0x2018e3` | `48 83 F8 40`, CMP RAX,0x40 |
+| 10,346 | `0x2018e7` | `76 21`, JBE rel8 +0x21 (ISSUE-492) |
+
+Both boundary runs report BudgetExhausted and empty COM1. With budget
+20000 the runner executes CMP and exits 5 at JBE with 10,346 retired
+instructions. Unsupported opcode 118 is the decimal value of JBE opcode
+byte `0x76`. The previous stop reported 131 for CMP opcode byte `0x83`
+after REX.W. The JBE at `0x2018e7` has fall-through `0x2018e9` and
+taken target `0x2018e7 + 2 + 0x21 = 0x20190a`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,575/7/15
+and zero doctests). The paged machine quantum suite passes 110/110. The
+workspace all-targets offline check passes with existing warnings.
+Scoped rustfmt and diff checks pass.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

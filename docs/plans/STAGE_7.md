@@ -3110,3 +3110,15 @@ stops after 10,345 retired instructions at RIP `0x2018e3` on
 `48 83 F8 40` (CMP RAX,0x40, ISSUE-491). It reports Unsupported opcode
 131 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-491 — exact CMP RAX,0x40 (`48 83 F8 40`)
+
+Base `PagedCpl0ProbeV1` admits the exact REX.W qword register compare. It
+defines the arithmetic flags from RAX minus sign-extended imm8 0x40,
+preserves all GPRs and advances RIP by four. Tests cover qword flags
+and definedness, the final-immediate fetch fault, neighbors and profile
+isolation. The existing EAX imm8 1 and 9 remain supported. With budget
+20000 the runner stops after 10,346 retired instructions at RIP
+`0x2018e7` on `76 21` (JBE rel8 +0x21, ISSUE-492). It reports
+Unsupported opcode 118 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
