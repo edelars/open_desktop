@@ -173,7 +173,7 @@ The following test budgets are deliberately not invented before their harnesses 
 |---|---|---|
 | S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | Recorded in S6-36 (implemented, awaiting review): 1,000,000 rounds/test/process x 3 fresh processes per applicable configuration (3,000,000/test/configuration), rates and the matrix in "S6-36" below. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | Recorded in S6-34 (implemented, awaiting review): repetitions, timeouts and race-window coverage are in the table of "S6-34 — параллельный режим" below and in the S6-34 report. |
-| S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | Recorded in S6-35 (steps 1–3 implemented, awaiting review): the matrix and the expected runtime are in "S6-35 — состояние на остановленной параллельной машине" below. The part with a snapshot format is blocked until S9-24, S9-25. |
+| S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | Steps 1–3 passed independent review. The matrix below covers restore within the same machine. File-based verification depends on S9-24 and S9-25. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
 
 ### probe v1 (S6-16e)
