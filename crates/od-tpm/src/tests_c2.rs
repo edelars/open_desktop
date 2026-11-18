@@ -797,6 +797,8 @@ fn policy_secret_can_be_authorized_by_a_policy_session() {
     let tr2 = policy_session(&mut t, se::TRIAL);
     ok(&pol_cc(&mut t, &tr2, cc::POLICY_SECRET));
     let without_av = digest(&mut t, &tr2);
+    let (ineligible, ineligible_name, _) =
+        make_child(&mut t, parent, &policy_key(&with_av), b"k1", b"");
     let mut object = ecc_sign();
     object.auth_policy = with_av;
     let (k1, n1, _) = make_child(&mut t, parent, &object, b"k1", b"");
@@ -823,6 +825,20 @@ fn policy_secret_can_be_authorized_by_a_policy_session() {
     let mut a1 = policy_session(&mut t, se::POLICY);
     ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &a1, &[]));
     ok(&pol_cc(&mut t, &a1, cc::POLICY_SECRET));
+    let authorized_digest = digest(&mut t, &a1);
+    let mut rejected = hc(
+        cc::POLICY_SECRET,
+        &[ineligible, target.handle],
+        secret_params(&[], &[], b"r", 0),
+        (ineligible, b"k1"),
+    );
+    rejected.names[0] = ineligible_name;
+    err(
+        &use_session(&mut t, &mut a1, &rejected, 0, false, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &a1), authorized_digest);
+    assert_eq!(digest(&mut t, &target), [0; 32]);
     let mut c1 = hc(
         cc::POLICY_SECRET,
         &[k1, target.handle],
@@ -836,6 +852,40 @@ fn policy_secret_can_be_authorized_by_a_policy_session() {
         digest(&mut t, &target),
         h256(&[&h256(&[&[0u8; 32], &u32b(cc::POLICY_SECRET), &n1]), b"r"])
     );
+}
+
+#[test]
+fn policy_secret_requires_index_read_authorization() {
+    use super::tests_b::{define_raw, nv_public};
+    use crate::nv::attr;
+
+    let mut t = started();
+    let denied = 0x0100_0001;
+    let allowed = 0x0100_0002;
+    for (index, read) in [(denied, attr::OWNERREAD), (allowed, attr::AUTHREAD)] {
+        ok(&define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            b"nv-secret",
+            &nv_public(index, alg::SHA256, attr::OWNERWRITE | read, &[], 8),
+        ));
+    }
+    let target = policy_session(&mut t, se::POLICY);
+    let parameters = secret_params(&[], &[], b"ref", 0);
+    err(
+        &secret_pw(&mut t, denied, b"nv-secret", &target, &parameters),
+        Rc::AUTH_TYPE,
+    );
+    assert_eq!(digest(&mut t, &target), [0; 32]);
+    ok(&secret_pw(
+        &mut t,
+        allowed,
+        b"nv-secret",
+        &target,
+        &parameters,
+    ));
+    assert_ne!(digest(&mut t, &target), [0; 32]);
 }
 
 fn unmarshal_name(t: &mut Tpm, h: u32) -> Vec<u8> {

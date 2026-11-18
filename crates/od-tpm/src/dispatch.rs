@@ -49,6 +49,7 @@ use crate::da::DaClass;
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
+use crate::nv::attr as nv_attr;
 use crate::object::is_object_hierarchy;
 use crate::paramenc::{
     SessionSym, apply as apply_param_encryption, first_parameter_is_sized,
@@ -223,10 +224,17 @@ fn handle_auth(
         // A policy session on an NV index: the indices have no policy access (`POLICYREAD` and
         // `POLICYWRITE` are refused at definition, Part 3, clause 5.6, step 7).
         handle::HT_NV_INDEX if policy => Err(Rc::AUTH_UNAVAILABLE),
-        handle::HT_NV_INDEX => tpm.nv_auth(h).ok_or(Rc::HANDLE.in_handle(n)),
+        handle::HT_NV_INDEX => {
+            let index = tpm.persistent.nv.get(h).ok_or(Rc::HANDLE.in_handle(n))?;
+            if code == cc::POLICY_SECRET && index.attributes & nv_attr::AUTHREAD == 0 {
+                return Err(Rc::AUTH_TYPE);
+            }
+            Ok(index.auth.clone())
+        }
         // Transient (not a sequence) and persistent objects (slice B).
         handle::HT_TRANSIENT | handle::HT_PERSISTENT if tpm.object(h).is_some() => {
-            tpm.object_auth(h, i, admin, policy)
+            // PolicySecret requires userWithAuth even for policy-based authorization.
+            tpm.object_auth(h, i, admin, policy && code != cc::POLICY_SECRET)
         }
         _ => {
             let slot = tpm.seq_slot(h, i)?;

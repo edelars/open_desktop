@@ -6328,8 +6328,8 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 <a id="issue-520"></a>
 
-### ISSUE-520 — S7-23: PolicySecret и атрибут userWithAuth
+### ISSUE-520 — S7-23: допустимые authHandle в PolicySecret
 
-- **Дата и компонент.** 2026-11-18, `od-tpm`, проверка `authHandle` команды `PolicySecret`. Статус открыт.
-- **Основание и последствие.** Для обычного объекта в `authHandle` TPM Library требует `userWithAuth = SET`. Путь policy-авторизации проверяет требование `PolicyAuthValue`, а проверка этого атрибута отсутствует. До проверки ISSUE-514 тест `policy_secret_can_be_authorized_by_a_policy_session` принимал обычный объект с битом CLEAR. Это допускает объект вне профиля команды. [TPM Library v185 Part 3, §23.4.1, Table 146](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=218).
-- **Следующий шаг.** Сверить код отказа и добавить проверку обычного объекта при разрешении `authHandle`. Покрыть обе формы атрибута, сохранив авторизацию иерархий и специальную проверку `PolicyAuthValue`.
+- **Дата и компонент.** 2026-11-18, `od-tpm`, проверка `authHandle` команды `PolicySecret`. Закрыто.
+- **Основание и последствие.** TPM Library требует `userWithAuth = SET` у обычного объекта и `TPMA_NV_AUTHREAD = SET` у поддерживаемых непиновых NV-индексов. Ранее policy-авторизация объекта и парольная авторизация индекса могли пройти при сброшенном бите. [TPM Library v185 Part 3, §23.4.1, Table 146](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=218).
+- **Исправление и проверка.** На этапе получения `authValue` обычный объект проходит общую проверку `userWithAuth`, а NV-индекс — проверку `AUTHREAD`. Тесты проверяют отказ и сохранение digest при сброшенном бите, успех при выставленном бите и авторизацию иерархий. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
