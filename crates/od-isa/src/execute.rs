@@ -27179,7 +27179,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && instruction.prefixes == Prefixes::default()
             && ((instruction.opcode.byte == 0xb8
                 && destination == RegisterView::low(Register::Rax, OperandSize::Dword)
-                && matches!(value, 1 | 2 | 3))
+                && matches!(value, 1 | 2 | 3 | 4))
                 || (instruction.opcode.byte == 0xbd
                     && destination == RegisterView::low(Register::Rbp, OperandSize::Dword)
                     && value == 1)) =>
