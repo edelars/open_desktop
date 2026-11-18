@@ -45,7 +45,9 @@
 
 use super::bytes::{copy_at, fill_range, head_mut, sub, tail_mut, tri};
 use super::dsdt::{DsdtError, build_dsdt_with_s5};
-use super::fadt::{FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt};
+use super::fadt::{
+    FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt, build_fadt_with_rtc,
+};
 use super::madt::{MadtError, build_madt};
 use super::manifest::{
     AcpiPmEntry, BoardManifest, DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE,
@@ -170,6 +172,40 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     }
 }
 
+/// Validates and detects the optional v1.3 RTC entry before table construction.
+const fn rtc_present(devices: &[DeviceEntry]) -> Result<bool, BlobError> {
+    let mut present = false;
+    let mut i = 0;
+    while i < devices.len() {
+        let entry = devices[i];
+        i += 1;
+        if entry.device_type != device_type::RTC_CMOS {
+            continue;
+        }
+        if present {
+            return Err(BlobError::Manifest(ManifestError::DeviceTypeNotUnique(
+                device_type::RTC_CMOS,
+            )));
+        }
+        if entry.flags != (FLAG_PRESENT | FLAG_PIO) {
+            return Err(BlobError::Manifest(ManifestError::BadRtc("flags")));
+        }
+        if entry.base != 0x70 || entry.length != 2 {
+            return Err(BlobError::Manifest(ManifestError::BadRtc("ports")));
+        }
+        if entry.gsi != GSI_NONE || entry.irq_flags != 0 || entry.param1 != 0 {
+            return Err(BlobError::Manifest(ManifestError::BadRtc(
+                "reserved fields",
+            )));
+        }
+        if entry.param0 > device_type::MAX_RTC_UNIX_SECONDS {
+            return Err(BlobError::Manifest(ManifestError::BadRtc("base UTC time")));
+        }
+        present = true;
+    }
+    Ok(present)
+}
+
 /// Zeroes the alignment gap after a table of `len` bytes at payload offset `cursor` and returns
 /// the payload offset of the next 16-aligned slot.
 const fn close_table(
@@ -202,6 +238,7 @@ const fn room(out: &[u8], needed: usize) -> Result<(), BlobError> {
 /// separate segment loaded at 0xE_F000 (see the module comment).
 pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize, BlobError> {
     let hash = tri!(manifest_hash(devices), BlobError::Manifest);
+    let has_rtc = tri!(rtc_present(devices));
     let (manifest, pm) = tri!(split_devices(devices));
     let with_mcfg = match manifest.device(device_type::PCIE_ECAM) {
         Some(ecam) => ecam.is_present(),
@@ -255,7 +292,12 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
         dsdt: ACPI_REGION_BASE + dsdt_at as u64,
     };
     let fadt_len = tri!(
-        build_fadt(&pm, &addresses, tail_mut(out, payload_offset + cursor)),
+        build_fadt_with_rtc(
+            &pm,
+            &addresses,
+            has_rtc,
+            tail_mut(out, payload_offset + cursor),
+        ),
         BlobError::Fadt
     );
     signatures[index] = *b"FACP";

@@ -34,6 +34,9 @@ pub mod device_type {
     pub const PCIE_ECAM: u32 = 7;
     /// ACPI fixed hardware: PM block and SCI route (handoff v1.2, S4-31c).
     pub const ACPI_PM: u32 = 9;
+    /// CMOS RTC at PIO 0x70/0x71 with a deterministic UTC base time (handoff v1.3, S7-14).
+    pub const RTC_CMOS: u32 = 10;
+    pub const MAX_RTC_UNIX_SECONDS: u64 = 253_402_300_799;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub enum ManifestError {
     ReservedIrqFlags(u32),
     /// An ACPI PM entry (code 9) that cannot be described by the FADT; the text names the field.
     BadAcpiPm(&'static str),
+    /// A handoff RTC entry (code 10) that does not match its fixed PIO/time contract.
+    BadRtc(&'static str),
 }
 
 /// One 48-byte device entry.

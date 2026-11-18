@@ -39,21 +39,22 @@ use crate::vcpu::{
 };
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
-    AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
-    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
-    DISPLAY_SECOND_FRAMEBUFFER_BASE, DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DisplayDevice,
-    DisplayHandle, DmaPage0, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
-    IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE,
-    LocalApic, LocalApicHandle, Long64ProbeConfig, MachineBus, MachineMemoryMap, MachineStopReason,
-    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE,
-    NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT,
-    PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES,
-    PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
-    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
-    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Handle, Pic8259Pair,
-    Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits,
-    TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
-    VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
+    AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, CMOS_INDEX_PORT,
+    CMOS_PORT_BYTES, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE,
+    DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE, DMA_PAGE_0_PORT,
+    DMA_PAGE_0_PORT_BYTES, DisplayDevice, DisplayHandle, DmaPage0, GuestLinearAddress,
+    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
+    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, Long64ProbeConfig,
+    MachineBus, MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind,
+    MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
+    NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
+    PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
+    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
+    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
+    PciEcam, Pic8259Handle, Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange,
+    PortRegionBinding, RamLimits, RtcCmos, TrackedAccessError, Uart16550Handle, Uart16550PollingTx,
+    VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
+    run_paged_probe_with_rdtsc,
 };
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
@@ -3243,6 +3244,27 @@ pub(crate) fn assemble_board(
         range: com1,
         device_index: DEV_COM1,
     }];
+    // A configured RTC is part of the firmware board as well as the Linux
+    // profile. Without an explicit UTC base, Linux-profile boards retain the
+    // S4-29 absent-port behavior; the ordinary firmware board leaves these
+    // ports unmapped. Never invent a host date or epoch.
+    if let Some(base_unix_seconds) = config.rtc_base_unix_seconds {
+        let rtc = RtcCmos::new(clock.clone(), base_unix_seconds)
+            .map_err(|_| FirmwareBoardError::Config("RTC base time is out of range"))?;
+        ports.push(PortRegionBinding {
+            range: PortRange::new(PortAddress::new(CMOS_INDEX_PORT), CMOS_PORT_BYTES)
+                .map_err(FirmwareBoardError::BusBuild)?,
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(rtc));
+    } else if config.linux_profile {
+        ports.push(PortRegionBinding {
+            range: PortRange::new(PortAddress::new(CMOS_INDEX_PORT), CMOS_PORT_BYTES)
+                .map_err(FirmwareBoardError::BusBuild)?,
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(AbsentPorts::new(AbsentPortRegion::Cmos)));
+    }
     // One PCI configuration device, two bindings (ECAM MMIO + conf1 PIO) with the
     // same device index, so both front ends share one function table.
     if devices[DEV_ECAM_TABLE].present() {
@@ -3296,11 +3318,7 @@ pub(crate) fn assemble_board(
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
-        for region in [
-            AbsentPortRegion::Cmos,
-            AbsentPortRegion::IoDelay,
-            AbsentPortRegion::Post,
-        ] {
+        for region in [AbsentPortRegion::IoDelay, AbsentPortRegion::Post] {
             bind(
                 region.base_port(),
                 region.port_bytes(),
@@ -6553,6 +6571,51 @@ mod tests {
             5,
             1
         ));
+    }
+
+    #[test]
+    fn configured_rtc_answers_through_board_ports_and_follows_virtual_clock() {
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_704_067_200), // 2024-01-01 00:00:00 UTC
+            ..reference_config()
+        };
+        let mut board = load_firmware_image(&minor3_image(&[0xf4]), &config).unwrap();
+        let read_cmos = |index: u8, board: &mut LoadedFirmwareBoard| {
+            board
+                .bus_mut()
+                .write_port(
+                    PortAddress::new(CMOS_INDEX_PORT),
+                    AccessWidth::Byte,
+                    u32::from(index),
+                )
+                .unwrap();
+            board
+                .bus_mut()
+                .read_port(PortAddress::new(CMOS_INDEX_PORT + 1), AccessWidth::Byte)
+                .unwrap() as u8
+        };
+        assert_eq!(read_cmos(0x08, &mut board), 0x01);
+        assert_eq!(read_cmos(0x09, &mut board), 0x24);
+        board.clock.advance_standalone(61_000_000_000).unwrap();
+        assert_eq!(read_cmos(0x02, &mut board), 0x01);
+        assert_eq!(read_cmos(0x00, &mut board), 0x01);
+    }
+
+    #[test]
+    fn board_without_rtc_configuration_keeps_cmos_absent() {
+        let mut board = linux_board();
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte),
+            Ok(u32::from(crate::ABSENT_PORT_READ_VALUE))
+        );
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(PortAddress::new(crate::CMOS_DATA_PORT), AccessWidth::Byte),
+            Ok(u32::from(crate::ABSENT_PORT_READ_VALUE))
+        );
     }
 
     #[test]

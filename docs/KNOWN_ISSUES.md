@@ -6117,3 +6117,14 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Только повторное подтверждение дальнейшего S7-04 runner frontier не выполнено: указанный в отчёте образ `/private/tmp/od-fw-s7-04-issue256.bin` отсутствует в текущей среде. Это внешнее ограничение артефакта, не дефект реализации и не незавершённый review S7-03.
 - **Ревью:** независимое ревью одобрило срез без замечаний; коммит `161de07` содержит реализацию, тесты и эту запись.
 - **Следующий шаг:** повторить firmware runner на образе с SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, если он доступен, и отметить фактическое продолжение исполнения.
+
+<a id="issue-506-s7-14-rtc-interrupts-and-intra-quantum-time"></a>
+
+### ISSUE-506 — S7-14: RTC interrupts and intra-quantum time
+
+- **Дата обнаружения:** 2026-11-18, при реализации RTC/CMOS.
+- **Компонент:** `od-machine` RTC/CMOS (`crates/od-machine/src/rtc_cmos.rs`) and board execution timing.
+- **Статус:** открыта; RTC/CMOS calendar slice implemented, interrupt routing and quantum integration are deferred.
+- **Суть и последствия:** RTC status C always reads zero; periodic, alarm and update-ended interrupt flags/IRQ8 delivery are not modeled. The calendar advances from the shared virtual clock, which is observed at I/O accesses. If guest execution stays in one instruction quantum, RTC UIP/second rollover is not observed during that quantum; firmware/Linux polling loops that expect time to advance inside the quantum can stall.
+- **Основание:** current RTC implementation explicitly has no interrupt route, status C returns zero, and timestamp is derived from `VirtualClockHandle::snapshot()`. No guest OS RTC polling fixture has been run for this slice.
+- **Следующий шаг:** coordinate with S4-38/S7-30 execution timing and interrupt scope; when enabling guest polling, advance/pump virtual time within a quantum and implement only the RTC interrupt semantics required by the accepted platform profile. Keep HPET tracked separately in S7-14.

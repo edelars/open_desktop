@@ -11,7 +11,7 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 2 | S7-02 (коммит `9d89aac`; архитектурное ревью 2026-11-18 одобрило полный scope); S7-03 (принята после независимого ревью 2026-11-18) |
-| `in_progress` | 8 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-12 (ограниченное качество реализации принято независимым ревью 2026-11-18; задача остаётся незакрытой); S7-16 (срезы A и B выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
+| `in_progress` | 9 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-12 (ограниченное качество реализации принято независимым ревью 2026-11-18; задача остаётся незакрытой); S7-14 (RTC/CMOS срез реализован, ожидает независимого ревью; HPET отложен); S7-16 (срезы A и B выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
 | `not_started` | 28 | остальные задачи, см. таблицу ниже |
 
 В плане отмечены принятые S7-02 и S7-03; остальные чекбоксы отмечаются только после соответствующего ревью по `STAGE_7.md` §0.
@@ -34,7 +34,7 @@
 | S7-11 | not_started | — | — | Runtime Services: время, `SetVirtualAddressMap`, `ResetSystem`, RT-переменные |
 | S7-12 | in_progress | — | Принято ограниченное качество реализации, 2026-11-18 | Независимое ревью одобрило ограниченный профиль; 165 тестов прошли. DSDT только для PCI0/COM1; CRS/PRT ограничены [ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes); RTC/HPET/S5 и TPM отложены на S7-14/S7-22; поведения Windows/Linux нет; ACPI 6.6 и кодировки не сверены. См. [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt). |
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
-| S7-14 | not_started | — | — | ACPI fixed hardware в `od-machine`: PM1, PM timer, reset register, RTC/CMOS, HPET |
+| S7-14 | in_progress | — | ожидает | RTC/CMOS реализованы как опциональное устройство из handoff и используют shared `VirtualClock`; HPET остаётся отложенным; подробности ниже |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
 | S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срез A — admin — и срез B — I/O `Read`/`Write`/`Flush` на in-memory backend — выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы; значения спецификации не сверены) |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
@@ -2894,6 +2894,16 @@ image recorded for prior steps was unavailable at
 `/private/tmp/od-fw-s7-04-issue256.bin`, so a confirming runner continuation
 could not be collected in this environment; see
 [ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
+
+## S7-14 RTC/CMOS, текущий срез
+
+`od-machine` реализует один MC146818-style RTC/CMOS на `0x70/0x71` только при наличии `rtc_base_unix_seconds` в handoff v1.3 (device code 10). Время детерминировано: начальная UTC Unix-секунда берётся из handoff, последующий ход — из общего `VirtualClock`. Поддержаны индекс и NMI-disable bit, календарные регистры и century `0x32`, BCD/binary, 12/24-часовой режим, SET freeze/rebase и rollover с григорианским високосным годом. Без RTC-конфигурации Linux-профиль сохраняет absent-порты (`0xFF`); FADT `CMOS_RTC_NOT_PRESENT` формируется из той же конфигурации, а century register указывается при наличии RTC.
+
+**Источник и fidelity.** Первичный источник — Motorola Semiconductor Technical Data, *MC146818 Real-Time Clock Plus RAM (RTC)*, document/order code **MC146818/D**, document code **ADI856R3**, ©1988 ([datasheet PDF](https://pccomponents.com/datasheets/MOTO-MC146818.PDF)); использованы register map, data modes, calendar/alarm ranges and Status B behavior (sections/tables 3, 4, 9–10, 16). Это ограниченная программная модель выбранных регистров, не полная эмуляция микросхемы: oscillator/divider and SQW output are not generated; alarm registers 0x01/0x03/0x05 store/read values but do not compare; PIE/AIE/UIE event flags, Register C IRQ state and IRQ8 delivery are absent; DST and battery-backed persistence are not modeled. Status A uses Table 6’s 1.984 ms update cycle for reset DV=010 (32.768 kHz); UIP asserts 244 µs before the virtual-second boundary and remains high through that update cycle. The datasheet has a source-text discrepancy: its earlier access-window paragraph says 1,948 µs, while the Update Cycle prose and Table 6 give 1,984 µs; this model follows Table 6/Update Cycle. Alternate divider/time-base programming does not retime UIP. SET freezes calendar updates and clears UIE, per Status B.
+
+Подтверждение: focused `od-machine` RTC tests — 15 passed; board tests покрывают привязку, 61 виртуальную секунду и no-RTC absent behavior. `cargo check --offline -p od-machine --all-targets` прошёл (есть предшествующее этому изменению предупреждение dead_code в `page_walk.rs`). UEFI ACPI `cargo test --offline --manifest-path firmware/uefi/Cargo.toml --lib` — 168 passed, включая проверку handoff/FADT. Полный `od-machine --lib` — 1634 passed, 13 ignored, два известных отказа CLD-ожиданий (ISSUE-201), описаны в [KNOWN_ISSUES](../KNOWN_ISSUES.md#issue-201); этот срез не меняет CPU.
+
+Граница: HPET не реализован; RTC periodic/alarm/update IRQ и статус C не подключены (status C возвращает 0), поэтому UIP polling внутри длинного CPU-кванта может не наблюдать временной переход. Это отдельно зафиксировано в [ISSUE-506](../KNOWN_ISSUES.md#issue-506-s7-14-rtc-interrupts-and-intra-quantum-time).
 
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 

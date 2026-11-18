@@ -59,13 +59,15 @@ pub const FLAG_RESET_REG_SUP: u32 = 1 << 10;
 pub const FLAG_HW_REDUCED_ACPI: u32 = 1 << 20;
 pub const FADT_FLAGS: u32 = FLAG_PWR_BUTTON | FLAG_SLP_BUTTON | FLAG_FIX_RTC | FLAG_RESET_REG_SUP;
 
-/// `IAPC_BOOT_ARCH` (Table 5.11, bit offsets). Set: `VGA_NOT_PRESENT` (the board has no VGA
-/// device), `CMOS_RTC_NOT_PRESENT` (S4-29: ports 0x70/0x71 are absent). Zero: `LEGACY_DEVICES`
-/// (no user-visible ISA/LPC devices; COM1 is described in the DSDT), `8042` (S4-29 removed the
-/// controller), `MSI_NOT_SUPPORTED`, `PCIE_ASPM_CONTROLS`.
+/// `IAPC_BOOT_ARCH` (Table 5.11, bit offsets). `VGA_NOT_PRESENT` is always set. The builder sets
+/// `CMOS_RTC_NOT_PRESENT` only when the handoff has no RTC/CMOS entry (S4-29/S7-14). Zero:
+/// `LEGACY_DEVICES` (no user-visible ISA/LPC devices; COM1 is described in the DSDT), `8042`
+/// (S4-29 removed the controller), `MSI_NOT_SUPPORTED`, `PCIE_ASPM_CONTROLS`.
 pub const IAPC_VGA_NOT_PRESENT: u16 = 1 << 2;
 pub const IAPC_CMOS_RTC_NOT_PRESENT: u16 = 1 << 5;
 pub const IAPC_BOOT_ARCH: u16 = IAPC_VGA_NOT_PRESENT | IAPC_CMOS_RTC_NOT_PRESENT;
+/// CMOS century register advertised through FADT when the RTC is present.
+pub const CMOS_CENTURY_REGISTER: u8 = 0x32;
 
 /// Generic Address Structure (Table 5.1): address space ids and access sizes used here.
 const GAS_SYSTEM_IO: u8 = 1;
@@ -88,6 +90,7 @@ mod at {
     pub const PM_TMR_LEN: usize = 91;
     pub const P_LVL2_LAT: usize = 96;
     pub const P_LVL3_LAT: usize = 98;
+    pub const CENTURY: usize = 108;
     pub const IAPC_BOOT_ARCH: usize = 109;
     pub const FLAGS: usize = 112;
     pub const RESET_REG: usize = 116;
@@ -138,6 +141,16 @@ impl From<TableError> for FadtError {
 pub const fn build_fadt(
     pm: &AcpiPmEntry,
     addresses: &FadtAddresses,
+    out: &mut [u8],
+) -> Result<usize, FadtError> {
+    build_fadt_with_rtc(pm, addresses, false, out)
+}
+
+/// Builds the FADT with RTC presence derived from handoff device code 10.
+pub const fn build_fadt_with_rtc(
+    pm: &AcpiPmEntry,
+    addresses: &FadtAddresses,
+    rtc_present: bool,
     out: &mut [u8],
 ) -> Result<usize, FadtError> {
     if pm.sci_gsi > 15 {
@@ -199,8 +212,18 @@ pub const fn build_fadt(
     // GPE0_BLK_LEN, GPE1_BLK_LEN, GPE1_BASE, CST_CNT: zero.
     copy_at(table, at::P_LVL2_LAT, &P_LVL_NOT_SUPPORTED.to_le_bytes());
     copy_at(table, at::P_LVL3_LAT, &P_LVL_NOT_SUPPORTED.to_le_bytes());
-    // FLUSH_SIZE/STRIDE, DUTY_*, DAY_ALRM, MON_ALRM, CENTURY: zero (no RTC, no processor ports).
-    copy_at(table, at::IAPC_BOOT_ARCH, &IAPC_BOOT_ARCH.to_le_bytes());
+    // FLUSH_SIZE/STRIDE, DUTY_*, DAY_ALRM, MON_ALRM: zero (no processor ports or RTC alarms).
+    table[at::CENTURY] = if rtc_present {
+        CMOS_CENTURY_REGISTER
+    } else {
+        0
+    };
+    let iapc_boot_arch = if rtc_present {
+        IAPC_VGA_NOT_PRESENT
+    } else {
+        IAPC_BOOT_ARCH
+    };
+    copy_at(table, at::IAPC_BOOT_ARCH, &iapc_boot_arch.to_le_bytes());
     copy_at(table, at::FLAGS, &FADT_FLAGS.to_le_bytes());
 
     write_gas(
@@ -268,6 +291,10 @@ const fn le64(table: &[u8], at: usize) -> u64 {
     ])
 }
 
+const fn le16(table: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([table[at], table[at + 1]])
+}
+
 /// Checks signature, `Length` (exactly 276), checksum, revision 6 and the internal rules of
 /// this board's FADT: `HW_REDUCED_ACPI` clear, non-zero table addresses whose 32-bit and
 /// 64-bit forms agree, the PM registers equal to their `X_` twins and a `RESET_REG` that is a
@@ -333,6 +360,13 @@ pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
         || le64(table, at::RESET_REG + 4) == 0
     {
         return Err(FadtError::BadField("RESET_REG"));
+    }
+    let iapc_boot_arch = le16(table, at::IAPC_BOOT_ARCH);
+    let rtc_not_present = iapc_boot_arch & IAPC_CMOS_RTC_NOT_PRESENT != 0;
+    if (table[at::CENTURY] == CMOS_CENTURY_REGISTER) == rtc_not_present
+        || (table[at::CENTURY] != 0 && table[at::CENTURY] != CMOS_CENTURY_REGISTER)
+    {
+        return Err(FadtError::BadField("CENTURY / CMOS_RTC_NOT_PRESENT"));
     }
     Ok(())
 }

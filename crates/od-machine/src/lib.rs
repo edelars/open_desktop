@@ -58,6 +58,7 @@ mod pit_8254;
 mod pit_ioapic_irq_source;
 mod pit_pic_irq_source;
 mod ram_storage;
+mod rtc_cmos;
 mod smp_scheduler;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
@@ -98,8 +99,7 @@ pub use acpi_blob::{
 
 pub use absent_ports::{
     ABSENT_PORT_READ_VALUE, AbsentPortRegion, AbsentPorts, CMOS_DATA_PORT, CMOS_INDEX_PORT,
-    CMOS_PORT_BYTES, CMOS_RTC_PRESENT, IAPC_CMOS_RTC_NOT_PRESENT_BIT, IO_DELAY_PORT,
-    IO_DELAY_PORT_BYTES, POST_PORT, POST_PORT_BYTES,
+    CMOS_PORT_BYTES, IO_DELAY_PORT, IO_DELAY_PORT_BYTES, POST_PORT, POST_PORT_BYTES,
 };
 pub use acpi_pm::{
     ACPI_PM_BASE_PORT, ACPI_PM_DESCRIPTOR, ACPI_PM_PORT_BYTES, ACPI_PM_TIMER_HZ, ACPI_PM_TMR_BLK,
@@ -114,6 +114,10 @@ pub use bus::{
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
+};
+pub use rtc_cmos::{
+    CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
+    RtcCmosError,
 };
 
 pub use console_output_context::{

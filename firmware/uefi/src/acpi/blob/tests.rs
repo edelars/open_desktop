@@ -15,6 +15,10 @@ fn le32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
+fn le16(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap())
+}
+
 fn le64(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
@@ -34,7 +38,7 @@ fn board_manifest() -> BoardManifest {
 #[test]
 fn const_blob_equals_the_runtime_blob_byte_for_byte() {
     const CONST_BLOB: [u8; STAGE4_BLOB_LEN] = stage4_blob_bytes::<STAGE4_BLOB_LEN>();
-    assert_eq!(CONST_BLOB.as_slice(), build(&STAGE4_DEVICES, 0).as_slice());
+    assert_eq!(&CONST_BLOB[..], build(&STAGE4_DEVICES, 0).as_slice());
 }
 
 /// Directory entry `i` as (signature, payload offset, length).
@@ -110,6 +114,49 @@ fn tables_in_the_blob_are_the_runtime_ones() {
     let fadt_len = build_fadt(&pm, &addresses, &mut fadt).unwrap();
     assert_eq!(table(&blob, b"FACP"), &fadt[..fadt_len]);
     assert_eq!(validate_fadt(table(&blob, b"FACP")), Ok(()));
+}
+
+#[test]
+fn rtc_handoff_clears_fadt_not_present_and_advertises_century_register() {
+    let mut devices = [DeviceEntry::default(); 9];
+    devices[..STAGE4_DEVICES.len()].copy_from_slice(&STAGE4_DEVICES);
+    devices[8] = DeviceEntry {
+        device_type: device_type::RTC_CMOS,
+        flags: FLAG_PRESENT | FLAG_PIO,
+        base: 0x70,
+        length: 2,
+        gsi: GSI_NONE,
+        irq_flags: 0,
+        param0: 1_704_067_200,
+        param1: 0,
+    };
+    let blob = build(&devices, 0);
+    let fadt = table(&blob, b"FACP");
+    assert_eq!(fadt[108], 0x32, "FADT CENTURY points at CMOS register 0x32");
+    assert_eq!(le16(fadt, 109) & (1 << 5), 0, "RTC is present");
+    assert_eq!(validate_fadt(fadt), Ok(()));
+}
+
+#[test]
+fn invalid_rtc_handoff_entry_is_rejected_before_table_build() {
+    let mut devices = [DeviceEntry::default(); 9];
+    devices[..STAGE4_DEVICES.len()].copy_from_slice(&STAGE4_DEVICES);
+    devices[8] = DeviceEntry {
+        device_type: device_type::RTC_CMOS,
+        flags: FLAG_PRESENT | FLAG_PIO,
+        base: 0x70,
+        length: 2,
+        gsi: GSI_NONE,
+        irq_flags: 0,
+        param0: device_type::MAX_RTC_UNIX_SECONDS + 1,
+        param1: 0,
+    };
+    let mut out = [0xA5; STAGE4_BLOB_CAPACITY];
+    assert!(matches!(
+        build_blob(&devices, &mut out),
+        Err(BlobError::Manifest(ManifestError::BadRtc("base UTC time")))
+    ));
+    assert!(out.iter().all(|byte| *byte == 0xA5));
 }
 
 #[test]

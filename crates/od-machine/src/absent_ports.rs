@@ -1,14 +1,13 @@
-//! Explicitly absent legacy ports (S4-29b): the CMOS/RTC index and data ports
-//! `0x70/0x71` and the `outb_p` delay sink `0xED`.
+//! Explicitly absent legacy ports: the `outb_p` delay sink `0xED`, and CMOS/RTC
+//! `0x70/0x71` only when the board has no explicit RTC base time (S4-29b/S7-14).
 //!
 //! A port without a binding stops the machine (`BusAccessError::UnmappedPort`),
 //! not a read of `0xFF`. The three ports below are touched by a stock Linux
-//! guest (`CMOS_READ`/`CMOS_WRITE`, `outb_p`/`io_delay`) although the board has
-//! no such hardware, so they are modelled as devices that are *definitely
-//! absent*: a read returns `0xFF` (a floating ISA data bus), a write is
-//! ignored. The devices hold no state at all; nothing the guest writes can be
-//! read back. That is the same decision the FADT states in `IAPC_BOOT_ARCH`
-//! (`CMOS_RTC_NOT_PRESENT`, bit 5); a test pins both places together.
+//! guest (`CMOS_READ`/`CMOS_WRITE`, `outb_p`/`io_delay`). The `0xED` sink is
+//! definitely absent: reads return `0xFF` and writes are ignored. The CMOS pair
+//! uses this absent model only for a board without `rtc_base_unix_seconds`; with
+//! an explicit handoff base, `RtcCmos` owns the same two ports and the FADT bit
+//! is cleared. The absent board's FADT bit is pinned by a board-level test.
 //!
 //! Width policy: byte accesses only. Linux uses only `inb`/`outb` on these
 //! ports, and the other port devices of the model (8259, UART, conf1) refuse an
@@ -18,8 +17,8 @@
 //! something this model has not been audited for. Accesses that straddle the end
 //! of a binding never reach the device (`BusAccessError::CrossesRegion`).
 //!
-//! Not part of this module: RTC clock, CMOS RAM, NMI-disable bit 7 of port
-//! `0x70` (S7-14) and the 8042 (`0x60/0x64`). The 8042 stays **unbound** on
+//! Not part of this module: the implemented RTC clock, CMOS RAM and NMI-disable
+//! bit 7 of port `0x70` (`rtc_cmos.rs`), and the 8042 (`0x60/0x64`). The 8042 stays **unbound** on
 //! purpose: that decision is still open (see the S4-29 decisions in the stage
 //! plan), so a guest touching it is a trap. The POST port `0x80` has the same
 //! absent-device model ([`AbsentPortRegion::Post`], S4-37a1) but the board binds
@@ -28,12 +27,7 @@
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 
-/// CMOS/RTC index port (`0x70`).
-pub const CMOS_INDEX_PORT: u16 = 0x70;
-/// CMOS/RTC data port (`0x71`).
-pub const CMOS_DATA_PORT: u16 = 0x71;
-/// Ports of the CMOS binding: `0x70` and `0x71`. `0x72/0x73` (second bank) are not bound.
-pub const CMOS_PORT_BYTES: u32 = 2;
+pub use crate::rtc_cmos::{CMOS_DATA_PORT, CMOS_INDEX_PORT, CMOS_PORT_BYTES};
 /// The `outb_p`/`io_delay` sink port.
 pub const IO_DELAY_PORT: u16 = 0xED;
 /// Ports of the `0xED` binding.
@@ -44,12 +38,6 @@ pub const POST_PORT: u16 = 0x80;
 pub const POST_PORT_BYTES: u32 = 1;
 /// What a read of an absent port returns.
 pub const ABSENT_PORT_READ_VALUE: u8 = 0xFF;
-
-/// Whether the board has a CMOS RTC. It does not (S7-14 may change this); the
-/// FADT must say the opposite of this value in `IAPC_BOOT_ARCH` bit 5.
-pub const CMOS_RTC_PRESENT: bool = false;
-/// `IAPC_BOOT_ARCH` bit offset of `CMOS_RTC_NOT_PRESENT` (ACPI Table 5.11).
-pub const IAPC_CMOS_RTC_NOT_PRESENT_BIT: u32 = 5;
 
 /// Which group of absent ports a device stands for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -448,18 +436,13 @@ mod tests {
         MachineBus::new(map, RamLimits::new(1 << 20), devices, Vec::new(), ports).unwrap();
     }
 
-    /// The model says "no CMOS RTC"; the firmware FADT must say the same in
-    /// `IAPC_BOOT_ARCH`. Checked against the real bytes of the committed ACPI
-    /// blob (the FADT field at offset 109) and against the firmware constants,
-    /// so the decision cannot drift in either place alone. The FADT also keeps
-    /// `8042` (bit 1) and `LEGACY_DEVICES` (bit 0) at 0, which matches the
-    /// 8042 and `0x80` having no device without the flag and on this bus.
+    /// A board without explicit RTC configuration keeps absent ports and the
+    /// matching FADT `CMOS_RTC_NOT_PRESENT` bit.
     #[test]
     fn model_agrees_with_the_fadt_iapc_boot_arch() {
         use crate::{FirmwareBoardConfig, validate_acpi_blob};
         const BLOB: &[u8] =
             include_bytes!("../../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin");
-        const FADT_SRC: &str = include_str!("../../../firmware/uefi/src/acpi/fadt.rs");
         let board = FirmwareBoardConfig {
             pci_ecam: true,
             acpi_pm: true,
@@ -474,22 +457,9 @@ mod tests {
             .expect("FADT in the blob");
         let fadt = info.table_bytes(BLOB, table);
         let iapc = u16::from_le_bytes(fadt[109..111].try_into().unwrap());
-        let not_present = iapc >> IAPC_CMOS_RTC_NOT_PRESENT_BIT & 1 == 1;
-        assert_eq!(not_present, !CMOS_RTC_PRESENT, "FADT vs model, blob bytes");
+        let not_present = iapc >> crate::CMOS_RTC_NOT_PRESENT_BIT & 1 == 1;
+        assert!(not_present, "default board has no configured RTC");
         assert_eq!(iapc & 0b11, 0, "LEGACY_DEVICES and 8042 stay 0");
-
-        // The firmware constant, read from its source.
-        let src_bit: u32 = FADT_SRC
-            .lines()
-            .find_map(|l| l.strip_prefix("pub const IAPC_CMOS_RTC_NOT_PRESENT: u16 = 1 << "))
-            .and_then(|v| v.trim_end_matches(';').parse().ok())
-            .expect("IAPC_CMOS_RTC_NOT_PRESENT constant");
-        assert_eq!(src_bit, IAPC_CMOS_RTC_NOT_PRESENT_BIT);
-        let boot_arch_line = FADT_SRC
-            .lines()
-            .find(|l| l.starts_with("pub const IAPC_BOOT_ARCH: u16 = "))
-            .expect("IAPC_BOOT_ARCH constant");
-        assert!(boot_arch_line.contains("IAPC_CMOS_RTC_NOT_PRESENT"));
 
         // The model side: the ports of the CMOS pair really are bound and absent.
         let mut bus = bus();
