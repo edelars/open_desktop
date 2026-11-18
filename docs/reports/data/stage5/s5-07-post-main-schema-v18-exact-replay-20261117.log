@@ -1,0 +1,58 @@
+# S5-07 post-main schema-v18 exact replay pair
+
+Date: 2026-11-17
+Code revision: `0356535` (`fix: repair post-main S5 integration checks`), after merge `c757d89` from `origin/main` (`e307966`).
+Purpose: confirm that the existing two exact S5-07 inputs retain their own guest stop, COM1 bytes, and schema-v18 CR3/caller evidence after the main sync. This is a replay integrity check, not acceptance of the pair.
+
+## Invocation profile
+
+Both runs used the `linux-direct` release runner with `--run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --ram-mib 128 --execution-observations-elf-stack-copy`. Each nonce was passed unchanged. The kernel, initramfs, and ACPI blob matched these pinned SHA-256 values:
+
+| Input | Bytes | SHA-256 |
+|---|---:|---|
+| `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` | 17,320,328 | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| `work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio` | 4,688 | `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` |
+| `work/stage5/staging/s5-07-canonical-acpi-20261117.bin` | 1,072 | `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` |
+
+Expected ACPI manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+
+The execution command for each run was:
+
+```sh
+cargo run --release --offline -p od-runner -- linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio \
+  --acpi-blob work/stage5/staging/s5-07-canonical-acpi-20261117.bin \
+  --nonce <exact-source-nonce> \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --out <run-dir>/runner.json \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out <run-dir>/execution-observations.json \
+  --execution-observations-elf-stack-copy
+```
+
+Standard output was preserved as `runner-stdout.bin`. As in the series runner, raw COM1 bytes were reconstructed from the runner stop's `com1_hex` into `uart.bin`; the full stdout stream also contains the JSON runner summary and is not itself the UART artifact.
+
+## Results
+
+| Run | Nonce | Source stop equal | Source UART equal | UART bytes / SHA-256 | CR3 ledger | Target caller event |
+|---|---|---:|---:|---|---|---|
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | yes | yes | 24,220 / `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` | complete, 26,595 / 26,595, omitted 0 | `not_seen` |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | yes | yes | 23,880 / `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` | complete, 26,596 / 26,596, omitted 0 | captured at sequence 26,596 |
+
+Both runner stop objects also match their respective source objects in `retired`, status, and all nested stop fields. Each stopped at 2,999,999,998 retired instructions with `Run(InstructionBudgetExhausted)`. Run 0001 ended with CR3 `0x64ac000`, 26,617 CR3 changes, and 33 delivered #PFs; run 0002 ended with CR3 `0x64d4000`, 26,618 CR3 changes, and 34 delivered #PFs.
+
+The run-0002 target record is at RIP `0xffffffff8141d753`, CR3 `0x64d4000`, retired 2,319,748,956. Its eight saved-RBP frames validate, and terminal status remains `frame_limit`. This reproduces the existing selected caller capture; it does not extend the chain or explain the run-0001 absence.
+
+## Artifact hashes
+
+| Run | Runner JSON SHA-256 | Schema-v18 sidecar SHA-256 |
+|---|---|---|
+| 0001 | `619a6a803ba23b1e33e22c63df01a82bb5f130d9993a8a9e6fa5fbcad062ebde` | `522f6816d8d1c4b609be2ce1b1d92d89d89eea6ae508c0ca5b4ae8de3ea13ec4` |
+| 0002 | `5d339ea9a2c0d076e0cfbd295e1f9a199f4c21232a636b6be999bacdc2f4b8b0` | `1b822e063f164211b519061d4dc655f103bcfd4bd622f16d6fe4d0c97c37f240` |
+
+The existing strict source-pair comparison remains `matches: false`. No comparator or allowlist changed. These replays confirm post-merge per-input stop/UART and capture integrity only; S5-07 remains blocked/unaccepted. The next diagnostic is the bounded paired MMU-gather capture before `tlb_finish_mmu`, correlated to the shared `relocate_vma_down` cleanup context, not to run-2 event 26,596 alone.
+
+Temporary runner artifacts are in ignored `work/stage5/s5-07-post-main-v18-baseline-exact-replay-20261117-a/`.

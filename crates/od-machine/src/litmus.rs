@@ -91,6 +91,32 @@ impl LitmusCase {
     pub fn schedule_count(&self) -> Option<u128> {
         self.0.schedule_count()
     }
+
+    /// S6-41e: the instructions of every thread as the fixture records them (for a host-side
+    /// executor that decides, before a run, which of them it takes).
+    pub fn program(&self) -> Vec<Vec<LitmusInstruction>> {
+        self.0
+            .threads
+            .iter()
+            .map(|thread| {
+                thread
+                    .instructions
+                    .iter()
+                    .map(|instruction| LitmusInstruction {
+                        asm: instruction.asm.clone(),
+                        bytes: instruction.bytes.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// One instruction of a litmus thread: its assembly text from the fixture and its bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LitmusInstruction {
+    pub asm: String,
+    pub bytes: Vec<u8>,
 }
 
 /// How [`run_litmus`] explores a case.

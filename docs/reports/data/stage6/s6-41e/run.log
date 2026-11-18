@@ -1,0 +1,175 @@
+=== process 1 start 12:23:20
+warning: unused import: `ThreadExitFn`
+  --> crates/od-machine/src/host_parallel.rs:35:18
+   |
+35 |     QuantumCall, ThreadExitFn, run_threads_with,
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `access_long64_4k_internal_with_writer` is never used
+    --> crates/od-machine/src/page_walk.rs:1401:4
+     |
+1401 | fn access_long64_4k_internal_with_writer(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `od-machine` (lib) generated 2 warnings (run `cargo fix --lib -p od-machine` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running tests/s6_41e_litmus_jit.rs (target/release/deps/s6_41e_litmus_jit-d5eae03cdb17528b)
+
+running 1 test
+interleaved LOCK-CMPXCHG-MUTEX   vcpus 2 exhaustive runs      2    0.01s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-CMPXCHG-MUTEX     vcpus 2 rounds 1000000     5.3s   188109 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-CMPXCHG-MUTEX     vcpus 4 rounds 1000000    12.6s    79106 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-XADD            vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-XADD              vcpus 2 rounds 1000000     5.2s   191147 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-XADD              vcpus 4 rounds 1000000    14.4s    69222 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-LOCAL        vcpus 2 exhaustive runs     10    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 10 calls 10 admitted 1 reused 9 fallback 0  equal
+parallel SB-LOCK-LOCAL          vcpus 2 rounds 1000000     8.8s   113511 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 2 reused 999998 fallback 0  late_barrier 0  allowed_only
+test s6_41e_the_corpus_with_the_jit_in_both_modes has been running for over 60 seconds
+parallel SB-LOCK-LOCAL          vcpus 4 rounds 1000000    17.6s    56762 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 4 reused 999996 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-XADD         vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-LOCK-XADD           vcpus 2 rounds 1000000     9.2s   108949 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK-XADD           vcpus 4 rounds 1000000    18.6s    53703 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-LOCK                vcpus 2 rounds 1000000     9.1s   110493 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK                vcpus 4 rounds 1000000    18.7s    53492 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-MFENCE            vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-MFENCE              vcpus 2 rounds 1000000    10.7s    93127 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-MFENCE              vcpus 4 rounds 1000000    18.4s    54418 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-XCHG              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-XCHG                vcpus 2 rounds 1000000     9.2s   109288 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-XCHG                vcpus 4 rounds 1000000    17.4s    57384 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved XCHG-MUTEX           vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel XCHG-MUTEX             vcpus 2 rounds 1000000     5.3s   188183 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel XCHG-MUTEX             vcpus 4 rounds 1000000    13.7s    73125 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=2,K=2)    vcpus 2 exhaustive runs      6    0.00s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 24 calls 24 admitted 24 reused 0 fallback 0  equal
+parallel LOCK-INC(N=2,K=2)      vcpus 2 rounds 1000000     5.6s   178716 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-INC(N=2,K=2)      vcpus 4 rounds 1000000    14.0s    71414 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=4,K=2)    vcpus 4 exhaustive runs   2520    0.07s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 20160 calls 20160 admitted 20160 reused 0 fallback 0  equal
+parallel LOCK-INC(N=4,K=2)      vcpus 4 rounds 1000000    16.1s    62038 r/s  outcomes 1 forbidden 0  jit 8000000 calls 4000000 admitted 16 reused 3999984 fallback 0  late_barrier 0  allowed_only
+total 230.1s, 29 runs, 0 failures
+test s6_41e_the_corpus_with_the_jit_in_both_modes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 230.10s
+
+=== process 1 end exit=0 12:27:10
+=== process 2 start 12:27:10
+warning: unused import: `ThreadExitFn`
+  --> crates/od-machine/src/host_parallel.rs:35:18
+   |
+35 |     QuantumCall, ThreadExitFn, run_threads_with,
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `access_long64_4k_internal_with_writer` is never used
+    --> crates/od-machine/src/page_walk.rs:1401:4
+     |
+1401 | fn access_long64_4k_internal_with_writer(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `od-machine` (lib) generated 2 warnings (run `cargo fix --lib -p od-machine` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.02s
+     Running tests/s6_41e_litmus_jit.rs (target/release/deps/s6_41e_litmus_jit-d5eae03cdb17528b)
+
+running 1 test
+interleaved LOCK-CMPXCHG-MUTEX   vcpus 2 exhaustive runs      2    0.01s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-CMPXCHG-MUTEX     vcpus 2 rounds 1000000     6.8s   147651 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-CMPXCHG-MUTEX     vcpus 4 rounds 1000000    15.1s    66260 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-XADD            vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-XADD              vcpus 2 rounds 1000000     5.5s   180281 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-XADD              vcpus 4 rounds 1000000    14.6s    68665 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-LOCAL        vcpus 2 exhaustive runs     10    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 10 calls 10 admitted 1 reused 9 fallback 0  equal
+parallel SB-LOCK-LOCAL          vcpus 2 rounds 1000000     8.8s   113502 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 2 reused 999998 fallback 0  late_barrier 0  allowed_only
+test s6_41e_the_corpus_with_the_jit_in_both_modes has been running for over 60 seconds
+parallel SB-LOCK-LOCAL          vcpus 4 rounds 1000000    17.7s    56415 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 4 reused 999996 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-XADD         vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-LOCK-XADD           vcpus 2 rounds 1000000     9.4s   106312 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK-XADD           vcpus 4 rounds 1000000    18.3s    54697 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-LOCK                vcpus 2 rounds 1000000     9.3s   107759 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK                vcpus 4 rounds 1000000    17.6s    56705 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-MFENCE            vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-MFENCE              vcpus 2 rounds 1000000     9.1s   110348 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-MFENCE              vcpus 4 rounds 1000000    18.3s    54620 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-XCHG              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-XCHG                vcpus 2 rounds 1000000     9.2s   108444 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-XCHG                vcpus 4 rounds 1000000    18.4s    54209 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved XCHG-MUTEX           vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel XCHG-MUTEX             vcpus 2 rounds 1000000     5.6s   178547 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel XCHG-MUTEX             vcpus 4 rounds 1000000    14.4s    69243 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=2,K=2)    vcpus 2 exhaustive runs      6    0.00s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 24 calls 24 admitted 24 reused 0 fallback 0  equal
+parallel LOCK-INC(N=2,K=2)      vcpus 2 rounds 1000000     6.3s   159562 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-INC(N=2,K=2)      vcpus 4 rounds 1000000    13.5s    74337 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=4,K=2)    vcpus 4 exhaustive runs   2520    0.07s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 20160 calls 20160 admitted 20160 reused 0 fallback 0  equal
+parallel LOCK-INC(N=4,K=2)      vcpus 4 rounds 1000000    14.0s    71541 r/s  outcomes 1 forbidden 0  jit 8000000 calls 4000000 admitted 16 reused 3999984 fallback 0  late_barrier 0  allowed_only
+total 232.0s, 29 runs, 0 failures
+test s6_41e_the_corpus_with_the_jit_in_both_modes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 231.99s
+
+=== process 2 end exit=0 12:31:02
+=== process 3 start 12:31:02
+warning: unused import: `ThreadExitFn`
+  --> crates/od-machine/src/host_parallel.rs:35:18
+   |
+35 |     QuantumCall, ThreadExitFn, run_threads_with,
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `access_long64_4k_internal_with_writer` is never used
+    --> crates/od-machine/src/page_walk.rs:1401:4
+     |
+1401 | fn access_long64_4k_internal_with_writer(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `od-machine` (lib) generated 2 warnings (run `cargo fix --lib -p od-machine` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running tests/s6_41e_litmus_jit.rs (target/release/deps/s6_41e_litmus_jit-d5eae03cdb17528b)
+
+running 1 test
+interleaved LOCK-CMPXCHG-MUTEX   vcpus 2 exhaustive runs      2    0.01s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-CMPXCHG-MUTEX     vcpus 2 rounds 1000000     5.1s   195002 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-CMPXCHG-MUTEX     vcpus 4 rounds 1000000    12.8s    78273 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-XADD            vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel LOCK-XADD              vcpus 2 rounds 1000000     5.2s   192387 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-XADD              vcpus 4 rounds 1000000    12.6s    79102 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-LOCAL        vcpus 2 exhaustive runs     10    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 10 calls 10 admitted 1 reused 9 fallback 0  equal
+parallel SB-LOCK-LOCAL          vcpus 2 rounds 1000000     8.6s   116788 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 2 reused 999998 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK-LOCAL          vcpus 4 rounds 1000000    15.5s    64324 r/s  outcomes 3 forbidden 0  jit 1000000 calls 1000000 admitted 4 reused 999996 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK-XADD         vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+test s6_41e_the_corpus_with_the_jit_in_both_modes has been running for over 60 seconds
+parallel SB-LOCK-XADD           vcpus 2 rounds 1000000     8.7s   115033 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK-XADD           vcpus 4 rounds 1000000    16.0s    62658 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-LOCK              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-LOCK                vcpus 2 rounds 1000000     8.7s   114596 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-LOCK                vcpus 4 rounds 1000000    15.9s    63058 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-MFENCE            vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-MFENCE              vcpus 2 rounds 1000000     8.4s   118743 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-MFENCE              vcpus 4 rounds 1000000    15.8s    63247 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved SB-XCHG              vcpus 2 exhaustive runs     20    0.00s outcomes 3 forbidden 0 not_covered 0 incomplete 0  jit 40 calls 40 admitted 2 reused 38 fallback 0  equal
+parallel SB-XCHG                vcpus 2 rounds 1000000     8.7s   114662 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-XCHG                vcpus 4 rounds 1000000    17.4s    57332 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved XCHG-MUTEX           vcpus 2 exhaustive runs      2    0.00s outcomes 2 forbidden 0 not_covered 0 incomplete 0  jit 4 calls 4 admitted 2 reused 2 fallback 0  equal
+parallel XCHG-MUTEX             vcpus 2 rounds 1000000     5.3s   189221 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel XCHG-MUTEX             vcpus 4 rounds 1000000    12.9s    77528 r/s  outcomes 2 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=2,K=2)    vcpus 2 exhaustive runs      6    0.00s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 24 calls 24 admitted 24 reused 0 fallback 0  equal
+parallel LOCK-INC(N=2,K=2)      vcpus 2 rounds 1000000     5.4s   183809 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel LOCK-INC(N=2,K=2)      vcpus 4 rounds 1000000    12.7s    78583 r/s  outcomes 1 forbidden 0  jit 4000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+interleaved LOCK-INC(N=4,K=2)    vcpus 4 exhaustive runs   2520    0.07s outcomes 1 forbidden 0 not_covered 0 incomplete 0  jit 20160 calls 20160 admitted 20160 reused 0 fallback 0  equal
+parallel LOCK-INC(N=4,K=2)      vcpus 4 rounds 1000000    13.7s    73070 r/s  outcomes 1 forbidden 0  jit 8000000 calls 4000000 admitted 16 reused 3999984 fallback 0  late_barrier 0  allowed_only
+total 209.6s, 29 runs, 0 failures
+test s6_41e_the_corpus_with_the_jit_in_both_modes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 209.62s
+
+=== process 3 end exit=0 12:34:32
+ALLDONE

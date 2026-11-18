@@ -139,8 +139,13 @@ pub fn create_raw_for_image_tool(
         .custom_flags(O_NONBLOCK_MACOS | O_NOFOLLOW_MACOS | O_DIRECTORY_MACOS | O_CLOEXEC_MACOS)
         .open(directory)
         .map_err(|_| IO_ERROR)?;
-    create_raw(directory.as_raw_fd(), name, capacity_bytes, &host_available_bytes)
-        .map_err(|failure| failure.status)
+    create_raw(
+        directory.as_raw_fd(),
+        name,
+        capacity_bytes,
+        &host_available_bytes,
+    )
+    .map_err(|failure| failure.status)
 }
 
 /// # Safety

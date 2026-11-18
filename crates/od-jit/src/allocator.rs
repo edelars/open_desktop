@@ -111,6 +111,15 @@ pub enum AllocatorError {
         temp: TempId,
         width: IntWidth,
     },
+    /// S6-41b (е): the atomic-family effects (`AtomicRmw`, `AtomicFlags`,
+    /// `WriteGprIfNotEqual`) define and use temporaries (`dst`, `value`,
+    /// `expected`, `lhs`, `rhs`) that this allocator's homes, liveness and
+    /// helper-boundary captures do not model. The effects are refused here
+    /// instead of being skipped; their only consumer is
+    /// `arm64::atomic_sequence`, which assigns its own registers.
+    UnsupportedEffect {
+        operation: usize,
+    },
     DuplicateHelperBoundary(usize),
     HelperBoundaryOutOfRange {
         index: usize,
@@ -471,7 +480,7 @@ impl<'program> Allocation<'program> {
 
 fn collect_definitions(program: &Program) -> Result<Vec<(TempId, IntWidth)>, AllocatorError> {
     let mut definitions = Vec::new();
-    for operation in &program.operations {
+    for (index, operation) in program.operations.iter().enumerate() {
         match operation {
             Operation::Constant { dst, width, .. } | Operation::ReadGpr { dst, width, .. } => {
                 definitions.push((*dst, *width))
@@ -482,7 +491,22 @@ fn collect_definitions(program: &Program) -> Result<Vec<(TempId, IntWidth)>, All
                 width,
                 ..
             } => definitions.push((*dst, *width)),
-            _ => {}
+            // S6-41b (е): refuse, do not skip (see `AllocatorError::UnsupportedEffect`).
+            Operation::AtomicRmw { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. } => {
+                return Err(AllocatorError::UnsupportedEffect { operation: index });
+            }
+            // Effects that define no temporary.
+            Operation::BeginInstruction { .. }
+            | Operation::CommitInstruction { .. }
+            | Operation::CheckedStore { .. }
+            | Operation::Fence { .. }
+            | Operation::Integer { result: None, .. }
+            | Operation::WriteGpr { .. }
+            | Operation::Branch { .. }
+            | Operation::DispatchBranch { .. }
+            | Operation::Exit { .. } => {}
         }
     }
     for (temp, width) in &definitions {
@@ -518,7 +542,18 @@ fn compute_liveness(program: &Program) -> Vec<BTreeSet<TempId>> {
             Operation::WriteGpr { src, .. } => {
                 live.insert(*src);
             }
-            _ => {}
+            // No temporary is defined or used. The atomic-family effects never
+            // reach liveness: `collect_definitions` refuses them (S6-41b (е)).
+            Operation::BeginInstruction { .. }
+            | Operation::CommitInstruction { .. }
+            | Operation::CheckedStore { .. }
+            | Operation::Fence { .. }
+            | Operation::AtomicRmw { .. }
+            | Operation::AtomicFlags { .. }
+            | Operation::WriteGprIfNotEqual { .. }
+            | Operation::Branch { .. }
+            | Operation::DispatchBranch { .. }
+            | Operation::Exit { .. } => {}
         }
         live_at[index] = live;
     }

@@ -10,13 +10,18 @@
 
 use core::panic::PanicInfo;
 
-use od_firmware::acpi::blob::{STAGE4_BLOB_LEN, stage4_blob_bytes};
+#[cfg(feature = "linux-nvme-acpi")]
+use od_firmware::acpi::blob::{
+    LINUX_NVME_BLOB_LEN as BLOB_LEN, linux_nvme_blob_bytes as blob_bytes,
+};
+#[cfg(not(feature = "linux-nvme-acpi"))]
+use od_firmware::acpi::blob::{STAGE4_BLOB_LEN as BLOB_LEN, stage4_blob_bytes as blob_bytes};
 
 /// The blob. `no_mangle` + `used` keep it in the object file whatever the optimizer sees.
 #[unsafe(no_mangle)]
 #[used]
 #[unsafe(link_section = ".acpi_blob")]
-pub static ACPI_BLOB: [u8; STAGE4_BLOB_LEN] = stage4_blob_bytes::<STAGE4_BLOB_LEN>();
+pub static ACPI_BLOB: [u8; BLOB_LEN] = blob_bytes::<BLOB_LEN>();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {

@@ -72,8 +72,7 @@ use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
     LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
     run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_with_execution_observations,
-    run_linux_direct_board_set_user_mode_with_post_iret_index,
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -88,11 +87,11 @@ mod checkpoints;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
---nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-post-iret-index <n>]]]]";
+--nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
-/// nonce is appended as `od.nonce=<nonce>`.
+/// nonce is appended as `od.nonce=<nonce>` unless sent through bootconfig.
 const CMDLINE_PREFIX: &str = "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1";
 /// `nokaslr` is added here, by the runner (decision of S4-37: the loader does not edit it).
 const CMDLINE_SUFFIX: &str = "nokaslr";
@@ -111,6 +110,8 @@ struct Options {
     initramfs: String,
     acpi_blob: String,
     nonce: String,
+    /// Carry the nonce in the initrd bootconfig instead of the early command line.
+    nonce_bootconfig: bool,
     expected_vmlinuz_sha256: String,
     expected_acpi_manifest_hash: [u8; 32],
     expected_initramfs_sha256: String,
@@ -128,6 +129,10 @@ struct Options {
     /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a|stage4a-apic`, S4-38L9-um): a committed `IRETQ`
     /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
     user_mode: bool,
+    /// Opt-in user-stack diagnostic: append Linux's `norandmaps` cmdline parameter.
+    linux_norandmaps: bool,
+    /// Opt-in stack-unwind diagnostic: append `randomize_kstack_offset=off` to the Linux cmdline.
+    linux_no_randomize_kstack_offset: bool,
     /// `--checkpoint-table <s4-38l2-oracle.json>` (S4-38L4i, only with `--run --set-cpl0`): record
     /// the checkpoints C0..C17 (observation only) and add the `checkpoints` key.
     checkpoint_table: Option<String>,
@@ -137,6 +142,20 @@ struct Options {
     execution_observations_out: Option<String>,
     /// Zero-based delivered-#PF ordinal for the opt-in post-IRET page-walk snapshot.
     execution_observations_post_iret_index: Option<u64>,
+    /// Selected CPL0 RDTSC RIP for bounded post-instruction register samples.
+    execution_observations_rdtsc_rip: Option<u64>,
+    /// Optional delay-function entry RIP, captured at every matching CPL0 RDTSC.
+    execution_observations_rdtsc_entry_rip: Option<u64>,
+    /// Capture every Nth hit at the selected CPL0 RDTSC RIP.
+    execution_observations_rdtsc_stride: Option<u64>,
+    /// Inclusive 1-based selected-site hit range for focused poll samples.
+    execution_observations_rdtsc_window: Option<od_machine::RdtscSampleWindow>,
+    /// Capture every CPL0 RDTSC through the fixed Linux delay_tsc entry sentinel.
+    execution_observations_rdtsc_prefix: bool,
+    execution_observations_delay_call_summary: bool,
+    /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
+    execution_observations_quantum_trace: bool,
+    execution_observations_elf_stack_copy: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -239,6 +258,8 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     mark_acceptance(
         &mut evidence,
         options.diagnostic_past_c7,
+        options.linux_norandmaps,
+        options.linux_no_randomize_kstack_offset,
         options.cpuid_profile,
     );
     let io_failure = |evidence: Value, stage: &str, detail: String| {
@@ -276,7 +297,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     //    placement of od-machine decides the exact limit). The size comes from the file
     //    metadata, so an oversized file is refused before a single byte is read into memory.
     let ram_bytes = options.ram_mib * MIB;
-    let initramfs = match read_capped(&options.initramfs, ram_bytes) {
+    let mut initramfs = match read_capped(&options.initramfs, ram_bytes) {
         Ok(bytes) => bytes,
         Err(detail) if detail == TOO_LARGE => {
             evidence["inputs"]["initramfs"] = json!({"path": options.initramfs});
@@ -347,7 +368,40 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     });
 
     // 6 (cmdline). The runner builds the line; od-machine checks it.
-    let cmdline = cmdline(&options.nonce);
+    let (cmdline, loaded_initrd_sha256) = if options.nonce_bootconfig {
+        let trailer = nonce_bootconfig_trailer(&options.nonce, initramfs.len() as u64);
+        let loaded_bytes = initramfs.len() + trailer.len();
+        if loaded_bytes as u64 > ram_bytes {
+            return (
+                refusal(
+                    "initrd_too_large",
+                    "initrd_size",
+                    format!(
+                        "the initrd with bootconfig is larger than guest RAM ({ram_bytes} bytes)"
+                    ),
+                    evidence,
+                ),
+                4,
+            );
+        }
+        initramfs.extend_from_slice(&trailer);
+        let loaded_hash = sha256_hex(&initramfs);
+        evidence["inputs"]["initramfs"]["nonce_bootconfig"] = json!({
+            "trailer_sha256": sha256_hex(&trailer),
+            "loaded_sha256": loaded_hash,
+            "loaded_bytes": loaded_bytes,
+        });
+        (nonce_bootconfig_cmdline(), loaded_hash)
+    } else {
+        (
+            cmdline(
+                &options.nonce,
+                options.linux_norandmaps,
+                options.linux_no_randomize_kstack_offset,
+            ),
+            initramfs_sha,
+        )
+    };
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
@@ -361,7 +415,13 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     };
     match load_linux_direct_board(&machine_input) {
         Ok(mut boot) => {
-            describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
+            describe(
+                &mut evidence,
+                &boot,
+                &cmdline,
+                &vmlinuz,
+                &loaded_initrd_sha256,
+            );
             if let Some(budget) = options.budget {
                 let mut sidecar_file = None;
                 let mut execution_observations_file = None;
@@ -584,20 +644,23 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     ..LinuxCpl0SetMembers::linux_default()
                 };
                 let run_started = std::time::Instant::now();
-                let result = if let Some(index) = options.execution_observations_post_iret_index {
-                    run_linux_direct_board_set_user_mode_with_post_iret_index(
+                let result = if options.execution_observations_out.is_some() {
+                    run_linux_direct_board_set_user_mode_with_delay_tsc_summary(
                         &mut boot,
                         &machine_input,
                         budget,
                         members,
-                        index,
-                    )
-                } else if options.execution_observations_out.is_some() {
-                    run_linux_direct_board_set_user_mode_with_execution_observations(
-                        &mut boot,
-                        &machine_input,
-                        budget,
-                        members,
+                        options.execution_observations_post_iret_index,
+                        options.execution_observations_rdtsc_rip,
+                        options.execution_observations_rdtsc_stride.unwrap_or(1),
+                        options.execution_observations_rdtsc_entry_rip,
+                        options.execution_observations_rdtsc_window,
+                        options
+                            .execution_observations_rdtsc_prefix
+                            .then_some(od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP),
+                        options.execution_observations_quantum_trace,
+                        options.execution_observations_elf_stack_copy,
+                        options.execution_observations_delay_call_summary,
                     )
                 } else if options.set_cpl0 {
                     run_linux_direct_board_set_observed(
@@ -674,6 +737,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     });
                 }
                 if let Some(path) = &options.execution_observations_out {
+                    let mut successful_metadata = None;
                     let write_error = if result.is_err() {
                         let cleanup_error = execution_observations_file
                             .take()
@@ -685,12 +749,25 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                         match (result.as_ref().ok(), execution_observations_file.as_mut()) {
                             (Some(record), Some(file)) => {
                                 match record.execution_observations.as_ref() {
-                                    Some(observations) => write_execution_observations_sidecar(
-                                        file,
-                                        path,
-                                        observations,
-                                    )
-                                    .err(),
+                                    Some(observations) => {
+                                        match write_execution_observations_sidecar(
+                                            file,
+                                            path,
+                                            observations,
+                                        ) {
+                                            Ok((byte_count, sha256)) => {
+                                                successful_metadata =
+                                                    Some(execution_observations_sidecar_metadata(
+                                                        path,
+                                                        observations,
+                                                        byte_count,
+                                                        sha256,
+                                                    ));
+                                                None
+                                            }
+                                            Err(error) => Some(error),
+                                        }
+                                    }
                                     None => Some("run returned no execution observations".into()),
                                 }
                             }
@@ -698,11 +775,12 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                             (None, _) => Some("run result is unavailable".into()),
                         }
                     };
-                    evidence["execution_observations_sidecar"] = json!({
+                    let mut metadata = successful_metadata.unwrap_or_else(|| json!({
                         "path": path,
-                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events",
-                        "write_error": write_error,
-                    });
+                        "capture_scope": "CPL0 RDTSC instruction RIP counts and successfully delivered #PF events, with optional selected-site and entry-site samples",
+                    }));
+                    metadata["write_error"] = json!(write_error);
+                    evidence["execution_observations_sidecar"] = metadata;
                 }
                 match result {
                     Ok(record) => {
@@ -730,9 +808,9 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
 
 /// S4-38L7: the acceptance marker, set right after the arguments are parsed so that every result
 /// (a refusal of an early step, of the machine or of the run included) carries it. Always
-/// present: `acceptance` is `counted` without `--diagnostic-past-c7` and `diagnostic_not_counted`
-/// with it (CPUID boundary off, DiagnosticV1 answers leaf 1 and 0x80000001, result NOT counted).
-/// The marker follows the request of the flag, not its effect.
+/// present: `acceptance` is `counted` without diagnostic flags and `diagnostic_not_counted` with
+/// `--diagnostic-past-c7`, `--linux-norandmaps`, or `--linux-no-randomize-kstack-offset`. The
+/// marker follows the requested flags, not their observed effect.
 ///
 /// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
 /// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and `cpuid_profile` says
@@ -740,15 +818,24 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
 /// `diagnostic_past_c7` still follows its flag.
 ///
 /// S4-39j: the profile alone no longer makes the result not counted. Stage4a is the counted
-/// profile of the plan: `acceptance` is `counted` without `--diagnostic-past-c7` for both
-/// profiles and `diagnostic_not_counted` with it; the board and `exit_kind` do not depend on it.
-fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
+/// profile of the plan. Diagnostic flags control whether a result is counted; the board and
+/// `exit_kind` do not depend on them.
+fn mark_acceptance(
+    evidence: &mut Value,
+    diagnostic_past_c7: bool,
+    linux_norandmaps: bool,
+    linux_no_randomize_kstack_offset: bool,
+    cpuid_profile: CpuidProfile,
+) {
     let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
+    evidence["linux_norandmaps"] = json!(linux_norandmaps);
+    evidence["linux_no_randomize_kstack_offset"] = json!(linux_no_randomize_kstack_offset);
+    let diagnostic = diagnostic_past_c7 || linux_norandmaps || linux_no_randomize_kstack_offset;
     // S4-38L8d: the APIC profile is never counted (only the checkpoint L8d is its status; the PASS
     // of S4-39j stays with `stage4a`).
     let apic = cpuid_profile == CpuidProfile::X8664V1Stage4AApic;
-    evidence["acceptance"] = json!(if diagnostic_past_c7 || apic {
+    evidence["acceptance"] = json!(if diagnostic || apic {
         "diagnostic_not_counted"
     } else {
         "counted"
@@ -779,10 +866,20 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
              profile of the target CPU"
         });
     }
+    if linux_norandmaps {
+        parts.push(
+            "--linux-norandmaps disables Linux address-space randomization for the user-stack diagnostic",
+        );
+    }
+    if linux_no_randomize_kstack_offset {
+        parts.push(
+            "--linux-no-randomize-kstack-offset disables Linux kernel stack offset randomization for this diagnostic",
+        );
+    }
     if !parts.is_empty() {
         let verdict = if apic {
             "the result is NOT counted (a checkpoint L8d record only; the S4-39j PASS stays with stage4a)"
-        } else if diagnostic_past_c7 {
+        } else if diagnostic {
             "the result is NOT counted"
         } else {
             "the result is counted (stage4a is the counted profile)"
@@ -830,9 +927,39 @@ fn read_capped(path: &str, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// The kernel command line: the S4-29g template with the operator's nonce, then `nokaslr`.
-fn cmdline(nonce: &str) -> String {
-    format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}")
+/// The kernel command line: the S4-29g template with the operator's nonce, `nokaslr`, and the
+/// optional Linux user-stack and kernel-stack diagnostics.
+fn cmdline(nonce: &str, linux_norandmaps: bool, linux_no_randomize_kstack_offset: bool) -> String {
+    let mut base = format!("{CMDLINE_PREFIX} od.nonce={nonce} {CMDLINE_SUFFIX}");
+    if linux_norandmaps {
+        base.push_str(" norandmaps");
+    }
+    if linux_no_randomize_kstack_offset {
+        base.push_str(" randomize_kstack_offset=off");
+    }
+    base
+}
+
+fn nonce_bootconfig_cmdline() -> String {
+    format!("{CMDLINE_PREFIX} {CMDLINE_SUFFIX} bootconfig")
+}
+
+/// Linux bootconfig footer (Linux 7.0, Documentation/admin-guide/bootconfig.rst).
+/// The caller has already validated the nonce as a single unquoted value.
+fn nonce_bootconfig_trailer(nonce: &str, base_bytes: u64) -> Vec<u8> {
+    const MAGIC: &[u8] = b"#BOOTCONFIG\n";
+    const FOOTER_BYTES: usize = 2 * size_of::<u32>() + MAGIC.len();
+
+    let mut trailer = format!("kernel.od.nonce = {nonce}\n\0").into_bytes();
+    let unaligned_bytes = base_bytes % 4 + (trailer.len() + FOOTER_BYTES) as u64;
+    let padding = (4 - unaligned_bytes % 4) % 4;
+    trailer.resize(trailer.len() + padding as usize, 0);
+    let size = trailer.len() as u32;
+    let checksum: u32 = trailer.iter().copied().map(u32::from).sum();
+    trailer.extend_from_slice(&size.to_le_bytes());
+    trailer.extend_from_slice(&checksum.to_le_bytes());
+    trailer.extend_from_slice(MAGIC);
+    trailer
 }
 
 fn merge(target: &mut Value, source: Value) {
@@ -880,7 +1007,7 @@ fn describe(
     boot: &LinuxDirectBoot,
     cmdline: &str,
     vmlinuz: &[u8],
-    initramfs_sha: &str,
+    loaded_initrd_sha256: &str,
 ) {
     let header = &boot.header;
     evidence["header"] = json!({
@@ -945,11 +1072,12 @@ fn describe(
     let kernel_input = pm_code(header, vmlinuz).map(sha256_hex);
     let kernel_memory = hex(&boot.kernel_sha256_in_memory);
     let initrd_memory = boot.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash));
+    // With bootconfig, the input payload is the file plus the generated trailer.
     evidence["memory_sha256"] = json!({
         "kernel_pm_code": kernel_memory,
         "kernel_pm_code_matches_file": kernel_input.as_deref() == Some(kernel_memory.as_str()),
         "initrd": initrd_memory,
-        "initrd_matches_file": initrd_memory.as_deref() == Some(initramfs_sha),
+        "initrd_matches_file": initrd_memory.as_deref() == Some(loaded_initrd_sha256),
     });
     let entry = &boot.entry;
     evidence["entry"] = json!({
@@ -1149,6 +1277,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut initramfs = None;
     let mut acpi_blob = None;
     let mut nonce = None;
+    let mut nonce_bootconfig = false;
     let mut expected_vmlinuz = None;
     let mut expected_manifest = None;
     let mut expected_initramfs = None;
@@ -1158,19 +1287,72 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
     let mut user_mode = false;
+    let mut linux_norandmaps = false;
+    let mut linux_no_randomize_kstack_offset = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut checkpoint_table: Option<String> = None;
     let mut stack_context_out = None;
     let mut execution_observations_out = None;
     let mut execution_observations_post_iret_index = None;
+    let mut execution_observations_rdtsc_rip = None;
+    let mut execution_observations_rdtsc_entry_rip = None;
+    let mut execution_observations_rdtsc_stride = None;
+    let mut execution_observations_rdtsc_window = None;
+    let mut execution_observations_rdtsc_prefix = false;
+    let mut execution_observations_delay_call_summary = false;
+    let mut execution_observations_quantum_trace = false;
+    let mut execution_observations_elf_stack_copy = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
-        // `--run` is the one flag without a value.
+        // Handle switches before consuming option values.
+        if name == "--nonce-bootconfig" {
+            if std::mem::replace(&mut nonce_bootconfig, true) {
+                return Err("duplicate option --nonce-bootconfig".into());
+            }
+            index += 1;
+            continue;
+        }
         if name == "--run" {
             if std::mem::replace(&mut run, true) {
                 return Err(format!("duplicate option --run; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-rdtsc-prefix" {
+            if std::mem::replace(&mut execution_observations_rdtsc_prefix, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-rdtsc-prefix; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-delay-call-summary" {
+            if std::mem::replace(&mut execution_observations_delay_call_summary, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-delay-call-summary; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-quantum-trace" {
+            if std::mem::replace(&mut execution_observations_quantum_trace, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-quantum-trace; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--execution-observations-elf-stack-copy" {
+            if std::mem::replace(&mut execution_observations_elf_stack_copy, true) {
+                return Err(format!(
+                    "duplicate option --execution-observations-elf-stack-copy; usage: {USAGE}"
+                ));
             }
             index += 1;
             continue;
@@ -1194,6 +1376,24 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--user-mode" {
             if std::mem::replace(&mut user_mode, true) {
                 return Err(format!("duplicate option --user-mode; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--linux-norandmaps" {
+            if std::mem::replace(&mut linux_norandmaps, true) {
+                return Err(format!(
+                    "duplicate option --linux-norandmaps; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--linux-no-randomize-kstack-offset" {
+            if std::mem::replace(&mut linux_no_randomize_kstack_offset, true) {
+                return Err(format!(
+                    "duplicate option --linux-no-randomize-kstack-offset; usage: {USAGE}"
+                ));
             }
             index += 1;
             continue;
@@ -1227,6 +1427,66 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         format!("invalid --execution-observations-post-iret-index '{value}'")
                     })?;
                 if execution_observations_post_iret_index
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-rip" => {
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                let parsed = u64::from_str_radix(hex, 16)
+                    .map_err(|_| format!("invalid --execution-observations-rdtsc-rip '{value}'"))?;
+                if execution_observations_rdtsc_rip.replace(parsed).is_some() {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-entry-rip" => {
+                let hex = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                    .filter(|digits| !digits.is_empty())
+                    .ok_or_else(|| {
+                        format!("invalid --execution-observations-rdtsc-entry-rip '{value}': expected 0x-prefixed hexadecimal")
+                    })?;
+                let parsed = u64::from_str_radix(hex, 16).map_err(|_| {
+                    format!("invalid --execution-observations-rdtsc-entry-rip '{value}'")
+                })?;
+                if execution_observations_rdtsc_entry_rip
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-stride" => {
+                let parsed = value.parse::<u64>().ok().filter(|stride| *stride > 0).ok_or_else(|| {
+                    format!("invalid --execution-observations-rdtsc-stride '{value}': expected a positive integer")
+                })?;
+                if execution_observations_rdtsc_stride
+                    .replace(parsed)
+                    .is_some()
+                {
+                    return Err(format!("duplicate option {name}; usage: {USAGE}"));
+                }
+                index += 2;
+                continue;
+            }
+            "--execution-observations-rdtsc-window" => {
+                let parsed = parse_rdtsc_sample_window(value)?;
+                if execution_observations_rdtsc_window
                     .replace(parsed)
                     .is_some()
                 {
@@ -1298,6 +1558,36 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a or stage4a-apic; usage: {USAGE}"
         ));
     }
+    if nonce_bootconfig
+        && !(run
+            && set_cpl0
+            && cpuid_profile == CpuidProfile::X8664V1Stage4A
+            && user_mode
+            && !diagnostic_past_c7
+            && !linux_norandmaps
+            && !linux_no_randomize_kstack_offset
+            && checkpoint_table.is_none())
+    {
+        return Err(
+            "--nonce-bootconfig needs the counted --run --set-cpl0 --cpuid-profile stage4a --user-mode profile without Linux diagnostics or a checkpoint table".into(),
+        );
+    }
+    if linux_norandmaps
+        && !(run && set_cpl0 && cpuid_profile == CpuidProfile::X8664V1Stage4A && user_mode)
+    {
+        return Err(
+            "--linux-norandmaps needs --run, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+                .into(),
+        );
+    }
+    if linux_no_randomize_kstack_offset
+        && !(run && set_cpl0 && cpuid_profile == CpuidProfile::X8664V1Stage4A && user_mode)
+    {
+        return Err(
+            "--linux-no-randomize-kstack-offset needs --run, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+                .into(),
+        );
+    }
     if stack_context_out.is_some() && !(run && set_cpl0) {
         return Err(format!(
             "--stack-context-out needs --run and --set-cpl0; usage: {USAGE}"
@@ -1308,10 +1598,81 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--execution-observations-out needs --run, --set-cpl0 and --user-mode; usage: {USAGE}"
         ));
     }
+    if execution_observations_rdtsc_prefix && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-rdtsc-prefix needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_delay_call_summary {
+        if execution_observations_out.is_none() {
+            return Err(format!(
+                "--execution-observations-delay-call-summary needs --execution-observations-out; usage: {USAGE}"
+            ));
+        }
+        if execution_observations_rdtsc_rip
+            .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_POLL_RIP)
+            || execution_observations_rdtsc_entry_rip
+                .is_some_and(|rip| rip != od_machine::LINUX_DELAY_TSC_ENTRY_RIP)
+            || execution_observations_rdtsc_stride.is_some_and(|stride| stride != 1)
+            || execution_observations_rdtsc_window.is_some()
+        {
+            return Err("--execution-observations-delay-call-summary conflicts with selected RIP, stride, or window options".into());
+        }
+        execution_observations_rdtsc_rip = Some(od_machine::LINUX_DELAY_TSC_POLL_RIP);
+        execution_observations_rdtsc_entry_rip = Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP);
+        execution_observations_rdtsc_stride = Some(1);
+    }
+    if execution_observations_quantum_trace && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-quantum-trace needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_elf_stack_copy && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-elf-stack-copy needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
     if execution_observations_post_iret_index.is_some() && execution_observations_out.is_none() {
         return Err(format!(
             "--execution-observations-post-iret-index needs --execution-observations-out; usage: {USAGE}"
         ));
+    }
+    if execution_observations_rdtsc_rip.is_some() && execution_observations_out.is_none() {
+        return Err(format!(
+            "--execution-observations-rdtsc-rip needs --execution-observations-out; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-entry-rip needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_rdtsc_entry_rip.is_some()
+        && execution_observations_rdtsc_entry_rip == execution_observations_rdtsc_rip
+    {
+        return Err("entry and selected RDTSC RIPs must differ".into());
+    }
+    if execution_observations_rdtsc_stride.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-stride needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
+    if execution_observations_rdtsc_window.is_some()
+        && (execution_observations_out.is_none() || execution_observations_rdtsc_rip.is_none())
+    {
+        return Err(format!(
+            "--execution-observations-rdtsc-window needs --execution-observations-out and --execution-observations-rdtsc-rip; usage: {USAGE}"
+        ));
+    }
+    if let Some(window) = execution_observations_rdtsc_window {
+        validate_rdtsc_sample_window_capacity(
+            window,
+            execution_observations_rdtsc_stride.unwrap_or(1),
+        )?;
     }
     // The board loop accepts both observers, but the public execution-observation runs of
     // od-machine do not take a checkpoint table and the pair is untested (ISSUE-505); refuse it
@@ -1355,6 +1716,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         initramfs: required(initramfs, "--initramfs")?,
         acpi_blob: required(acpi_blob, "--acpi-blob")?,
         nonce,
+        nonce_bootconfig,
         expected_vmlinuz_sha256: parse_sha256(&required(
             expected_vmlinuz,
             "--expected-vmlinuz-sha256",
@@ -1374,11 +1736,65 @@ fn parse(args: &[String]) -> Result<Options, String> {
         diagnostic_past_c7,
         cpuid_profile,
         user_mode,
+        linux_norandmaps,
+        linux_no_randomize_kstack_offset,
         checkpoint_table,
         stack_context_out,
         execution_observations_out,
         execution_observations_post_iret_index,
+        execution_observations_rdtsc_rip,
+        execution_observations_rdtsc_entry_rip,
+        execution_observations_rdtsc_stride,
+        execution_observations_rdtsc_window,
+        execution_observations_rdtsc_prefix,
+        execution_observations_delay_call_summary,
+        execution_observations_quantum_trace,
+        execution_observations_elf_stack_copy,
     })
+}
+
+pub(super) fn parse_rdtsc_sample_window(
+    value: &str,
+) -> Result<od_machine::RdtscSampleWindow, String> {
+    let (first, last) = value.split_once(':').ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': expected START:END")
+    })?;
+    if last.contains(':') {
+        return Err(format!(
+            "invalid --execution-observations-rdtsc-window '{value}': expected START:END"
+        ));
+    }
+    let parse = |part: &str| part.parse::<u64>().ok().filter(|_| !part.starts_with('+'));
+    let first_hit = parse(first).ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': START must be positive")
+    })?;
+    let last_hit = parse(last).ok_or_else(|| {
+        format!("invalid --execution-observations-rdtsc-window '{value}': END must be positive")
+    })?;
+    if first_hit == 0 || last_hit < first_hit {
+        return Err(format!(
+            "invalid --execution-observations-rdtsc-window '{value}': require 1 <= START <= END"
+        ));
+    }
+    Ok(od_machine::RdtscSampleWindow {
+        first_hit,
+        last_hit,
+    })
+}
+
+pub(super) fn validate_rdtsc_sample_window_capacity(
+    window: od_machine::RdtscSampleWindow,
+    stride: u64,
+) -> Result<(), String> {
+    let stride = stride.max(1);
+    let candidates = window.last_hit / stride - (window.first_hit - 1) / stride;
+    if candidates > od_machine::LINUX_RDTSC_SAMPLE_CAPACITY as u64 {
+        return Err(format!(
+            "--execution-observations-rdtsc-window selects {candidates} samples at stride {stride}, exceeding the {} sample cap",
+            od_machine::LINUX_RDTSC_SAMPLE_CAPACITY
+        ));
+    }
+    Ok(())
 }
 
 fn match_existing_file_identity(first: &str, second: &str) -> Result<bool, String> {
@@ -1801,60 +2217,304 @@ fn write_execution_observations_sidecar(
     file: &mut File,
     path: &str,
     observations: &LinuxExecutionObservations,
-) -> Result<(), String> {
-    let value = json!({
-        "schema_version": 5,
-        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, and an optional selected post-IRET page-walk snapshot",
-        "limits": {
-            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
-            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
-            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
-            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
-        },
-        "rdtsc_cpl0_sites": observations.rdtsc_cpl0_sites.iter().map(|site| json!({
-            "rip": hex64(site.rip),
-            "reads": site.reads,
-        })).collect::<Vec<_>>(),
-        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
-        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
-        "page_faults_delivered": observations.page_faults_delivered,
-        "page_fault_events": observations.page_fault_events.iter().map(|event| json!({
-            "rip": hex64(event.rip),
-            "cr2": hex64(event.cr2),
-            "error_code": format!("0x{:08x}", event.error_code),
-            "access": event.access,
-            "cpl": event.cpl,
-            "faulting_context": {
-                "cr3": hex64(event.faulting_context.cr3),
-                "rsp": hex64(event.faulting_context.rsp),
-                "rbp": hex64(event.faulting_context.rbp),
-                "rcx": hex64(event.faulting_context.rcx),
-                "rsi": hex64(event.faulting_context.rsi),
-                "rdi": hex64(event.faulting_context.rdi),
-                "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
-                "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
-                    "frame_pointer": hex64(frame.frame_pointer),
-                    "return_address": hex64(frame.return_address),
-                })).collect::<Vec<_>>(),
-                "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
-                "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
-                    "source": "original_faulting_guest_access",
-                    "entry_values": "raw_before_accessed_dirty_updates",
-                    "reason": format!("{:?}", walk.reason),
-                    "entries": walk.entries.iter().map(|entry| json!({
-                        "level": format!("{:?}", entry.level),
-                        "index": entry.index,
-                        "entry_address": hex64(entry.entry_address.get()),
-                        "entry_value": hex64(entry.entry_value),
-                    })).collect::<Vec<_>>(),
-                })),
+) -> Result<(usize, String), String> {
+    let alignment_point_json = |point: &Option<od_machine::ElfStackAlignmentPoint>| {
+        point.as_ref().map(|point| {
+            json!({
+                "rip": hex64(point.rip),
+                "retired_instructions_before_current": point.retired_instructions_before_current,
+                "cr3": hex64(point.cr3),
+                "cs_selector": point.cs_selector.map(|value| format!("0x{value:04x}")),
+                "cpl": point.cpl,
+                "r15": hex64(point.r15),
+                "rbp": hex64(point.rbp),
+                "rsp": hex64(point.rsp),
+                "pointer": hex64(point.pointer),
+                "instruction_bytes": point.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                "error": point.error,
+            })
+        })
+    };
+    let elf_stack_copy = observations.elf_stack_copy.as_ref().map(|snapshot| {
+        json!({
+            "profile": snapshot.profile,
+            "status": elf_stack_copy_status_name(snapshot.status),
+            "rip": snapshot.rip.map(hex64),
+            "cr3": snapshot.cr3.map(hex64),
+            "cs_selector": snapshot.cs_selector.map(|value| format!("0x{value:04x}")),
+            "cpl": snapshot.cpl,
+            "registers": {
+                "r15": snapshot.r15.map(hex64),
+                "rbp": snapshot.rbp.map(hex64),
+                "rsp": snapshot.rsp.map(hex64),
+                "r13": snapshot.r13.map(hex64),
+                "rdi": snapshot.rdi.map(hex64),
+                "rsi": snapshot.rsi.map(hex64),
+                "rdx": snapshot.rdx.map(hex64),
             },
-        })).collect::<Vec<_>>(),
-        "page_fault_events_omitted": observations.page_fault_events_omitted,
-        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
-        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
-        "post_iret_page_walk": observations.post_iret_page_walk.as_ref().map(|snapshot| json!({
+            "bprm_p_address": snapshot.bprm_p_address.map(hex64),
+            "bprm_p": snapshot.bprm_p.map(hex64),
+            "aligned_stack_pointer": snapshot.aligned_stack_pointer.map(hex64),
+            "copy_destination": snapshot.copy_destination.map(hex64),
+            "copy_length": snapshot.copy_length.map(hex64),
+            "instruction_bytes": snapshot.instruction_bytes.as_ref().map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+            "return_rip": snapshot.return_rip.map(hex64),
+            "platform_string_matches": snapshot.platform_string_matches,
+            "alignment": {
+                "status": snapshot.alignment.status,
+                "before_call": alignment_point_json(&snapshot.alignment.before_call),
+                "after_return": alignment_point_json(&snapshot.alignment.after_return),
+                "before_omitted": snapshot.alignment.before_omitted,
+                "after_omitted": snapshot.alignment.after_omitted,
+                "matched_copy": snapshot.alignment.matched_copy,
+            },
+            "pre_copy_cr3_ledger": snapshot.pre_copy_cr3_ledger.as_ref().map(|ledger| json!({
+                "status": match ledger.status {
+                    od_machine::ElfStackCopyCr3LedgerStatus::Complete => "complete",
+                    od_machine::ElfStackCopyCr3LedgerStatus::IncompleteOverflow => "incomplete_overflow",
+                    od_machine::ElfStackCopyCr3LedgerStatus::RunEndedBeforeTarget => "run_ended_before_target",
+                },
+                "event_count": ledger.event_count,
+                "events_omitted": ledger.events_omitted,
+                "events": ledger.events.iter().map(|event| json!({
+                    "sequence": event.sequence,
+                    "rip": hex64(event.rip),
+                    "old_cr3": hex64(event.old_cr3),
+                    "new_cr3": hex64(event.new_cr3),
+                    "cpl": event.cpl,
+                    "retired_instructions_through_current": event.retired_instructions_through_current,
+                })).collect::<Vec<_>>(),
+                "boundary_markers": ledger.boundary_markers.iter().map(|marker| json!({
+                    "name": marker.name,
+                    "rip": hex64(marker.rip),
+                    "retired_instructions_before_current": marker.retired_instructions_before_current,
+                })).collect::<Vec<_>>(),
+                "target_event": {
+                    "status": ledger.target_event.status,
+                    "sequence": ledger.target_event.sequence,
+                    "rip": ledger.target_event.rip.map(hex64),
+                    "cr3": ledger.target_event.cr3.map(hex64),
+                    "retired_instructions": ledger.target_event.retired_instructions,
+                    "rsp": ledger.target_event.rsp.map(hex64),
+                    "rbp": ledger.target_event.rbp.map(hex64),
+                    "chain_status": ledger.target_event.chain_status.map(|status| match status {
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Complete => "complete",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Unreadable => "unreadable",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::Malformed => "malformed",
+                        od_machine::ElfStackCopyTargetCr3ChainStatus::FrameLimit => "frame_limit",
+                    }),
+                    "frames": ledger.target_event.frames.iter().map(|frame| json!({
+                        "rbp": hex64(frame.rbp),
+                        "saved_rbp_slot": hex64(frame.saved_rbp_slot),
+                        "saved_rbp": hex64(frame.saved_rbp),
+                        "return_address_slot": hex64(frame.return_address_slot),
+                        "return_address": hex64(frame.return_address),
+                    })).collect::<Vec<_>>(),
+                    "error": ledger.target_event.error,
+                },
+                "mmu_gather": {
+                    "status": elf_mmu_gather_capture_status(&ledger.mmu_gather),
+                    "association": "prefix_candidates",
+                    "copy_destination": ledger.mmu_gather.copy_destination.map(hex64),
+                    "destination_in_candidate_pages": ledger.mmu_gather.destination_in_candidate_pages,
+                    "setup_count": ledger.mmu_gather.setup_count,
+                    "setups_omitted": ledger.mmu_gather.setups_omitted,
+                    "setups": ledger.mmu_gather.setups.iter().map(elf_mmu_gather_setup_json).collect::<Vec<_>>(),
+                    "unpaired_omitted": ledger.mmu_gather.unpaired_omitted,
+                    "unpaired": ledger.mmu_gather.unpaired.iter().map(elf_mmu_gather_unpaired_json).collect::<Vec<_>>(),
+                },
+            })),
+            "invocation": snapshot.invocation.as_ref().map(elf_stack_copy_invocation_json),
+            "mismatch_reasons": snapshot.mismatch_reasons,
+            "error": snapshot.error,
+            "probes": snapshot.probes.iter().map(|probe| json!({
+                "name": probe.name,
+                "address": hex64(probe.address),
+                "page_base": hex64(probe.page_base),
+                "access": probe.access,
+                "cpl": probe.cpl,
+                "entries": probe.entries.iter().map(|entry| json!({
+                    "level": format!("{:?}", entry.level),
+                    "index": entry.index,
+                    "entry_address": hex64(entry.entry_address.get()),
+                    "entry_value": hex64(entry.entry_value),
+                })).collect::<Vec<_>>(),
+                "outcome": probe.outcome,
+                "translated_physical": probe.translated_physical.map(hex64),
+                "error": probe.error,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    let rdtsc_sites = observations
+        .rdtsc_cpl0_sites
+        .iter()
+        .map(|site| json!({ "rip": hex64(site.rip), "reads": site.reads }))
+        .collect::<Vec<_>>();
+    let poll_samples = observations
+        .rdtsc_site_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "requested_cycles": hex64(sample.requested_cycles),
+                "start_tsc": hex64(sample.start_tsc),
+                "observed_tsc": hex64(sample.observed_tsc),
+                "elapsed_cycles": hex64(sample.elapsed_cycles),
+                "rbp": hex64(sample.rbp),
+                "rsp": hex64(sample.rsp),
+                "cr3": sample.cr3.map(hex64),
+            })
+        })
+        .collect::<Vec<_>>();
+    let entry_samples = observations
+        .rdtsc_entry_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "requested_cycles": hex64(sample.requested_cycles),
+                "observed_tsc": hex64(sample.observed_tsc),
+                "rbp": hex64(sample.rbp),
+                "rsp": hex64(sample.rsp),
+                "cr3": sample.cr3.map(hex64),
+            })
+        })
+        .collect::<Vec<_>>();
+    let delay_tsc_call_summary = observations.delay_tsc_call_summary.as_ref().map(|summary| {
+        json!({
+            "entry_rip": hex64(summary.entry_rip),
+            "poll_rip": hex64(summary.poll_rip),
+            "entry_count": summary.entry_count,
+            "entries_omitted": summary.entries_omitted,
+            "poll_count": summary.poll_count,
+            "unmatched_polls": summary.unmatched_polls,
+            "ambiguous_polls": summary.ambiguous_polls,
+            "entries": summary.entries.iter().map(|entry| json!({
+                "ordinal": entry.ordinal,
+                "requested_cycles": hex64(entry.requested_cycles),
+                "entry_tsc": hex64(entry.entry_tsc),
+                "cr3": entry.cr3.map(hex64),
+                "rbp": hex64(entry.rbp),
+                "rsp": hex64(entry.rsp),
+                "frame_links": entry.frame_links.iter().map(|link| json!({
+                    "frame_pointer": hex64(link.frame_pointer),
+                    "return_address": hex64(link.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": frame_chain_end_name(entry.frame_chain_end),
+                "frame_chain_incomplete": entry.frame_chain_end
+                    != od_machine::FrameChainEnd::NullFramePointer,
+                "poll_count": entry.poll_count,
+                "first_poll_ordinal": entry.first_poll_ordinal,
+                "last_poll_ordinal": entry.last_poll_ordinal,
+                "last_elapsed_cycles": entry.last_elapsed_cycles.map(hex64),
+                "terminal_threshold_seen": entry.terminal_threshold_seen,
+                "poll_sequence_status": delay_tsc_poll_sequence_status_name(entry.poll_sequence_status),
+            })).collect::<Vec<_>>(),
+        })
+    });
+    let entry_clock_trace_samples = observations
+        .rdtsc_entry_clock_trace_samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "rip": hex64(sample.rip),
+                "hit_ordinal": sample.hit_ordinal,
+                "initial_now_ns": sample.initial_now_ns,
+                "now_ns": sample.now_ns,
+                "callback_tsc": hex64(sample.callback_tsc),
+                "tsc_hz": sample.tsc_hz,
+                "retired_instructions_charged": sample.retired_instructions_charged,
+                "retired_ns_charged": sample.retired_ns_charged,
+                "quantum_instructions_executed": sample.quantum_instructions_executed,
+                "retired_instructions_through_rdtsc": sample.retired_instructions_through_rdtsc,
+                "pm_timer_ns_charged": sample.pm_timer_ns_charged,
+                "pit_ns_charged": sample.pit_ns_charged,
+                "rdtsc_ns_charged": sample.rdtsc_ns_charged,
+                "idle_ns_advanced": sample.idle_ns_advanced,
+                "quantum_ordinal": sample.quantum_ordinal,
+                "irqs_delivered": sample.irqs_delivered,
+                "unaccounted_elapsed_ns": sample.unaccounted_elapsed_ns,
+            })
+        })
+        .collect::<Vec<_>>();
+    let rdtsc_prefix_samples = observations
+        .rdtsc_prefix_samples
+        .iter()
+        .map(|sample| {
+            let clock = &sample.clock;
+            json!({
+                "ordinal": sample.ordinal,
+                "rip": hex64(sample.rip),
+                "cpl": sample.cpl,
+                "cr3": sample.cr3.map(hex64),
+                "rsp": hex64(sample.rsp),
+                "rbp": hex64(sample.rbp),
+                "page_faults_delivered_through": sample.page_faults_delivered_through,
+                "general_protection_faults_delivered_through": sample.general_protection_faults_delivered_through,
+                "clock": {
+                    "rip": hex64(clock.rip),
+                    "hit_ordinal": clock.hit_ordinal,
+                    "initial_now_ns": clock.initial_now_ns,
+                    "now_ns": clock.now_ns,
+                    "callback_tsc": hex64(clock.callback_tsc),
+                    "tsc_hz": clock.tsc_hz,
+                    "retired_instructions_charged": clock.retired_instructions_charged,
+                    "retired_ns_charged": clock.retired_ns_charged,
+                    "quantum_instructions_executed": clock.quantum_instructions_executed,
+                    "retired_instructions_through_rdtsc": clock.retired_instructions_through_rdtsc,
+                    "pm_timer_ns_charged": clock.pm_timer_ns_charged,
+                    "pit_ns_charged": clock.pit_ns_charged,
+                    "rdtsc_ns_charged": clock.rdtsc_ns_charged,
+                    "idle_ns_advanced": clock.idle_ns_advanced,
+                    "quantum_ordinal": clock.quantum_ordinal,
+                    "irqs_delivered": clock.irqs_delivered,
+                    "unaccounted_elapsed_ns": clock.unaccounted_elapsed_ns,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let page_fault_events = observations
+        .page_fault_events
+        .iter()
+        .map(|event| {
+            json!({
+                "rip": hex64(event.rip),
+                "cr2": hex64(event.cr2),
+                "error_code": format!("0x{:08x}", event.error_code),
+                "access": event.access,
+                "cpl": event.cpl,
+                "faulting_context": {
+                    "cr3": hex64(event.faulting_context.cr3),
+                    "rsp": hex64(event.faulting_context.rsp),
+                    "rbp": hex64(event.faulting_context.rbp),
+                    "rcx": hex64(event.faulting_context.rcx),
+                    "rsi": hex64(event.faulting_context.rsi),
+                    "rdi": hex64(event.faulting_context.rdi),
+                    "cs_selector": event.faulting_context.cs_selector.map(|selector| format!("0x{selector:04x}")),
+                    "frame_chain": event.faulting_context.frame_chain.iter().map(|frame| json!({
+                        "frame_pointer": hex64(frame.frame_pointer),
+                        "return_address": hex64(frame.return_address),
+                    })).collect::<Vec<_>>(),
+                    "frame_chain_end": format!("{:?}", event.faulting_context.frame_chain_end),
+                    "page_walk": event.faulting_context.page_walk.as_ref().map(|walk| json!({
+                        "source": "original_faulting_guest_access",
+                        "entry_values": "raw_before_accessed_dirty_updates",
+                        "reason": format!("{:?}", walk.reason),
+                        "entries": walk.entries.iter().map(|entry| json!({
+                            "level": format!("{:?}", entry.level),
+                            "index": entry.index,
+                            "entry_address": hex64(entry.entry_address.get()),
+                            "entry_value": hex64(entry.entry_value),
+                        })).collect::<Vec<_>>(),
+                    })),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let post_iret_page_walk = observations.post_iret_page_walk.as_ref().map(|snapshot| {
+        json!({
             "event_ordinal": snapshot.event_ordinal,
             "fault_rip": hex64(snapshot.fault_rip),
             "fault_cr2": hex64(snapshot.fault_cr2),
@@ -1876,12 +2536,120 @@ fn write_execution_observations_sidecar(
                 "entry_address": hex64(entry.entry_address.get()),
                 "entry_value": hex64(entry.entry_value),
             })).collect::<Vec<_>>(),
+        })
+    });
+    let instruction_path_trace = observations.instruction_path_trace.as_ref().map(|trace| {
+        let status = match trace.status {
+            od_machine::InstructionPathTraceStatus::NotRequested => "not_requested",
+            od_machine::InstructionPathTraceStatus::AwaitingStart => "awaiting_start",
+            od_machine::InstructionPathTraceStatus::Captured => "captured",
+            od_machine::InstructionPathTraceStatus::GateMismatch => "gate_mismatch",
+            od_machine::InstructionPathTraceStatus::MissedStart => "missed_start",
+            od_machine::InstructionPathTraceStatus::MissedEnd => "missed_end",
+            od_machine::InstructionPathTraceStatus::CapacityExhausted => "capacity_exhausted",
+        };
+        json!({
+            "requested": trace.requested,
+            "status": status,
+            "quantum_ordinal": trace.quantum_ordinal,
+            "retired_instructions_charged": trace.retired_instructions_charged,
+            "rdtsc_cpl0_hits_before_dispatch": trace.rdtsc_cpl0_hits_before_dispatch,
+            "quantum_instructions_executed": trace.quantum_instructions_executed,
+            "rdtsc_cpl0_hits_after_quantum": trace.rdtsc_cpl0_hits_after_quantum,
+            "omitted_records": trace.omitted_records,
+            "header": trace.header.as_ref().map(|header| json!({
+                "rip": hex64(header.rip),
+                "rflags": hex64(header.rflags),
+                "gpr": header.gpr.map(hex64),
+                "cr3": header.cr3.map(hex64),
+                "cs_selector": header.cs_selector.map(|value| format!("0x{value:04x}")),
+                "frame_chain": header.frame_chain.iter().map(|frame| json!({
+                    "frame_pointer": hex64(frame.frame_pointer),
+                    "return_address": hex64(frame.return_address),
+                })).collect::<Vec<_>>(),
+                "frame_chain_end": format!("{:?}", header.frame_chain_end),
+            })),
+            "records": trace.records.iter().map(|record| json!({
+                "rip": hex64(record.rip),
+                "next_rip": hex64(record.next_rip),
+                "control_flow": record.control_flow.map(|flow| json!({
+                    "kind": flow.kind,
+                    "condition": flow.condition,
+                    "taken": flow.taken,
+                    "rflags_before": hex64(flow.rflags_before),
+                    "rflags_after": hex64(flow.rflags_after),
+                    "destination_registers": flow.destination_registers.iter().flatten().map(|value| json!({
+                        "register": value.register,
+                        "value": hex64(value.value),
+                    })).collect::<Vec<_>>(),
+                    "destination": hex64(flow.destination),
+                })),
+            })).collect::<Vec<_>>(),
+        })
+    });
+    let value = json!({
+        "schema_version": 21,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events with pre-delivery registers, bounded frame-pointer context, original faulting page-walk traces, an optional selected post-IRET page-walk snapshot, optional post-instruction registers at one selected CPL0 RDTSC RIP, an optional bounded every-hit entry-RDTSC stream with clock ledger, an optional ordered RDTSC prefix through a sentinel RIP, an optional inclusive hit-ordinal window, an optional strictly gated single-quantum instruction path trace, an optional bounded delay_tsc per-call summary, an optional ordered pre-copy CR3-write ledger, bounded read-only MMU-gather candidate-page walks, and two exact read-only ELF stack-alignment instruction anchors",
+        "limits": {
+            "rdtsc_cpl0_sites": od_machine::LINUX_RDTSC_SITE_CAPACITY,
+            "rdtsc_site_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "rdtsc_entry_samples": od_machine::LINUX_RDTSC_SAMPLE_CAPACITY,
+            "delay_tsc_call_summaries": od_machine::LINUX_DELAY_TSC_CALL_CAPACITY,
+            "delay_tsc_frame_links_per_entry": 4,
+            "rdtsc_entry_clock_trace_samples": od_machine::LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
+            "rdtsc_prefix_samples": od_machine::LINUX_RDTSC_PREFIX_CAPACITY,
+            "instruction_path_trace_records": od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
+            "page_fault_events": od_machine::LINUX_PAGE_FAULT_EVENT_CAPACITY,
+            "frame_links_per_page_fault": od_machine::LINUX_PAGE_FAULT_FRAME_LINK_CAPACITY,
+            "page_walk_entries_per_fault": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "post_iret_page_walk_entries": od_machine::LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+            "elf_stack_copy_probes": od_machine::LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
+            "elf_stack_copy_walk_entries_per_probe": od_machine::LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
+            "elf_stack_copy_cr3_events": od_machine::LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY,
+            "elf_stack_copy_rdtsc_sites": od_machine::LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY,
+            "elf_stack_copy_page_fault_events": od_machine::LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
+            "elf_stack_copy_retired_duration": od_machine::LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+            "elf_stack_copy_pre_copy_cr3_events": od_machine::LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY,
+            "elf_stack_alignment_points_per_run": 2,
+        },
+        "rdtsc_cpl0_sites": rdtsc_sites,
+        "rdtsc_cpl0_unattributed_reads": observations.rdtsc_cpl0_unattributed_reads,
+        "rdtsc_cpl0_site_overflow_reads": observations.rdtsc_cpl0_site_overflow_reads,
+        "rdtsc_sample_rip": observations.rdtsc_sample_rip.map(hex64),
+        "rdtsc_sample_stride": observations.rdtsc_sample_stride,
+        "rdtsc_sample_window": observations.rdtsc_sample_window.map(|window| json!({
+            "first_hit": window.first_hit,
+            "last_hit": window.last_hit,
         })),
+        "rdtsc_sample_site_hits": observations.rdtsc_sample_site_hits,
+        "rdtsc_site_samples": poll_samples,
+        "rdtsc_site_samples_omitted": observations.rdtsc_site_samples_omitted,
+        "rdtsc_entry_sample_rip": observations.rdtsc_entry_sample_rip.map(hex64),
+        "rdtsc_entry_sample_hits": observations.rdtsc_entry_sample_hits,
+        "rdtsc_entry_samples": entry_samples,
+        "rdtsc_entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "delay_tsc_call_summary": delay_tsc_call_summary,
+        "rdtsc_entry_clock_trace_samples": entry_clock_trace_samples,
+        "rdtsc_entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
+        "rdtsc_prefix_sentinel_rip": observations.rdtsc_prefix_sentinel_rip.map(hex64),
+        "rdtsc_prefix_status": rdtsc_prefix_status_name(observations.rdtsc_prefix_status),
+        "rdtsc_prefix_samples": rdtsc_prefix_samples,
+        "rdtsc_prefix_event_count": observations.rdtsc_prefix_event_count,
+        "rdtsc_prefix_missing": observations.rdtsc_prefix_missing,
+        "instruction_path_trace": instruction_path_trace,
+        "page_faults_delivered": observations.page_faults_delivered,
+        "page_fault_events": page_fault_events,
+        "page_fault_events_omitted": observations.page_fault_events_omitted,
+        "post_iret_selected_ordinal": observations.post_iret_selected_ordinal,
+        "post_iret_page_walk_status": observations.post_iret_page_walk_status,
+        "post_iret_page_walk": post_iret_page_walk,
+        "elf_stack_copy": elf_stack_copy,
     });
     file_matches_existing_path(file, path, path)?;
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
     use std::io::Write;
-    if let Err(error) = file.write_all(&bytes).and_then(|()| file.write_all(b"\n")) {
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.flush()) {
         let cleanup = match file_matches_existing_path(file, path, path) {
             Ok(true) => {
                 std::fs::remove_file(path).map_err(|cleanup_error| cleanup_error.to_string())
@@ -1896,7 +2664,309 @@ fn write_execution_observations_sidecar(
             }
         });
     }
-    Ok(())
+    file_matches_existing_path(file, path, path)?;
+    Ok((bytes.len(), od_testkit::sha256_hex(&bytes)))
+}
+
+fn elf_stack_copy_status_name(status: od_machine::ElfStackCopyStatus) -> &'static str {
+    match status {
+        od_machine::ElfStackCopyStatus::NotRequested => "not_requested",
+        od_machine::ElfStackCopyStatus::AwaitingTarget => "awaiting_target",
+        od_machine::ElfStackCopyStatus::Captured => "captured",
+        od_machine::ElfStackCopyStatus::GateMismatch => "gate_mismatch",
+        od_machine::ElfStackCopyStatus::ReadError => "read_error",
+        od_machine::ElfStackCopyStatus::RunEndedBeforeTarget => "run_ended_before_target",
+    }
+}
+
+fn elf_mmu_gather_context_json(context: od_machine::ElfMmuGatherContext) -> Value {
+    json!({
+        "rip": hex64(context.rip),
+        "retired_instructions": context.retired_instructions,
+        "cr3": hex64(context.cr3),
+        "cr3_changes": context.cr3_changes,
+        "page_faults": context.page_faults,
+        "rbp": hex64(context.rbp),
+        "rsp": hex64(context.rsp),
+        "tlb_pointer": context.tlb_pointer.map(hex64),
+        "saved_rbp": context.saved_rbp.map(hex64),
+        "saved_return_rip": context.saved_return_rip.map(hex64),
+    })
+}
+
+fn elf_mmu_gather_raw_json(raw: od_machine::ElfMmuGatherRaw) -> Value {
+    json!({
+        "tlb": hex64(raw.tlb),
+        "mm": hex64(raw.mm),
+        "start": hex64(raw.start),
+        "end": hex64(raw.end),
+        "flags": format!("0x{:08x}", raw.flags),
+        "mm_tlb_flush_nested": raw.mm_tlb_flush_nested,
+    })
+}
+
+fn elf_mmu_setup_data_json(data: &od_machine::ElfMmuGatherSetupData) -> Value {
+    json!({
+        "stack_shift": hex64(data.stack_shift),
+        "vma": hex64(data.vma),
+        "vm_start": data.vm_start.map(hex64),
+        "vm_end": data.vm_end.map(hex64),
+        "relocated_start": data.relocated_start.map(hex64),
+        "aligned_start": data.aligned_start.map(hex64),
+        "candidate_pages": data.candidate_pages.map(|address| address.map(hex64)),
+        "candidate_error": data.candidate_error,
+    })
+}
+
+fn elf_mmu_gather_page_walk_json(walk: &od_machine::ElfMmuGatherPageWalk) -> Value {
+    json!({
+        "address": walk.address.map(hex64),
+        "access": walk.access,
+        "cpl": walk.cpl,
+        "origin": walk.origin,
+        "profile": walk.profile,
+        "cr0_wp": walk.cr0_wp,
+        "efer_nxe": walk.efer_nxe,
+        "status": walk.status,
+        "entries": walk.entries.iter().map(|entry| json!({
+            "level": format!("{:?}", entry.level),
+            "index": entry.index,
+            "entry_address": hex64(entry.entry_address.get()),
+            "entry_value": hex64(entry.entry_value),
+        })).collect::<Vec<_>>(),
+        "terminal_level": walk.terminal_level.map(|level| format!("{level:?}")),
+        "leaf_size": walk.leaf_size,
+        "translated_physical": walk.translated_physical.map(hex64),
+        "error": walk.error,
+    })
+}
+
+fn elf_mmu_phase_json<T>(
+    phase: &od_machine::ElfMmuGatherPhase<T>,
+    encode: impl Fn(&T) -> Value,
+) -> Value {
+    match phase {
+        od_machine::ElfMmuGatherPhase::NotObserved => json!({"status": "not_observed"}),
+        od_machine::ElfMmuGatherPhase::Captured { context, value } => json!({
+            "status": "captured",
+            "context": elf_mmu_gather_context_json(*context),
+            "value": encode(value),
+        }),
+        od_machine::ElfMmuGatherPhase::ReadError {
+            context,
+            partial,
+            error,
+        } => json!({
+            "status": "read_error",
+            "context": elf_mmu_gather_context_json(*context),
+            "partial": partial.as_ref().map(&encode),
+            "error": error,
+        }),
+    }
+}
+
+fn elf_mmu_gather_setup_json(setup: &od_machine::ElfMmuGatherInvocation) -> Value {
+    let needs_flush = match &setup.actual_post {
+        od_machine::ElfMmuGatherPhase::Captured { value, .. } => Some(value.flags & 0x08f4 != 0),
+        od_machine::ElfMmuGatherPhase::ReadError {
+            partial: Some(value),
+            ..
+        } => Some(value.flags & 0x08f4 != 0),
+        _ => None,
+    };
+    json!({
+        "sequence": setup.sequence,
+        "association_mismatch": setup.association_mismatch,
+        "closure": match setup.closure {
+            od_machine::ElfMmuGatherClosure::Active => "active",
+            od_machine::ElfMmuGatherClosure::Returned => "returned",
+            od_machine::ElfMmuGatherClosure::Superseded => "superseded",
+            od_machine::ElfMmuGatherClosure::RunEnded => "run_ended",
+        },
+        "setup": elf_mmu_phase_json(&setup.setup, elf_mmu_setup_data_json),
+        "setup_page_walks": setup.setup_page_walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>(),
+        "initial": elf_mmu_phase_json(&setup.initial, |raw| elf_mmu_gather_raw_json(*raw)),
+        "initial_page_walks": setup.initial_page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
+        "actual_post": elf_mmu_phase_json(&setup.actual_post, |raw| elf_mmu_gather_raw_json(*raw)),
+        "returned": elf_mmu_phase_json(&setup.returned, |_| json!(true)),
+        "return_page_walks": setup.return_page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
+        "needs_flush": needs_flush,
+    })
+}
+
+fn elf_mmu_gather_capture_status(capture: &od_machine::ElfMmuGatherCapture) -> &'static str {
+    if capture.setups_omitted != 0 || capture.unpaired_omitted != 0 {
+        return "truncated";
+    }
+    if capture.setups.is_empty() && capture.unpaired.is_empty() {
+        return "not_seen";
+    }
+    let complete = capture.unpaired.is_empty()
+        && capture.setups.iter().all(|invocation| {
+            invocation.closure == od_machine::ElfMmuGatherClosure::Returned
+                && !invocation.association_mismatch
+                && matches!(
+                    invocation.setup,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && invocation
+                    .setup_page_walks
+                    .iter()
+                    .all(elf_mmu_gather_page_walk_is_complete)
+                && matches!(
+                    invocation.initial,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && invocation
+                    .initial_page_walks
+                    .as_ref()
+                    .is_some_and(|walks| walks.iter().all(elf_mmu_gather_page_walk_is_complete))
+                && matches!(
+                    invocation.actual_post,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && matches!(
+                    invocation.returned,
+                    od_machine::ElfMmuGatherPhase::Captured { .. }
+                )
+                && invocation
+                    .return_page_walks
+                    .as_ref()
+                    .is_some_and(|walks| walks.iter().all(elf_mmu_gather_page_walk_is_complete))
+        });
+    if complete { "captured" } else { "incomplete" }
+}
+
+fn elf_mmu_gather_page_walk_is_complete(walk: &od_machine::ElfMmuGatherPageWalk) -> bool {
+    matches!(walk.status, "translated" | "non_present" | "protection")
+}
+
+fn elf_mmu_gather_unpaired_json(event: &od_machine::ElfMmuGatherUnpaired) -> Value {
+    json!({
+        "phase": event.phase,
+        "status": event.status,
+        "context": elf_mmu_gather_context_json(event.context),
+        "raw": event.raw.map(elf_mmu_gather_raw_json),
+        "page_walks": event.page_walks.as_ref().map(|walks| walks.iter().map(elf_mmu_gather_page_walk_json).collect::<Vec<_>>()),
+        "error": event.error,
+    })
+}
+
+fn elf_stack_copy_invocation_json(
+    capture: &od_machine::ElfStackCopyInvocation,
+) -> serde_json::Value {
+    let counters = |snapshot: &od_machine::ElfStackCopyCounterSnapshot| {
+        json!({
+            "cr3": hex64(snapshot.cr3),
+            "delivered_page_faults": snapshot.delivered_page_faults,
+            "delivered_exceptions": snapshot.delivered_exceptions,
+            "cr3_changes": snapshot.cr3_changes,
+            "rdtsc_reads": snapshot.rdtsc_reads,
+            "retired_instructions_through_current": snapshot.retired_instructions_through_current,
+        })
+    };
+    json!({
+        "status": elf_stack_copy_invocation_status_name(capture.status),
+        "return_rip": capture.return_rip.map(hex64),
+        "entry": capture.entry.as_ref().map(counters),
+        "return_boundary": capture.return_boundary.as_ref().map(counters),
+        "stop": capture.stop.as_ref().map(counters),
+        "cr3_events": capture.cr3_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "old_cr3": hex64(event.old_cr3),
+            "new_cr3": hex64(event.new_cr3),
+            "retired_instructions_through_current": event.retired_instructions_through_current,
+        })).collect::<Vec<_>>(),
+        "cr3_events_omitted": capture.cr3_events_omitted,
+        "page_fault_events": capture.page_fault_events.iter().map(|event| json!({
+            "rip": hex64(event.rip),
+            "cr2": hex64(event.cr2),
+            "error_code": event.error_code,
+            "access": event.access,
+            "cpl": event.cpl,
+            "retired_instructions_through_current": event.retired_instructions_through_current,
+        })).collect::<Vec<_>>(),
+        "page_fault_events_omitted": capture.page_fault_events_omitted,
+        "rdtsc_sites": capture.rdtsc_sites.iter().map(|site| json!({ "rip": hex64(site.rip), "reads": site.reads })).collect::<Vec<_>>(),
+        "rdtsc_site_overflow_reads": capture.rdtsc_site_overflow_reads,
+        "retired_duration": capture.retired_duration,
+        "retired_duration_cap": capture.retired_duration_cap,
+    })
+}
+
+fn elf_stack_copy_invocation_status_name(
+    status: od_machine::ElfStackCopyInvocationStatus,
+) -> &'static str {
+    match status {
+        od_machine::ElfStackCopyInvocationStatus::NotStarted => "not_started",
+        od_machine::ElfStackCopyInvocationStatus::InProgress => "in_progress",
+        od_machine::ElfStackCopyInvocationStatus::Complete => "complete",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteGate => "incomplete_gate",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteOverflow => "incomplete_overflow",
+        od_machine::ElfStackCopyInvocationStatus::IncompleteRunEnded => "incomplete_run_ended",
+    }
+}
+
+fn delay_tsc_poll_sequence_status_name(
+    status: od_machine::DelayTscPollSequenceStatus,
+) -> &'static str {
+    match status {
+        od_machine::DelayTscPollSequenceStatus::ThresholdSeen => "threshold_seen",
+        od_machine::DelayTscPollSequenceStatus::Partial => "partial",
+    }
+}
+
+fn execution_observations_sidecar_metadata(
+    path: &str,
+    observations: &LinuxExecutionObservations,
+    byte_count: usize,
+    sha256: String,
+) -> Value {
+    json!({
+        "path": path,
+        "capture_scope": "CPL0 RDTSC instruction RIP counts and delivered #PF events, with bounded optional RDTSC streams and a strictly gated single-quantum instruction path trace",
+        "write_error": null,
+        "selected_rip": observations.rdtsc_sample_rip.map(hex64),
+        "stride": observations.rdtsc_sample_stride,
+        "sample_window": observations.rdtsc_sample_window.map(|window| json!({
+            "first_hit": window.first_hit,
+            "last_hit": window.last_hit,
+        })),
+        "selected_site_hits": observations.rdtsc_sample_site_hits,
+        "sample_count": observations.rdtsc_site_samples.len(),
+        "samples_omitted": observations.rdtsc_site_samples_omitted,
+        "entry_rip": observations.rdtsc_entry_sample_rip.map(hex64),
+        "entry_hits": observations.rdtsc_entry_sample_hits,
+        "entry_sample_count": observations.rdtsc_entry_samples.len(),
+        "entry_samples_omitted": observations.rdtsc_entry_samples_omitted,
+        "delay_tsc_call_summary_entry_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entry_count),
+        "delay_tsc_call_summary_retained_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entries.len()),
+        "delay_tsc_call_summary_entries_omitted": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.entries_omitted),
+        "delay_tsc_call_summary_poll_count": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.poll_count),
+        "delay_tsc_call_summary_unmatched_polls": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.unmatched_polls),
+        "delay_tsc_call_summary_ambiguous_polls": observations.delay_tsc_call_summary.as_ref().map(|summary| summary.ambiguous_polls),
+        "entry_clock_trace_sample_count": observations.rdtsc_entry_clock_trace_samples.len(),
+        "entry_clock_trace_missing": observations.rdtsc_entry_clock_trace_missing,
+        "rdtsc_prefix_sentinel_rip": observations.rdtsc_prefix_sentinel_rip.map(hex64),
+        "rdtsc_prefix_status": rdtsc_prefix_status_name(observations.rdtsc_prefix_status),
+        "rdtsc_prefix_sample_count": observations.rdtsc_prefix_samples.len(),
+        "rdtsc_prefix_event_count": observations.rdtsc_prefix_event_count,
+        "rdtsc_prefix_missing": observations.rdtsc_prefix_missing,
+        "instruction_path_trace_status": observations.instruction_path_trace.as_ref().map(|trace| match trace.status {
+            od_machine::InstructionPathTraceStatus::NotRequested => "not_requested",
+            od_machine::InstructionPathTraceStatus::AwaitingStart => "awaiting_start",
+            od_machine::InstructionPathTraceStatus::Captured => "captured",
+            od_machine::InstructionPathTraceStatus::GateMismatch => "gate_mismatch",
+            od_machine::InstructionPathTraceStatus::MissedStart => "missed_start",
+            od_machine::InstructionPathTraceStatus::MissedEnd => "missed_end",
+            od_machine::InstructionPathTraceStatus::CapacityExhausted => "capacity_exhausted",
+        }),
+        "instruction_path_trace_record_count": observations.instruction_path_trace.as_ref().map(|trace| trace.records.len()),
+        "instruction_path_trace_omitted_records": observations.instruction_path_trace.as_ref().map(|trace| trace.omitted_records),
+        "elf_stack_copy_status": observations.elf_stack_copy.as_ref().map(|snapshot| elf_stack_copy_status_name(snapshot.status)),
+        "byte_count": byte_count,
+        "sha256": sha256,
+    })
 }
 
 fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str {
@@ -1904,6 +2974,15 @@ fn uart_context_end_name(end: od_machine::UartOutputContextEnd) -> &'static str 
         od_machine::UartOutputContextEnd::MarkerNotFound => "marker_not_found",
         od_machine::UartOutputContextEnd::RunEnded => "run_end",
         od_machine::UartOutputContextEnd::ByteLimit => "byte_limit",
+    }
+}
+
+fn rdtsc_prefix_status_name(status: od_machine::RdtscPrefixStatus) -> &'static str {
+    match status {
+        od_machine::RdtscPrefixStatus::NotRequested => "not_requested",
+        od_machine::RdtscPrefixStatus::SentinelSeen => "sentinel_seen",
+        od_machine::RdtscPrefixStatus::CapacityExhausted => "capacity_exhausted",
+        od_machine::RdtscPrefixStatus::RunEndedBeforeSentinel => "run_ended_before_sentinel",
     }
 }
 
@@ -2042,10 +3121,21 @@ mod tests {
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
                 user_mode: false,
+                nonce_bootconfig: false,
+                linux_norandmaps: false,
+                linux_no_randomize_kstack_offset: false,
                 checkpoint_table: None,
                 stack_context_out: None,
                 execution_observations_out: None,
                 execution_observations_post_iret_index: None,
+                execution_observations_rdtsc_rip: None,
+                execution_observations_rdtsc_entry_rip: None,
+                execution_observations_rdtsc_stride: None,
+                execution_observations_rdtsc_window: None,
+                execution_observations_rdtsc_prefix: false,
+                execution_observations_delay_call_summary: false,
+                execution_observations_quantum_trace: false,
+                execution_observations_elf_stack_copy: false,
             };
             Self { dir, options }
         }
@@ -2523,23 +3613,18 @@ mod tests {
 
     #[test]
     fn run_reports_the_stop_record_of_each_exit() {
-        // CLD: outside the base profile, stops before retirement.
+        // CLD retires in the base profile; CLI is the unsupported boundary.
         let value = run_case("run-cld", &[0xFC, 0xFA, 0x31, 0xC0], 100);
         assert_eq!(value["guest_started"], true);
-        assert_eq!(value["retired"], 0);
+        assert_eq!(value["retired"], 1);
         let stop = &value["stop"];
         assert_eq!(stop["exit_kind"], "unsupported");
         assert_eq!(stop["machine_stop_reason"], Value::Null);
-        assert_eq!(stop["unsupported_opcode"], "0xfc");
-        assert_eq!(stop["rip"], "0x1000200");
-        assert_eq!(stop["rip_gpa"], "0x1000200");
-        assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("fc fa 31 c0")
-        );
-        assert_eq!(stop["retired"], 0);
+        assert_eq!(stop["unsupported_opcode"], "0xfa");
+        assert_eq!(stop["rip"], "0x1000201");
+        assert_eq!(stop["rip_gpa"], "0x1000201");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("fa 31 c0"));
+        assert_eq!(stop["retired"], 1);
         assert_eq!(stop["budget"], 100);
         assert_eq!(
             (stop["mode"].as_str(), stop["cpl"].as_u64()),
@@ -2674,7 +3759,7 @@ mod tests {
 
     #[test]
     fn set_cpl0_runs_the_set_and_reports_its_path_and_members() {
-        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: with the set the stop moves from CLD past MOV DS.
+        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: the set moves the stop past MOV DS.
         let code = [0xFC, 0xFA, 0x31, 0xC0, 0x8E, 0xD8];
         let mut case = Case::new("set-cpl0", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
         case.options.budget = Some(64);
@@ -2731,10 +3816,11 @@ mod tests {
         assert_eq!(stop["rip"], "0x1000206");
         assert_eq!(stop["cr3_changes"], 0);
         assert_eq!(stop["last_cr3_change"], Value::Null);
-        // The same bytes through the default path stop at CLD, with the old schema values.
+        // The default path retires CLD and stops at CLI.
         let value = run_case("set-cpl0-control", &code, 64);
         assert_eq!(value["stop"]["path"], "paged_probe");
-        assert_eq!(value["stop"]["unsupported_opcode"], "0xfc");
+        assert_eq!(value["stop"]["unsupported_opcode"], "0xfa");
+        assert_eq!(value["stop"]["retired"], 1);
         assert_eq!(value["stop"]["set_members"], json!([]));
     }
 
@@ -3097,6 +4183,205 @@ mod tests {
     }
 
     #[test]
+    fn nonce_bootconfig_loads_an_aligned_trailer_without_changing_the_file_or_early_cmdline() {
+        let mut case = Case::good("nonce-bootconfig");
+        let fixture = std::fs::read(&case.options.initramfs).unwrap();
+        let profile = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--nonce-bootconfig",
+        ];
+        assert!(parse_base(&profile).unwrap().nonce_bootconfig);
+        assert!(parse_base(&["--nonce-bootconfig"]).is_err());
+        assert!(parse_base(&[&profile[..], &["--nonce-bootconfig"]].concat()).is_err());
+
+        case.options.nonce_bootconfig = true;
+        let (first, code) = evaluate(&case.options);
+        assert_eq!(code, 0, "{first}");
+        case.options.nonce = "N0nce-2".into();
+        let (second, code) = evaluate(&case.options);
+        assert_eq!(code, 0, "{second}");
+        assert_eq!(first["cmdline"], second["cmdline"]);
+        assert_eq!(first["cmdline"], nonce_bootconfig_cmdline());
+        for result in [&first, &second] {
+            assert_eq!(
+                result["inputs"]["initramfs"]["sha256"],
+                sha256_hex(&fixture)
+            );
+            let payload = result["inputs"]["initramfs"]["nonce_bootconfig"].clone();
+            let len = payload["loaded_bytes"].as_u64().unwrap();
+            assert!(len > fixture.len() as u64);
+            assert_eq!(len % 4, 0);
+            assert_eq!(result["memory_sha256"]["initrd"], payload["loaded_sha256"]);
+            assert_eq!(result["memory_sha256"]["initrd_matches_file"], true);
+        }
+        assert_ne!(
+            first["memory_sha256"]["initrd"],
+            second["memory_sha256"]["initrd"]
+        );
+        assert_eq!(std::fs::read(&case.options.initramfs).unwrap(), fixture);
+    }
+
+    #[test]
+    fn linux_norandmaps_is_opt_in_and_requires_the_full_user_mode_profile() {
+        assert!(!parse_base(&[]).unwrap().linux_norandmaps);
+        let enabled = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-norandmaps",
+        ])
+        .unwrap();
+        assert!(enabled.linux_norandmaps);
+
+        for bad in [
+            vec!["--linux-norandmaps"],
+            vec!["--run", "--budget", "1", "--linux-norandmaps"],
+            vec!["--run", "--budget", "1", "--set-cpl0", "--linux-norandmaps"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--linux-norandmaps",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "diagnostic",
+                "--user-mode",
+                "--linux-norandmaps",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode",
+                "--linux-norandmaps",
+                "--linux-norandmaps",
+            ],
+        ] {
+            assert!(parse_base(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn linux_cmdline_diagnostics_are_opt_in_and_compose() {
+        assert_eq!(
+            cmdline("N0nce-1", false, false),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr"
+        );
+        assert_eq!(
+            cmdline("N0nce-1", true, false),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr norandmaps"
+        );
+        assert_eq!(
+            cmdline("N0nce-1", false, true),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr randomize_kstack_offset=off"
+        );
+        assert_eq!(
+            cmdline("N0nce-1", true, true),
+            "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=N0nce-1 nokaslr norandmaps randomize_kstack_offset=off"
+        );
+    }
+
+    #[test]
+    fn linux_no_randomize_kstack_offset_requires_the_full_user_mode_profile() {
+        assert!(!parse_base(&[]).unwrap().linux_no_randomize_kstack_offset);
+        let enabled = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-no-randomize-kstack-offset",
+        ])
+        .unwrap();
+        assert!(enabled.linux_no_randomize_kstack_offset);
+        let composed = parse_base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+            "--linux-norandmaps",
+            "--linux-no-randomize-kstack-offset",
+        ])
+        .unwrap();
+        assert!(composed.linux_norandmaps && composed.linux_no_randomize_kstack_offset);
+
+        for bad in [
+            vec!["--linux-no-randomize-kstack-offset"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "diagnostic",
+                "--user-mode",
+                "--linux-no-randomize-kstack-offset",
+            ],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode",
+                "--linux-no-randomize-kstack-offset",
+                "--linux-no-randomize-kstack-offset",
+            ],
+        ] {
+            assert!(parse_base(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn user_mode_runs_the_board_into_cpl3_and_the_record_says_so() {
         let mut case = Case::new(
             "set-user-mode",
@@ -3296,7 +4581,7 @@ mod tests {
         };
         for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
             let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
-            mark_acceptance(&mut base, flag, CpuidProfile::DiagnosticV1);
+            mark_acceptance(&mut base, flag, false, false, CpuidProfile::DiagnosticV1);
             let value = run_failure(&error, base);
             assert_eq!(value["status"], "refused");
             assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
@@ -3521,6 +4806,255 @@ mod tests {
             accepted.execution_observations_out.as_deref(),
             Some("observations.json")
         );
+        let prefix = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-prefix",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(prefix.execution_observations_rdtsc_prefix);
+        let delay_summary = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-delay-call-summary",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(delay_summary.execution_observations_delay_call_summary);
+        assert_eq!(
+            delay_summary.execution_observations_rdtsc_rip,
+            Some(od_machine::LINUX_DELAY_TSC_POLL_RIP)
+        );
+        assert_eq!(
+            delay_summary.execution_observations_rdtsc_entry_rip,
+            Some(od_machine::LINUX_DELAY_TSC_ENTRY_RIP)
+        );
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-delay-call-summary"]].concat())
+                .is_err()
+        );
+        let elf_stack_copy = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-elf-stack-copy",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(elf_stack_copy.execution_observations_elf_stack_copy);
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-elf-stack-copy"]].concat()).is_err()
+        );
+        let combined = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-quantum-trace",
+                    "--execution-observations-elf-stack-copy",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(combined.execution_observations_quantum_trace);
+        assert!(combined.execution_observations_elf_stack_copy);
+        let quantum_trace = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-entry-rip",
+                    "0xffffffff8271b31b",
+                    "--execution-observations-quantum-trace",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(quantum_trace.execution_observations_quantum_trace);
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-quantum-trace",
+                    ],
+                ]
+                .concat(),
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-quantum-trace"]].concat()).is_err()
+        );
+        assert!(
+            parse_base(&[&run[..], &["--execution-observations-rdtsc-prefix"]].concat()).is_err()
+        );
+        let selected_rip = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_rip.execution_observations_rdtsc_rip,
+            Some(0xffff_ffff_8271_b34d)
+        );
+        let selected_stride = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-stride",
+                    "512",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_stride.execution_observations_rdtsc_stride,
+            Some(512)
+        );
+        let selected_entry = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-entry-rip",
+                    "0xffffffff8271b31b",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_entry.execution_observations_rdtsc_entry_rip,
+            Some(0xffff_ffff_8271_b31b)
+        );
+        let selected_window = parse_base(
+            &[
+                &run[..],
+                &[
+                    "--execution-observations-out",
+                    "observations.json",
+                    "--execution-observations-rdtsc-rip",
+                    "0xffffffff8271b34d",
+                    "--execution-observations-rdtsc-window",
+                    "1150000:1200000",
+                ],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            selected_window.execution_observations_rdtsc_window,
+            Some(od_machine::RdtscSampleWindow {
+                first_hit: 1_150_000,
+                last_hit: 1_200_000,
+            })
+        );
+        assert!(parse_rdtsc_sample_window("0:10").is_err());
+        assert!(parse_rdtsc_sample_window("10:9").is_err());
+        assert!(parse_rdtsc_sample_window("10").is_err());
+        assert!(parse_rdtsc_sample_window("10:11:12").is_err());
+        assert!(parse_rdtsc_sample_window("1:+10").is_err());
+        assert!(parse_rdtsc_sample_window("1:18446744073709551616").is_err());
+        let too_many = od_machine::RdtscSampleWindow {
+            first_hit: 1,
+            last_hit: od_machine::LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1,
+        };
+        assert!(validate_rdtsc_sample_window_capacity(too_many, 1).is_err());
+        assert!(validate_rdtsc_sample_window_capacity(too_many, 2).is_ok());
+        let mut entry_without_selected = run.to_vec();
+        entry_without_selected.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-entry-rip",
+            "0x1234",
+        ]);
+        assert!(
+            parse_base(&entry_without_selected)
+                .unwrap_err()
+                .contains("needs")
+        );
+        let mut zero_stride = run.to_vec();
+        zero_stride.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-rip",
+            "0x1234",
+            "--execution-observations-rdtsc-stride",
+            "0",
+        ]);
+        assert!(
+            parse_base(&zero_stride)
+                .unwrap_err()
+                .contains("positive integer")
+        );
+        let mut stride_without_rip = run.to_vec();
+        stride_without_rip.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-stride",
+            "2",
+        ]);
+        assert!(
+            parse_base(&stride_without_rip)
+                .unwrap_err()
+                .contains("needs")
+        );
+        let mut duplicate_stride = run.to_vec();
+        duplicate_stride.extend([
+            "--execution-observations-out",
+            "observations.json",
+            "--execution-observations-rdtsc-rip",
+            "0x1234",
+            "--execution-observations-rdtsc-stride",
+            "2",
+            "--execution-observations-rdtsc-stride",
+            "4",
+        ]);
+        assert!(
+            parse_base(&duplicate_stride)
+                .unwrap_err()
+                .contains("duplicate")
+        );
         let selected = parse_base(
             &[
                 &run[..],
@@ -3536,6 +5070,22 @@ mod tests {
         .unwrap();
         assert_eq!(selected.execution_observations_post_iret_index, Some(30));
         assert!(parse_base(&["--execution-observations-post-iret-index", "30"]).is_err());
+        assert!(parse_base(&["--execution-observations-rdtsc-rip", "0x1234"]).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..],
+                    &[
+                        "--execution-observations-out",
+                        "observations.json",
+                        "--execution-observations-rdtsc-rip",
+                        "1234"
+                    ],
+                ]
+                .concat(),
+            )
+            .is_err()
+        );
         assert!(
             parse_base(
                 &[
@@ -4172,6 +5722,113 @@ mod tests {
                 rip: 0xffff_ffff_8100_1234,
                 reads: 19,
             }],
+            rdtsc_sample_rip: Some(0xffff_ffff_8271_b34d),
+            rdtsc_sample_stride: 512,
+            rdtsc_sample_window: Some(od_machine::RdtscSampleWindow {
+                first_hit: 1024,
+                last_hit: 1536,
+            }),
+            rdtsc_sample_site_hits: 19_000_000,
+            rdtsc_site_samples: vec![od_machine::RdtscSiteSample {
+                rip: 0xffff_ffff_8271_b34d,
+                hit_ordinal: 1024,
+                requested_cycles: 0x1234,
+                start_tsc: 0x1000,
+                observed_tsc: 0x1235,
+                elapsed_cycles: 0x235,
+                rbp: 0x3000,
+                rsp: 0x2000,
+                cr3: Some(0x4000),
+            }],
+            rdtsc_site_samples_omitted: 1,
+            rdtsc_entry_sample_rip: Some(0xffff_ffff_8271_b31b),
+            rdtsc_entry_sample_hits: 12,
+            rdtsc_entry_samples: vec![od_machine::RdtscEntrySample {
+                rip: 0xffff_ffff_8271_b31b,
+                hit_ordinal: 12,
+                requested_cycles: 0x1234,
+                observed_tsc: 0x1000,
+                rbp: 0x3000,
+                rsp: 0x2000,
+                cr3: Some(0x4000),
+            }],
+            rdtsc_entry_samples_omitted: 2,
+            delay_tsc_call_summary: None,
+            rdtsc_entry_clock_trace_samples: vec![
+                od_machine::RdtscClockTraceSample {
+                    rip: 0xffff_ffff_8271_b31b,
+                    hit_ordinal: 1,
+                    initial_now_ns: 10,
+                    now_ns: 30,
+                    callback_tsc: 0x1000,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 5,
+                    retired_ns_charged: Some(5),
+                    quantum_instructions_executed: 3,
+                    retired_instructions_through_rdtsc: 8,
+                    pm_timer_ns_charged: 2,
+                    pit_ns_charged: 3,
+                    rdtsc_ns_charged: 4,
+                    idle_ns_advanced: 6,
+                    quantum_ordinal: 12,
+                    irqs_delivered: 7,
+                    unaccounted_elapsed_ns: Some(0),
+                },
+                od_machine::RdtscClockTraceSample {
+                    rip: 0xffff_ffff_8271_b31b,
+                    hit_ordinal: 2,
+                    initial_now_ns: 10,
+                    now_ns: 34,
+                    callback_tsc: 0x1001,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 8,
+                    retired_ns_charged: Some(8),
+                    quantum_instructions_executed: 4,
+                    retired_instructions_through_rdtsc: 12,
+                    pm_timer_ns_charged: 3,
+                    pit_ns_charged: 3,
+                    rdtsc_ns_charged: 4,
+                    idle_ns_advanced: 6,
+                    quantum_ordinal: 18,
+                    irqs_delivered: 9,
+                    unaccounted_elapsed_ns: Some(0),
+                },
+            ],
+            rdtsc_entry_clock_trace_missing: 0,
+            rdtsc_prefix_sentinel_rip: Some(od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP),
+            rdtsc_prefix_samples: vec![od_machine::RdtscPrefixSample {
+                ordinal: 1,
+                rip: od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP,
+                cpl: Some(0),
+                cr3: Some(0x4000),
+                rsp: 0x5000,
+                rbp: 0x6000,
+                clock: od_machine::RdtscClockTraceSample {
+                    rip: od_machine::LINUX_RDTSC_PREFIX_SENTINEL_RIP,
+                    hit_ordinal: 1,
+                    initial_now_ns: 0,
+                    now_ns: 20,
+                    callback_tsc: 0x30,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 10,
+                    retired_ns_charged: Some(10),
+                    quantum_instructions_executed: 3,
+                    retired_instructions_through_rdtsc: 13,
+                    pm_timer_ns_charged: 2,
+                    pit_ns_charged: 3,
+                    rdtsc_ns_charged: 1,
+                    idle_ns_advanced: 4,
+                    quantum_ordinal: 12,
+                    irqs_delivered: 1,
+                    unaccounted_elapsed_ns: Some(0),
+                },
+                page_faults_delivered_through: 4,
+                general_protection_faults_delivered_through: 2,
+            }],
+            rdtsc_prefix_event_count: 1,
+            rdtsc_prefix_missing: 0,
+            rdtsc_prefix_status: od_machine::RdtscPrefixStatus::SentinelSeen,
+            instruction_path_trace: None,
             rdtsc_cpl0_unattributed_reads: 2,
             rdtsc_cpl0_site_overflow_reads: 3,
             page_faults_delivered: 5,
@@ -4231,11 +5888,45 @@ mod tests {
                 translated_physical: Some(0x4_2000),
                 translation_error: None,
             }),
+            elf_stack_copy: None,
         };
-        write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
-            .unwrap();
+        let (byte_count, sha256) =
+            write_execution_observations_sidecar(&mut file, path.to_str().unwrap(), &observations)
+                .unwrap();
+        let metadata = execution_observations_sidecar_metadata(
+            path.to_str().unwrap(),
+            &observations,
+            byte_count,
+            sha256.clone(),
+        );
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(byte_count, written.len());
+        assert_eq!(sha256, od_testkit::sha256_hex(&written));
+        assert_eq!(metadata["selected_rip"], "0xffffffff8271b34d");
+        assert_eq!(metadata["stride"], 512);
+        assert_eq!(metadata["selected_site_hits"], 19_000_000);
+        assert_eq!(metadata["sample_count"], 1);
+        assert_eq!(metadata["samples_omitted"], 1);
+        assert_eq!(metadata["sample_window"]["first_hit"], 1024);
+        assert_eq!(metadata["sample_window"]["last_hit"], 1536);
+        assert_eq!(metadata["entry_clock_trace_sample_count"], 2);
+        assert_eq!(metadata["entry_clock_trace_missing"], 0);
+        assert_eq!(metadata["rdtsc_prefix_status"], "sentinel_seen");
+        assert_eq!(metadata["rdtsc_prefix_sample_count"], 1);
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 5);
+        assert_eq!(value["schema_version"], 21);
+        assert!(value["elf_stack_copy"].is_null());
+        assert_eq!(value["rdtsc_prefix_status"], "sentinel_seen");
+        assert_eq!(value["rdtsc_prefix_event_count"], 1);
+        assert!(value["instruction_path_trace"].is_null());
+        assert_eq!(
+            value["limits"]["instruction_path_trace_records"],
+            od_machine::LINUX_INSTRUCTION_PATH_TRACE_CAPACITY
+        );
+        assert_eq!(
+            value["rdtsc_prefix_samples"][0]["clock"]["rip"],
+            "0xffffffff8271b31b"
+        );
         assert_eq!(value["post_iret_selected_ordinal"], 3);
         assert_eq!(value["post_iret_page_walk_status"], "captured");
         assert_eq!(
@@ -4268,6 +5959,55 @@ mod tests {
         assert_eq!(value["rdtsc_cpl0_sites"][0]["rip"], "0xffffffff81001234");
         assert_eq!(value["rdtsc_cpl0_sites"][0]["reads"], 19);
         assert_eq!(value["rdtsc_cpl0_site_overflow_reads"], 3);
+        assert_eq!(
+            value["limits"]["rdtsc_site_samples"],
+            od_machine::LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(value["rdtsc_sample_rip"], "0xffffffff8271b34d");
+        assert_eq!(value["rdtsc_sample_stride"], 512);
+        assert_eq!(value["rdtsc_sample_window"]["first_hit"], 1024);
+        assert_eq!(value["rdtsc_sample_window"]["last_hit"], 1536);
+        assert_eq!(value["rdtsc_sample_site_hits"], 19_000_000);
+        assert_eq!(value["rdtsc_site_samples"][0]["hit_ordinal"], 1024);
+        assert_eq!(value["rdtsc_site_samples"][0]["requested_cycles"], "0x1234");
+        assert_eq!(value["rdtsc_site_samples"][0]["start_tsc"], "0x1000");
+        assert_eq!(value["rdtsc_site_samples"][0]["observed_tsc"], "0x1235");
+        assert_eq!(value["rdtsc_site_samples"][0]["elapsed_cycles"], "0x235");
+        assert_eq!(value["rdtsc_site_samples"][0]["cr3"], "0x4000");
+        assert_eq!(value["rdtsc_site_samples_omitted"], 1);
+        assert_eq!(value["rdtsc_entry_sample_rip"], "0xffffffff8271b31b");
+        assert_eq!(value["rdtsc_entry_sample_hits"], 12);
+        assert_eq!(value["rdtsc_entry_samples"][0]["hit_ordinal"], 12);
+        assert_eq!(
+            value["rdtsc_entry_samples"][0]["requested_cycles"],
+            "0x1234"
+        );
+        assert_eq!(value["rdtsc_entry_samples"][0]["observed_tsc"], "0x1000");
+        assert_eq!(value["rdtsc_entry_samples_omitted"], 2);
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(value["rdtsc_entry_clock_trace_missing"], 0);
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["hit_ordinal"],
+            1
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][1]["callback_tsc"],
+            "0x1001"
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["quantum_instructions_executed"],
+            3
+        );
+        assert_eq!(
+            value["rdtsc_entry_clock_trace_samples"][0]["retired_instructions_through_rdtsc"],
+            8
+        );
         assert_eq!(value["page_faults_delivered"], 5);
         assert_eq!(value["page_fault_events"][0]["rip"], "0xffffffff81005678");
         assert_eq!(value["page_fault_events"][0]["cr2"], "0x402000");
@@ -4719,27 +6459,48 @@ mod tests {
 
     #[test]
     fn diagnostic_note_has_both_explanations_with_both_flags() {
-        let note = |past_c7: bool, profile: CpuidProfile| {
+        let note = |past_c7: bool,
+                    norandmaps: bool,
+                    no_kstack_randomization: bool,
+                    profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, profile);
+            mark_acceptance(
+                &mut evidence,
+                past_c7,
+                norandmaps,
+                no_kstack_randomization,
+                profile,
+            );
             evidence
                 .get("diagnostic_note")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         };
-        let both = note(true, CpuidProfile::X8664V1Stage4A).expect("note");
+        let both = note(true, false, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(both.contains("X8664V1Stage4A declares a subset"), "{both}");
         assert!(both.contains("--diagnostic-past-c7"), "{both}");
         assert!(both.contains("NOT counted"), "{both}");
-        let subset = note(false, CpuidProfile::X8664V1Stage4A).expect("note");
+        let subset = note(false, false, false, CpuidProfile::X8664V1Stage4A).expect("note");
         assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
         assert!(
             subset.contains("is counted") && !subset.contains("NOT counted"),
             "{subset}"
         );
-        let diag = note(true, CpuidProfile::DiagnosticV1).expect("note");
+        let diag = note(true, false, false, CpuidProfile::DiagnosticV1).expect("note");
         assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
-        assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
+        let norandmaps = note(false, true, false, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(
+            norandmaps.contains("address-space randomization"),
+            "{norandmaps}"
+        );
+        assert!(norandmaps.contains("NOT counted"), "{norandmaps}");
+        let no_kstack = note(false, false, true, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(
+            no_kstack.contains("kernel stack offset randomization"),
+            "{no_kstack}"
+        );
+        assert!(no_kstack.contains("NOT counted"), "{no_kstack}");
+        assert_eq!(note(false, false, false, CpuidProfile::DiagnosticV1), None);
     }
 
     /// S4-38L8d: the notes of the accepted evidence stay byte for byte (the APIC profile has its
@@ -4751,7 +6512,7 @@ mod tests {
     fn the_notes_of_the_accepted_evidence_are_unchanged() {
         let note = |past_c7: bool, profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, profile);
+            mark_acceptance(&mut evidence, past_c7, false, false, profile);
             evidence["diagnostic_note"].as_str().unwrap().to_string()
         };
         assert_eq!(
@@ -4776,20 +6537,39 @@ mod tests {
 
     #[test]
     fn acceptance_is_counted_for_both_profiles_without_the_flag_and_not_with_it() {
-        let acceptance = |past_c7: bool, profile: CpuidProfile| {
+        let acceptance = |past_c7: bool,
+                          norandmaps: bool,
+                          no_kstack_randomization: bool,
+                          profile: CpuidProfile| {
             let mut evidence = json!({});
-            mark_acceptance(&mut evidence, past_c7, profile);
+            mark_acceptance(
+                &mut evidence,
+                past_c7,
+                norandmaps,
+                no_kstack_randomization,
+                profile,
+            );
             evidence["acceptance"].as_str().unwrap().to_string()
         };
-        assert_eq!(acceptance(false, CpuidProfile::X8664V1Stage4A), "counted");
         assert_eq!(
-            acceptance(true, CpuidProfile::X8664V1Stage4A),
+            acceptance(false, false, false, CpuidProfile::X8664V1Stage4A),
+            "counted"
+        );
+        assert_eq!(
+            acceptance(true, false, false, CpuidProfile::X8664V1Stage4A),
+            "diagnostic_not_counted"
+        );
+        assert_eq!(
+            acceptance(false, true, false, CpuidProfile::X8664V1Stage4A),
             "diagnostic_not_counted"
         );
         // The default profile keeps its earlier marking: counted without the flag, not with it.
-        assert_eq!(acceptance(false, CpuidProfile::DiagnosticV1), "counted");
         assert_eq!(
-            acceptance(true, CpuidProfile::DiagnosticV1),
+            acceptance(false, false, false, CpuidProfile::DiagnosticV1),
+            "counted"
+        );
+        assert_eq!(
+            acceptance(true, false, false, CpuidProfile::DiagnosticV1),
             "diagnostic_not_counted"
         );
     }
@@ -4826,10 +6606,21 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
+            linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
+            execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
+            execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
+            execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -4873,10 +6664,21 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
+            linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
+            execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
+            execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
+            execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -4924,10 +6726,21 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
             user_mode: false,
+            nonce_bootconfig: false,
+            linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             checkpoint_table: Some(path("docs/reports/data/stage4/s4-38l2-oracle.json")),
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
+            execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
+            execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
+            execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -4996,10 +6809,21 @@ mod tests {
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
             user_mode: false,
+            nonce_bootconfig: false,
+            linux_norandmaps: false,
+            linux_no_randomize_kstack_offset: false,
             checkpoint_table: None,
             stack_context_out: None,
             execution_observations_out: None,
             execution_observations_post_iret_index: None,
+            execution_observations_rdtsc_rip: None,
+            execution_observations_rdtsc_entry_rip: None,
+            execution_observations_rdtsc_stride: None,
+            execution_observations_rdtsc_window: None,
+            execution_observations_rdtsc_prefix: false,
+            execution_observations_delay_call_summary: false,
+            execution_observations_quantum_trace: false,
+            execution_observations_elf_stack_copy: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
@@ -5089,7 +6913,7 @@ mod tests {
             Self {
                 vmlinuz: bzimage_with_entry(code),
                 initramfs: vec![0xAB; 4688],
-                cmdline: cmdline("N0nce-1"),
+                cmdline: cmdline("N0nce-1", false, false),
             }
         }
 

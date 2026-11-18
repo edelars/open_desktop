@@ -1,0 +1,62 @@
+# S5-07 schema-v17 pre-copy CR3 ledger exact replay — 2026-11-17
+
+## Purpose and inputs
+
+Exercise the opt-in schema-v17 CR3 prefix ledger on both existing counted canonical nonces. The ledger captures actual CR3-write events from the beginning of `cr3_changes` accounting through the verified pre-copy gate at RIP `0xffffffff81999bd4`, immediately before the CALL. Capture stops at the gate while the guest continues to its normal 3-billion-instruction budget stop.
+
+Both release-runner executions used the canonical kernel, initramfs, ACPI blob, 128 MiB RAM, Stage4A CPL0 set, and user mode. Input hashes:
+
+- vmlinuz: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`
+- initramfs: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`
+- ACPI manifest: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`
+
+## Replay integrity and completeness
+
+| Run | Source ID | Nonce | Stop equal | UART equal | UART bytes / SHA-256 | Prefix ledger | `event_count` / entry counter | Omitted |
+|---|---|---|---:|---:|---|---|---:|---:|
+| 0001 | `s5-07-counted-canonical-n2-20261117-a-run-0001` | `OD518e8be9ac44221a00000fb3400000000` | yes | yes | 24,220 / `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` | complete | 26,595 / 26,595 | 0 |
+| 0002 | `s5-07-counted-canonical-n2-20261117-a-run-0002` | `OD518e8bfb13a39d1980000fb3400000001` | yes | yes | 23,880 / `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` | complete | 26,596 / 26,596 | 0 |
+
+Both sidecars use schema 17. The target gate was reached, each journal retained every event in sequence through the gate, and no cap or omission was reported. The optional `kernel_execve` and `create_elf_tables` markers were observed in both runs; the optional `load_elf_binary` marker was not present in either sidecar, so no event boundary at that symbol is claimed.
+
+At run stop the cumulative counters were 26,617 and 26,618, respectively; the additional 22 post-entry writes in each run are outside the frozen pre-copy prefix. Full stop objects and decoded `stop.com1_hex` bytes equal their corresponding source artifacts.
+
+## Sequence comparison
+
+The 26,595-event run-1 sequence, projected to `(RIP, CPL, old_cr3 == new_cr3)`, exactly matches the first 26,595 events of run 2. Run 2 then has one additional event at sequence 26,596. This projection describes event-site/write shape only; the actual root values differ substantially and are not interchangeable.
+
+The first observed CR3 payload difference is event 10, at `switch_mm_irqs_off+0x182`, before the `kernel_execve` marker:
+
+| Run | Old CR3 | New CR3 | Retired through event |
+|---|---|---|---:|
+| 0001 | `0x3a44000` | `0x4caa000` | 1,634,749,706 |
+| 0002 | `0x3a44000` | `0x4cac000` | 1,634,550,629 |
+
+This is the first observed difference in CR3 root values, not proof of when or why the physical page-table allocation diverged. The matching-ELF symbolization identifies RIP `0xffffffff8141c2e2` as `switch_mm_irqs_off+0x182` with inline `write_cr3` (`arch/x86/mm/tlb.c:582`).
+
+The tail of each pre-copy journal is:
+
+| Run / sequence | RIP | Old → new CR3 | Retired through event |
+|---|---|---|---:|
+| 0001 / 26,595 | `0xffffffff8141c2e2` | `0x3a44000 → 0x64ac000` | 2,319,708,567 |
+| 0002 / 26,595 | `0xffffffff8141c2e2` | `0x3a44000 → 0x64d4000` | 2,319,691,331 |
+| 0002 / 26,596 | `0xffffffff8141d753` | `0x64d4000 → 0x64d4000` | 2,319,748,956 |
+
+The final run-2 event is a same-value CR3 write in `native_flush_tlb_local+0x33`, inline `native_write_cr3` (`arch/x86/mm/tlb.c:1699`). Matching-ELF disassembly shows the local TLB-flush sequence reads CR3 and writes the value back; the equal old/new value does not mean the write is redundant. This event is 16,584 retired instructions before the run-2 `create_elf_tables` marker and 27,539 before the pre-copy entry snapshot. It contributes the `+1` prefix count, but the reason this local flush was invoked only in run 2 is not established.
+
+The journals therefore locate two separate observations: CR3 root values first differ before `kernel_execve`, while the extra counted same-value flush write occurs later, after the run-2 root is loaded and before `create_elf_tables`. The event data alone does not establish why the root allocations differ, why the flush call differs, or whether either condition caused the absent destination PTE and extra #PF during the later seven-byte copy. Only 20 of the first 26,595 event records match exact `(RIP,CPL,old_cr3,new_cr3)` payloads at the same ordinal; do not describe the pair as identical except for one extra event.
+
+## Conclusion and next bounded step
+
+This completes the schema-v17 ledger localization slice: both exact-nonce replays reproduce their source stop/UART, both prefixes reconcile without omissions, and the `+1 cr3_changes` is localized to the run-2 same-value write in the local TLB-flush function. The earlier CR3 root-value divergence is observed before `kernel_execve`. No causal relation to the missing PTE/#PF is claimed. The source pair's strict comparison remains false and S5-07 remains blocked/unaccepted; comparator and allowlist are unchanged.
+
+The next narrow diagnostic is a single exact-nonce run-2 replay with a bounded caller-frame chain only for CR3 event ordinal 26,596 at RIP `0xffffffff8141d753`: retain CR3/RSP/RBP and at most eight read-only frame links, each with the slot address and value, and explicit unreadable/bad-chain/cap status. This can identify the call path requesting the flush; it cannot by itself explain why the caller's condition differs from run 1. Do not infer guest arguments from registers at the CR3 write site.
+
+## Artifact hashes
+
+| Run | Runner JSON SHA-256 | Schema-v17 sidecar SHA-256 |
+|---|---|---|
+| 0001 | `cc593af2a5b60d955a616d9482a1ecb4e4202a28d3344cdfef950a711ade9585` | `b616de6e745cbfd7f88882eacb921a4de0d5d9a9d6a4c4e235d2bb109ad7f84e` |
+| 0002 | `c23e4c775eeea5a4de3fd2ebe5968b299a944b20ebd3df697fb57cc3ab4ada89` | `7303a733c8b8aec346dcc1222517fb18ee971c308f75ce228f2f33cc38749dee` |
+
+Raw local replays reside under `work/stage5/s5-07-pre-copy-cr3-ledger-exact-replay-20261117-a/` and are not committed.

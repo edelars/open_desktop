@@ -1,0 +1,62 @@
+# S5-07 identical-input direct replay control
+
+Date: 2026-11-16
+
+## Purpose and scope
+
+Two separate direct single runs replay the same current guest input, including the same nonce, to measure within-pair repeatability. This is diagnostic evidence only; duplicate nonce runs do not satisfy the unique-nonce requirement for an S5-07 acceptance series. The prior 2026-11-15 RDTSC N=2 pair used an older ACPI blob, so this replay does not hold every artifact fixed relative to that pair.
+
+## Provenance
+
+- Host: Darwin arm64.
+- Runner: `target/release/od-runner`; SHA-256: `90c5db937de8fff1501c1ce24f0b3a35a546b557dbe24c5a73bd24be6d6b343f`.
+- The runner binary was built after commit `886f7fa57164ac82ebb198abb08bb05a72d4ab57` (`runner: mark norandmaps runs diagnostic`); runner source/dependency trees `crates/`, `apps/` and `tools/runner/` have no changes from that commit through the current HEAD. The direct-run schema is v1 and does not embed the runner source revision, so the executable hash is retained as the run identity.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` (1104 bytes, includes `\_SB.CPU0`); manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`. The prior RDTSC N=2 evidence used ACPI blob SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` with the same manifest hash.
+- Guest nonce: `OD5IDENT20261116aaaaaaaaaaaaaaaa`; cmdline: `console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=OD5IDENT20261116aaaaaaaaaaaaaaaa nokaslr`.
+- Board profile: 128 MiB, `stage4a`, `--user-mode`, no `--linux-norandmaps`; retirement budget: `3,000,000,000`.
+
+## Commands
+
+Run A and Run B used identical arguments except for the host output and sidecar paths:
+
+```sh
+target/release/od-runner linux-direct \
+  --nonce OD5IDENT20261116aaaaaaaaaaaaaaaa \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --ram-mib 128 --out <run-output.json> \
+  --run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --execution-observations-out <run-sidecar.json>
+```
+
+## Results
+
+| Field | Run A | Run B |
+|---|---:|---:|
+| Status / guest started | loaded / True | loaded / True |
+| Retired / stop | 2999999998 / budget_exhausted | 2999999998 / budget_exhausted |
+| Delivered #PF / #GP | 34 / 1 | 34 / 1 |
+| CPL3 retired | 1060 | 1060 |
+| RDTSC reads (CPL0) | 34421635 / [34421635, 0, 0, 0] | 34421635 / [34421635, 0, 0, 0] |
+| IRQ0 edges / IRQ delivered | 34783 / 34788 | 34783 / 34788 |
+| Quanta | 34547820 | 34547820 |
+| Halt idle ns / virtual ns | 1802993 / 37440340991 | 1802993 / 37440340991 |
+| UART bytes / exact marker count | 23838 / 1 | 23838 / 1 |
+
+- UART raw-byte SHA-256 (both): `93272d0f4835fee587e661dbfe2fb823f064c6e248acc35cb9cff2063ee69098`.
+- Direct-run JSON SHA-256: A `6a799f6072159b2e2149799a4e41cbaf72f34cd6ba9df55df574e8799a58c9ef`, B `d5d6f510bb3cdb3b64e40f458c743d52111752c7819185c46d9db19ffa641722`.
+- Schema-v5 execution-observation sidecar SHA-256 (both): `a523ae704fa7378cdbb1cc0262061927ebd065631e05616806c969d31324e4ef`.
+- Sidecar: 34/34 delivered page-fault events retained; 22 CPL0 RDTSC sites; zero unattributed reads and zero site overflow.
+- A structural comparison found zero differences in the complete direct-run JSON after excluding only the host sidecar output path; the schema-v5 sidecars were byte-identical. UART bytes were identical.
+
+## Conclusion
+
+The current guest input produced an identical UART transcript, stop record, machine observations and execution-observation sidecar in this pair. The previous RDTSC N=2 pair used the older ACPI blob, so this does not show that earlier variation disappears with the same artifact set or isolate nonce as a cause. It establishes only exact repeatability for one same-nonce pair on the current fixture; internal guest randomness or other run state was not independently controlled. No comparator normalization changed. S5-07 remains blocked until a unique-nonce automatic N=2 acceptance series is strict-clean and the remaining earlier differences are explained.
+
+Raw direct-run JSON and sidecars are retained locally under `work/stage5/stage5-s5-07-identical-input-20261116-a/`; those files are ignored build/run evidence, not committed.

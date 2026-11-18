@@ -1,0 +1,7 @@
+baseline SB           vcpus 2 rounds 1000000   59.5s outcomes 3 weak(0,0) 0 forbidden 0 weak_build true  [([0, 1, 1, 1], 243524), ([1, 0, 1, 1], 243913), ([1, 1, 1, 1], 512563)]
+test s6_41e_barrier_sb_on_the_interpreter_path_baseline has been running for over 60 seconds
+baseline SB           vcpus 4 rounds 1000000   19.2s outcomes 3 weak(0,0) 0 forbidden 0 weak_build true  [([0, 1, 1, 1], 232925), ([1, 0, 1, 1], 152322), ([1, 1, 1, 1], 614753)]
+baseline SB-MFENCE    vcpus 2 rounds 1000000    8.1s outcomes 3 weak(0,0) 0 forbidden 0 weak_build true  [([0, 1, 1, 1], 68956), ([1, 0, 1, 1], 69294), ([1, 1, 1, 1], 861750)]
+baseline SB-MFENCE    vcpus 4 rounds 1000000   16.8s outcomes 3 weak(0,0) 0 forbidden 0 weak_build true  [([0, 1, 1, 1], 116817), ([1, 0, 1, 1], 64179), ([1, 1, 1, 1], 819004)]
+test s6_41e_barrier_sb_on_the_interpreter_path_baseline ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 103.55s

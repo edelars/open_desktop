@@ -1,4 +1,6 @@
-use crate::apic_pair::{LEVEL, MASK, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN};
+use crate::apic_pair::{
+    LEVEL, MASK, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN,
+};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
 use std::sync::{Arc, Mutex};
 
@@ -45,6 +47,13 @@ impl IoApicHandle {
             .unwrap_or_else(|e| e.into_inner())
             .set_sci_line(asserted)
     }
+    pub(crate) fn set_nvme_line(&self, asserted: bool) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_nvme_line(asserted)
+    }
+
     /// S4-38L8f: the route of INTIN2 as a question that changes nothing: `Some((cpu, vector))`
     /// when the entry is unmasked (an edge would request `vector` on the Local APIC of vCPU
     /// `cpu`), `None` when it is masked (an edge is lost).
@@ -113,8 +122,9 @@ fn register(selector: u8) -> Option<Register> {
 fn valid_low(pin: usize, value: u64) -> bool {
     let masked = value & u64::from(MASK) != 0;
     let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
-    let sci_form = pin == SCI_PIN && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
-    if pin != 4 && (masked || sci_form) {
+    let level_low_form = matches!(pin, SCI_PIN | NVME_PIN)
+        && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
+    if pin != 4 && (masked || level_low_form) {
         allowed |= u64::from(POLARITY_LOW);
     }
     let vector = value & 0xff;
@@ -143,6 +153,14 @@ impl BusDevice for IoApic {
             Register::Redirection { pin: SCI_PIN, .. } => {
                 state.route.pins[SCI_PIN]
                     | if state.route.sci_remote_irr {
+                        REMOTE_IRR
+                    } else {
+                        0
+                    }
+            }
+            Register::Redirection { pin: NVME_PIN, .. } => {
+                state.route.pins[NVME_PIN]
+                    | if state.route.nvme_remote_irr {
                         REMOTE_IRR
                     } else {
                         0
@@ -180,6 +198,8 @@ impl BusDevice for IoApic {
                     state.set_low2(low)
                 } else if pin == SCI_PIN {
                     state.set_sci_low(low)
+                } else if pin == NVME_PIN {
+                    state.set_level_low(pin, low)
                 } else {
                     state.route.pins[pin] = low;
                     Ok(())

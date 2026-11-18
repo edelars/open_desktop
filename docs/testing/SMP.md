@@ -426,6 +426,21 @@ od-runner --stage6-litmus (--fixture FILE | --corpus DIR |
 
 Результат на корпусе S6-05 (`--corpus`, полный перебор): при срезе S6-19b было 8 `equal` и 7 `unsupported` (LOCK-CMPXCHG-MUTEX, LOCK-XADD, SB-LOCK, SB-LOCK-LOCAL, SB-LOCK-XADD, SB-XCHG, XCHG-MUTEX; LOCK-INC счётчик тоже); **после S6-20 — 15 fixture = 15 `equal`**, счётчик LOCK-INC тоже `equal`; ожидания CLI-теста `stage6_litmus_cli.rs` изменены с «unsupported = 7» на «equal = 15, unsupported = 0» (эталон читается из fixture, не из прогона; гистограммы и число расписаний всех 15 совпадают с `s6-19-litmus-interleaving.json`, проверено тестом). Команды: `cargo test -p od-runner --offline --test stage6_litmus_cli`; `od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus`; `od-runner --stage6-litmus --fixture tests/fixtures/guest/stage6/litmus/sb.json --mode seed --seeds 0..=99`.
 
+### S6-43a — cross-modifying code на двух vCPU с JIT
+
+Число повторов для этой проверки раньше не было задано; записано здесь. Числа 600 / 2000 / 2 000 000 / не меньше 10 000 выбраны исполнителем S6-43a, требуют подтверждения ревью (в плане их нет). Сценарий (vCPU A пишет код, подаёт сигнал; vCPU B ждёт, исполняет шаг, кончающий блок (`CLD`; по SDM не сериализующая), и исполняет изменённый код нативно) — `crates/od-host/src/paged_host_loop/tests/s6_43a.rs`, протокол и результаты — [JIT_CONTRACT.md, S6-43a](../specs/JIT_CONTRACT.md#s6-43a-probe-cross-modifying-code-на-двух-vcpu-с-включённым-jit).
+
+| Проверка | Повторы | Что должно быть |
+| --- | --- | --- |
+| быстрая форма (`cargo test -p od-host --offline --lib -- s6_43a`) | три протокола: 600 сигналов (чередование) и 2000 сигналов (`run_host_threads`) на протокол | после сигнала B исполняет только новые байты (`stale 0`, `wrong 0`); регистры, RAM и записи данных равны интерпретатору; изменяемая инструкция исполнена нативно до записи и после неё в каждом цикле (иначе прогон не засчитывается), доля интерпретатора записана |
+| длинная форма (release, `#[ignore]`) | 2 000 000 сигналов на протокол (6 000 000 всего, ~80 с на M3 Max); не меньше 10 000; число меняет `OD_S6_43A_CYCLES` | то же |
+
+```text
+cargo test --release -p od-host --offline --lib -- --ignored s6_43a_long_parallel_run --nocapture
+```
+
+Отсутствие устаревших запусков за конечное число повторов порядок памяти не доказывает (раздел 1): ослабление порядка (`--features od-machine/weak-host-ordering`) этим сценарием не ловится (200 000 сигналов на протокол, 0), ловится мутация сверки поколения на входе блока.
+
 ## 6. Evidence and failure handling
 
 Every run records: fixture and corpus SHA-256; test ID; source revision; runner commit; compiler/toolchain and flags; mode; CPU model, OS and thread count; iteration count; seed or explicit schedule; elapsed time; histogram; and exit/result status. Physical-x86 evidence goes in `docs/reports/data/stage6/`; temporary logs and binaries stay under ignored `work/stage6/`.

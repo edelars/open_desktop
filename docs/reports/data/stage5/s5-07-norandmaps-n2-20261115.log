@@ -1,0 +1,87 @@
+# S5-07 `norandmaps` diagnostic N=2, 2026-11-15
+
+Purpose: check whether disabling Linux address-space randomization changes the
+run-to-run startup-stack page-fault count observed in earlier S5-07 diagnostics.
+This is a diagnostic profile only, not acceptance evidence.
+
+## Source and inputs
+
+- Worktree/branch: `codex`; source revision `886f7fa57164ac82ebb198abb08bb05a72d4ab57`, clean.
+- Host: macOS 26.7.1, arm64.
+- Runner: release `target/release/od-runner`, SHA-256
+  `90c5db937de8fff1501c1ce24f0b3a35a546b557dbe24c5a73bd24be6d6b343f`.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- ACPI blob SHA-256: `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`.
+- ACPI manifest SHA-256: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Profile: `--run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a
+  --user-mode --linux-norandmaps`, 128 MiB. The runner appends `norandmaps`
+  after `nokaslr`; both runs record `acceptance: diagnostic_not_counted`.
+
+## Command
+
+```sh
+target/release/od-runner linux-direct --test-runs 2 \
+  --series-id stage5-s5-07-stage4a-norandmaps-20261115-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-stage4a-norandmaps-20261115-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps
+```
+
+## Results
+
+Both runs loaded Linux, passed exact nonce validation and reached
+`retired=2,999,999,998` with `budget_exhausted`. Both had 1,093 CPL3 retired
+instructions and the same CPL3 syscall journal. The series scenario outcome was
+`passed`. The automatic strict comparator returned `matches=false` (process
+exit 1), with unexplained `machine_observations` and
+`ordered_uart_bytes` differences after nonce normalization.
+
+| Run | #PF / #GP(0) | RDTSC `[CPL0,CPL1,CPL2,CPL3]` | PIT 0x61 / 0x42 | PM reads | IRQ0 edges / delivered | Quanta | Halt idle ns | Virtual ns |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 33 / 1 | `[34443005, 0, 0, 0]` | 1 / 16,672 | 230 | 34,803 / 34,808 | 34,568,783 | 1,704,017 | 37,461,612,015 |
+| 0002 | 33 / 1 | `[34459916, 0, 0, 0]` | 1 / 16,672 | 230 | 34,820 / 34,825 | 34,585,645 | 1,389,172 | 37,478,208,170 |
+
+The aggregate `#PF` count is equal in this pair; the earlier 35/34 difference
+did not recur here. This N=2 series did not collect per-event execution sidecars,
+so it does not identify which faults changed or establish that the prior
+startup-stack write fault was prevented. The different cmdline is a diagnostic
+intervention, and the result does not establish causation or acceptance.
+
+RDTSC totals differ by 16,911, all counted at CPL0. The virtual-time residual
+(`virtual_ns - retired - halt_idle_ns - PM_reads * 1,000`) is 34,459,678,000 ns
+and 34,476,589,000 ns; each equals `(RDTSC + PIT 0x61 reads + PIT 0x42 reads) *
+1,000 ns`. The residual difference is therefore 16,911,000 ns. IRQ0 edges and
+delivered IRQs differ by 17, quanta by 16,862, and halt idle by -314,845 ns.
+These remain strict machine-observation differences.
+
+After nonce and printk timestamp removal, UART still differs: the embedded
+`audit(0.141:1)` line moves relative to adjacent output, `sched_clock` reports
+different calibration values, and the terminal panic traces contain different
+optional frames. No UART or machine-observation normalizer was changed.
+
+## Evidence hashes
+
+- `series.json`: `4a28b6f8108202e7d62a9b94a272ded64f465f6440a159f5f7c7a426e55b3753`
+- `comparison.json`: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`
+- Run 0001 manifest / raw runner JSON / UART:
+  `f3f0c3d4eb7663a52d30456623f93b4055f2b93970ec8cdcbac462521663f16d` /
+  `0e2f0ba3add1f8f22f0af3a2c382c78cbbf25daf42e68ba77db7dc4e28d95ce7` /
+  `72936cba4946c7572261252fc946acde9352227ce3235a28d3822eaf1880da36`
+- Run 0002 manifest / raw runner JSON / UART:
+  `c17d759f8cd7cd9bce8c24e1a304e02d93154f8ce4836b346742805eca8aea0b` /
+  `044278dcb02021aa5f06e0e53141ec9839a18388d5731b1d8cf3d644536dae1b` /
+  `d5f50ffb9ec5e3ffb20f700e62b6ea7489b9e6bd9f127e3fb9d0d74c94070591`
+
+Raw artifacts are retained in ignored
+`work/stage5/stage5-s5-07-stage4a-norandmaps-20261115-a/`. S5-07 remains
+blocked/unaccepted; this diagnostic pair neither passes the strict comparator
+nor explains the outstanding UART and machine-observation variation.

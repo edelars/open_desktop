@@ -1,0 +1,124 @@
+# S5-07 current CPU0 ACPI N=2 with per-run execution sidecars
+
+Date: 2026-11-16
+
+## Purpose
+
+Rerun the strict unique-nonce automatic N=2 series on the current CPU0 ACPI
+fixture with the new opt-in per-run execution-observations sidecars. The
+sidecars localize RDTSC-site and delivered page-fault differences; they do not
+change marker validation, the comparator, or acceptance criteria.
+
+## Command and provenance
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-current-acpi-sidecars-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-current-acpi-sidecars-n2-20261116-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --execution-observations
+```
+
+- Host: macOS arm64.
+- Source revision in both run manifests: `742ad451dc3fac32ece94cf93203206719214146`,
+  `source_dirty=false`.
+- Runner SHA-256: `4571753d5ffe2edbb925b2413cb43b9b591a51054a8be0ffe983f8274f6278fd`.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`.
+- Initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- CPU0 ACPI blob SHA-256: `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`;
+  ACPI manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Matching `vmlinux-debug` SHA-256:
+  `7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`.
+- Profile: 128 MiB, counted `stage4a --user-mode`, no `--linux-norandmaps`,
+  3,000,000,000 retired-instruction budget.
+
+## Results
+
+| Run | Nonce | Scenario | Marker | Retired / stop | #PF / #GP | CPL0 RDTSC | CR3 changes | IRQ0 edges / delivered | Quanta | UART bytes / SHA-256 | Wall seconds |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---|---:|
+| 0001 | `OD518e8717419d4b0e80000f36000000000` | failed | false | 2,999,999,998 / `budget_exhausted` | 35 / 1 | 34,425,827 | 26,617 | 34,787 / 34,792 | 34,552,121 | 23,909 / `645ab37b020e2bd9d78de567c00f04d5ee160552cafb0c0855335d141e9eaeba` | 1,157.432 |
+| 0002 | `OD518e87281985e2cd80000f36000000001` | passed | true | 2,999,999,998 / `budget_exhausted` | 33 / 1 | 34,443,586 | 26,618 | 34,803 / 34,808 | 34,569,501 | 23,491 / `81f742f45148b8859f639e848f0b5fef2dfbdd2f0d0f7b1b3d7dc3379bdc39d9` | 1,163.126 |
+
+Run 0001's exact marker line was merged with the kernel's
+`Run /init as init process` printk:
+
+```text
+OD_NONCE=OD518e8717419d4b0e80000f36000000000[    2.271342] Run /init as init process
+```
+
+The strict marker validator rejected it. Run 0002 emitted its exact nonce line
+and passed. Both guests loaded Linux and reached the expected budget stop.
+Series outcome was `failed`; the command exited 1. The strict comparator reported
+`matches=false` with unexplained `run[1].scenario_status`,
+`run[1].marker_validation`, `run[1].machine_observations`, and
+`run[1].ordered_uart_bytes`. The failed marker makes the Stage 4 nonce-variation
+eligibility gate false, so its volatile-observation projection was not applied.
+No comparator rule changed.
+
+## Execution-observation sidecars
+
+Each schema-v5 sidecar retained every delivered #PF and all CPL0 RDTSC site
+counts: run 0001 has 35/35 #PF events and 22 sites; run 0002 has 33/33 #PF
+events and 22 sites. Both report zero omitted #PF events, zero RDTSC site
+overflow, and zero unattributed reads.
+
+The CPL0 RDTSC total increased by 17,759 reads in run 0002. Eight of 22 sites
+changed. The largest delta is 17,614 reads at RIP `0xffffffff8271b34d`
+(`34,033,918` → `34,051,532`), which is 99.18% of the total delta. Other site
+deltas (run 0002 minus run 0001) are: `0xffffffff813afa20` +64,
+`0xffffffff8200796e` +36, `0xffffffff8271b31b` +18,
+`0xffffffff8200713e` +16, `0xffffffff82726060` +15,
+`0xffffffff8184f2f1` -2, and `0xffffffff81c02515` -2. The remaining 14 site
+counts match. The same kernel debug ELF was previously used to resolve
+`0xffffffff8271b34d` to `delay_tsc+0x4d`; `llvm-nm` also maps it to `delay_tsc`
+at offset `+0x4d`. This localizes the largest count delta to the kernel delay
+loop, but does not establish why its iteration count changed or classify the
+observation as benign.
+
+The first 30 ordered #PF signatures match. Run 0001 then has two extra CPL0
+write faults; deleting those two records makes its remaining 33-record
+sequence identical to run 0002:
+
+| Run 0001 event | RIP / matched symbol | CR2 | Error | Original page walk |
+|---:|---|---|---|---|
+| 30 | `0xffffffff8271a9c1`, `rep_movs_alternative+0x11` | `0x7fffcfc42089` | `0x2`, write, CPL0 | `NotPresent { level: Pt }` |
+| 31 | `0xffffffff8271ec4d`, `__put_user_8+0xd` | `0x7fffcfc41ed0` | `0x2`, write, CPL0 | `NotPresent { level: Pt }` |
+
+The first RIP and the `delay_tsc` RIP were resolved against the matching
+`vmlinux-debug` ELF. The per-event frame-chain and original page-walk records
+are pre-delivery observations. They do not establish why the startup-stack
+faults occur in one run and not the other, or prove the later PTE repair. The
+RDTSC and #PF differences remain strict machine-observation differences.
+
+## Hashes
+
+- `series.json`: `e2eaa6f947011d654b26c2cef1e7b18ed2e1838ce3506c831774d97bdd871613`.
+- `comparison.json`: `a007d5cdb605a819d03e3b0aad59b53baca9113fb939d7936309cda434436fbe`.
+- Run 0001 manifest: `0a8589d95ac561a5003eb61c54a2c008fd02a3dc1f9528899d0126ffd80b754a`;
+  runner JSON: `c53ad37fcd595a37902824bc54eb5521c5262d1aa5bab6b7257ac6dfff57f924`;
+  sidecar: `ebde88a2bf8d2a97f1e968ffd2ad269e05160e12f1f11d2ae44ea1ab91f5da24`.
+- Run 0002 manifest: `131d94fe16ee014f3ceb6edbdd4ea5cedfae31f2620c6afb52b2d6689f4e074b`;
+  runner JSON: `dd6311b5daefae30a30e186bf7e848f43b144a61e5c662e0c58b78722ad8dfe7`;
+  sidecar: `fcf0b78f8950dc772831d7730923f4fa6741a9fd924621a08672823fedb0890a`.
+
+Raw manifests, runner JSON, complete UART captures and sidecars are retained in
+ignored `work/stage5/stage5-s5-07-current-acpi-sidecars-n2-20261116-a/`.
+Sidecar overhead was not isolated against an otherwise identical control; these
+wall times are not a performance comparison.
+
+## Conclusion
+
+The opt-in series sidecar path worked on both runs and captured complete bounded
+event records. This unique-nonce N=2 is not accepted: run 0001 failed strict
+marker validation, the automatic comparison failed, and RDTSC/#PF variations
+remain unexplained. The marker interleaving recurred; no parser relaxation or
+volatile-field normalization was made. S5-07 remains blocked/unaccepted.

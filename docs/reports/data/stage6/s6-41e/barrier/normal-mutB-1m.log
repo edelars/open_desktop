@@ -1,0 +1,6 @@
+parallel SB-MFENCE              vcpus 2 rounds 1000000     8.2s   121786 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 0 reused 0 fallback 0  late_barrier 0  allowed_only
+test s6_41e_the_corpus_with_the_jit_in_both_modes has been running for over 60 seconds
+parallel SB-MFENCE              vcpus 4 rounds 1000000    72.3s    13840 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 0 reused 0 fallback 0  late_barrier 0  allowed_only
+total 80.5s, 2 runs, 0 failures
+test s6_41e_the_corpus_with_the_jit_in_both_modes ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 80.46s

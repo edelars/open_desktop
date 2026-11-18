@@ -263,10 +263,8 @@ pub struct MachineBus {
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
     mmio_lens: Vec<u64>,
-    /// S4-38L8d: the set loop also serves the Local APIC and IOAPIC windows. `false` unless the
-    /// board turned the APIC profile on (`enable_apic_mmio_windows`), so every other run keeps the ECAM
-    /// window as the only MMIO of the set loop.
-    apic_mmio_windows: bool,
+    /// Selected once by the board to restrict set-step MMIO to its opt-in devices.
+    set_step_windows: &'static [crate::page_walk::MmioWindow],
     ports: Vec<PortRegionBinding>,
 }
 
@@ -324,7 +322,7 @@ impl MachineBus {
     /// Diagnostic-only read of one guest virtual range. The page walk uses a no-op A/D writer,
     /// and the final physical access is admitted only when its entire range is backed by RAM.
     pub(crate) fn read_virtual_ram_diagnostic(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         rip: u64,
         linear: GuestLinearAddress,
@@ -340,7 +338,7 @@ impl MachineBus {
             let bytes_to_page_end = 4096 - (linear_address as usize & 0xfff);
             let fragment_len = bytes_to_page_end.min(output.len() - offset);
             let physical = crate::page_walk::translate_long64_2m_ram_read_only(
-                &mut self.memory,
+                &self.memory,
                 paging,
                 rip,
                 GuestLinearAddress::new(linear_address),
@@ -376,7 +374,7 @@ impl MachineBus {
     /// page. The first byte is translated as an instruction fetch; the page
     /// walker enforces execute permissions and commits its A-bit effects.
     pub fn tracked_code_snapshot(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -388,7 +386,7 @@ impl MachineBus {
     /// Capture one executable byte range and report each committed page-walk
     /// write in the order it occurs.
     pub fn tracked_code_snapshot_with_callback(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -425,7 +423,7 @@ impl MachineBus {
     /// failure keeps the first-page walk effects (reported through the
     /// callback) and returns no snapshot.
     pub fn tracked_code_snapshot_two_pages_with_callback(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         linear_start: u64,
         length: usize,
@@ -492,7 +490,7 @@ impl MachineBus {
     /// `instruction_rip` and read `length` bytes from its page. The caller
     /// guarantees that the range lies within the page of `fetch_linear`.
     fn capture_code_page(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         instruction_rip: u64,
         linear_start: u64,
@@ -790,6 +788,16 @@ const SET_STEP_APIC_WINDOWS: [crate::page_walk::MmioWindow; 3] = [
     (crate::IO_APIC_MMIO_BASE, crate::IO_APIC_MMIO_SIZE),
 ];
 
+const NVME_PCI_WINDOW: crate::page_walk::MmioWindow =
+    (crate::nvme::NVME_PCI_BAR_BASE, crate::NVME_MMIO_BYTES);
+const SET_STEP_NVME_WINDOWS: [crate::page_walk::MmioWindow; 2] = [ECAM_WINDOW, NVME_PCI_WINDOW];
+const SET_STEP_APIC_NVME_WINDOWS: [crate::page_walk::MmioWindow; 4] = [
+    SET_STEP_APIC_WINDOWS[0],
+    SET_STEP_APIC_WINDOWS[1],
+    SET_STEP_APIC_WINDOWS[2],
+    NVME_PCI_WINDOW,
+];
+
 impl SetStepMmio for MachineBusSetStepIo<'_> {
     fn windows(&self) -> &[crate::page_walk::MmioWindow] {
         self.windows
@@ -976,7 +984,7 @@ impl MachineBus {
             devices,
             mmio,
             mmio_lens,
-            apic_mmio_windows,
+            set_step_windows,
             ports,
         } = self;
         (
@@ -989,11 +997,7 @@ impl MachineBus {
                 ports,
                 mmio,
                 mmio_lens,
-                windows: if *apic_mmio_windows {
-                    &SET_STEP_APIC_WINDOWS
-                } else {
-                    &SET_STEP_WINDOWS
-                },
+                windows: set_step_windows,
                 vcpu,
             },
         )
@@ -1015,11 +1019,7 @@ impl MachineBus {
                 ports: &self.ports,
                 mmio: &self.mmio,
                 mmio_lens: &self.mmio_lens,
-                windows: if self.apic_mmio_windows {
-                    &SET_STEP_APIC_WINDOWS
-                } else {
-                    &SET_STEP_WINDOWS
-                },
+                windows: self.set_step_windows,
                 vcpu,
             },
         )
@@ -1028,7 +1028,19 @@ impl MachineBus {
     /// S4-38L8d: let the set loop reach the Local APIC and IOAPIC windows (off by default). Only the
     /// APIC profile of the Linux board turns it on.
     pub(crate) fn enable_apic_mmio_windows(&mut self) {
-        self.apic_mmio_windows = true;
+        self.set_step_windows = if self.set_step_windows.contains(&NVME_PCI_WINDOW) {
+            &SET_STEP_APIC_NVME_WINDOWS
+        } else {
+            &SET_STEP_APIC_WINDOWS
+        };
+    }
+
+    pub(crate) fn enable_nvme_pci_mmio_window(&mut self) {
+        self.set_step_windows = if self.set_step_windows.contains(&SET_STEP_APIC_WINDOWS[1]) {
+            &SET_STEP_APIC_NVME_WINDOWS
+        } else {
+            &SET_STEP_NVME_WINDOWS
+        };
     }
 
     pub(crate) fn split_for_pio_step(&mut self) -> (&PhysicalMemory, MachineBusPortIo<'_>) {
@@ -1146,21 +1158,21 @@ impl MachineBus {
     }
 
     pub(crate) fn access_tracked_ram(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> TrackedAccessReport {
-        crate::page_walk::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
+        crate::page_walk::access_long64_4k_ram(&self.memory, paging, request, committed_write)
     }
 
     pub(crate) fn access_tracked_2m_ram(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> TrackedAccessReport {
-        crate::page_walk::access_long64_2m_ram(&mut self.memory, paging, request, committed_write)
+        crate::page_walk::access_long64_2m_ram(&self.memory, paging, request, committed_write)
     }
 
     pub(crate) fn probe_tracked_ram_access(
@@ -1190,6 +1202,16 @@ impl MachineBus {
         &self.memory
     }
 
+    /// S6-41d: the machine memory as the shared reference the inline atomic helper of `od-host`
+    /// works on (`locate_paged_atomic_operand` translates and checks with the walks of the
+    /// interpreter's locked operation, hands out the host pointer of a RAM operand, and the
+    /// generated host atomic operation runs on it). It is the same memory the locked operations
+    /// of the adapters use ([`Self::physical_memory`]); the shared reference does not let the
+    /// caller change the memory map or the execution mode (`set_execution_mode` needs `&mut`).
+    pub fn atomic_inline_memory(&self) -> &PhysicalMemory {
+        &self.memory
+    }
+
     pub(crate) fn tracked_physical_range_is_ram(&self, range: GuestPhysicalRange) -> bool {
         self.memory
             .locate_region_kind(range.start(), range.len())
@@ -1197,13 +1219,13 @@ impl MachineBus {
     }
 
     pub(crate) fn read_tracked_bounded_ram_read(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Result<u64, crate::TrackedAccessError> {
         crate::page_walk::read_long64_4k_bounded_ram_read(
-            &mut self.memory,
+            &self.memory,
             paging,
             request,
             committed_write,
@@ -1211,14 +1233,14 @@ impl MachineBus {
     }
 
     pub(crate) fn read_tracked_bounded_ram_read_with_fault_trace(
-        &mut self,
+        &self,
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
         fault_trace: &mut Option<crate::WalkTrace>,
     ) -> Result<u64, crate::TrackedAccessError> {
         crate::page_walk::read_long64_4k_bounded_ram_read_with_fault_trace(
-            &mut self.memory,
+            &self.memory,
             paging,
             request,
             committed_write,
@@ -1415,7 +1437,7 @@ impl MachineBus {
             devices: Mutex::new(devices),
             mmio,
             mmio_lens,
-            apic_mmio_windows: false,
+            set_step_windows: &SET_STEP_WINDOWS,
             ports,
         })
     }
@@ -1963,6 +1985,24 @@ mod tests {
         )
         .unwrap();
         (bus, state)
+    }
+
+    #[test]
+    fn shared_and_exclusive_set_views_keep_apic_and_nvme_in_either_order() {
+        for apic_first in [false, true] {
+            let (mut bus, _) = setup(false);
+            if apic_first {
+                bus.enable_apic_mmio_windows();
+                bus.enable_nvme_pci_mmio_window();
+            } else {
+                bus.enable_nvme_pci_mmio_window();
+                bus.enable_apic_mmio_windows();
+            }
+            let shared_windows = bus.split_for_set_step_shared(0).1.windows().to_vec();
+            let exclusive_windows = bus.split_for_set_step_of_vcpu(0).1.windows().to_vec();
+            assert_eq!(shared_windows, SET_STEP_APIC_NVME_WINDOWS);
+            assert_eq!(exclusive_windows, shared_windows);
+        }
     }
 
     fn diagnostic_page_bus(map_second_page: bool) -> (MachineBus, Long64ProbeConfig) {

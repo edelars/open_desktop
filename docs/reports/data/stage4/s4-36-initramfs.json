@@ -21,14 +21,14 @@
         "mtime": 0,
         "name": "/init",
         "nlink": 1,
-        "sha256": "6f467a05fa08dac5b2d9cc429c4d482bb69d181c5e86820070708d0ec80fbea3",
+        "sha256": "fad513259cd88ba9d50c51aeccd1a8d50a1d09ab8a98f80cec9d11b36c00daff",
         "size_bytes": 4448,
         "uid": 0
       }
     ],
     "format": "newc 070701, 4-byte aligned, no trailing padding, uncompressed",
     "path": "work/stage4/initramfs/initramfs.cpio",
-    "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "sha256": "65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7",
     "size_bytes": 4688,
     "trailer": "TRAILER!!!"
   },
@@ -73,7 +73,7 @@
       "ghp_",
       "BEGIN "
     ],
-    "sha256": "6f467a05fa08dac5b2d9cc429c4d482bb69d181c5e86820070708d0ec80fbea3",
+    "sha256": "fad513259cd88ba9d50c51aeccd1a8d50a1d09ab8a98f80cec9d11b36c00daff",
     "size_bytes": 4448,
     "syscalls_used": {
       "close": {
@@ -119,7 +119,7 @@
     "linker_script": "tests/fixtures/guest/stage4/initramfs/layout.ld",
     "linker_script_sha256": "5411212aa808dd17d55c50bb6f7097feab96ff7ab57083663163fb1f5bc5eff1",
     "path": "tests/fixtures/guest/stage4/initramfs/init.S",
-    "sha256": "6c7bb5bbaa84e9d0a1e27351c12c9f6a8d0efb6006b2eef982582ded9620f728",
+    "sha256": "1b40a651a80acd8f203f2d3a21c76d06fc7000f8084428b72d5735998b7784c7",
     "tools": {
       "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
       "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)"

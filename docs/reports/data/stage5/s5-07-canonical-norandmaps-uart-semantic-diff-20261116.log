@@ -1,0 +1,59 @@
+# S5-07 canonical `norandmaps` UART semantic-diff diagnostic
+
+Date: 2026-11-16
+
+## Scope and method
+
+Inspect the `ordered_uart_bytes` mismatch in the canonical unique-nonce
+`norandmaps` N=2 series. This is a diagnostic derivation from the retained
+runner JSON and UART evidence; it does not modify the strict comparator or its
+normalization policy.
+
+The analysis decoded each run's recorded COM1 bytes, replaced its exact
+nonce with the same placeholder, split the output into lines, then replaced
+the leading Linux printk timestamp on each line with `[T]`. An ordered line
+diff was calculated with Python `difflib.SequenceMatcher(autojunk=False)`.
+
+## Findings
+
+The source UART streams contain 23,513 bytes (run 0001) and 23,893 bytes
+(run 0002), with 347 and 355 lines. The first raw mismatch after nonce
+replacement occurs in the `Zone ranges` timestamp: `0.018745` versus
+`0.018744`.
+
+After timestamp normalization, three ordered regions still differ:
+
+1. `Memory: 62064K/130360K available` in run 0001 versus
+   `62040K/130360K available` in run 0002. The reported available-memory value
+   differs by 24 KiB.
+2. The `sched_clock: Marking stable` calibration values differ:
+   `(728298011, 1447594021)->(2176406400, -514368)` versus
+   `(728435933, 1447745258)->(2176559780, -378589)`.
+3. The terminal panic unwind differs in its optional frames. Run 0001 prints
+   `count_memcg_events`, `handle_mm_fault`, and
+   `arch_exit_to_user_mode_prepare`; run 0002 prints eleven frames including
+   `__wake_up`, `iterate_tty_write`, `tty_ldisc_deref`, `file_tty_write`,
+   `redirected_tty_write`, `vfs_write`, `__task_pid_nr_ns`, and
+   `do_syscall_64`.
+
+Thus timestamp normalization leaves differences in memory accounting,
+clocksource calibration, and panic context. This analysis does not determine
+their cause or establish that any difference is benign. Same-input direct
+replays reproduce each source run's UART exactly, while the automatic strict
+N=2 comparison remains `matches=false` on machine observations and ordered
+UART. S5-07 remains blocked/unaccepted.
+
+## Source evidence
+
+The automatic series raw artifacts are retained under
+`work/stage5/stage5-s5-07-canonical-norandmaps-n2-20261116-a/`. Their UART
+SHA-256 values are:
+
+| Run | Bytes | SHA-256 |
+|---|---:|---|
+| 0001 | 23,513 | `5e1aa859b8f8098f4f299f777edd0fec8d7f6a7f4b702f8661741bcc2a0a124f` |
+| 0002 | 23,893 | `f8420be3e44d602884a051ae7e157f2c945f162628d5fccb5c003566547c7bf3` |
+
+The full input hashes, sidecar metrics, comparison result, and raw manifest
+hashes are recorded in
+[`s5-07-canonical-norandmaps-sidecar-n2-20261116.log`](s5-07-canonical-norandmaps-sidecar-n2-20261116.log).

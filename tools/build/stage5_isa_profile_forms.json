@@ -1958,6 +1958,26 @@
         "docs/plans/STAGE_2.md:13299-13333",
         "docs/reports/STAGE_2_REPORT.md:14438-14484"
       ]
+    },
+    {
+      "task": "S4-38L9p",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_profile",
+      "mode": "Long64",
+      "cpl": 0,
+      "families": [
+        {
+          "task": "S4-38L9p",
+          "encoding": "[REX] 87 /r dword memory; optional F0 LOCK",
+          "gate": "Selected Cpl0ProfileSet member, Ring0, operand_size=Dword, no REX.W; no 66/67 or segment prefixes, at most one LOCK group-1 prefix; address/fault/commit rules are the bounded CPU_CONTRACT rules. One vCPU with synchronous memory; no multi-vCPU atomicity.",
+          "outcome": "Accepted bounded CPL0 form; do not infer runtime address validity or CPL3 support."
+        }
+      ],
+      "outcome": "Accepted Stage 4 profile. The observed S5-21 overlay covers only the 13 exact unprefixed base-only forms recorded in the compact inventories; matching rows stay unclassified and outside evidence_scope/proven_supported.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:24992-25015",
+        "docs/plans/STAGE_4.md:2190"
+      ]
     }
   ],
   "conditional_local_state_gated_candidates": [
@@ -2265,5 +2285,5 @@
     }
   ],
   "explicit_profile_exclusions": [],
-  "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles through S4-38L7as, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."
+  "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles through S4-38L9p, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."
 }

@@ -1,0 +1,145 @@
+S5-07 callback and through-RDTSC instruction ledger exact-nonce replay N=2
+Date: 2026-11-16
+Host: local macOS/aarch64
+Code revision: 34f989e (schema-v11 instruction-count instrumentation)
+Runner executable SHA-256: bb8deed3b82df05b984e426738fbc2e060f12306dc786b18ef74bab0d5e5a69a
+
+Purpose
+-------
+Replay both exact nonces from the automatic dual-site source pair and capture
+the first two entry-RIP RDTSC callbacks. Schema v11 preserves the callback-time
+pre-charge clock ledger, then adds the completed quantum's instruction count
+and cumulative retired count through the RDTSC instruction.
+
+Source pair and inputs
+---------------------
+Source series: `stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a`
+Source revision: `71cca6233444a06ec69bf1623c7a46e791313b6a`
+Source series SHA-256: `269cff1da52a8ae5196ab2f6a4d5f6eda1db2143df03325cdaa42167670449b6`
+Source comparison SHA-256: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`
+
+The two source manifests have identical kernel, initramfs, ACPI blob and ACPI
+manifest hashes, and identical configuration after removing the nonce token
+from `cmdline`. The only confirmed input difference in those fields is the
+per-run nonce; this does not prove the nonce causes the run variation.
+
+| Input | SHA-256 |
+|---|---|
+| vmlinuz | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+Profile: 128 MiB, `stage4a`, `--set-cpl0`, `--user-mode`,
+`--linux-norandmaps`, `--linux-no-randomize-kstack-offset`, budget
+3,000,000,000; expected stop `budget_exhausted`. Poll RIP:
+`0xffffffff8271b34d`, stride 512. Entry RIP: `0xffffffff8271b31b`.
+
+Invocation
+----------
+Both single-run replays use the common arguments below. Append the run-specific
+arguments listed after the command; the runs were sequential on the local Mac
+and used the same release binary.
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d \
+  --execution-observations-rdtsc-stride 512 \
+  --execution-observations-rdtsc-entry-rip 0xffffffff8271b31b
+```
+
+Run 0001:
+
+```sh
+  --nonce OD518e8a0fda5d3f4600000175200000000 \
+  --out work/stage5/stage5-s5-07-rdtsc-quantum-ledger-replay-20261116-a/run-0001.json \
+  --execution-observations-out work/stage5/stage5-s5-07-rdtsc-quantum-ledger-replay-20261116-a/run-0001-observations.json
+```
+
+Run 0002:
+
+```sh
+  --nonce OD518e8a2228ca02d300000175200000001 \
+  --out work/stage5/stage5-s5-07-rdtsc-quantum-ledger-replay-20261116-a/run-0002.json \
+  --execution-observations-out work/stage5/stage5-s5-07-rdtsc-quantum-ledger-replay-20261116-a/run-0002-observations.json
+```
+
+Replay identity and bounded capture
+-----------------------------------
+Both runs loaded Linux, reached `retired=2,999,999,998`, and stopped with
+`exit_kind=budget_exhausted`. For each nonce, full stop objects, UART bytes,
+all entry samples and all retained source stride-512 poll samples match the
+corresponding automatic source run exactly. UART length is 23,356 bytes in
+both runs. The automatic source comparison remains `matches=false` for machine
+observations and ordered UART; these exact replays do not change that result.
+
+Each schema-v11 sidecar has two entry-clock records, zero missing ledger
+records, zero entry omissions and zero poll omissions. Run 0001 has 43,871
+entry hits and 66,395 stride samples; run 0002 has 43,868 entry hits and
+66,389 stride samples. Sidecar sizes are 31,788,223 and 31,785,631 bytes.
+
+Callback and completed-quantum values
+-------------------------------------
+`tsc_hz=1,000,000,000`, and all records have `initial_now_ns=0`. The clock
+ledger fields are sampled inside the RDTSC callback before the current quantum
+is charged. `quantum_instructions_executed` and
+`retired_instructions_through_rdtsc` are attached after that exact set-loop
+report returns. For these selected RDTSC instructions the report stop flag
+ends the quantum at the RDTSC instruction. The validator checks with checked
+arithmetic that:
+
+```text
+retired_instructions_through_rdtsc
+  == retired_instructions_charged + quantum_instructions_executed
+```
+
+| Run | Hit | Callback TSC | Charged now ns | Retired instructions charged | Current quantum instructions | Retired through RDTSC | PM ns | PIT ns | RDTSC ns charged | Idle ns | Quantum | IRQs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 1 | `0x6181dbee` | 1,635,900,398 | 1,524,205,398 | 19,366 | 1,524,224,764 | 0 | 16,673,000 | 95,022,000 | 0 | 136,012 | 0 |
+| 0002 | 1 | `0x6182ac5c` | 1,635,953,756 | 1,524,256,756 | 19,312 | 1,524,276,068 | 0 | 16,673,000 | 95,024,000 | 0 | 136,014 | 0 |
+| 0001 | 2 | `0x61822f6c` | 1,635,921,772 | 1,524,224,772 | 54 | 1,524,224,826 | 0 | 16,673,000 | 95,024,000 | 0 | 136,014 | 0 |
+| 0002 | 2 | `0x6182ffa4` | 1,635,975,076 | 1,524,276,076 | 54 | 1,524,276,130 | 0 | 16,673,000 | 95,026,000 | 0 | 136,016 | 0 |
+
+At entry hit 1 the complete retired count through RDTSC differs by
+`+51,358 - 54 = +51,304` instructions: the pre-charge retired count differs
+by +51,358 and the current quantum in run 0002 contains 54 fewer instructions.
+Separately, the observed TSC gap is `+51,358 + 2,000 = +53,358 ns`, from the
+pre-charge retired-time delta and already charged RDTSC-time delta. PM, PIT,
+idle and delivered IRQ values match. The two pre-charge
+clock sums exactly equal their `now_ns` values and have zero unaccounted
+elapsed time. Thus the complete retired count is already different by the
+first observed entry RDTSC, rather than the +51,358 pre-charge delta being
+only a quantum-grouping artifact. This still does not identify which guest
+instructions differed or why; it also does not establish nonce causality or
+benignity.
+
+At hit 2 the cumulative retired delta remains +51,304; both current quanta
+contain 54 instructions. The TSC gap is 53,304 cycles, equal to the +51,304
+retired count and +2,000 charged RDTSC ns. This preserves the earlier
+entry-to-entry observation without explaining the underlying path.
+
+Final virtual time still differs: 37,404,144,074 versus 37,401,694,078 ns.
+The first-two-hit ledger therefore does not explain later machine/UART
+variation or the strict comparator failure.
+
+Artifacts
+---------
+Raw outputs are in the ignored directory
+`work/stage5/stage5-s5-07-rdtsc-quantum-ledger-replay-20261116-a/`.
+
+| Run | Runner JSON SHA-256 | Sidecar SHA-256 | UART SHA-256 |
+|---|---|---|---|
+| 0001 | `40111b4a3c15a56dfc183f6822576e58dd33c89c3416a51627626274b654b613` | `dce56708be711f12acb833c81917ae1479f92bcce549bf8baca5b2ca2498e078` | `6ca448b531593443e67762c949d9ae30421c6825a8dcfa5496d1af216fa0c606` |
+| 0002 | `f59c06b4a4fd4ade6a275b1241393294f83ecbf17dd17e753bbdfa3400f7a867` | `a58d4ec07b34b7ed8ced9966b2d020147c9bcb0323adf57dbe853c8a0d450dd4` | `1cc7d829ab6b0afcec0b15c20aff4fe3387ef4f6e1f92f5e36c5ef3ab2d9a0b8` |
+
+S5-07 remains blocked/unaccepted; neither CPU semantics nor comparator rules
+changed.

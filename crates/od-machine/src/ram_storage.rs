@@ -32,7 +32,8 @@
 //! Vol. 3A 11.1.1). Invariants: (a) after creation no non-atomic access to the bytes exists (no
 //! `&[u8]`/`&mut [u8]`, `ptr::copy` or memcpy); (b) every host access is aligned and at most 8
 //! bytes wide (16 bytes only by the S6-31 primitive); (c) `unsafe` is only in the macros of this
-//! file; (d) target hosts are aarch64 and x86_64; (e) concurrent tests keep one width per
+//! file and in `operand_ptr` (S6-41c, amendment (в′): the host pointer of an aligned operand for
+//! generated code); (d) target hosts are aarch64 and x86_64; (e) concurrent tests keep one width per
 //! location (mixing widths is for the host litmus of S6-36, not for Miri).
 //!
 //! Variant B (`AtomicU64` cells only, narrow stores as a CAS loop, narrow locked RMW through CAS
@@ -372,6 +373,34 @@ impl RamStorage {
         }
     }
 
+    /// S6-41c, amendment (в′) of S6-30a: the host pointer of the naturally aligned operand of
+    /// `width` (1, 2, 4 or 8) bytes at region offset `offset`, for generated code that accesses
+    /// the RAM with host-atomic instructions of that width. `None` when the width is not one of
+    /// those, the operand is not inside the store, or the host address is not naturally aligned
+    /// (checked on the host pointer, not derived from the guest address; a guest-aligned operand
+    /// is host-aligned because of `lead`).
+    ///
+    /// Lifetime: the cells are allocated once by [`Self::new_zeroed`] and never resized or moved,
+    /// so the pointer is valid while `self` is alive. The caller keeps it only for one synchronous
+    /// call (it must not be stored in a cache that outlives the `PhysicalMemory`) and accesses it
+    /// only with host-atomic instructions of exactly `width` bytes at that address (invariant (а′)
+    /// of the amendment); no Rust reference to the bytes is made here or may be made from it.
+    /// This function and the macros above are the only code in the crate that does pointer
+    /// arithmetic on the store.
+    pub(crate) fn operand_ptr(&self, offset: usize, width: usize) -> Option<*mut u8> {
+        if !matches!(width, 1 | 2 | 4 | 8) || offset.checked_add(width)? > self.len {
+            return None;
+        }
+        let at = self.lead + offset;
+        if at % width != 0 {
+            return None;
+        }
+        // SAFETY: `at + width <= lead + len`, which is within the allocation of
+        // `words.len() * 8` bytes (`new_zeroed`), so the offset stays inside the same allocated
+        // object; no memory is read or written here.
+        Some(unsafe { self.base().add(at) })
+    }
+
     /// Host address of region offset `offset` (alignment checks in tests).
     #[cfg(test)]
     pub(crate) fn host_address(&self, offset: usize) -> usize {
@@ -404,6 +433,44 @@ mod tests {
 
     fn storage(len: usize, lead: usize) -> RamStorage {
         RamStorage::new_zeroed(len, lead).unwrap()
+    }
+
+    /// S6-41c: the operand pointer is the host address of the offset, naturally aligned for its
+    /// width, for every lead; a misaligned, out-of-range or odd-width request gets none.
+    #[test]
+    fn operand_ptr_is_naturally_aligned_in_range_and_refuses_everything_else() {
+        for lead in 0..8usize {
+            let ram = storage(64, lead);
+            for width in [1usize, 2, 4, 8] {
+                for offset in 0..64usize {
+                    let pointer = ram.operand_ptr(offset, width);
+                    let expected = (lead + offset) % width == 0 && offset + width <= 64;
+                    assert_eq!(pointer.is_some(), expected, "lead {lead} {offset}+{width}");
+                    if let Some(pointer) = pointer {
+                        assert_eq!(pointer as usize, ram.host_address(offset));
+                        assert_eq!(pointer as usize % width, 0);
+                    }
+                }
+            }
+            for width in [0usize, 3, 5, 6, 7, 9, 16] {
+                assert!(ram.operand_ptr(0, width).is_none(), "width {width}");
+            }
+            assert!(ram.operand_ptr(usize::MAX, 1).is_none());
+            assert!(ram.operand_ptr(63, 8).is_none());
+        }
+    }
+
+    /// S6-41c: a store through the operand pointer with a host atomic of the operand's width is
+    /// the store of the safe API (same cell, same bytes).
+    #[test]
+    fn a_host_atomic_through_the_operand_pointer_is_seen_by_the_safe_loads() {
+        let ram = storage(64, 3);
+        let pointer = ram.operand_ptr(5, 4).unwrap();
+        // SAFETY: the pointer is a naturally aligned `u32` cell of a live store (test of the
+        // contract of `operand_ptr`).
+        unsafe { AtomicU32::from_ptr(pointer.cast::<u32>()) }.store(0xdead_beef, Ordering::SeqCst);
+        assert_eq!(ram.load_u32(5, Ordering::SeqCst), 0xdead_beef);
+        assert_eq!(ram.load_u8(5, Ordering::SeqCst), 0xef);
     }
 
     #[test]

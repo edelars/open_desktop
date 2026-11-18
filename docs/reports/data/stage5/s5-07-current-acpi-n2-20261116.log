@@ -1,0 +1,47 @@
+# S5-07 current-ACPI automatic N=2 series
+
+Date: 2026-11-16
+
+## Command and provenance
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-current-acpi-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-current-acpi-n2-20261116-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs /Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode
+```
+
+- Host: macOS arm64.
+- Runner source revision: `886f7fa57164ac82ebb198abb08bb05a72d4ab57`; both manifests say `source_dirty=false`.
+- Current CPU0 ACPI blob SHA-256: `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`; manifest hash: `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`.
+- Kernel SHA-256: `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs SHA-256: `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`.
+- Series JSON SHA-256: `6d0b1590ea1c9516e8f4452b2f9f6cb599205067e10ec9c6124d650304d5a50d`; automatic comparison SHA-256: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+
+## Results
+
+| Run | Nonce | Scenario | Marker | #PF / #GP | RDTSC reads (CPL0) | CR3 changes | UART bytes / SHA-256 | Wall seconds |
+|---|---|---|---|---:|---:|---:|---|---:|
+| 0001 | `OD518e86e276af49380000026ac00000000` | passed | true | 33 / 1 | 34428852 / [34428852, 0, 0, 0] | 26620 | 23682 / `bfb80d10bcf879071d991d1eacea3131c7787752101bb880b1c4d0a5c5aa5598` | 1165.906 |
+| 0002 | `OD518e86f36e28e08f8000026ac00000001` | passed | true | 33 / 1 | 34409309 / [34409309, 0, 0, 0] | 26618 | 24075 / `3c63f2a6398cdda7cd46f02feae038d3bfec20dce10051166c91f9b0892467e4` | 1175.719 |
+
+- Guest series outcome: `passed`; both runs loaded Linux, emitted their generated unique nonce exactly once, and reached `budget_exhausted` at `retired=2,999,999,998`.
+- Strict automatic comparison: `matches=false`, process exit code 1. Explained fields are run ID/nonce, raw runner JSON hash, UART hash/path and wall time. Unexplained fields are `machine_observations` and `ordered_uart_bytes` after the existing nonce/Stage 4 normalization.
+- The Stage 4 nonce eligibility gate was false for this pair because the terminal panic snapshots contain unallowlisted optional frames (run 0001 includes `? common_interrupt`; run 0002 includes `? console_srcu_read_unlock` and `? tty_ldisc_deref`). Therefore the comparator did not apply the Stage 4 volatile-field projection. It compared the complete stop record after removing only `com1_hex`, `com1_text`, and `machine_stop_reason` and normalizing nonce strings; 29 raw machine leaf paths differ: `cr3`, `cr3_changes`, 11 `gpr` leaves, `halt_idle_ns`, `irq0_edges`, `irq_refused_masked`, `irq_refused_shadow`, `irqs_delivered`, two `last_cr3_change` leaves, `quanta`, `quantum_cut_by_deadline`, `rdtsc_reads`, `rdtsc_reads_by_cpl[0]`, `rflags`, `rip`, `rip_bytes`, `rip_gpa`, and `virtual_ns`. Delivered #PF (33/33) and #GP (1/1) match. If the existing volatile projection were hypothetically applied, its residual would be `cr3_changes`, `rdtsc_reads`, and `rdtsc_reads_by_cpl[0]`; that is not the actual comparator result for this pair. No new field was excluded.
+- RDTSC count delta: 19,543 reads. This series did not request per-event execution sidecars, so it does not localize the delta to a guest RIP or capture returned TSC values.
+- UART differs after nonce normalization; full UART captures are in the run directories below. No comparator normalizer was changed.
+
+## Interpretation
+
+This current CPU0 ACPI fixture also fails the strict unique-nonce N=2 comparator, so the old ACPI blob in earlier S5-07 runs is not the only condition under which variation occurs. A same-nonce direct replay on this current fixture was byte-identical, but that pair used an opt-in sidecar and is only a control. The current N=2 difference is consistent with guest execution depending on nonce/cmdline content or another run-state source; it does not establish causality. S5-07 remains blocked/unaccepted until strict-clean unique-nonce evidence and an explanation of the surviving RDTSC/CR3 and UART differences. No comparator rules changed.
+
+Raw series, per-run manifests/runner JSON and complete UART files are retained locally under `work/stage5/stage5-s5-07-current-acpi-n2-20261116-a/`.

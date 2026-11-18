@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use crate::arm64::memory_order::MemoryOrderMode;
 use crate::block::{
     BasicBlock, BlockStopReason, BranchTargetResolution, CodeMemory, CodeView, GuestByteRange,
 };
@@ -110,6 +111,13 @@ pub struct ExecutionProfile {
     pub mode: GuestExecutionMode,
     pub canonical_address_bits: u8,
     pub jit_profile: JitSemanticProfile,
+    /// S6-41b (з): the memory-ordering mode the code is generated for. It is
+    /// part of every translation key through the execution context, so code
+    /// built for `Interleaved` (no ordering bits, no barriers) cannot be found
+    /// by a `Parallel` lookup. The fixture caches support `Interleaved` only
+    /// (A5, JIT_CONTRACT S6-40): a `Parallel` profile is refused by
+    /// `is_supported_cached_fixture`.
+    pub memory_order: MemoryOrderMode,
 }
 
 impl ExecutionProfile {
@@ -117,13 +125,25 @@ impl ExecutionProfile {
         mode: GuestExecutionMode::Long64,
         canonical_address_bits: 48,
         jit_profile: JitSemanticProfile::S0_09Fixture,
+        memory_order: MemoryOrderMode::Interleaved,
     };
 
     pub const NATIVE_REGISTER_V1_LONG64_CANONICAL48: Self = Self {
         mode: GuestExecutionMode::Long64,
         canonical_address_bits: 48,
         jit_profile: JitSemanticProfile::NativeRegisterV1Fixture,
+        memory_order: MemoryOrderMode::Interleaved,
     };
+
+    /// The same profile generated for another memory-ordering mode. The result
+    /// is a different key; it is not a supported fixture-cache profile unless
+    /// the mode is `Interleaved`.
+    pub const fn with_memory_order(self, memory_order: MemoryOrderMode) -> Self {
+        Self {
+            memory_order,
+            ..self
+        }
+    }
 
     pub const fn is_supported_fixture(self) -> bool {
         matches!(self, Self::S0_09_LONG64_CANONICAL48)
@@ -878,12 +898,52 @@ mod tests {
                     mode: GuestExecutionMode::Long64,
                     canonical_address_bits: 57,
                     jit_profile: JitSemanticProfile::S0_09Fixture,
+                    memory_order: MemoryOrderMode::Interleaved,
                 },
             ),
             &spans,
         )
         .unwrap();
         assert_ne!(base, new_profile);
+    }
+
+    /// S6-41b (з): the memory-ordering mode is part of the key, so code built
+    /// for `Interleaved` is not found by a `Parallel` lookup, and the profile
+    /// that differs only by mode is a different key under the same context id.
+    #[test]
+    fn s6_41b_translation_key_distinguishes_the_memory_order_mode() {
+        let bytes = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let (code, block) = build(&bytes, 0x4000);
+        let spans = one_span(code, identity(10, 1, 20, 1, true));
+        let interleaved = key(code, &block, CompileFlavor::S0_09FixtureDispatch, &spans).unwrap();
+        let parallel_profile =
+            ExecutionProfile::S0_09_LONG64_CANONICAL48.with_memory_order(MemoryOrderMode::Parallel);
+        assert_ne!(parallel_profile, ExecutionProfile::S0_09_LONG64_CANONICAL48);
+        let parallel = key_in_context(
+            code,
+            &block,
+            CompileFlavor::S0_09FixtureDispatch,
+            ExecutionContextSnapshot::new(test_context().id, parallel_profile),
+            &spans,
+        )
+        .unwrap();
+        assert_ne!(interleaved, parallel);
+        // Same mode, same key.
+        let again = key_in_context(
+            code,
+            &block,
+            CompileFlavor::S0_09FixtureDispatch,
+            ExecutionContextSnapshot::new(
+                test_context().id,
+                parallel_profile.with_memory_order(MemoryOrderMode::Interleaved),
+            ),
+            &spans,
+        )
+        .unwrap();
+        assert_eq!(interleaved, again);
+        // The fixture caches do not accept a Parallel profile at all.
+        assert!(!parallel_profile.is_supported_cached_fixture());
+        assert!(ExecutionProfile::S0_09_LONG64_CANONICAL48.is_supported_cached_fixture());
     }
 
     #[test]

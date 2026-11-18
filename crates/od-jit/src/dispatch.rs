@@ -8051,17 +8051,25 @@ mod tests {
                 mode: crate::translation::GuestExecutionMode::Compatibility,
                 canonical_address_bits: 48,
                 jit_profile: crate::translation::JitSemanticProfile::S0_09Fixture,
+                memory_order: crate::arm64::memory_order::MemoryOrderMode::Interleaved,
             },
             ExecutionProfile {
                 mode: crate::translation::GuestExecutionMode::Long64,
                 canonical_address_bits: 57,
                 jit_profile: crate::translation::JitSemanticProfile::S0_09Fixture,
+                memory_order: crate::arm64::memory_order::MemoryOrderMode::Interleaved,
             },
             ExecutionProfile {
                 mode: crate::translation::GuestExecutionMode::Long64,
                 canonical_address_bits: 48,
                 jit_profile: crate::translation::JitSemanticProfile::Other,
+                memory_order: crate::arm64::memory_order::MemoryOrderMode::Interleaved,
             },
+            // S6-41b (з): the fixture caches serve Interleaved code only.
+            ExecutionProfile::S0_09_LONG64_CANONICAL48
+                .with_memory_order(crate::arm64::memory_order::MemoryOrderMode::Parallel),
+            ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48
+                .with_memory_order(crate::arm64::memory_order::MemoryOrderMode::Parallel),
         ];
         for profile in unsupported_profiles {
             assert!(matches!(

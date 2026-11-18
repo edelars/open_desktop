@@ -11,6 +11,9 @@ description = "Open Desktop own UEFI firmware (S7-01: build skeleton, not a firm
 # Keep this host-testable guest project independent even when a checkout is nested in another
 # Open Desktop worktree, where Cargo would otherwise discover that outer workspace first.
 [workspace]
+[features]
+# Selects the direct Linux PCI NVMe manifest in the data-only ACPI carrier.
+linux-nvme-acpi = []
 
 [lib]
 name = "od_firmware"

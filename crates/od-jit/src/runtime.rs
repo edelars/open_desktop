@@ -5190,6 +5190,102 @@ pub const RUNTIME_CONTEXT_V3_TOTAL_INITIAL_BUDGET_OFFSET: usize =
 /// Distinct native entry type for verifier-issued active-code artifacts.
 pub type BlockEntryV3 = unsafe extern "C" fn(*mut RuntimeContextV3) -> u32;
 
+/// S6-41c: block exit values of the V4 entry (inline atomic memory operations). They share the
+/// namespace of [`RuntimeExitTag`] for `0` (complete), `1` (budget) and `3` (stop); the values
+/// below are private to V4 and never go through a V1 or V2 result decoder.
+///
+/// The locate helper reported a guest fault (`#PF`, `#GP`, `#SS`): the block left before the
+/// atomic operation, so no guest register, flag, RIP or memory byte changed and nothing was
+/// retired; the details are in [`RuntimeContextV4::outcome`].
+pub const RUNTIME_EXIT_V4_ATOMIC_FAULT: u32 = 11;
+/// The locate helper declined the operand (misaligned or split, not plain RAM, exhausted page
+/// counter, backend error): no effect, nothing retired; the interpreter owns the instruction.
+pub const RUNTIME_EXIT_V4_ATOMIC_DECLINED: u32 = 12;
+/// The helper contract was violated (null host or site pointer, bad site): no effect.
+pub const RUNTIME_EXIT_V4_HELPER_FAILURE: u32 = 13;
+/// S6-41d: a retired instruction of the block wrote into the code range of the block (the guarded page, the rule of the store of S4-16i)
+/// (the helper noted the overlap before the effect, the block checks the flag after the
+/// instruction retired): the instruction and every earlier one retired, the later ones did not
+/// run, and the block must not be reused (the S4-16i exit of the store, `CodeInvalidated`).
+pub const RUNTIME_EXIT_V4_CODE_INVALIDATED: u32 = 14;
+
+/// Per-block description of the memory operand of the one atomic guest instruction of a V4
+/// block. The representation is private to the same linked build (as `MemorySiteV2`); the
+/// helper reads it, generated code never does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AtomicSiteV4 {
+    pub guest_rip: u64,
+    pub next_rip: u64,
+    pub operand: MemoryOperand,
+}
+
+/// The "translate and check with the intent to write" helper of a V4 block: called by the block
+/// with its own context before the atomic operation, returns `0` (success: `operand_host`,
+/// `generation` and the committed range are filled) or one of the `RUNTIME_EXIT_V4_*` values,
+/// which the block returns as it is.
+pub type AtomicLocateHelperV4 = unsafe extern "C" fn(*mut RuntimeContextV4) -> u32;
+
+/// V4 call record (S6-41c). Its first member preserves the V1 control prefix. Everything after
+/// it is valid for one invocation only. Never pass this record to a V1, V2 or V3 entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeContextV4 {
+    pub base: RuntimeContextV1,
+    /// Required for a block with a memory operand; the block calls it with this very record.
+    pub locate_helper: Option<AtomicLocateHelperV4>,
+    /// Opaque host object of the helper (the adapter of the invocation).
+    pub host: *mut std::ffi::c_void,
+    /// Immutable site descriptions read by the helper: the base of an array of `site_count`
+    /// sites (S6-41d: one per memory instruction of the block, in program order); the block
+    /// stores the index of the site of the instruction in [`Self::site_index`] before each call.
+    pub site: *const AtomicSiteV4,
+    /// Output of the helper: host address of the operand, naturally aligned for its width.
+    pub operand_host: *mut u8,
+    /// Output of the helper: the page-generation counters of the touched pages (`AtomicU64`).
+    /// After the atomic operation the block raises each of the first `generation_count` of them
+    /// with a read-modify-write that releases (`LDADDAL`, not weaker than `Release`).
+    pub generation: [*const std::sync::atomic::AtomicU64; 2],
+    /// Output of the helper: how many of `generation` are meaningful (1 or 2).
+    pub generation_count: u32,
+    /// Output of the block before every helper call: the index into `site` (S6-41d).
+    pub site_index: u32,
+    /// Output of the helper: the range of the write, for the `committed_write` report that the
+    /// host makes after the block returned `0`.
+    pub committed_start: u64,
+    pub committed_len: u64,
+    /// Output of the block: set to 1 after the data write and the generation raise (order:
+    /// data, `Release` generation, report). The host reports `committed_write` only when set.
+    pub committed_valid: u32,
+    /// Input: how many sites `site` holds (S6-41d); the helper refuses an index beyond it.
+    pub site_count: u32,
+    /// Output of the helper: set when the walk or the located operand overlaps the guarded code range of the block
+    /// (S6-41d); the block checks it after the instruction retired and exits
+    /// [`RUNTIME_EXIT_V4_CODE_INVALIDATED`]. Reset by the host before the call, never by the block.
+    pub code_dirty: u32,
+    pub reserved2: u32,
+    /// Output of the helper for a fault or a decline.
+    pub outcome: crate::memory_bridge::CheckedMemoryOutcomeV1,
+}
+
+/// Distinct native entry type of V4 blocks.
+pub type BlockEntryV4 = unsafe extern "C" fn(*mut RuntimeContextV4) -> u32;
+
+macro_rules! v4_offset {
+    ($($name:ident => $($field:ident).+),* $(,)?) => {
+        $(pub const $name: usize = std::mem::offset_of!(RuntimeContextV4, $($field).+);)*
+    };
+}
+
+v4_offset! {
+    RUNTIME_CONTEXT_V4_LOCATE_HELPER_OFFSET => locate_helper,
+    RUNTIME_CONTEXT_V4_OPERAND_HOST_OFFSET => operand_host,
+    RUNTIME_CONTEXT_V4_GENERATION_OFFSET => generation,
+    RUNTIME_CONTEXT_V4_GENERATION_COUNT_OFFSET => generation_count,
+    RUNTIME_CONTEXT_V4_COMMITTED_VALID_OFFSET => committed_valid,
+    RUNTIME_CONTEXT_V4_SITE_INDEX_OFFSET => site_index,
+    RUNTIME_CONTEXT_V4_CODE_DIRTY_OFFSET => code_dirty,
+}
+
 /// Exit namespace for the S3-24a entry. Values are private to this typed V3
 /// artifact and are never passed through V1 or V2 result decoders.
 #[repr(u32)]

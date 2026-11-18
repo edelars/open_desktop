@@ -1,9 +1,11 @@
 //! DSDT built from the board manifest (S7-12).
 //!
-//! The namespace is `\_SB` with one child per device that the manifest marks `PRESENT`:
-//! `PCI0` (PCIe root, from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1). Devices that are
-//! not described here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not
-//! emitted; `_S5` is added only by `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
+//! The namespace is `\_SB` with the fixed one-CPU profile device `CPU0` (`_HID` `ACPI0007`,
+//! integer `_UID` 0) followed by devices that the manifest marks `PRESENT`: `PCI0` (PCIe root,
+//! from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1).
+//! `CPU0` matches the UID 0 Local APIC record emitted by MADT. Devices that are not described
+//! here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not emitted; `_S5` is added only by
+//! `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
 //!
 //! The PCIe ECAM entry (S4-31b) is checked by the same rules as the MCFG serializer
 //! (`mcfg::EcamWindow::from_entry`, S4-31a: a memory window of `(end_bus - start_bus + 1) << 20`
@@ -16,11 +18,13 @@
 use super::aml::AmlError;
 use super::aml::builder::AmlBuilder;
 use super::aml::names::{AmlName, NameSeg};
-use super::aml::resource::{AddressRange, InterruptFlags, ResourceTemplate, SpaceFlags};
+use super::aml::resource::{
+    AddressRange, InterruptFlags, MemoryFlags, ResourceTemplate, SpaceFlags,
+};
 use super::aml::validate::validate_definition_block;
 use super::bytes::{head_mut, sub, tail_mut, tri};
 use super::manifest::{
-    BoardManifest, DeviceEntry, GSI_NONE, IRQ_ACTIVE_LOW, IRQ_LEVEL, device_type,
+    BoardManifest, DeviceEntry, GSI_NONE, IRQ_ACTIVE_LOW, IRQ_LEVEL, PciNvmeRoute, device_type,
 };
 use super::mcfg::{ECAM_BYTES_PER_BUS, EcamWindow, McfgError};
 use super::table::{SDT_HEADER_LEN, TableError, finish_checksum, validate_table, write_header};
@@ -67,7 +71,9 @@ impl From<TableError> for DsdtError {
 /// Builds the DSDT into `out` and returns its length. The manifest entries are checked first;
 /// the result is checked by [`validate_dsdt`] before it is returned.
 ///
-/// With a `PRESENT` PCIe ECAM entry the table has `\_SB.PCI0` (`_CRS`: bus number range and
+/// The fixed one-CPU profile always emits `\_SB.CPU0` (`_HID` `ACPI0007`, integer `_UID` 0),
+/// matching the UID 0 Local APIC record in MADT. With a `PRESENT` PCIe ECAM entry the table then
+/// has `\_SB.PCI0` (`_CRS`: bus number range and
 /// `IO(Decode16, 0xCF8, 0xCF8, 1, 8)`), then `\_SB.ECAM` (`_HID` `PNP0C02`, `_UID` 0, `_CRS` =
 /// `Memory32Fixed(ReadWrite, base, 0x10_0000)`), then `COM<n>` if present. Without the entry the
 /// table has no PCI0 and no ECAM device.
@@ -107,7 +113,7 @@ const fn build_dsdt_inner(
         Some(ecam) if ecam.is_present() => {
             let window = tri!(EcamWindow::from_entry(ecam), DsdtError::Ecam);
             (
-                Some(tri!(PciRoot::from_window(&window))),
+                Some(tri!(PciRoot::from_window(&window, manifest.pci_nvme()))),
                 Some(tri!(EcamReservation::from_window(&window))),
             )
         }
@@ -120,7 +126,8 @@ const fn build_dsdt_inner(
     let aml_len = {
         let mut builder = AmlBuilder::new(tail_mut(out, SDT_HEADER_LEN));
         let scope = tri!(builder.begin_scope("\\_SB"), DsdtError::Aml);
-        // Order is fixed (PCI0, ECAM reservation, COM1) so the output is deterministic.
+        tri!(emit_cpu0(&mut builder), DsdtError::Aml);
+        // Order is fixed (CPU0, PCI0, ECAM reservation, COM1) so the output is deterministic.
         if let Some(pci) = &pci {
             tri!(pci.emit(&mut builder), DsdtError::Aml);
         }
@@ -152,6 +159,14 @@ const fn build_dsdt_inner(
     Ok(total)
 }
 
+/// The stage-4 profile has one processor: Device(CPU0) with ACPI processor HID and integer UID 0.
+const fn emit_cpu0(builder: &mut AmlBuilder<'_>) -> Result<(), AmlError> {
+    let device = tri!(builder.begin_device("CPU0"));
+    tri!(builder.name_string("_HID", "ACPI0007"));
+    tri!(builder.name_integer("_UID", 0));
+    builder.end(device)
+}
+
 /// `Name(\_S5, Package() { typ, typ, 0, 0 })`. With `typ` = 5 the bytes are
 /// `08 5C 5F 53 35 5F 12 08 04 0A 05 0A 05 00 00` (`typ` 0 and 1 would use the one-byte ZeroOp and
 /// OneOp, the shorter forms of the AML integer encoder). The package holds `SLP_TYPa`, `SLP_TYPb`
@@ -179,22 +194,19 @@ pub const fn validate_dsdt(table: &[u8]) -> Result<(), DsdtError> {
     Ok(())
 }
 
-/// PCIe root bridge `\_SB.PCI0` from the checked ECAM window (FIRMWARE_BOOT.md 6.3, type 7):
-/// segment, `start_bus`, `end_bus`.
-///
-/// The manifest v1.0 has no I/O or MMIO window fields for the root bridge and no interrupt
-/// routes, so `_CRS` carries the bus number range and the conf1 ports `0xCF8..=0xCFF` (S4-31b;
-/// the ports are board facts of S4-30c, not manifest fields) and `_PRT` is empty. There are no
-/// bridge apertures: this is a gap of the contract, recorded in `docs/KNOWN_ISSUES.md`; nothing
-/// is invented here.
+/// PCIe root bridge `\_SB.PCI0` from the ECAM window and optional NVMe PCI aperture and route.
 struct PciRoot {
     segment: u16,
     start_bus: u16,
     crs: ResourceTemplate,
+    nvme: Option<PciNvmeRoute>,
 }
 
 impl PciRoot {
-    const fn from_window(window: &EcamWindow) -> Result<Self, DsdtError> {
+    const fn from_window(
+        window: &EcamWindow,
+        nvme: Option<PciNvmeRoute>,
+    ) -> Result<Self, DsdtError> {
         let segment = window.segment;
         let start_bus = window.start_bus as u16;
         let end_bus = window.end_bus as u16;
@@ -216,11 +228,31 @@ impl PciRoot {
             template.io(true, CONF1_PORT_BASE, CONF1_PORT_BASE, 1, CONF1_PORT_LEN),
             DsdtError::Aml
         );
+        if let Some(route) = nvme {
+            tri!(
+                template.dword_memory(
+                    SpaceFlags::FIXED,
+                    MemoryFlags {
+                        cacheability: 0,
+                        read_write: true,
+                    },
+                    AddressRange {
+                        granularity: 0,
+                        min: route.min,
+                        max: route.max,
+                        translation: 0,
+                        length: route.length,
+                    },
+                ),
+                DsdtError::Aml
+            );
+        }
         let crs = tri!(template.finish(), DsdtError::Aml);
         Ok(PciRoot {
             segment,
             start_bus,
             crs,
+            nvme,
         })
     }
 
@@ -232,10 +264,17 @@ impl PciRoot {
         tri!(b.name_integer("_SEG", self.segment as u64));
         tri!(b.name_integer("_BBN", self.start_bus as u64));
         tri!(b.name_resource_template("_CRS", &self.crs));
-        // Empty: the manifest has no PCI interrupt routes (ACPI 6.2.13 допускает пустой _PRT,
-        // маршрутов нет; текст 6.2.13 не сверен). No `_ADR`: a device has `_HID` or `_ADR`.
         tri!(b.begin_name("_PRT"));
         let prt = tri!(b.begin_package());
+        if let Some(route) = self.nvme {
+            // ACPI 6.6 §6.2.14: any function, INTA, hardwired GSI.
+            let entry = tri!(b.begin_package());
+            tri!(b.integer(((route.slot as u64) << 16) | 0xFFFF));
+            tri!(b.integer(0));
+            tri!(b.integer(0));
+            tri!(b.integer(route.gsi as u64));
+            tri!(b.end_package(entry));
+        }
         tri!(b.end_package(prt));
         b.end(device)
     }

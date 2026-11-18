@@ -1,0 +1,7 @@
+parallel SB-MFENCE              vcpus 2 rounds 1000000     8.5s   117448 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-MFENCE              vcpus 4 rounds 1000000    14.3s    70146 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+parallel SB-XCHG                vcpus 2 rounds 1000000     8.6s   116592 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 4 reused 1999996 fallback 0  late_barrier 0  allowed_only
+parallel SB-XCHG                vcpus 4 rounds 1000000    13.4s    74496 r/s  outcomes 3 forbidden 0  jit 2000000 calls 2000000 admitted 8 reused 1999992 fallback 0  late_barrier 0  allowed_only
+total 44.8s, 4 runs, 0 failures
+test s6_41e_the_corpus_with_the_jit_in_both_modes ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 44.77s

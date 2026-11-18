@@ -51,7 +51,7 @@ use super::fadt::{
 use super::madt::{MadtError, build_madt};
 use super::manifest::{
     AcpiPmEntry, BoardManifest, DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE,
-    ManifestError, device_type,
+    IRQ_ACTIVE_LOW, IRQ_LEVEL, ManifestError, device_type,
 };
 use super::mcfg::{McfgError, build_mcfg};
 use super::rsdp::{RsdpError, build_rsdp, build_xsdt};
@@ -136,7 +136,7 @@ pub const fn manifest_hash(devices: &[DeviceEntry]) -> Result<[u8; 32], Manifest
     Ok(sha256(sub(&buf, 0, len)))
 }
 
-/// The board manifest of the tables (types 1..=7) and the validated PM entry (type 9).
+/// The bridge and base device manifest (types 1..=8) and the validated PM entry (type 9).
 const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPmEntry), BlobError> {
     let filler = DeviceEntry {
         device_type: 0,
@@ -151,28 +151,34 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     let mut base_entries = [filler; 7];
     let mut count = 0;
     let mut pm: Option<AcpiPmEntry> = None;
+    let mut nvme = None;
     let mut i = 0;
     while i < devices.len() {
         let entry = devices[i];
         i += 1;
         if entry.device_type == device_type::ACPI_PM {
             pm = Some(tri!(AcpiPmEntry::from_entry(&entry), BlobError::Manifest));
+        } else if entry.device_type == device_type::NVME {
+            nvme = Some(entry);
         } else if entry.device_type >= 1 && entry.device_type <= 7 && count < 7 {
             base_entries[count] = entry;
             count += 1;
         }
     }
-    let manifest = tri!(
+    let mut manifest = tri!(
         BoardManifest::from_entries(base_entries),
         BlobError::Manifest
     );
+    if let Some(entry) = nvme {
+        manifest = tri!(manifest.with_nvme(&entry), BlobError::Manifest);
+    }
     match pm {
         Some(pm) => Ok((manifest, pm)),
         None => Err(BlobError::MissingAcpiPm),
     }
 }
 
-/// Validates and detects the optional v1.3 RTC entry before table construction.
+/// Validates and detects the optional v1.4 RTC entry before table construction.
 const fn rtc_present(devices: &[DeviceEntry]) -> Result<bool, BlobError> {
     let mut present = false;
     let mut i = 0;
@@ -445,16 +451,37 @@ pub const STAGE4_DEVICES: [DeviceEntry; 8] = [
     },
 ];
 
+/// The direct Linux board with a single PCI NVMe endpoint (handoff v1.3).
+pub const LINUX_NVME_DEVICES: [DeviceEntry; 9] = [
+    STAGE4_DEVICES[0],
+    STAGE4_DEVICES[1],
+    STAGE4_DEVICES[2],
+    STAGE4_DEVICES[3],
+    STAGE4_DEVICES[4],
+    STAGE4_DEVICES[5],
+    STAGE4_DEVICES[6],
+    DeviceEntry {
+        gsi: 16,
+        irq_flags: IRQ_LEVEL | IRQ_ACTIVE_LOW,
+        param0: 4,
+        ..mmio(device_type::NVME, 0xFC00_4000, 0x2000)
+    },
+    STAGE4_DEVICES[7],
+];
+
 /// Upper bound of the stage-4 blob; the scratch buffer of the const evaluation.
 pub const STAGE4_BLOB_CAPACITY: usize = 2048;
 
-const STAGE4_BUILT: ([u8; STAGE4_BLOB_CAPACITY], usize) = {
+const fn build_static(devices: &[DeviceEntry]) -> ([u8; STAGE4_BLOB_CAPACITY], usize) {
     let mut out = [0u8; STAGE4_BLOB_CAPACITY];
-    match build_blob(&STAGE4_DEVICES, &mut out) {
+    match build_blob(devices, &mut out) {
         Ok(len) => (out, len),
         Err(_) => panic!("build_blob failed in a const context"),
     }
-};
+}
+
+const STAGE4_BUILT: ([u8; STAGE4_BLOB_CAPACITY], usize) = build_static(&STAGE4_DEVICES);
+const LINUX_NVME_BUILT: ([u8; STAGE4_BLOB_CAPACITY], usize) = build_static(&LINUX_NVME_DEVICES);
 
 /// Length of the stage-4 blob.
 pub const STAGE4_BLOB_LEN: usize = STAGE4_BUILT.1;
@@ -462,11 +489,21 @@ pub const STAGE4_BLOB_LEN: usize = STAGE4_BUILT.1;
 /// The stage-4 blob as an exact-size array, for the static of the freestanding binary.
 /// `N` must be [`STAGE4_BLOB_LEN`] (a compile-time error otherwise).
 pub const fn stage4_blob_bytes<const N: usize>() -> [u8; N] {
-    assert!(N == STAGE4_BUILT.1, "N must be STAGE4_BLOB_LEN");
+    exact_blob_bytes(&STAGE4_BUILT)
+}
+
+pub const LINUX_NVME_BLOB_LEN: usize = LINUX_NVME_BUILT.1;
+
+pub const fn linux_nvme_blob_bytes<const N: usize>() -> [u8; N] {
+    exact_blob_bytes(&LINUX_NVME_BUILT)
+}
+
+const fn exact_blob_bytes<const N: usize>(built: &([u8; STAGE4_BLOB_CAPACITY], usize)) -> [u8; N] {
+    assert!(N == built.1, "N must equal the selected ACPI blob length");
     let mut out = [0u8; N];
     let mut i = 0;
     while i < N {
-        out[i] = STAGE4_BUILT.0[i];
+        out[i] = built.0[i];
         i += 1;
     }
     out

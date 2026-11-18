@@ -71,23 +71,23 @@ fn the_fixture_layout_is_the_documented_one() {
         0xE_0040,
         "DSDT first, right after the RSDP slot"
     );
-    assert_eq!(at(b"APIC"), 0xE_0140);
-    assert_eq!(at(b"FACP"), 0xE_01A0);
-    assert_eq!(at(b"MCFG"), 0xE_02C0);
-    assert_eq!(at(b"XSDT"), 0xE_0300);
+    assert_eq!(at(b"APIC"), 0xE_0160);
+    assert_eq!(at(b"FACP"), 0xE_01C0);
+    assert_eq!(at(b"MCFG"), 0xE_02E0);
+    assert_eq!(at(b"XSDT"), 0xE_0320);
     assert_eq!(info.payload_offset, 0xB0);
-    assert_eq!(info.payload_len, 0x340);
-    assert_eq!(info.load_range(), (0xE_0000, 0xE_0340));
-    assert_eq!(info.facs_offset, 0x3F0);
-    assert_eq!(FIXTURE.len(), 0x430);
+    assert_eq!(info.payload_len, 0x360);
+    assert_eq!(info.load_range(), (0xE_0000, 0xE_0360));
+    assert_eq!(info.facs_offset, 0x410);
+    assert_eq!(FIXTURE.len(), 0x450);
     // RSDP -> XSDT, XSDT -> FADT, MADT, MCFG, FADT -> DSDT and FACS.
     let payload = info.payload(FIXTURE);
     assert_eq!(le64(payload, 24), at(b"XSDT"));
-    let xsdt = &payload[0x300..0x33C];
+    let xsdt = &payload[0x320..0x35C];
     assert_eq!(le64(xsdt, 36), at(b"FACP"));
     assert_eq!(le64(xsdt, 44), at(b"APIC"));
     assert_eq!(le64(xsdt, 52), at(b"MCFG"));
-    let fadt = &payload[0x1A0..0x1A0 + 276];
+    let fadt = &payload[0x1C0..0x1C0 + 276];
     assert_eq!(le64(fadt, 140), at(b"DSDT"));
     assert_eq!(le64(fadt, 132), 0xE_F000);
 }

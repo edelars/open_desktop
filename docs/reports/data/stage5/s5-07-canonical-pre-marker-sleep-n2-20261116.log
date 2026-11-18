@@ -1,0 +1,102 @@
+# S5-07 canonical initramfs marker-order N=2
+
+Date: 2026-11-16
+
+## Purpose
+
+Run the current strict automatic N=2 `stage4-init-nonce` series using the
+canonical Stage 4 initramfs after moving its existing checked 1 ms sleep before
+the nonce write. This uses the original 3,000,000,000-retirement profile and
+the opt-in schema-v5 execution-observation sidecars. The marker parser,
+comparator, and acceptance rules are unchanged.
+
+## Provenance and command
+
+`od-runner` was rebuilt from commit `b6d5e78` with
+`cargo build -p od-runner --release --offline`; binary SHA-256:
+`d0e3be4b345cb1ce4b2b5e72c721630ab098641b29e77816b13fdd2e13c4251f`.
+The build succeeded with the existing `page_walk.rs:1219` dead-code warning.
+
+```sh
+target/release/od-runner linux-direct \
+  --test-runs 2 \
+  --series-id stage5-s5-07-canonical-pre-marker-sleep-n2-20261116-a \
+  --scenario-id stage4-init-nonce \
+  --expected-stop-kind budget_exhausted \
+  --out work/stage5/stage5-s5-07-canonical-pre-marker-sleep-n2-20261116-a/series.json \
+  --vmlinuz /Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --execution-observations
+```
+
+The profile did not use `--linux-norandmaps`. Each input hash was identical
+between runs:
+
+| Input | SHA-256 |
+|---|---|
+| Linux 7.0.0-38-generic kernel | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Canonical initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| CPU0 ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+The canonical fixture `init.S` SHA-256 is
+`1b40a651a80acd8f203f2d3a21c76d06fc7000f8084428b72d5735998b7784c7`.
+
+## Results
+
+| Run | Scenario | Marker | Retired / stop | Delivered #PF | CPL0 RDTSC total | UART bytes / SHA-256 |
+|---|---|---|---|---:|---:|---|
+| 0001 | passed | exact and valid | 2,999,999,998 / `budget_exhausted` | 34 | 34,401,050 | 24,086 / `258712baddb16fbbba892e77a2c9aae7cf2422aa6126f6f1f1c8bed0f8c4519b` |
+| 0002 | passed | exact and valid | 2,999,999,998 / `budget_exhausted` | 34 | 34,424,800 | 24,002 / `3ebe789ac812bf48a47e92c7ed05835cb03fbfe4a978907c84017bfe270d1dbd` |
+
+Both UARTs contain separate lines in the expected order:
+
+```text
+[    2.271132] Run /init as init process
+OD_NONCE=OD518e878f3f96ffdf800012fdc00000000
+
+[    2.271102] Run /init as init process
+OD_NONCE=OD518e87a00efc97e3800012fdc00000001
+```
+
+The automatic series reports `outcome=passed` for both guest scenarios, but
+the command exits 1 because strict comparison returns `matches=false`. Its
+unexplained fields remain `run[1].machine_observations` and
+`run[1].ordered_uart_bytes` after the existing nonce normalization.
+
+Each schema-v5 sidecar retained all 34 #PF records, 22 CPL0 RDTSC sites, and
+reported zero omitted faults, site overflow, and unattributed RDTSC reads. The
+first 30 #PF signatures match; event 30 has the same RIP
+`0xffffffff8271a9c1` and error code `0x2` but different CR2 stack addresses
+(`0x7ffd28785499` and `0x7ffc0f3286a9`); the remaining three signatures match.
+RDTSC differs by 23,750 reads across eight sites. The largest delta is 23,649
+reads at RIP `0xffffffff8271b34d`, previously resolved against the matching
+kernel debug ELF as `delay_tsc+0x4d` ([prior symbol mapping](s5-07-current-acpi-sidecars-n2-20261116.log)).
+These are observations, not an explanation or a classification as benign. UART
+lengths and hashes also differ; the first ordered differences occur among
+kernel boot messages around 0.35–0.38 seconds. Sidecar overhead was not
+isolated, so no performance comparison is claimed.
+
+The canonical fixture reproduces the two clean nonce lines at the original
+budget, eliminating the previous marker-validation failure in this pair. The
+strict machine and UART variation remains, so S5-07 is still blocked/unaccepted.
+
+## Raw evidence hashes
+
+Raw series, comparison, run manifests, runner JSON, UART captures, and sidecars
+are retained under
+`work/stage5/stage5-s5-07-canonical-pre-marker-sleep-n2-20261116-a/`.
+
+- `series.json`: `9e275de56ba879098117496d0cceb0f829e0dc4a4c474ec0c4f821195a2cb599`.
+- `comparison.json`: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`.
+- Run 0001 manifest: `134c0edeec742a6dfe31176fa53b8bf791e9397058311872dd2a0c6ad71a32b5`.
+- Run 0002 manifest: `07d32fa68b9244e815398e3ddd9a881518cf82f1bdbf5881a6e5a6094cb2ca03`.
+- Run 0001 runner JSON: `1f4c99affd4d23ca973cc0df42004805251bf43a6ea83bc66a28c4216fca9a8b`.
+- Run 0002 runner JSON: `b0c4228a801e5209f7cf5e939b4ed515dbc5a2b3460ffacba617bf9d3e7151f6`.
+- Run 0001 sidecar: `eb880af2bb073594212b488b24215a84f6d8e9491f5a6ae9a374cc73fa69a4d0`.
+- Run 0002 sidecar: `893a70fead7ab90381703f4826220ce8518ce9c4d107614ac4ad7ed2cca3620f`.

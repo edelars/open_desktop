@@ -35,7 +35,7 @@ use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
 use crate::firmware_board::{FIRMWARE_CR0, FIRMWARE_CR4, assemble_board};
 use crate::litmus::{LitmusCase, LitmusError};
 use crate::litmus_interleaving::{Case, Field, Outcome};
-use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
+use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads_with};
 use crate::smp_scheduler::Executed;
 use crate::{
     FirmwareBoardConfig, FirmwareBoardError, GuestPhysicalAddress, LoadedFirmwareBoard, PciEcam,
@@ -53,9 +53,9 @@ use std::time::{Duration, Instant};
 
 const SEQ: Ordering = Ordering::SeqCst;
 /// The table set (PML4, PDPT, PD): the first 2 MiB identity-mapped by one 2 MiB page.
-const TABLES: u64 = 0x1_0000;
+pub(crate) const TABLES: u64 = 0x1_0000;
 const GDT_AT: u64 = 0x1_4000;
-const EFER: u64 = 0xD01;
+pub(crate) const EFER: u64 = 0xD01;
 /// The most vCPUs of this harness.
 pub const LITMUS_PARALLEL_MAX_VCPUS: usize = 4;
 /// How long a thread waits at a barrier for the others before the run is given up.
@@ -120,8 +120,52 @@ pub struct LitmusParallelReport {
     /// inside the first poll of the stop test (the threads then ran one after another).
     pub late_barrier_rounds: u64,
     pub retired: Vec<u64>,
+    /// S6-41e: instructions of all rounds executed by the step hook and by the interpreter (the
+    /// hook's are 0 in a run without one).
+    pub hooked_retired: u64,
+    pub interpreted_retired: u64,
     pub elapsed_ns: u128,
     pub verdict: LitmusParallelVerdict,
+}
+
+/// S6-41e: one instruction offered to a [`LitmusStepHook`] (the JIT of `od-host`): the vCPU's
+/// state, the machine by shared reference and the translation context the board's interpreter
+/// uses for this litmus (`cr3` of the identity table set, `efer`).
+pub struct LitmusStep<'a> {
+    /// The vCPU that runs the step.
+    pub cpu: usize,
+    /// The litmus thread the vCPU runs this round.
+    pub thread: usize,
+    /// Index of the instruction in the thread (the program of [`LitmusCase::program`]).
+    pub index: usize,
+    /// At most this many instructions may be executed (at least 1; never beyond the thread's end).
+    pub budget: u64,
+    pub state: &'a mut LongModeState,
+    pub bus: &'a crate::MachineBus,
+    pub cr3: u64,
+    pub efer: u64,
+}
+
+/// What a [`LitmusStepHook`] did with a step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LitmusStepOutcome {
+    /// The hook executed `retired` (at least 1, at most `budget`) instructions from the step's RIP.
+    Executed { retired: u64 },
+    /// The hook does not take this instruction: the interpreter executes it.
+    Declined,
+}
+
+/// S6-41e: the point where a host-side executor (the JIT of `od-host`, which `od-machine` does not
+/// depend on) takes instructions of a litmus run before the interpreter. The run, the barriers, the
+/// placements, the histogram and the reference sets are those of S6-36/S6-19 unchanged; only the
+/// execution of an instruction the hook accepts differs. `Sync`: in the parallel mode every vCPU
+/// thread calls it (state of one vCPU lives on its thread).
+pub trait LitmusStepHook: Sync {
+    /// Offered an instruction on the vCPU's own thread. `Err` ends the run as a guest failure.
+    fn step(&self, step: LitmusStep<'_>) -> Result<LitmusStepOutcome, String>;
+    /// Called on the vCPU's own thread after its last step (the owner of per-thread state releases
+    /// it here); in the interleaved run, once on the calling thread for every vCPU.
+    fn thread_exit(&self, cpu: usize);
 }
 
 /// All the injective maps of `threads` litmus threads on `vcpus` vCPUs, as `vcpu -> Some(thread)`.
@@ -257,6 +301,11 @@ struct Driver<'c> {
     abort: AtomicBool,
     late_barrier_rounds: AtomicU64,
     failure: Mutex<Option<String>>,
+    /// S6-41e: the step hook (the JIT of `od-host`), `None` for the interpreter-only run of S6-36.
+    hook: Option<&'c dyn LitmusStepHook>,
+    /// Instructions the hook executed and instructions the interpreter executed, all rounds.
+    hooked_retired: AtomicU64,
+    interpreted_retired: AtomicU64,
 }
 
 impl Driver<'_> {
@@ -337,6 +386,59 @@ impl Driver<'_> {
                     stop()
                 };
                 while retired < total {
+                    if let Some(hook) = self.hook {
+                        // S6-41e: the hook runs an instruction without the interpreter's stop
+                        // test, so the start barrier and the stop poll are taken here, before the
+                        // hook as before the interpreter.
+                        if poll() {
+                            break;
+                        }
+                        let step_budget = budget.max(1).min(total - retired);
+                        let step = LitmusStep {
+                            cpu,
+                            thread,
+                            index: retired as usize,
+                            budget: step_budget,
+                            state: &mut vcpu.state,
+                            bus: env.bus,
+                            cr3: TABLES,
+                            efer: EFER,
+                        };
+                        match hook.step(step) {
+                            Ok(LitmusStepOutcome::Executed { retired: done })
+                                if done > step_budget =>
+                            {
+                                self.fail(format!(
+                                    "cpu{cpu} thread {thread} round {round}: hook retired {done} \
+                                     over a budget of {step_budget}"
+                                ));
+                                return Err(FirmwareBoardError::Config(
+                                    "litmus parallel: the step hook exceeded its budget",
+                                ));
+                            }
+                            Ok(LitmusStepOutcome::Executed { retired: done }) if done > 0 => {
+                                retired += done;
+                                self.hooked_retired.fetch_add(done, SEQ);
+                                continue;
+                            }
+                            Ok(_) => {}
+                            Err(detail) => {
+                                self.fail(format!(
+                                    "cpu{cpu} thread {thread} round {round}: hook: {detail}"
+                                ));
+                                return Err(FirmwareBoardError::Config(
+                                    "litmus parallel: the step hook failed",
+                                ));
+                            }
+                        }
+                    }
+                    // With a hook the interpreter takes ONE instruction (the next one may be the
+                    // hook's); without it, what is left of the thread.
+                    let interpreter_budget = if self.hook.is_some() {
+                        1
+                    } else {
+                        budget.max(1).min(total - retired)
+                    };
                     let executed = run_vcpu_set_quantum_shared(
                         env,
                         vcpu,
@@ -344,7 +446,7 @@ impl Driver<'_> {
                         lapic,
                         &mut *source,
                         Some(gate),
-                        budget.max(1).min(total - retired),
+                        interpreter_budget,
                         &mut poll,
                         &set,
                     );
@@ -356,6 +458,7 @@ impl Driver<'_> {
                         }
                     };
                     retired += executed.retired;
+                    self.interpreted_retired.fetch_add(executed.retired, SEQ);
                     if executed.retired == 0 {
                         break;
                     }
@@ -472,7 +575,7 @@ impl Driver<'_> {
     }
 }
 
-fn long_state(rip: u64) -> LongModeState {
+pub(crate) fn long_state(rip: u64) -> LongModeState {
     LongModeState {
         rip,
         rflags: 0x2,
@@ -505,7 +608,15 @@ fn long_state(rip: u64) -> LongModeState {
 
 /// A board of `vcpus` vCPUs with the litmus case loaded: the code of every litmus thread at its
 /// region, the cells at their initial values, one identity table set, every vCPU in long mode.
-fn build_board(case: &Case, vcpus: usize) -> Result<LoadedFirmwareBoard, String> {
+///
+/// `pages_4k` (S6-41e): the first 2 MiB are mapped by 512 identity 4 KiB pages (a page table at
+/// `TABLES + 0x3000`) instead of one 2 MiB page, because the JIT's fetch window and helper walk
+/// 4 KiB pages (`UnsupportedPageSize` for a 2 MiB leaf); S6-36 keeps the 2 MiB page.
+pub(crate) fn build_board(
+    case: &Case,
+    vcpus: usize,
+    pages_4k: bool,
+) -> Result<LoadedFirmwareBoard, String> {
     let config = FirmwareBoardConfig {
         vcpu_count: vcpus,
         ..FirmwareBoardConfig::default()
@@ -526,7 +637,18 @@ fn build_board(case: &Case, vcpus: usize) -> Result<LoadedFirmwareBoard, String>
     let entry = |value: u64| value.to_le_bytes();
     patch(TABLES, &entry((TABLES + 0x1000) | 3))?;
     patch(TABLES + 0x1000, &entry((TABLES + 0x2000) | 3))?;
-    patch(TABLES + 0x2000, &entry(0x83))?;
+    if pages_4k {
+        patch(TABLES + 0x2000, &entry((TABLES + 0x3000) | 3))?;
+        let mut table = vec![0u8; 0x1000];
+        for page in 0..512u64 {
+            // Present, writable, accessed, dirty: the walks set no bit in a table.
+            let leaf = (page << 12) | 0x63;
+            table[page as usize * 8..page as usize * 8 + 8].copy_from_slice(&leaf.to_le_bytes());
+        }
+        patch(TABLES + 0x3000, &table)?;
+    } else {
+        patch(TABLES + 0x2000, &entry(0x83))?;
+    }
     let mut gdt = [0u8; 24];
     gdt[8..16].copy_from_slice(&0x00AF_9B00_0000_FFFFu64.to_le_bytes());
     gdt[16..24].copy_from_slice(&0x00CF_9300_0000_FFFFu64.to_le_bytes());
@@ -560,6 +682,26 @@ pub fn run_litmus_parallel(
     vcpus: usize,
     rounds: u64,
 ) -> Result<LitmusParallelReport, LitmusError> {
+    run_litmus_parallel_with(case, vcpus, rounds, None)
+}
+
+/// S6-41e: [`run_litmus_parallel`] with a [`LitmusStepHook`] that takes instructions before the
+/// interpreter (the JIT of `od-host`). Everything else is the run of S6-36.
+pub fn run_litmus_parallel_hooked(
+    case: &LitmusCase,
+    vcpus: usize,
+    rounds: u64,
+    hook: &dyn LitmusStepHook,
+) -> Result<LitmusParallelReport, LitmusError> {
+    run_litmus_parallel_with(case, vcpus, rounds, Some(hook))
+}
+
+fn run_litmus_parallel_with(
+    case: &LitmusCase,
+    vcpus: usize,
+    rounds: u64,
+    hook: Option<&dyn LitmusStepHook>,
+) -> Result<LitmusParallelReport, LitmusError> {
     let case = case.case();
     let threads = case.threads.len();
     if !(2..=LITMUS_PARALLEL_MAX_VCPUS).contains(&vcpus) {
@@ -578,7 +720,7 @@ pub fn run_litmus_parallel(
             "the number of rounds is at least 1".into(),
         ));
     }
-    let mut board = build_board(case, vcpus).map_err(LitmusError::Load)?;
+    let mut board = build_board(case, vcpus, hook.is_some()).map_err(LitmusError::Load)?;
     let driver = Driver {
         case,
         rounds,
@@ -593,6 +735,9 @@ pub fn run_litmus_parallel(
         abort: AtomicBool::new(false),
         late_barrier_rounds: AtomicU64::new(0),
         failure: Mutex::new(None),
+        hook,
+        hooked_retired: AtomicU64::new(0),
+        interpreted_retired: AtomicU64::new(0),
     };
     let quantum = |call: QuantumCall<'_, '_>| driver.round(call);
     // The spread fills the test-only fields of the struct.
@@ -605,11 +750,24 @@ pub fn run_litmus_parallel(
         ..ParallelConfig::default()
     };
     let started = Instant::now();
-    let (report, finished) = run_threads(&mut board, config, &quantum, |control| {
-        control.wait_until(Duration::from_secs(24 * 3600), || {
-            driver.done.load(SEQ) || driver.abort.load(SEQ)
-        })
-    })
+    // The hook's per-thread state is released on the vCPU's own thread, after its last quantum.
+    let exit = |cpu: usize| {
+        if let Some(hook) = hook {
+            hook.thread_exit(cpu);
+        }
+    };
+    let (report, finished) = run_threads_with(
+        &mut board,
+        config,
+        false,
+        &quantum,
+        Some(&exit),
+        |control| {
+            control.wait_until(Duration::from_secs(24 * 3600), || {
+                driver.done.load(SEQ) || driver.abort.load(SEQ)
+            })
+        },
+    )
     .map_err(|error| LitmusError::Load(format!("parallel run: {error:?}")))?;
     let elapsed_ns = started.elapsed().as_nanos();
     if let Some(detail) = driver
@@ -694,6 +852,8 @@ pub fn run_litmus_parallel(
         not_observed,
         late_barrier_rounds: driver.late_barrier_rounds.load(SEQ),
         retired: report.cpus.iter().map(|cpu| cpu.retired).collect(),
+        hooked_retired: driver.hooked_retired.load(SEQ),
+        interpreted_retired: driver.interpreted_retired.load(SEQ),
         elapsed_ns,
         verdict,
     })

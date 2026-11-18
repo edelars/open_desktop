@@ -1,0 +1,375 @@
+{
+  "elapsed_s": 80.463656792,
+  "failures": [],
+  "modes": "parallel",
+  "not_via_jit": [],
+  "process": "",
+  "rounds_per_test": 1000000,
+  "runs": [
+    {
+      "classification": [
+        {
+          "asm": "mov dword ptr [0x00001000], 1",
+          "bytes": "c704250010000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 0,
+          "via": "jit"
+        },
+        {
+          "asm": "mov eax, dword ptr [0x00001004]",
+          "bytes": "8b042504100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "mov dword ptr [0x00001004], 1",
+          "bytes": "c704250410000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 1,
+          "via": "jit"
+        },
+        {
+          "asm": "mov ebx, dword ptr [0x00001000]",
+          "bytes": "8b1c2500100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        }
+      ],
+      "elapsed_s": 8.211122625,
+      "forbidden": [],
+      "histogram": [
+        {
+          "first_placement": [
+            0,
+            1
+          ],
+          "first_round": 2,
+          "in_x86_tso": true,
+          "rounds": 113900,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "first_placement": [
+            0,
+            1
+          ],
+          "first_round": 8,
+          "in_x86_tso": true,
+          "rounds": 114404,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "first_placement": [
+            0,
+            1
+          ],
+          "first_round": 0,
+          "in_x86_tso": true,
+          "rounds": 771696,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "hooked_retired": 2000000,
+      "id": "SB-MFENCE",
+      "interpreted_retired": 4000000,
+      "jit": {
+        "blocks_admitted": 0,
+        "blocks_reused": 0,
+        "counted": true,
+        "fallback_of_jit_forms": 0,
+        "helper_calls": 0,
+        "helper_declined": 0,
+        "jit_calls": 2000000,
+        "jit_expected": 2000000,
+        "jit_forms_per_round": 2,
+        "jit_retired": 2000000,
+        "ordinary_declined": 4000000,
+        "rounds_or_runs": 1000000
+      },
+      "late_barrier_rounds": 0,
+      "mode": "parallel",
+      "not_observed": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "placements": 2,
+      "rounds": 1000000,
+      "rounds_per_s": 121786.02679192116,
+      "threads": 2,
+      "vcpus": 2,
+      "verdict": "allowed_only",
+      "x86_tso": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ]
+    },
+    {
+      "classification": [
+        {
+          "asm": "mov dword ptr [0x00001000], 1",
+          "bytes": "c704250010000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 0,
+          "via": "jit"
+        },
+        {
+          "asm": "mov eax, dword ptr [0x00001004]",
+          "bytes": "8b042504100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "mov dword ptr [0x00001004], 1",
+          "bytes": "c704250410000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 1,
+          "via": "jit"
+        },
+        {
+          "asm": "mov ebx, dword ptr [0x00001000]",
+          "bytes": "8b1c2500100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        }
+      ],
+      "elapsed_s": 72.252095125,
+      "forbidden": [],
+      "histogram": [
+        {
+          "first_placement": [
+            0,
+            2
+          ],
+          "first_round": 1,
+          "in_x86_tso": true,
+          "rounds": 209305,
+          "values": [
+            0,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "first_placement": [
+            3,
+            1
+          ],
+          "first_round": 10,
+          "in_x86_tso": true,
+          "rounds": 160130,
+          "values": [
+            1,
+            0,
+            1,
+            1
+          ]
+        },
+        {
+          "first_placement": [
+            0,
+            1
+          ],
+          "first_round": 0,
+          "in_x86_tso": true,
+          "rounds": 630565,
+          "values": [
+            1,
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "hooked_retired": 2000000,
+      "id": "SB-MFENCE",
+      "interpreted_retired": 4000000,
+      "jit": {
+        "blocks_admitted": 0,
+        "blocks_reused": 0,
+        "counted": true,
+        "fallback_of_jit_forms": 0,
+        "helper_calls": 0,
+        "helper_declined": 0,
+        "jit_calls": 2000000,
+        "jit_expected": 2000000,
+        "jit_forms_per_round": 2,
+        "jit_retired": 2000000,
+        "ordinary_declined": 4000000,
+        "rounds_or_runs": 1000000
+      },
+      "late_barrier_rounds": 0,
+      "mode": "parallel",
+      "not_observed": [],
+      "observe": [
+        "cpu0.eax",
+        "cpu1.ebx",
+        "mem.x",
+        "mem.y"
+      ],
+      "placements": 12,
+      "rounds": 1000000,
+      "rounds_per_s": 13840.429101328431,
+      "threads": 2,
+      "vcpus": 4,
+      "verdict": "allowed_only",
+      "x86_tso": [
+        [
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          0,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ]
+    }
+  ],
+  "schema": "stage6-s6-41e-litmus-jit/1",
+  "vcpus": "all",
+  "via_jit": [
+    {
+      "classification": [
+        {
+          "asm": "mov dword ptr [0x00001000], 1",
+          "bytes": "c704250010000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 0,
+          "via": "jit"
+        },
+        {
+          "asm": "mov eax, dword ptr [0x00001004]",
+          "bytes": "8b042504100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 0,
+          "via": "interpreter"
+        },
+        {
+          "asm": "mov dword ptr [0x00001004], 1",
+          "bytes": "c704250410000001000000",
+          "index": 0,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        },
+        {
+          "asm": "MFENCE",
+          "bytes": "0faef0",
+          "index": 1,
+          "reason": null,
+          "thread": 1,
+          "via": "jit"
+        },
+        {
+          "asm": "mov ebx, dword ptr [0x00001000]",
+          "bytes": "8b1c2500100000",
+          "index": 2,
+          "reason": "not an atomic form: an ordinary load, store or read-modify-write; the block profile of S6-41d admits only LOCK forms, XCHG and fences, and the forms of execute_forms (S4-15) are RBX/RIP-relative, not the absolute [disp32] of the corpus",
+          "thread": 1,
+          "via": "interpreter"
+        }
+      ],
+      "id": "SB-MFENCE",
+      "label": "SB-MFENCE (2 threads)",
+      "threads": 2
+    }
+  ]
+}

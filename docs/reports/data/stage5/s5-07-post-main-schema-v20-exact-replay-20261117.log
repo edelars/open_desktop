@@ -1,0 +1,25 @@
+# S5-07 post-main schema-v20 exact replay verification
+
+Date: 2026-11-17
+Candidate revision: `b73d534` (`merge: integrate main RAM and MMU updates`), including local `main` at `98ac1e1`. The candidate is on top of fetched `origin/main` at `e307966`; `codex` is not behind `origin/main`.
+
+Purpose: verify after the RAM/MMU integration that the two existing canonical Stage 4A inputs still produce their own source stop object, UART bytes, and schema-v20 diagnostic sidecar. This verifies replay integrity only; it does not accept the source pair.
+
+The post-main release runner is `/private/tmp/s5-main-integration-target/release/od-runner`, 13,072,112 bytes, SHA-256 `6257a554072e7761ce87afd16d8a5654c1b253227f30b2432745ea2996a10083`. It used the same pinned inputs and invocation profile as the schema-v18 source pair: 128 MiB RAM, `--run --budget 3000000000 --set-cpl0 --cpuid-profile stage4a --user-mode --execution-observations-elf-stack-copy`, exact source nonce, and expected kernel/initramfs/ACPI hashes.
+
+| Input | SHA-256 |
+|---|---|
+| Kernel `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Initramfs `work/stage4/s5-07-canonical-initramfs-rebuild/initramfs.cpio` | `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588` |
+| ACPI blob `work/stage5/staging/s5-07-canonical-acpi-20261117.bin` | `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf` |
+
+The post-main run artifacts are in the ignored directory `work/stage5/s5-07-main98ac1e1-schema-v20-exact-replay-20261117-a/run-{0001,0002}/`. Each complete `stop` object equals its corresponding schema-v18 source stop. Reconstructed `stop.com1_hex`, saved `uart.bin`, and the corresponding source `uart.bin` are byte-identical. Both stop at 2,999,999,998 retired instructions with `budget_exhausted`.
+
+| Run | Nonce | UART bytes / SHA-256 | Runner JSON SHA-256 | Schema-v20 sidecar SHA-256 | #PF / omitted |
+|---|---|---|---|---|---:|
+| 0001 | `OD518e8be9ac44221a00000fb3400000000` | 24,220 / `1bc1d93bc3166bec2f29a1715d1e8a5b3933ce93bc53136e0fa701ad725a9284` | `37eb6c09708bed882ef340198de16bd3d331cd786dc7179dbab0094c904ef6a3` | `33b6d198d652c00d829772087c3d4a8b60e110d62eb392c98367d738422665cb` | 33 / 0 |
+| 0002 | `OD518e8bfb13a39d1980000fb3400000001` | 23,880 / `53fe7af2da27845e71c3707c9916c258b480ffb39bbc273c88127731fa656ae4` | `e71992f8ce3bc8748fe2d881afc7c5ab87d45f0cf3b7cb0814a25fa68bdec833` | `86e22ad7e08d331dc0e08959cb574493b9a7fe36c3c88bf31657cd8411649ed0` | 34 / 0 |
+
+For both runs, the complete schema-v20 sidecar JSON equals the pre-merge schema-v20 replay sidecar at `work/stage5/s5-07-schema-v20-mmuwalk-exact-replay-20261117-a/run-{0001,0002}/`. Each MMU-gather record has one captured setup, `setups_omitted=0`, and `unpaired_omitted=0`; its `unpaired` list contains one separately observed `actual_post` event, so aggregate status remains `incomplete`. This preserves the prior evidence, including its explicit limitation.
+
+The strict source-pair comparator remains `matches: false`; the differing guest stop/UART evidence is not normalized or allowlisted. S5-07 remains blocked/unaccepted. This replay confirms post-main per-input parity and diagnostic-sidecar integrity only; it does not prove causality or satisfy the acceptance gate.

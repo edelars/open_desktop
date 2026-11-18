@@ -19,6 +19,7 @@ mod fetch_translation_cache;
 mod firmware_board;
 #[cfg(test)]
 mod host_order_litmus;
+mod host_parallel;
 mod identity_memory_adapter;
 mod idle_arbiter;
 #[cfg(test)]
@@ -34,6 +35,7 @@ mod linux_direct;
 mod linux_load;
 mod linux_placement;
 mod litmus;
+mod litmus_interleaved_hooked;
 mod litmus_interleaving;
 mod litmus_parallel;
 mod local_apic;
@@ -194,9 +196,14 @@ pub use linux_direct::{
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
     LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
-    load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
+    load_linux_direct_board, load_linux_direct_board_with_nvme, run_linux_direct_board,
+    run_linux_direct_board_set, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
+    run_linux_direct_board_set_user_mode_with_elf_stack_copy,
     run_linux_direct_board_set_user_mode_with_execution_observations,
+    run_linux_direct_board_set_user_mode_with_execution_observations_options,
+    run_linux_direct_board_set_user_mode_with_execution_observations_sampling_options,
     run_linux_direct_board_set_user_mode_with_post_iret_index,
 };
 
@@ -204,10 +211,39 @@ pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEve
 
 pub use ap_legacy_exec::ApLegacyRefusal;
 pub use execution_observations::{
-    DeliveredPageFaultObservation, FaultingPageFaultContext, FaultingPageWalkContext,
-    LINUX_PAGE_FAULT_EVENT_CAPACITY, LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY,
+    DelayTscCallSummary, DelayTscCallSummaryCollection, DelayTscPollSequenceStatus,
+    DeliveredPageFaultObservation, ElfStackAlignmentCapture, ElfStackAlignmentPoint,
+    ElfStackCopyBoundaryMarker, ElfStackCopyCounterSnapshot, ElfStackCopyCr3Event,
+    ElfStackCopyCr3LedgerStatus, ElfStackCopyInvocation, ElfStackCopyInvocationStatus,
+    ElfStackCopyPageFaultEvent, ElfStackCopyPreCopyCr3Event, ElfStackCopyPreCopyCr3Ledger,
+    ElfStackCopyProbe, ElfStackCopyRdtscSiteCount, ElfStackCopySnapshot, ElfStackCopyStatus,
+    ElfStackCopyTargetCr3Capture, ElfStackCopyTargetCr3ChainStatus, ElfStackCopyTargetCr3Frame,
+    FaultingPageFaultContext, FaultingPageWalkContext, InstructionPathControlFlow,
+    InstructionPathRegisterValue, InstructionPathTrace, InstructionPathTraceHeader,
+    InstructionPathTraceRecord, InstructionPathTraceStatus, LINUX_DELAY_TSC_CALL_CAPACITY,
+    LINUX_DELAY_TSC_ENTRY_RIP, LINUX_DELAY_TSC_POLL_RIP, LINUX_ELF_STACK_ALIGN_AFTER_RIP,
+    LINUX_ELF_STACK_ALIGN_BEFORE_RIP, LINUX_ELF_STACK_COPY_BOUNDARIES,
+    LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY, LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY,
+    LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY, LINUX_ELF_STACK_COPY_PROBE_CAPACITY,
+    LINUX_ELF_STACK_COPY_PROFILE, LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY,
+    LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY, LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+    LINUX_ELF_STACK_COPY_RIP, LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL,
+    LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP, LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY,
+    LINUX_INSTRUCTION_PATH_TRACE_CAPACITY, LINUX_INSTRUCTION_PATH_TRACE_END_HIT,
+    LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+    LINUX_INSTRUCTION_PATH_TRACE_START_HITS, LINUX_PAGE_FAULT_EVENT_CAPACITY,
+    LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY, LINUX_RDTSC_CLOCK_TRACE_CAPACITY,
+    LINUX_RDTSC_PREFIX_CAPACITY, LINUX_RDTSC_PREFIX_SENTINEL_RIP, LINUX_RDTSC_SAMPLE_CAPACITY,
     LINUX_RDTSC_SITE_CAPACITY, LinuxExecutionObservations, PostIretPageWalkSnapshot,
-    RdtscSiteCount,
+    RdtscClockTraceSample, RdtscEntrySample, RdtscPrefixSample, RdtscPrefixStatus,
+    RdtscSampleWindow, RdtscSiteCount, RdtscSiteSample,
+};
+pub use execution_observations::{
+    ElfMmuGatherCapture, ElfMmuGatherClosure, ElfMmuGatherContext, ElfMmuGatherInvocation,
+    ElfMmuGatherPageWalk, ElfMmuGatherPhase, ElfMmuGatherRaw, ElfMmuGatherSetupData,
+    ElfMmuGatherUnpaired, LINUX_ELF_MMU_GATHER_SETUP_CAPACITY,
+    LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP, LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+    LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP, LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
 };
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
@@ -232,8 +268,14 @@ pub use page_walk::{
     ProbeReport, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport,
     TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_2m_ram,
     access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
+    validate_long64_read_only_walk_observation,
 };
 
+pub use host_parallel::{
+    HostParallelConfig, HostParallelControl, HostParallelFinish, HostParallelReport,
+    HostQuantumCall, HostQuantumExit, HostQuantumFn, HostQuantumResult, HostStopError,
+    HostStopProof, HostThreadExitFn, host_install_vcpu, host_parallel_board, run_host_threads,
+};
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
     PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,
@@ -252,20 +294,21 @@ pub use paged_exception_delivery::{
     step_paged_iretq_and_user_load, step_paged_iretq_to_cpl3, step_paged_syscall_profile,
 };
 pub use paged_memory_adapter::{
-    PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovCr0StepReport,
-    PagedMovCr3StepError, PagedMovCr3StepReport, PagedMovMemoryScope, PagedMovStepError,
-    PagedMovStepReport, PagedMovStoreScope, PagedStateOpStepReport, PagedStoreRefusal,
-    step_paged_hlt, step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram,
-    step_paged_mov_cr0_wp, step_paged_mov_cr3_wp, step_paged_mov_dword_read,
-    step_paged_mov_dword_store, step_paged_mov_word_read,
-    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_dword_memory,
-    with_paged_mov_memory, with_paged_mov_store_memory,
+    PagedAtomicOperand, PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport,
+    PagedMovCr0StepReport, PagedMovCr3StepError, PagedMovCr3StepReport, PagedMovMemoryAdapter,
+    PagedMovMemoryScope, PagedMovStepError, PagedMovStepReport, PagedMovStoreScope,
+    PagedStateOpStepReport, PagedStoreRefusal, locate_paged_atomic_operand, step_paged_hlt,
+    step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram, step_paged_mov_cr0_wp,
+    step_paged_mov_cr3_wp, step_paged_mov_dword_read, step_paged_mov_dword_store,
+    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, step_paged_sti,
+    with_paged_cpl0_set_memory, with_paged_mov_dword_memory, with_paged_mov_memory,
+    with_paged_mov_store_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
     run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_cr3_probe_2m_ram, run_paged_probe,
-    run_paged_probe_with_rdtsc, run_paged_stack_probe,
+    run_paged_probe_shared, run_paged_probe_with_rdtsc, run_paged_stack_probe,
 };
 pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
@@ -403,8 +446,8 @@ pub use stage4_uart_irq_probe::{
 };
 
 pub use litmus::{
-    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusOutcome,
-    LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
+    LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusInstruction,
+    LitmusOutcome, LitmusPolicy, LitmusReport, LitmusUnsupported, LitmusVerdict, LitmusWitness,
     litmus_seed_schedule, run_litmus,
 };
 /// S6-36: this build has the host memory order weakened (`weak-host-ordering`); never in a product
@@ -412,9 +455,13 @@ pub use litmus::{
 pub const BUILD_WEAK_HOST_ORDERING: bool = cfg!(feature = "weak-host-ordering");
 /// S6-36: this build has `LOCK` non-atomic (`nonatomic-lock-test`); never in a product build.
 pub const BUILD_NONATOMIC_LOCK_TEST: bool = cfg!(feature = "nonatomic-lock-test");
+pub use litmus_interleaved_hooked::{
+    LitmusInterleavedOutcome, LitmusInterleavedReport, LitmusInterleavedVerdict,
+    run_litmus_interleaved_hooked,
+};
 pub use litmus_parallel::{
     LITMUS_PARALLEL_MAX_VCPUS, LitmusParallelOutcome, LitmusParallelReport, LitmusParallelVerdict,
-    run_litmus_parallel,
+    LitmusStep, LitmusStepHook, LitmusStepOutcome, run_litmus_parallel, run_litmus_parallel_hooked,
 };
 
 pub use stage6_smp_probe::{
@@ -451,8 +498,9 @@ pub use pci_ecam::{
 };
 
 pub use physical_memory::{
-    ExecutionMode, GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
-    MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, PhysicalWidthError, RamLimits,
+    AtomicOperandWindow, ExecutionMode, GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap,
+    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, PhysicalWidthError,
+    RamLimits,
 };
 
 pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};

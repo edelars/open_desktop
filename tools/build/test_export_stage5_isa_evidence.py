@@ -46,11 +46,22 @@ def exact_form(prefix, modrm, address, count, binary, classification):
 
 
 class NormalizedFormTests(unittest.TestCase):
+    def test_profile_registry_matcher_bytes_are_exact_and_l9p_is_family_scoped(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        registry = json.loads((repo_root / "tools/build/stage5_isa_profile_forms.json").read_text())
+        exact_matchers, exclusion_matchers = analyzer.profile_matcher_maps(registry)
+        self.assertTrue(exact_matchers)
+        self.assertTrue(all(all(0 <= byte <= 0xFF for byte in key) for key in exact_matchers))
+        self.assertTrue(all(all(0 <= byte <= 0xFF for byte in key) for key in exclusion_matchers))
+        l9p = next(profile for profile in registry["profiles"] if profile["task"] == "S4-38L9p")
+        self.assertNotIn("accepted_bytes", l9p)
+        self.assertEqual(l9p["families"][0]["encoding"], "[REX] 87 /r dword memory; optional F0 LOCK")
+
     def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         cases = (
-            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2"),
-            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "3e0d006622e9f21af3c54048c145e6ed21d30bd29ae6225ae7c96e0eff6ba913"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "52e9c9672ccd4930540e7e4feb2147f4d1dabfa41a7d1fa03377a067129144f2"),
         )
         expected_binary_counts = {
             "S4-38L9b-PAUSE-exact-F3-90": {"gcc-cc1": 2, "gcc-collect2": 2, "gcc-driver": 2},
@@ -63,6 +74,9 @@ class NormalizedFormTests(unittest.TestCase):
             },
             "S4-38L7ay-LOCK-XADD-m32-r32-base-only": {
                 "gcc-cc1": 12, "gcc-collect2": 12, "gcc-driver": 12,
+            },
+            "S4-38L9p-XCHG-m32-r32-base-only": {
+                "gcc-cc1": 5, "gcc-collect2": 4, "gcc-driver": 4,
             },
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,8 +142,18 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("Long64", annotation["added_candidate"]["condition"])
                 self.assertEqual(annotation["latest_compact_sha256"], compact_sha)
                 self.assertEqual(annotation["compact_payload_repeat_sha256"], compact_sha)
+                l9p = "S4-38L9p-XCHG-m32-r32-base-only"
+                self.assertIn(l9p, annotation["candidate_ids_after_derivation"])
+                self.assertEqual(annotation["additional_candidates"][0]["candidate_id"], l9p)
+                self.assertEqual(annotation["additional_candidates"][0]["rows"], 13)
+                self.assertEqual(annotation["additional_candidates"][0]["exact_encoding_keys"], 3)
                 self.assertFalse(annotation["raw_analyzer_rerun"])
                 self.assertEqual(compact["conditional_local_state_gated_candidate_rows"], 508)
+                self.assertEqual(compact["conditional_cpl0_candidate_frequencies"][l9p], 13)
+                self.assertEqual(compact["classification_frequencies"], {
+                    "proven_supported": 6296422 if full_key else 6296706,
+                    "unclassified": 213978 if full_key else 214039,
+                })
                 cvtsd_rows = [
                     item for item in compact["exact_encoding_forms"]
                     if item["dimensions"]["operand_signature"] == "cvtsd2ss xmm,xmm"
@@ -200,9 +224,9 @@ class NormalizedFormTests(unittest.TestCase):
                     "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
                     "S2-37be-CVTSD2SS-register-state-gated": 1,
                 })
-                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 116114 if full_key else 116174)
-                self.assertEqual(fields["conditional_candidate_hit_count"], 116191 if full_key else 116251)
-                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115683 if full_key else 115743)
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 116127 if full_key else 116187)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 116204 if full_key else 116264)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115696 if full_key else 115756)
                 self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
                 self.assertEqual(fields["scenario_candidate_summaries"], {
                     name: {

@@ -1,0 +1,25 @@
+# S5-07 post-main RAM/MMU page-walker benchmark
+
+Date: 2026-11-17
+Purpose: measure the direct page-walker scenario change after integrating the main RAM/MMU backend. This comparison is `36a568d` (pre-merge schema-v20 implementation) versus `b73d534` (post-merge backend); it is not an attribution to one upstream commit and is not a Linux throughput benchmark.
+
+The release libtest binaries were built with rustc 1.99.0 / cargo 1.99.0 in isolated archived source copies. Both source revisions used the same scratch source path and release command `cargo test -p od-machine --lib --release --offline --no-run`; target directories were separate. Baseline binary SHA-256: `ecca4fe1f980fec915e64e2414e17de32c732980fc4d5aad8205c9d6121845db`. Candidate binary SHA-256: `2d64be574de0a7b03643b694a579e9b40c29d2938d7d49da372fd0785f44be59`. The archived original harness SHA-256 is `51a3e7e01c3d71e206475fb0ccd034ae4f2690de3aa8c2010491a84440648fbc`; the candidate adaptation SHA-256 is `7e6ccb357602961313d1cf21c9df648fd2072a5cf78e1dd6cf24446ac7127bc9`.
+
+The candidate-only harness adaptations affect fixture setup/reset and verification outside timing: legacy `read_u64`/`write_u64`/`write_u8` APIs became `load_u64`/`store_u64`/`store_u8`, and both candidate RAM fixtures explicitly use `ExecutionMode::Interleaved`. The timed loops, arguments to `walk_long64_4k_with_writer`, 512 independent path layouts, raw table values, path order, and assertions are unchanged. Both builds use the same harness checks for translation, trace/result use, A-bit update counts, and D-bit state. First-A invocations reset A outside timing; warm-A starts with A and D set and requires zero new A updates. No operand store or D-bit commit is included. Since the RAM setup/reset APIs differ between revisions and may prepare host caches differently, First-A denotes this prepared-fixture scenario and is not a cold-cache measurement.
+
+Six paired samples alternated order: samples 1/3/5 ran baseline then candidate; 2/4/6 ran candidate then baseline. Each invocation ran 4 KiB and 2 MiB paths with read/write translation access kinds, first-A and warm-A. `S5_BENCH_ITERS=100000`; every scenario had at least 200,000,000 ns timed. Every invocation passed its exact libtest entrypoint and emitted all eight scenarios. For first-A, raw-file entry count equals batch count and each batch contains 512 walks; warm-A walk count is taken from the timed invocation. Percentages are computed per pair as `100 * (candidate ns/walk / baseline ns/walk - 1)`. Each order-group result is the median of its three paired percentages.
+
+Host: macOS 26.7.1, Darwin arm64. The parent benchmark environment record identifies this host as Apple M3 Max MacBook Pro (14 cores, 36 GB). Full invocation logs, 60 raw `.u64le` files, build logs, original/adapted harnesses, and raw hashes are preserved in [the evidence archive](s5-07-post-main-page-walk-benchmark-20261117.tar.gz).
+
+| Page size | Access | Phase | Baseline median ns/walk | Candidate median ns/walk | B→C median | C→B median | All-pair median | Paired range |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 4 KiB | Read | First-A | 99.7379 | 80.8961 | -19.182% | -18.982% | -19.082% | -19.748%…-17.456% |
+| 4 KiB | Read | Warm-A | 40.2928 | 42.4147 | +4.837% | +5.936% | +5.195% | +2.697%…+6.633% |
+| 4 KiB | Write | First-A | 99.7313 | 80.9004 | -19.408% | -18.762% | -18.933% | -19.794%…-17.333% |
+| 4 KiB | Write | Warm-A | 40.3351 | 42.4240 | +4.674% | +5.598% | +5.136% | +4.237%…+6.529% |
+| 2 MiB | Read | First-A | 77.9333 | 64.0255 | -18.257% | -18.713% | -18.349% | -18.776%…-16.850% |
+| 2 MiB | Read | Warm-A | 32.6861 | 34.1851 | +4.686% | +4.795% | +4.740% | +4.521%…+5.129% |
+| 2 MiB | Write | First-A | 77.6019 | 63.6207 | -18.063% | -17.695% | -17.965% | -19.063%…-16.703% |
+| 2 MiB | Write | Warm-A | 32.4931 | 34.1559 | +4.990% | +5.381% | +5.302% | +4.233%…+5.631% |
+
+The same sign appears in both run orders for every scenario: First-A is faster by about 18–19%, while Warm-A is slower by about 4.7–5.3%. Treat these as a measured, workload-specific backend tradeoff; do not combine the phases into a general acceleration claim or infer Linux throughput. Cause is not yet isolated. Existing focused backend and schema-v20 correctness checks passed in the integration slice; benchmark success alone does not replace those checks. Strict S5-07 source comparison remains false and S5-07 remains blocked/unaccepted.

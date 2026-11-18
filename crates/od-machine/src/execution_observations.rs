@@ -1,15 +1,855 @@
+use crate::clock_owner::NS_PER_RETIRED;
 use std::collections::BTreeMap;
 
 /// Maximum distinct CPL0 RDTSC instruction addresses retained in one diagnostic run.
 pub const LINUX_RDTSC_SITE_CAPACITY: usize = 128;
+/// Maximum post-instruction register samples retained for one selected CPL0 RDTSC RIP.
+pub const LINUX_RDTSC_SAMPLE_CAPACITY: usize = 131_072;
+/// Maximum per-call delay_tsc summaries retained for the opt-in canonical replay diagnostic.
+pub const LINUX_DELAY_TSC_CALL_CAPACITY: usize = 131_072;
+pub const LINUX_DELAY_TSC_ENTRY_RIP: u64 = 0xffff_ffff_8271_b31b;
+pub const LINUX_DELAY_TSC_POLL_RIP: u64 = 0xffff_ffff_8271_b34d;
+const OMITTED_DELAY_TSC_ENTRY_SENTINEL: usize = usize::MAX;
+/// Number of entry-site RDTSC callbacks for which the exact pre-charge clock ledger is retained.
+pub const LINUX_RDTSC_CLOCK_TRACE_CAPACITY: usize = 2;
+/// Maximum ordered RDTSC prefix events retained for the opt-in sentinel trace.
+pub const LINUX_RDTSC_PREFIX_CAPACITY: usize = 131_072;
+/// Hard cap for the one selected instruction-path quantum.
+pub const LINUX_INSTRUCTION_PATH_TRACE_CAPACITY: usize = 2_000_000;
+pub const LINUX_INSTRUCTION_PATH_TRACE_QUANTUM: u64 = 45_215;
+pub const LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE: u64 = 1_203_244_482;
+pub const LINUX_INSTRUCTION_PATH_TRACE_START_HITS: u64 = 8_382;
+pub const LINUX_INSTRUCTION_PATH_TRACE_END_HIT: u64 = 8_383;
+/// Linux delay_tsc entry instruction used to end the diagnostic prefix.
+pub const LINUX_RDTSC_PREFIX_SENTINEL_RIP: u64 = 0xffff_ffff_8271_b31b;
 /// Maximum successful delivered page-fault events retained in one diagnostic run.
 pub const LINUX_PAGE_FAULT_EVENT_CAPACITY: usize = 256;
 pub const LINUX_PAGE_FAULT_WALK_ENTRY_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_PROFILE: &str = "s5-07-elf-stack-platform-copy-v1";
+pub const LINUX_ELF_STACK_COPY_RIP: u64 = 0xffff_ffff_8199_9bd4;
+pub const LINUX_ELF_STACK_ALIGN_BEFORE_RIP: u64 = 0xffff_ffff_8199_9bb5;
+pub const LINUX_ELF_STACK_ALIGN_AFTER_RIP: u64 = 0xffff_ffff_8199_9bba;
+/// Function entry RIPs from the matching S5-07 kernel debug ELF used by the current exact replay.
+pub const LINUX_ELF_STACK_COPY_BOUNDARIES: [(u64, &str); 3] = [
+    (0xffff_ffff_818f_4570, "kernel_execve"),
+    (0xffff_ffff_8199_c220, "load_elf_binary"),
+    (0xffff_ffff_8199_9b40, "create_elf_tables"),
+];
+pub const LINUX_ELF_STACK_COPY_PROBE_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_WALK_ENTRY_CAPACITY: usize = 4;
+pub const LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY: usize = 64;
+pub const LINUX_ELF_STACK_COPY_RETIRED_CAPACITY: u64 = 1_000_000;
+/// Maximum CR3 writes retained from observation accounting start through the ELF-copy gate.
+pub const LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY: usize = 32_768;
+pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL: u64 = 26_596;
+pub const LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP: u64 = 0xffff_ffff_8141_d753;
+pub const LINUX_ELF_STACK_COPY_RBP_FRAME_CAPACITY: usize = 8;
+pub const LINUX_ELF_MMU_GATHER_SETUP_CAPACITY: usize = 8;
+pub const LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP: u64 = 0xffff_ffff_818f_24d5;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP: u64 = 0xffff_ffff_8182_bfdb;
+pub const LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP: u64 = 0xffff_ffff_8180_9fa1;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP: u64 = 0xffff_ffff_8182_bfe0;
+pub const LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP: u64 = 0xffff_ffff_818f_24e5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherContext {
+    pub rip: u64,
+    pub retired_instructions: u64,
+    pub cr3: u64,
+    pub cr3_changes: u64,
+    pub page_faults: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub tlb_pointer: Option<u64>,
+    pub saved_rbp: Option<u64>,
+    pub saved_return_rip: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherRaw {
+    pub tlb: u64,
+    pub mm: u64,
+    pub start: u64,
+    pub end: u64,
+    pub flags: u32,
+    pub mm_tlb_flush_nested: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherSetupData {
+    pub stack_shift: u64,
+    pub vma: u64,
+    pub vm_start: Option<u64>,
+    pub vm_end: Option<u64>,
+    pub relocated_start: Option<u64>,
+    pub aligned_start: Option<u64>,
+    pub candidate_pages: [Option<u64>; 2],
+    pub candidate_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherPageWalk {
+    pub address: Option<u64>,
+    pub access: &'static str,
+    pub cpl: u8,
+    pub origin: &'static str,
+    pub profile: &'static str,
+    pub cr0_wp: bool,
+    pub efer_nxe: bool,
+    pub status: &'static str,
+    pub entries: Vec<crate::WalkEntry>,
+    pub terminal_level: Option<crate::PageTableLevel>,
+    pub leaf_size: Option<u64>,
+    pub translated_physical: Option<u64>,
+    pub error: Option<String>,
+}
+
+fn elf_mmu_gather_page_walk_not_observed() -> ElfMmuGatherPageWalk {
+    ElfMmuGatherPageWalk {
+        address: None,
+        access: "Write",
+        cpl: 0,
+        origin: "Explicit",
+        profile: "long64_4k_2m",
+        cr0_wp: false,
+        efer_nxe: false,
+        status: "not_observed",
+        entries: Vec::new(),
+        terminal_level: None,
+        leaf_size: None,
+        translated_physical: None,
+        error: None,
+    }
+}
+
+fn elf_mmu_gather_candidate_pages(
+    vm_start: Option<u64>,
+    stack_shift: u64,
+) -> (Option<u64>, Option<u64>, [Option<u64>; 2], Option<String>) {
+    let Some(relocated_start) = vm_start.and_then(|start| start.checked_sub(stack_shift)) else {
+        return (
+            None,
+            None,
+            [None, None],
+            Some("vm_start - stack_shift underflow or vm_start unavailable".into()),
+        );
+    };
+    let aligned_start = relocated_start & !0xfff;
+    let Some(previous_page) = aligned_start.checked_sub(4096) else {
+        return (
+            Some(relocated_start),
+            Some(aligned_start),
+            [None, None],
+            Some("aligned relocated start minus one page underflow".into()),
+        );
+    };
+    if !canonical_guest_address(relocated_start)
+        || !canonical_guest_address(aligned_start)
+        || !canonical_guest_address(previous_page)
+    {
+        return (
+            Some(relocated_start),
+            Some(aligned_start),
+            [None, None],
+            Some("relocated candidate address is noncanonical".into()),
+        );
+    }
+    (
+        Some(relocated_start),
+        Some(aligned_start),
+        [Some(previous_page), Some(aligned_start)],
+        None,
+    )
+}
+
+fn canonical_guest_address(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
+    (sign == 0 && address >> 48 == 0) || (sign == 1 && address >> 48 == 0xffff)
+}
+
+fn mmu_gather_setup_candidates(
+    phase: &ElfMmuGatherPhase<ElfMmuGatherSetupData>,
+) -> Option<[Option<u64>; 2]> {
+    let data = match phase {
+        ElfMmuGatherPhase::Captured { value, .. } => value,
+        ElfMmuGatherPhase::ReadError {
+            partial: Some(value),
+            ..
+        } => value,
+        _ => return None,
+    };
+    Some(data.candidate_pages)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfMmuGatherClosure {
+    Active,
+    Returned,
+    Superseded,
+    RunEnded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ElfMmuGatherPhase<T> {
+    NotObserved,
+    Captured {
+        context: ElfMmuGatherContext,
+        value: T,
+    },
+    ReadError {
+        context: ElfMmuGatherContext,
+        partial: Option<T>,
+        error: String,
+    },
+}
+
+impl<T> Default for ElfMmuGatherPhase<T> {
+    fn default() -> Self {
+        Self::NotObserved
+    }
+}
+
+impl<T> ElfMmuGatherPhase<T> {
+    fn context(&self) -> Option<&ElfMmuGatherContext> {
+        match self {
+            Self::NotObserved => None,
+            Self::Captured { context, .. } | Self::ReadError { context, .. } => Some(context),
+        }
+    }
+
+    fn is_not_observed(&self) -> bool {
+        matches!(self, Self::NotObserved)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherInvocation {
+    pub sequence: u64,
+    pub closure: ElfMmuGatherClosure,
+    pub association_mismatch: bool,
+    pub setup: ElfMmuGatherPhase<ElfMmuGatherSetupData>,
+    pub setup_page_walks: [ElfMmuGatherPageWalk; 2],
+    pub initial: ElfMmuGatherPhase<ElfMmuGatherRaw>,
+    pub initial_page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+    pub actual_post: ElfMmuGatherPhase<ElfMmuGatherRaw>,
+    pub returned: ElfMmuGatherPhase<()>,
+    pub return_page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherCapture {
+    pub setup_count: u64,
+    pub setups_omitted: u64,
+    pub setups: Vec<ElfMmuGatherInvocation>,
+    pub unpaired: Vec<ElfMmuGatherUnpaired>,
+    pub unpaired_omitted: u64,
+    pub copy_destination: Option<u64>,
+    pub destination_in_candidate_pages: Option<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfMmuGatherUnpaired {
+    pub phase: &'static str,
+    pub status: &'static str,
+    pub context: ElfMmuGatherContext,
+    pub raw: Option<ElfMmuGatherRaw>,
+    pub page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+    pub error: Option<String>,
+}
+
+impl Default for ElfMmuGatherCapture {
+    fn default() -> Self {
+        Self {
+            setup_count: 0,
+            setups_omitted: 0,
+            setups: Vec::new(),
+            unpaired: Vec::new(),
+            unpaired_omitted: 0,
+            copy_destination: None,
+            destination_in_candidate_pages: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfStackCopyTargetCr3ChainStatus {
+    Complete,
+    Unreadable,
+    Malformed,
+    FrameLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyTargetCr3Frame {
+    pub rbp: u64,
+    pub saved_rbp_slot: u64,
+    pub saved_rbp: u64,
+    pub return_address_slot: u64,
+    pub return_address: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyTargetCr3Capture {
+    pub status: &'static str,
+    pub sequence: Option<u64>,
+    pub rip: Option<u64>,
+    pub cr3: Option<u64>,
+    pub retired_instructions: Option<u64>,
+    pub rsp: Option<u64>,
+    pub rbp: Option<u64>,
+    pub chain_status: Option<ElfStackCopyTargetCr3ChainStatus>,
+    pub frames: Vec<ElfStackCopyTargetCr3Frame>,
+    pub error: Option<String>,
+}
+
+impl ElfStackCopyTargetCr3Capture {
+    fn not_seen() -> Self {
+        Self {
+            status: "not_seen",
+            sequence: None,
+            rip: None,
+            cr3: None,
+            retired_instructions: None,
+            rsp: None,
+            rbp: None,
+            chain_status: None,
+            frames: Vec::new(),
+            error: None,
+        }
+    }
+}
+
+impl Default for ElfStackCopyTargetCr3Capture {
+    fn default() -> Self {
+        Self::not_seen()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfStackCopyCr3LedgerStatus {
+    Complete,
+    IncompleteOverflow,
+    RunEndedBeforeTarget,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPreCopyCr3Event {
+    pub sequence: u64,
+    pub rip: u64,
+    pub old_cr3: u64,
+    pub new_cr3: u64,
+    pub cpl: u8,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyBoundaryMarker {
+    pub name: &'static str,
+    pub rip: u64,
+    pub retired_instructions_before_current: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackAlignmentPoint {
+    pub rip: u64,
+    pub retired_instructions_before_current: u64,
+    pub cr3: u64,
+    pub cs_selector: Option<u16>,
+    pub cpl: Option<u8>,
+    pub r15: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub pointer: u64,
+    pub instruction_bytes: Option<Vec<u8>>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackAlignmentCapture {
+    pub status: &'static str,
+    pub before_call: Option<ElfStackAlignmentPoint>,
+    pub after_return: Option<ElfStackAlignmentPoint>,
+    pub before_omitted: u64,
+    pub after_omitted: u64,
+    pub matched_copy: Option<bool>,
+}
+
+impl Default for ElfStackAlignmentCapture {
+    fn default() -> Self {
+        Self {
+            status: "not_seen",
+            before_call: None,
+            after_return: None,
+            before_omitted: 0,
+            after_omitted: 0,
+            matched_copy: None,
+        }
+    }
+}
+
+impl ElfStackAlignmentCapture {
+    fn finalize(&mut self, copy: Option<&ElfStackCopySnapshot>, copy_retired: Option<u64>) {
+        if self.before_omitted != 0 || self.after_omitted != 0 {
+            self.status = "ambiguous";
+            return;
+        }
+        let (Some(before), Some(after)) = (&self.before_call, &self.after_return) else {
+            self.status = if copy.is_some() {
+                "incomplete"
+            } else {
+                "run_ended_before_target"
+            };
+            return;
+        };
+        if before.error.is_some() || after.error.is_some() {
+            self.status = "read_error";
+            return;
+        }
+        let before_bytes = before.instruction_bytes.as_deref();
+        let after_bytes = after.instruction_bytes.as_deref();
+        if before.rip != LINUX_ELF_STACK_ALIGN_BEFORE_RIP
+            || before_bytes != Some(&[0xe8, 0xf6, 0x9a, 0xa1, 0xff])
+            || after.rip != LINUX_ELF_STACK_ALIGN_AFTER_RIP
+            || after_bytes != Some(&[0xba, 0x07, 0x00, 0x00, 0x00])
+        {
+            self.status = "anchor_mismatch";
+            return;
+        }
+        let same_frame = before.cr3 == after.cr3
+            && before.cs_selector == after.cs_selector
+            && before.cpl == Some(0)
+            && after.cpl == Some(0)
+            && before.r15 == after.r15
+            && before.rbp == after.rbp
+            && before.rsp == after.rsp
+            && after
+                .retired_instructions_before_current
+                .checked_sub(before.retired_instructions_before_current)
+                .is_some_and(|delta| delta >= 1);
+        let copy_matches = copy.is_some_and(|copy| {
+            copy.status == ElfStackCopyStatus::Captured
+                && copy.platform_string_matches == Some(true)
+                && copy.cs_selector == before.cs_selector
+                && copy.cpl == before.cpl
+                && copy.r15 == Some(before.r15)
+                && copy.rbp == Some(before.rbp)
+                && copy.rsp == Some(before.rsp)
+                && copy.cr3 == Some(before.cr3)
+                && copy.bprm_p == Some(before.pointer)
+                && copy.r13 == Some(after.pointer)
+                && copy_retired
+                    .is_some_and(|retired| after.retired_instructions_before_current < retired)
+        });
+        self.matched_copy = copy.map(|_| same_frame && copy_matches);
+        self.status = if !same_frame {
+            "invocation_mismatch"
+        } else if copy.is_none() {
+            "copy_target_not_seen"
+        } else if copy_matches {
+            "captured"
+        } else {
+            "invocation_mismatch"
+        };
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPreCopyCr3Ledger {
+    pub status: ElfStackCopyCr3LedgerStatus,
+    pub event_count: u64,
+    pub events_omitted: u64,
+    pub events: Vec<ElfStackCopyPreCopyCr3Event>,
+    pub boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
+    pub target_event: ElfStackCopyTargetCr3Capture,
+    pub mmu_gather: ElfMmuGatherCapture,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ElfStackCopyInvocationStatus {
+    #[default]
+    NotStarted,
+    InProgress,
+    Complete,
+    IncompleteGate,
+    IncompleteOverflow,
+    IncompleteRunEnded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyCounterSnapshot {
+    pub cr3: u64,
+    pub delivered_page_faults: u64,
+    pub delivered_exceptions: u64,
+    pub cr3_changes: u64,
+    pub rdtsc_reads: u64,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyCr3Event {
+    pub rip: u64,
+    pub old_cr3: u64,
+    pub new_cr3: u64,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyPageFaultEvent {
+    pub rip: u64,
+    pub cr2: u64,
+    pub error_code: u32,
+    pub access: &'static str,
+    pub cpl: u8,
+    pub retired_instructions_through_current: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyRdtscSiteCount {
+    pub rip: u64,
+    pub reads: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyInvocation {
+    pub status: ElfStackCopyInvocationStatus,
+    pub return_rip: Option<u64>,
+    pub entry: Option<ElfStackCopyCounterSnapshot>,
+    pub return_boundary: Option<ElfStackCopyCounterSnapshot>,
+    pub stop: Option<ElfStackCopyCounterSnapshot>,
+    pub cr3_events: Vec<ElfStackCopyCr3Event>,
+    pub cr3_events_omitted: u64,
+    pub page_fault_events: Vec<ElfStackCopyPageFaultEvent>,
+    pub page_fault_events_omitted: u64,
+    pub rdtsc_sites: Vec<ElfStackCopyRdtscSiteCount>,
+    pub rdtsc_site_overflow_reads: u64,
+    pub retired_duration: u64,
+    pub retired_duration_cap: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ElfStackCopyStatus {
+    #[default]
+    NotRequested,
+    AwaitingTarget,
+    Captured,
+    GateMismatch,
+    ReadError,
+    RunEndedBeforeTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopyProbe {
+    pub name: String,
+    pub address: u64,
+    pub page_base: u64,
+    pub access: String,
+    pub cpl: u8,
+    pub entries: Vec<crate::WalkEntry>,
+    /// `translated`, `page_fault`, or `error`.
+    pub outcome: String,
+    pub translated_physical: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfStackCopySnapshot {
+    pub profile: &'static str,
+    pub status: ElfStackCopyStatus,
+    pub rip: Option<u64>,
+    pub cr3: Option<u64>,
+    pub cs_selector: Option<u16>,
+    pub cpl: Option<u8>,
+    pub r15: Option<u64>,
+    pub rbp: Option<u64>,
+    pub rsp: Option<u64>,
+    pub r13: Option<u64>,
+    pub rdi: Option<u64>,
+    pub rsi: Option<u64>,
+    pub rdx: Option<u64>,
+    pub bprm_p_address: Option<u64>,
+    pub bprm_p: Option<u64>,
+    pub aligned_stack_pointer: Option<u64>,
+    pub copy_destination: Option<u64>,
+    pub copy_length: Option<u64>,
+    pub instruction_bytes: Option<Vec<u8>>,
+    pub mismatch_reasons: Vec<String>,
+    pub probes: Vec<ElfStackCopyProbe>,
+    pub error: Option<String>,
+    pub return_rip: Option<u64>,
+    pub platform_string_matches: Option<bool>,
+    pub alignment: ElfStackAlignmentCapture,
+    pub pre_copy_cr3_ledger: Option<ElfStackCopyPreCopyCr3Ledger>,
+    pub invocation: Option<ElfStackCopyInvocation>,
+}
+
+impl ElfStackCopyCounterSnapshot {
+    fn from_counts(
+        cr3: u64,
+        page_faults: u64,
+        exceptions: u64,
+        cr3_changes: u64,
+        rdtsc: u64,
+        retired: u64,
+    ) -> Self {
+        Self {
+            cr3,
+            delivered_page_faults: page_faults,
+            delivered_exceptions: exceptions,
+            cr3_changes,
+            rdtsc_reads: rdtsc,
+            retired_instructions_through_current: retired,
+        }
+    }
+}
+
+impl ElfStackCopySnapshot {
+    pub(crate) fn empty(status: ElfStackCopyStatus) -> Self {
+        Self {
+            profile: LINUX_ELF_STACK_COPY_PROFILE,
+            status,
+            rip: None,
+            cr3: None,
+            cs_selector: None,
+            cpl: None,
+            r15: None,
+            rbp: None,
+            rsp: None,
+            r13: None,
+            rdi: None,
+            rsi: None,
+            rdx: None,
+            bprm_p_address: None,
+            bprm_p: None,
+            aligned_stack_pointer: None,
+            copy_destination: None,
+            copy_length: None,
+            instruction_bytes: None,
+            mismatch_reasons: Vec::new(),
+            probes: Vec::new(),
+            error: None,
+            return_rip: None,
+            platform_string_matches: None,
+            alignment: ElfStackAlignmentCapture::default(),
+            pre_copy_cr3_ledger: None,
+            invocation: None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RdtscSiteCount {
     pub rip: u64,
     pub reads: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RdtscSiteSample {
+    pub rip: u64,
+    /// 1-based selected-RIP hit ordinal, including hits skipped by stride sampling.
+    pub hit_ordinal: u64,
+    /// R8 at the instruction boundary, as used by the selected kernel delay loop.
+    pub requested_cycles: u64,
+    /// RDI at the instruction boundary, as used by the selected kernel delay loop.
+    pub start_tsc: u64,
+    /// TSC value returned in EDX:EAX by this RDTSC instruction.
+    pub observed_tsc: u64,
+    /// Wrapping `observed_tsc - start_tsc` for direct comparison with the request.
+    pub elapsed_cycles: u64,
+    /// Post-instruction guest stack context for correlating the sample with its caller.
+    pub rbp: u64,
+    pub rsp: u64,
+    pub cr3: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RdtscEntrySample {
+    pub rip: u64,
+    /// 1-based hit ordinal at the selected delay-function entry RIP.
+    pub hit_ordinal: u64,
+    pub requested_cycles: u64,
+    /// TSC value returned in EDX:EAX by the entry RDTSC instruction.
+    pub observed_tsc: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub cr3: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DelayTscPollSequenceStatus {
+    ThresholdSeen,
+    Partial,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelayTscCallSummary {
+    pub ordinal: u64,
+    pub requested_cycles: u64,
+    pub entry_tsc: u64,
+    pub cr3: Option<u64>,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub frame_links: Vec<crate::ConsoleContextFrame>,
+    pub frame_chain_end: crate::FrameChainEnd,
+    pub poll_count: u64,
+    pub first_poll_ordinal: Option<u64>,
+    pub last_poll_ordinal: Option<u64>,
+    pub last_elapsed_cycles: Option<u64>,
+    pub terminal_threshold_seen: bool,
+    pub poll_sequence_status: DelayTscPollSequenceStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelayTscCallSummaryCollection {
+    pub entry_rip: u64,
+    pub poll_rip: u64,
+    pub entry_count: u64,
+    pub entries_omitted: u64,
+    pub poll_count: u64,
+    /// Includes ambiguous polls; `ambiguous_polls` is a subset of this value.
+    pub unmatched_polls: u64,
+    pub ambiguous_polls: u64,
+    pub entries: Vec<DelayTscCallSummary>,
+}
+
+/// Clock-owner state observed inside the RDTSC callback, before the current quantum is charged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RdtscClockReadLedger {
+    pub initial_now_ns: u64,
+    pub now_ns: u64,
+    pub tsc: u64,
+    pub tsc_hz: u64,
+    pub retired_instructions_charged: u64,
+    pub pm_timer_ns_charged: u64,
+    pub pit_ns_charged: u64,
+    pub rdtsc_ns_charged: u64,
+    pub idle_ns_advanced: u64,
+    pub quantum_ordinal: u64,
+    pub irqs_delivered: u64,
+}
+
+/// Post-report instruction counts for the quantum containing the captured RDTSC callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RdtscClockReadCompletion {
+    pub quantum_instructions_executed: u64,
+    pub retired_instructions_through_rdtsc: u64,
+}
+
+/// Bounded, exact-callback ledger for the first two selected entry-site reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscClockTraceSample {
+    pub rip: u64,
+    pub hit_ordinal: u64,
+    pub initial_now_ns: u64,
+    pub now_ns: u64,
+    pub callback_tsc: u64,
+    pub tsc_hz: u64,
+    pub retired_instructions_charged: u64,
+    pub retired_ns_charged: Option<u64>,
+    /// Instructions in the quantum containing this callback, reported after execution returns.
+    pub quantum_instructions_executed: u64,
+    /// Cumulative retired instructions through the RDTSC that invoked the callback.
+    pub retired_instructions_through_rdtsc: u64,
+    pub pm_timer_ns_charged: u64,
+    pub pit_ns_charged: u64,
+    pub rdtsc_ns_charged: u64,
+    pub idle_ns_advanced: u64,
+    pub quantum_ordinal: u64,
+    pub irqs_delivered: u64,
+    /// `None` means the known charged components exceeded the observed elapsed clock or overflowed.
+    pub unaccounted_elapsed_ns: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscPrefixSample {
+    pub ordinal: u64,
+    pub rip: u64,
+    pub cpl: Option<u8>,
+    pub cr3: Option<u64>,
+    pub rsp: u64,
+    pub rbp: u64,
+    pub clock: RdtscClockTraceSample,
+    pub page_faults_delivered_through: u64,
+    pub general_protection_faults_delivered_through: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstructionPathTraceStatus {
+    NotRequested,
+    AwaitingStart,
+    Captured,
+    GateMismatch,
+    MissedStart,
+    MissedEnd,
+    CapacityExhausted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionPathTraceHeader {
+    pub rip: u64,
+    pub rflags: u64,
+    pub gpr: [u64; 16],
+    pub cr3: Option<u64>,
+    pub cs_selector: Option<u16>,
+    pub frame_chain: Vec<crate::ConsoleContextFrame>,
+    pub frame_chain_end: crate::FrameChainEnd,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathRegisterValue {
+    pub register: u8,
+    pub value: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathControlFlow {
+    /// `branch`, `jump`, `call`, `return`, `indirect_jump`, or `indirect_call`.
+    pub kind: &'static str,
+    pub condition: Option<u8>,
+    pub taken: bool,
+    pub rflags_before: u64,
+    pub rflags_after: u64,
+    pub destination_registers: [Option<InstructionPathRegisterValue>; 2],
+    pub destination: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionPathTraceRecord {
+    pub rip: u64,
+    pub next_rip: u64,
+    pub control_flow: Option<InstructionPathControlFlow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionPathTrace {
+    pub requested: bool,
+    pub status: InstructionPathTraceStatus,
+    pub quantum_ordinal: Option<u64>,
+    pub retired_instructions_charged: Option<u64>,
+    pub rdtsc_cpl0_hits_before_dispatch: Option<u64>,
+    pub header: Option<InstructionPathTraceHeader>,
+    pub records: Vec<InstructionPathTraceRecord>,
+    pub omitted_records: u64,
+    pub quantum_instructions_executed: Option<u64>,
+    pub rdtsc_cpl0_hits_after_quantum: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RdtscPrefixStatus {
+    #[default]
+    NotRequested,
+    SentinelSeen,
+    CapacityExhausted,
+    RunEndedBeforeSentinel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscSampleWindow {
+    /// Inclusive, 1-based selected-site hit ordinal.
+    pub first_hit: u64,
+    /// Inclusive, 1-based selected-site hit ordinal.
+    pub last_hit: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,9 +918,28 @@ pub struct DeliveredPageFaultObservation {
 }
 
 /// Opt-in, bounded telemetry for one Linux CPL0-set run.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LinuxExecutionObservations {
     pub rdtsc_cpl0_sites: Vec<RdtscSiteCount>,
+    pub rdtsc_sample_rip: Option<u64>,
+    pub rdtsc_sample_stride: u64,
+    pub rdtsc_sample_window: Option<RdtscSampleWindow>,
+    pub rdtsc_sample_site_hits: u64,
+    pub rdtsc_site_samples: Vec<RdtscSiteSample>,
+    pub rdtsc_site_samples_omitted: u64,
+    pub rdtsc_entry_sample_rip: Option<u64>,
+    pub rdtsc_entry_sample_hits: u64,
+    pub rdtsc_entry_samples: Vec<RdtscEntrySample>,
+    pub rdtsc_entry_samples_omitted: u64,
+    pub delay_tsc_call_summary: Option<DelayTscCallSummaryCollection>,
+    pub rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
+    pub rdtsc_entry_clock_trace_missing: u64,
+    pub rdtsc_prefix_sentinel_rip: Option<u64>,
+    pub rdtsc_prefix_samples: Vec<RdtscPrefixSample>,
+    pub rdtsc_prefix_event_count: u64,
+    pub rdtsc_prefix_missing: u64,
+    pub rdtsc_prefix_status: RdtscPrefixStatus,
+    pub instruction_path_trace: Option<InstructionPathTrace>,
     /// CPL0 RDTSC reads for which the set loop did not report an instruction RIP.
     pub rdtsc_cpl0_unattributed_reads: u64,
     /// CPL0 RDTSC reads at new sites after the distinct-site table reached its capacity.
@@ -92,11 +951,39 @@ pub struct LinuxExecutionObservations {
     pub post_iret_selected_ordinal: Option<u64>,
     pub post_iret_page_walk: Option<PostIretPageWalkSnapshot>,
     pub post_iret_page_walk_status: Option<&'static str>,
+    pub elf_stack_copy: Option<ElfStackCopySnapshot>,
 }
 
 #[derive(Default)]
 pub(crate) struct LinuxExecutionObservationCollector {
+    rdtsc_sample_rip: Option<u64>,
+    rdtsc_sample_stride: u64,
+    rdtsc_sample_window: Option<RdtscSampleWindow>,
+    rdtsc_sample_site_hits: u64,
+    rdtsc_site_samples: Vec<RdtscSiteSample>,
+    rdtsc_site_samples_omitted: u64,
+    rdtsc_entry_sample_rip: Option<u64>,
+    rdtsc_entry_sample_hits: u64,
+    rdtsc_entry_samples: Vec<RdtscEntrySample>,
+    rdtsc_entry_samples_omitted: u64,
+    delay_tsc_summary_requested: bool,
+    delay_tsc_entry_count: u64,
+    delay_tsc_entries_omitted: u64,
+    delay_tsc_poll_count: u64,
+    delay_tsc_unmatched_polls: u64,
+    delay_tsc_ambiguous_polls: u64,
+    delay_tsc_entries: Vec<DelayTscCallSummary>,
+    delay_tsc_open_entries: BTreeMap<(u64, u64, u64, u64), Vec<usize>>,
+    rdtsc_entry_clock_trace_samples: Vec<RdtscClockTraceSample>,
+    rdtsc_entry_clock_trace_missing: u64,
+    rdtsc_prefix_sentinel_rip: Option<u64>,
+    rdtsc_prefix_samples: Vec<RdtscPrefixSample>,
+    rdtsc_prefix_event_ordinal: u64,
+    rdtsc_prefix_missing: u64,
+    rdtsc_prefix_status: RdtscPrefixStatus,
+    instruction_path_trace: Option<InstructionPathTrace>,
     rdtsc_sites: BTreeMap<u64, u64>,
+    rdtsc_cpl0_hits: u64,
     rdtsc_unattributed_reads: u64,
     rdtsc_site_overflow_reads: u64,
     page_faults_delivered: u64,
@@ -107,9 +994,833 @@ pub(crate) struct LinuxExecutionObservationCollector {
     post_iret_page_walk: Option<PostIretPageWalkSnapshot>,
     post_iret_context_mismatch: bool,
     nested_iret_depth: u64,
+    elf_stack_copy: Option<ElfStackCopySnapshot>,
+    elf_stack_alignment: ElfStackAlignmentCapture,
+    pre_copy_cr3_events: Vec<ElfStackCopyPreCopyCr3Event>,
+    pre_copy_cr3_events_omitted: u64,
+    pre_copy_cr3_ledger_overflow: bool,
+    pre_copy_cr3_ledger_frozen: bool,
+    pre_copy_boundary_markers: Vec<ElfStackCopyBoundaryMarker>,
+    target_cr3_event: ElfStackCopyTargetCr3Capture,
+    mmu_gather: ElfMmuGatherCapture,
+    retired_total: u64,
+    delivered_exception_total: u64,
+    cr3_change_total: u64,
 }
 
 impl LinuxExecutionObservationCollector {
+    #[cfg(test)]
+    pub(crate) fn mmu_gather_capture_for_test(&self) -> &ElfMmuGatherCapture {
+        &self.mmu_gather
+    }
+
+    pub(crate) fn with_elf_stack_copy(mut self, requested: bool) -> Self {
+        self.elf_stack_copy =
+            requested.then(|| ElfStackCopySnapshot::empty(ElfStackCopyStatus::AwaitingTarget));
+        self
+    }
+
+    pub(crate) fn wants_elf_stack_copy(&self) -> bool {
+        self.elf_stack_copy
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.status == ElfStackCopyStatus::AwaitingTarget)
+    }
+
+    pub(crate) fn wants_mmu_gather_capture(&self) -> bool {
+        self.wants_elf_stack_copy()
+            && !self.pre_copy_cr3_ledger_frozen
+            && self.mmu_gather.setups_omitted == 0
+            && self.mmu_gather.unpaired_omitted == 0
+    }
+
+    pub(crate) fn mmu_gather_context(
+        &self,
+        rip: u64,
+        cr3: u64,
+        rbp: u64,
+        rsp: u64,
+        tlb_pointer: Option<u64>,
+        saved_rbp: Option<u64>,
+        saved_return_rip: Option<u64>,
+    ) -> ElfMmuGatherContext {
+        ElfMmuGatherContext {
+            rip,
+            retired_instructions: self.retired_total,
+            cr3,
+            cr3_changes: self.cr3_change_total,
+            page_faults: self.page_faults_delivered,
+            rbp,
+            rsp,
+            tlb_pointer,
+            saved_rbp,
+            saved_return_rip,
+        }
+    }
+
+    pub(crate) fn record_mmu_gather_setup(
+        &mut self,
+        context: ElfMmuGatherContext,
+        stack_shift: u64,
+        vma: u64,
+        vm_start: Option<u64>,
+        vm_end: Option<u64>,
+        read_status: &'static str,
+        error: Option<String>,
+    ) -> Option<(usize, [Option<u64>; 2])> {
+        if !self.wants_mmu_gather_capture() {
+            return None;
+        }
+        self.mmu_gather.setup_count = self.mmu_gather.setup_count.saturating_add(1);
+        for previous in &mut self.mmu_gather.setups {
+            let same_anchor = previous
+                .setup
+                .context()
+                .is_some_and(|old| old.rbp == context.rbp && old.saved_rbp == context.saved_rbp);
+            if previous.closure == ElfMmuGatherClosure::Active && same_anchor {
+                previous.closure = ElfMmuGatherClosure::Superseded;
+            }
+        }
+        if self.mmu_gather.setups.len() >= LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            self.mmu_gather.setups_omitted = self.mmu_gather.setups_omitted.saturating_add(1);
+            return None;
+        }
+        let (relocated_start, aligned_start, candidate_pages, candidate_error) =
+            elf_mmu_gather_candidate_pages(vm_start, stack_shift);
+        let data = ElfMmuGatherSetupData {
+            stack_shift,
+            vma,
+            vm_start,
+            vm_end,
+            relocated_start,
+            aligned_start,
+            candidate_pages,
+            candidate_error,
+        };
+        let setup = if read_status == "captured" {
+            ElfMmuGatherPhase::Captured {
+                context,
+                value: data,
+            }
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: Some(data),
+                error: error.unwrap_or_else(|| "setup checkpoint read failed".into()),
+            }
+        };
+        self.mmu_gather.setups.push(ElfMmuGatherInvocation {
+            sequence: self.mmu_gather.setup_count,
+            closure: ElfMmuGatherClosure::Active,
+            association_mismatch: false,
+            setup,
+            setup_page_walks: std::array::from_fn(|_| elf_mmu_gather_page_walk_not_observed()),
+            initial: ElfMmuGatherPhase::NotObserved,
+            initial_page_walks: None,
+            actual_post: ElfMmuGatherPhase::NotObserved,
+            returned: ElfMmuGatherPhase::NotObserved,
+            return_page_walks: None,
+        });
+        Some((self.mmu_gather.setups.len() - 1, candidate_pages))
+    }
+
+    pub(crate) fn record_mmu_gather_setup_page_walks(
+        &mut self,
+        setup_index: usize,
+        page_walks: [ElfMmuGatherPageWalk; 2],
+    ) {
+        if let Some(setup) = self.mmu_gather.setups.get_mut(setup_index) {
+            setup.setup_page_walks = page_walks;
+        }
+    }
+
+    pub(crate) fn mmu_gather_candidate_pages_for_relocate(
+        &self,
+        context: ElfMmuGatherContext,
+    ) -> Option<[Option<u64>; 2]> {
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .filter(|setup| {
+                setup.closure == ElfMmuGatherClosure::Active
+                    && setup.initial.is_not_observed()
+                    && setup.setup.context().is_some_and(|setup_context| {
+                        setup_context.rbp == context.saved_rbp.unwrap_or(0)
+                    })
+                    && context.saved_return_rip
+                        == Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP)
+            })
+            .collect::<Vec<_>>();
+        (candidates.len() == 1).then(|| mmu_gather_setup_candidates(&candidates[0].setup))?
+    }
+
+    pub(crate) fn mmu_gather_candidate_pages_for_return(
+        &self,
+        context: ElfMmuGatherContext,
+    ) -> Option<[Option<u64>; 2]> {
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .filter(|setup| {
+                setup.closure == ElfMmuGatherClosure::Active
+                    && setup.returned.is_not_observed()
+                    && setup.initial.context().is_some_and(|relocate| {
+                        relocate.rbp == context.rbp
+                            && relocate.rsp == context.rsp
+                            && relocate.saved_rbp == context.saved_rbp
+                            && relocate.saved_return_rip == context.saved_return_rip
+                    })
+            })
+            .collect::<Vec<_>>();
+        (candidates.len() == 1).then(|| mmu_gather_setup_candidates(&candidates[0].setup))?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_mmu_gather_relocate(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        self.record_mmu_gather_relocate_with_walks(context, raw, status, error, None);
+    }
+
+    pub(crate) fn record_mmu_gather_relocate_with_walks(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let frame_candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.initial.is_not_observed()
+                    && setup.setup.context().is_some_and(|setup_context| {
+                        setup_context.rbp == context.saved_rbp.unwrap_or(0)
+                    }))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let candidates = frame_candidates
+            .iter()
+            .copied()
+            .filter(|_| {
+                context.saved_return_rip == Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            self.push_mmu_gather_unpaired(
+                "relocate_vma_down",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() && frame_candidates.len() == 1 {
+                    "mismatch"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                raw,
+                page_walks,
+                error,
+            );
+            return;
+        }
+        if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP) {
+            self.push_mmu_gather_unpaired(
+                "relocate_vma_down",
+                "mismatch",
+                context,
+                raw,
+                page_walks,
+                error,
+            );
+            return;
+        }
+        let phase = if status == "captured" {
+            raw.map(|value| ElfMmuGatherPhase::Captured { context, value })
+                .unwrap_or_else(|| ElfMmuGatherPhase::ReadError {
+                    context,
+                    partial: None,
+                    error: "initial gather read failed".into(),
+                })
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: raw,
+                error: error.unwrap_or_else(|| "initial gather read failed".into()),
+            }
+        };
+        let setup = &mut self.mmu_gather.setups[candidates[0]];
+        setup.initial = phase;
+        setup.initial_page_walks = page_walks;
+    }
+
+    pub(crate) fn record_mmu_gather_actual_post(
+        &mut self,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let frame_candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.actual_post.is_not_observed()
+                    && setup
+                        .initial
+                        .context()
+                        .is_some_and(|relocate| relocate.rbp == context.saved_rbp.unwrap_or(0)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let candidates = frame_candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                let relocate = self.mmu_gather.setups[*index].initial.context().unwrap();
+                relocate.tlb_pointer == context.tlb_pointer
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            self.push_mmu_gather_unpaired(
+                "actual_post",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() && frame_candidates.len() == 1 {
+                    "mismatch"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                raw,
+                None,
+                error,
+            );
+            return;
+        }
+        if context.saved_return_rip != Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP) {
+            self.push_mmu_gather_unpaired("actual_post", "mismatch", context, raw, None, error);
+            return;
+        }
+        let phase = if status == "captured" {
+            raw.map(|value| ElfMmuGatherPhase::Captured { context, value })
+                .unwrap_or_else(|| ElfMmuGatherPhase::ReadError {
+                    context,
+                    partial: None,
+                    error: "actual_post gather read failed".into(),
+                })
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: raw,
+                error: error.unwrap_or_else(|| "actual_post gather read failed".into()),
+            }
+        };
+        self.mmu_gather.setups[candidates[0]].actual_post = phase;
+        let invocation = &mut self.mmu_gather.setups[candidates[0]];
+        if let (
+            ElfMmuGatherPhase::Captured { value: initial, .. },
+            ElfMmuGatherPhase::Captured {
+                value: actual_post, ..
+            },
+        ) = (&invocation.initial, &invocation.actual_post)
+        {
+            invocation.association_mismatch =
+                initial.tlb == actual_post.tlb && initial.mm != actual_post.mm;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_mmu_gather_return(
+        &mut self,
+        context: ElfMmuGatherContext,
+        status: &'static str,
+        error: Option<String>,
+    ) {
+        self.record_mmu_gather_return_with_walks(context, status, error, None);
+    }
+
+    pub(crate) fn record_mmu_gather_return_with_walks(
+        &mut self,
+        context: ElfMmuGatherContext,
+        status: &'static str,
+        error: Option<String>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+    ) {
+        if !self.wants_mmu_gather_capture() {
+            return;
+        }
+        let candidates = self
+            .mmu_gather
+            .setups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setup)| {
+                (setup.closure == ElfMmuGatherClosure::Active
+                    && setup.returned.is_not_observed()
+                    && setup.initial.context().is_some_and(|relocate| {
+                        relocate.rbp == context.rbp
+                            && relocate.rsp == context.rsp
+                            && relocate.saved_rbp == context.saved_rbp
+                            && relocate.saved_return_rip == context.saved_return_rip
+                    }))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 || status != "captured" {
+            self.push_mmu_gather_unpaired(
+                "return",
+                if status != "captured" {
+                    "read_error"
+                } else if candidates.is_empty() {
+                    "unpaired"
+                } else {
+                    "ambiguous"
+                },
+                context,
+                None,
+                page_walks,
+                error,
+            );
+            return;
+        }
+        let setup = &mut self.mmu_gather.setups[candidates[0]];
+        setup.returned = if status == "captured" {
+            ElfMmuGatherPhase::Captured { context, value: () }
+        } else {
+            ElfMmuGatherPhase::ReadError {
+                context,
+                partial: None,
+                error: error.unwrap_or_else(|| "return frame read failed".into()),
+            }
+        };
+        if status == "captured" {
+            setup.closure = ElfMmuGatherClosure::Returned;
+        }
+        setup.return_page_walks = page_walks;
+    }
+
+    fn push_mmu_gather_unpaired(
+        &mut self,
+        phase: &'static str,
+        status: &'static str,
+        context: ElfMmuGatherContext,
+        raw: Option<ElfMmuGatherRaw>,
+        page_walks: Option<[ElfMmuGatherPageWalk; 2]>,
+        error: Option<String>,
+    ) {
+        if self.mmu_gather.unpaired.len() < LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            self.mmu_gather.unpaired.push(ElfMmuGatherUnpaired {
+                phase,
+                status,
+                context,
+                raw,
+                page_walks,
+                error,
+            });
+        } else {
+            self.mmu_gather.unpaired_omitted = self.mmu_gather.unpaired_omitted.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn wants_elf_copy_target_cr3_event(&self, rip: u64) -> bool {
+        self.wants_elf_stack_copy()
+            && self.cr3_change_total.saturating_add(1)
+                == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL
+            && rip == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP
+            && self.target_cr3_event.status == "not_seen"
+    }
+
+    pub(crate) fn record_elf_stack_copy(&mut self, snapshot: ElfStackCopySnapshot) {
+        if self.wants_elf_stack_copy() {
+            let mut snapshot = snapshot;
+            let mut alignment = std::mem::take(&mut self.elf_stack_alignment);
+            alignment.finalize(Some(&snapshot), Some(self.retired_total));
+            snapshot.alignment = alignment;
+            self.mmu_gather.copy_destination = snapshot.copy_destination;
+            self.mmu_gather.destination_in_candidate_pages =
+                snapshot.copy_destination.map(|dest| {
+                    self.mmu_gather.setups.iter().any(|invocation| {
+                        mmu_gather_setup_candidates(&invocation.setup).is_some_and(|candidates| {
+                            candidates
+                                .into_iter()
+                                .flatten()
+                                .any(|page| page == (dest & !0xfff))
+                        })
+                    })
+                });
+            for invocation in &mut self.mmu_gather.setups {
+                if invocation.closure == ElfMmuGatherClosure::Active {
+                    invocation.closure = ElfMmuGatherClosure::RunEnded;
+                }
+            }
+            snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
+                status: if self.pre_copy_cr3_ledger_overflow {
+                    ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+                } else {
+                    ElfStackCopyCr3LedgerStatus::Complete
+                },
+                event_count: self.cr3_change_total,
+                events_omitted: self.pre_copy_cr3_events_omitted,
+                events: std::mem::take(&mut self.pre_copy_cr3_events),
+                boundary_markers: std::mem::take(&mut self.pre_copy_boundary_markers),
+                target_event: std::mem::replace(
+                    &mut self.target_cr3_event,
+                    ElfStackCopyTargetCr3Capture::not_seen(),
+                ),
+                mmu_gather: std::mem::take(&mut self.mmu_gather),
+            });
+            self.pre_copy_cr3_ledger_frozen = true;
+            if snapshot.status == ElfStackCopyStatus::Captured
+                && snapshot.platform_string_matches == Some(true)
+                && snapshot.return_rip.is_some()
+            {
+                let return_rip = snapshot.return_rip;
+                let mut invocation = ElfStackCopyInvocation {
+                    status: ElfStackCopyInvocationStatus::InProgress,
+                    return_rip,
+                    entry: None,
+                    return_boundary: None,
+                    stop: None,
+                    cr3_events: Vec::new(),
+                    cr3_events_omitted: 0,
+                    page_fault_events: Vec::new(),
+                    page_fault_events_omitted: 0,
+                    rdtsc_sites: Vec::new(),
+                    rdtsc_site_overflow_reads: 0,
+                    retired_duration: 0,
+                    retired_duration_cap: LINUX_ELF_STACK_COPY_RETIRED_CAPACITY,
+                };
+                invocation.entry = Some(self.elf_copy_counters(snapshot.cr3.unwrap_or(0)));
+                snapshot.invocation = Some(invocation);
+            } else if snapshot.status == ElfStackCopyStatus::Captured {
+                snapshot.status = ElfStackCopyStatus::GateMismatch;
+                snapshot.probes.clear();
+                if snapshot.mismatch_reasons.is_empty() {
+                    snapshot
+                        .mismatch_reasons
+                        .push("platform_call_gate_incomplete".into());
+                }
+                snapshot.invocation = None;
+            }
+            self.elf_stack_copy = Some(snapshot);
+        }
+    }
+
+    pub(crate) fn record_elf_stack_alignment_point(
+        &mut self,
+        mut point: ElfStackAlignmentPoint,
+        before_call: bool,
+    ) {
+        if !self.wants_elf_stack_copy() || self.pre_copy_cr3_ledger_frozen {
+            return;
+        }
+        point.retired_instructions_before_current = self.retired_total;
+        let (slot, omitted) = if before_call {
+            (
+                &mut self.elf_stack_alignment.before_call,
+                &mut self.elf_stack_alignment.before_omitted,
+            )
+        } else {
+            (
+                &mut self.elf_stack_alignment.after_return,
+                &mut self.elf_stack_alignment.after_omitted,
+            )
+        };
+        if slot.is_some() {
+            *omitted = omitted.saturating_add(1);
+        } else {
+            *slot = Some(point);
+        }
+    }
+
+    pub(crate) fn observe_elf_stack_copy_boundary(&mut self, rip: u64) {
+        if self.pre_copy_cr3_ledger_frozen || !self.wants_elf_stack_copy() {
+            return;
+        }
+        let Some((_, name)) = LINUX_ELF_STACK_COPY_BOUNDARIES
+            .iter()
+            .find(|(boundary_rip, _)| *boundary_rip == rip)
+        else {
+            return;
+        };
+        if self
+            .pre_copy_boundary_markers
+            .iter()
+            .any(|marker| marker.name == *name)
+        {
+            return;
+        }
+        self.pre_copy_boundary_markers
+            .push(ElfStackCopyBoundaryMarker {
+                name,
+                rip,
+                retired_instructions_before_current: self.retired_total,
+            });
+    }
+
+    fn elf_copy_counters(&self, cr3: u64) -> ElfStackCopyCounterSnapshot {
+        ElfStackCopyCounterSnapshot::from_counts(
+            cr3,
+            self.page_faults_delivered,
+            self.delivered_exception_total,
+            self.cr3_change_total,
+            self.rdtsc_cpl0_hits,
+            self.retired_total,
+        )
+    }
+
+    pub(crate) fn elf_copy_return_rip(&self) -> Option<u64> {
+        self.elf_stack_copy
+            .as_ref()?
+            .invocation
+            .as_ref()
+            .filter(|capture| {
+                matches!(
+                    capture.status,
+                    ElfStackCopyInvocationStatus::InProgress
+                        | ElfStackCopyInvocationStatus::IncompleteOverflow
+                ) && capture.return_boundary.is_none()
+            })?
+            .return_rip
+    }
+
+    pub(crate) fn tracks_elf_copy_counters(&self) -> bool {
+        self.wants_elf_stack_copy() || self.elf_copy_invocation_active()
+    }
+
+    pub(crate) fn needs_elf_stack_copy_path(&self) -> bool {
+        self.tracks_elf_copy_counters()
+    }
+
+    pub(crate) fn elf_copy_invocation_active(&self) -> bool {
+        self.elf_stack_copy
+            .as_ref()
+            .and_then(|snapshot| snapshot.invocation.as_ref())
+            .is_some_and(|capture| {
+                matches!(
+                    capture.status,
+                    ElfStackCopyInvocationStatus::InProgress
+                        | ElfStackCopyInvocationStatus::IncompleteOverflow
+                ) && capture.return_boundary.is_none()
+            })
+    }
+
+    pub(crate) fn finish_elf_copy_invocation(&mut self, observed_rip: u64, cr3: u64) {
+        let snapshot = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut());
+        if let Some(capture) = snapshot.filter(|capture| {
+            matches!(
+                capture.status,
+                ElfStackCopyInvocationStatus::InProgress
+                    | ElfStackCopyInvocationStatus::IncompleteOverflow
+            ) && capture.return_boundary.is_none()
+        }) {
+            if capture.return_rip != Some(observed_rip) {
+                capture.status = ElfStackCopyInvocationStatus::IncompleteGate;
+                return;
+            }
+            capture.return_boundary = Some(ElfStackCopyCounterSnapshot::from_counts(
+                cr3,
+                self.page_faults_delivered,
+                self.delivered_exception_total,
+                self.cr3_change_total,
+                self.rdtsc_cpl0_hits,
+                self.retired_total,
+            ));
+            if capture.status == ElfStackCopyInvocationStatus::InProgress {
+                capture.status = ElfStackCopyInvocationStatus::Complete;
+            }
+        }
+    }
+
+    pub(crate) fn finish_elf_copy_run(
+        &mut self,
+        cr3: u64,
+        page_faults: u64,
+        exceptions: u64,
+        cr3_changes: u64,
+        rdtsc_reads: u64,
+        retired: u64,
+    ) {
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        capture.stop = Some(ElfStackCopyCounterSnapshot::from_counts(
+            cr3,
+            page_faults,
+            exceptions,
+            cr3_changes,
+            rdtsc_reads,
+            retired,
+        ));
+        if capture.status == ElfStackCopyInvocationStatus::InProgress {
+            capture.status = ElfStackCopyInvocationStatus::IncompleteRunEnded;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_retired(&mut self, count: u64) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.retired_total = self.retired_total.saturating_add(count);
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        capture.retired_duration = capture.retired_duration.saturating_add(count);
+        if capture.retired_duration > capture.retired_duration_cap {
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_cr3(&mut self, rip: u64, old_cr3: u64, new_cr3: u64, cpl: u8) {
+        self.record_elf_copy_cr3_with_target(rip, old_cr3, new_cr3, cpl, None);
+    }
+
+    pub(crate) fn record_elf_copy_cr3_with_target(
+        &mut self,
+        rip: u64,
+        old_cr3: u64,
+        new_cr3: u64,
+        cpl: u8,
+        target_capture: Option<ElfStackCopyTargetCr3Capture>,
+    ) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.cr3_change_total = self.cr3_change_total.saturating_add(1);
+        if let Some(target_capture) = target_capture
+            && self.wants_elf_stack_copy()
+            && rip == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP
+            && self.cr3_change_total == LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL
+            && self.target_cr3_event.status == "not_seen"
+        {
+            self.target_cr3_event = ElfStackCopyTargetCr3Capture {
+                status: "captured",
+                sequence: Some(self.cr3_change_total),
+                rip: Some(rip),
+                cr3: Some(new_cr3),
+                retired_instructions: Some(self.retired_total),
+                ..target_capture
+            };
+        }
+        let retired = self.retired_total;
+        if !self.pre_copy_cr3_ledger_frozen {
+            if self.pre_copy_cr3_events.len() < LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+                self.pre_copy_cr3_events.push(ElfStackCopyPreCopyCr3Event {
+                    sequence: self.cr3_change_total,
+                    rip,
+                    old_cr3,
+                    new_cr3,
+                    cpl,
+                    retired_instructions_through_current: retired,
+                });
+            } else {
+                self.pre_copy_cr3_events_omitted =
+                    self.pre_copy_cr3_events_omitted.saturating_add(1);
+                self.pre_copy_cr3_ledger_overflow = true;
+            }
+        }
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        if capture.cr3_events.len() < LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            capture.cr3_events.push(ElfStackCopyCr3Event {
+                rip,
+                old_cr3,
+                new_cr3,
+                retired_instructions_through_current: retired,
+            });
+        } else {
+            capture.cr3_events_omitted = capture.cr3_events_omitted.saturating_add(1);
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_page_fault(&mut self, event: &DeliveredPageFaultObservation) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.delivered_exception_total = self.delivered_exception_total.saturating_add(1);
+        let Some(capture) = self
+            .elf_stack_copy
+            .as_mut()
+            .and_then(|snapshot| snapshot.invocation.as_mut())
+        else {
+            return;
+        };
+        if capture.status != ElfStackCopyInvocationStatus::InProgress {
+            return;
+        }
+        if capture.page_fault_events.len() < LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY {
+            capture.page_fault_events.push(ElfStackCopyPageFaultEvent {
+                rip: event.rip,
+                cr2: event.cr2,
+                error_code: event.error_code,
+                access: match event.access.as_str() {
+                    "Read" => "Read",
+                    "Write" => "Write",
+                    "Fetch" => "Fetch",
+                    _ => "unknown",
+                },
+                cpl: event.cpl,
+                retired_instructions_through_current: self.retired_total,
+            });
+        } else {
+            capture.page_fault_events_omitted = capture.page_fault_events_omitted.saturating_add(1);
+            capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+        }
+    }
+
+    pub(crate) fn record_elf_copy_general_protection(&mut self) {
+        if !self.tracks_elf_copy_counters() {
+            return;
+        }
+        self.delivered_exception_total = self.delivered_exception_total.saturating_add(1);
+    }
+
     pub(crate) fn with_post_iret_ordinal(selected_post_iret_ordinal: Option<u64>) -> Self {
         Self {
             selected_post_iret_ordinal,
@@ -117,7 +1828,576 @@ impl LinuxExecutionObservationCollector {
         }
     }
 
+    pub(crate) fn with_rdtsc_sample_rip(mut self, rip: Option<u64>) -> Self {
+        self.rdtsc_sample_rip = rip;
+        self
+    }
+
+    pub(crate) fn with_rdtsc_sample_stride(mut self, stride: u64) -> Self {
+        self.rdtsc_sample_stride = stride.max(1);
+        self
+    }
+
+    pub(crate) fn with_rdtsc_sample_window(mut self, window: Option<RdtscSampleWindow>) -> Self {
+        self.rdtsc_sample_window = window;
+        self
+    }
+
+    pub(crate) fn with_rdtsc_entry_sample_rip(mut self, rip: Option<u64>) -> Self {
+        self.rdtsc_entry_sample_rip = rip;
+        self
+    }
+
+    pub(crate) fn with_delay_tsc_call_summary(mut self, requested: bool) -> Self {
+        self.delay_tsc_summary_requested = requested;
+        self
+    }
+
+    pub(crate) fn wants_delay_tsc_call_summary(&self) -> bool {
+        self.delay_tsc_summary_requested
+    }
+
+    pub(crate) fn record_delay_tsc_entry(
+        &mut self,
+        rip: Option<u64>,
+        state: &od_isa::LongModeState,
+        frame_links: Vec<crate::ConsoleContextFrame>,
+        frame_chain_end: crate::FrameChainEnd,
+    ) {
+        if !self.delay_tsc_summary_requested || rip != Some(LINUX_DELAY_TSC_ENTRY_RIP) {
+            return;
+        }
+        self.delay_tsc_entry_count = self.delay_tsc_entry_count.saturating_add(1);
+        use od_isa::Register;
+        let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+        let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+        let requested_cycles = state.gpr[Register::R8 as usize];
+        let entry_tsc = (rdx << 32) | rax;
+        let rbp = state.gpr[Register::Rbp as usize];
+        let rsp = state.gpr[Register::Rsp as usize];
+        let key = (entry_tsc, requested_cycles, rbp, rsp);
+        if self.delay_tsc_entries.len() >= LINUX_DELAY_TSC_CALL_CAPACITY {
+            self.delay_tsc_entries_omitted = self.delay_tsc_entries_omitted.saturating_add(1);
+            if let Some(retained) = self.delay_tsc_open_entries.get_mut(&key) {
+                if !retained.contains(&OMITTED_DELAY_TSC_ENTRY_SENTINEL) {
+                    retained.push(OMITTED_DELAY_TSC_ENTRY_SENTINEL);
+                }
+            }
+            return;
+        }
+        let index = self.delay_tsc_entries.len();
+        self.delay_tsc_open_entries
+            .entry(key)
+            .or_default()
+            .push(index);
+        self.delay_tsc_entries.push(DelayTscCallSummary {
+            ordinal: self.delay_tsc_entry_count,
+            requested_cycles,
+            entry_tsc,
+            cr3: state.cr3,
+            rbp,
+            rsp,
+            frame_links: frame_links.into_iter().take(4).collect(),
+            frame_chain_end,
+            poll_count: 0,
+            first_poll_ordinal: None,
+            last_poll_ordinal: None,
+            last_elapsed_cycles: None,
+            terminal_threshold_seen: false,
+            poll_sequence_status: DelayTscPollSequenceStatus::Partial,
+        });
+    }
+
+    fn record_delay_tsc_poll(&mut self, sample: &RdtscSiteSample) {
+        if !self.delay_tsc_summary_requested || sample.rip != LINUX_DELAY_TSC_POLL_RIP {
+            return;
+        }
+        self.delay_tsc_poll_count = self.delay_tsc_poll_count.saturating_add(1);
+        let key = (
+            sample.start_tsc,
+            sample.requested_cycles,
+            sample.rbp,
+            sample.rsp,
+        );
+        let Some(matches) = self.delay_tsc_open_entries.get(&key) else {
+            self.delay_tsc_unmatched_polls = self.delay_tsc_unmatched_polls.saturating_add(1);
+            return;
+        };
+        if matches.len() != 1 {
+            self.delay_tsc_unmatched_polls = self.delay_tsc_unmatched_polls.saturating_add(1);
+            self.delay_tsc_ambiguous_polls = self.delay_tsc_ambiguous_polls.saturating_add(1);
+            return;
+        }
+        let index = matches[0];
+        let entry = &mut self.delay_tsc_entries[index];
+        entry.poll_count = entry.poll_count.saturating_add(1);
+        entry.first_poll_ordinal.get_or_insert(sample.hit_ordinal);
+        entry.last_poll_ordinal = Some(sample.hit_ordinal);
+        entry.last_elapsed_cycles = Some(sample.elapsed_cycles);
+        if sample.elapsed_cycles >= entry.requested_cycles {
+            entry.terminal_threshold_seen = true;
+            entry.poll_sequence_status = DelayTscPollSequenceStatus::ThresholdSeen;
+            self.delay_tsc_open_entries.remove(&key);
+        }
+    }
+
+    pub(crate) fn with_rdtsc_prefix_sentinel(mut self, sentinel_rip: Option<u64>) -> Self {
+        self.rdtsc_prefix_sentinel_rip = sentinel_rip;
+        self.rdtsc_prefix_status = if sentinel_rip.is_some() {
+            RdtscPrefixStatus::RunEndedBeforeSentinel
+        } else {
+            RdtscPrefixStatus::NotRequested
+        };
+        self
+    }
+
+    pub(crate) fn with_instruction_path_trace(mut self, requested: bool) -> Self {
+        self.instruction_path_trace = requested.then(|| InstructionPathTrace {
+            requested: true,
+            status: InstructionPathTraceStatus::AwaitingStart,
+            quantum_ordinal: None,
+            retired_instructions_charged: None,
+            rdtsc_cpl0_hits_before_dispatch: None,
+            header: None,
+            records: Vec::new(),
+            omitted_records: 0,
+            quantum_instructions_executed: None,
+            rdtsc_cpl0_hits_after_quantum: None,
+        });
+        self
+    }
+
+    /// Called immediately before dispatching each board quantum. The gate is deliberately
+    /// specific to the recorded S5-07 divergence and does not change the dispatch budget.
+    pub(crate) fn begin_instruction_path_quantum(
+        &mut self,
+        quantum_ordinal: u64,
+        retired_instructions_charged: u64,
+    ) {
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.status != InstructionPathTraceStatus::AwaitingStart {
+            return;
+        }
+        if quantum_ordinal < LINUX_INSTRUCTION_PATH_TRACE_QUANTUM {
+            return;
+        }
+        trace.quantum_ordinal = Some(quantum_ordinal);
+        trace.retired_instructions_charged = Some(retired_instructions_charged);
+        trace.rdtsc_cpl0_hits_before_dispatch = Some(self.rdtsc_cpl0_hits);
+        if quantum_ordinal != LINUX_INSTRUCTION_PATH_TRACE_QUANTUM
+            || retired_instructions_charged != LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE
+            || self.rdtsc_cpl0_hits != LINUX_INSTRUCTION_PATH_TRACE_START_HITS
+        {
+            trace.status = InstructionPathTraceStatus::GateMismatch;
+            return;
+        }
+        trace.status = InstructionPathTraceStatus::AwaitingStart;
+        trace.records.clear();
+    }
+
+    pub(crate) fn wants_instruction_path_trace(&self) -> bool {
+        self.instruction_path_trace.as_ref().is_some_and(|trace| {
+            trace.requested
+                && trace.status == InstructionPathTraceStatus::AwaitingStart
+                && trace.quantum_ordinal == Some(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM)
+                && trace.retired_instructions_charged
+                    == Some(LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE)
+                && trace.rdtsc_cpl0_hits_before_dispatch
+                    == Some(LINUX_INSTRUCTION_PATH_TRACE_START_HITS)
+        })
+    }
+
+    pub(crate) fn needs_instruction_path_header(&self) -> bool {
+        self.wants_instruction_path_trace()
+            && self
+                .instruction_path_trace
+                .as_ref()
+                .is_some_and(|trace| trace.header.is_none())
+    }
+
+    pub(crate) fn begin_instruction_path_header(
+        &mut self,
+        state: &od_isa::LongModeState,
+        frame_chain: Vec<crate::ConsoleContextFrame>,
+        frame_chain_end: crate::FrameChainEnd,
+    ) {
+        if !self.wants_instruction_path_trace() {
+            return;
+        }
+        if let Some(trace) = self.instruction_path_trace.as_mut() {
+            trace.header = Some(InstructionPathTraceHeader {
+                rip: state.rip,
+                rflags: state.rflags,
+                gpr: state.gpr,
+                cr3: state.cr3,
+                cs_selector: state.cs_selector,
+                frame_chain,
+                frame_chain_end,
+            });
+        }
+    }
+
+    pub(crate) fn record_instruction_path_retirement(
+        &mut self,
+        record: InstructionPathTraceRecord,
+    ) {
+        if !self.wants_instruction_path_trace() {
+            return;
+        }
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.records.len() >= LINUX_INSTRUCTION_PATH_TRACE_CAPACITY {
+            trace.omitted_records = trace.omitted_records.saturating_add(1);
+            trace.status = InstructionPathTraceStatus::CapacityExhausted;
+            return;
+        }
+        trace.records.push(record);
+    }
+
+    pub(crate) fn complete_instruction_path_quantum(
+        &mut self,
+        quantum_ordinal: u64,
+        quantum_instructions_executed: u64,
+    ) {
+        let Some(trace) = self.instruction_path_trace.as_mut() else {
+            return;
+        };
+        if trace.quantum_ordinal != Some(quantum_ordinal)
+            || trace.status == InstructionPathTraceStatus::GateMismatch
+        {
+            return;
+        }
+        trace.quantum_instructions_executed = Some(quantum_instructions_executed);
+        trace.rdtsc_cpl0_hits_after_quantum = Some(self.rdtsc_cpl0_hits);
+        if trace.status == InstructionPathTraceStatus::CapacityExhausted {
+            return;
+        }
+        if trace.header.is_none() {
+            trace.status = InstructionPathTraceStatus::MissedStart;
+        } else if self.rdtsc_cpl0_hits != LINUX_INSTRUCTION_PATH_TRACE_END_HIT {
+            trace.status = InstructionPathTraceStatus::MissedEnd;
+        } else if trace.records.len() as u64 != quantum_instructions_executed {
+            trace.status = InstructionPathTraceStatus::MissedEnd;
+        } else {
+            trace.status = InstructionPathTraceStatus::Captured;
+        }
+    }
+
+    pub(crate) fn finish_instruction_path_trace(&mut self) {
+        if let Some(trace) = self.instruction_path_trace.as_mut()
+            && trace.status == InstructionPathTraceStatus::AwaitingStart
+        {
+            trace.status = if trace.header.is_some() {
+                InstructionPathTraceStatus::MissedEnd
+            } else {
+                InstructionPathTraceStatus::MissedStart
+            };
+        }
+    }
+
+    pub(crate) fn wants_rdtsc_prefix(&self) -> bool {
+        self.rdtsc_prefix_sentinel_rip.is_some()
+            && self.rdtsc_prefix_status == RdtscPrefixStatus::RunEndedBeforeSentinel
+            && self.rdtsc_prefix_event_ordinal < LINUX_RDTSC_PREFIX_CAPACITY as u64
+    }
+
+    pub(crate) fn wants_any_rdtsc_clock_trace(&self) -> bool {
+        self.wants_rdtsc_prefix() || self.wants_rdtsc_clock_trace()
+    }
+
+    pub(crate) fn wants_rdtsc_clock_trace(&self) -> bool {
+        self.rdtsc_entry_sample_rip.is_some()
+            && self
+                .rdtsc_entry_clock_trace_samples
+                .len()
+                .saturating_add(self.rdtsc_entry_clock_trace_missing as usize)
+                < LINUX_RDTSC_CLOCK_TRACE_CAPACITY
+    }
+
+    pub(crate) fn build_rdtsc_clock_trace_if_active<T>(
+        &self,
+        build: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.wants_any_rdtsc_clock_trace().then(build)
+    }
+
+    pub(crate) fn record_rdtsc_site_sample(
+        &mut self,
+        rip: Option<u64>,
+        state: &od_isa::LongModeState,
+        clock_ledger: Option<RdtscClockReadLedger>,
+    ) {
+        if let Some(entry_rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_entry_sample_rip) {
+            self.rdtsc_entry_sample_hits = self.rdtsc_entry_sample_hits.saturating_add(1);
+            let hit_ordinal = self.rdtsc_entry_sample_hits;
+            if hit_ordinal <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+                if let Some(ledger) = clock_ledger {
+                    let retired_ns_charged = ledger
+                        .retired_instructions_charged
+                        .checked_mul(NS_PER_RETIRED);
+                    let charged_ns = retired_ns_charged.and_then(|ns| {
+                        ns.checked_add(ledger.pm_timer_ns_charged)
+                            .and_then(|ns| ns.checked_add(ledger.pit_ns_charged))
+                            .and_then(|ns| ns.checked_add(ledger.rdtsc_ns_charged))
+                            .and_then(|ns| ns.checked_add(ledger.idle_ns_advanced))
+                    });
+                    let clock_elapsed_ns = ledger.now_ns.checked_sub(ledger.initial_now_ns);
+                    self.rdtsc_entry_clock_trace_samples
+                        .push(RdtscClockTraceSample {
+                            rip: entry_rip,
+                            hit_ordinal,
+                            initial_now_ns: ledger.initial_now_ns,
+                            now_ns: ledger.now_ns,
+                            callback_tsc: ledger.tsc,
+                            tsc_hz: ledger.tsc_hz,
+                            retired_instructions_charged: ledger.retired_instructions_charged,
+                            retired_ns_charged,
+                            quantum_instructions_executed: 0,
+                            retired_instructions_through_rdtsc: 0,
+                            pm_timer_ns_charged: ledger.pm_timer_ns_charged,
+                            pit_ns_charged: ledger.pit_ns_charged,
+                            rdtsc_ns_charged: ledger.rdtsc_ns_charged,
+                            idle_ns_advanced: ledger.idle_ns_advanced,
+                            quantum_ordinal: ledger.quantum_ordinal,
+                            irqs_delivered: ledger.irqs_delivered,
+                            unaccounted_elapsed_ns: clock_elapsed_ns
+                                .zip(charged_ns)
+                                .and_then(|(elapsed, charged)| elapsed.checked_sub(charged)),
+                        });
+                } else {
+                    self.rdtsc_entry_clock_trace_missing =
+                        self.rdtsc_entry_clock_trace_missing.saturating_add(1);
+                }
+            }
+            if self.rdtsc_entry_samples.len() < LINUX_RDTSC_SAMPLE_CAPACITY {
+                use od_isa::Register;
+                let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+                let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+                self.rdtsc_entry_samples.push(RdtscEntrySample {
+                    rip: entry_rip,
+                    hit_ordinal: self.rdtsc_entry_sample_hits,
+                    requested_cycles: state.gpr[Register::R8 as usize],
+                    observed_tsc: (rdx << 32) | rax,
+                    rbp: state.gpr[Register::Rbp as usize],
+                    rsp: state.gpr[Register::Rsp as usize],
+                    cr3: state.cr3,
+                });
+            } else {
+                self.rdtsc_entry_samples_omitted =
+                    self.rdtsc_entry_samples_omitted.saturating_add(1);
+            }
+        }
+        let Some(rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_sample_rip) else {
+            return;
+        };
+        self.rdtsc_sample_site_hits = self.rdtsc_sample_site_hits.saturating_add(1);
+        let hit_ordinal = self.rdtsc_sample_site_hits;
+        if self.delay_tsc_summary_requested && rip == LINUX_DELAY_TSC_POLL_RIP {
+            use od_isa::Register;
+            let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+            let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+            let observed_tsc = (rdx << 32) | rax;
+            let start_tsc = state.gpr[Register::Rdi as usize];
+            self.record_delay_tsc_poll(&RdtscSiteSample {
+                rip: LINUX_DELAY_TSC_POLL_RIP,
+                hit_ordinal,
+                requested_cycles: state.gpr[Register::R8 as usize],
+                start_tsc,
+                observed_tsc,
+                elapsed_cycles: observed_tsc.wrapping_sub(start_tsc),
+                rbp: state.gpr[Register::Rbp as usize],
+                rsp: state.gpr[Register::Rsp as usize],
+                cr3: state.cr3,
+            });
+            return;
+        }
+        if self
+            .rdtsc_sample_window
+            .is_some_and(|window| !(window.first_hit..=window.last_hit).contains(&hit_ordinal))
+        {
+            return;
+        }
+        if hit_ordinal % self.rdtsc_sample_stride.max(1) != 0 {
+            return;
+        }
+        if self.rdtsc_site_samples.len() >= LINUX_RDTSC_SAMPLE_CAPACITY {
+            self.rdtsc_site_samples_omitted = self.rdtsc_site_samples_omitted.saturating_add(1);
+            return;
+        }
+
+        use od_isa::Register;
+        let rax = state.gpr[Register::Rax as usize] & u64::from(u32::MAX);
+        let rdx = state.gpr[Register::Rdx as usize] & u64::from(u32::MAX);
+        let observed_tsc = (rdx << 32) | rax;
+        let start_tsc = state.gpr[Register::Rdi as usize];
+        self.rdtsc_site_samples.push(RdtscSiteSample {
+            rip,
+            hit_ordinal,
+            requested_cycles: state.gpr[Register::R8 as usize],
+            start_tsc,
+            observed_tsc,
+            elapsed_cycles: observed_tsc.wrapping_sub(start_tsc),
+            rbp: state.gpr[Register::Rbp as usize],
+            rsp: state.gpr[Register::Rsp as usize],
+            cr3: state.cr3,
+        });
+    }
+
+    pub(crate) fn record_rdtsc_prefix(
+        &mut self,
+        rip: Option<u64>,
+        state: &od_isa::LongModeState,
+        ledger: Option<RdtscClockReadLedger>,
+        page_faults_delivered: u64,
+        general_protection_faults_delivered: u64,
+    ) -> Option<u64> {
+        if !self.wants_rdtsc_prefix() {
+            return None;
+        }
+        self.rdtsc_prefix_event_ordinal = self.rdtsc_prefix_event_ordinal.saturating_add(1);
+        let ordinal = self.rdtsc_prefix_event_ordinal;
+        let sentinel = rip.is_some_and(|rip| self.rdtsc_prefix_sentinel_rip == Some(rip));
+        if let (Some(rip), Some(ledger)) = (rip, ledger) {
+            let retired_ns_charged = ledger
+                .retired_instructions_charged
+                .checked_mul(NS_PER_RETIRED);
+            let charged_ns = retired_ns_charged.and_then(|ns| {
+                ns.checked_add(ledger.pm_timer_ns_charged)
+                    .and_then(|ns| ns.checked_add(ledger.pit_ns_charged))
+                    .and_then(|ns| ns.checked_add(ledger.rdtsc_ns_charged))
+                    .and_then(|ns| ns.checked_add(ledger.idle_ns_advanced))
+            });
+            let clock_elapsed_ns = ledger.now_ns.checked_sub(ledger.initial_now_ns);
+            let clock = RdtscClockTraceSample {
+                rip,
+                hit_ordinal: ordinal,
+                initial_now_ns: ledger.initial_now_ns,
+                now_ns: ledger.now_ns,
+                callback_tsc: ledger.tsc,
+                tsc_hz: ledger.tsc_hz,
+                retired_instructions_charged: ledger.retired_instructions_charged,
+                retired_ns_charged,
+                quantum_instructions_executed: 0,
+                retired_instructions_through_rdtsc: 0,
+                pm_timer_ns_charged: ledger.pm_timer_ns_charged,
+                pit_ns_charged: ledger.pit_ns_charged,
+                rdtsc_ns_charged: ledger.rdtsc_ns_charged,
+                idle_ns_advanced: ledger.idle_ns_advanced,
+                quantum_ordinal: ledger.quantum_ordinal,
+                irqs_delivered: ledger.irqs_delivered,
+                unaccounted_elapsed_ns: clock_elapsed_ns
+                    .zip(charged_ns)
+                    .and_then(|(elapsed, charged)| elapsed.checked_sub(charged)),
+            };
+            self.rdtsc_prefix_samples.push(RdtscPrefixSample {
+                ordinal,
+                rip,
+                cpl: state.cs_selector.map(|selector| (selector & 3) as u8),
+                cr3: state.cr3,
+                rsp: state.gpr[od_isa::Register::Rsp as usize],
+                rbp: state.gpr[od_isa::Register::Rbp as usize],
+                clock,
+                page_faults_delivered_through: page_faults_delivered,
+                general_protection_faults_delivered_through: general_protection_faults_delivered,
+            });
+        } else {
+            self.rdtsc_prefix_missing = self.rdtsc_prefix_missing.saturating_add(1);
+        }
+        if sentinel {
+            self.rdtsc_prefix_status = RdtscPrefixStatus::SentinelSeen;
+        } else if ordinal == LINUX_RDTSC_PREFIX_CAPACITY as u64 {
+            self.rdtsc_prefix_status = RdtscPrefixStatus::CapacityExhausted;
+        }
+        Some(ordinal)
+    }
+
+    pub(crate) fn complete_rdtsc_prefix(
+        &mut self,
+        ordinal: Option<u64>,
+        completion: RdtscClockReadCompletion,
+    ) {
+        let Some(ordinal) = ordinal else { return };
+        let Some(sample) = self
+            .rdtsc_prefix_samples
+            .last_mut()
+            .filter(|sample| sample.ordinal == ordinal)
+        else {
+            return;
+        };
+        if sample
+            .clock
+            .retired_instructions_charged
+            .checked_add(completion.quantum_instructions_executed)
+            != Some(completion.retired_instructions_through_rdtsc)
+        {
+            self.rdtsc_prefix_samples.pop();
+            self.rdtsc_prefix_missing = self.rdtsc_prefix_missing.saturating_add(1);
+            return;
+        }
+        sample.clock.quantum_instructions_executed = completion.quantum_instructions_executed;
+        sample.clock.retired_instructions_through_rdtsc =
+            completion.retired_instructions_through_rdtsc;
+    }
+
+    /// Completes the selected callback snapshot after the containing execution quantum returns.
+    pub(crate) fn complete_rdtsc_clock_trace(
+        &mut self,
+        rip: Option<u64>,
+        completion: RdtscClockReadCompletion,
+    ) {
+        let Some(entry_rip) = rip.filter(|rip| Some(*rip) == self.rdtsc_entry_sample_rip) else {
+            return;
+        };
+        let hit_ordinal = self.rdtsc_entry_sample_hits;
+        if hit_ordinal > LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+            return;
+        }
+        let Some(sample) = self
+            .rdtsc_entry_clock_trace_samples
+            .last_mut()
+            .filter(|sample| sample.rip == entry_rip && sample.hit_ordinal == hit_ordinal)
+        else {
+            return;
+        };
+        if sample
+            .retired_instructions_charged
+            .checked_add(completion.quantum_instructions_executed)
+            != Some(completion.retired_instructions_through_rdtsc)
+        {
+            self.rdtsc_entry_clock_trace_samples.pop();
+            self.rdtsc_entry_clock_trace_missing =
+                self.rdtsc_entry_clock_trace_missing.saturating_add(1);
+            return;
+        }
+        sample.quantum_instructions_executed = completion.quantum_instructions_executed;
+        sample.retired_instructions_through_rdtsc = completion.retired_instructions_through_rdtsc;
+    }
+
     pub(crate) fn record_cpl0_rdtsc(&mut self, rip: Option<u64>) {
+        self.rdtsc_cpl0_hits = self.rdtsc_cpl0_hits.saturating_add(1);
+        if self.elf_copy_invocation_active()
+            && let Some(capture) = self
+                .elf_stack_copy
+                .as_mut()
+                .and_then(|snapshot| snapshot.invocation.as_mut())
+            && capture.status == ElfStackCopyInvocationStatus::InProgress
+            && let Some(rip) = rip
+        {
+            if let Some(site) = capture.rdtsc_sites.iter_mut().find(|site| site.rip == rip) {
+                site.reads = site.reads.saturating_add(1);
+            } else if capture.rdtsc_sites.len() < LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY {
+                capture
+                    .rdtsc_sites
+                    .push(ElfStackCopyRdtscSiteCount { rip, reads: 1 });
+            } else {
+                capture.rdtsc_site_overflow_reads =
+                    capture.rdtsc_site_overflow_reads.saturating_add(1);
+                capture.status = ElfStackCopyInvocationStatus::IncompleteOverflow;
+            }
+        }
         let Some(rip) = rip else {
             self.rdtsc_unattributed_reads = self.rdtsc_unattributed_reads.saturating_add(1);
             return;
@@ -132,6 +2412,7 @@ impl LinuxExecutionObservationCollector {
     }
 
     pub(crate) fn record_page_fault(&mut self, event: DeliveredPageFaultObservation) {
+        self.record_elf_copy_page_fault(&event);
         let ordinal = self.page_faults_delivered;
         self.page_faults_delivered = self.page_faults_delivered.saturating_add(1);
         if self.selected_post_iret_ordinal == Some(ordinal)
@@ -196,7 +2477,23 @@ impl LinuxExecutionObservationCollector {
         }
     }
 
-    pub(crate) fn finish(self) -> LinuxExecutionObservations {
+    pub(crate) fn finish(mut self) -> LinuxExecutionObservations {
+        let cpl0_rdtsc_total = self.rdtsc_sites.values().copied().fold(
+            self.rdtsc_unattributed_reads
+                .saturating_add(self.rdtsc_site_overflow_reads),
+            u64::saturating_add,
+        );
+        for invocation in &mut self.mmu_gather.setups {
+            if invocation.closure == ElfMmuGatherClosure::Active {
+                invocation.closure = ElfMmuGatherClosure::RunEnded;
+            }
+        }
+        let rdtsc_prefix_missing =
+            if self.rdtsc_prefix_status == RdtscPrefixStatus::CapacityExhausted {
+                cpl0_rdtsc_total.saturating_sub(self.rdtsc_prefix_samples.len() as u64)
+            } else {
+                self.rdtsc_prefix_missing
+            };
         let post_iret_page_walk_status = self.selected_post_iret_ordinal.map(|_| {
             if self.post_iret_page_walk.is_some() {
                 "captured"
@@ -208,12 +2505,44 @@ impl LinuxExecutionObservationCollector {
                 "event_not_seen"
             }
         });
+        let delay_tsc_call_summary =
+            self.delay_tsc_summary_requested
+                .then(|| DelayTscCallSummaryCollection {
+                    entry_rip: LINUX_DELAY_TSC_ENTRY_RIP,
+                    poll_rip: LINUX_DELAY_TSC_POLL_RIP,
+                    entry_count: self.delay_tsc_entry_count,
+                    entries_omitted: self.delay_tsc_entries_omitted,
+                    poll_count: self.delay_tsc_poll_count,
+                    unmatched_polls: self.delay_tsc_unmatched_polls,
+                    ambiguous_polls: self.delay_tsc_ambiguous_polls,
+                    entries: self.delay_tsc_entries,
+                });
+        let mut elf_stack_alignment = std::mem::take(&mut self.elf_stack_alignment);
         LinuxExecutionObservations {
             rdtsc_cpl0_sites: self
                 .rdtsc_sites
                 .into_iter()
                 .map(|(rip, reads)| RdtscSiteCount { rip, reads })
                 .collect(),
+            rdtsc_sample_rip: self.rdtsc_sample_rip,
+            rdtsc_sample_stride: self.rdtsc_sample_stride.max(1),
+            rdtsc_sample_window: self.rdtsc_sample_window,
+            rdtsc_sample_site_hits: self.rdtsc_sample_site_hits,
+            rdtsc_site_samples: self.rdtsc_site_samples,
+            rdtsc_site_samples_omitted: self.rdtsc_site_samples_omitted,
+            rdtsc_entry_sample_rip: self.rdtsc_entry_sample_rip,
+            rdtsc_entry_sample_hits: self.rdtsc_entry_sample_hits,
+            rdtsc_entry_samples: self.rdtsc_entry_samples,
+            rdtsc_entry_samples_omitted: self.rdtsc_entry_samples_omitted,
+            delay_tsc_call_summary,
+            rdtsc_entry_clock_trace_samples: self.rdtsc_entry_clock_trace_samples,
+            rdtsc_entry_clock_trace_missing: self.rdtsc_entry_clock_trace_missing,
+            rdtsc_prefix_sentinel_rip: self.rdtsc_prefix_sentinel_rip,
+            rdtsc_prefix_samples: self.rdtsc_prefix_samples,
+            rdtsc_prefix_event_count: self.rdtsc_prefix_event_ordinal,
+            rdtsc_prefix_missing,
+            rdtsc_prefix_status: self.rdtsc_prefix_status,
+            instruction_path_trace: self.instruction_path_trace,
             rdtsc_cpl0_unattributed_reads: self.rdtsc_unattributed_reads,
             rdtsc_cpl0_site_overflow_reads: self.rdtsc_site_overflow_reads,
             page_faults_delivered: self.page_faults_delivered,
@@ -222,6 +2551,32 @@ impl LinuxExecutionObservationCollector {
             post_iret_selected_ordinal: self.selected_post_iret_ordinal,
             post_iret_page_walk: self.post_iret_page_walk,
             post_iret_page_walk_status,
+            elf_stack_copy: self.elf_stack_copy.map(|mut snapshot| {
+                if snapshot.status == ElfStackCopyStatus::AwaitingTarget {
+                    elf_stack_alignment.finalize(None, None);
+                    snapshot.alignment = elf_stack_alignment;
+                    snapshot.status = ElfStackCopyStatus::RunEndedBeforeTarget;
+                    snapshot.pre_copy_cr3_ledger = Some(ElfStackCopyPreCopyCr3Ledger {
+                        status: if self.pre_copy_cr3_ledger_overflow {
+                            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+                        } else {
+                            ElfStackCopyCr3LedgerStatus::RunEndedBeforeTarget
+                        },
+                        event_count: self.cr3_change_total,
+                        events_omitted: self.pre_copy_cr3_events_omitted,
+                        events: self.pre_copy_cr3_events,
+                        boundary_markers: self.pre_copy_boundary_markers,
+                        target_event: self.target_cr3_event,
+                        mmu_gather: self.mmu_gather,
+                    });
+                }
+                if let Some(invocation) = snapshot.invocation.as_mut()
+                    && invocation.status == ElfStackCopyInvocationStatus::InProgress
+                {
+                    invocation.status = ElfStackCopyInvocationStatus::IncompleteRunEnded;
+                }
+                snapshot
+            }),
         }
     }
 }
@@ -229,6 +2584,1010 @@ impl LinuxExecutionObservationCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gather_context(
+        rip: u64,
+        rbp: u64,
+        rsp: u64,
+        saved_rbp: Option<u64>,
+        saved_return_rip: Option<u64>,
+    ) -> ElfMmuGatherContext {
+        ElfMmuGatherContext {
+            rip,
+            retired_instructions: 101,
+            cr3: 0x1000,
+            cr3_changes: 3,
+            page_faults: 2,
+            rbp,
+            rsp,
+            tlb_pointer: matches!(
+                rip,
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP | LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP
+            )
+            .then_some(0xa000),
+            saved_rbp,
+            saved_return_rip,
+        }
+    }
+
+    fn gather_raw(tlb: u64, mm: u64, flags: u32) -> ElfMmuGatherRaw {
+        ElfMmuGatherRaw {
+            tlb,
+            mm,
+            start: 0x4000,
+            end: 0x8000,
+            flags,
+            mm_tlb_flush_nested: -1,
+        }
+    }
+
+    #[test]
+    fn mmu_gather_pairing_requires_direct_frame_links_and_exact_tlb() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0x2000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0x0000_0001)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_actual_post(
+            gather_context(
+                LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+                0x7e00,
+                0x6fe0,
+                Some(0x7f00),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0x0000_0800)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_return(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            "captured",
+            None,
+        );
+        let capture = &collector.mmu_gather;
+        assert_eq!(capture.setups.len(), 1);
+        assert_eq!(capture.unpaired.len(), 0);
+        assert_eq!(capture.setups[0].closure, ElfMmuGatherClosure::Returned);
+        assert!(matches!(
+            capture.setups[0].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(matches!(
+            capture.setups[0].actual_post,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(matches!(
+            capture.setups[0].returned,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(
+            matches!(capture.setups[0].actual_post, ElfMmuGatherPhase::Captured { value, .. } if value.flags & 0x08f4 != 0)
+        );
+
+        let mut wrong_tlb = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_tlb.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        wrong_tlb.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        let mut wrong_tlb_context = gather_context(
+            LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+            0x7e00,
+            0x6fe0,
+            Some(0x7f00),
+            Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+        );
+        wrong_tlb_context.tlb_pointer = Some(0xa008);
+        wrong_tlb.record_mmu_gather_actual_post(
+            wrong_tlb_context,
+            Some(gather_raw(0xa008, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert_eq!(wrong_tlb.mmu_gather.unpaired[0].status, "mismatch");
+
+        let mut wrong_frame =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_frame.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        wrong_frame.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(0xdead),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert!(wrong_frame.mmu_gather.setups[0].initial.is_not_observed());
+        assert_eq!(wrong_frame.mmu_gather.unpaired[0].status, "mismatch");
+    }
+
+    #[test]
+    fn mmu_gather_retains_raw_snapshots_but_marks_mm_association_mismatch() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(0x1234),
+            ),
+            0,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_relocate(
+            gather_context(
+                LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+                0x7f00,
+                0x6ff0,
+                Some(0x8000),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_actual_post(
+            gather_context(
+                LINUX_TLB_FINISH_MMU_ACTUAL_POST_RIP,
+                0x7e00,
+                0x6fe0,
+                Some(0x7f00),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_RETURN_RIP),
+            ),
+            Some(gather_raw(0xa000, 0xc000, 0x800)),
+            "captured",
+            None,
+        );
+
+        let invocation = &collector.mmu_gather.setups[0];
+        assert!(invocation.association_mismatch);
+        assert!(matches!(
+            invocation.initial,
+            ElfMmuGatherPhase::Captured { value, .. } if value.mm == 0xb000
+        ));
+        assert!(matches!(
+            invocation.actual_post,
+            ElfMmuGatherPhase::Captured { value, .. } if value.mm == 0xc000
+        ));
+    }
+
+    #[test]
+    fn mmu_gather_default_path_is_disabled_and_setup_prefix_is_capped() {
+        let setup = gather_context(
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            0x8000,
+            0x7000,
+            None,
+            None,
+        );
+        let mut disabled = LinuxExecutionObservationCollector::default().with_elf_stack_copy(false);
+        disabled.record_mmu_gather_setup(
+            setup,
+            0,
+            0x9000,
+            None,
+            None,
+            "read_error",
+            Some("bad read".into()),
+        );
+        assert!(disabled.mmu_gather.setups.is_empty());
+        assert_eq!(disabled.mmu_gather.setup_count, 0);
+
+        let mut capped = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for _ in 0..=LINUX_ELF_MMU_GATHER_SETUP_CAPACITY {
+            capped.record_mmu_gather_setup(
+                setup,
+                0,
+                0x9000,
+                None,
+                None,
+                "read_error",
+                Some("bad read".into()),
+            );
+        }
+        assert_eq!(
+            capped.mmu_gather.setups.len(),
+            LINUX_ELF_MMU_GATHER_SETUP_CAPACITY
+        );
+        assert_eq!(
+            capped.mmu_gather.setup_count,
+            (LINUX_ELF_MMU_GATHER_SETUP_CAPACITY + 1) as u64
+        );
+        assert_eq!(capped.mmu_gather.setups_omitted, 1);
+        assert!(
+            capped
+                .mmu_gather
+                .setups
+                .iter()
+                .all(|item| { matches!(item.setup, ElfMmuGatherPhase::ReadError { .. }) })
+        );
+    }
+
+    #[test]
+    fn mmu_gather_setup_derives_and_retains_exact_candidate_pages() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let slot = collector.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            0x1800,
+            0x9000,
+            Some(0x10_123),
+            Some(0x20_000),
+            "captured",
+            None,
+        );
+        let (index, pages) = slot.unwrap();
+        assert_eq!(pages, [Some(0xd000), Some(0xe000)]);
+        assert!(matches!(
+            &collector.mmu_gather.setups[index].setup,
+            ElfMmuGatherPhase::Captured { value, .. }
+                if value.relocated_start == Some(0xe923)
+                    && value.aligned_start == Some(0xe000)
+                    && value.candidate_pages == pages
+                    && value.candidate_error.is_none()
+        ));
+
+        let mut invalid = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        invalid.record_mmu_gather_setup(
+            gather_context(
+                LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+                0x8000,
+                0x7000,
+                Some(0x8100),
+                Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+            ),
+            0x20_000,
+            0x9000,
+            Some(0x1000),
+            Some(0x2000),
+            "captured",
+            None,
+        );
+        assert!(matches!(
+            &invalid.mmu_gather.setups[0].setup,
+            ElfMmuGatherPhase::Captured { value, .. }
+                if value.candidate_pages == [None, None]
+                    && value.candidate_error.is_some()
+        ));
+    }
+
+    #[test]
+    fn superseded_setup_preserves_captured_phase_and_cannot_receive_later_hit() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let setup = gather_context(
+            LINUX_SETUP_ARG_PAGES_STACK_SHIFT_RIP,
+            0x8000,
+            0x7000,
+            Some(0x8100),
+            Some(0x1234),
+        );
+        collector.record_mmu_gather_setup(
+            setup,
+            0x1000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+        let relocation = gather_context(
+            LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALL_RIP,
+            0x7f00,
+            0x6ff0,
+            Some(0x8000),
+            Some(LINUX_RELOCATE_VMA_DOWN_TLB_FINISH_CALLER_RIP),
+        );
+        collector.record_mmu_gather_relocate(
+            relocation,
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        collector.record_mmu_gather_setup(
+            setup,
+            0x2000,
+            0x9000,
+            Some(0x10000),
+            Some(0x20000),
+            "captured",
+            None,
+        );
+
+        assert_eq!(
+            collector.mmu_gather.setups[0].closure,
+            ElfMmuGatherClosure::Superseded
+        );
+        assert!(matches!(
+            collector.mmu_gather.setups[0].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+        assert!(collector.mmu_gather.setups[0].actual_post.is_not_observed());
+
+        collector.record_mmu_gather_relocate(
+            relocation,
+            Some(gather_raw(0xa000, 0xb000, 0)),
+            "captured",
+            None,
+        );
+        assert!(collector.mmu_gather.setups[0].actual_post.is_not_observed());
+        assert!(matches!(
+            collector.mmu_gather.setups[1].initial,
+            ElfMmuGatherPhase::Captured { .. }
+        ));
+    }
+
+    fn gated_instruction_trace_collector() -> LinuxExecutionObservationCollector {
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..LINUX_INSTRUCTION_PATH_TRACE_START_HITS {
+            collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        collector
+    }
+
+    #[test]
+    fn target_cr3_event_capture_requires_exact_ordinal_and_rip_once() {
+        let mut wrong_rip = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        wrong_rip.cr3_change_total = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL - 1;
+        wrong_rip.retired_total = 123;
+        let capture = ElfStackCopyTargetCr3Capture {
+            status: "captured",
+            sequence: None,
+            rip: None,
+            cr3: None,
+            retired_instructions: None,
+            rsp: Some(0x8000),
+            rbp: Some(0x8100),
+            chain_status: Some(ElfStackCopyTargetCr3ChainStatus::Complete),
+            frames: Vec::new(),
+            error: None,
+        };
+        assert!(
+            !wrong_rip
+                .wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP + 1)
+        );
+        wrong_rip.record_elf_copy_cr3_with_target(
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP + 1,
+            0x1000,
+            0x2000,
+            0,
+            Some(capture.clone()),
+        );
+        assert_eq!(wrong_rip.target_cr3_event.status, "not_seen");
+
+        let mut exact = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        exact.cr3_change_total = LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL - 1;
+        exact.retired_total = 456;
+        assert!(exact.wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP));
+        exact.record_elf_copy_cr3_with_target(
+            LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP,
+            0x1000,
+            0x2000,
+            0,
+            Some(capture),
+        );
+        assert_eq!(exact.target_cr3_event.status, "captured");
+        assert_eq!(
+            exact.target_cr3_event.sequence,
+            Some(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_ORDINAL)
+        );
+        assert_eq!(exact.target_cr3_event.cr3, Some(0x2000));
+        assert_eq!(exact.target_cr3_event.retired_instructions, Some(456));
+        assert!(!exact.wants_elf_copy_target_cr3_event(LINUX_ELF_STACK_COPY_TARGET_CR3_EVENT_RIP));
+    }
+
+    #[test]
+    fn elf_stack_copy_collector_requests_only_its_first_snapshot() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        assert!(collector.wants_elf_stack_copy());
+        let mut captured = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        captured.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        collector.record_elf_stack_copy(captured);
+        assert!(!collector.wants_elf_stack_copy());
+    }
+
+    #[test]
+    fn elf_stack_copy_cr3_prefix_is_ordered_reconciled_and_stops_at_the_gate() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[0].0);
+        collector.record_elf_copy_retired(5);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[1].0);
+        collector.record_elf_copy_cr3(0x1010, 0x1000, 0x2000, 0);
+        collector.record_elf_copy_retired(2);
+        collector.observe_elf_stack_copy_boundary(LINUX_ELF_STACK_COPY_BOUNDARIES[2].0);
+        collector.record_elf_copy_cr3(0x2020, 0x2000, 0x3000, 0);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(0x3000);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+
+        collector.record_elf_copy_cr3(0x3030, 0x3000, 0x4000, 0);
+        let capture = collector.finish().elf_stack_copy.unwrap();
+        let ledger = capture.pre_copy_cr3_ledger.unwrap();
+        assert_eq!(ledger.status, ElfStackCopyCr3LedgerStatus::Complete);
+        assert_eq!(ledger.event_count, 2);
+        assert_eq!(ledger.events_omitted, 0);
+        assert_eq!(ledger.events.len(), 2);
+        assert_eq!(ledger.events[0].sequence, 1);
+        assert_eq!(ledger.events[0].rip, 0x1010);
+        assert_eq!(ledger.events[0].old_cr3, 0x1000);
+        assert_eq!(ledger.events[0].new_cr3, 0x2000);
+        assert_eq!(ledger.events[0].cpl, 0);
+        assert_eq!(ledger.events[0].retired_instructions_through_current, 5);
+        assert_eq!(ledger.events[1].sequence, 2);
+        assert_eq!(ledger.events[1].old_cr3, 0x2000);
+        assert_eq!(ledger.events[1].new_cr3, 0x3000);
+        assert_eq!(ledger.events[1].retired_instructions_through_current, 7);
+        assert_eq!(ledger.boundary_markers.len(), 3);
+        assert_eq!(ledger.boundary_markers[0].name, "kernel_execve");
+        assert_eq!(
+            ledger.boundary_markers[0].retired_instructions_before_current,
+            0
+        );
+        assert_eq!(ledger.boundary_markers[1].name, "load_elf_binary");
+        assert_eq!(ledger.boundary_markers[2].name, "create_elf_tables");
+        assert_eq!(capture.invocation.unwrap().entry.unwrap().cr3_changes, 2);
+    }
+
+    #[test]
+    fn elf_stack_copy_cr3_prefix_overflow_is_explicit() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for index in 0..=LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
+        }
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+
+        let capture = collector.finish().elf_stack_copy.unwrap();
+        let ledger = capture.pre_copy_cr3_ledger.unwrap();
+        assert_eq!(
+            ledger.status,
+            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            ledger.event_count,
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1
+        );
+        assert_eq!(ledger.events_omitted, 1);
+        assert_eq!(
+            ledger.events.len(),
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY
+        );
+
+        let mut ended_before_target =
+            LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        for index in 0..=LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY {
+            ended_before_target.record_elf_copy_cr3(
+                0x2000 + index as u64,
+                index as u64,
+                index as u64 + 1,
+                0,
+            );
+        }
+        let ledger = ended_before_target
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .pre_copy_cr3_ledger
+            .unwrap();
+        assert_eq!(
+            ledger.status,
+            ElfStackCopyCr3LedgerStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            ledger.event_count,
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY as u64 + 1
+        );
+        assert_eq!(ledger.events_omitted, 1);
+        assert_eq!(
+            ledger.events.len(),
+            LINUX_ELF_STACK_COPY_PRE_COPY_CR3_EVENT_CAPACITY
+        );
+    }
+
+    fn start_elf_copy_invocation() -> LinuxExecutionObservationCollector {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.rip = Some(LINUX_ELF_STACK_COPY_RIP);
+        snapshot.cr3 = Some(0x1000);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(true);
+        collector.record_elf_stack_copy(snapshot);
+        collector
+    }
+
+    #[test]
+    fn elf_stack_copy_invocation_snapshots_cumulative_counters_at_return_and_stop() {
+        let mut collector = start_elf_copy_invocation();
+        collector.record_elf_copy_retired(2);
+        collector.record_elf_copy_cr3(0xffff_ffff_8199_9c00, 0x1000, 0x2000, 0);
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8199_9c10));
+        collector.record_elf_copy_retired(3);
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        collector.finish_elf_copy_run(0x2000, 1, 1, 1, 1, 100);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(capture.status, ElfStackCopyInvocationStatus::Complete);
+        assert_eq!(
+            capture.entry.unwrap().retired_instructions_through_current,
+            0
+        );
+        assert_eq!(
+            capture
+                .return_boundary
+                .unwrap()
+                .retired_instructions_through_current,
+            5
+        );
+        assert_eq!(capture.return_boundary.unwrap().cr3_changes, 1);
+        assert_eq!(capture.stop.unwrap().cr3_changes, 1);
+        assert_eq!(capture.cr3_events.len(), 1);
+        assert_eq!(
+            capture.rdtsc_sites,
+            [ElfStackCopyRdtscSiteCount {
+                rip: 0xffff_ffff_8199_9c10,
+                reads: 1
+            }]
+        );
+        assert_eq!(capture.retired_duration, 5);
+    }
+
+    #[test]
+    fn elf_stack_copy_rejects_platform_string_mismatch_before_invocation() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let mut snapshot = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        snapshot.return_rip = Some(LINUX_ELF_STACK_COPY_RIP + 5);
+        snapshot.platform_string_matches = Some(false);
+        snapshot.probes.push(ElfStackCopyProbe {
+            name: "copy_source".into(),
+            address: 0x1000,
+            page_base: 0x1000,
+            access: "Read".into(),
+            cpl: 0,
+            entries: Vec::new(),
+            outcome: "translated".into(),
+            translated_physical: Some(0x2000),
+            error: None,
+        });
+        collector.record_elf_stack_copy(snapshot);
+        let snapshot = collector.finish().elf_stack_copy.unwrap();
+        assert_eq!(snapshot.status, ElfStackCopyStatus::GateMismatch);
+        assert!(snapshot.invocation.is_none());
+        assert!(snapshot.probes.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_copy_early_wrong_return_rip_is_marked_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 4, 0x1000);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(capture.status, ElfStackCopyInvocationStatus::IncompleteGate);
+        assert!(capture.return_boundary.is_none());
+    }
+
+    #[test]
+    fn elf_stack_copy_cr3_and_rdtsc_caps_mark_capture_incomplete() {
+        let mut cr3 = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            cr3.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
+        }
+        let cr3_capture = cr3.finish().elf_stack_copy.unwrap().invocation.unwrap();
+        assert_eq!(
+            cr3_capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            cr3_capture.cr3_events.len(),
+            LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY
+        );
+        assert_eq!(cr3_capture.cr3_events_omitted, 1);
+
+        let mut rdtsc = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY {
+            rdtsc.record_cpl0_rdtsc(Some(0x1000 + index as u64));
+        }
+        let rdtsc_capture = rdtsc.finish().elf_stack_copy.unwrap().invocation.unwrap();
+        assert_eq!(
+            rdtsc_capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            rdtsc_capture.rdtsc_sites.len(),
+            LINUX_ELF_STACK_COPY_RDTSC_SITE_CAPACITY
+        );
+        assert_eq!(rdtsc_capture.rdtsc_site_overflow_reads, 1);
+    }
+
+    #[test]
+    fn elf_stack_copy_page_fault_event_cap_marks_capture_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY {
+            collector.record_page_fault(DeliveredPageFaultObservation {
+                rip: 0xffff_ffff_8199_9c00 + index as u64,
+                cr2: 0x7fff_0000_1000 + index as u64,
+                error_code: 3,
+                access: "Write".into(),
+                cpl: 0,
+                faulting_context: FaultingPageFaultContext {
+                    cr3: 0x1000,
+                    rsp: 0x2000,
+                    rbp: 0x3000,
+                    rcx: 0,
+                    rsi: 0,
+                    rdi: 0,
+                    cs_selector: Some(8),
+                    frame_chain: Vec::new(),
+                    frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+                    page_walk: None,
+                },
+            });
+        }
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(
+            capture.page_fault_events.len(),
+            LINUX_ELF_STACK_COPY_PF_EVENT_CAPACITY
+        );
+        assert_eq!(capture.page_fault_events_omitted, 1);
+    }
+
+    #[test]
+    fn elf_stack_copy_retired_duration_cap_marks_capture_incomplete() {
+        let mut collector = start_elf_copy_invocation();
+        collector
+            .elf_stack_copy
+            .as_mut()
+            .unwrap()
+            .invocation
+            .as_mut()
+            .unwrap()
+            .retired_duration_cap = 2;
+        collector.record_elf_copy_retired(3);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(capture.retired_duration, 3);
+        assert_eq!(capture.retired_duration_cap, 2);
+    }
+
+    #[test]
+    fn elf_stack_copy_overflow_keeps_first_return_boundary_only() {
+        let mut collector = start_elf_copy_invocation();
+        for index in 0..=LINUX_ELF_STACK_COPY_CR3_EVENT_CAPACITY {
+            collector.record_elf_copy_cr3(0x1000 + index as u64, index as u64, index as u64 + 1, 0);
+        }
+        collector.record_elf_copy_retired(10);
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        let first_boundary = collector
+            .elf_stack_copy
+            .as_ref()
+            .unwrap()
+            .invocation
+            .as_ref()
+            .unwrap()
+            .return_boundary;
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x3000);
+        let capture = collector
+            .finish()
+            .elf_stack_copy
+            .unwrap()
+            .invocation
+            .unwrap();
+        assert_eq!(
+            capture.status,
+            ElfStackCopyInvocationStatus::IncompleteOverflow
+        );
+        assert_eq!(capture.return_boundary, first_boundary);
+        assert_eq!(capture.return_boundary.unwrap().cr3, 0x2000);
+    }
+
+    #[test]
+    fn elf_copy_path_remains_enabled_across_quantum_until_return_boundary() {
+        let mut collector = start_elf_copy_invocation();
+        assert!(collector.needs_elf_stack_copy_path());
+        assert!(!collector.wants_elf_stack_copy());
+        assert!(collector.elf_copy_invocation_active());
+
+        // A set call may end at a quantum boundary while the guest is still inside the call.
+        // The next set call must select the same specialized path.
+        assert!(collector.needs_elf_stack_copy_path());
+        collector.finish_elf_copy_invocation(LINUX_ELF_STACK_COPY_RIP + 5, 0x2000);
+        assert!(!collector.needs_elf_stack_copy_path());
+    }
+
+    #[test]
+    fn elf_copy_counters_are_inactive_without_the_opt_in() {
+        let mut collector = LinuxExecutionObservationCollector::default();
+        assert!(!collector.tracks_elf_copy_counters());
+        assert_eq!(collector.elf_copy_return_rip(), None);
+        collector.record_elf_copy_retired(5);
+        collector.record_elf_copy_cr3(0x1000, 0x2000, 0x3000, 0);
+        collector.record_elf_copy_general_protection();
+        assert_eq!(collector.retired_total, 0);
+        assert_eq!(collector.cr3_change_total, 0);
+        assert_eq!(collector.delivered_exception_total, 0);
+        assert!(collector.finish().elf_stack_copy.is_none());
+    }
+
+    fn trace_header() -> InstructionPathTraceHeader {
+        InstructionPathTraceHeader {
+            rip: 0x1000,
+            rflags: 0x202,
+            gpr: [0; 16],
+            cr3: Some(0x3000),
+            cs_selector: Some(8),
+            frame_chain: Vec::new(),
+            frame_chain_end: crate::FrameChainEnd::NullFramePointer,
+        }
+    }
+
+    #[test]
+    fn instruction_path_trace_starts_only_after_the_exact_quantum_gate() {
+        let mut collector = gated_instruction_trace_collector();
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM - 1,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert!(!collector.wants_instruction_path_trace());
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert!(collector.wants_instruction_path_trace());
+        assert_eq!(
+            collector
+                .instruction_path_trace
+                .as_ref()
+                .unwrap()
+                .rdtsc_cpl0_hits_before_dispatch,
+            Some(LINUX_INSTRUCTION_PATH_TRACE_START_HITS)
+        );
+
+        let mut mismatch = gated_instruction_trace_collector();
+        mismatch.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE + 1,
+        );
+        assert!(!mismatch.wants_instruction_path_trace());
+        assert_eq!(
+            mismatch.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::GateMismatch
+        );
+
+        let mut hit_mismatch =
+            LinuxExecutionObservationCollector::default().with_instruction_path_trace(true);
+        for _ in 0..(LINUX_INSTRUCTION_PATH_TRACE_START_HITS - 1) {
+            hit_mismatch.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        }
+        hit_mismatch.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        assert_eq!(
+            hit_mismatch.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::GateMismatch
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_keeps_record_order_and_branch_metadata() {
+        let mut collector = gated_instruction_trace_collector();
+        collector.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        collector.instruction_path_trace.as_mut().unwrap().header = Some(trace_header());
+        let flow = InstructionPathControlFlow {
+            kind: "branch",
+            condition: Some(4),
+            taken: true,
+            rflags_before: 0x242,
+            rflags_after: 0x202,
+            destination_registers: [None, None],
+            destination: 0x2000,
+        };
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x1000,
+            next_rip: 0x2000,
+            control_flow: Some(flow),
+        });
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x2000,
+            next_rip: 0x2001,
+            control_flow: None,
+        });
+        let records = &collector.instruction_path_trace.as_ref().unwrap().records;
+        assert_eq!((records[0].rip, records[0].next_rip), (0x1000, 0x2000));
+        assert_eq!((records[1].rip, records[1].next_rip), (0x2000, 0x2001));
+        assert_eq!(records[0].control_flow.unwrap(), flow);
+        assert_eq!(records[1].control_flow, None);
+        collector.record_cpl0_rdtsc(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        collector.complete_instruction_path_quantum(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, 2);
+        let trace = collector.instruction_path_trace.as_ref().unwrap();
+        assert_eq!(trace.status, InstructionPathTraceStatus::Captured);
+        assert_eq!(
+            trace.rdtsc_cpl0_hits_after_quantum,
+            Some(LINUX_INSTRUCTION_PATH_TRACE_END_HIT)
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_overflow_and_missing_boundaries_are_incomplete() {
+        let mut overflow = gated_instruction_trace_collector();
+        overflow.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        let trace = overflow.instruction_path_trace.as_mut().unwrap();
+        trace.records.resize(
+            LINUX_INSTRUCTION_PATH_TRACE_CAPACITY,
+            InstructionPathTraceRecord {
+                rip: 0x1000,
+                next_rip: 0x1001,
+                control_flow: None,
+            },
+        );
+        overflow.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 0x1001,
+            next_rip: 0x1002,
+            control_flow: None,
+        });
+        assert_eq!(
+            overflow.instruction_path_trace.as_ref().unwrap().status,
+            InstructionPathTraceStatus::CapacityExhausted
+        );
+        assert_eq!(
+            overflow
+                .instruction_path_trace
+                .as_ref()
+                .unwrap()
+                .omitted_records,
+            1
+        );
+
+        let mut missed_end = gated_instruction_trace_collector();
+        missed_end.begin_instruction_path_quantum(
+            LINUX_INSTRUCTION_PATH_TRACE_QUANTUM,
+            LINUX_INSTRUCTION_PATH_TRACE_RETIRED_GATE,
+        );
+        missed_end.instruction_path_trace.as_mut().unwrap().header = Some(trace_header());
+        missed_end.complete_instruction_path_quantum(LINUX_INSTRUCTION_PATH_TRACE_QUANTUM, 0);
+        assert_eq!(
+            missed_end.instruction_path_trace.as_ref().unwrap().status,
+            InstructionPathTraceStatus::MissedEnd
+        );
+
+        let mut missed_start = gated_instruction_trace_collector();
+        missed_start.finish_instruction_path_trace();
+        assert_eq!(
+            missed_start.instruction_path_trace.unwrap().status,
+            InstructionPathTraceStatus::MissedStart
+        );
+    }
+
+    #[test]
+    fn instruction_path_trace_is_a_no_op_when_not_requested() {
+        let mut collector = LinuxExecutionObservationCollector::default();
+        collector.begin_instruction_path_quantum(1, 0);
+        collector.record_instruction_path_retirement(InstructionPathTraceRecord {
+            rip: 1,
+            next_rip: 2,
+            control_flow: None,
+        });
+        collector.complete_instruction_path_quantum(1, 1);
+        collector.finish_instruction_path_trace();
+        assert_eq!(collector.finish().instruction_path_trace, None);
+    }
 
     fn fault(rip: u64) -> DeliveredPageFaultObservation {
         DeliveredPageFaultObservation {
@@ -413,6 +3772,579 @@ mod tests {
     }
 
     #[test]
+    fn selected_rdtsc_rip_keeps_post_instruction_context_and_caps_samples() {
+        use od_isa::{LongModeState, Register};
+
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(1);
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 0x1234;
+        state.gpr[Register::Rdi as usize] = 0xffff_ffff_ffff_ff00;
+        state.gpr[Register::Rdx as usize] = 0;
+        state.gpr[Register::Rax as usize] = 0x250;
+        state.gpr[Register::Rbp as usize] = 0x8000;
+        state.gpr[Register::Rsp as usize] = 0x7ff0;
+        state.cr3 = Some(0x9000);
+
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state, None);
+        collector.record_rdtsc_site_sample(Some(RIP), &state, None);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_rip, Some(RIP));
+        assert_eq!(observations.rdtsc_site_samples.len(), 1);
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+        assert_eq!(
+            observations.rdtsc_site_samples[0],
+            RdtscSiteSample {
+                rip: RIP,
+                hit_ordinal: 1,
+                requested_cycles: 0x1234,
+                start_tsc: 0xffff_ffff_ffff_ff00,
+                observed_tsc: 0x250,
+                elapsed_cycles: 0x350,
+                rbp: 0x8000,
+                rsp: 0x7ff0,
+                cr3: Some(0x9000),
+            }
+        );
+
+        let mut capped = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(1);
+        for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
+            capped.record_rdtsc_site_sample(Some(RIP), &state, None);
+        }
+        let observations = capped.finish();
+        assert_eq!(
+            observations.rdtsc_site_samples.len(),
+            LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(observations.rdtsc_site_samples_omitted, 1);
+        assert_eq!(
+            observations.rdtsc_sample_site_hits,
+            LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1
+        );
+    }
+
+    #[test]
+    fn delay_tsc_summary_associates_only_verified_polls_and_keeps_partial_status() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 100;
+        entry.gpr[Register::Rax as usize] = 1_000;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        entry.cr3 = Some(0x9000);
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::ReadFailed,
+        );
+
+        let mut poll = entry.clone();
+        poll.gpr[Register::Rdi as usize] = 1_000;
+        poll.gpr[Register::Rax as usize] = 1_040;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        poll.gpr[Register::Rax as usize] = 1_100;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(summary.entry_count, 1);
+        assert_eq!(summary.poll_count, 3);
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 0);
+        assert!(summary.entries[0].terminal_threshold_seen);
+        assert_eq!(summary.entries[0].poll_count, 2);
+        assert_eq!(summary.entries[0].first_poll_ordinal, Some(1));
+        assert_eq!(summary.entries[0].last_poll_ordinal, Some(2));
+        assert_eq!(summary.entries[0].last_elapsed_cycles, Some(100));
+        assert_eq!(
+            summary.entries[0].poll_sequence_status,
+            DelayTscPollSequenceStatus::ThresholdSeen
+        );
+    }
+
+    #[test]
+    fn exact_delay_tsc_rips_keep_legacy_poll_samples_without_summary_opt_in() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP));
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 100;
+        state.gpr[Register::Rdi as usize] = 1_000;
+        state.gpr[Register::Rax as usize] = 1_025;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &state, None);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_site_samples.len(), 1);
+        assert!(observations.delay_tsc_call_summary.is_none());
+    }
+
+    #[test]
+    fn delay_tsc_summary_counts_ambiguous_polls_as_unmatched_and_marks_partial_call() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 50;
+        entry.gpr[Register::Rax as usize] = 1_000;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        for _ in 0..2 {
+            collector.record_delay_tsc_entry(
+                Some(LINUX_DELAY_TSC_ENTRY_RIP),
+                &entry,
+                vec![],
+                crate::FrameChainEnd::NullFramePointer,
+            );
+        }
+        let mut poll = entry.clone();
+        poll.gpr[Register::Rdi as usize] = 1_000;
+        poll.gpr[Register::Rax as usize] = 1_025;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 1);
+        assert_eq!(
+            summary
+                .entries
+                .iter()
+                .map(|entry| entry.poll_count)
+                .sum::<u64>(),
+            0
+        );
+        assert!(
+            summary
+                .entries
+                .iter()
+                .all(|entry| !entry.terminal_threshold_seen)
+        );
+        assert!(
+            summary
+                .entries
+                .iter()
+                .all(|entry| entry.poll_sequence_status == DelayTscPollSequenceStatus::Partial)
+        );
+    }
+
+    #[test]
+    fn omitted_duplicate_delay_tsc_entry_makes_retained_key_ambiguous() {
+        use od_isa::{LongModeState, Register};
+
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(LINUX_DELAY_TSC_POLL_RIP))
+            .with_rdtsc_entry_sample_rip(Some(LINUX_DELAY_TSC_ENTRY_RIP))
+            .with_delay_tsc_call_summary(true);
+        let mut entry = LongModeState::default();
+        entry.gpr[Register::R8 as usize] = 100;
+        entry.gpr[Register::Rbp as usize] = 0x8000;
+        entry.gpr[Register::Rsp as usize] = 0x7ff0;
+        for ordinal in 0..LINUX_DELAY_TSC_CALL_CAPACITY as u64 {
+            entry.gpr[Register::Rax as usize] = ordinal;
+            collector.record_delay_tsc_entry(
+                Some(LINUX_DELAY_TSC_ENTRY_RIP),
+                &entry,
+                vec![],
+                crate::FrameChainEnd::NullFramePointer,
+            );
+        }
+        // This omitted call collides with the first retained entry's verified key.
+        entry.gpr[Register::Rax as usize] = 0;
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::NullFramePointer,
+        );
+        // Repeating the omitted key keeps only one ambiguity marker in its retained bucket.
+        collector.record_delay_tsc_entry(
+            Some(LINUX_DELAY_TSC_ENTRY_RIP),
+            &entry,
+            vec![],
+            crate::FrameChainEnd::NullFramePointer,
+        );
+
+        let mut poll = entry;
+        poll.gpr[Register::Rdi as usize] = 0;
+        poll.gpr[Register::Rax as usize] = 100;
+        collector.record_rdtsc_site_sample(Some(LINUX_DELAY_TSC_POLL_RIP), &poll, None);
+        let summary = collector.finish().delay_tsc_call_summary.unwrap();
+        assert_eq!(
+            summary.entry_count,
+            LINUX_DELAY_TSC_CALL_CAPACITY as u64 + 2
+        );
+        assert_eq!(summary.entries.len(), LINUX_DELAY_TSC_CALL_CAPACITY);
+        assert_eq!(summary.entries_omitted, 2);
+        assert_eq!(summary.unmatched_polls, 1);
+        assert_eq!(summary.ambiguous_polls, 1);
+        assert_eq!(summary.entries[0].poll_count, 0);
+    }
+
+    #[test]
+    fn selected_rdtsc_entry_rip_keeps_every_hit_and_reports_cap_omissions() {
+        use od_isa::{LongModeState, Register};
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        let mut state = LongModeState::default();
+        state.gpr[Register::R8 as usize] = 0x1234;
+        state.gpr[Register::Rax as usize] = 0x5678;
+        state.gpr[Register::Rdx as usize] = 0x9abc;
+        state.gpr[Register::Rbp as usize] = 0x8000;
+        state.gpr[Register::Rsp as usize] = 0x7ff0;
+        state.cr3 = Some(0x9000);
+
+        collector.record_rdtsc_site_sample(Some(RIP + 2), &state, None);
+        collector.record_rdtsc_site_sample(Some(RIP), &state, None);
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_sample_rip, Some(RIP));
+        assert_eq!(observations.rdtsc_entry_sample_hits, 1);
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 0);
+        assert_eq!(
+            observations.rdtsc_entry_samples[0],
+            RdtscEntrySample {
+                rip: RIP,
+                hit_ordinal: 1,
+                requested_cycles: 0x1234,
+                observed_tsc: 0x9abc_0000_5678,
+                rbp: 0x8000,
+                rsp: 0x7ff0,
+                cr3: Some(0x9000),
+            }
+        );
+
+        let mut capped =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..=LINUX_RDTSC_SAMPLE_CAPACITY {
+            capped.record_rdtsc_site_sample(Some(RIP), &state, None);
+        }
+        let observations = capped.finish();
+        assert_eq!(
+            observations.rdtsc_entry_samples.len(),
+            LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 1);
+        assert_eq!(
+            observations.rdtsc_entry_sample_hits,
+            LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 1
+        );
+    }
+
+    #[test]
+    fn entry_clock_ledger_keeps_only_the_first_two_callback_snapshots() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        let state = LongModeState::default();
+        for hit in 1..=4 {
+            assert_eq!(
+                collector.wants_rdtsc_clock_trace(),
+                hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64
+            );
+            collector.record_rdtsc_site_sample(
+                Some(RIP),
+                &state,
+                (hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64).then_some(RdtscClockReadLedger {
+                    initial_now_ns: 10,
+                    now_ns: 20 + 2 * hit,
+                    tsc: 0x1000 + hit,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: 5,
+                    pm_timer_ns_charged: 2,
+                    pit_ns_charged: 1,
+                    rdtsc_ns_charged: 1,
+                    idle_ns_advanced: 2 + hit,
+                    quantum_ordinal: hit + 9,
+                    irqs_delivered: hit - 1,
+                }),
+            );
+            if hit <= LINUX_RDTSC_CLOCK_TRACE_CAPACITY as u64 {
+                collector.complete_rdtsc_clock_trace(
+                    Some(RIP),
+                    RdtscClockReadCompletion {
+                        quantum_instructions_executed: 3,
+                        retired_instructions_through_rdtsc: 8,
+                    },
+                );
+            }
+        }
+        assert!(!collector.wants_rdtsc_clock_trace());
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 2);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 0);
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].hit_ordinal,
+            1
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].callback_tsc,
+            0x1001
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].retired_ns_charged,
+            Some(5)
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].quantum_instructions_executed,
+            3
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].retired_instructions_through_rdtsc,
+            8
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].quantum_ordinal,
+            10
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].irqs_delivered,
+            0
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[0].unaccounted_elapsed_ns,
+            Some(0)
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[1].hit_ordinal,
+            2
+        );
+        assert_eq!(
+            observations.rdtsc_entry_clock_trace_samples[1].unaccounted_elapsed_ns,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn entry_clock_ledger_counts_missing_only_for_the_first_two_hits() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..3 {
+            collector.record_rdtsc_site_sample(Some(RIP), &LongModeState::default(), None);
+        }
+        assert!(!collector.wants_rdtsc_clock_trace());
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_entry_clock_trace_samples.len(), 0);
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 2);
+    }
+
+    #[test]
+    fn inactive_or_complete_clock_trace_does_not_build_diagnostic_state() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut builds = 0;
+        let inactive = LinuxExecutionObservationCollector::default();
+        assert_eq!(
+            inactive.build_rdtsc_clock_trace_if_active(|| {
+                builds += 1;
+                ()
+            }),
+            None
+        );
+        let mut inactive = inactive;
+        inactive.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 2,
+                retired_instructions_through_rdtsc: 2,
+            },
+        );
+
+        let mut complete =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        for _ in 0..LINUX_RDTSC_CLOCK_TRACE_CAPACITY {
+            assert!(complete.wants_rdtsc_clock_trace());
+            assert_eq!(
+                complete.build_rdtsc_clock_trace_if_active(|| {
+                    builds += 1;
+                    ()
+                }),
+                Some(())
+            );
+            complete.record_rdtsc_site_sample(Some(RIP), &LongModeState::default(), None);
+        }
+        complete.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 2,
+                retired_instructions_through_rdtsc: 2,
+            },
+        );
+        assert!(!complete.wants_rdtsc_clock_trace());
+        assert_eq!(
+            complete.build_rdtsc_clock_trace_if_active(|| {
+                builds += 1;
+                ()
+            }),
+            None
+        );
+        assert_eq!(builds, LINUX_RDTSC_CLOCK_TRACE_CAPACITY);
+    }
+
+    #[test]
+    fn invalid_clock_trace_completion_is_counted_missing() {
+        use od_isa::LongModeState;
+
+        const RIP: u64 = 0xffff_ffff_8271_b31b;
+        let mut collector =
+            LinuxExecutionObservationCollector::default().with_rdtsc_entry_sample_rip(Some(RIP));
+        collector.record_rdtsc_site_sample(
+            Some(RIP),
+            &LongModeState::default(),
+            Some(RdtscClockReadLedger {
+                initial_now_ns: 0,
+                now_ns: 0,
+                tsc: 0x1000,
+                tsc_hz: 2_400_000_000,
+                retired_instructions_charged: u64::MAX,
+                pm_timer_ns_charged: 0,
+                pit_ns_charged: 0,
+                rdtsc_ns_charged: 0,
+                idle_ns_advanced: 0,
+                quantum_ordinal: 1,
+                irqs_delivered: 0,
+            }),
+        );
+        collector.complete_rdtsc_clock_trace(
+            Some(RIP),
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 1,
+                retired_instructions_through_rdtsc: u64::MAX,
+            },
+        );
+        let observations = collector.finish();
+        assert!(observations.rdtsc_entry_clock_trace_samples.is_empty());
+        assert_eq!(observations.rdtsc_entry_clock_trace_missing, 1);
+    }
+
+    #[test]
+    fn selected_rdtsc_rip_samples_each_stride_hit_and_tracks_all_hits() {
+        use od_isa::LongModeState;
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let state = LongModeState::default();
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(3);
+        for _ in 0..8 {
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
+        }
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_stride, 3);
+        assert_eq!(observations.rdtsc_sample_site_hits, 8);
+        assert_eq!(
+            observations
+                .rdtsc_site_samples
+                .iter()
+                .map(|sample| sample.hit_ordinal)
+                .collect::<Vec<_>>(),
+            vec![3, 6]
+        );
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+    }
+
+    #[test]
+    fn selected_rdtsc_window_keeps_global_stride_phase_and_total_hits() {
+        use od_isa::LongModeState;
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let state = LongModeState::default();
+        let window = RdtscSampleWindow {
+            first_hit: 2,
+            last_hit: 8,
+        };
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(3)
+            .with_rdtsc_sample_window(Some(window));
+        for _ in 0..10 {
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
+        }
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_window, Some(window));
+        assert_eq!(observations.rdtsc_sample_site_hits, 10);
+        assert_eq!(
+            observations
+                .rdtsc_site_samples
+                .iter()
+                .map(|sample| sample.hit_ordinal)
+                .collect::<Vec<_>>(),
+            vec![3, 6]
+        );
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+    }
+
+    #[test]
+    fn window_beyond_execution_prefix_keeps_entry_stream_and_has_no_omissions() {
+        use od_isa::LongModeState;
+        const POLL_RIP: u64 = 0xffff_ffff_8271_b34d;
+        const ENTRY_RIP: u64 = 0xffff_ffff_8271_b31b;
+        let state = LongModeState::default();
+        let window = RdtscSampleWindow {
+            first_hit: 20,
+            last_hit: 25,
+        };
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(POLL_RIP))
+            .with_rdtsc_sample_window(Some(window))
+            .with_rdtsc_entry_sample_rip(Some(ENTRY_RIP));
+        for _ in 0..10 {
+            collector.record_rdtsc_site_sample(Some(ENTRY_RIP), &state, None);
+            collector.record_rdtsc_site_sample(Some(POLL_RIP), &state, None);
+        }
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_sample_site_hits, 10);
+        assert_eq!(observations.rdtsc_site_samples.len(), 0);
+        assert_eq!(observations.rdtsc_site_samples_omitted, 0);
+        assert_eq!(observations.rdtsc_entry_sample_hits, 10);
+        assert_eq!(observations.rdtsc_entry_samples.len(), 10);
+        assert_eq!(observations.rdtsc_entry_samples_omitted, 0);
+    }
+
+    #[test]
+    fn strided_rdtsc_sample_cap_counts_only_omitted_candidates() {
+        use od_isa::LongModeState;
+        const RIP: u64 = 0xffff_ffff_8271_b34d;
+        let state = LongModeState::default();
+        let stride = 2;
+        let hits = (LINUX_RDTSC_SAMPLE_CAPACITY as u64 + 5) * stride;
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_sample_rip(Some(RIP))
+            .with_rdtsc_sample_stride(stride);
+        for _ in 0..hits {
+            collector.record_rdtsc_site_sample(Some(RIP), &state, None);
+        }
+        let observations = collector.finish();
+        assert_eq!(
+            observations.rdtsc_site_samples.len(),
+            LINUX_RDTSC_SAMPLE_CAPACITY
+        );
+        assert_eq!(observations.rdtsc_sample_site_hits, hits);
+        assert_eq!(observations.rdtsc_site_samples_omitted, 5);
+        assert_eq!(
+            observations.rdtsc_site_samples.last().unwrap().hit_ordinal,
+            (LINUX_RDTSC_SAMPLE_CAPACITY as u64) * stride
+        );
+    }
+
+    #[test]
     fn delivered_page_faults_keep_true_total_when_event_samples_are_capped() {
         let mut collector = LinuxExecutionObservationCollector::default();
         for rip in 0..(LINUX_PAGE_FAULT_EVENT_CAPACITY as u64 + 3) {
@@ -431,5 +4363,233 @@ mod tests {
         assert_eq!(observations.page_fault_events_omitted, 3);
         assert_eq!(observations.page_fault_events[0], fault(0));
         assert_eq!(observations.page_fault_events.last(), Some(&fault(255)));
+    }
+
+    #[test]
+    fn rdtsc_prefix_stops_at_sentinel_with_complete_post_report_counts() {
+        use od_isa::{LongModeState, Register};
+        let sentinel = LINUX_RDTSC_PREFIX_SENTINEL_RIP;
+        let mut state = LongModeState::default();
+        state.cs_selector = Some(0x08);
+        state.cr3 = Some(0x4000);
+        state.gpr[Register::Rsp as usize] = 0x5000;
+        state.gpr[Register::Rbp as usize] = 0x6000;
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_prefix_sentinel(Some(sentinel));
+        for (rip, retired) in [(0xffff_ffff_8100_1000, 4), (sentinel, 7)] {
+            collector.record_cpl0_rdtsc(Some(rip));
+            let ordinal = collector.record_rdtsc_prefix(
+                Some(rip),
+                &state,
+                Some(RdtscClockReadLedger {
+                    initial_now_ns: 10,
+                    now_ns: 20,
+                    tsc: 123 + retired,
+                    tsc_hz: 2_400_000_000,
+                    retired_instructions_charged: retired - 1,
+                    pm_timer_ns_charged: 0,
+                    pit_ns_charged: 0,
+                    rdtsc_ns_charged: 1,
+                    idle_ns_advanced: 0,
+                    quantum_ordinal: retired,
+                    irqs_delivered: 0,
+                }),
+                retired,
+                2,
+            );
+            collector.complete_rdtsc_prefix(
+                ordinal,
+                RdtscClockReadCompletion {
+                    quantum_instructions_executed: 1,
+                    retired_instructions_through_rdtsc: retired,
+                },
+            );
+        }
+        assert_eq!(
+            collector.rdtsc_prefix_status,
+            RdtscPrefixStatus::SentinelSeen
+        );
+        assert!(!collector.wants_rdtsc_prefix());
+        let mut built = false;
+        assert!(
+            collector
+                .build_rdtsc_clock_trace_if_active(|| built = true)
+                .is_none()
+        );
+        assert!(!built);
+        // Site accounting can continue for the legacy RDTSC table; prefix capture stays frozen.
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8100_2000));
+        assert_eq!(collector.rdtsc_prefix_samples.len(), 2);
+        let observations = collector.finish();
+        assert_eq!(
+            observations.rdtsc_prefix_status,
+            RdtscPrefixStatus::SentinelSeen
+        );
+        assert_eq!(observations.rdtsc_prefix_missing, 0);
+        let sample = observations.rdtsc_prefix_samples[1];
+        assert_eq!(sample.ordinal, 2);
+        assert_eq!(sample.rip, sentinel);
+        assert_eq!(sample.cpl, Some(0));
+        assert_eq!(sample.cr3, Some(0x4000));
+        assert_eq!((sample.rsp, sample.rbp), (0x5000, 0x6000));
+        assert_eq!(sample.page_faults_delivered_through, 7);
+        assert_eq!(sample.general_protection_faults_delivered_through, 2);
+        assert_eq!(sample.clock.retired_instructions_through_rdtsc, 7);
+    }
+
+    #[test]
+    fn rdtsc_prefix_reports_capacity_and_missing_post_cap_events() {
+        use od_isa::LongModeState;
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_prefix_sentinel(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        collector.rdtsc_prefix_event_ordinal = LINUX_RDTSC_PREFIX_CAPACITY as u64 - 1;
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8100_1000));
+        let ordinal = collector.record_rdtsc_prefix(
+            Some(0xffff_ffff_8100_1000),
+            &LongModeState::default(),
+            Some(RdtscClockReadLedger {
+                initial_now_ns: 0,
+                now_ns: 1,
+                tsc: 1,
+                tsc_hz: 1,
+                retired_instructions_charged: 0,
+                pm_timer_ns_charged: 0,
+                pit_ns_charged: 0,
+                rdtsc_ns_charged: 0,
+                idle_ns_advanced: 0,
+                quantum_ordinal: 1,
+                irqs_delivered: 0,
+            }),
+            0,
+            0,
+        );
+        collector.complete_rdtsc_prefix(
+            ordinal,
+            RdtscClockReadCompletion {
+                quantum_instructions_executed: 0,
+                retired_instructions_through_rdtsc: 0,
+            },
+        );
+        assert_eq!(
+            collector.rdtsc_prefix_status,
+            RdtscPrefixStatus::CapacityExhausted
+        );
+        assert!(!collector.wants_rdtsc_prefix());
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8100_2000));
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8100_3000));
+        let observations = collector.finish();
+        assert_eq!(observations.rdtsc_prefix_missing, 2);
+        assert_eq!(observations.rdtsc_prefix_samples.len(), 1);
+    }
+
+    #[test]
+    fn rdtsc_prefix_marks_missing_callback_data_and_run_end_before_sentinel() {
+        use od_isa::LongModeState;
+        let mut collector = LinuxExecutionObservationCollector::default()
+            .with_rdtsc_prefix_sentinel(Some(LINUX_RDTSC_PREFIX_SENTINEL_RIP));
+        collector.record_cpl0_rdtsc(Some(0xffff_ffff_8100_1000));
+        collector.record_rdtsc_prefix(
+            Some(0xffff_ffff_8100_1000),
+            &LongModeState::default(),
+            None,
+            0,
+            0,
+        );
+        let observations = collector.finish();
+        assert_eq!(
+            observations.rdtsc_prefix_status,
+            RdtscPrefixStatus::RunEndedBeforeSentinel
+        );
+        assert_eq!(observations.rdtsc_prefix_missing, 1);
+        assert!(observations.rdtsc_prefix_samples.is_empty());
+    }
+
+    #[test]
+    fn elf_stack_alignment_pair_is_bounded_and_linked_to_copy_snapshot() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let r15 = 0xffff_ffff_83ff_0040;
+        let rbp = 0xffff_ffff_8000_7000;
+        let rsp = 0xffff_ffff_8000_6000;
+        let point = |rip, pointer, bytes| ElfStackAlignmentPoint {
+            rip,
+            retired_instructions_before_current: 0,
+            cr3: 0x1000,
+            cs_selector: Some(8),
+            cpl: Some(0),
+            r15,
+            rbp,
+            rsp,
+            pointer,
+            instruction_bytes: Some(bytes),
+            error: None,
+        };
+        collector.retired_total = 80;
+        collector.record_elf_stack_alignment_point(
+            point(
+                LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+                0xffff_ffff_83ff_0080,
+                vec![0xe8, 0xf6, 0x9a, 0xa1, 0xff],
+            ),
+            true,
+        );
+        collector.retired_total = 81;
+        collector.record_elf_stack_alignment_point(
+            point(
+                LINUX_ELF_STACK_ALIGN_AFTER_RIP,
+                0xffff_ffff_83ff_0000,
+                vec![0xba, 0x07, 0x00, 0x00, 0x00],
+            ),
+            false,
+        );
+        let mut copy = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        copy.cr3 = Some(0x1000);
+        copy.cs_selector = Some(8);
+        copy.cpl = Some(0);
+        copy.r15 = Some(r15);
+        copy.rbp = Some(rbp);
+        copy.rsp = Some(rsp);
+        copy.bprm_p = Some(0xffff_ffff_83ff_0080);
+        copy.r13 = Some(0xffff_ffff_83ff_0000);
+        copy.platform_string_matches = Some(true);
+        collector.retired_total = 82;
+        collector.record_elf_stack_copy(copy);
+        let observations = collector.finish();
+        let alignment = &observations.elf_stack_copy.unwrap().alignment;
+        assert_eq!(alignment.status, "captured");
+        assert_eq!(
+            alignment.before_call.as_ref().unwrap().pointer,
+            0xffff_ffff_83ff_0080
+        );
+        assert_eq!(
+            alignment.after_return.as_ref().unwrap().pointer,
+            0xffff_ffff_83ff_0000
+        );
+        assert_eq!(alignment.matched_copy, Some(true));
+    }
+
+    #[test]
+    fn elf_stack_alignment_repeated_anchor_is_reported_as_ambiguous() {
+        let mut collector = LinuxExecutionObservationCollector::default().with_elf_stack_copy(true);
+        let point = ElfStackAlignmentPoint {
+            rip: LINUX_ELF_STACK_ALIGN_BEFORE_RIP,
+            retired_instructions_before_current: 0,
+            cr3: 0x1000,
+            cs_selector: Some(8),
+            cpl: Some(0),
+            r15: 0x100,
+            rbp: 0x200,
+            rsp: 0x300,
+            pointer: 0x400,
+            instruction_bytes: Some(vec![0xe8, 0xf6, 0x9a, 0xa1, 0xff]),
+            error: None,
+        };
+        collector.record_elf_stack_alignment_point(point.clone(), true);
+        collector.record_elf_stack_alignment_point(point, true);
+        let copy = ElfStackCopySnapshot::empty(ElfStackCopyStatus::Captured);
+        collector.record_elf_stack_copy(copy);
+        let observations = collector.finish();
+        let alignment = &observations.elf_stack_copy.unwrap().alignment;
+        assert_eq!(alignment.before_omitted, 1);
+        assert_eq!(alignment.status, "ambiguous");
     }
 }

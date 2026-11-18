@@ -1,0 +1,127 @@
+S5-07 callback-time virtual-clock ledger exact-nonce replay N=2
+Date: 2026-11-16
+Host: local macOS/aarch64
+Code revision: d324ea6 (clock-ledger instrumentation; no guest CPU or comparator changes)
+Runner executable SHA-256: 918f4c1bfe61be3532d4691f3f0bc3fd4af4fe0eacf41138d9ecf35819c34906
+
+Purpose
+-------
+Replay the two nonces from the automatic dual-site source pair and capture
+the first two RDTSC callbacks at entry RIP `0xffffffff8271b31b` with schema-v10
+pre-charge clock ledger. The ledger is taken inside the callback before the
+current quantum's retired instructions and device ticks are charged.
+
+Source pair and inputs
+---------------------
+Source series: `stage5-s5-07-rdtsc-dual-site-stride512-n2-20261116-a`
+Source revision: `71cca6233444a06ec69bf1623c7a46e791313b6a`
+Source series SHA-256: `269cff1da52a8ae5196ab2f6a4d5f6eda1db2143df03325cdaa42167670449b6`
+Source comparison SHA-256: `989064d1f1ec9b4732e55fb44c4f28eb73dd41a9422163b0b14af4c5d558654e`
+
+Both source manifests have identical kernel, initramfs, ACPI blob and ACPI
+manifest hashes, and identical configuration after removing the nonce token
+from `cmdline`. The only confirmed input difference in those fields is the
+per-run `od.nonce`; this does not prove that nonce causes the run variation.
+
+| Input | SHA-256 |
+|---|---|
+| vmlinuz | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| initramfs | `65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7` |
+| ACPI blob | `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d` |
+| ACPI manifest | `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2` |
+
+Profile: 128 MiB, `stage4a`, `--set-cpl0`, `--user-mode`,
+`--linux-norandmaps`, `--linux-no-randomize-kstack-offset`, budget
+3,000,000,000; expected stop `budget_exhausted`. The poll RIP remains
+`0xffffffff8271b34d`, stride 512; entry RIP is
+`0xffffffff8271b31b`.
+
+Invocation
+----------
+Common direct-run arguments:
+
+```sh
+target/release/od-runner linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 65acac38cd4c791154f33179fe2c9f2103dd7fdec51aacfd969ab4d9eb0aedb7 \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --ram-mib 128 --run --budget 3000000000 --set-cpl0 \
+  --cpuid-profile stage4a --user-mode --linux-norandmaps \
+  --linux-no-randomize-kstack-offset \
+  --execution-observations-rdtsc-rip 0xffffffff8271b34d \
+  --execution-observations-rdtsc-stride 512 \
+  --execution-observations-rdtsc-entry-rip 0xffffffff8271b31b
+```
+
+Run 0001 adds `--nonce OD518e8a0fda5d3f4600000175200000000`,
+`--out work/stage5/stage5-s5-07-rdtsc-clock-ledger-replay-20261116-a/run-0001.json`,
+and `--execution-observations-out` pointing to the same directory's
+`run-0001-observations.json`. Run 0002 uses nonce
+`OD518e8a2228ca02d300000175200000001` and the corresponding `run-0002` paths.
+The two commands ran sequentially on the local Mac using the same release
+binary.
+
+Replay identity and capture
+---------------------------
+Both replays loaded Linux, reached `retired=2,999,999,998`, and stopped with
+`exit_kind=budget_exhausted`. For each nonce, the full stop object, UART bytes,
+all entry samples and all retained source stride-512 poll samples match the
+corresponding automatic source run exactly. UART length is 23,356 bytes in
+both runs. Direct replay remains diagnostic; the automatic source comparison
+still has `matches=false` for machine observations and ordered UART.
+
+Schema v10 captured exactly two clock records at the selected entry RIP per
+run; `clock_trace_missing=0`, entry omissions and poll sample omissions are
+zero. Run 0001 has 43,871 entry hits and 66,395 stride samples; run 0002 has
+43,868 entry hits and 66,389 stride samples. Neither trace changed execution
+semantics or comparator rules.
+
+Pre-charge callback ledger
+--------------------------
+`tsc_hz=1,000,000,000`; all snapshots have `initial_now_ns=0`.
+`retired_ns_charged` is the retired-instruction time already committed by
+completed quanta. It deliberately excludes the current quantum, which is
+charged only after the CPU run returns. Therefore its difference is **not** a
+claim that the guest executed exactly that many more instructions by the
+callback.
+
+| Run | Entry hit | Callback TSC | `now_ns` | Retired ns charged | PM ns | PIT ns | RDTSC ns charged | Idle ns | Quantum | IRQs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0001 | 1 | `0x6181dbee` | 1,635,900,398 | 1,524,205,398 | 0 | 16,673,000 | 95,022,000 | 0 | 136,012 | 0 |
+| 0002 | 1 | `0x6182ac5c` | 1,635,953,756 | 1,524,256,756 | 0 | 16,673,000 | 95,024,000 | 0 | 136,014 | 0 |
+| 0001 | 2 | `0x61822f6c` | 1,635,921,772 | 1,524,224,772 | 0 | 16,673,000 | 95,024,000 | 0 | 136,014 | 0 |
+| 0002 | 2 | `0x6182ffa4` | 1,635,975,076 | 1,524,276,076 | 0 | 16,673,000 | 95,026,000 | 0 | 136,016 | 0 |
+
+For entry hit 1 the callback-TSC gap is 53,358 cycles. The ledger explains
+that clock gap arithmetically as +51,358 already-charged retired ns and
++2,000 already-charged RDTSC ns; initial, PM, PIT, idle and delivered-IRQ
+values are equal. Both component sums exactly equal their `now_ns`, with
+`unaccounted_elapsed_ns=0`. This localizes the observed early clock offset to
+charged-time components, but not why the retired path or earlier RDTSC count
+differs. It does not establish nonce causality or benignity.
+
+Between entry hits 1 and 2, run 0001 advances 21,374 ns and run 0002 advances
+21,320 ns. Each ledger advances 2,000 ns in already-charged RDTSC ticks; the
+remaining advances are 19,374 and 19,320 ns of already-charged retired time.
+This agrees with the observed entry-to-entry TSC intervals, while preserving
+the same pre-charge caveat.
+
+The final `virtual_ns` values still diverge (37,404,144,074 versus
+37,401,694,078), so the first-entry ledger does not explain later execution,
+UART ordering, or the strict comparator failure.
+
+Artifacts
+---------
+Raw replays and sidecars are in the ignored directory
+`work/stage5/stage5-s5-07-rdtsc-clock-ledger-replay-20261116-a/`.
+
+| Run | Runner JSON SHA-256 | Sidecar SHA-256 | UART SHA-256 |
+|---|---|---|---|
+| 0001 | `6e3de00cea49e2136b83c362444714d4e32d56e956eae92aa102434f791a6d7c` | `790332e02552a45e9dab73791697349ed549477e390d27a3dc9b79c66dfa52f2` | `6ca448b531593443e67762c949d9ae30421c6825a8dcfa5496d1af216fa0c606` |
+| 0002 | `701272bf8d90444e7d73811b51ef75e3b649e4f295ce47ef15f5948248c97707` | `debe41b0695f83182ffe5857a26d02cd552efeebb55634cf4e5a309a226347d7` | `1cc7d829ab6b0afcec0b15c20aff4fe3387ef4f6e1f92f5e36c5ef3ab2d9a0b8` |
+
+S5-07 remains blocked/unaccepted; no comparator changes or guest CPU semantic
+changes were made.

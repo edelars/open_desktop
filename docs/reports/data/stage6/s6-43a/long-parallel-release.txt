@@ -1,0 +1,10 @@
+running 1 test
+S6-43a parallel / guest-wait+serialize: 2000000 cycles, B native 9875239 interpreter 2000000 (fallback 16.8% of B's steps: 2000000 serializing, X native 6000000 of 6000000), wait steps 3875239 (max 1283), admissions 5401473, A native 4000000 interpreter 0, stale 0, wrong 0, 23.89s
+S6-43a parallel / guest-wait+serialize: equals the interpreter (registers, RAM, data stores): yes
+S6-43a parallel / guest-wait: 2000000 cycles, B native 10822682 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 6000000 of 6000000), wait steps 4822682 (max 13616), admissions 5499346, A native 4000000 interpreter 0, stale 0, wrong 0, 25.19s
+S6-43a parallel / guest-wait: equals the interpreter (registers, RAM, data stores): yes
+test paged_host_loop::tests::s6_43a::s6_43a_long_parallel_run has been running for over 60 seconds
+S6-43a parallel / host-wait (block kept): 2000000 cycles, B native 6000000 interpreter 0 (fallback 0.0% of B's steps: 0 serializing, X native 6000000 of 6000000), wait steps 2000000 (max 1), admissions 2000001, A native 4000000 interpreter 0, stale 0, wrong 0, 19.57s
+S6-43a parallel / host-wait (block kept): equals the interpreter (registers, RAM, data stores): yes
+test paged_host_loop::tests::s6_43a::s6_43a_long_parallel_run ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 81.05s
