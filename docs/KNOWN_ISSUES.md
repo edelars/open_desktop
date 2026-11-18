@@ -1894,10 +1894,11 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 ### ISSUE-066 — S7-16: обязательные log pages и проверка соответствия NVMe
 
-- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Статус открыт.
-- **Основание.** Figure 31 Base 2.4 требует для I/O controller страницы Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Текущий профиль реализует `0x01`–`0x03`. [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf)
-- **Последствие.** Гость не получает обязательные для целевой редакции сведения об этих страницах, командах и features.
-- **Следующий шаг.** Реализовать три страницы и проверить их содержимое. Остаток сверки перечислен в [NVME_DEVICE.md](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно). Проверка полей размеров записей очередей уточнена отдельно в [ISSUE-519](#issue-519).
+- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Статус частично исправлено, сверка открыта.
+- **Исходное расхождение.** Figure 31 Base 2.4 требует для I/O controller страницы Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Ранее профиль предоставлял только `0x01`–`0x03`, и гость не получал сведения о поддерживаемых командах, журналах и features. [NVMe Base 2.4, Figure 31](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=74).
+- **Исправление.** Добавлены три страницы. Тесты через `MachineBus` проверяют все записи, `LPA` в Identify Controller, допустимые `NSID`, смещения и запрос длиннее страницы в пределах `MDTS`. [Контракт Get Log Page](specs/NVME_DEVICE.md#92-get-log-page).
+- **Исправление длины и области действия.** Figure 204 допускает запрос длиной больше страницы. Модель возвращает данные страницы и нулевой хвост в пределах `MDTS` для всех поддерживаемых страниц. Error Information требует controller scope по Figure 209. Тест `log_pages_check_supported_id_scope_and_offset` проверяет чтение 1024 байт со страницы SMART длиной 512 байт и отказ с `Invalid Field` для Error Information при `NSID = 1`. [Base 2.4, с. 213–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239).
+- **Следующий шаг.** Проверить поля Error Information и остальные открытые пункты соответствия. Размеры записей очередей исправлены отдельно. [Пункты сверки](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно), [ISSUE-519](#issue-519).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 

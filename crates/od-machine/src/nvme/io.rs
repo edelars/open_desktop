@@ -20,9 +20,9 @@ use super::queues::{
     Command, Completion, GuestDma, Outcome, PAGE_BYTES, Status, read_from_host, write_to_host,
 };
 
-const OPC_FLUSH: u8 = 0x00;
-const OPC_WRITE: u8 = 0x01;
-const OPC_READ: u8 = 0x02;
+pub(super) const OPC_FLUSH: u8 = 0x00;
+pub(super) const OPC_WRITE: u8 = 0x01;
+pub(super) const OPC_READ: u8 = 0x02;
 
 /// Largest transfer of one command in sectors: `MDTS` = 8 is 2^8 pages of 4 KiB.
 const MAX_SECTORS: u64 = (PAGE_BYTES << MDTS) / SECTOR_BYTES as u64;

@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx. Постоянный RAW backend реализован в `od-host` (раздел 14). MSI-X и обязательные log pages из раздела 1 остаются открыты.
+**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx. Постоянный RAW backend реализован в `od-host` (раздел 14). Добавлены страницы журналов `0x00`, `0x05` и `0x12`. Открыты MSI-X и оставшаяся сверка по разделу 11.
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -8,7 +8,7 @@
 
 Редакция по плану: NVM Express Base Specification 2.4, NVM Command Set Specification 1.3, NVMe over PCIe Transport Specification 1.4 (ratified 2026-07-31, [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md)).
 
-На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`; в текущей модели их нет. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
+На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`. Их форматы и объявление поддержки в Identify Controller сверены по разделу 9.2. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
 
 Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Figure 41 связывает допустимые `CC.IOSQES` и `CC.IOCQES` с SQES/CQES в Identify Controller. Таблицы статусов Create I/O CQ и Create I/O SQ относят `Invalid Queue Size` к неинициализированному `CC.IOCQES` и `CC.IOSQES` соответственно. Модель проверяет соответствующее поле при обработке каждой команды. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85), [Figure 574](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=554), [Figure 579](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=557), [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
 
@@ -158,7 +158,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | 258 | `ACL` | 3 | четыре `Abort` (0-based) |
 | 259 | `AERL` | 3 | четыре AER (0-based) |
 | 260 | `FRMW` | `0x03` | слот 1 только для чтения; один слот |
-| 261 | `LPA` | 0 | SMART и Firmware Slot log — на весь контроллер; нет Commands Supported and Effects, телеметрии |
+| 261 | `LPA` | `0x06` | Поддерживаются расширенный `NUMD`, байтовый `LPO` и Commands Supported and Effects. `MLPS = 0` допускает страницы `0x00` и `0x12` без объявления областей действия команд в `0x05`. SMART доступен для всего контроллера |
 | 262 | `ELPE` | 63 | 64 записи Error Information log |
 | 263 | `NPSS` | 0 | одно состояние питания |
 | 266, 268 | `WCTEMP`, `CCTEMP` | 343, 358 K | пороги предупреждения и критический |
@@ -201,15 +201,18 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 ### 9.2. Get Log Page
 
-`CDW10`: `LID[7:0]`, `RAE` (бит 15), `NUMDL[31:16]`; `CDW11[15:0]` = `NUMDU`; смещение `LPO` — `CDW12/CDW13`, обязано быть кратно 4. Читается `(NUMD + 1) · 4` байт с `LPO`; запрос за пределами страницы — `Invalid Field`. `NSID` для `0x02` и `0x03` — 0 или `0xFFFF_FFFF` (`LPA` бит 0 = 0), иначе `Invalid Field`. Неизвестный `LID` — `Invalid Log Page` (SCT 1, SC `0x09`). Содержимое — настоящее состояние, не нули-заглушки там, где поле имеет смысл:
+Команда читает `(NUMD + 1) · 4` байт с байтового смещения `LPO`. `CDW10` содержит `LID[7:0]`, `RAE` (бит 15) и `NUMDL[31:16]`. `CDW11[15:0]` содержит `NUMDU`. `CDW12/CDW13` задают смещение, кратное 4. Для поддерживаемых страниц допустимы `NSID = 0` и `0xFFFF_FFFF`. `CDW14.OT = 1`, смещение больше размера страницы или длина больше `MDTS` дают `Invalid Field`. Для `0x00`, `0x05` и `0x12` ненулевой `UIDX` также даёт `Invalid Field`. Неизвестный `LID` даёт `Invalid Log Page` (SCT 1, SC `0x09`). Контроллер заполняет нулями участок буфера за концом страницы. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified).
 
 | LID | Страница | Содержимое |
 |---|---|---|
+| `0x00` | Supported Log Pages (1024) | 256 little-endian `u32`, по одному на LID. `LSUPP = 1` для шести страниц в таблице. Индексы записей как `LPO` и параметры `LIDSP` не объявлены |
 | `0x01` | Error Information | до 64 записей по 64 байта, новейшая первой. Заводится на каждую команду с ненулевым статусом (кроме событий-doorbell, у них свои записи): `Error Count` (с 1, растёт), `SQID`, `CID`, `Status Field` (`P` из CQE, `SC`, `SCT`, `DNR`), `Parameter Error Location = 0xFFFF` (не отслеживается), `NSID` команды (`0xFFFF_FFFF`, если 0). Неиспользованные записи — нули (`Error Count = 0`) |
 | `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
 | `0x03` | Firmware Slot Information (512) | `AFI = 0x01` (активен слот 1, следующий — нет); `FRS1` = `FR`; слоты 2–7 пусты (нули) |
+| `0x05` | Commands Supported and Effects (4096) | 256 little-endian `u32` для Admin с байта 0 и 256 для NVM I/O с байта 1024. `CSUPP = 1` для реализованных команд, `LBCC = 1` для NVM `Write`. Зарезервированный остаток обнулён |
+| `0x12` | Feature Identifiers Supported and Effects (1024) | 256 little-endian `u32`, по одному на FID. `FSUPP = 1` для реализованных features. `FSP` указывает namespace для Error Recovery и controller для остальных. Зарезервированные поля обнулены |
 
-Чтение с `RAE = 0` снимает маску асинхронного события соответствующего типа (`0x01` — тип 0 «error status», `0x02` — тип 1).
+Чтение с `RAE = 0` снимает маску асинхронного события для `0x01` (тип 0 «error status») и для `0x02/0x03` (тип 1). Чтение страниц `0x00`, `0x05` и `0x12` сохраняет настройки AER. Поскольку `CC.CSS = 0`, `CSI` не влияет на эти три страницы. [Base 2.4, Figures 204–211](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239), [Figures 216–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=253), [Figures 270–271](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=302), [NVM Command Set 1.3, Figure 92](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=64).
 
 ### 9.3. Асинхронные события
 
@@ -227,7 +230,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | SGL | вне scope; `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Доставка прерываний | нет IRQ-маршрута (`gsi = 0xFFFF_FFFF`); `INTMS/INTMC`, `IEN`, `Interrupt Coalescing` хранятся без эффекта; прошивка опрашивает CQ. Pin-based через IOAPIC — отдельная часть S7-16; MSI-X — после S4-30 |
 | PCI-привязка (class `010802`, BAR0, MSI-X) | blocked до S4-30; до неё контроллер виден только прошивке |
-| Supported Log Pages (`LID 0x00`), Commands Supported and Effects (`0x05`), Changed Namespace List, телеметрия | не реализованы; обязательность `0x00` и `0x05` для заявляемой редакции не сверена (раздел 11). `Invalid Log Page` |
+| Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
 | `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR, ключевые события температуры | не реализованы; `CAP` не объявляет их |
 | Идентификаторы `VID`, `SSVID`, `IEEE` | нулевые; значения проекту не выданы (раздел 8.1) |
@@ -242,7 +245,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 - смещения и размеры полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`, нужны ли `CNS 0x03` и I/O-command-set-specific CNS для заявляемой редакции;
 - перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
 - коды статусов и их SCT, особенно `PRP Offset Invalid`, `Invalid Interrupt Vector`, `Invalid Queue Deletion`, порядок проверок при создании очередей, `DNR`;
-- формат Error Information log (`Status Field`, `Parameter Error Location`), какие команды в него попадают, поведение при чтении за пределами страницы, обязательность `LID 0x00` и `0x05`;
+- формат Error Information log (`Status Field`, `Parameter Error Location`) и какие команды в него попадают;
 - коды событий AER (тип 0, `info` 0 и 1) и правила маскирования до `Get Log Page` с `RAE = 0`;
 - ответ `Abort`, когда цель не найдена (`DW0` бит 0 = 1), и поведение при несуществующей SQ;
 - реакция на doorbell несозданной очереди и на значение вне диапазона (здесь — запись принимается, событие и запись в журнал, а не ошибка шины);
@@ -252,10 +255,9 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 **Открытые вопросы среза A (для ревью и S7-17):**
 
-1. Добавить обязательные для целевой Base 2.4 страницы `0x00`, `0x05` и `0x12`. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified)
-2. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
-3. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
-4. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
+1. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
+2. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
+3. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
 
 ## 12. Проверка
 

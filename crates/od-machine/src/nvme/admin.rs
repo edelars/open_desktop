@@ -13,6 +13,7 @@
 //! error behaviour, which commands are mandatory, LID 0x00 and 0x05.
 
 use super::controller::{MAX_IO_QUEUES, NvmeServiceReport, NvmeState, QUEUE_SLOTS, VERSION};
+use super::io;
 use super::queues::{
     CQE_BYTES, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome,
     PAGE_BYTES, SQE_BYTES, Status, SubmissionQueue, write_to_host,
@@ -45,9 +46,14 @@ const FID_INTERRUPT_VECTOR_CONFIG: u8 = 0x09;
 const FID_WRITE_ATOMICITY: u8 = 0x0A;
 const FID_ASYNC_EVENT_CONFIG: u8 = 0x0B;
 
+const LID_SUPPORTED_LOG_PAGES: u8 = 0x00;
 const LID_ERROR_INFORMATION: u8 = 0x01;
 const LID_SMART_HEALTH: u8 = 0x02;
 const LID_FIRMWARE_SLOT: u8 = 0x03;
+const LID_COMMAND_EFFECTS: u8 = 0x05;
+const LID_FEATURE_EFFECTS: u8 = 0x12;
+const EFFECTS_LIST_BYTES: usize = 256 * 4;
+const SUPPORTED: u32 = 1;
 
 /// The only namespace: its id and the number of namespaces (`NN`).
 pub(super) const NAMESPACE_ID: u32 = 1;
@@ -240,14 +246,9 @@ pub(super) fn report_invalid_doorbell_value(state: &mut NvmeState, qid: u16) {
 /// Executes one admin command. Unsupported opcodes (including the optional
 /// commands this controller does not implement) complete with `Invalid
 /// Command Opcode`.
-pub(super) fn execute(
-    state: &mut NvmeState,
-    command: &Command,
-    dma: &mut dyn GuestDma,
-    report: &mut NvmeServiceReport,
-) -> Outcome {
-    let known = matches!(
-        command.opcode,
+fn admin_opcode_supported(opcode: u8) -> bool {
+    matches!(
+        opcode,
         OPC_DELETE_SQ
             | OPC_CREATE_SQ
             | OPC_GET_LOG_PAGE
@@ -258,8 +259,16 @@ pub(super) fn execute(
             | OPC_SET_FEATURES
             | OPC_GET_FEATURES
             | OPC_ASYNC_EVENT_REQUEST
-    );
-    if !known {
+    )
+}
+
+pub(super) fn execute(
+    state: &mut NvmeState,
+    command: &Command,
+    dma: &mut dyn GuestDma,
+    report: &mut NvmeServiceReport,
+) -> Outcome {
+    if !admin_opcode_supported(command.opcode) {
         return Outcome::Done(Completion::error(Status::INVALID_OPCODE));
     }
     // Fused operations and SGLs are not supported (ONCS.FUSES = 0, SGLS = 0).
@@ -471,6 +480,7 @@ fn identify_controller(state: &NvmeState) -> Vec<u8> {
     page[258] = 3; // ACL: four concurrent Abort commands
     page[259] = (AER_LIMIT - 1) as u8; // AERL
     page[260] = 0x03; // FRMW: slot 1 read only, one slot
+    page[261] = (1 << 2) | (1 << 1); // LPA: extended Get Log Page and command effects
     page[262] = (ERROR_LOG_ENTRIES - 1) as u8; // ELPE
     put(&mut page, 266, &WARNING_TEMPERATURE_K.to_le_bytes()); // WCTEMP
     put(&mut page, 268, &CRITICAL_TEMPERATURE_K.to_le_bytes()); // CCTEMP
@@ -537,22 +547,43 @@ fn get_log_page(
     let dwords = (u64::from(command.cdw11 & 0xFFFF) << 16 | u64::from(command.cdw10 >> 16)) + 1;
     let length = dwords * 4;
     let offset = u64::from(command.cdw13) << 32 | u64::from(command.cdw12);
-    if offset % 4 != 0 {
+    if offset % 4 != 0 || command.cdw14 & (1 << 23) != 0 || length > PAGE_BYTES << MDTS {
         return Err(Status::INVALID_FIELD);
     }
-    // LPA bit 0 is clear: SMART and Firmware Slot logs are controller-wide.
+    let discovery_log = matches!(
+        lid,
+        LID_SUPPORTED_LOG_PAGES | LID_COMMAND_EFFECTS | LID_FEATURE_EFFECTS
+    );
+    // CSI is ignored when CC.CSS selects the NVM command set directly.
+    if discovery_log && command.cdw14 & 0x7F != 0 {
+        return Err(Status::INVALID_FIELD);
+    }
+    // The supported logs are controller-wide (SMART per namespace is disabled).
     let controller_wide = matches!(command.nsid, 0 | 0xFFFF_FFFF);
-    let page = match lid {
-        LID_ERROR_INFORMATION => state.errors.page(),
+    let mut page = match lid {
+        LID_ERROR_INFORMATION if controller_wide => state.errors.page(),
         LID_SMART_HEALTH if controller_wide => smart_health_page(state),
         LID_FIRMWARE_SLOT if controller_wide => firmware_slot_page(state),
-        LID_SMART_HEALTH | LID_FIRMWARE_SLOT => return Err(Status::INVALID_FIELD),
+        LID_SUPPORTED_LOG_PAGES if controller_wide => supported_log_pages(),
+        LID_COMMAND_EFFECTS if controller_wide => command_effects_page(),
+        LID_FEATURE_EFFECTS if controller_wide => feature_effects_page(),
+        LID_ERROR_INFORMATION
+        | LID_SMART_HEALTH
+        | LID_FIRMWARE_SLOT
+        | LID_SUPPORTED_LOG_PAGES
+        | LID_COMMAND_EFFECTS
+        | LID_FEATURE_EFFECTS => return Err(Status::INVALID_FIELD),
         _ => return Err(Status::INVALID_LOG_PAGE),
     };
-    let end = offset
-        .checked_add(length)
-        .filter(|&end| end <= page.len() as u64)
-        .ok_or(Status::INVALID_FIELD)?;
+    if offset > page.len() as u64 {
+        return Err(Status::INVALID_FIELD);
+    }
+    let end = offset + length;
+    if end > page.len() as u64 {
+        // The trailing dwords are undefined. Zero-fill the requested transfer
+        // so the PRPs are interpreted using the original transfer length.
+        page.resize(end as usize, 0);
+    }
     write_to_host(
         dma,
         command.prp1,
@@ -560,10 +591,75 @@ fn get_log_page(
         &page[offset as usize..end as usize],
     )?;
     if !retain_event {
-        let event_type = if lid == LID_ERROR_INFORMATION { 0 } else { 1 };
-        state.aer.masked &= !(1 << event_type);
+        match lid {
+            LID_ERROR_INFORMATION => state.aer.masked &= !(1 << EVENT_TYPE_ERROR),
+            LID_SMART_HEALTH | LID_FIRMWARE_SLOT => state.aer.masked &= !(1 << 1),
+            _ => {}
+        }
     }
     Ok(Completion::ok(0))
+}
+
+fn supported_log_pages() -> Vec<u8> {
+    let mut page = vec![0u8; EFFECTS_LIST_BYTES];
+    for lid in [
+        LID_SUPPORTED_LOG_PAGES,
+        LID_ERROR_INFORMATION,
+        LID_SMART_HEALTH,
+        LID_FIRMWARE_SLOT,
+        LID_COMMAND_EFFECTS,
+        LID_FEATURE_EFFECTS,
+    ] {
+        put(&mut page, usize::from(lid) * 4, &SUPPORTED.to_le_bytes());
+    }
+    page
+}
+
+fn command_effects_page() -> Vec<u8> {
+    let mut page = vec![0u8; 4096];
+    for opcode in 0..=u8::MAX {
+        if admin_opcode_supported(opcode) {
+            put(&mut page, usize::from(opcode) * 4, &SUPPORTED.to_le_bytes());
+        }
+    }
+    for (opcode, effects) in [
+        (io::OPC_FLUSH, 0),
+        (io::OPC_WRITE, 1 << 1),
+        (io::OPC_READ, 0),
+    ] {
+        let offset = EFFECTS_LIST_BYTES + usize::from(opcode) * 4;
+        put(&mut page, offset, &(SUPPORTED | effects).to_le_bytes());
+    }
+    page
+}
+
+fn feature_effects_page() -> Vec<u8> {
+    const NAMESPACE_SCOPE: u32 = 1 << 20;
+    const CONTROLLER_SCOPE: u32 = 1 << 21;
+    let mut page = vec![0u8; EFFECTS_LIST_BYTES];
+    for fid in [
+        FID_ARBITRATION,
+        FID_POWER_MANAGEMENT,
+        FID_TEMPERATURE_THRESHOLD,
+        FID_ERROR_RECOVERY,
+        FID_NUMBER_OF_QUEUES,
+        FID_INTERRUPT_COALESCING,
+        FID_INTERRUPT_VECTOR_CONFIG,
+        FID_WRITE_ATOMICITY,
+        FID_ASYNC_EVENT_CONFIG,
+    ] {
+        let scope = if fid == FID_ERROR_RECOVERY {
+            NAMESPACE_SCOPE
+        } else {
+            CONTROLLER_SCOPE
+        };
+        put(
+            &mut page,
+            usize::from(fid) * 4,
+            &(SUPPORTED | scope).to_le_bytes(),
+        );
+    }
+    page
 }
 
 fn smart_health_page(state: &NvmeState) -> Vec<u8> {

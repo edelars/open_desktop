@@ -103,7 +103,7 @@ pub(crate) enum Outcome {
     Deferred,
 }
 
-/// A decoded 64-byte submission queue entry (common dwords 0, 1, 6-15).
+/// A decoded 64-byte submission queue entry (common dwords 0, 1, and 6–14).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Command {
     pub(crate) opcode: u8,
@@ -117,6 +117,7 @@ pub(crate) struct Command {
     pub(crate) cdw11: u32,
     pub(crate) cdw12: u32,
     pub(crate) cdw13: u32,
+    pub(crate) cdw14: u32,
 }
 
 impl Command {
@@ -143,6 +144,7 @@ impl Command {
             cdw11: dword(11),
             cdw12: dword(12),
             cdw13: dword(13),
+            cdw14: dword(14),
         }
     }
 }

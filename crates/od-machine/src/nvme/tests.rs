@@ -54,6 +54,7 @@ struct Sqe {
     cdw11: u32,
     cdw12: u32,
     cdw13: u32,
+    cdw14: u32,
 }
 
 impl Sqe {
@@ -96,6 +97,10 @@ impl Sqe {
         self.cdw13 = value;
         self
     }
+    fn cdw14(mut self, value: u32) -> Self {
+        self.cdw14 = value;
+        self
+    }
     fn fuse(mut self, fuse: u8) -> Self {
         self.fuse = fuse;
         self
@@ -118,6 +123,7 @@ impl Sqe {
         raw[44..48].copy_from_slice(&self.cdw11.to_le_bytes());
         raw[48..52].copy_from_slice(&self.cdw12.to_le_bytes());
         raw[52..56].copy_from_slice(&self.cdw13.to_le_bytes());
+        raw[56..60].copy_from_slice(&self.cdw14.to_le_bytes());
         raw
     }
 }
@@ -648,6 +654,7 @@ fn identify_controller_matches_the_declared_structure_byte_for_byte() {
     expected[258] = 3; // ACL
     expected[259] = 3; // AERL
     expected[260] = 0x03; // FRMW
+    expected[261] = 0x06; // LPA: extended Get Log Page and command effects
     expected[262] = 63; // ELPE
     put(&mut expected, 266, &343u16.to_le_bytes()); // WCTEMP
     put(&mut expected, 268, &358u16.to_le_bytes()); // CCTEMP
@@ -1365,17 +1372,98 @@ fn firmware_slot_log_names_the_active_revision() {
 }
 
 #[test]
-fn log_page_requests_outside_the_defined_pages_are_refused() {
+fn log_discovery_reports_supported_logs_commands_and_features() {
+    let mut rig = Rig::enabled();
+    let (cqe, logs) = rig.log_page(0x00, 1024, 0, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for lid in 0..256 {
+        let supported = matches!(lid, 0x00..=0x03 | 0x05 | 0x12);
+        assert_eq!(u32_at(&logs, lid * 4), u32::from(supported), "LID {lid:#x}");
+    }
+
+    let (cqe, commands) = rig.log_page(0x05, 4096, u32::MAX, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for opcode in 0..256 {
+        let admin = matches!(opcode, 0x00..=0x02 | 0x04..=0x06 | 0x08..=0x0A | 0x0C);
+        assert_eq!(u32_at(&commands, opcode * 4), u32::from(admin));
+        let io_effects = match opcode {
+            0x00 | 0x02 => 1,
+            0x01 => 3,
+            _ => 0,
+        };
+        assert_eq!(u32_at(&commands, 1024 + opcode * 4), io_effects);
+    }
+    assert!(commands[2048..].iter().all(|&byte| byte == 0));
+
+    let (cqe, features) = rig.log_page(0x12, 1024, 0, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for fid in 0..256 {
+        let effects = match fid {
+            0x05 => 1 | (1 << 20), // Error Recovery has namespace scope.
+            0x01 | 0x02 | 0x04 | 0x07..=0x0B => 1 | (1 << 21),
+            _ => 0,
+        };
+        assert_eq!(u32_at(&features, fid * 4), effects, "FID {fid:#x}");
+    }
+}
+
+#[test]
+fn discovery_logs_are_controller_scoped_and_use_byte_offsets() {
+    let mut rig = Rig::enabled();
+    for (lid, offset, entry) in [
+        (0x00, 0x12 * 4, 1),
+        (0x05, 1028, 3),
+        (0x12, 0x05 * 4, 0x100001),
+    ] {
+        let request = Sqe::new(OPC_GET_LOG_PAGE)
+            .prp(DATA, 0)
+            .cdw(lid, 0)
+            .with_offset(offset);
+        assert_eq!(rig.admin(request.nsid(1)).status(), (0, 0x02));
+        assert_eq!(rig.admin(request.cdw14(1 << 23)).status(), (0, 0x02));
+        assert_eq!(rig.admin(request.cdw14(1)).status(), (0, 0x02));
+        // CSI has no effect when CC.CSS selects the NVM command set directly.
+        rig.mem_write(DATA, &[0xAA; 8]);
+        assert_eq!(rig.admin(request.cdw14(0xFF << 24)).status(), (0, 0));
+        let output = rig.mem_read(DATA, 8);
+        assert_eq!(u32_at(&output, 0), entry);
+        assert_eq!(output[4..], [0xAA; 4]);
+    }
+}
+
+#[test]
+fn discovery_log_allows_an_oversized_transfer_within_mdts() {
+    let mut rig = Rig::enabled();
+    rig.mem_write(DATA + 4096, &[0xAA; 8]);
+    let request = Sqe::new(OPC_GET_LOG_PAGE)
+        .prp(DATA, DATA + 4096)
+        .cdw(0x05 | (1024 << 16), 0);
+    assert_eq!(rig.admin(request).status(), (0, 0));
+    assert_eq!(u32_at(&rig.mem_read(DATA, 8), 0), 1);
+    assert_eq!(
+        rig.mem_read(DATA + 4096, 8),
+        [0, 0, 0, 0, 0xAA, 0xAA, 0xAA, 0xAA]
+    );
+    assert_eq!(rig.admin(request.with_offset(4100)).status(), (0, 0x02));
+    assert_eq!(rig.admin(request.cdw(0x05, 4)).status(), (0, 0x02));
+}
+
+#[test]
+fn log_pages_check_supported_id_scope_and_offset() {
     let mut rig = Rig::enabled();
     let (cqe, _) = rig.log_page(0x7F, 512, 0, true);
     assert_eq!(cqe.status(), (1, 0x09), "Invalid Log Page");
-    // Longer than the page, offset past its end, offset not dword aligned.
-    let (cqe, _) = rig.log_page(0x02, 1024, 0, true);
+    let (cqe, _) = rig.log_page(0x01, 64, 1, true);
     assert_eq!(cqe.status(), (0, 0x02));
+    let (cqe, page) = rig.log_page(0x02, 1024, 0, true);
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(u16_at(&page, 1), 300);
+    assert!(page[512..].iter().all(|&byte| byte == 0));
+    // An offset past the end or not aligned to a dword is invalid.
     let long = Sqe::new(OPC_GET_LOG_PAGE)
         .prp(DATA, 0)
         .cdw(0x02 | (1 << 16), 0);
-    assert_eq!(rig.admin(long.with_offset(512)).status(), (0, 0x02));
+    assert_eq!(rig.admin(long.with_offset(516)).status(), (0, 0x02));
     assert_eq!(rig.admin(long.with_offset(2)).status(), (0, 0x02));
 }
 
