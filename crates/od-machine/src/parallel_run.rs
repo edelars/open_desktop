@@ -786,6 +786,8 @@ struct Worker<'s, 'a, 'e, 'b> {
     /// (the interpreter paths), or the root named for this vCPU by a host run (S6-42c); `None`
     /// when none was named (the NMI is then an error, see `deliver_pending_nmi_of`).
     page_table_root: Option<u64>,
+    /// A host quantum can supply EFER independently of the modelled vCPU MSR.
+    nmi_efer: Option<u64>,
     cpu: usize,
 }
 
@@ -826,7 +828,8 @@ impl Worker<'_, '_, '_, '_> {
             let applied = vcpu.apply_startup(pending);
             cell.init_applied.fetch_add(u64::from(applied.init), SEQ);
             cell.started.fetch_add(u64::from(applied.started), SEQ);
-            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root) {
+            let efer = self.nmi_efer.unwrap_or(vcpu.guest_efer);
+            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root, efer) {
                 Ok(nmi) => {
                     cell.nmi_delivered
                         .fetch_add(u64::from(nmi == NmiBoundary::Delivered), SEQ);
@@ -1196,22 +1199,34 @@ pub(crate) fn run_threads_with<R>(
         source_free,
         run,
         on_thread_exit,
-        None,
+        NmiPaging::Board,
         controller,
     )
 }
 
-/// [`run_threads_with`] with the page-table root of every vCPU for the delivery of an NMI
-/// (S6-42c): `nmi_roots[cpu]` is the root of vCPU `cpu` when it has no CR3 of its own, `None` (or a
-/// vCPU past the end of the slice) means no root, and an NMI that needs one is an error. Without
-/// `nmi_roots` the board's root is used, as in every interpreter run.
+/// NMI translation inputs for interpreter and host quanta. CR3 in the vCPU
+/// state takes precedence over the fallback root.
+pub(crate) enum NmiPaging<'a> {
+    Board,
+    Roots(&'a [Option<u64>]),
+    Host(&'a [Option<HostNmiPaging>]),
+}
+
+/// Paging inputs shared by a host quantum and NMI delivery on its vCPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostNmiPaging {
+    pub root: u64,
+    pub efer: u64,
+}
+
+/// [`run_threads_with`] with explicit NMI translation inputs for host quanta.
 pub(crate) fn run_threads_rooted<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
     source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_roots: Option<&[Option<u64>]>,
+    nmi_paging: NmiPaging<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     if config.quantum == 0 {
@@ -1225,7 +1240,7 @@ pub(crate) fn run_threads_rooted<R>(
         source_free,
         run,
         on_thread_exit,
-        nmi_roots,
+        nmi_paging,
         controller,
     );
     board.set_execution_mode(previous_mode);
@@ -1238,7 +1253,7 @@ fn run_threads_inner<R>(
     source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_roots: Option<&[Option<u64>]>,
+    nmi_paging: NmiPaging<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     let parts = board.thread_parts()?;
@@ -1303,14 +1318,23 @@ fn run_threads_inner<R>(
     let _ = shared.controller.set(thread::current());
     let result = thread::scope(|scope| {
         for cpu in 0..count {
+            let (page_table_root, nmi_efer) = match nmi_paging {
+                NmiPaging::Board => (Some(page_table_root), None),
+                NmiPaging::Roots(roots) => (roots.get(cpu).copied().flatten(), None),
+                NmiPaging::Host(configs) => configs
+                    .get(cpu)
+                    .copied()
+                    .flatten()
+                    .map_or((None, None), |paging| {
+                        (Some(paging.root), Some(paging.efer))
+                    }),
+            };
             let worker = Worker {
                 shared: &shared,
                 env: &env,
                 run,
-                page_table_root: match nmi_roots {
-                    None => Some(page_table_root),
-                    Some(roots) => roots.get(cpu).copied().flatten(),
-                },
+                page_table_root,
+                nmi_efer,
                 cpu,
             };
             thread::Builder::new()

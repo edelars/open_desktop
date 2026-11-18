@@ -5,14 +5,14 @@
 //! interpreter took `&mut MachineBus`. Here no lock of the bus exists anywhere: the threads hold
 //! `&MachineBus`, RAM is `PhysicalMemory` by `&self` (parallel mode: `SeqCst` accesses, `Release`
 //! page generations), and the interpreter fallback takes the device lock for one port access at a
-//! time. `run_paged_host_loop_shared` is the loop; `od_machine::run_host_threads` runs the threads.
+//! time. `run_paged_host_loop_shared` is the loop; `od_machine::run_host_threads_with_nmi_paging` runs the threads.
 
 use super::*;
 use crate::host_threads::JitHostQuantum;
 use crate::jit_region::SharedJitRegion;
 use od_machine::{
     ExecutionMode, HostParallelConfig, HostParallelFinish, host_install_vcpu, host_parallel_board,
-    run_host_threads,
+    run_host_threads_with_nmi_paging,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Barrier, Mutex};
@@ -399,7 +399,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
     assert!(host_install_vcpu(&mut board, 1, a_halted_state()));
 
     let seen = Mutex::new(Vec::<String>::new());
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         HostParallelConfig {
             // A quantum far longer than a stop may wait: every stop lands inside a call and
@@ -408,7 +408,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
             budget: u64::MAX,
             end_when_idle: false,
         },
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -531,7 +531,7 @@ fn s6_42b_parallel_control_stops_jit_vcpus_and_a_changes_code_b_executes() {
 }
 
 /// M1 of the review of S6-42b: the session and the part of the region of a vCPU thread are dropped
-/// on that thread before `run_host_threads` returns (the exit hook), not by a `thread_local!`
+/// on that thread before `run_host_threads_with_nmi_paging` returns (the exit hook), not by a `thread_local!`
 /// destructor that `thread::scope` does not wait for. So a region made right after a run, with the
 /// parent's own handles dropped, never meets the previous one still live
 /// (`MappingAlreadyLive`), run after run.
@@ -554,14 +554,14 @@ fn s6_42b_the_thread_exit_releases_the_region_before_the_run_returns() {
         add_code_a(board.bus_mut(), &A_PROGRAM);
         assert!(host_install_vcpu(&mut board, 0, b_state()));
         assert!(host_install_vcpu(&mut board, 1, a_halted_state()));
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             HostParallelConfig {
                 quantum: 256,
                 budget: u64::MAX,
                 end_when_idle: false,
             },
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| quantum.run(call),
             &|_| {
                 if crate::host_threads::thread_slot_occupied() {

@@ -16,7 +16,7 @@ use od_isa::state::{Gdtr, Idtr, StiShadow};
 use od_isa::{CodeSegmentDescriptorCache, CpuActivity, StackSegmentDescriptorCache};
 use od_machine::{
     HostParallelConfig, HostParallelFinish, HostQuantumCall, HostSplitGate, LoadedFirmwareBoard,
-    host_install_vcpu, host_parallel_board, run_host_threads,
+    host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
 };
 use std::time::Duration;
 
@@ -301,10 +301,10 @@ fn s6_42c_a_fixed_vector_is_delivered_to_a_guest_that_runs_native_steps() {
         CODE_0,
         STACK_TOP_0,
     );
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -385,10 +385,10 @@ fn s6_42c_a_one_shot_timer_is_delivered_once() {
     ]
     .concat();
     install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -443,10 +443,10 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
         let quantum = quantum_of(&region, 1);
         let mut board = board(1);
         install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             host_config(false),
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| quantum.run(call),
             &|_| quantum.thread_exit(),
             |control| {
@@ -503,10 +503,10 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
         base_state.gpr[Register::Rbx as usize] = UNMAPPED;
         put(&mut board, CODE_0, &[0x48, 0x8B, 0x03]);
         assert!(host_install_vcpu(&mut board, 0, base_state));
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             host_config(false),
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| quantum.run(call),
             &|_| quantum.thread_exit(),
             |control| {
@@ -582,10 +582,10 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
         for (cpu, top) in [(0, STACK_TOP_0), (1, STACK_TOP_1)] {
             assert!(host_install_vcpu(&mut board, cpu, state(CODE_0, top)));
         }
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             host_config(true),
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| quantum.run(call),
             &|_| quantum.thread_exit(),
             |control| {
@@ -623,10 +623,10 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
         for (cpu, top) in [(0, STACK_TOP_0), (1, STACK_TOP_1)] {
             assert!(host_install_vcpu(&mut board, cpu, state(CODE_0, top)));
         }
-        let (report, ()) = run_host_threads(
+        let (report, ()) = run_host_threads_with_nmi_paging(
             &mut board,
             host_config(true),
-            &quantum.nmi_roots(),
+            &quantum.nmi_paging(),
             &|call| {
                 quantum.run(HostQuantumCall {
                     gate: HostSplitGate::none(),
@@ -659,10 +659,16 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
 // ---- C: the NMI -------------------------------------------------------------------------------
 
 /// vCPU 1 sends an NMI to vCPU 0 through the ICR; vCPU 0 (native and interpreted steps) takes it at
-/// a boundary through the root named for it (`JitHostQuantum::nmi_roots`: its configuration's CR3,
+/// a boundary through the root named for it (`JitHostQuantum::nmi_paging`: its configuration's CR3 and EFER,
 /// the state carries none) and the handler of vector 2 runs once.
 fn nmi_board() -> LoadedFirmwareBoard {
     let mut board = board(2);
+    // The IDT is data. Its NX leaf is legal only when EFER.NXE is set.
+    put_u64(
+        &mut board,
+        PT + (IDT_AT >> 12) * 8,
+        IDT_AT | 0x63 | (1 << 63),
+    );
     let sender = [
         enable_lapic(),
         write_icr(0, 0x0400), // NMI delivery mode, destination vCPU 0
@@ -686,10 +692,10 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| quantum.run(call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -718,6 +724,56 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
     drop(region);
 }
 
+#[test]
+fn s6_42d_an_nmi_uses_the_host_quantums_efer_for_the_idt_walk() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = JitHostQuantum::new(
+        vec![
+            Some(region.take_part().unwrap()),
+            Some(region.take_part().unwrap()),
+        ],
+        vec![
+            PagedHostLoopConfig {
+                efer: EFER & !(1 << 11),
+                ..config()
+            },
+            config(),
+        ],
+        RFLAGS_DEFINED,
+    )
+    .with_cpl0_set();
+    let mut board = nmi_board();
+    let (report, handler_ran) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(false),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| control.wait_until(WAIT, || cell(control, COUNTER_NMI) != 0),
+    )
+    .expect("the board runs");
+    assert!(
+        !handler_ran,
+        "NX is reserved when the host quantum clears NXE"
+    );
+    assert_eq!(report.nmi_delivered, vec![0, 0], "{report:?}");
+    match &report.finished {
+        HostParallelFinish::Error { cpu: 0, message } => {
+            // P=1 and RSVD=1 identify the reserved-bit page fault at the IDT gate.
+            let gate = IDT_AT + 2 * 16;
+            assert!(message.contains("phase: IdtGateRead"), "{message}");
+            assert!(
+                message.contains(&format!(
+                    "vector: 14, error_code: Some(9), linear_address: Some({gate})"
+                )),
+                "{message}"
+            );
+        }
+        other => panic!("expected an NMI page fault reading the IDT, got {other:?}"),
+    }
+}
+
 /// Without a root named for the vCPU the NMI is an explicit error of the run (the board's own root,
 /// 0x1000, is not read): the run ends `Error` naming the missing root, and the vCPU's handler never
 /// ran.
@@ -727,7 +783,7 @@ fn s6_42c_an_nmi_without_a_root_fails_the_run_explicitly() {
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),
         &[None, None],

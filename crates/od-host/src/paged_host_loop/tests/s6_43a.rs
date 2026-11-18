@@ -9,7 +9,7 @@
 //! * the interpreter of od-isa (`run_paged_probe`, the oracle) on one thread: the expected values
 //!   and the final state;
 //! * the interleaved mode: one thread, one JIT session per vCPU, a fixed schedule;
-//! * the parallel mode: `run_host_threads`, one thread per vCPU, no lock of the bus.
+//! * the parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, no lock of the bus.
 //!
 //! The paged profile has no compare, no jump and no `CPUID`; the loops (wait for the signal, the
 //! cycle counter) are the host driver's, the steps are guest instructions: every step sets RIP and
@@ -27,7 +27,7 @@ use crate::host_threads::JitHostQuantum;
 use crate::jit_region::SharedJitRegion;
 use od_machine::{
     ExecutionMode, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostQuantumExit,
-    HostQuantumResult, host_install_vcpu, host_parallel_board, run_host_threads,
+    HostQuantumResult, host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
 };
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -924,7 +924,7 @@ fn drive(
     Ok(HostQuantumResult { retired, exit })
 }
 
-/// The parallel mode: `run_host_threads`, one thread per vCPU, the bus by shared reference.
+/// The parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, the bus by shared reference.
 fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
     let region = SharedJitRegion::new(2, 4).unwrap();
     let parts = vec![
@@ -951,14 +951,14 @@ fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
         error: Mutex::new(None),
     };
     let started = Instant::now();
-    let (report, ()) = run_host_threads(
+    let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         HostParallelConfig {
             quantum: 4096,
             budget: u64::MAX,
             end_when_idle: false,
         },
-        &quantum.nmi_roots(),
+        &quantum.nmi_paging(),
         &|call| drive(&shared, &quantum, call),
         &|_| quantum.thread_exit(),
         |control| {
@@ -1126,7 +1126,7 @@ fn s6_43a_interleaved_b_runs_only_the_new_bytes_after_the_signal_and_equals_the_
     }
 }
 
-/// Parallel mode (`run_host_threads`, no lock of the bus): the same, with A and B on their own
+/// Parallel mode (`run_host_threads_with_nmi_paging`, no lock of the bus): the same, with A and B on their own
 /// threads; B waits for the signal in a loop, A waits for B's run of the old code and for B's
 /// cycle.
 #[test]

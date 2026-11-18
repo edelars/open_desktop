@@ -47,8 +47,8 @@ use crate::paged_memory_adapter::{
     IrqBoundaryOutcome, LoopBus, PagedCpl0SetExit, deliver_pending_irq, run_cpl0_set_loop,
 };
 use crate::parallel_run::{
-    ParallelConfig, ParallelControl, ParallelFinish, ParallelReport, ParallelStopError,
-    QuantumCall, run_threads_rooted,
+    HostNmiPaging, NmiPaging, ParallelConfig, ParallelControl, ParallelFinish, ParallelReport,
+    ParallelStopError, QuantumCall, run_threads_rooted,
 };
 use crate::smp_scheduler::Executed;
 use crate::{
@@ -301,10 +301,50 @@ impl HostParallelControl<'_, '_> {
 /// own configuration, so the root is named here too). A vCPU without a root (`None`, or past the end
 /// of the slice) that has an NMI to take at a boundary fails the run with an explicit error; the
 /// board's own root is never used (S6-42c).
+/// This entry uses the guest vCPU's EFER for NMI delivery.
 pub fn run_host_threads<R>(
     board: &mut LoadedFirmwareBoard,
     config: HostParallelConfig,
     nmi_roots: &[Option<u64>],
+    run: &HostQuantumFn<'_>,
+    on_thread_exit: &HostThreadExitFn<'_>,
+    controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
+) -> Result<(HostParallelReport, R), FirmwareBoardError> {
+    run_host_threads_inner(
+        board,
+        config,
+        NmiPaging::Roots(nmi_roots),
+        run,
+        on_thread_exit,
+        controller,
+    )
+}
+
+/// Run host threads with the same CR3 and EFER inputs for NMI delivery as for each host quantum.
+/// CPU-owned CR3 takes precedence over the configured root. For a missing entry, the vCPU must
+/// provide its own CR3 and guest EFER when taking an NMI. These inputs are fixed for the run.
+pub fn run_host_threads_with_nmi_paging<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: HostParallelConfig,
+    nmi_paging: &[Option<HostNmiPaging>],
+    run: &HostQuantumFn<'_>,
+    on_thread_exit: &HostThreadExitFn<'_>,
+    controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
+) -> Result<(HostParallelReport, R), FirmwareBoardError> {
+    run_host_threads_inner(
+        board,
+        config,
+        NmiPaging::Host(nmi_paging),
+        run,
+        on_thread_exit,
+        controller,
+    )
+}
+
+fn run_host_threads_inner<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: HostParallelConfig,
+    nmi_paging: NmiPaging<'_>,
     run: &HostQuantumFn<'_>,
     on_thread_exit: &HostThreadExitFn<'_>,
     controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
@@ -343,7 +383,7 @@ pub fn run_host_threads<R>(
         true,
         &quantum,
         Some(on_thread_exit),
-        Some(nmi_roots),
+        nmi_paging,
         |control| controller(&HostParallelControl { inner: control }),
     )?;
     Ok((host_report(report), value))

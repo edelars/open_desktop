@@ -1292,12 +1292,14 @@ pub struct LoadedFirmwareBoard {
 /// needs: the vCPU's Local APIC, the vCPU itself, the RAM and the page-table root to use when the
 /// vCPU has no CR3 of its own (the board's root, or, for a host thread run of S6-42c, the root the
 /// caller named for that vCPU; `None`: there is none, and an NMI that needs one is an error).
+/// The caller supplies the EFER used by its instruction walk.
 /// A vCPU thread of the parallel mode (S6-34) calls it with the shared reference to the RAM.
 pub(crate) fn deliver_pending_nmi_of(
     apic: &LocalApicHandle,
     vcpu: &mut Vcpu,
     memory: &crate::PhysicalMemory,
     page_table_root: Option<u64>,
+    efer: u64,
 ) -> Result<NmiBoundary, FirmwareBoardError> {
     use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
     use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
@@ -1340,7 +1342,6 @@ pub(crate) fn deliver_pending_nmi_of(
             ));
         }
     }
-    // The walker's EFER is the vCPU's own guest EFER (the guest may change only `SCE`).
     // The walk is built on the vCPU's own CR3 (as the S6-16d quantum does); a vCPU without a
     // modelled CR3 uses the root the caller gave (the board's `page_table_root`, or the host
     // run's root of that vCPU). With neither there is nothing to walk: an explicit refusal, not a
@@ -1352,7 +1353,7 @@ pub(crate) fn deliver_pending_nmi_of(
         .ok_or(FirmwareBoardError::Config(
             "deliver_pending_nmi: the vCPU has no page-table root (no CR3 and no root named for the NMI)",
         ))?;
-    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, vcpu.guest_efer)
+    let paging = Long64ProbeConfig::from_cpu_state(&vcpu.state, paging_root, efer)
         .map_err(|_| FirmwareBoardError::Config("deliver_pending_nmi: no paging for the vCPU"))?;
     let context = AccessContext {
         mode: InstructionMode::Long64,
@@ -1613,11 +1614,13 @@ impl LoadedFirmwareBoard {
             FirmwareBoardError::Config("deliver_pending_nmi: no such vCPU");
         let apic = self.lapic.for_cpu(index).ok_or(NO_VCPU)?;
         let vcpu = self.vcpus.get_mut(index).ok_or(NO_VCPU)?;
+        let efer = vcpu.guest_efer;
         deliver_pending_nmi_of(
             &apic,
             vcpu,
             self.bus.physical_memory(),
             Some(self.page_table_root),
+            efer,
         )
     }
 

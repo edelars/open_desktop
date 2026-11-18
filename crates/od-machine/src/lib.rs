@@ -276,7 +276,7 @@ pub use host_parallel::{
     HostParallelReport, HostQuantumCall, HostQuantumExit, HostQuantumFn, HostQuantumResult,
     HostSetStepReport, HostSplitGate, HostStopError, HostStopProof, HostThreadExitFn,
     host_deliver_pending_irq, host_install_vcpu, host_parallel_board, run_host_set_step,
-    run_host_threads,
+    run_host_threads, run_host_threads_with_nmi_paging,
 };
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
@@ -315,6 +315,7 @@ pub use paged_probe::{
 pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
 };
+pub use parallel_run::HostNmiPaging;
 pub use stage4_alias_probe::load_stage4_alias_probe;
 pub use stage4_cpl3_syscall_probe::{
     LoadedStage4Cpl3SyscallProbe, STAGE4_CPL3_SYSCALL_DATA_GPA, STAGE4_CPL3_SYSCALL_FINAL_RIP,

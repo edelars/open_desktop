@@ -23,8 +23,8 @@
 //! (so `IRETQ`, `STI`, `LOCK` forms and the rest of the set run), a guest `#PF`/`#GP(0)` is
 //! delivered through the guest IDT, and the split `LOCK` goes through the gate of the run. The
 //! default quantum is the base profile as before (a guest fault or a refusal of the interpreter is
-//! an error of the run). [`JitHostQuantum::nmi_roots`] gives the page-table roots for the NMI
-//! delivery of `od_machine::run_host_threads`.
+//! an error of the run). [`JitHostQuantum::nmi_paging`] gives the paging inputs for NMI delivery
+//! through `od_machine::run_host_threads_with_nmi_paging`.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
 use od_isa::{CliProfile, HaltProfile, StiProfile};
-use od_machine::{HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit};
+use od_machine::{
+    HostNmiPaging, HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit,
+};
 
 use crate::PagedFetchedLoadSession;
 use crate::jit_region::{JitPartStats, JitRegionPart};
@@ -151,10 +153,23 @@ impl JitHostQuantum {
         self
     }
 
-    /// The page-table root of every vCPU (`Some(config.cr3)`), for the `nmi_roots` of
-    /// `od_machine::run_host_threads`: the root an NMI to a vCPU is delivered through.
+    /// Fallback roots for the root-only `od_machine::run_host_threads` entry.
+    /// Use [`Self::nmi_paging`] to also supply the quantum's EFER.
     pub fn nmi_roots(&self) -> Vec<Option<u64>> {
         self.configs.iter().map(|config| Some(config.cr3)).collect()
+    }
+
+    /// NMI delivery uses the same fixed paging inputs as the native and interpreter steps.
+    pub fn nmi_paging(&self) -> Vec<Option<HostNmiPaging>> {
+        self.configs
+            .iter()
+            .map(|config| {
+                Some(HostNmiPaging {
+                    root: config.cr3,
+                    efer: config.efer,
+                })
+            })
+            .collect()
     }
 
     /// S6-43a: keep, per vCPU, the committed write ranges `(start, length)` of every call
