@@ -136,7 +136,7 @@ pub const fn manifest_hash(devices: &[DeviceEntry]) -> Result<[u8; 32], Manifest
     Ok(sha256(sub(&buf, 0, len)))
 }
 
-/// The bridge and base device manifest (types 1..=8) and the validated PM entry (type 9).
+/// The board manifest (types 1–8 and 10) and the validated PM entry (type 9).
 const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPmEntry), BlobError> {
     let filler = DeviceEntry {
         device_type: 0,
@@ -152,6 +152,7 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     let mut count = 0;
     let mut pm: Option<AcpiPmEntry> = None;
     let mut nvme = None;
+    let mut rtc = None;
     let mut i = 0;
     while i < devices.len() {
         let entry = devices[i];
@@ -160,6 +161,8 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
             pm = Some(tri!(AcpiPmEntry::from_entry(&entry), BlobError::Manifest));
         } else if entry.device_type == device_type::NVME {
             nvme = Some(entry);
+        } else if entry.device_type == device_type::RTC_CMOS {
+            rtc = Some(entry);
         } else if entry.device_type >= 1 && entry.device_type <= 7 && count < 7 {
             base_entries[count] = entry;
             count += 1;
@@ -172,44 +175,13 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     if let Some(entry) = nvme {
         manifest = tri!(manifest.with_nvme(&entry), BlobError::Manifest);
     }
+    if let Some(entry) = rtc {
+        manifest = tri!(manifest.with_rtc(entry), BlobError::Manifest);
+    }
     match pm {
         Some(pm) => Ok((manifest, pm)),
         None => Err(BlobError::MissingAcpiPm),
     }
-}
-
-/// Validates and detects the optional v1.4 RTC entry before table construction.
-const fn rtc_present(devices: &[DeviceEntry]) -> Result<bool, BlobError> {
-    let mut present = false;
-    let mut i = 0;
-    while i < devices.len() {
-        let entry = devices[i];
-        i += 1;
-        if entry.device_type != device_type::RTC_CMOS {
-            continue;
-        }
-        if present {
-            return Err(BlobError::Manifest(ManifestError::DeviceTypeNotUnique(
-                device_type::RTC_CMOS,
-            )));
-        }
-        if entry.flags != (FLAG_PRESENT | FLAG_PIO) {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("flags")));
-        }
-        if entry.base != 0x70 || entry.length != 2 {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("ports")));
-        }
-        if entry.gsi != GSI_NONE || entry.irq_flags != 0 || entry.param1 != 0 {
-            return Err(BlobError::Manifest(ManifestError::BadRtc(
-                "reserved fields",
-            )));
-        }
-        if entry.param0 > device_type::MAX_RTC_UNIX_SECONDS {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("base UTC time")));
-        }
-        present = true;
-    }
-    Ok(present)
 }
 
 /// Zeroes the alignment gap after a table of `len` bytes at payload offset `cursor` and returns
@@ -244,7 +216,6 @@ const fn room(out: &[u8], needed: usize) -> Result<(), BlobError> {
 /// separate segment loaded at 0xE_F000 (see the module comment).
 pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize, BlobError> {
     let hash = tri!(manifest_hash(devices), BlobError::Manifest);
-    let has_rtc = tri!(rtc_present(devices));
     let (manifest, pm) = tri!(split_devices(devices));
     let with_mcfg = match manifest.device(device_type::PCIE_ECAM) {
         Some(ecam) => ecam.is_present(),
@@ -301,7 +272,7 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
         build_fadt_with_rtc(
             &pm,
             &addresses,
-            has_rtc,
+            manifest.rtc().is_some(),
             tail_mut(out, payload_offset + cursor),
         ),
         BlobError::Fadt

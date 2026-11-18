@@ -146,7 +146,7 @@ fn tables_in_the_blob_are_the_runtime_ones() {
 }
 
 #[test]
-fn rtc_handoff_clears_fadt_not_present_and_advertises_century_register() {
+fn rtc_handoff_advertises_the_same_rtc_in_dsdt_and_fadt() {
     let mut devices = [DeviceEntry::default(); 9];
     devices[..STAGE4_DEVICES.len()].copy_from_slice(&STAGE4_DEVICES);
     devices[8] = DeviceEntry {
@@ -164,6 +164,29 @@ fn rtc_handoff_clears_fadt_not_present_and_advertises_century_register() {
     assert_eq!(fadt[108], 0x32, "FADT CENTURY points at CMOS register 0x32");
     assert_eq!(le16(fadt, 109) & (1 << 5), 0, "RTC is present");
     assert_eq!(validate_fadt(fadt), Ok(()));
+
+    // Device(RTC0), _HID = EISA PNP0B00, _CRS = two Decode16 ports, EndTag.
+    // ACPI 6.6 §9.14.1, §6.4.2.6 and §20.2.5.4.
+    let rtc = [
+        0x5b, 0x82, 0x22, b'R', b'T', b'C', b'0', 0x08, b'_', b'H', b'I', b'D', 0x0c, 0x41, 0xd0,
+        0x0b, 0x00, 0x08, b'_', b'C', b'R', b'S', 0x11, 0x0d, 0x0a, 0x0a, 0x47, 0x01, 0x70, 0x00,
+        0x70, 0x00, 0x01, 0x02, 0x79, 0x00,
+    ];
+    let dsdt = table(&blob, b"DSDT");
+    assert_eq!(validate_dsdt(dsdt), Ok(()));
+    assert_eq!(
+        dsdt.windows(rtc.len())
+            .filter(|bytes| *bytes == rtc)
+            .count(),
+        1
+    );
+    let without_rtc = build(&STAGE4_DEVICES, 0);
+    assert!(
+        !table(&without_rtc, b"DSDT")
+            .windows(4)
+            .any(|bytes| bytes == b"RTC0")
+    );
+    assert_ne!(le16(table(&without_rtc, b"FACP"), 109) & (1 << 5), 0);
 }
 
 #[test]

@@ -44,6 +44,7 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 | `\_SB.PCI0` | запись типа 7 (PCIe ECAM), `PRESENT = 1`, не PIO; окно проходит те же проверки, что MCFG (`EcamWindow::from_entry`, S4-31b) | `_HID` `PNP0A08`, `_CID` `PNP0A03`, `_UID` 0, `_SEG` = сегмент (0), `_BBN` = `start_bus` (0), `_CRS`: `WordBusNumber` (ResourceProducer, MinFixed, MaxFixed) `start_bus..=end_bus` (0..=0), затем `IO(Decode16, 0xCF8, 0xCF8, 1, 8)` (порты conf1 платы S4-30c), `_PRT`: пустой пакет в базовом профиле. В Linux direct boot с PCI NVMe запись типа 8 handoff v1.3 добавляет producer `DWordMemory` для BAR0/1 и INTA → GSI 16 в `_PRT`. [ACPI 6.6 §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table) |
 | `\_SB.ECAM` | та же запись типа 7, `PRESENT = 1` (S4-31b) | `_HID` `PNP0C02` (motherboard resources), `_UID` 0, `_CRS`: `Memory32Fixed(ReadWrite, base, 0x10_0000)` — окно ECAM из записи; выводится после PCI0 и перед COM; нужен для `pci_mmcfg_late_init` (ECAM принимается как зарезервированный ресурс) |
 | `\_SB.COM<n>` | запись типа 1 (COM1), `PRESENT = 1`, `PIO` | имя `COM` + цифра `param0` (1–9), `_HID` `PNP0501`, `_UID` = `param0`, `_CRS`: `IO(Decode16, base, base, 1, length)` (`base` и `length` из записи; `base + length ≤ 0x10000`, `1 ≤ length ≤ 255`) и, если `gsi ≠ 0xFFFF_FFFF`, один `Interrupt(ResourceConsumer, …) {gsi}`; режим и полярность из `irq_flags` (бит 0: 1 = level, 0 = edge; бит 1: 1 = active-low), Exclusive |
+| `\_SB.RTC0` | опциональная запись RTC/CMOS типа 10 (handoff v1.4), `PRESENT = 1`, `PIO` | `_HID` `PNP0B00`, `_CRS` с `IO(Decode16, 0x70, 0x70, 1, 2)`. FADT использует ту же запись для `CENTURY = 0x32` и признака наличия RTC. [ACPI 6.6, §9.14.1](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00) |
 | `\_S5_` | `build_dsdt_with_s5` (S4-31e), поле `slp_typ_s5` записи ACPI PM (тип 9) | `Name(\_S5, Package() { 5, 5, 0, 0 })` в корне после `\_SB`: `SLP_TYPa` = `SLP_TYPb` = 5 (`ACPI_SLP_TYP_S5`), два последних элемента нулевые. `build_dsdt` без `_S5` даёт прежние байты (golden S4-31b) |
 
 Для firmware board v1 COM1 даёт `IO 0x3F8 length 8` и `Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive) {4}` (IRQ4 по FIRMWARE_BOOT.md §6.3; доставки IRQ4 нет, прошивка опрашивает COM1 — это описание ресурса, а не обещание работы прерывания в гостевой ОС).
@@ -62,12 +63,12 @@ _PRT описывает маршруты корневых мостов. [ACPI 6.
 
 | Что | Почему не здесь | Кто делает |
 |---|---|---|
-| RTC `PNP0B00`, HPET `PNP0103` | RTC/CMOS доступен плате по опциональной записи code 10 v1.4. Декларация RTC в DSDT остаётся открытой. Для HPET требуется подтверждённая потребность и модель устройства. | S7-14 |
+| HPET `PNP0103` | Для HPET требуется подтверждённая потребность и модель устройства. | S7-14 |
 | TPM `MSFT0101`, `_CRS` CRB `0xFED4_0000` | запись типа 6 `PRESENT = 0` до S7-22; CRB-устройства на плате нет | S7-22 |
 | IOAPIC, дисплей, NVRAM в DSDT | описываются таблицами MADT и конфигурацией ОС, а не AML; отдельного решения «описывать ли в DSDT» нет | S7-13 (состав — после S7-30) |
 | Публикация RSDP через UEFI configuration table | В текущем blob FADT уже указывает на DSDT полем `X_DSDT`. Путь публикации через UEFI относится к S7-13. | S7-13 |
 
-Механизм «устройство есть в manifest» реализован для PCI0 и COM1; для отложенных устройств добавление означает новую запись manifest и новый вывод в `dsdt.rs`, а не изменение кодировщика.
+PCI0, COM1 и RTC0 объявляются по соответствующим записям manifest. Для отложенных устройств потребуются данные manifest и правила вывода в `dsdt.rs`.
 
 ### Валидатор
 

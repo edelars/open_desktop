@@ -2,9 +2,9 @@
 //!
 //! The namespace is `\_SB` with the fixed one-CPU profile device `CPU0` (`_HID` `ACPI0007`,
 //! integer `_UID` 0) followed by devices that the manifest marks `PRESENT`: `PCI0` (PCIe root,
-//! from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1).
-//! `CPU0` matches the UID 0 Local APIC record emitted by MADT. Devices that are not described
-//! here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not emitted; `_S5` is added only by
+//! from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry), `COM1` (type 1) and
+//! `RTC0` (`PNP0B00`, type 10). `CPU0` matches the UID 0 Local APIC record emitted by MADT.
+//! HPET and TPM CRB belong to S7-14 and S7-22; `_S5` is added only by
 //! `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
 //!
 //! The PCIe ECAM entry (S4-31b) is checked by the same rules as the MCFG serializer
@@ -75,8 +75,8 @@ impl From<TableError> for DsdtError {
 /// matching the UID 0 Local APIC record in MADT. With a `PRESENT` PCIe ECAM entry the table then
 /// has `\_SB.PCI0` (`_CRS`: bus number range and
 /// `IO(Decode16, 0xCF8, 0xCF8, 1, 8)`), then `\_SB.ECAM` (`_HID` `PNP0C02`, `_UID` 0, `_CRS` =
-/// `Memory32Fixed(ReadWrite, base, 0x10_0000)`), then `COM<n>` if present. Without the entry the
-/// table has no PCI0 and no ECAM device.
+/// `Memory32Fixed(ReadWrite, base, 0x10_0000)`). The table also emits `COM<n>` and `RTC0` when
+/// their respective entries are present. Without a PCIe ECAM entry it has no PCI0 or ECAM device.
 ///
 /// A `const fn` (S4-31b0): evaluated at compile time it gives the table as static bytes, called
 /// at run time it gives the same bytes.
@@ -127,7 +127,7 @@ const fn build_dsdt_inner(
         let mut builder = AmlBuilder::new(tail_mut(out, SDT_HEADER_LEN));
         let scope = tri!(builder.begin_scope("\\_SB"), DsdtError::Aml);
         tri!(emit_cpu0(&mut builder), DsdtError::Aml);
-        // Order is fixed (CPU0, PCI0, ECAM reservation, COM1) so the output is deterministic.
+        // Order is fixed so the output is deterministic.
         if let Some(pci) = &pci {
             tri!(pci.emit(&mut builder), DsdtError::Aml);
         }
@@ -136,6 +136,9 @@ const fn build_dsdt_inner(
         }
         if let Some(com) = &com {
             tri!(com.emit(&mut builder), DsdtError::Aml);
+        }
+        if let Some(rtc) = manifest.rtc() {
+            tri!(emit_rtc(&mut builder, rtc), DsdtError::Aml);
         }
         tri!(builder.end(scope), DsdtError::Aml);
         if let Some(typ) = s5 {
@@ -157,6 +160,18 @@ const fn build_dsdt_inner(
     tri!(finish_checksum(head_mut(out, total)), DsdtError::Table);
     tri!(validate_dsdt(head_mut(out, total)));
     Ok(total)
+}
+
+/// ACPI 6.6 §9.14.1 PNP0B00. The handoff checks the PIO range and reserves no interrupt.
+const fn emit_rtc(builder: &mut AmlBuilder<'_>, rtc: &DeviceEntry) -> Result<(), AmlError> {
+    let base = rtc.base as u16;
+    let mut template = ResourceTemplate::new();
+    tri!(template.io(true, base, base, 1, rtc.length as u8));
+    let resources = tri!(template.finish());
+    let device = tri!(builder.begin_device("RTC0"));
+    tri!(builder.name_eisa_id("_HID", "PNP0B00"));
+    tri!(builder.name_resource_template("_CRS", &resources));
+    builder.end(device)
 }
 
 /// The stage-4 profile has one processor: Device(CPU0) with ACPI processor HID and integer UID 0.

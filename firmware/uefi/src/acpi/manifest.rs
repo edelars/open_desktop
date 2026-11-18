@@ -135,11 +135,12 @@ impl DeviceEntry {
     }
 }
 
-/// The seven devices of the handoff block, indexed by type code minus one.
+/// The seven base handoff entries and validated optional devices used by ACPI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoardManifest {
     devices: [DeviceEntry; DEVICE_COUNT],
     pci_nvme: Option<PciNvmeRoute>,
+    rtc: Option<DeviceEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +185,7 @@ impl BoardManifest {
         Ok(BoardManifest {
             devices: slots,
             pci_nvme: None,
+            rtc: None,
         })
     }
 
@@ -233,6 +235,27 @@ impl BoardManifest {
 
     pub(super) const fn pci_nvme(&self) -> Option<PciNvmeRoute> {
         self.pci_nvme
+    }
+
+    pub(super) const fn with_rtc(mut self, entry: DeviceEntry) -> Result<Self, ManifestError> {
+        if entry.flags != (FLAG_PRESENT | FLAG_PIO) {
+            return Err(ManifestError::BadRtc("flags"));
+        }
+        if entry.base != 0x70 || entry.length != 2 {
+            return Err(ManifestError::BadRtc("ports"));
+        }
+        if entry.gsi != GSI_NONE || entry.irq_flags != 0 || entry.param1 != 0 {
+            return Err(ManifestError::BadRtc("reserved fields"));
+        }
+        if entry.param0 > device_type::MAX_RTC_UNIX_SECONDS {
+            return Err(ManifestError::BadRtc("base UTC time"));
+        }
+        self.rtc = Some(entry);
+        Ok(self)
+    }
+
+    pub(super) const fn rtc(&self) -> Option<&DeviceEntry> {
+        self.rtc.as_ref()
     }
 
     /// The entry of a device type (1..=7).

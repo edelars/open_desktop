@@ -417,7 +417,27 @@ ACPICA предупреждает о пустом _PRT в базовой таб�
 [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#выборочная-сверка-с-acpi-66).
 
 S7-12 остаётся открытой по общим окнам и маршрутам [ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes)
-и условным декларациям RTC, HPET и TPM в соответствующих задачах этапа.
+и условным декларациям HPET и TPM в соответствующих задачах этапа.
+
+#### RTC в DSDT
+
+DSDT публикует `\_SB.RTC0` только при наличии валидной записи RTC/CMOS
+из handoff v1.4. Запись `DeviceEntry` с кодом 10 проходит общую проверку
+для DSDT и FADT до сериализации. `_HID` обозначает `PNP0B00`, `_CRS`
+указывает PIO `0x70–0x71`. В записи handoff нет маршрута IRQ8.
+[ACPI 6.6, §9.14.1](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00)
+
+Прошли 172 теста firmware. Эталон проверяет байты RTC0, контрольную сумму,
+FADT и отсутствие RTC0 при отсутствии записи. Для диагностики из blob,
+вычисленного `build_blob` в константе Rust для `STAGE4_DEVICES` с кодом 10,
+извлечена DSDT. `acpiexec` прочитала `_HID` `PNP0B00` и Decode16,
+минимум `0x70`, максимум `0x70`, длину 2. Из базового blob запрос
+`\_SB.RTC0._HID` вернул `AE_NOT_FOUND`.
+
+Базовый freestanding blob совпал побайтно с результатом host-сборки.
+Freestanding blob для PCI NVMe без RTC совпал с предыдущим артефактом.
+Форматирование и `git diff --check` прошли. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез без замечаний.
 
 #### История исходного среза
 
