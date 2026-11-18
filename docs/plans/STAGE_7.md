@@ -3073,3 +3073,15 @@ isolation. With budget 20000 the runner retires 10,341 instructions and
 stops at RIP `0x2018d6` on `75 1B` (JNZ rel8 +0x1b, ISSUE-488). It reports
 Unsupported opcode 117 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-488 — exact JNZ rel8 +0x1b (`75 1B`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed short branch. With ZF=0
+it adds signed rel8 +0x1b to next RIP and checks the taken target for
+canonicality. With ZF=1 it advances to next RIP. Both outcomes preserve
+flags and definedness. Tests cover both paths, target and fetch faults,
+neighboring encodings and profile isolation. With budget 20000 the runner
+falls through to `0x2018d8` and stops after 10,342 retired instructions on
+`48 83 7E 20 00` (CMP qword ptr [RSI+0x20],0, ISSUE-489). It reports
+Unsupported opcode 131 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

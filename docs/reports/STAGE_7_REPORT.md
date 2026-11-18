@@ -4941,3 +4941,38 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-488 — exact JNZ rel8 +0x1b
+
+The focused short JNZ tests cover both branch outcomes, concrete ZF with
+and without definedness, taken-target canonicality, the displacement fetch
+fault, neighboring encodings and CPL3 MOV probe isolation. The short JNZ
+filter passes 10/10, short JZ regressions pass 5/5 and the other CPL0 probe
+matrix passes 1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue488.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+For `75 1B` at `0x2018d6`, ZF=0 selects
+`0x2018d6 + 2 + 0x1b = 0x2018f3` and ZF=1 selects `0x2018d8`. The
+firmware run takes the ZF=1 path.
+
+| Budget and retired | RIP | Instruction at RIP |
+| ---: | --- | --- |
+| 10,341 | `0x2018d6` | `75 1B`, JNZ rel8 +0x1b |
+| 10,342 | `0x2018d8` | `48 83 7E 20 00`, CMP qword ptr [RSI+0x20],0 (ISSUE-489) |
+
+Both boundary runs report BudgetExhausted and empty COM1. With budget
+20000 the runner attempts the CMP and exits 5 with 10,342 retired and
+empty COM1. Unsupported opcode 131 is the decimal value of the CMP opcode
+byte `0x83` after the REX.W prefix. The previous stop reported 117 for JNZ
+byte `0x75`.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,559/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
