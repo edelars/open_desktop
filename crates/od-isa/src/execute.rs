@@ -22319,8 +22319,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: startup/helper use only observed literal conditional branch
-        // encodings, including these exact Jcc forms; other branches stay outside.
+        // S7-04: firmware boot accepts the decoded direct Jcc displacement.
+        // The diagnostic profile retains its literal encodings.
         Operation::Branch {
             condition,
             displacement,
@@ -22424,6 +22424,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                     | 0xb0
                             )
                             | (ConditionCode::Below, 0x82, 0xb7 | 0x19d | 0x230)
+                    ))
+                || (firmware_boot_profile
+                    && matches!(
+                        (
+                            instruction.opcode.map,
+                            instruction.length,
+                            instruction.opcode.byte
+                        ),
+                        (OpcodeMap::Primary, 2, 0x70..=0x7f)
+                            | (OpcodeMap::Escape0f, 6, 0x80..=0x8f)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {
@@ -24416,10 +24426,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: Rust helper exact memory XOR forms `46 33 24 8D 80 26 20 00`
-        // (XOR R12D,[R9*4+0x202680]) and `46 33 0C B5 80 26 20 00`
-        // (XOR R9D,[R14*4+0x202680]). Read through the tracked operand path
-        // before committing destination or flags.
+        // S7-04: the handoff CRC uses two indexed dword reads. Firmware boot
+        // takes the table displacement from the decoded instruction. The
+        // diagnostic profile retains the address from its original ROM.
         Operation::Logic {
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
@@ -24440,7 +24449,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     && source.index == Some(Register::R14)))
             && source.base == AddressBase::None
             && source.scale == 4
-            && source.displacement == 0x202680
+            && (source.displacement == 0x202680 || firmware_boot_profile)
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>
         {
@@ -27123,22 +27132,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // `41 83 FA 06`, and
         // `R15D,-0x0c` with exact `41 83 FF F4`, `R13D,-1/-0x0c` with exact
         // `41 83 FD FF/F4`, and `R12D,3` with exact `41 83 FC 03`. The decoder
-        // sign-extends imm8. Keep width, prefix, register and immediate tuples exact.
+        // sign-extends imm8. Firmware boot also compares BX against the
+        // handoff version bound selected by the compiler.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src:
-                Operand::Immediate(
-                    immediate @ (1
-                    | 2
-                    | 3
-                    | 6
-                    | 0x0b
-                    | 0x20
-                    | 0x30
-                    | 0xffff_ffff_ffff_fff4
-                    | 0xffff_ffff_ffff_ffff),
-                ),
+            src: Operand::Immediate(immediate),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -27179,10 +27178,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     && ((immediate == 1
                         && destination
                             == RegisterView::low(Register::Rdi, OperandSize::Word))
-                        || (immediate == 3
-                            && destination
-                                == RegisterView::low(Register::Rbx, OperandSize::Word))
-                        || (immediate == 2
+                        || ((firmware_boot_profile || matches!(immediate, 2 | 3))
                             && destination
                                 == RegisterView::low(Register::Rbx, OperandSize::Word))))
                 || (instruction.length == 5
