@@ -3013,3 +3013,15 @@ and stops there after 10,326 retired instructions on `48 83 C4 18`
 (ADD RSP,0x18, ISSUE-483). It reports Unsupported opcode 131 with empty
 COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-483 — exact ADD RSP,0x18 (`48 83 C4 18`)
+
+Base `PagedCpl0ProbeV1` admits the exact REX.W qword addition with
+sign-extended imm8 0x18. It writes the wrapping sum to RSP, defines the
+arithmetic flags and advances RIP. Tests cover the qword result, flags and
+definedness, noncanonical results, the immediate fetch fault, neighboring
+encodings and profile isolation. With budget 20000 the runner returns to
+the caller and stops after 10,335 retired instructions at RIP `0x201012`
+on `75 17` (JNZ rel8 +0x17, ISSUE-484). It reports Unsupported opcode 117
+with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

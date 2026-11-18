@@ -31451,18 +31451,23 @@ fn rust_helper_add_rsi_imm8_0x24_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn rust_helper_add_rsp_imm8_8_updates_qword_and_arithmetic_flags() {
-    let code = [0x48, 0x83, 0xc4, 0x08]; // ADD RSP,sign-extended imm8 8
+fn rust_helper_add_rsp_imm8_updates_qword_and_arithmetic_flags() {
     let arithmetic_flags = 0x8d5;
     let initial_defined = DEFINED & !arithmetic_flags;
-    for (rsp, sum, result_flags) in [
-        (0u64, 8, 0),
-        (u64::MAX - 7, 0, 0x055),
-        (i64::MAX as u64, 0x8000_0000_0000_0007, 0x890),
-        (i64::MIN as u64, 0x8000_0000_0000_0008, 0x080),
-        (0x0000_0001_ffff_fff8, 0x0000_0002_0000_0000, 0x014),
+    for (immediate, rsp, sum, result_flags) in [
+        (0x08, 0u64, 8, 0),
+        (0x08, u64::MAX - 7, 0, 0x055),
+        (0x08, i64::MAX as u64, 0x8000_0000_0000_0007, 0x890),
+        (0x08, i64::MIN as u64, 0x8000_0000_0000_0008, 0x080),
+        (0x08, 0x0000_0001_ffff_fff8, 0x0000_0002_0000_0000, 0x014),
+        (0x18, 0, 0x18, 0x004),
+        (0x18, u64::MAX - 0x17, 0, 0x055),
+        (0x18, i64::MAX as u64, 0x8000_0000_0000_0017, 0x894),
+        (0x18, i64::MIN as u64, 0x8000_0000_0000_0018, 0x084),
+        (0x18, 0x0000_0001_ffff_ffe8, 0x0000_0002_0000_0000, 0x014),
+        (0x18, 0x0000_7fff_ffff_ffe8, 0x0000_8000_0000_0000, 0x014),
     ] {
-        assert_eq!(rsp.wrapping_add(8), sum);
+        let code = [0x48, 0x83, 0xc4, immediate];
         let mut memory = Memory::new(&code);
         let mut cpu = state();
         cpu.gpr = gpr_patterns();
@@ -31480,7 +31485,7 @@ fn rust_helper_add_rsp_imm8_8_updates_qword_and_arithmetic_flags() {
         expected.gpr[Register::Rsp as usize] = sum;
         expected.rflags = (expected.rflags & !arithmetic_flags) | result_flags;
         expected.rip = RIP + code.len() as u64;
-        assert_eq!(cpu, expected, "RSP={rsp:#018x}");
+        assert_eq!(cpu, expected, "RSP={rsp:#018x}, imm8={immediate:#04x}");
         assert_eq!((memory.reads, memory.writes), (0, 0));
         assert!(memory.write_addresses.is_empty());
         assert!(pio.reads.is_empty() && pio.writes.is_empty());
@@ -31488,7 +31493,7 @@ fn rust_helper_add_rsp_imm8_8_updates_qword_and_arithmetic_flags() {
 }
 
 #[test]
-fn rust_helper_add_rsp_imm8_8_fetch_fault_is_atomic() {
+fn rust_helper_add_rsp_imm8_fetch_fault_is_atomic() {
     let rip = RIP + 0xffd;
     let code = [0x48, 0x83, 0xc4];
     let mut memory = memory_with_code_at(&code, rip);
@@ -31517,7 +31522,7 @@ fn rust_helper_add_rsp_imm8_8_fetch_fault_is_atomic() {
 }
 
 #[test]
-fn rust_helper_add_rsp_imm8_8_neighbours_stay_unsupported() {
+fn rust_helper_add_rsp_imm8_neighbours_stay_unsupported() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x48, 0x83, 0xc4, 0x07], 0x83),          // adjacent immediate
         (&[0x48, 0x83, 0xc4, 0x09], 0x83),          // adjacent immediate
@@ -31532,6 +31537,19 @@ fn rust_helper_add_rsp_imm8_8_neighbours_stay_unsupported() {
         (&[0xf3, 0x48, 0x83, 0xc4, 0x08], 0x83),    // prefix
         (&[0x48, 0x83, 0x04, 0x24, 0x08], 0x83),    // memory destination
         (&[0x48, 0x81, 0xc4, 0x08, 0, 0, 0], 0x81), // imm32 opcode
+        (&[0x48, 0x83, 0xc4, 0x17], 0x83),          // Adjacent immediate.
+        (&[0x48, 0x83, 0xc4, 0x19], 0x83),          // Adjacent immediate.
+        (&[0x48, 0x83, 0xc4, 0xe8], 0x83),          // Negative immediate.
+        (&[0x48, 0x83, 0xcc, 0x18], 0x83),          // OR RSP,0x18.
+        (&[0x48, 0x83, 0xfc, 0x18], 0x83),          // CMP RSP,0x18.
+        (&[0x48, 0x83, 0xc0, 0x18], 0x83),          // ADD RAX,0x18.
+        (&[0x49, 0x83, 0xc4, 0x18], 0x83),          // REX.B selects R12.
+        (&[0x40, 0x83, 0xc4, 0x18], 0x83),          // Dword destination.
+        (&[0x66, 0x48, 0x83, 0xc4, 0x18], 0x83),    // Additional operand-size prefix.
+        (&[0x66, 0x83, 0xc4, 0x18], 0x83),          // Word destination.
+        (&[0xf3, 0x48, 0x83, 0xc4, 0x18], 0x83),    // REP prefix.
+        (&[0x48, 0x83, 0x04, 0x24, 0x18], 0x83),    // Memory destination.
+        (&[0x48, 0x81, 0xc4, 0x18, 0, 0, 0], 0x81), // Imm32 opcode.
     ];
     for (bytes, opcode) in cases {
         let mut memory = Memory::new(bytes);
@@ -31556,26 +31574,28 @@ fn rust_helper_add_rsp_imm8_8_neighbours_stay_unsupported() {
 }
 
 #[test]
-fn rust_helper_add_rsp_imm8_8_is_unsupported_in_cpl3_profile() {
-    let bytes = [0x48, 0x83, 0xc4, 0x08];
-    let mut memory = Memory::new(&bytes);
-    let mut cpu = state();
-    cpu.cr3 = Some(0x1000);
-    cpu.gpr = gpr_patterns();
-    let before = cpu.clone();
-    let result = execute::step_paged_cpl3_mov(
-        &mut cpu,
-        &mut memory,
-        context(InstructionMode::Long64, PrivilegeLevel::Ring3),
-        0xd00,
-        DEFINED,
-    );
+fn rust_helper_add_rsp_imm8_is_unsupported_in_cpl3_profile() {
+    for immediate in [0x08, 0x18] {
+        let bytes = [0x48, 0x83, 0xc4, immediate];
+        let mut memory = Memory::new(&bytes);
+        let mut cpu = state();
+        cpu.cr3 = Some(0x1000);
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let result = execute::step_paged_cpl3_mov(
+            &mut cpu,
+            &mut memory,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring3),
+            0xd00,
+            DEFINED,
+        );
 
-    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(result.rflags_defined, DEFINED);
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -48760,6 +48780,7 @@ fn other_paged_profiles_keep_s7_entry_instructions_unsupported() {
         (&[0x49, 0x83, 0xc0, 0x18][..], 0x83),
         (&[0x48, 0x83, 0xc6, 0x24][..], 0x83),
         (&[0x48, 0x83, 0xc4, 0x08][..], 0x83),
+        (&[0x48, 0x83, 0xc4, 0x18][..], 0x83),
         (&[0x48, 0x83, 0xc6, 0x30][..], 0x83),
         (&[0x48, 0x83, 0xc6, 0x3c][..], 0x83),
         (&[0x45, 0x0f, 0x44, 0xf2][..], 0x44),

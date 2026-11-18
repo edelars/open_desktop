@@ -5866,7 +5866,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-483 — S7-04: exact ADD RSP,0x18 frontier (`48 83 C4 18`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-482.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2014c1`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `48 83 C4 18` (ADD RSP,0x18).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact `48 83 C4 18` adds sign-extended imm8 0x18 to RSP at 64-bit width, defines the arithmetic flags and advances RIP. The register operation performs no data access.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x2014c1` after 10,326 retired instructions. COM1 is empty. Bytes at the link-base shadow are `48 83 C4 18`.
-- **Следующий шаг:** admit the exact qword ADD and cover the arithmetic result and flags, the immediate fetch fault and profile isolation.
+- **Результат:** the runner executes the epilogue and caller compare, then stops after 10,335 retired instructions at RIP `0x201012` on `75 17` (JNZ rel8 +0x17, ISSUE-484). It reports `Unsupported { opcode: 117 }` with empty COM1.
+- **Проверка:** focused tests cover the qword result, wrap, arithmetic flags and definedness, a noncanonical result, the final-immediate fetch fault, neighboring encodings and CPL3 MOV isolation. The other CPL0 probe matrix passes. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-484 — S7-04: exact JNZ rel8 +0x17 frontier (`75 17`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-483.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201012`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `75 17` (JNZ rel8 +0x17).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 117 }` at RIP `0x201012` after 10,335 retired instructions. COM1 is empty. Bytes at the link-base shadow are `75 17`.
+- **Следующий шаг:** admit the exact short branch and cover the ZF condition, target canonicality, fault atomicity and profile isolation.

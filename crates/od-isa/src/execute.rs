@@ -22742,13 +22742,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: the helper releases exactly eight bytes with
-        // `48 83 C4 08`. Opcode 83 sign-extends imm8; the shared qword ADD
-        // updates arithmetic flags and definedness while changing only RSP.
+        // S7-04: the helper releases stack space with exact `48 83 C4 08`
+        // and `48 83 C4 18`. Opcode 83 sign-extends imm8. Shared qword ADD
+        // updates RSP and the arithmetic flags and their definedness.
         Operation::Arithmetic {
             kind: ArithmeticKind::Add,
             dst: Operand::Register(destination),
-            src: Operand::Immediate(0x08),
+            src: Operand::Immediate(immediate @ (0x08 | 0x18)),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -22766,7 +22766,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 OperandSize::Qword,
                 ArithmeticKind::Add,
                 lhs,
-                0x08,
+                immediate,
                 state.rflags,
             );
             state.write(destination, value);

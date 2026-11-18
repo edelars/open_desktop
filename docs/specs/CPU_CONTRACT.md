@@ -30025,3 +30025,15 @@ final-displacement-byte fetch fault commit no architectural state or
 retirement. The other CPL0 probes and the paged CPL3 MOV probe refuse
 this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-483 — bounded ADD RSP,0x18
+
+The base paged CPL0 profile admits exact `48 83 C4 18`. Opcode 83
+sign-extends imm8 0x18 and REX.W selects 64-bit addition. The instruction
+writes the wrapping sum to RSP and defines CF, PF, AF, ZF, SF and OF.
+RIP advances four bytes. Other GPRs, non-arithmetic flags and their
+definedness are preserved. This register operation performs no data
+access and permits a noncanonical RSP result. A fault on the final
+immediate fetch commits no architectural state. The other CPL0 probes
+and the paged CPL3 MOV probe refuse this form.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

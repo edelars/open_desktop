@@ -4775,3 +4775,37 @@ all-targets offline check passes with existing warnings. Scoped rustfmt and
 diff checks pass.
 
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-483 — exact ADD RSP,0x18
+
+Four focused tests cover the exact RSP immediates 8 and 0x18. They exercise
+the qword result, wrap, arithmetic flags and definedness, a noncanonical
+result without a data access, the final-immediate fetch fault, neighboring
+encodings and CPL3 MOV probe isolation. The other CPL0 probe matrix passes
+1/1.
+
+The runner command
+`cargo run --offline -q -p od-runner -- boot-firmware --image
+/private/tmp/od-fw-s7-04-issue256.bin --com1-out
+/private/tmp/od-fw-s7-04-issue483.com1 --budget 20000` uses image SHA-256
+`9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`.
+It exits 5 with 10,335 retired instructions, RIP `0x201012`, Unsupported
+opcode 117 and empty COM1. Bytes `75 17` select JNZ rel8 +0x17 (ISSUE-484).
+
+Runs with budgets 10326 through 10335 stop at each instruction boundary with
+BudgetExhausted, retired equal to budget and no COM1 output. The image bytes
+at `0x2014c1` are `48 83 C4 18 5B 41 5C 41 5D 41 5E 41 5F 5D C3`,
+encoding ADD, POP RBX, POP R12, POP R13, POP R14, POP R15, POP RBP and RET.
+The measured RIPs after the ADD and successive POPs are `0x2014c5`,
+`0x2014c6`, `0x2014c8`, `0x2014ca`, `0x2014cc`, `0x2014ce` and
+`0x2014cf`. RET returns to `0x20100c` at 10,334 retired. The caller's
+`66 83 7C 24 18 FF` (CMP word ptr [RSP+0x18],-1) advances RIP to
+`0x201012` at 10,335 retired. The run with budget 20000 attempts the JNZ
+there and reports Unsupported.
+
+The full offline `od-isa` suite passes (2,322/1,591/126/29/6/1,558/7/15 and
+zero doctests). The paged machine quantum suite passes 110/110. The workspace
+all-targets offline check passes with existing warnings. Scoped rustfmt and
+diff checks pass.
+
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
