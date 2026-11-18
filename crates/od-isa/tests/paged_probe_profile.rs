@@ -51226,6 +51226,8 @@ fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
 #[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x44, 0x08, 0xd1][..], 0x08),
+        (&[0x89, 0x70, 0x48][..], 0x89),
         (&[0x0f, 0x93, 0xc1][..], 0x93),
         (&[0x48, 0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7),
         (&[0x41, 0x0f, 0xa3, 0xec][..], 0xa3),
@@ -51841,19 +51843,69 @@ fn firmware_boot_register_xor_clears_the_definedness_of_af() {
 }
 
 #[test]
-fn firmware_boot_qword_register_stores_use_the_decoded_address_and_source() {
-    for (code, source, address) in [
-        (&[0x48, 0x89, 0x3c, 0x24][..], Register::Rdi, DATA),
+fn firmware_boot_or_byte_writes_only_the_decoded_destination() {
+    const AF: u64 = 1 << 4;
+    for (code, destination, input, expected_value, flags) in [
         (
-            &[0x4f, 0x89, 0xb4, 0xcd, 0xe0, 0xff, 0xff, 0xff][..],
-            Register::R14,
-            DATA + 0x20,
+            &[0x44, 0x08, 0xd1][..],
+            Register::Rcx,
+            0x1234_5678_9abc_de80,
+            0x1234_5678_9abc_de81,
+            0x696,
+        ),
+        (
+            &[0x0a, 0xc4][..],
+            Register::Rax,
+            0xfedc_ba98_7654_0201,
+            0xfedc_ba98_7654_0203,
+            0x616,
         ),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
+        cpu.gpr[destination as usize] = input;
+        cpu.gpr[Register::R10 as usize] = 0xface_1122_3344_5501;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = expected_value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_register_stores_use_the_decoded_address_width_and_source() {
+    for (code, source, address, width) in [
+        (&[0x48, 0x89, 0x3c, 0x24][..], Register::Rdi, DATA, 8),
+        (
+            &[0x4f, 0x89, 0xb4, 0xcd, 0xe0, 0xff, 0xff, 0xff][..],
+            Register::R14,
+            DATA + 0x20,
+            8,
+        ),
+        (&[0x89, 0x70, 0x48][..], Register::Rsi, DATA + 0x48, 4),
+    ] {
+        let mut memory = Memory::new(code);
+        let offset = DATA_PHYSICAL + (address - DATA) as usize;
+        memory.bytes[offset - 1..=offset + 8].fill(0xA5);
+        let mut cpu = state();
         cpu.gpr = gpr_patterns();
         cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rax as usize] = DATA;
         cpu.gpr[Register::R13 as usize] = DATA;
         cpu.gpr[Register::R9 as usize] = 8;
         let value = cpu.gpr[source as usize];
@@ -51876,15 +51928,23 @@ fn firmware_boot_qword_register_stores_use_the_decoded_address_and_source() {
         assert_eq!(cpu, expected);
         assert_eq!((memory.reads, memory.writes), (0, 1));
         assert_eq!(memory.write_addresses, [address]);
-        let offset = DATA_PHYSICAL + (address - DATA) as usize;
-        assert_eq!(memory.bytes[offset..offset + 8], value.to_le_bytes());
+        assert_eq!(
+            memory.bytes[offset..offset + width],
+            value.to_le_bytes()[..width]
+        );
+        assert_eq!(memory.bytes[offset - 1], 0xA5);
+        assert_eq!(
+            memory.bytes[offset + width..=offset + 8],
+            [0xA5; 9][width..]
+        );
     }
 }
 
 #[test]
-fn firmware_boot_qword_store_does_not_retire_on_memory_errors() {
+fn firmware_boot_register_store_does_not_retire_on_memory_errors() {
     let stack_store = (&[0x48, 0x89, 0x3c, 0x24][..], Register::Rsp);
     let data_store = (&[0x48, 0x89, 0x3b][..], Register::Rbx);
+    let dword_store = (&[0x89, 0x33][..], Register::Rbx);
     let page = od_isa::ArchitecturalFault {
         vector: 14,
         error_code: Some(2),
@@ -51905,6 +51965,13 @@ fn firmware_boot_qword_store_does_not_retire_on_memory_errors() {
         access: AccessKind::Write,
     };
     for ((code, base), base_value, backend_fault, exit, writes) in [
+        (
+            dword_store,
+            DATA,
+            Some(MemoryError::Architectural(page.clone())),
+            PagedProbeExit::Fault(page.clone()),
+            1,
+        ),
         (
             stack_store,
             DATA,
@@ -52472,6 +52539,9 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
+        (&[0x44, 0x08, 0x11][..], 0x08),                // OR byte [RCX],R10B
+        (&[0x0a, 0x03][..], 0x0a),                      // OR AL,byte [RBX]
+        (&[0x67, 0x89, 0x70, 0x48][..], 0x89),          // address32 dword store
         (&[0x0f, 0x93, 0x01][..], 0x93),                // SETAE byte [RCX]
         (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93),          // address prefix on SETAE CL
         (&[0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7), // dword store
@@ -52493,7 +52563,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x48, 0x03, 0x13][..], 0x03),                // ADD RDX,[RBX]
         (&[0x66, 0x83, 0xc6, 0xff][..], 0x83),          // ADD SI,-1
         (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),    // segment override
-        (&[0x89, 0x3c, 0x24][..], 0x89),                // dword store
+        (&[0x66, 0x89, 0x3c, 0x24][..], 0x89),          // word store
         (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),    // address32 store
         (&[0x8a, 0x3c, 0x24][..], 0x8a),                // byte load
         (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),    // address32 LEA

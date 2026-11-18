@@ -20048,7 +20048,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
         | Operation::Logic {
-            kind: LogicKind::Xor,
+            kind: LogicKind::Xor | LogicKind::Or,
             dst: Operand::Register(destination),
             src: source @ Operand::Register(_),
         }
@@ -20074,6 +20074,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0xf6, OperandSize::Byte) | (0x85, OperandSize::Dword | OperandSize::Qword)
                     )
+                }
+                Operation::Logic {
+                    kind: LogicKind::Or,
+                    ..
+                } => {
+                    instruction.operand_size == OperandSize::Byte
+                        && matches!(instruction.opcode.byte, 0x08 | 0x0a)
                 }
                 _ => matches!(
                     instruction.operand_size,
@@ -20164,7 +20171,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: execute the compiler's ordinary loads, qword stores and
+        // S7-04: execute the compiler's ordinary loads, stores and
         // effective address calculations through the shared transfers.
         operation @ (Operation::Mov {
             dst: Operand::Memory(_),
@@ -20179,7 +20186,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.opcode.map == OpcodeMap::Primary
                 && matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0x89, OperandSize::Qword)
+                    (0x89, OperandSize::Dword | OperandSize::Qword)
                         | (0x8b, OperandSize::Dword | OperandSize::Qword)
                         | (0x8d, OperandSize::Dword | OperandSize::Qword)
                 )
