@@ -1308,7 +1308,7 @@ fn s6_42d_atomic_steps_share_the_budget_and_definedness_with_the_interpreter() {
 }
 
 #[test]
-fn s6_42d_atomic_step_preserves_the_cpl0_sti_shadow_refusal() {
+fn s6_42d_atomic_step_without_sti_enabled_declines_blocking_shadow() {
     let _guard = jit_guard();
     let mut board = board(1);
     put(&mut board, CODE_0, &[0xf0, 0xff, 0x03]);
@@ -1330,6 +1330,69 @@ fn s6_42d_atomic_step_preserves_the_cpl0_sti_shadow_refusal() {
             .unwrap(),
         MARKER,
     );
+}
+
+#[test]
+fn s6_42d_lock_retires_in_sti_shadow_before_a_pending_irq() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xfb, 0xf0, 0xff, 0x03, 0xf4]); // STI; LOCK INC [RBX]; HLT
+    put(&mut board, HANDLER_IRQ, &[0xf4]);
+    let mut guest = state(CODE_0, STACK_TOP_0);
+    guest.rflags &= !(1 << 9);
+    guest.gpr[Register::Rbx as usize] = DATA;
+    assert!(host_install_vcpu(&mut board, 0, guest));
+    board
+        .bus_mut()
+        .write_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(LOCAL_APIC + 0xf0),
+            AccessWidth::Dword,
+            0x1ff,
+        )
+        .unwrap();
+    let lapic = board.local_apic_of(0).unwrap();
+    lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (true, false));
+
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        HostParallelConfig {
+            budget: 16,
+            ..host_config(true)
+        },
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.finished,
+        HostParallelFinish::AllIdle,
+        "{report:?}, {:?}",
+        quantum.last_failure(),
+    );
+    let stats = quantum.stats(0);
+    assert_eq!(stats.irqs_delivered, 1);
+    assert_eq!(stats.retired_interpreter, 3); // STI, LOCK INC, handler HLT.
+    assert_eq!(stats.atomic_jit_steps, 0);
+    assert_eq!(board.state().rip, HANDLER_IRQ + 1);
+    assert_eq!(board.state().sti_shadow, Some(StiShadow::Clear));
+    let frame = board.state().gpr[Register::Rsp as usize];
+    let ram = board.bus_mut().atomic_inline_memory();
+    assert_eq!(
+        ram.load_u64(GuestPhysicalAddress::new(DATA)).unwrap(),
+        MARKER + 1
+    );
+    assert_eq!(
+        ram.load_u64(GuestPhysicalAddress::new(frame)).unwrap(),
+        CODE_0 + 4
+    );
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (false, true));
 }
 
 #[test]
