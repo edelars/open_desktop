@@ -16,10 +16,12 @@ use od_isa::integer_flags::{AUXILIARY_CARRY_FLAG, CARRY_FLAG};
 use od_isa::state::{Gdtr, Idtr, StiShadow};
 use od_isa::{CodeSegmentDescriptorCache, CpuActivity, StackSegmentDescriptorCache};
 use od_machine::{
-    HostBoardIrqSource, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostSplitGate,
-    LoadedFirmwareBoard, host_install_vcpu, host_parallel_board, run_host_threads_with_nmi_paging,
+    HostBoardIrqSource, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostQuantumExit,
+    HostQuantumResult, HostSplitGate, LoadedFirmwareBoard, host_install_vcpu, host_parallel_board,
+    run_host_threads_with_nmi_paging,
 };
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -1876,11 +1878,150 @@ fn nmi_board() -> LoadedFirmwareBoard {
 }
 
 #[test]
+fn s6_42d_irq_resolves_its_descriptor_after_the_other_worker_drains() {
+    const OLD_DESCRIPTOR: u64 = 0x00AF_9A00_0000_FFFF;
+    const NEW_DESCRIPTOR: u64 = 0x00BF_9A00_0000_FFFF; // Set AVL, which is copied into the cache.
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let mut board = board(2);
+    put_u64(&mut board, GDT_AT + 8, OLD_DESCRIPTOR);
+    put(&mut board, HANDLER_IRQ, &SLEEP);
+    install(&mut board, 0, &SLEEP, CODE_0, STACK_TOP_0);
+    install(&mut board, 1, &SLEEP, CODE_1, STACK_TOP_1);
+    board
+        .bus_mut()
+        .write_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(LOCAL_APIC + 0xF0),
+            AccessWidth::Dword,
+            0x1FF,
+        )
+        .unwrap();
+    let lapic = board.local_apic_of(0).unwrap();
+    lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
+    let peer_entered = AtomicBool::new(false);
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| {
+            let deadline = Instant::now() + WAIT;
+            if call.cpu == 1 {
+                peer_entered.store(true, Ordering::Release);
+                // Complete an in-flight peer write before this worker returns to the barrier.
+                while !(call.stop)() {
+                    assert!(Instant::now() < deadline, "IRQ did not request quiescence");
+                    std::thread::yield_now();
+                }
+                call.bus
+                    .atomic_inline_memory()
+                    .store_u64(
+                        GuestPhysicalAddress::new(GDT_AT + 8),
+                        NEW_DESCRIPTOR,
+                        |_| {},
+                    )
+                    .unwrap();
+                return Ok(HostQuantumResult {
+                    retired: 0,
+                    exit: HostQuantumExit::Halted,
+                    device_ns: 0,
+                });
+            }
+            while !peer_entered.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the peer did not enter its quantum"
+                );
+                std::thread::yield_now();
+            }
+            quantum.run(call)
+        },
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+
+    assert_eq!(report.finished, HostParallelFinish::AllIdle, "{report:?}");
+    assert_eq!(report.split_locks, vec![0, 0]);
+    assert_eq!(quantum.stats(0).irqs_delivered, 1);
+    assert_eq!(board.state().rip, HANDLER_IRQ + 1);
+    assert_eq!(board.state().cs_cache.as_ref().unwrap().flags, 0xB);
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (false, true));
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(GDT_AT + 8))
+            .unwrap(),
+        NEW_DESCRIPTOR | (1 << 40),
+    );
+}
+
+#[test]
+fn s6_42d_irq_does_not_overwrite_a_descriptor_changed_by_its_frame() {
+    let _guard = jit_guard();
+    let region = SharedJitRegion::new(2, 4).unwrap();
+    let quantum = quantum_of(&region, 2);
+    let mut board = board(2);
+    put_u64(&mut board, GDT_AT + 8, 0x00AF_9A00_0000_FFFF);
+    // The first IRQ frame word writes the saved SS at the selected GDT entry.
+    install(&mut board, 0, &SLEEP, CODE_0, GDT_AT + 16);
+    install(&mut board, 1, &SLEEP, CODE_1, STACK_TOP_1);
+    let before = board.state().clone();
+    board
+        .bus_mut()
+        .write_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(LOCAL_APIC + 0xF0),
+            AccessWidth::Dword,
+            0x1FF,
+        )
+        .unwrap();
+    let lapic = board.local_apic_of(0).unwrap();
+    lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
+
+    let (report, ()) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(false),
+        &quantum.nmi_paging(),
+        &|call| quantum.run(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        report.finished,
+        HostParallelFinish::Error { cpu: 0, .. }
+    ));
+    assert!(quantum.last_failure().is_some_and(|text| {
+        text.contains("descriptor or its translation changed before the Accessed write")
+    }));
+    assert_eq!(quantum.stats(0).irqs_delivered, 0);
+    assert_eq!(lapic.vector_state(VECTOR_IRQ), (true, false));
+    assert_eq!(board.state().rip, before.rip);
+    assert_eq!(board.state().gpr, before.gpr);
+    assert_eq!(board.state().cs_cache, before.cs_cache);
+    assert_eq!(board.state().rflags, before.rflags);
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(GDT_AT + 8))
+            .unwrap(),
+        u64::from(before.ss_selector.unwrap()),
+        "the committed frame prefix survives refusal of the descriptor update",
+    );
+}
+
+#[test]
 fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
     let _guard = jit_guard();
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
+    put_u64(&mut board, GDT_AT + 8, 0x00AF_9A00_0000_FFFF);
     let (report, ()) = run_host_threads_with_nmi_paging(
         &mut board,
         host_config(false),
@@ -1908,6 +2049,15 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
     .expect("the board runs");
     assert_eq!(report.finished, HostParallelFinish::Stopped, "{report:?}");
     assert_eq!(report.nmi_delivered, vec![1, 0], "{report:?}");
+    assert_eq!(report.split_locks, vec![0, 0]);
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(GDT_AT + 8))
+            .unwrap(),
+        0x00AF_9B00_0000_FFFF,
+    );
     assert_eq!(quantum.last_failure(), None);
     drop(quantum);
     drop(region);

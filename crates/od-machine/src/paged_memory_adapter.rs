@@ -2754,7 +2754,16 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             context
         };
         if let Some(hook) = irq.as_mut() {
-            match deliver_pending_irq(hook, state, bus.ram(), &paging, context, &mut watch, cache) {
+            match deliver_pending_irq(
+                hook,
+                state,
+                bus.ram(),
+                &paging,
+                context,
+                &mut watch,
+                cache,
+                split_gate,
+            ) {
                 IrqBoundaryOutcome::None => {}
                 IrqBoundaryOutcome::Delivered => {
                     if let Some(observations) = execution_observations.as_deref_mut() {
@@ -3582,6 +3591,181 @@ pub(crate) enum IrqBoundaryOutcome {
     ),
 }
 
+struct DescriptorGate<'a>(&'a dyn crate::bus::SplitLockGate);
+
+impl<'a> DescriptorGate<'a> {
+    fn acquire(gate: &'a dyn crate::bus::SplitLockGate) -> Result<Self, MemoryError> {
+        gate.acquire_for_descriptor()
+            .map_err(|error| MemoryError::Backend(format!("descriptor gate: {error}")))?;
+        Ok(Self(gate))
+    }
+}
+
+impl Drop for DescriptorGate<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DescriptorLocation {
+    physical: GuestPhysicalAddress,
+    tables: [Option<GuestPhysicalAddress>; 4],
+}
+
+struct DescriptorRead {
+    linear: u64,
+    location: DescriptorLocation,
+    bytes: [u8; 8],
+}
+
+/// Delivery can write a frame between validating its target descriptor and setting Accessed.
+/// Quiescing the other workers does not protect the checked image from aliases in that frame.
+struct Cpl0GateMemory<'a, 'm> {
+    memory: &'a mut PagedMovMemoryAdapter<'m>,
+    descriptor_reads: Option<Vec<DescriptorRead>>,
+}
+
+impl Cpl0GateMemory<'_, '_> {
+    fn descriptor_location(
+        &self,
+        address: u64,
+        context: AccessContext,
+        access: AccessKind,
+    ) -> Result<DescriptorLocation, TrackedAccessError> {
+        let (physical, tables) = crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
+            self.memory.bus.locked_memory(),
+            &self.memory.paging,
+            self.memory.instruction_rip,
+            GuestLinearAddress::new(address),
+            context,
+            access,
+        )?;
+        Ok(DescriptorLocation { physical, tables })
+    }
+
+    fn check_descriptor_write(
+        &self,
+        reads: &[DescriptorRead],
+        address: u64,
+        context: AccessContext,
+        width: usize,
+    ) -> Result<(), MemoryError> {
+        if width != 8 || (address & 0xfff) + width as u64 > 4096 {
+            return Err(MemoryError::Backend(
+                "shared gate delivery requires a single-page qword descriptor write".into(),
+            ));
+        }
+        // An unsuccessful probe leaves the original walk to report the fault and its A/D prefix.
+        let Ok(location) = self.descriptor_location(address, context, AccessKind::Write) else {
+            return Ok(());
+        };
+        let Some(read) = reads.iter().rev().find(|read| read.linear == address) else {
+            return Err(MemoryError::Backend(
+                "descriptor was not read before update".into(),
+            ));
+        };
+        let mut current = [0; 8];
+        if location != read.location
+            || location
+                .tables
+                .iter()
+                .flatten()
+                .any(|table| table.get() == (location.physical.get() & !0xfff))
+            || self
+                .memory
+                .bus
+                .locked_memory()
+                .load_bytes(location.physical, &mut current)
+                .is_err()
+            || current != read.bytes
+        {
+            return Err(MemoryError::Backend(
+                "descriptor or its translation changed before the Accessed write".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl GuestMemory for Cpl0GateMemory<'_, '_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.memory.fetch(address, context)
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.memory.mfence(context)
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.memory.read(address, context, destination)?;
+        if self.descriptor_reads.is_some()
+            && context.origin == AccessOrigin::DescriptorTable
+            && (address & 0xfff) <= 4088
+            && let Ok(bytes) = <[u8; 8]>::try_from(destination)
+            && let Ok(location) = self.descriptor_location(address, context, AccessKind::Read)
+            && let Some(reads) = &mut self.descriptor_reads
+        {
+            reads.push(DescriptorRead {
+                linear: address,
+                location,
+                bytes,
+            });
+        }
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        if context.origin == AccessOrigin::DescriptorTable
+            && let Some(reads) = &self.descriptor_reads
+        {
+            self.check_descriptor_write(reads, address, context, source.len())?;
+        }
+        self.memory.write(address, context, source)
+    }
+}
+
+fn with_cpl0_gate_memory<T>(
+    ram: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    rip: u64,
+    watch: &mut dyn FnMut(GuestPhysicalRange),
+    cache: Option<&FetchTranslationCache>,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
+    deliver: impl FnOnce(&mut Cpl0GateMemory<'_, '_>) -> T,
+) -> Result<(T, Option<PageFaultRecord>, Option<TrackedAccessError>), MemoryError> {
+    let gate = gate.map(DescriptorGate::acquire).transpose()?;
+    let mut writes = Vec::new();
+    let result = {
+        let mut record = |range| match gate {
+            Some(_) => writes.push(range),
+            None => watch(range),
+        };
+        let mut memory = set_loop_adapter(ram, None, *paging, rip, &mut record, cache, None);
+        let mut delivery_memory = Cpl0GateMemory {
+            memory: &mut memory,
+            descriptor_reads: gate.is_some().then(Vec::new),
+        };
+        let delivery = deliver(&mut delivery_memory);
+        (delivery, memory.page_fault, memory.memory_error)
+    };
+    drop(gate);
+    for range in writes {
+        watch(range);
+    }
+    Ok(result)
+}
+
 pub(crate) fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
@@ -3590,6 +3774,7 @@ pub(crate) fn deliver_pending_irq(
     context: AccessContext,
     watch: &mut dyn FnMut(GuestPhysicalRange),
     cache: Option<&FetchTranslationCache>,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
 ) -> IrqBoundaryOutcome {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
@@ -3606,9 +3791,11 @@ pub(crate) fn deliver_pending_irq(
         hook.counters.irq_refused_shadow += 1;
         return IrqBoundaryOutcome::None;
     }
-    let ram = memory;
-    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache, None);
-    let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
+    let (delivery, page_fault, memory_error) =
+        with_cpl0_gate_memory(memory, paging, state.rip, watch, cache, gate, |memory| {
+            deliver_external_interrupt_cpl0_set(state, memory, vector, context)
+        })
+        .unwrap_or_else(|cause| (gate_acquisition_failure(cause), None, None));
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
@@ -3633,9 +3820,16 @@ pub(crate) fn deliver_pending_irq(
     };
     IrqBoundaryOutcome::Failed((
         PagedCpl0SetExit::IrqDeliveryFailed { vector, failure },
-        memory.page_fault,
-        memory.memory_error,
+        page_fault,
+        memory_error,
     ))
+}
+
+fn gate_acquisition_failure(cause: MemoryError) -> Cpl0ExternalInterruptDelivery {
+    Cpl0ExternalInterruptDelivery::Aborted {
+        phase: Cpl0ExternalInterruptPhase::IdtGateRead,
+        cause,
+    }
 }
 
 /// Deliver a native instruction's already observed CPL0 fault without executing it again.
@@ -3689,19 +3883,20 @@ pub(crate) fn deliver_nmi_at_boundary(
     memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
     context: AccessContext,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
 ) -> Cpl0ExternalInterruptDelivery {
-    let ram = memory;
     let mut committed_write = |_: GuestPhysicalRange| {};
-    let mut memory = set_loop_adapter(
-        ram,
-        None,
-        *paging,
+    with_cpl0_gate_memory(
+        memory,
+        paging,
         state.rip,
         &mut committed_write,
         None,
-        None,
-    );
-    deliver_nmi_cpl0_set(state, &mut memory, context)
+        gate,
+        |memory| deliver_nmi_cpl0_set(state, memory, context),
+    )
+    .map(|(delivery, _, _)| delivery)
+    .unwrap_or_else(gate_acquisition_failure)
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next
@@ -5345,6 +5540,76 @@ mod tests {
         put(&mut bus, 0x4000, 0x7007);
         put(&mut bus, 0x5000, data_pte);
         bus
+    }
+
+    #[test]
+    fn a_shared_descriptor_delivery_rejects_its_own_remap_and_notifies_after_release() {
+        #[derive(Default)]
+        struct Gate(std::cell::Cell<bool>);
+        impl crate::bus::SplitLockGate for Gate {
+            fn acquire(&self) -> Result<(), String> {
+                assert!(!self.0.replace(true));
+                Ok(())
+            }
+
+            fn release(&self) {
+                assert!(self.0.replace(false));
+            }
+        }
+
+        let mut bus = bus(0x8007);
+        put(&mut bus, 0x4000, 0x5007); // 4 MiB aliases the PTE for DATA_LINEAR.
+        let descriptor = 0x00AF_9A00_0000_FFFF;
+        put(&mut bus, 0x8000, descriptor);
+        put(&mut bus, 0x9000, descriptor);
+        let ram = bus.physical_memory();
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let gate = Gate::default();
+        let mut notified = Vec::new();
+
+        let (result, _, _) = with_cpl0_gate_memory(
+            ram,
+            &paging,
+            0,
+            &mut |range| {
+                assert!(!gate.0.get());
+                notified.push(range);
+            },
+            None,
+            Some(&gate),
+            |memory| {
+                assert!(gate.0.get());
+                let table = context().descriptor_table();
+                let mut bytes = [0; 8];
+                memory.read(DATA_LINEAR, table, &mut bytes).unwrap();
+                assert_eq!(u64::from_le_bytes(bytes), descriptor);
+                memory
+                    .write(0x40_0000, context(), &0x9007u64.to_le_bytes())
+                    .unwrap();
+                bytes[5] |= 1;
+                memory.write(DATA_LINEAR, table, &bytes)
+            },
+        )
+        .unwrap();
+
+        assert!(
+            matches!(result, Err(MemoryError::Backend(message)) if message.contains("translation changed"))
+        );
+        assert!(notified.contains(&range(0x5000)));
+        assert!(!notified.contains(&range(0x8000)));
+        assert!(!notified.contains(&range(0x9000)));
+        assert_eq!(
+            ram.load_u64(GuestPhysicalAddress::new(0x5000)).unwrap(),
+            0x9007
+        );
+        assert_eq!(
+            ram.load_u64(GuestPhysicalAddress::new(0x8000)).unwrap(),
+            descriptor
+        );
+        assert_eq!(
+            ram.load_u64(GuestPhysicalAddress::new(0x9000)).unwrap(),
+            descriptor
+        );
     }
 
     const ELF_COPY_R13: u64 = 0xffff_ffff_83ff_0000;

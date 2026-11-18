@@ -1300,6 +1300,7 @@ pub(crate) fn deliver_pending_nmi_of(
     memory: &crate::PhysicalMemory,
     page_table_root: Option<u64>,
     efer: u64,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
 ) -> Result<NmiBoundary, FirmwareBoardError> {
     use od_isa::Cpl0ExternalInterruptDelivery as Delivery;
     use od_isa::Cpl0ExternalInterruptRefusal as Refusal;
@@ -1370,7 +1371,7 @@ pub(crate) fn deliver_pending_nmi_of(
         rip: vcpu.state.rip,
         cs_selector: vcpu.state.cs_selector,
     };
-    match deliver_nmi_at_boundary(&mut vcpu.state, memory, &paging, context) {
+    match deliver_nmi_at_boundary(&mut vcpu.state, memory, &paging, context, gate) {
         Delivery::Delivered { .. } => {
             apic.take_nmi();
             Ok(NmiBoundary::Delivered)
@@ -1623,6 +1624,7 @@ impl LoadedFirmwareBoard {
             self.bus.physical_memory(),
             Some(self.page_table_root),
             efer,
+            None,
         )
     }
 

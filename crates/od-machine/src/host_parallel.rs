@@ -320,6 +320,9 @@ pub struct HostParallelControl<'s, 'a> {
 
 impl HostParallelControl<'_, '_> {
     /// The bus of the machine (RAM by shared reference, devices behind their lock).
+    /// Controller-side RAM writes require a successful [`Self::stop_all`] and must finish
+    /// before [`Self::resume`]. Running workers and their device services own the RAM writes
+    /// during execution. Reads during execution have ordinary access-width guarantees.
     pub fn bus(&self) -> &MachineBus {
         self.inner.bus()
     }
@@ -470,7 +473,10 @@ fn run_host_threads_inner<R>(
             stop: call.stop,
             native_stop: call.native_stop,
             lapic: call.lapic,
-            board_irq: HostBoardIrqSource((call.cpu == BOOT_VCPU_INDEX).then_some(call.source)),
+            board_irq: HostBoardIrqSource {
+                source: (call.cpu == BOOT_VCPU_INDEX).then_some(call.source),
+                gate: Some(call.gate),
+            },
             devices: HostDeviceServices(Some(call.env)),
             gate: HostSplitGate(Some(call.gate)),
         })
@@ -605,6 +611,8 @@ pub enum HostIrqBoundary {
 /// The page tables are those of `cr3`/`efer` (the host quantum's own configuration); `state.cr3`
 /// stays what the caller keeps it. The board's source (PIC, PIT) is not offered: only what waits in
 /// the Local APIC (an IPI, the Local APIC timer, an IOAPIC line routed to it).
+/// The caller must have exclusive access to guest RAM throughout delivery. A running vCPU quantum
+/// uses [`HostQuantumCall::board_irq`] for delivery with the worker gate.
 pub fn host_deliver_pending_irq(
     state: &mut LongModeState,
     bus: &MachineBus,
@@ -629,25 +637,35 @@ pub fn host_deliver_pending_irq(
 
 /// The interrupt source lent to the boot processor for this quantum. Selection and acknowledgment
 /// use the same board-first routing as the interpreter. Each source operation has its own lock scope.
-pub struct HostBoardIrqSource<'a>(Option<&'a mut dyn BoardIrqSource>);
+pub struct HostBoardIrqSource<'a> {
+    source: Option<&'a mut dyn BoardIrqSource>,
+    gate: Option<&'a dyn SplitLockGate>,
+}
 
 impl HostBoardIrqSource<'_> {
-    /// Use only the Local APIC at the instruction boundary.
+    /// Use only the Local APIC at an instruction boundary with exclusive access to guest RAM.
+    /// A running vCPU quantum gets its source from [`HostQuantumCall::board_irq`].
     pub const fn none() -> Self {
-        Self(None)
+        Self {
+            source: None,
+            gate: None,
+        }
     }
 
     /// Borrow the source for an instruction loop with shorter-lived state.
     pub fn reborrow(&mut self) -> HostBoardIrqSource<'_> {
-        match self.0.as_mut() {
-            Some(source) => HostBoardIrqSource(Some(&mut **source)),
-            None => HostBoardIrqSource::none(),
+        HostBoardIrqSource {
+            source: match self.source.as_mut() {
+                Some(source) => Some(&mut **source),
+                None => None,
+            },
+            gate: self.gate,
         }
     }
 
     /// Whether a successful guest write to the PIT ports calls for a new scheduler deadline.
     pub fn pit_write_ends_quantum(&self) -> bool {
-        self.0
+        self.source
             .as_deref()
             .is_some_and(BoardIrqSource::pit_write_ends_quantum)
     }
@@ -666,7 +684,7 @@ impl HostBoardIrqSource<'_> {
     ) -> HostIrqBoundary {
         let mut lapic = LapicIrqSource::new(lapic.clone());
         let mut boot;
-        let source: &mut dyn BoardIrqSource = if let Some(board) = self.0.as_deref_mut() {
+        let source: &mut dyn BoardIrqSource = if let Some(board) = self.source.as_deref_mut() {
             boot = BootProcessorSource::new(board, lapic);
             &mut boot
         } else {
@@ -702,6 +720,7 @@ impl HostBoardIrqSource<'_> {
             context,
             &mut committed_write,
             None,
+            self.gate,
         );
         *skip_first_boundary = hook.skip_first_boundary;
         match outcome {

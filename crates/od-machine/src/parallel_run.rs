@@ -621,7 +621,7 @@ impl SharedState<'_> {
     ///
     /// An owner that does not get every other vCPU quiet within the configured time gives the gate
     /// back and fails the instruction (no effect); every vCPU that waited goes on.
-    fn split_acquire(&self, cpu: usize) -> Result<(), String> {
+    fn acquire_exclusive(&self, cpu: usize, count_split_lock: bool) -> Result<(), String> {
         let cell = &self.cells[cpu];
         let deadline = Instant::now() + self.config.split_timeout;
         loop {
@@ -635,7 +635,9 @@ impl SharedState<'_> {
                     self.kicks.kick_all();
                     loop {
                         if self.others_quiet(cpu) {
-                            cell.split_locks.fetch_add(1, SEQ);
+                            if count_split_lock {
+                                cell.split_locks.fetch_add(1, SEQ);
+                            }
                             return Ok(());
                         }
                         if self.finish.load(SEQ) || Instant::now() >= deadline {
@@ -652,7 +654,9 @@ impl SharedState<'_> {
                 }
                 Err(owner) => {
                     // The loser: nothing of the instruction has happened. Stand still.
-                    cell.split_losses.fetch_add(1, SEQ);
+                    if count_split_lock {
+                        cell.split_losses.fetch_add(1, SEQ);
+                    }
                     cell.quiet.store(true, SEQ);
                     self.kicks.unpark(owner);
                     while self.split_owner.load(SEQ) != NO_OWNER {
@@ -662,7 +666,7 @@ impl SharedState<'_> {
                         }
                         if Instant::now() >= deadline {
                             cell.quiet.store(false, SEQ);
-                            return Err("the split-lock owner did not release in time".to_owned());
+                            return Err("the exclusive vCPU did not release in time".to_owned());
                         }
                         thread::park_timeout(Duration::from_micros(200));
                     }
@@ -826,7 +830,11 @@ struct WorkerGate<'s, 'a> {
 
 impl SplitLockGate for WorkerGate<'_, '_> {
     fn acquire(&self) -> Result<(), String> {
-        self.shared.split_acquire(self.cpu)
+        self.shared.acquire_exclusive(self.cpu, true)
+    }
+
+    fn acquire_for_descriptor(&self) -> Result<(), String> {
+        self.shared.acquire_exclusive(self.cpu, false)
     }
 
     fn release(&self) {
@@ -886,7 +894,15 @@ impl Worker<'_, '_, '_, '_> {
             cell.init_applied.fetch_add(u64::from(applied.init), SEQ);
             cell.started.fetch_add(u64::from(applied.started), SEQ);
             let efer = self.nmi_efer.unwrap_or(vcpu.guest_efer);
-            match deliver_pending_nmi_of(&apic, vcpu, self.memory(), self.page_table_root, efer) {
+            let gate = WorkerGate { shared: sh, cpu };
+            match deliver_pending_nmi_of(
+                &apic,
+                vcpu,
+                self.memory(),
+                self.page_table_root,
+                efer,
+                Some(&gate),
+            ) {
                 Ok(nmi) => {
                     cell.nmi_delivered
                         .fetch_add(u64::from(nmi == NmiBoundary::Delivered), SEQ);

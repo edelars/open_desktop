@@ -773,6 +773,12 @@ impl<'a> MachineBusSetStepIo<'a> {
 /// and then asks again: the instruction of the loser has had no effect, so it starts over.
 pub(crate) trait SplitLockGate {
     fn acquire(&self) -> Result<(), String>;
+
+    /// A descriptor delivery needs the same quiescence as a split operand.
+    fn acquire_for_descriptor(&self) -> Result<(), String> {
+        self.acquire()
+    }
+
     fn release(&self);
 }
 
