@@ -5902,7 +5902,16 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 ### ISSUE-487 — S7-04: exact CMP EAX,1 frontier (`83 F8 01`)
 - **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-486.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018d3`.
-- **Статус:** открыта. Следующая точная инструкция Stage 7.
-- **Суть и последствия:** the base firmware CPU profile stops on exact `83 F8 01` (CMP EAX,1).
+- **Статус:** решена для точной формы в base `PagedCpl0ProbeV1`.
+- **Суть и последствия:** exact unprefixed `83 F8 01` compares EAX with sign-extended imm8 1, defines the arithmetic flags and advances RIP. All GPRs are preserved.
 - **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 131 }` at RIP `0x2018d3` after 10,340 retired instructions. COM1 is empty. Bytes at the link-base shadow are `83 F8 01`.
-- **Следующий шаг:** admit the exact dword CMP and cover arithmetic flags, the immediate fetch fault and profile isolation.
+- **Результат:** the runner advances to `0x2018d6` and stops after 10,341 retired instructions on `75 1B` (JNZ rel8 +0x1b, ISSUE-488). It reports `Unsupported { opcode: 117 }` with empty COM1.
+- **Проверка:** focused tests cover dword arithmetic flags and definedness, all GPRs, the immediate fetch fault, neighboring encodings and profile isolation. Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-488 — S7-04: exact JNZ rel8 +0x1b frontier (`75 1B`)
+- **Дата обнаружения:** 2026-11-17, firmware runner after ISSUE-487.
+- **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x2018d6`.
+- **Статус:** открыта. Следующая точная инструкция Stage 7.
+- **Суть и последствия:** the base firmware CPU profile stops on exact `75 1B` (JNZ rel8 +0x1b).
+- **Основание:** with image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 117 }` at RIP `0x2018d6` after 10,341 retired instructions. COM1 is empty. Bytes at the link-base shadow are `75 1B`.
+- **Следующий шаг:** admit the exact short branch and cover the ZF condition, target canonicality, the displacement fetch fault and profile isolation.

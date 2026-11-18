@@ -30074,3 +30074,14 @@ other GPRs, RFLAGS and flag definedness. A noncanonical data range raises
 fault commits no architectural CPU state or retirement. The other CPL0
 probes and the paged CPL3 MOV probe refuse this encoding.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-487 — bounded CMP EAX,1
+
+The base paged CPL0 profile admits exact unprefixed `83 F8 01`. Opcode 83
+sign-extends imm8 1 and subtraction uses RAX[31:0] at dword width. The
+comparison defines CF, PF, AF, ZF, SF and OF and advances RIP by three
+bytes. All GPRs, other flags and their definedness are preserved. A fault
+on the final immediate fetch commits no architectural CPU state or
+retirement. The other CPL0 probes and the paged CPL3 MOV probe refuse
+this encoding.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.

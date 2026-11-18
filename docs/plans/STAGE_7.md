@@ -3062,3 +3062,14 @@ neighboring encodings and profile isolation. With budget 20000 the runner
 retires 10,340 instructions and stops at RIP `0x2018d3` on `83 F8 01`
 (CMP EAX,1, ISSUE-487). It reports Unsupported opcode 131 with empty COM1.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+### ISSUE-487 — exact CMP EAX,1 (`83 F8 01`)
+
+Base `PagedCpl0ProbeV1` admits the exact unprefixed dword compare. It
+subtracts sign-extended imm8 1 from EAX to define the arithmetic flags,
+preserves all GPRs and advances RIP. Tests cover dword flags and definedness,
+the final-immediate fetch fault, neighboring encodings and profile
+isolation. With budget 20000 the runner retires 10,341 instructions and
+stops at RIP `0x2018d6` on `75 1B` (JNZ rel8 +0x1b, ISSUE-488). It reports
+Unsupported opcode 117 with empty COM1.
+Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
