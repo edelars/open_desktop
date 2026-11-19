@@ -20509,7 +20509,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && matches!(
                 (instruction.opcode.map, instruction.opcode.byte, operation),
                 (OpcodeMap::Escape0f, 0xaf, Operation::Imul { .. })
-                    | (OpcodeMap::Primary, 0x69, Operation::ImulImmediate { .. })
+                    | (
+                        OpcodeMap::Primary,
+                        0x69 | 0x6b,
+                        Operation::ImulImmediate { .. }
+                    )
             )
             && instruction.operand_size == OperandSize::Qword
             && instruction.prefixes

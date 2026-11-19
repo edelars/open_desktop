@@ -225,6 +225,27 @@ Boot Services. Указатели Runtime Services и конфигурацион
 Привязка handle загруженного EFI-образа относится к S7-06.
 [UEFI 2.11, §§7.1 и 7.4.6](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-exitbootservices).
 
+### События в runtime-памяти
+
+`CreateEvent` принимает `EVT_RUNTIME` как признак хранения в
+runtime-памяти. Специальный тип `EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE`
+привязывается к группе `VIRTUAL_ADDRESS_CHANGE` с сохранением исходного
+типа. `CreateEventEx` принимает этот GUID с обычным типом события
+и выбирает runtime-хранение сам. Специальный тип сигнализации для
+`CreateEventEx` даёт `EFI_INVALID_PARAMETER`.
+
+При первой регистрации выделяется массив записей в
+`EfiRuntimeServicesData`. В нём сохраняются тип, идентификатор, группа,
+указатели callback и context, а также TPL. Вызывающий отвечает за
+runtime-время жизни callback и context. `CloseEvent` очищает запись.
+Последующие операции переиспользуют массив и сохраняют `MapKey`.
+По завершении BEFORE и проверке ключа прошивка записывает адрес массива
+в runtime-область рядом с Runtime Services. Поле адреса лежит за
+границей `HeaderSize` и CRC таблицы. Записи остаются в runtime-памяти
+после `ExitBootServices`. Вызов уведомлений при смене адресации и
+перенос указателей на виртуальные адреса относятся к S7-11.
+[UEFI 2.11, §§7.1 и 8.4](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#virtual-memory-services).
+
 ### Watchdog
 
 `SetWatchdogTimer` принимает секунды и выставляет один срок на том же

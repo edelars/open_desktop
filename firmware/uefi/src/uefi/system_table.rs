@@ -4,7 +4,7 @@
 use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
-use crate::bs::event::{self, Event, EventNotify, Tpl};
+use crate::bs::event::{self, Event, EventNotify, RuntimeEventTable, Tpl};
 use crate::bs::{config_table, exit, memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::device_path::DevicePathNode;
@@ -237,6 +237,23 @@ impl RuntimeServices {
     }
 }
 
+/// Firmware-owned storage for the Runtime Services table and its retained
+/// event registrations. The EFI header size covers only the table field.
+#[repr(C)]
+pub struct RuntimeServicesStorage {
+    pub table: RuntimeServices,
+    pub(crate) event_table: *mut RuntimeEventTable,
+}
+
+impl RuntimeServicesStorage {
+    pub const fn diagnostic() -> Self {
+        Self {
+            table: RuntimeServices::diagnostic(),
+            event_table: ptr::null_mut(),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ConfigurationTable {
@@ -395,6 +412,8 @@ mod tests {
         assert_eq!(offset_of!(BootServices, create_event_ex), 368);
         assert_eq!(offset_of!(RuntimeServices, get_variable), 72);
         assert_eq!(offset_of!(RuntimeServices, query_variable_info), 128);
+        assert_eq!(offset_of!(RuntimeServicesStorage, table), 0);
+        assert_eq!(offset_of!(RuntimeServicesStorage, event_table), 136);
     }
 
     #[test]

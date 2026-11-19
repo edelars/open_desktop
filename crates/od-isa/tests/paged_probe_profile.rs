@@ -55001,19 +55001,21 @@ fn firmware_rdtsc_does_not_sample_on_fetch_fault_or_prefix() {
 fn firmware_boot_qword_imul_immediate_writes_only_the_truncated_destination() {
     for (code, source, product, flags) in [
         (
-            [0x4d, 0x69, 0xd9, 0x80, 0x96, 0x98, 0],
+            &[0x4d, 0x69, 0xd9, 0x80, 0x96, 0x98, 0][..],
             3,
             30_000_000,
             0x6d6,
         ),
         (
-            [0x4d, 0x69, 0xd9, 0xff, 0xff, 0xff, 0xff],
+            &[0x4d, 0x69, 0xd9, 0xff, 0xff, 0xff, 0xff][..],
             1 << 63,
             1 << 63,
             0xed7,
         ),
+        (&[0x4d, 0x6b, 0xd9, 0x38][..], 3, 168, 0x6d6),
+        (&[0x4d, 0x6b, 0xd9, 0xff][..], 3, u64::MAX - 2, 0x6d6),
     ] {
-        let mut memory = Memory::new(&code);
+        let mut memory = Memory::new(code);
         let mut cpu = state();
         cpu.gpr[Register::R9 as usize] = source;
         cpu.gpr[Register::R11 as usize] = u64::MAX;
@@ -55411,7 +55413,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x66, 0x41, 0xf7, 0xf1][..], 0xf7),             // DIV R9W
         (&[0x48, 0xf7, 0x32][..], 0xf7),                   // DIV qword [RDX]
         (&[0x45, 0x69, 0xd9, 3, 0, 0, 0][..], 0x69),       // IMUL R11D,R9D,3
-        (&[0x4d, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11,R9,imm8
+        (&[0x45, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11D,R9D,imm8
         (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69),       // IMUL RDX,[RDX],3
         (&[0x45, 0x19, 0xd8][..], 0x19),                   // SBB R8D,R11D
         (&[0x1b, 0x03][..], 0x1b),                         // SBB EAX,[RBX]

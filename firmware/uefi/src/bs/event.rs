@@ -5,9 +5,13 @@ use crate::uefi::{guid::Guid, status::Status};
 use core::ffi::c_void;
 use core::ptr;
 
+mod runtime;
 mod timer;
 mod watchdog;
 
+use runtime::RuntimeEventRegistrations;
+pub(crate) use runtime::RuntimeEventTable;
+pub use runtime::{EVT_RUNTIME, EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE, VIRTUAL_ADDRESS_CHANGE};
 pub use timer::{
     EVT_TIMER, TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, set_timer, stall, wait_for_event,
 };
@@ -59,6 +63,7 @@ pub(crate) struct EventRegistry {
     clock: Option<TimerClock>,
     timers_active: bool,
     watchdog: Watchdog,
+    runtime: RuntimeEventRegistrations,
     pending: [usize; MAX_EVENTS],
     pending_count: usize,
     last_event: usize,
@@ -73,6 +78,7 @@ impl EventRegistry {
             clock: None,
             timers_active: true,
             watchdog: Watchdog::new(),
+            runtime: RuntimeEventRegistrations::new(),
             pending: [0; MAX_EVENTS],
             pending_count: 0,
             last_event: 0,
@@ -80,14 +86,14 @@ impl EventRegistry {
         }
     }
 
-    fn create(
-        &mut self,
+    fn prepare_event(
+        &self,
         event_type: u32,
         notify_tpl: Tpl,
         function: Option<EventNotify>,
         context: *mut c_void,
         group: Option<Guid>,
-    ) -> Result<Event, Status> {
+    ) -> Result<(usize, Entry), Status> {
         let notify = match event_type & !EVT_TIMER {
             0 => None,
             EVT_NOTIFY_WAIT | EVT_NOTIFY_SIGNAL
@@ -103,24 +109,48 @@ impl EventRegistry {
         };
         let slot = self
             .entries
-            .iter_mut()
-            .find(|entry| entry.is_none())
+            .iter()
+            .position(|entry| entry.is_none())
             .ok_or(Status::OUT_OF_RESOURCES)?;
         let token = self
             .last_event
             .checked_add(1)
             .ok_or(Status::OUT_OF_RESOURCES)?;
         let event = ptr::without_provenance_mut(token);
-        *slot = Some(Entry {
-            event,
-            event_type,
-            notify,
-            group,
-            signaled: false,
-            queued: false,
-        });
-        self.last_event = token;
-        Ok(event)
+        Ok((
+            slot,
+            Entry {
+                event,
+                event_type,
+                notify,
+                group,
+                signaled: false,
+                queued: false,
+            },
+        ))
+    }
+
+    fn commit_event(&mut self, slot: usize, entry: Entry) -> Event {
+        self.entries[slot] = Some(entry);
+        self.last_event = entry.event.addr();
+        entry.event
+    }
+
+    #[cfg(test)]
+    fn create(
+        &mut self,
+        event_type: u32,
+        notify_tpl: Tpl,
+        function: Option<EventNotify>,
+        context: *mut c_void,
+        group: Option<Guid>,
+    ) -> Result<Event, Status> {
+        let (slot, entry) = self.prepare_event(event_type, notify_tpl, function, context, group)?;
+        Ok(self.commit_event(slot, entry))
+    }
+
+    pub(super) fn runtime_event_table(&self) -> *mut RuntimeEventTable {
+        self.runtime.root()
     }
 
     fn find(&self, event: Event) -> Result<usize, Status> {
@@ -244,6 +274,7 @@ impl EventRegistry {
         }
         self.entries[index] = None;
         self.timers[index] = None;
+        self.runtime.forget(index);
         Status::SUCCESS
     }
 
@@ -331,15 +362,34 @@ pub unsafe extern "efiapi" fn create_event(
     context: *mut c_void,
     event: *mut Event,
 ) -> Status {
-    let (event_type, group) = if event_type == EVT_SIGNAL_EXIT_BOOT_SERVICES {
-        (
+    let (kind, group, runtime_kind) = match event_type {
+        EVT_SIGNAL_EXIT_BOOT_SERVICES => (
             EVT_NOTIFY_SIGNAL,
-            ptr::from_ref(&super::exit::EXIT_BOOT_SERVICES),
-        )
-    } else {
-        (event_type, ptr::null())
+            Some(super::exit::EXIT_BOOT_SERVICES),
+            None,
+        ),
+        EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE => (
+            EVT_NOTIFY_SIGNAL,
+            Some(VIRTUAL_ADDRESS_CHANGE),
+            Some(EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE),
+        ),
+        other => (
+            other & !EVT_RUNTIME,
+            None,
+            (other & EVT_RUNTIME != 0).then_some(other),
+        ),
     };
-    unsafe { create_event_ex(event_type, notify_tpl, function, context, group, event) }
+    unsafe {
+        publish_event(
+            kind,
+            notify_tpl,
+            function,
+            context,
+            group,
+            runtime_kind,
+            event,
+        )
+    }
 }
 
 /// # Safety
@@ -353,7 +403,12 @@ pub unsafe extern "efiapi" fn create_event_ex(
     group: *const Guid,
     event: *mut Event,
 ) -> Status {
-    if event.is_null() {
+    if event.is_null()
+        || matches!(
+            event_type,
+            EVT_SIGNAL_EXIT_BOOT_SERVICES | EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE
+        )
+    {
         return Status::INVALID_PARAMETER;
     }
     let group = if group.is_null() {
@@ -361,18 +416,60 @@ pub unsafe extern "efiapi" fn create_event_ex(
     } else {
         Some(unsafe { group.read() })
     };
+    let runtime_kind = (event_type & EVT_RUNTIME != 0 || group == Some(VIRTUAL_ADDRESS_CHANGE))
+        .then_some(event_type | EVT_RUNTIME);
+    unsafe {
+        publish_event(
+            event_type & !EVT_RUNTIME,
+            notify_tpl,
+            function,
+            context.cast_mut(),
+            group,
+            runtime_kind,
+            event,
+        )
+    }
+}
+
+unsafe fn publish_event(
+    event_type: u32,
+    notify_tpl: Tpl,
+    function: Option<EventNotify>,
+    context: *mut c_void,
+    group: Option<Guid>,
+    runtime_type: Option<u32>,
+    event: *mut Event,
+) -> Status {
+    if event.is_null() {
+        return Status::INVALID_PARAMETER;
+    }
     unsafe {
         state::with(|state| {
-            match state
+            let (slot, entry) = match state
                 .events
-                .create(event_type, notify_tpl, function, context.cast_mut(), group)
+                .prepare_event(event_type, notify_tpl, function, context, group)
             {
-                Ok(created) => {
-                    event.write(created);
-                    Status::SUCCESS
+                Ok(entry) => entry,
+                Err(status) => return status,
+            };
+            if let Some(runtime_type) = runtime_type {
+                if !state.exit.can_change_map() {
+                    return Status::ACCESS_DENIED;
                 }
-                Err(status) => status,
+                if state.runtime_services.is_none() {
+                    return Status::NOT_READY;
+                }
+                if let Err(status) =
+                    state
+                        .events
+                        .runtime
+                        .retain(state.allocator, slot, entry, runtime_type)
+                {
+                    return status;
+                }
             }
+            event.write(state.events.commit_event(slot, entry));
+            Status::SUCCESS
         })
     }
 }

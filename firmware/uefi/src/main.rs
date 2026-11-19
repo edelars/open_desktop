@@ -14,9 +14,10 @@ use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::event::{
-    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_SIGNAL_EXIT_BOOT_SERVICES, EVT_TIMER, Event,
-    TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_HIGH_LEVEL,
-    TPL_NOTIFY,
+    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_RUNTIME, EVT_SIGNAL_EXIT_BOOT_SERVICES,
+    EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE, EVT_TIMER, Event, EventNotify, TIMER_CANCEL, TIMER_PERIODIC,
+    TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_HIGH_LEVEL, TPL_NOTIFY,
+    VIRTUAL_ADDRESS_CHANGE,
 };
 use od_firmware::bs::exit::{BEFORE_EXIT_BOOT_SERVICES, EXIT_BOOT_SERVICES, set_boot_image_handle};
 use od_firmware::bs::memory::IdentityPoolMemory;
@@ -39,7 +40,7 @@ use od_firmware::stop::{
 };
 use od_firmware::uefi::guid::Guid;
 use od_firmware::uefi::status::Status;
-use od_firmware::uefi::system_table::{BootServices, RuntimeServices, SystemTable};
+use od_firmware::uefi::system_table::{BootServices, RuntimeServicesStorage, SystemTable};
 use od_firmware::uefi::types::Handle;
 
 unsafe extern "C" {
@@ -175,6 +176,22 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         com1_write(&fixed_hex(u64::from(byte)));
         com1_write(b"\r\n");
     }
+    // The live allocator's free pages are identity-mapped and writable.
+    let runtime_address = match allocator.allocate_pool(
+        &mut IdentityPoolMemory,
+        MemoryType::RUNTIME_SERVICES_DATA,
+        size_of::<RuntimeServicesStorage>() as u64,
+    ) {
+        Ok(address) => address,
+        Err(_) => stop(STOP_BOOT_SERVICES, 60),
+    };
+    let runtime =
+        ptr::with_exposed_provenance_mut::<RuntimeServicesStorage>(runtime_address as usize);
+    let mut runtime_storage = RuntimeServicesStorage::diagnostic();
+    runtime_storage.table.update_crc32();
+    // SAFETY: the pool allocated a live, aligned runtime storage slot.
+    unsafe { runtime.write(runtime_storage) };
+    let service_map_key = allocator.map().key() as usize;
     // SAFETY: this is the one BSP initialization; the diagnostic has finished
     // borrowing the allocator. All ensuing accesses go through Boot Services.
     unsafe { od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc) };
@@ -189,20 +206,19 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         };
     }
     let mut boot = BootServices::diagnostic();
-    let mut runtime = RuntimeServices::diagnostic();
     boot.update_crc32();
-    runtime.update_crc32();
     let mut system = SystemTable::diagnostic(
         FIRMWARE_VENDOR.as_ptr(),
-        ptr::addr_of_mut!(runtime),
+        runtime.cast(),
         ptr::addr_of_mut!(boot),
     );
     system.update_crc32();
     let system_pointer = ptr::addr_of_mut!(system);
-    // SAFETY: the table stays on the live boot stack through every service call.
-    unsafe { od_firmware::bs::attach_system_table(system_pointer) };
+    // SAFETY: the System Table stays on the boot stack and the Runtime
+    // Services storage resides in its dedicated runtime pool.
+    unsafe { od_firmware::bs::attach_system_tables(system_pointer, runtime) };
     verify_boot_services(&system);
-    verify_memory_services(&system, key as usize);
+    verify_memory_services(&system, service_map_key);
     verify_protocol_services(&system);
     verify_event_services(&system);
     verify_protocol_notify(&system);
@@ -216,7 +232,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
             "/* {system} {boot} {runtime} */",
             system = in(reg) &system,
             boot = in(reg) &boot,
-            runtime = in(reg) &runtime,
+            runtime = in(reg) runtime,
             options(nostack, preserves_flags),
         );
     }
@@ -1453,6 +1469,105 @@ unsafe fn record_exit_notification(probe: *mut ExitProbe, value: u8) {
     }
 }
 
+unsafe fn verify_runtime_events(boot: *mut BootServices, runtime_context: *mut c_void) {
+    // SAFETY: this runs in the private BEFORE notification, with the table
+    // and output arrays live and no mutable references across service calls.
+    unsafe {
+        let allocate = ptr::addr_of!((*boot).allocate_pages).read_volatile();
+        let get_map = ptr::addr_of!((*boot).get_memory_map).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event).read_volatile();
+        let create_ex = ptr::addr_of!((*boot).create_event_ex).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+        let set_timer = ptr::addr_of!((*boot).set_timer).read_volatile();
+        let mut callback_page = 0;
+        if allocate(0, MemoryType::RUNTIME_SERVICES_CODE, 1, &mut callback_page) != Status::SUCCESS
+            || callback_page == 0
+        {
+            stop(STOP_BOOT_SERVICES, 61);
+        }
+        let callback_byte = ptr::with_exposed_provenance_mut::<u8>(callback_page as usize);
+        // Install the x64 RET instruction for a no-op EFI callback. This
+        // diagnostic checks retention of the registration and never calls it.
+        callback_byte.write(0xc3);
+        let notify = core::mem::transmute::<*mut u8, EventNotify>(callback_byte);
+
+        let mut descriptors = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
+        let mut read_key = || {
+            let mut size = size_of_val(&descriptors);
+            let mut key = 0;
+            if get_map(
+                &mut size,
+                descriptors.as_mut_ptr(),
+                &mut key,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ) != Status::SUCCESS
+            {
+                stop(STOP_BOOT_SERVICES, 61);
+            }
+            key
+        };
+        let before = read_key();
+        let mut legacy = ptr::null_mut();
+        let mut extended = ptr::null_mut();
+        let mut timer = ptr::null_mut();
+        let mut transient = ptr::null_mut();
+        if create_ex(
+            EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
+            TPL_NOTIFY,
+            Some(notify),
+            runtime_context,
+            &VIRTUAL_ADDRESS_CHANGE,
+            &mut legacy,
+        ) != Status::INVALID_PARAMETER
+            || !legacy.is_null()
+            || read_key() != before
+            || create(
+                EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
+                TPL_NOTIFY,
+                Some(notify),
+                runtime_context,
+                &mut legacy,
+            ) != Status::SUCCESS
+            || legacy.is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 62);
+        }
+        let retained = read_key();
+        if before.checked_add(1) != Some(retained)
+            || create_ex(
+                EVT_NOTIFY_SIGNAL,
+                TPL_NOTIFY,
+                Some(notify),
+                ptr::null(),
+                &VIRTUAL_ADDRESS_CHANGE,
+                &mut extended,
+            ) != Status::SUCCESS
+            || extended.is_null()
+            || create(
+                EVT_RUNTIME | EVT_TIMER,
+                0,
+                None,
+                ptr::null_mut(),
+                &mut timer,
+            ) != Status::SUCCESS
+            || set_timer(timer, TIMER_RELATIVE, 10_000) != Status::SUCCESS
+            || create(
+                EVT_RUNTIME | EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify),
+                ptr::null_mut(),
+                &mut transient,
+            ) != Status::SUCCESS
+            || close(transient) != Status::SUCCESS
+            || read_key() != retained
+        {
+            stop(STOP_BOOT_SERVICES, 63);
+        }
+    }
+    com1_write(b"OD-FW S7-05 runtime events registered\r\n");
+}
+
 unsafe extern "efiapi" fn notify_before_exit(_: Event, context: *mut c_void) {
     let probe = context.cast::<ExitProbe>();
     unsafe {
@@ -1466,6 +1581,11 @@ unsafe extern "efiapi" fn notify_before_exit(_: Event, context: *mut c_void) {
         {
             stop(STOP_BOOT_SERVICES, 54);
         }
+        let system = ptr::addr_of!((*probe).system).read();
+        verify_runtime_events(
+            boot,
+            ptr::addr_of!((*system).runtime_services).read().cast(),
+        );
         record_exit_notification(probe, b'B');
     }
 }
@@ -1583,7 +1703,7 @@ fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
             stop(STOP_BOOT_SERVICES, 55);
         }
         let fresh_key = read_key();
-        if key.checked_add(1) != Some(fresh_key) || exit(image, fresh_key) != Status::SUCCESS {
+        if key.checked_add(3) != Some(fresh_key) || exit(image, fresh_key) != Status::SUCCESS {
             stop(STOP_BOOT_SERVICES, 56);
         }
 

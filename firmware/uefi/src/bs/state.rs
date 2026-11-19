@@ -6,7 +6,7 @@ use super::exit::BootExit;
 use super::protocol::ProtocolRegistry;
 use crate::mem::pages::PageAllocator;
 use crate::uefi::status::Status;
-use crate::uefi::system_table::SystemTable;
+use crate::uefi::system_table::{RuntimeServicesStorage, SystemTable};
 use core::cell::{Cell, UnsafeCell};
 use core::ptr::NonNull;
 
@@ -17,6 +17,7 @@ struct BspServices {
     events: UnsafeCell<EventRegistry>,
     configuration: UnsafeCell<ConfigurationTables>,
     system_table: Cell<Option<NonNull<SystemTable>>>,
+    runtime_services: Cell<Option<NonNull<RuntimeServicesStorage>>>,
     exit: UnsafeCell<BootExit>,
 }
 
@@ -32,6 +33,7 @@ static BOOT_SERVICES: BspServices = BspServices {
     events: UnsafeCell::new(EventRegistry::new()),
     configuration: UnsafeCell::new(ConfigurationTables::new()),
     system_table: Cell::new(None),
+    runtime_services: Cell::new(None),
     exit: UnsafeCell::new(BootExit::new()),
 };
 
@@ -41,6 +43,7 @@ pub(crate) struct ServiceState<'a> {
     pub events: &'a mut EventRegistry,
     pub configuration: &'a mut ConfigurationTables,
     pub system_table: Option<NonNull<SystemTable>>,
+    pub runtime_services: Option<NonNull<RuntimeServicesStorage>>,
     pub exit: &'a mut BootExit,
 }
 
@@ -70,10 +73,12 @@ pub unsafe fn initialize(
 }
 
 /// # Safety
-/// Call once on the BSP before publishing the table. It must remain at its
-/// address and be exclusively writable by Boot Services during table updates.
-pub unsafe fn attach_system_table(system: *mut SystemTable) {
+/// Call once on the BSP before publishing the tables. Both must remain at
+/// their addresses and be exclusively writable by Boot Services when updated.
+/// The runtime storage lives in runtime memory and survives boot exit.
+pub unsafe fn attach_system_tables(system: *mut SystemTable, runtime: *mut RuntimeServicesStorage) {
     BOOT_SERVICES.system_table.set(NonNull::new(system));
+    BOOT_SERVICES.runtime_services.set(NonNull::new(runtime));
 }
 
 /// # Safety
@@ -125,6 +130,7 @@ pub(crate) unsafe fn try_with<R>(operation: impl FnOnce(ServiceState<'_>) -> R) 
             events: &mut *BOOT_SERVICES.events.get(),
             configuration: &mut *BOOT_SERVICES.configuration.get(),
             system_table: BOOT_SERVICES.system_table.get(),
+            runtime_services: BOOT_SERVICES.runtime_services.get(),
             exit,
         }))
     }

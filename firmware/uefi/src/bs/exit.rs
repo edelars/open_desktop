@@ -123,6 +123,9 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
             if status != Status::SUCCESS {
                 return status;
             }
+            if let Some(mut runtime) = state.runtime_services {
+                runtime.as_mut().event_table = state.events.runtime_event_table();
+            }
             state.events.disable_timers();
             state.events.signal_group(EXIT_BOOT_SERVICES);
             Status::SUCCESS
