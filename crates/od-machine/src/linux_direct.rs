@@ -768,6 +768,43 @@ fn check_nvme_interrupt_profile(
     Ok(())
 }
 
+fn prepare_apic_profile(
+    board: &LoadedFirmwareBoard,
+    members: &mut LinuxCpl0SetMembers,
+) -> Result<(), LinuxDirectError> {
+    if !board.pit_ioapic_irq_available() {
+        return Err(linux_irq_setup_error(
+            "the X8664V1Stage4AApic profile needs the Linux-profile PIT and no 8259 source",
+        ));
+    }
+    members.halt = true;
+    members.irq = true;
+    members.clock_owner = true;
+    // Linux reads IA32_APIC_BASE when it identifies the BSP.
+    members.msr_apic_base = true;
+    Ok(())
+}
+
+fn install_linux_ioapic_sources(board: &mut LoadedFirmwareBoard) -> Result<(), LinuxDirectError> {
+    if !board.enable_pit_ioapic_irq() {
+        return Err(linux_irq_setup_error(
+            "the X8664V1Stage4AApic profile could not install the IOAPIC timer source",
+        ));
+    }
+    if !board.enable_uart_ioapic_irq4() {
+        return Err(linux_irq_setup_error(
+            "the X8664V1Stage4AApic profile could not install the IOAPIC UART source",
+        ));
+    }
+    Ok(())
+}
+
+fn linux_irq_setup_error(detail: &str) -> LinuxDirectError {
+    let mut error = LinuxDirectError::text("run_failed", "run", detail.to_owned());
+    error.retired = Some(0);
+    error
+}
+
 /// What the set path adds to a stop record.
 struct SetExtras<'a> {
     path: &'static str,
@@ -1468,24 +1505,9 @@ fn run_linux_direct_board_set_with_post_iret_index(
     // `TSS.RSP0`) as at CPL0, so the source of the vector (IOAPIC or the LAPIC timer) is not
     // looked at by the privilege entry.
     if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
-        let refuse = |detail: &str| {
-            let mut error = LinuxDirectError::text("run_failed", "run", detail.to_string());
-            error.retired = Some(0);
-            error
-        };
         // Only a check here: the board is changed after the last refusal below (the clock owner,
-        // the checkpoint table), see `enable_pit_ioapic_irq` further down.
-        if !boot.board.pit_ioapic_irq_available() {
-            return Err(refuse(
-                "the X8664V1Stage4AApic profile needs the Linux-profile PIT and no 8259 source",
-            ));
-        }
-        members.halt = true;
-        members.irq = true;
-        members.clock_owner = true;
-        // S4-38L8g: the kernel reads IA32_APIC_BASE (the Local APIC is enabled at the default
-        // base; without the member the read is `#GP`, "BSP APIC 0 is not marked in APICBASE MSR").
-        members.msr_apic_base = true;
+        // the checkpoint table), see `install_linux_ioapic_sources` further down.
+        prepare_apic_profile(&boot.board, &mut members)?;
     } else if user_mode && boot.board.enable_pit_pic_irq() {
         // S4-39i: the UART THRE line goes to master IR4, so the kernel's 8250 driver can send
         // `tty` output (it writes THR from the THRE interrupt).
@@ -1521,32 +1543,9 @@ fn run_linux_direct_board_set_with_post_iret_index(
             error
         })?;
     }
-    // S4-38L8d: the APIC profile's timer line is installed last, so that a refusal above (the clock
-    // owner, the checkpoint table) leaves the board without it. `pit_ioapic_irq_available` was
-    // checked at the top, so this cannot fail; the refusal is kept for a broken invariant.
-    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
-        && !boot.board.enable_pit_ioapic_irq()
-    {
-        let mut error = LinuxDirectError::text(
-            "run_failed",
-            "run",
-            "the X8664V1Stage4AApic profile could not install the IOAPIC timer source".to_string(),
-        );
-        error.retired = Some(0);
-        return Err(error);
-    }
-    // S4-38 (UART -> INTIN4): the UART interrupt output goes to IOAPIC INTIN4 on top of the timer
-    // source above (the 8259 variant `enable_uart_irq4` is the stage4a user-mode one).
-    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic
-        && !boot.board.enable_uart_ioapic_irq4()
-    {
-        let mut error = LinuxDirectError::text(
-            "run_failed",
-            "run",
-            "the X8664V1Stage4AApic profile could not install the IOAPIC UART source".to_string(),
-        );
-        error.retired = Some(0);
-        return Err(error);
+    // Install the APIC sources only after clock and checkpoint validation.
+    if members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
+        install_linux_ioapic_sources(&mut boot.board)?;
     }
     // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a subset
     // profile answers leaves 1 and 0x8000_0001 for what it declares.
@@ -18343,6 +18342,104 @@ mod tests {
                 boot.board.local_apic().vector_state(IRQ_VECTOR),
                 (false, false)
             );
+        }
+
+        #[test]
+        fn threaded_linux_ioapic_pit_interrupts_return_to_cpl3() {
+            let mut prefix = apic_setup(u32::from(IRQ_VECTOR));
+            prefix.extend(pit_program(0x34, 10));
+            for quantum in [1, 1024] {
+                let (mut boot, file) = user_apic_board(&prefix, &USER_SPIN, 0x202);
+                let report = run_threaded_apic(&mut boot, &file, 20_000, quantum)
+                    .expect("the APIC worker runs in user mode");
+                assert_eq!((report.threads_started, report.threads_exited), (1, 1));
+                let stop = report.stop;
+                assert_eq!(stop.exit, PagedProbeExit::BudgetExhausted, "{stop:?}");
+                assert_eq!(stop.retired, 20_000);
+                assert_eq!(stop.cpl, 3);
+                assert!(stop.cpl3_retired > 19_000);
+                assert!(stop.irqs_delivered >= 2);
+                assert!(stop.set_members.iter().any(|name| name == "msr:apic_base"));
+                assert_eq!(stop.gpr[Register::Rsp as usize], ENTRY + 0x800);
+                assert!(boot.board.pit_pic_source().is_none());
+                assert!(boot.board.uart_ioapic_source().is_some());
+                let stats = boot.board.pit_ioapic_source().expect("installed").stats();
+                assert_eq!(stats.acknowledged, stop.irqs_delivered);
+                assert_eq!(stats.edges, stop.irq0_edges);
+                assert_eq!(
+                    (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                    (0, 0, 0)
+                );
+            }
+        }
+
+        #[test]
+        fn threaded_linux_ioapic_refuses_an_already_configured_pic_board() {
+            let (mut boot, file) = boot_with_entry(&[0x90]);
+            assert!(boot.board.enable_pit_pic_irq());
+            let original_rip = boot.board.state().rip;
+            let error = run_threaded_apic(&mut boot, &file, 1, 1).unwrap_err();
+            assert_eq!((error.code, error.retired), ("run_failed", Some(0)));
+            assert_eq!(boot.board.state().rip, original_rip);
+            assert!(!boot.board.clock_owner_enabled());
+            assert!(boot.board.pit_ioapic_source().is_none());
+        }
+
+        #[test]
+        fn threaded_linux_ioapic_one_shot_lapic_timer_wakes_hlt() {
+            let code = lapic_timer_guest(u32::from(IRQ_VECTOR), 100);
+            let mut boot = apic_board(&code, true);
+            let file = bzimage_with_entry(&code);
+            let stop = run_threaded_apic(&mut boot, &file, 300, 1024).unwrap().stop;
+            assert_eq!(stop.exit, PagedProbeExit::BudgetExhausted, "{stop:?}");
+            assert_eq!(
+                (stop.retired, stop.halt_wakes, stop.irqs_delivered),
+                (300, 1, 1)
+            );
+            assert!(stop.halt_idle_ns > 0);
+            assert_eq!(stop.virtual_ns, stop.retired + stop.halt_idle_ns);
+            assert_eq!(stop.gpr[Register::Rax as usize] as u8, 0x5a);
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+            assert_eq!(boot.board.local_apic().next_timer_deadline(), None);
+        }
+
+        #[test]
+        fn threaded_linux_ioapic_routes_uart_rx_through_intin4() {
+            let code = uart_guest(ENTRY4_EDGE);
+            let mut boot = uart_board(&code, true);
+            let file = bzimage_with_entry(&code);
+            let stop = run_threaded_apic(&mut boot, &file, 300, 1024).unwrap().stop;
+            assert_eq!(stop.exit, PagedProbeExit::BudgetExhausted, "{stop:?}");
+            assert_eq!(stop.irqs_delivered, 1);
+            assert_eq!(stop.gpr[Register::Rsi as usize], 1);
+            assert_eq!(boot.board.uart().received_byte(), None);
+            let source = boot.board.uart_ioapic_source().expect("installed");
+            assert_eq!((source.uart_edges(), source.uart_refused()), (1, 0));
+            assert_eq!(
+                boot.board.local_apic().vector_state(IRQ_VECTOR),
+                (false, false)
+            );
+        }
+
+        fn run_threaded_apic(
+            boot: &mut LinuxDirectBoot,
+            file: &[u8],
+            budget: u64,
+            quantum: u64,
+        ) -> Result<LinuxThreadedRunReport, LinuxDirectError> {
+            run_linux_direct_board_set_user_mode_threaded(
+                boot,
+                &input(file, &[], BLOB, board_hash()),
+                budget,
+                members(CpuidProfile::X8664V1Stage4AApic),
+                LinuxThreadedOptions {
+                    quantum,
+                    timeout: std::time::Duration::from_secs(5),
+                },
+            )
         }
 
         #[test]

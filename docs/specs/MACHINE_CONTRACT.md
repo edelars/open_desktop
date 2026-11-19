@@ -1931,11 +1931,18 @@ See the [S4-28a3 report](../reports/STAGE_4_S4-28A3_2026-11-07.md).
 The same opt-in timer profile accepts LVT Timer bit 17 as the mode selector:
 zero is one-shot and one is periodic. Bit 18 and other unsupported bits remain
 rejected. Writing LVT selects the mode but does not arm the timer; a nonzero
-Initial Count starts or replaces the countdown, and zero cancels it. Mode and
-divider changes are accepted only while no deadline is queued. Vector and mask
-changes may be made before expiry without restarting the active phase. The
-divider encodings and the read-only Current Count register keep their existing
-meaning.
+Initial Count starts or replaces the countdown, and zero cancels it. While a
+deadline is queued and is still in the future, the timer accepts a transition
+from periodic mode to one-shot mode. The transition retains the deadline and
+phase within the current period. Current Count reaches zero at that deadline.
+The expiry is consumed once and signals the current LVT vector if unmasked.
+Interrupts already pending or in service keep their state. A write repeating
+the programmed divider is accepted before expiry and preserves the phase.
+The timer accepts changes to the divider and transitions to periodic mode only
+while no deadline is queued.
+Vector and mask changes may be made before expiry without restarting the active
+phase. The retained phase is the model's interpretation of the countdown and
+reload rules. [Intel SDM rev. 090, vol. 3A, §13.5.4](https://cdrdv2-public.intel.com/874249/253668-090-sdm-vol-3a.pdf).
 
 Periodic Current Count wraps through the programmed Initial Count as virtual
 time advances. Dispatch processes no more than one due occurrence per call.
@@ -4594,7 +4601,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 ## S6-37 — LinuxDirect на рабочем потоке vCPU
 
-`run_linux_direct_board_set_user_mode_threaded` принимает загруженную плату с одним BSP, профиль Stage4A и пределы кванта и времени ожидания. Рабочий поток исполняет тот же CPL0/CPL3 интерпретатор на общей шине. Кеш трансляции инструкций при включённом `fetch_cache` принадлежит потоку и проверяет поколения таблиц. `ClockOwner` начисляет завершённые инструкции, время устройств и простой. Пробуждение из HLT и доставка исключения сами не расходуют бюджет инструкций.
+`run_linux_direct_board_set_user_mode_threaded` принимает загруженную плату с одним BSP, профиль Stage4A или Stage4AApic и пределы кванта и времени ожидания. Stage4A проводит PIT и UART через 8259, а Stage4AApic проводит PIT и UART через IOAPIC INTIN2 и INTIN4 к LAPIC и включает доступ к `IA32_APIC_BASE`. Обе конфигурации используют один интерпретатор CPL0/CPL3 на общей шине. Если плата уже использует 8259, выбор Stage4AApic возвращает ошибку с нулём исполненных инструкций. Кеш трансляции инструкций при включённом `fetch_cache` принадлежит потоку и проверяет поколения таблиц. `ClockOwner` начисляет завершённые инструкции, время устройств и простой. Пробуждение из HLT и доставка исключения сами не расходуют бюджет инструкций.
 
 Квант сохраняет полный отчёт интерпретатора. При терминальном гостевом результате поток заканчивает начисление выполненного префикса и только затем публикует `GuestExit`. Ошибки исполнения на стороне host получают `run_failed` с числом уже начисленных инструкций. Таймаут запрашивает остановку на границе рабочего потока и ждёт его выхода. После join отчёт строится из состояния BSP, включая его CR3 и диагностическое чтение по итоговому CR3 с правами гостя. Если обычный запуск изменил временную ячейку CF8, при переходе на поточный режим адрес переносится в устройство PCI до старта работника. Поточный отчёт и продолжение запуска используют адрес CF8 устройства платы. [Проверки](../reports/STAGE_6_REPORT.md#s6-37--linuxdirect-на-рабочем-потоке-vcpu).
 

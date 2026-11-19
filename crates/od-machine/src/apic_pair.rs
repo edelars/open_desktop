@@ -189,16 +189,23 @@ impl Timer {
         if n == 7 { 1 } else { 2u128 << n }
     }
     pub fn current(&self) -> u32 {
-        if self.queue.is_empty() {
+        let Some(deadline) = self.queue.next_deadline() else {
+            return 0;
+        };
+        let now = self.clock.snapshot().now_ns();
+        if self.lvt & PERIODIC == 0 && deadline <= now {
             return 0;
         }
-        let elapsed = u128::from(self.clock.snapshot().now_ns() - self.start);
+        let elapsed = u128::from(now - self.start);
         let ticks = elapsed * u128::from(self.hz) / (1_000_000_000u128 * self.divisor());
-        if self.lvt & PERIODIC != 0 {
-            (u128::from(self.initial) - ticks % u128::from(self.initial)) as u32
+        let initial = u128::from(self.initial);
+        // An active periodic timer converted to one-shot finishes the current period.
+        let ticks_in_period = if ticks < initial {
+            ticks
         } else {
-            u128::from(self.initial).saturating_sub(ticks) as u32
-        }
+            ticks % initial
+        };
+        (initial - ticks_in_period) as u32
     }
     pub fn due_at(&self, now_ns: u64) -> bool {
         self.queue.next_deadline().is_some_and(|d| d <= now_ns)

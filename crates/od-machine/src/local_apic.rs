@@ -820,12 +820,15 @@ impl BusDevice for LocalApic {
                 }
                 match offset {
                     0x320 => {
+                        // A periodic timer can finish its current countdown as a one-shot.
+                        // Entering periodic mode still requires an idle timer.
                         // A masked LVT is accepted even when its vector is below 16. The SDM
                         // permits an APIC to report that illegal vector through ESR regardless
                         // of the mask bit; that optional ESR source is outside this model.
                         if value & !u64::from(MASK | PERIODIC | 0xff) != 0
                             || (value & u64::from(MASK) == 0 && value & 0xff < 16)
-                            || ((value as u32 ^ timer.lvt) & PERIODIC != 0
+                            || (value & u64::from(PERIODIC) != 0
+                                && timer.lvt & PERIODIC == 0
                                 && !timer.queue.is_empty())
                             || (value & u64::from(MASK) == 0
                                 && pair.cpus[cpu].local.svr & 0x100 == 0)
@@ -849,7 +852,10 @@ impl BusDevice for LocalApic {
                         }
                         return armed;
                     }
-                    0x3e0 if value & !0xb == 0 && timer.queue.is_empty() => {
+                    0x3e0
+                        if value & !0xb == 0
+                            && (timer.queue.is_empty() || value == u64::from(timer.divide)) =>
+                    {
                         pair.cpus[cpu].timer.as_mut().unwrap().divide = value as u32;
                         pair.cpus[cpu].timer_writes += 1;
                         return Ok(());
@@ -1474,13 +1480,58 @@ mod tests {
     }
 
     #[test]
+    fn one_shot_preserves_the_in_flight_periodic_countdown() {
+        for (lvt, expected_irq) in [(MASK, None), (0xec, Some(0xec))] {
+            let (mut bus, apic) = timer_setup(600_000_000);
+            write(&mut bus, 0x320, u64::from(PERIODIC | 0x40)).unwrap();
+            write(&mut bus, 0x3e0, 3).unwrap(); // divide by 16, as in Linux setup
+            write(&mut bus, 0x380, 4).unwrap();
+            apic.advance_timer_ns(107).unwrap();
+            assert!(apic.dispatch_timer().unwrap());
+            assert_eq!(apic.pending(), Some(0x40));
+            apic.advance_timer_ns(1).unwrap();
+            assert_eq!(read(&mut bus, 0x390), Ok(4));
+            assert_eq!(apic.next_timer_deadline(), Some(214));
+
+            let mut expected = apic.0.lock().unwrap().clone();
+            expected.cpus[0].timer.as_mut().unwrap().lvt = lvt;
+            expected.cpus[0].timer_writes += 1;
+            write(&mut bus, 0x320, u64::from(lvt))
+                .unwrap_or_else(|error| panic!("one-shot write {lvt:#x} failed: {error:?}"));
+            assert_eq!(*apic.0.lock().unwrap(), expected);
+            assert!(write(&mut bus, 0x320, u64::from(PERIODIC | 0xec)).is_err());
+            assert_eq!(*apic.0.lock().unwrap(), expected);
+            write(&mut bus, 0x3e0, 3).expect("rewrite the active divide configuration");
+            expected.cpus[0].timer_writes += 1;
+            assert_eq!(*apic.0.lock().unwrap(), expected);
+            assert_eq!(read(&mut bus, 0x390), Ok(4));
+            assert_eq!(read(&mut bus, 0x380), Ok(4));
+            assert_eq!(apic.acknowledge(), Some(0x40));
+
+            apic.advance_timer_ns(26).unwrap();
+            assert_eq!(read(&mut bus, 0x390), Ok(3));
+            apic.advance_timer_ns(79).unwrap();
+            assert_eq!(read(&mut bus, 0x390), Ok(1));
+            assert!(!apic.dispatch_timer().unwrap());
+            apic.advance_timer_ns(1).unwrap();
+            assert_eq!(read(&mut bus, 0x390), Ok(0));
+            assert!(apic.dispatch_timer().unwrap());
+            assert_eq!(apic.acknowledge(), expected_irq);
+            assert_eq!(apic.vector_state(0x40), (false, true));
+            assert_eq!(apic.next_timer_deadline(), None);
+            apic.advance_timer_ns(100).unwrap();
+            assert_eq!(read(&mut bus, 0x390), Ok(0));
+            assert!(!apic.dispatch_timer().unwrap());
+        }
+    }
+
+    #[test]
     fn periodic_timer_mask_reprogram_cancel_and_reset() {
         let (mut bus, apic) = timer_setup(1_000_000_000);
         write(&mut bus, 0x320, u64::from(PERIODIC | MASK | 0x40)).unwrap();
         write(&mut bus, 0x3e0, 0xb).unwrap();
         write(&mut bus, 0x380, 3).unwrap();
         let before = apic.0.lock().unwrap().clone();
-        assert!(write(&mut bus, 0x320, u64::from(MASK | 0x40)).is_err());
         assert!(
             write(
                 &mut bus,

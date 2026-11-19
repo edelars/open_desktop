@@ -493,6 +493,23 @@ done
 
 Проверки на 2 и 4 online vCPU и длительные гостевые нагрузки относятся к полной приёмке S6-37. [Отчёт запуска](../reports/STAGE_6_REPORT.md#s6-37--linuxdirect-на-рабочем-потоке-vcpu)
 
+### S6-37 — LinuxDirect с IOAPIC
+
+Запуск Stage4AApic использует те же ядро, initramfs и проверку `/init`, что и запуск с 8259. Гостевой `/proc/interrupts` также должен содержать строку таймера через IOAPIC.
+
+```sh
+cargo test --locked --offline -p od-machine --lib threaded_linux_ioapic_
+out=work/stage6/s6-37-threaded-ioapic
+mkdir -p "$out"
+for quantum in 1024 4096; do
+  OD_S6_LINUX_QUANTUM="$quantum" cargo test --release --locked --offline -p od-machine \
+    --test stage6_linux_seeded -- --ignored --exact a_vcpu_worker_reaches_real_linux_guest_init_through_ioapic --nocapture \
+    > "$out/boot-$quantum.log" 2>&1 || exit 1
+done
+```
+
+Каждый лог проверяется тем же `build_stage6_smp_initramfs.py --verify-report`, что и в опыте с 8259 выше. [Результаты](../reports/STAGE_6_REPORT.md#s6-37--linuxdirect-с-ioapic-на-рабочем-потоке).
+
 ### S6-38 — вычислительная нагрузка гостя
 
 `s6_smp_workloads` делит заданное общее число блоков на соседние непересекающиеся диапазоны. Блок `i` начинает со значения `i + 1` и выполняет 256 раундов сдвигов, XOR и умножения `uint64_t`. Контрольная сумма складывает значения блоков по модулю 2⁶⁴. Один, два и четыре рабочих потока выполняют одинаковый объём работы и проверяют число обработанных блоков и ожидаемую контрольную сумму. Каждый поток закреплён на отдельном разрешённом CPU. [Гостевой исходник](../../guest/linux/tests/s6_smp_workloads.c).

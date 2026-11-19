@@ -2699,6 +2699,10 @@ impl LoadedFirmwareBoard {
             .map(|pit| [pit.port_b_reads(), pit.counter_port_reads()])
     }
 
+    pub(crate) fn irq0_edges(&self) -> u64 {
+        self.irq_source.irq0_edges()
+    }
+
     /// Run quanta until the guest halts, faults or the instruction budget is
     /// spent. Each quantum ends on a COM1 THR write (FIRMWARE_BOOT.md 11); the
     /// byte is moved through the UART and recorded, then virtual time advances

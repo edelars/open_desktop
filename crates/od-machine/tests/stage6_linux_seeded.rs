@@ -166,6 +166,16 @@ fn seeded_interleaved_reaches_guest_init() {
 #[test]
 #[ignore = "uses the staged Linux kernel and S6-21 observation initramfs"]
 fn a_vcpu_worker_reaches_real_linux_guest_init() {
+    threaded_linux_guest_init(CpuidProfile::X8664V1Stage4A);
+}
+
+#[test]
+#[ignore = "uses the staged Linux kernel and S6-21 observation initramfs"]
+fn a_vcpu_worker_reaches_real_linux_guest_init_through_ioapic() {
+    threaded_linux_guest_init(CpuidProfile::X8664V1Stage4AApic);
+}
+
+fn threaded_linux_guest_init(cpuid_profile: CpuidProfile) {
     const BUDGET: u64 = 2_500_000_000;
     let quantum = std::env::var("OD_S6_LINUX_QUANTUM")
         .ok()
@@ -180,6 +190,7 @@ fn a_vcpu_worker_reaches_real_linux_guest_init() {
     );
     let mut boot = load_linux_direct_board(&input).expect("load the S6-21 guest");
     let members = LinuxCpl0SetMembers {
+        cpuid_profile,
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,
@@ -239,4 +250,16 @@ fn a_vcpu_worker_reaches_real_linux_guest_init() {
     assert!(transcript.contains("Run /init as init process"));
     assert!(transcript.contains("OD_SMP_V1 SMPUpObservation20261119"));
     assert!(transcript.contains("OD_SMP_END"));
+    if cpuid_profile == CpuidProfile::X8664V1Stage4AApic {
+        assert!(
+            transcript
+                .lines()
+                .any(|line| line.contains("IO-APIC") && line.contains("timer"))
+        );
+        assert!(stop.irq0_edges > 0 && stop.irqs_delivered > 0);
+        println!(
+            "ioapic irq0_edges={} irqs_delivered={} halt_wakes={}",
+            stop.irq0_edges, stop.irqs_delivered, stop.halt_wakes
+        );
+    }
 }

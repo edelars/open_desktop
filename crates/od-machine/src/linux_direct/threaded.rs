@@ -6,7 +6,6 @@ use crate::firmware_board::set_exit_to_probe_exit;
 use crate::firmware_board::vcpu_quantum::{
     SharedSetReport, is_quantum_boundary, quantum_progress, run_shared_set_quantum,
 };
-use crate::irq_source::BoardIrqSource;
 use crate::paged_memory_adapter::PagedCpl0SetExit;
 use crate::parallel_run::{
     NmiPaging, ParallelConfig, ParallelFinish, QuantumCall, ThreadRunOptions, run_threads_rooted,
@@ -121,7 +120,7 @@ fn run_error(detail: impl std::fmt::Debug, retired: u64) -> LinuxDirectError {
     error
 }
 
-/// Run a Stage4A LinuxDirect guest with user mode on one dedicated vCPU thread. The retirable
+/// Run a Stage4A or Stage4AApic LinuxDirect guest in user mode on one dedicated vCPU thread. The
 /// instruction budget and virtual time follow the Stage 6 worker scheduler. The board can be
 /// passed back to this entry to continue from its final vCPU state.
 pub fn run_linux_direct_board_set_user_mode_threaded(
@@ -142,30 +141,43 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
     }
     if boot.board.vcpu_count() != 1
         || boot.board.linux_interleaved()
-        || members.cpuid_profile != CpuidProfile::X8664V1Stage4A
+        || !matches!(
+            members.cpuid_profile,
+            CpuidProfile::X8664V1Stage4A | CpuidProfile::X8664V1Stage4AApic
+        )
         || members.diagnostic_past_c7
     {
         return Err(run_error(
-            "threaded LinuxDirect requires one Stage4A BSP and no interleaved schedule",
+            "threaded LinuxDirect requires one Stage4A or Stage4AApic BSP and no interleaved schedule",
             0,
         ));
     }
-    check_nvme_interrupt_profile(boot, false)?;
+    let apic = members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic;
+    check_nvme_interrupt_profile(boot, apic)?;
     if boot
         .board
         .vcpu(BOOT_VCPU_INDEX)
         .is_none_or(|cpu| cpu.legacy.is_some())
-        || !boot.board.enable_pit_pic_irq()
     {
         return Err(run_error(
-            "threaded LinuxDirect requires a long-mode BSP and the PIT/PIC source",
+            "threaded LinuxDirect requires a long-mode BSP",
             0,
         ));
     }
-    boot.board.enable_uart_irq4();
+    if apic {
+        prepare_apic_profile(&boot.board, &mut members)?;
+    } else {
+        if !boot.board.enable_pit_pic_irq() {
+            return Err(run_error("threaded Stage4A requires the PIT/PIC source", 0));
+        }
+        boot.board.enable_uart_irq4();
+    }
     boot.board
         .enable_clock_owner()
         .map_err(|error| run_error(error, 0))?;
+    if apic {
+        install_linux_ioapic_sources(&mut boot.board)?;
+    }
     boot.board
         .import_threaded_linux_pci_address()
         .map_err(|error| run_error(error, 0))?;
@@ -269,10 +281,7 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
             .take()
             .ok_or_else(|| run_error("missing guest exit report", retired))?,
     };
-    observed.irq.irq0_edges = boot
-        .board
-        .pit_pic_source()
-        .map_or(0, |source| source.irq0_edges());
+    observed.irq.irq0_edges = boot.board.irq0_edges();
     observed.irq.halt_wakes = bsp.wakes;
     observed.irq.halt_idle_ns = parallel.idle_ns;
     let pit_reads = pit_before
