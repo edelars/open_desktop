@@ -16,9 +16,11 @@ corpus and both historical comparisons. Warm uses the five S3-36b inputs.
 Cold uses the original S3-35a trace and all 1,010 byte-verified fixtures.
 On the latter, the generic/FIFO ratios of paired JIT/interpreter medians
 were 1.101, 1.094 and 1.085 across three rounds. This evidence covers the
-native-register workload. S3-57 and final S3-41 acceptance remain open.
+native-register workload. The Core line passed S3-57 on `11cbe6b`.
+Final Stage 3 acceptance remains open in S3-41.
 [Cold evidence](STAGE_3_S3-56_S3-17_2026-11-19.md)
 [Matched cold and warm evidence](STAGE_3_S3-56_MATCHED_2026-11-19.md)
+[Core review and final-state repeat](STAGE_3_CORE_REPORT.md#10-s3-57--финальное-независимое-ревью-линии)
 
 S3-26f source support and unrun evidence were added for the exact uncached
 `48 89 03 48 89 02` two-store pair. Source/site binding, ordered typed IR,

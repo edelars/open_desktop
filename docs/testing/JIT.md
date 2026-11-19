@@ -3012,3 +3012,9 @@ S3-55 tests under separate exact Cargo identities. The harness records
 each invocation and passing log. Its self-check rejects missing
 evidence or a passing log from the strict native host test substituted
 for the mixed host test.
+
+The final Core checks on `11cbe6b` repeated admission equivalence (2,452
+comparisons, zero mismatches), all 31 register wrapper checks, the two
+direct-entry checks, and the cache and mixed-helper suites on macOS ARM64.
+The final Core report records the complete command and coverage results.
+[Core verification](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)

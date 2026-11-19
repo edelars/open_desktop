@@ -768,11 +768,11 @@ repeat comparisons дали 0 differences. Локальный и удалённ�
 
 **Готово:** multi-block program даёт состояние interpreter при том же budget; ошибочный target или невозможный exit не зацикливает runtime.
 
-**S3-50…S3-55, bounded generic path:** регистровые dispatch-обёртки
-используют общий механизм; проверены budget, STOP и совпадение состояний на
-поддержанных смесях native и helper. Это fixture-level данные, не полный
-обязательный corpus этапа 1 с physical oracle. S3-15 остаётся открытой;
-границы и проверки приведены в [отчёте Core](../reports/STAGE_3_CORE_REPORT.md).
+**Ограниченный generic путь S3-50…S3-55.** Все 31 регистровая
+dispatch-обёртка проверена на эквивалентность общему входу. На допустимых
+смесях native и helper проверены budget, STOP и состояние гостя.
+Физическое сравнение полного корпуса этапа 1 для generic пути остаётся
+открытым. [Итоговые локальные проверки](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)
 
 **Локальная partial реализация:** `od-jit` теперь имеет отдельный
 `compile_block_for_dispatch`/`lower_for_dispatch` путь, который принимает
@@ -950,6 +950,7 @@ helper и успешные interpreter steps, проверяет progress и п�
 источник, CR3, context и зависимости после helper. Смеси с native blocks
 проверены против интерпретатора. Общий Stage 2, profile-required и data-memory
 fallback, а также production owner остаются открытыми; S3-16 не принята целиком.
+[Итоговые проверки generic fallback](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)
 
 **Локальная partial реализация (S3-16):** добавлены отдельные
 `S0_09NopAdmission` и `run_with_nop_fallback`. Admission строит полные
@@ -1051,6 +1052,9 @@ mixed eager/demand пути; generic cache проверяет предостав
 snapshot зависимостей и отклоняет несовместимый ввод. Production mapping и
 backing identity/version, их связь с MMU и представительный выбор lookup не
 подтверждены этой линией. S3-17 остаётся открытой.
+Холодное сравнение S3-56 использовало исходную трассу S3-17 и все 1 010
+входов с проверкой порядка и SHA-256. Исходный список путей остаётся
+недоступным. [Привязка корпуса и результаты](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 **Локальная partial реализация:** `od_jit::translation::TranslationKey`
 требует typed compile flavor, entry RIP, полные bytes/base/end `CodeView`,
@@ -1105,6 +1109,9 @@ owner-provided identity/version guarantees, production cache/invalidation и
 тот же опубликованный handle без новой компиляции и публикации; проверены
 инвалидация и смена контекста между синхронными вызовами. Production owner,
 MMU, memory-путь и полная этапная приёмка остаются открытыми; S3-18 не принята.
+На трассе S3-17 FIFO и generic дали одинаковые 2 hits, 1 320 компиляций и
+публикаций и 1 304 eviction на 1 322 visits. Пиковые размеры кода и метаданных
+также совпали. [Счётчики на полном S3-17](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 **S3-18a local partial:** `od_jit::dispatch::run_cached` adds one resident
 fixture-dispatch block with an opaque published handle supplied by a generic
