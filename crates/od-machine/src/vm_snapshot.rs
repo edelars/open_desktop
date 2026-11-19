@@ -28,11 +28,11 @@
 //! consistent processor complex over a different memory. The restore is into the same machine,
 //! not into a new one.
 
+use crate::LoadedFirmwareBoard;
 use crate::apic_pair::PairState;
 use crate::parallel_run::{ParallelControl, StopProof};
 use crate::smp_scheduler::{SafePoint, SchedulerState, SmpScheduler, StopAck};
-use crate::vcpu::Vcpu;
-use crate::{LoadedFirmwareBoard, LocalApicHandle};
+use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
 use std::time::{Duration, Instant};
 
 /// How long [`VmSnapshot::take_parallel`] waits for the acknowledgement flag of one vCPU that is
@@ -127,12 +127,12 @@ impl VmSnapshot {
 
     /// Take the state of a machine that the parallel mode has stopped (S6-35): the controller of a
     /// parallel run calls it between [`ParallelControl::stop_all`] and [`ParallelControl::resume`],
-    /// with the [`StopProof`] that `stop_all` returned and the handle of the Local APIC set of the
-    /// machine (taken before the run: the board is lent to the threads). Nothing is changed in the
+    /// with the [`StopProof`] that `stop_all` returned. The controller provides both the vCPUs and
+    /// the Local APIC set of the stopped run. Nothing is changed in the
     /// machine. Refused ([`SnapshotError::NotStopped`]) when no stop is in force, and
-    /// ([`SnapshotError::StaleSafePoint`]) when the proof is not of the stop that is in force: the
-    /// clock moved, a vCPU is not as it acknowledged; a flag that stays down past the bounded wait
-    /// is [`SnapshotError::SafeFlagTimeout`] (S6-36 review, M-1). Every vCPU has
+    /// ([`SnapshotError::StaleSafePoint`]) when the proof disagrees with the current stop's virtual
+    /// time, vCPU count, or vCPU state. A flag that stays down past the bounded wait is
+    /// [`SnapshotError::SafeFlagTimeout`] (S6-36 review, M-1). Every vCPU has
     /// acknowledged, so no instruction is half done, nothing writes to a Local APIC but the
     /// controller itself, and what is read here is the state at one safe point, ordered after the
     /// acknowledgement of every vCPU (MACHINE_CONTRACT S6-34, rule 5).
@@ -146,18 +146,16 @@ impl VmSnapshot {
     /// no file format (`S9-24`/`S9-25`).
     pub(crate) fn take_parallel(
         control: &ParallelControl<'_, '_>,
-        lapic: &LocalApicHandle,
         proof: &StopProof,
         scheduler: &SmpScheduler,
     ) -> Result<Self, SnapshotError> {
-        Self::take_parallel_within(control, lapic, proof, scheduler, READ_WAIT)
+        Self::take_parallel_within(control, proof, scheduler, READ_WAIT)
     }
 
     /// [`Self::take_parallel`] with the bound of the wait for an acknowledgement flag given (the
     /// tests of the timeout use a short one).
     pub(crate) fn take_parallel_within(
         control: &ParallelControl<'_, '_>,
-        lapic: &LocalApicHandle,
         proof: &StopProof,
         scheduler: &SmpScheduler,
         wait: Duration,
@@ -202,7 +200,10 @@ impl VmSnapshot {
         }
         let snapshot = Self {
             vcpus,
-            apic: lapic.snapshot_pair(),
+            apic: control
+                .lapic(BOOT_VCPU_INDEX)
+                .ok_or(SnapshotError::Apic)?
+                .snapshot_pair(),
             now_ns: proof.now_ns,
             scheduler: scheduler.state(),
         };

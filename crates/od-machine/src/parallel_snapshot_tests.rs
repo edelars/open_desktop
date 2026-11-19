@@ -34,6 +34,37 @@ const PERIODIC_LVT: u64 = (1 << 17) | TO_BSP as u64;
 const WAIT: Duration = Duration::from_secs(60);
 const BSP_EFER: u64 = 0xD01;
 
+#[test]
+fn a_parallel_snapshot_contains_the_stopped_boards_pending_ipi() {
+    let mut board = board_with_timers();
+    let foreign_board = board_with_timers();
+    let foreign_lapic = foreign_board.local_apic();
+    let sender = board.local_apic_of(0).unwrap();
+    let scheduler = SmpScheduler::new(2, QuantumPolicy::seeded(0), StopRequest::new()).unwrap();
+    let config = ParallelConfig {
+        end_when_idle: false,
+        ..ParallelConfig::default()
+    };
+    let (report, snapshot) = run_threads(&mut board, config, &parallel_quantum, |control| {
+        let proof = control.stop_all(Duration::from_secs(10)).expect("stop");
+        sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
+        let snapshot = VmSnapshot::take_parallel(control, &proof, &scheduler);
+        control.finish();
+        snapshot.unwrap()
+    })
+    .unwrap();
+    assert_eq!(report.finished, ParallelFinish::Stopped);
+    let pending_ipi = 1 << (TO_AP % 32);
+    assert_eq!(
+        foreign_lapic.snapshot_pair().cpus[1].local.irr[usize::from(TO_AP / 32)] & pending_ipi,
+        0
+    );
+    assert_eq!(
+        snapshot.apic().cpus[1].local.irr[usize::from(TO_AP / 32)] & pending_ipi,
+        pending_ipi
+    );
+}
+
 fn parallel_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     with_set(|set| {
         run_vcpu_set_quantum_shared(
@@ -159,7 +190,6 @@ fn round(seed: u64) -> Round {
     let quantum = [1u64, 7, 64][(seed % 3) as usize];
     let stop_at = 5_000 + seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) % 95_000;
     let mut board = board_with_timers();
-    let lapic = board.local_apic();
     let sender = board.local_apic_of(0).unwrap();
     let mut scheduler =
         SmpScheduler::new(2, QuantumPolicy::seeded(seed), StopRequest::new()).unwrap();
@@ -184,7 +214,7 @@ fn round(seed: u64) -> Round {
                 now_ns: control.now_ns(),
             };
             assert_eq!(
-                VmSnapshot::take_parallel(control, &lapic, &unproven, &scheduler),
+                VmSnapshot::take_parallel(control, &unproven, &scheduler),
                 Err(SnapshotError::NotStopped),
                 "seed {seed}"
             );
@@ -192,7 +222,7 @@ fn round(seed: u64) -> Round {
             let first = control.stop_all(Duration::from_secs(10)).expect("stop");
             control.resume();
             assert_eq!(
-                VmSnapshot::take_parallel(control, &lapic, &first, &scheduler),
+                VmSnapshot::take_parallel(control, &first, &scheduler),
                 Err(SnapshotError::NotStopped),
                 "seed {seed}"
             );
@@ -205,7 +235,7 @@ fn round(seed: u64) -> Round {
             );
             if first.now_ns != proof.now_ns {
                 assert_eq!(
-                    VmSnapshot::take_parallel(control, &lapic, &first, &scheduler),
+                    VmSnapshot::take_parallel(control, &first, &scheduler),
                     Err(SnapshotError::StaleSafePoint),
                     "seed {seed}: the proof of an earlier stop"
                 );
@@ -213,7 +243,7 @@ fn round(seed: u64) -> Round {
             // A request that arrives at the stopped, sleeping AP waits in its IRR (S6-34, step 4).
             sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
             let (counter_0, counter_1) = (cell(control, COUNTER_0), cell(control, COUNTER_1));
-            let snapshot = VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+            let snapshot = VmSnapshot::take_parallel(control, &proof, &scheduler)
                 .unwrap_or_else(|error| panic!("seed {seed}: {error:?}"));
             assert_eq!(snapshot.now_ns(), proof.now_ns);
             // The AP has not taken the IPI, and the clock stood while we looked.
@@ -221,7 +251,7 @@ fn round(seed: u64) -> Round {
             assert_eq!(control.now_ns(), proof.now_ns);
             control.finish();
             assert_eq!(
-                VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler),
+                VmSnapshot::take_parallel(control, &proof, &scheduler),
                 Err(SnapshotError::NotStopped),
                 "a proof of the previous stop cannot be reused after finish"
             );
@@ -376,7 +406,6 @@ fn timers_across_the_stop_many_runs() {
 #[test]
 fn a_kick_of_the_stopped_sleeping_ap_does_not_spoil_the_snapshot() {
     let mut board = board_without_timers();
-    let lapic = board.local_apic();
     let sender = board.local_apic_of(0).unwrap();
     let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
     let config = ParallelConfig {
@@ -394,7 +423,7 @@ fn a_kick_of_the_stopped_sleeping_ap_does_not_spoil_the_snapshot() {
         for round in 1..=300u32 {
             let proof = control.stop_all(Duration::from_secs(10)).expect("stop");
             sender.write_icr(0, 1, FIXED | u32::from(TO_AP)).unwrap();
-            let snapshot = VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+            let snapshot = VmSnapshot::take_parallel(control, &proof, &scheduler)
                 .unwrap_or_else(|error| panic!("round {round}: {error:?}"));
             assert_eq!(
                 snapshot.apic().cpus[1].local.irr[1] >> 16 & 1,
@@ -446,7 +475,6 @@ fn a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut board = board_without_timers();
-    let lapic = board.local_apic();
     let sender = board.local_apic_of(0).unwrap();
     let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
     let config = ParallelConfig {
@@ -477,7 +505,7 @@ fn a_kick_of_the_stopped_ap_never_lowers_safe_in_the_barrier_and_the_snapshot_is
                 std::thread::sleep(Duration::from_millis(1));
             }
             let held = HELD_IN_WINDOW.load(Ordering::SeqCst);
-            let taken = VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler);
+            let taken = VmSnapshot::take_parallel(control, &proof, &scheduler);
             // Let the thread go before anything is asserted, so that the run can end.
             HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
             RELEASE_WINDOW.store(true, Ordering::SeqCst);
@@ -554,7 +582,6 @@ fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut board = board_without_timers();
-    let lapic = board.local_apic();
     let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
     let config = ParallelConfig {
         quantum: 8,
@@ -600,7 +627,6 @@ fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused(
         );
         let short = VmSnapshot::take_parallel_within(
             control,
-            &lapic,
             &proof,
             &scheduler,
             Duration::from_millis(100),
@@ -613,7 +639,7 @@ fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused(
                 HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
                 RELEASE_WINDOW.store(true, Ordering::SeqCst);
             });
-            VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+            VmSnapshot::take_parallel(control, &proof, &scheduler)
         });
         HOLD_IN_WINDOW.store(false, Ordering::SeqCst);
         RELEASE_WINDOW.store(true, Ordering::SeqCst);
@@ -641,7 +667,6 @@ fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused(
 #[test]
 fn a_proof_with_another_number_of_acknowledgements_is_stale_and_changes_nothing() {
     let mut board = board_without_timers();
-    let lapic = board.local_apic();
     let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
     let config = ParallelConfig {
         quantum: 8,
@@ -673,7 +698,7 @@ fn a_proof_with_another_number_of_acknowledgements_is_stale_and_changes_nothing(
         };
         for refused in [&more, &fewer, &none] {
             assert_eq!(
-                VmSnapshot::take_parallel(control, &lapic, refused, &scheduler),
+                VmSnapshot::take_parallel(control, refused, &scheduler),
                 Err(SnapshotError::StaleSafePoint),
                 "{} acknowledgements",
                 refused.acks.len()
@@ -683,7 +708,7 @@ fn a_proof_with_another_number_of_acknowledgements_is_stale_and_changes_nothing(
         assert_eq!(control.retired(), retired);
         assert_eq!(cell(control, COUNTER_1), counter_1);
         assert_eq!(control.now_ns(), proof.now_ns);
-        let snapshot = VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+        let snapshot = VmSnapshot::take_parallel(control, &proof, &scheduler)
             .expect("the true proof of the same stop still serves");
         assert_eq!(snapshot.vcpus().len(), 2);
         control.resume();

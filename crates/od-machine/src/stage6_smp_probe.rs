@@ -523,7 +523,6 @@ impl Stage6SmpProbe {
             StopRequest::new(),
         )
         .map_err(|error| Stage6SmpProbeRunError::Scheduler(format!("{error:?}")))?;
-        let lapic = self.board.local_apic();
         let config = ParallelConfig {
             quantum,
             budget: BUDGET_OF_A_STOPPED_RUN,
@@ -541,7 +540,7 @@ impl Stage6SmpProbe {
                     ));
                 }
                 match control.stop_all(STOP_TIMEOUT) {
-                    Ok(proof) => VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler)
+                    Ok(proof) => VmSnapshot::take_parallel(control, &proof, &scheduler)
                         .map(Some)
                         .map_err(|error| format!("{error:?}")),
                     Err(ParallelStopError::Finished) => Ok(None),
