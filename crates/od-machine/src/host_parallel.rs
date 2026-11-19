@@ -245,7 +245,7 @@ impl HostDeviceWork for ThreadQuantumEnv<'_> {
     }
 
     fn stop_request(&self) -> Option<MachineStopReason> {
-        self.acpi_pm.as_ref().and_then(|pm| pm.stop_request())
+        self.machine_stop_request()
     }
 
     fn nvme_pending(&self) -> bool {
@@ -259,36 +259,7 @@ impl HostDeviceWork for ThreadQuantumEnv<'_> {
         stop: &mut dyn FnMut() -> bool,
         committed_write: &mut dyn FnMut(GuestPhysicalRange),
     ) -> bool {
-        let Some(nvme) = &self.nvme else {
-            return false;
-        };
-        let mut written = Vec::new();
-        loop {
-            // The caller may observe a device while polling STOP. Poll only between batches,
-            // after releasing the device lock and publishing the previous batch's observations.
-            if stop() {
-                return true;
-            }
-            if self.stop_request().is_some() {
-                return false;
-            }
-            let Some(report) = nvme
-                .try_service_one_pending_ram(self.bus.physical_memory(), |range| {
-                    written.push(range)
-                })
-            else {
-                // Another worker can be inside a synchronous provider. Do not queue a new
-                // command behind its lock without first polling STOP again.
-                std::thread::park_timeout(std::time::Duration::from_micros(200));
-                continue;
-            };
-            for range in written.drain(..) {
-                committed_write(range);
-            }
-            if report.commands == 0 && report.completions == 0 {
-                return false;
-            }
-        }
+        ThreadQuantumEnv::service_nvme_until(self, stop, committed_write)
     }
 }
 
@@ -960,6 +931,7 @@ pub fn run_host_set_step(
         None,
         None,
         ExceptionDeliveryMode::HostStep(step.consecutive_faults),
+        false,
     );
     let partial_rep = matches!(
         report.exit,

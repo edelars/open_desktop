@@ -750,6 +750,16 @@ impl NvmeHandle {
         state.pending && state.dma_enabled()
     }
 
+    /// Observe possible work without waiting for a peer inside the storage provider.
+    pub(crate) fn doorbell_pending_or_contended(&self) -> bool {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return true,
+        };
+        state.pending && state.dma_enabled()
+    }
+
     /// `CSTS.RDY = 1` and no fatal status.
     pub fn is_ready(&self) -> bool {
         lock(&self.state).ready()

@@ -27,8 +27,8 @@
 //! then ends the quantum and returns its device tick to the scheduler. There is no fetch cache.
 //!
 //! The shared quantum also ends at a latched ACPI PM stop request and reports it to the
-//! scheduler. The NVMe doorbell, checkpoint recorder and observation collectors belong to
-//! the boot processor's Linux boot loop. The MSR and FP cells of the vCPU are the
+//! scheduler. On a board with NVMe the shared quantum exits after MMIO writes, allowing the
+//! worker to service the controller before another guest instruction. The MSR and FP cells are the
 //! caller's: the `set` it hands in is built over the cells of `cpu` (loaded from the `Vcpu::guest_*`
 //! fields before the call and stored back after it, as `linux_direct` does for the boot processor).
 
@@ -48,8 +48,8 @@ use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
 use crate::{
-    AcpiPmHandle, LocalApicHandle, MachineBus, MachineStopReason, Pit8254Handle, Uart16550Handle,
-    VirtualClockHandle,
+    AcpiPmHandle, GuestPhysicalRange, LocalApicHandle, MachineBus, MachineStopReason,
+    Pit8254Handle, Uart16550Handle, VirtualClockHandle,
 };
 use od_isa::execute::Cpl0ProfileSet;
 use std::cell::Cell;
@@ -123,6 +123,7 @@ struct QuantumEnv<'a> {
     gate: Option<&'a dyn SplitLockGate>,
     rdtsc_clock: Option<&'a VirtualClockHandle>,
     check_acpi_stop: bool,
+    stop_after_mmio: bool,
 }
 
 /// What a vCPU has to have before a quantum can run (checked before anything changes).
@@ -163,6 +164,7 @@ fn quantum_loop(
         gate,
         rdtsc_clock,
         check_acpi_stop,
+        stop_after_mmio,
     } = env;
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
@@ -225,6 +227,7 @@ fn quantum_loop(
         None,
         None,
         exception_delivery,
+        stop_after_mmio,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -340,6 +343,7 @@ impl LoadedFirmwareBoard {
                 gate: None,
                 rdtsc_clock: None,
                 check_acpi_stop: false,
+                stop_after_mmio: false,
             },
             inputs,
             budget,
@@ -379,6 +383,47 @@ pub(crate) struct ThreadQuantumEnv<'a> {
 }
 
 impl ThreadQuantumEnv<'_> {
+    pub(crate) fn machine_stop_request(&self) -> Option<MachineStopReason> {
+        self.acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request)
+    }
+
+    pub(crate) fn service_nvme_until(
+        &self,
+        stop: &mut dyn FnMut() -> bool,
+        committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    ) -> bool {
+        let Some(nvme) = &self.nvme else {
+            return false;
+        };
+        let mut written = Vec::new();
+        loop {
+            // The caller may observe a device while polling STOP. Poll only between batches,
+            // after releasing the device lock and publishing the previous batch's observations.
+            if stop() {
+                return true;
+            }
+            if self.machine_stop_request().is_some() {
+                return false;
+            }
+            let Some(report) = nvme
+                .try_service_one_pending_ram(self.bus.physical_memory(), |range| {
+                    written.push(range)
+                })
+            else {
+                // Another worker can be inside a synchronous provider. Do not queue a new
+                // command behind its lock without first polling STOP again.
+                std::thread::park_timeout(std::time::Duration::from_micros(200));
+                continue;
+            };
+            for range in written.drain(..) {
+                committed_write(range);
+            }
+            if report.commands == 0 && report.completions == 0 {
+                return false;
+            }
+        }
+    }
+
     /// Take the outstanding device-time requests from the shared board.
     pub(crate) fn take_device_ticks(&self) -> u64 {
         let pm_ns = self
@@ -423,6 +468,8 @@ impl ThreadQuantumEnv<'_> {
 /// for any other vCPU. `gate` is the stop-all of the split `LOCK`. The bus takes the device
 /// lock for each access. The Linux-profile board supplies the clock for `RDTSC`. The worker
 /// publishes `machine_stop` after charging the executed prefix.
+/// `nvme_pending` carries an interrupted drain to the worker's next call, before idle or a new
+/// guest boundary.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_vcpu_set_quantum_shared(
     env: &ThreadQuantumEnv<'_>,
@@ -436,7 +483,27 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     set: &Cpl0ProfileSet<'_>,
     consecutive_faults: &mut u64,
     machine_stop: &mut Option<MachineStopReason>,
+    mut nvme_pending: Option<&mut bool>,
 ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+    if let Some(pending) = nvme_pending.as_deref_mut() {
+        let continuation = *pending;
+        if continuation
+            || env
+                .nvme
+                .as_ref()
+                .is_some_and(crate::NvmeHandle::doorbell_pending_or_contended)
+        {
+            *pending = env.service_nvme_until(stop, &mut |_| {});
+            *machine_stop = env.machine_stop_request();
+            if continuation || *pending || machine_stop.is_some() {
+                env.pump_uart_transmit();
+                return Ok(Executed {
+                    device_ns: env.take_device_ticks(),
+                    ..Executed::default()
+                });
+            }
+        }
+    }
     let inputs = quantum_inputs(vcpu)?;
     env.pump_uart_transmit();
 
@@ -453,6 +520,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
             gate,
             rdtsc_clock: env.rdtsc_clock,
             check_acpi_stop: true,
+            stop_after_mmio: nvme_pending.is_some(),
         },
         inputs,
         budget,
@@ -465,8 +533,14 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     // A completed quantum takes pending board requests for the clock owner.
     // A peer may have queued them before this call.
     let device_ns = env.take_device_ticks().saturating_add(rdtsc_ns);
+    let mmio_written = report.mmio_written;
     let executed = quantum_result(report, cpu, vcpu, device_ns)?;
-    *machine_stop = env.acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+    // The instruction and its device-table access have ended. Drain before the next instruction
+    // or before the worker publishes budget exhaustion for an exact-budget doorbell write.
+    if mmio_written && let Some(pending) = nvme_pending {
+        *pending = env.service_nvme_until(stop, &mut |_| {});
+    }
+    *machine_stop = env.machine_stop_request();
     Ok(executed)
 }
 
@@ -505,6 +579,7 @@ pub(crate) fn run_litmus_ram_quantum(
         None,
         None,
         ExceptionDeliveryMode::Quantum,
+        false,
     );
     quantum_result(report, cpu, vcpu, 0)
 }

@@ -304,6 +304,8 @@ struct Cell {
     /// The thread touches no RAM: it stands on a boundary, sleeps, or waits inside its own
     /// `split_acquire` before any effect of its instruction.
     quiet: AtomicBool,
+    /// A call on an NVMe board may submit device work, or already owns an unfinished drain.
+    nvme_work: AtomicBool,
     retired: AtomicU64,
     calls: AtomicU64,
     wakes: AtomicU64,
@@ -324,6 +326,7 @@ impl Cell {
             rep_restart: AtomicBool::new(false),
             safe: AtomicBool::new(false),
             quiet: AtomicBool::new(false),
+            nvme_work: AtomicBool::new(false),
             retired: AtomicU64::new(0),
             calls: AtomicU64::new(0),
             wakes: AtomicU64::new(0),
@@ -367,8 +370,8 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) native_stop: Option<&'a AtomicU8>,
     /// A guest machine stop requested by the host quantum, published after its charge.
     pub(crate) machine_stop: &'a mut Option<MachineStopReason>,
-    /// Pending host service for an NVMe-equipped host run. The host quantum takes the
-    /// previous request and sets the flag again only if more device work remains.
+    /// Pending service for an NVMe-equipped run. A pending call services the device without
+    /// executing guest instructions, even when the guest budget is zero.
     pub(crate) nvme_pending: Option<&'a mut bool>,
 }
 
@@ -523,6 +526,14 @@ impl SharedState<'_> {
 
     fn fail(&self, cpu: usize, error: FirmwareBoardError) {
         self.finish_with(ParallelFinish::Error { cpu, error });
+    }
+
+    fn finish_budget<const SERVICE_NVME: bool>(&self) -> bool {
+        if SERVICE_NVME && self.cells.iter().any(|cell| cell.nvme_work.load(SEQ)) {
+            return false;
+        }
+        self.finish_with(ParallelFinish::BudgetExhausted);
+        true
     }
 
     fn publish(&self, cpu: usize, vcpu: &Vcpu) {
@@ -901,6 +912,14 @@ impl Worker<'_, '_, '_, '_> {
             }
             // Clear the kick BEFORE looking at the APIC (see the module documentation).
             sh.kicks.cells[cpu].flag.store(false, SEQ);
+            if SERVICE_NVME && !nvme_pending && sh.remaining.load(SEQ) == 0 {
+                if !sh.finish_budget::<SERVICE_NVME>() {
+                    // Stay busy for the idle arbiter, but hold no vCPU or device lock while
+                    // waiting for a peer to finish its drain.
+                    thread::park_timeout(Duration::from_micros(200));
+                }
+                continue;
+            }
             let mut slot = lock(&sh.vcpus[cpu]);
             let vcpu: &mut Vcpu = &mut slot;
 
@@ -1033,16 +1052,37 @@ impl Worker<'_, '_, '_, '_> {
         let sh = self.shared;
         let cpu = self.cpu;
         let cell = &sh.cells[cpu];
-        let left = sh.config.quantum.max(1).min(sh.remaining.load(SEQ));
-        if left == 0 {
-            sh.finish_with(ParallelFinish::BudgetExhausted);
+        let device_only = SERVICE_NVME && *nvme_pending;
+        let mut left = sh.config.quantum.max(1).min(sh.remaining.load(SEQ));
+        if SERVICE_NVME && (left != 0 || device_only) {
+            cell.nvme_work.store(true, SEQ);
+            // A peer that sees zero may finish only after all admitted calls have drained.
+            // Recheck after publication so a late caller cannot submit work after that decision.
+            left = left.min(sh.remaining.load(SEQ));
+        }
+        if left == 0 && !device_only {
+            if SERVICE_NVME {
+                cell.nvme_work.store(false, SEQ);
+            }
+            sh.finish_budget::<SERVICE_NVME>();
             return Ok(());
         }
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
-        let nvme_pending = SERVICE_NVME.then_some(nvme_pending);
-        let dispatched = if cpu == BOOT_VCPU_INDEX && sh.source_free {
+        let pending = SERVICE_NVME.then_some(&mut *nvme_pending);
+        let dispatched = if device_only {
+            self.dispatch(
+                vcpu,
+                apic,
+                &mut inert,
+                &gate,
+                0,
+                consecutive_faults,
+                &mut stop,
+                pending,
+            )
+        } else if cpu == BOOT_VCPU_INDEX && sh.source_free {
             // The lock of the board's source and the clock owner's lock are held for the budget
             // only: the call itself runs under none of them.
             let budget = {
@@ -1061,7 +1101,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
-                nvme_pending,
+                pending,
             )
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
@@ -1079,7 +1119,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
-                nvme_pending,
+                pending,
             )
         } else {
             let budget = lock(&sh.owner).step_budget(left, None);
@@ -1091,7 +1131,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
-                nvme_pending,
+                pending,
             )
         };
         let (executed, machine_stop, failure) = match dispatched {
@@ -1130,10 +1170,13 @@ impl Worker<'_, '_, '_, '_> {
         if let Some(error) = failure {
             return Err(error);
         }
+        if SERVICE_NVME && !*nvme_pending {
+            cell.nvme_work.store(false, SEQ);
+        }
         if let Some(reason) = machine_stop {
             sh.finish_with(ParallelFinish::GuestStop(reason));
         } else if left_after == 0 {
-            sh.finish_with(ParallelFinish::BudgetExhausted);
+            sh.finish_budget::<SERVICE_NVME>();
         }
         Ok(())
     }
@@ -1394,14 +1437,16 @@ impl ParallelControl<'_, '_> {
 ///
 /// `run` is the quantum of a vCPU (the caller's CPL0 set); it is called by every thread. A vCPU
 /// that is not `Running` is not run: the boot processor starts `Running` as the loader left it and
-/// the others wait for SIPI.
+/// the others wait for SIPI. With NVMe, scope the board-source lock to individual operations so
+/// a worker can service the controller without holding it.
 pub(crate) fn run_threads<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
     run: &QuantumFn<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
-    run_threads_with(board, config, false, run, None, controller)
+    let source_free = board.nvme().is_some();
+    run_threads_with(board, config, source_free, run, None, controller)
 }
 
 /// [`run_threads`] with `source_free`: the host quantum receives a board source adapter that locks
@@ -1652,7 +1697,217 @@ mod tests {
             set,
             call.consecutive_faults,
             call.machine_stop,
+            call.nvme_pending,
         )
+    }
+
+    #[test]
+    fn a_guest_nvme_doorbell_completes_dma_before_the_next_instruction_or_budget_stop() {
+        use crate::{AccessWidth, NvmeConfig, PCI_ECAM_DESCRIPTOR, host_parallel_board_with_nvme};
+
+        const ASQ: u64 = 0x30_0000;
+        const ACQ: u64 = 0x30_1000;
+        const IDENTIFY: u64 = 0x30_2000;
+        const PT_NVME: u64 = TABLES_0 + 0x5000;
+        const PCI_FUNCTION: u64 = PCI_ECAM_DESCRIPTOR.base + (4 << 15);
+        const CID: u32 = 0x51;
+
+        for (budget, stop_before_dma) in [(3, false), (64, false), (64, true), (3, true)] {
+            let mut board = host_parallel_board_with_nvme(2, NvmeConfig::default()).unwrap();
+            let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+            // The first bank is identity mapped. Map the second 2 MiB for the DMA buffer.
+            patch(&mut board, cr3 + 0x2000 + 8, &0x20_0083u64.to_le_bytes());
+            let bus = board.bus_mut();
+            let bar_low = bus
+                .read_physical(
+                    GuestPhysicalAddress::new(PCI_FUNCTION + 0x10),
+                    AccessWidth::Dword,
+                )
+                .unwrap();
+            let bar_high = bus
+                .read_physical(
+                    GuestPhysicalAddress::new(PCI_FUNCTION + 0x14),
+                    AccessWidth::Dword,
+                )
+                .unwrap();
+            let bar = (bar_high << 32) | (bar_low & !0xF);
+            for (address, width, value) in [
+                (PCI_FUNCTION + 4, AccessWidth::Word, 6),
+                (bar + 0x24, AccessWidth::Dword, 0x000F_000F),
+                (bar + 0x28, AccessWidth::Qword, ASQ),
+                (bar + 0x30, AccessWidth::Qword, ACQ),
+                (bar + 0x14, AccessWidth::Dword, 0x0046_0001),
+            ] {
+                bus.write_physical(GuestPhysicalAddress::new(address), width, value, |_| {})
+                    .unwrap();
+            }
+            let nvme = board.nvme().unwrap();
+            assert!(nvme.is_ready());
+            let doorbell = bar + 0x1000;
+            patch(
+                &mut board,
+                TABLES_0 + 0x3000 + ((doorbell >> 21) & 0x1ff) * 8,
+                &(PT_NVME | 0x63).to_le_bytes(),
+            );
+            patch(
+                &mut board,
+                PT_NVME + ((doorbell >> 12) & 0x1ff) * 8,
+                &(doorbell | 0x73).to_le_bytes(),
+            );
+            let mut identify = [0; 64];
+            identify[..4].copy_from_slice(&((CID << 16) | 0x06).to_le_bytes());
+            identify[24..32].copy_from_slice(&IDENTIFY.to_le_bytes());
+            identify[40..44].copy_from_slice(&1u32.to_le_bytes());
+            patch(&mut board, ASQ, &identify);
+
+            let code = [
+                mov_eax(1),
+                mov_ebx(u32::try_from(doorbell).unwrap()),
+                vec![0x89, 0x03], // mov [rbx], eax
+                mov_ebx((IDENTIFY + 4) as u32),
+                vec![0x8B, 0x03, 0xF4], // mov eax, [rbx]; hlt
+            ]
+            .concat();
+            patch(&mut board, CODE_0, &code);
+            install(
+                &mut board,
+                0,
+                long_state(CODE_0, STACK_0, cr3, false),
+                0xD01,
+            );
+            let page = GuestPhysicalAddress::new(IDENTIFY);
+            let generation = board
+                .bus_mut()
+                .physical_memory()
+                .code_page_generation(page)
+                .unwrap();
+            let start_ns = board.clock().now_ns();
+
+            let (report, ()) = if stop_before_dma {
+                let active_peer = budget == 3;
+                if active_peer {
+                    patch(&mut board, CODE_1, &[0xF4]);
+                    install(
+                        &mut board,
+                        1,
+                        long_state(CODE_1, STACK_1, cr3, false),
+                        0xD01,
+                    );
+                }
+                let (notified, doorbell_written) = std::sync::mpsc::sync_channel(1);
+                let (drain_announced, drain_started) = std::sync::mpsc::sync_channel(1);
+                let observed = AtomicBool::new(false);
+                let peer_entered = AtomicBool::new(false);
+                let allow_drain = AtomicBool::new(false);
+                let quantum = |call: QuantumCall<'_, '_>| {
+                    let deadline = Instant::now() + WAIT;
+                    if call.cpu == 1 {
+                        assert!(active_peer && !peer_entered.swap(true, SEQ));
+                        while !(call.stop)() {
+                            assert!(Instant::now() < deadline);
+                            thread::yield_now();
+                        }
+                        return Ok(Executed::default());
+                    }
+                    if active_peer {
+                        while !peer_entered.load(SEQ) {
+                            assert!(Instant::now() < deadline);
+                            thread::yield_now();
+                        }
+                        if call.nvme_pending.as_deref().copied() == Some(true) {
+                            assert_eq!(call.budget, 0);
+                            drain_announced.send(()).unwrap();
+                            while !allow_drain.load(SEQ) && !(call.stop)() {
+                                assert!(Instant::now() < deadline);
+                                thread::yield_now();
+                            }
+                        }
+                    }
+                    let stop = call.stop;
+                    let mut poll = || {
+                        if !observed.load(SEQ) && nvme.doorbell_pending() {
+                            observed.store(true, SEQ);
+                            notified.send(()).unwrap();
+                            let deadline = Instant::now() + WAIT;
+                            while !stop() {
+                                assert!(Instant::now() < deadline);
+                                thread::yield_now();
+                            }
+                            return true;
+                        }
+                        stop()
+                    };
+                    with_set(|set| {
+                        run_vcpu_set_quantum_shared(
+                            call.env,
+                            call.vcpu,
+                            call.cpu,
+                            call.lapic,
+                            call.source,
+                            Some(call.gate),
+                            call.budget,
+                            &mut poll,
+                            set,
+                            call.consecutive_faults,
+                            call.machine_stop,
+                            call.nvme_pending,
+                        )
+                    })
+                };
+                run_threads(&mut board, config(64, budget), &quantum, |control| {
+                    doorbell_written.recv_timeout(WAIT).unwrap();
+                    let proof = control.stop_all(WAIT).unwrap();
+                    assert_eq!(proof.now_ns, start_ns + 3);
+                    assert_eq!(control.retired()[0], 3);
+                    assert_eq!(cell(control, IDENTIFY + 4), 0);
+                    assert!(nvme.doorbell_pending());
+                    control.resume();
+                    if active_peer {
+                        drain_started.recv_timeout(WAIT).unwrap();
+                        // While the owner is draining, the other runnable vCPU cannot end the
+                        // run at the exhausted guest budget.
+                        assert!(!control.wait_finished(Duration::from_millis(50)));
+                        allow_drain.store(true, SEQ);
+                    }
+                    assert!(control.wait_finished(WAIT));
+                })
+                .unwrap()
+            } else {
+                run(&mut board, config(64, budget), |control| {
+                    assert!(control.wait_finished(WAIT));
+                })
+            };
+            assert_joined(&report, 2);
+            assert_eq!(report.cpus[1].retired, 0);
+            assert_eq!(
+                read(&mut board, IDENTIFY + 4, 8),
+                b"OD-NVME-",
+                "budget {budget}: {report:?}"
+            );
+            assert_eq!(dword(&mut board, ACQ + 12), CID | (1 << 16));
+            assert!(!nvme.doorbell_pending());
+            assert_ne!(
+                board
+                    .bus_mut()
+                    .physical_memory()
+                    .code_page_generation(page)
+                    .unwrap(),
+                generation
+            );
+            if budget == 3 {
+                assert_eq!(report.finished, ParallelFinish::BudgetExhausted);
+                assert_eq!(report.cpus[0].retired, 3);
+                assert_eq!(board.clock().now_ns() - start_ns, 3);
+            } else {
+                assert_eq!(report.finished, ParallelFinish::AllIdle);
+                assert_eq!(report.cpus[0].retired, 6);
+                assert_eq!(board.clock().now_ns() - start_ns, 6);
+                assert_eq!(
+                    board.vcpu(0).unwrap().state.gpr[Register::Rax as usize],
+                    u64::from(u32::from_le_bytes(*b"OD-N"))
+                );
+            }
+        }
     }
 
     #[test]
@@ -2045,6 +2300,7 @@ mod tests {
                         set,
                         call.consecutive_faults,
                         call.machine_stop,
+                        call.nvme_pending,
                     )
                 })
             },

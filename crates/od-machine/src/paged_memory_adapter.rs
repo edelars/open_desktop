@@ -2455,6 +2455,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         checkpoints,
         execution_observations,
         ExceptionDeliveryMode::Quantum,
+        false,
     )
 }
 
@@ -2533,6 +2534,7 @@ pub(crate) fn run_cpl0_set_loop(
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     exception_delivery: ExceptionDeliveryMode<'_>,
+    stop_after_mmio: bool,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2561,6 +2563,7 @@ pub(crate) fn run_cpl0_set_loop(
             checkpoints,
             execution_observations,
             exception_delivery,
+            stop_after_mmio,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false>(
             state,
@@ -2582,6 +2585,7 @@ pub(crate) fn run_cpl0_set_loop(
             checkpoints,
             execution_observations,
             exception_delivery,
+            stop_after_mmio,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true>(
             state,
@@ -2603,6 +2607,7 @@ pub(crate) fn run_cpl0_set_loop(
             checkpoints,
             execution_observations,
             exception_delivery,
+            stop_after_mmio,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false>(
             state,
@@ -2624,6 +2629,7 @@ pub(crate) fn run_cpl0_set_loop(
             checkpoints,
             execution_observations,
             exception_delivery,
+            stop_after_mmio,
         ),
     }
 }
@@ -2649,6 +2655,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     mut checkpoints: Option<&mut CheckpointRecorder>,
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     exception_delivery: ExceptionDeliveryMode<'_>,
+    stop_after_mmio: bool,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -2740,7 +2747,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     let mut port_accessed = false;
     let mut mmio_written = false;
     let (exit, page_fault, memory_error) = loop {
-        if stop() {
+        if stop() || (stop_after_mmio && mmio_written) {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
         }
         if pit_write_pending {

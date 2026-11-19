@@ -471,6 +471,7 @@ impl Stage6SmpProbe {
             &set,
             call.consecutive_faults,
             call.machine_stop,
+            call.nvme_pending,
         )
     }
 

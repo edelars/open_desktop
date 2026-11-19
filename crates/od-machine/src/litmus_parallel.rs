@@ -328,6 +328,7 @@ impl Driver<'_> {
             budget,
             consecutive_faults,
             machine_stop,
+            mut nvme_pending,
             stop,
             ..
         } = call;
@@ -471,6 +472,7 @@ impl Driver<'_> {
                             &set,
                             consecutive_faults,
                             machine_stop,
+                            nvme_pending.as_deref_mut(),
                         )
                     };
                     let executed = match executed {
