@@ -1748,6 +1748,16 @@ correctness cases, fixed call counts and six paired rounds. Keep the
 accepted timing archive and the rejected preflight as separate evidence.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ak_2026-11-19.md)
 
+### S3-32a. First native return on M1 Pro
+
+Use the signed release probe for the exact aliased ADD. Time from the
+uncompiled fixture through compilation, executable publication and first
+native return. Include candidate-only admission. Run the compile and warm
+controls from the same binary after confirming architectural parity.
+The archived scripts pin the fixture and source and verify effective
+nice −5, matching UID, pair ordering, interval floors and raw hashes.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
