@@ -1328,6 +1328,13 @@ exit status from the separate launcher regression.
 - The local archive contains 415 files, SHA-256 `79aa524d27424073346408addef7ffd155db2f7aff3ee7256847f08e4244137b`. [Local archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/local.json.gz)
 - The process archive contains 176 files, SHA-256 `0b519b6b3c0ab1f66b0b6aeef3763b2f01578ffcb89a2dd1270c82647e9e0738`. [VMHost process archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/vmhost-process.json.gz)
 
+### Native session ABI V1 notification failure
+The signed native ARM64 C client verified public ABI layout and normal
+notification delivery. With the default `SIGPIPE` disposition and an injected
+reader loss before STOP, the `ef44df6` client exited by signal 13. The fixed
+client observed `INVALID_STATE` with unchanged output, destroyed the failed
+session and acquired a fresh one. Pipe setup failure injection remains open.
+[Native C smoke and reproduction](STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
 ### Hardware acceptance
 
 The M1 Pro passed both ARM64 selectors on `5bc5ec6` and passed the

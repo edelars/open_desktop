@@ -1,7 +1,7 @@
 # S3-38f: persistent session C ABI proxy
 
-**Status:** bounded local Rust proxy acceptance passed; full S3-38 and Stage 3
-acceptance remain open.
+Bounded Rust proxy tests and the signed native C smoke passed. Full S3-38 and
+Stage 3 acceptance remain open.
 
 ## Implemented boundary
 
@@ -48,12 +48,9 @@ The macOS ARM64 unit gates are pinned in the Stage3 harness:
 Independent Sol/high static review passed with no remaining concrete findings.
 All three exact macOS/ARM64 Rust lifecycle gates passed 1/1, and
 `test_s3_38f_session_proxy_gates_are_pinned_once_and_fail_closed` exited 0.
-These results cover the existing Rust proxy tests and pinned harness identity;
-they do not establish C-client linking/layout on the target toolchain,
-pipe-failure injection, or broader runtime race ordering. The complete Stage 3
-harness was not run. The documented Mini endpoint `senya@192.168.1.14:22`
-timed out before any remote command or test ran; M1 remains deferred by the
-user. These checks do not establish physical-x86 or full-stage acceptance.
+These initial results cover the Rust proxy tests and pinned harness identity.
+The documented Mini endpoint `senya@192.168.1.14:22` timed out before any remote
+command or test ran. The subsequent native C checks are recorded below.
 
 ## Scope that remains
 
@@ -63,3 +60,51 @@ worker failure into helper-process termination, or demonstrate packaged
 Hardened Runtime behavior. Those are later integration gates; this report
 makes no claim that the persistent session is ready for VMHost use or makes a
 performance claim.
+
+## Native C client and a lost notification reader, 2026-11-19
+
+The same C11 client compiled against the public V1 header and linked to both
+ARM64 `od-host` static libraries with minimum macOS 14.0. Compile-time checks
+cover the public struct sizes, alignments and field offsets. Both client
+executables passed strict signature verification with Hardened Runtime and
+the project’s `allow-jit` entitlement.
+
+On local macOS 26.7.1 (25G241), Xcode 27.1 and Rust 1.99.0, both builds
+delivered one completion byte followed by EOF and returned valid CPU state.
+The next invocation was held active with a same-code guest loop. The fixture
+then intentionally violated the read-descriptor lifetime to inject reader loss
+before sending explicit STOP. With default, unblocked `SIGPIPE`, the client
+built from `ef44df6` was terminated by signal 13. The fixed build exited 0.
+
+The macOS pipe writer uses Darwin `F_SETNOSIGPIPE` so a lost reader reaches
+the existing EPIPE handling. The test verifies `INVALID_STATE`, unchanged
+output, failed admission, successful destroy and a fresh session after the
+mapping lease is released. The client confirms that the process-wide
+`SIGPIPE` disposition is still the default. The caller must keep the read end
+open until wait returns in normal use. [ISSUE-524](../KNOWN_ISSUES.md#issue-524)
+
+### Reproduce the native smoke
+
+Run from the repository root on macOS ARM64 with a prepared offline Cargo
+cache. The build uses the same smoke entitlements as VMHost.
+
+```sh
+export MACOSX_DEPLOYMENT_TARGET=14.0
+target_dir=$(mktemp -d)
+cargo build --locked --offline --release -p od-host --lib \
+  --target aarch64-apple-darwin --target-dir "$target_dir"
+xcrun clang -target arm64-apple-macos14.0 -std=c11 -Wall -Wextra -Werror \
+  -I include tests/system/session_abi_v1_smoke.c \
+  "$target_dir/aarch64-apple-darwin/release/libod_host.a" \
+  -ldl -lpthread -lm -framework Security -framework SystemConfiguration \
+  -framework CoreFoundation -framework CoreServices -framework Foundation \
+  -o "$target_dir/session-abi-v1-smoke"
+codesign --force --sign - --options runtime \
+  --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements \
+  "$target_dir/session-abi-v1-smoke"
+codesign --verify --strict "$target_dir/session-abi-v1-smoke"
+"$target_dir/session-abi-v1-smoke"
+```
+
+Failure injection verified the notification write path. Pipe creation and
+`fcntl` setup errors were not injected in this run.
