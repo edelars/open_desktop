@@ -1024,8 +1024,8 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
-    /// S6-21: `F0 [REX] 81 /5 id` with a dword memory destination and no REX.W.
-    /// Executed only in the CPL0 set as one atomic subtraction.
+    /// S6-21: `F0 [REX] 81 /5 id` for dword memory or `F0 REX.W 83 /5 ib` for
+    /// qword memory. The byte immediate is sign-extended. CPL0 set only.
     LockSubMem {
         destination: MemoryOperand,
         immediate: u64,
@@ -9300,8 +9300,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // scalar arithmetic/logical group1 selectors are now supported.
                 let group = (modrm >> 3) & 7;
                 if prefixes.group1 == Some(0xf0) {
-                    // S4-38 admits memory OR and ADD, plus byte AND. S6-21 admits the dword
-                    // immediate SUB used by Linux. The shared prefix check above handles
+                    // S4-38 admits memory OR and ADD, plus byte AND. S6-21 admits the
+                    // dword/imm32 and qword/imm8 SUB forms used by Linux. The shared check handles
                     // repeated LOCK/REP.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
@@ -9310,7 +9310,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     let supported_group = match group {
                         0 | 1 => true,
                         4 => byte == 0x80,
-                        5 => byte == 0x81 && size == OperandSize::Dword,
+                        5 => matches!(
+                            (byte, size),
+                            (0x81, OperandSize::Dword) | (0x83, OperandSize::Qword)
+                        ),
                         _ => false,
                     };
                     if !supported_group
@@ -25428,7 +25431,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_sub_decodes_only_dword_memory_immediate_forms() {
+    fn lock_sub_decodes_only_dword_imm32_and_qword_imm8_memory_forms() {
         let decoded = Memory::new(&[0xf0, 0x81, 0x6b, 4, 1, 0, 0, 0x80])
             .decode()
             .unwrap();
@@ -25450,9 +25453,25 @@ mod tests {
             Operation::LockSubMem { destination, .. }
                 if destination.base == AddressBase::Register(Register::R11)
         ));
+        for (encoded, immediate) in [(1, 1), (0x80, 0xffff_ffff_ffff_ff80u64)] {
+            let decoded = Memory::new(&[0xf0, 0x48, 0x83, 0x2f, encoded])
+                .decode()
+                .unwrap();
+            assert_eq!(decoded.length, 5);
+            assert!(matches!(
+                decoded.operation,
+                Operation::LockSubMem { destination, immediate: value }
+                    if destination.base == AddressBase::Register(Register::Rdi)
+                        && destination.displacement == 0
+                        && destination.size == OperandSize::Qword
+                        && value == immediate
+            ));
+        }
         for (bytes, opcode_byte) in [
             (&[0xf0, 0x80, 0x6b, 4, 1][..], 0x80),
             (&[0xf0, 0x83, 0x6b, 4, 1][..], 0x83),
+            (&[0xf0, 0x48, 0x83, 0xef, 1][..], 0x83),
+            (&[0xf0, 0x66, 0x83, 0x2f, 1][..], 0x83),
             (&[0xf0, 0x48, 0x81, 0x6b, 4, 1, 0, 0, 0][..], 0x81),
             (&[0xf0, 0x66, 0x81, 0x6b, 4, 1, 0][..], 0x81),
             (&[0xf0, 0x81, 0xeb, 1, 0, 0, 0][..], 0x81),
