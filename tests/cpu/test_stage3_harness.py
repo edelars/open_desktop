@@ -20,11 +20,11 @@ from pathlib import Path
 import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
-EXPECTED_SELF_TESTS = 157
-EXPECTED_RUST_GATES = 341
-EXPECTED_LOCAL_ACCEPTANCE_GATES = 321
+EXPECTED_SELF_TESTS = 158
+EXPECTED_RUST_GATES = 342
+EXPECTED_LOCAL_ACCEPTANCE_GATES = 322
 EXPECTED_LOCAL_LIFECYCLE_GATES = 20
-EXPECTED_LOCAL_STEPS = 359
+EXPECTED_LOCAL_STEPS = 360
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -14951,7 +14951,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
         source_path = "crates/od-jit/src/memory_cache.rs"
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source_path), 1)
-        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 20)
+        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 21)
 
         source_manifest = {
             "gates": manifest,
@@ -15025,6 +15025,74 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     harness.HarnessError, "invocation is not exact"
                 ):
                     harness.validate_required_rust_test_evidence(forged_argv, run_root)
+
+
+    def test_s3_34ds_mixed_register_corpus_gate_is_pinned_and_fail_closed(self):
+        step = "s3_34ds_mixed_register_v1_corpus"
+        suite = "local_acceptance"
+        package = "od-host"
+        identity = "generated_mixed_register_v1_corpus_runs_twice_on_published_arena"
+        source = "crates/od-host/tests/mixed_register_v1_corpus.rs"
+        argv = [
+            "cargo", "test", "--offline", "-p", package, "--test",
+            "mixed_register_v1_corpus", identity, "--", "--exact", "--test-threads=1",
+        ]
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(harness.RUST_TEST_GATES.count((step, suite, package, identity)), 1)
+        self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+        self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+        self.assertEqual(harness.rust_test_argv(package, identity), argv)
+        manifest = {
+            "gates": harness.rust_test_gate_manifest(),
+            "sources": [
+                {"path": path, "sha256": harness.sha256_file(harness.ROOT / path)}
+                for path in harness.LOCAL_RUST_TEST_SOURCES
+            ],
+        }
+        self.assertEqual(
+            [entry for entry in manifest["gates"] if entry["step"] == step],
+            [{"step": step, "suite": suite, "package": package, "identity": identity}],
+        )
+        harness.validate_rust_test_manifest(manifest)
+        missing_source = {
+            **manifest,
+            "sources": [entry for entry in manifest["sources"] if entry["path"] != source],
+        }
+        with self.assertRaisesRegex(harness.HarnessError, "required Rust test sources"):
+            harness.validate_rust_test_manifest(missing_source)
+        current_source = next(entry for entry in manifest["sources"] if entry["path"] == source)
+        current_source["sha256"] = "0" * 64
+        with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
+            harness.validate_rust_test_manifest(manifest)
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            valid = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(valid, run_root)
+            missing = valid.copy()
+            del missing[step]
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(missing, run_root)
+            for wrong_target in (["--lib"], ["--test", "memory_corpus"]):
+                wrong = {**valid, step: {**valid[step], "argv": argv[:5] + wrong_target + argv[7:]}}
+                with self.subTest(target=wrong_target), self.assertRaisesRegex(
+                    harness.HarnessError, "invocation is not exact"
+                ):
+                    harness.validate_required_rust_test_evidence(wrong, run_root)
+            for output in (
+                "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
+                "test tests::s3_54_native_multi_cache_reuses_published_handle ... ok\n",
+                f"test {identity} ... ignored\n",
+                f"test {identity} ... FAILED\n",
+            ):
+                wrong = {**valid, step: valid[step].copy()}
+                replace_step_log_output(wrong[step], output)
+                with self.subTest(output=output), self.assertRaisesRegex(
+                    harness.HarnessError, "lacks exact passing output"
+                ):
+                    harness.validate_required_rust_test_evidence(wrong, run_root)
 
 
 if __name__ == "__main__":

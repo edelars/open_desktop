@@ -1353,6 +1353,8 @@ seeds. The exact signed ARM64 test ran two interpreter passes and
 two arena passes per flags mode for each input. It covered full
 state, DF, budget, STOP and distinct native and helper retirements.
 The cache repeats recorded 6,556 warm hits.
+The local selector now requires this gate. The exact gate ran through
+the harness on local ARM64 and all 158 harness self-tests passed.
 [Corpus result and reproduction](STAGE_3_S3-34ds_2026-11-19.md)
 
 ### M1 Pro checks after S3-40ah

@@ -179,6 +179,7 @@ SELF_TEST_NAMES = (
     "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34dr_load_load_profile_gates_are_pinned_and_fail_closed",
+    "test_s3_34ds_mixed_register_corpus_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed",
     "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
@@ -1556,6 +1557,10 @@ ADDITIONAL_TEST_GATES = (
         "tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault",
     ),
     (
+        "s3_34ds_mixed_register_v1_corpus", "local_acceptance", "od-host",
+        "generated_mixed_register_v1_corpus_runs_twice_on_published_arena",
+    ),
+    (
         "s3_18g_load_load_dependency_generation_republishes", "local_acceptance", "od-host",
         "tests::s3_18g_load_load_dependency_generation_republishes",
     ),
@@ -1601,6 +1606,10 @@ RUST_TEST_TARGET_OVERRIDES = {
         "od-host",
         "s3_34do_captured_runtime_mismatch_replays_and_reduces",
     ): ("--test", "stage3_dword_store_corpus"),
+    (
+        "od-host",
+        "generated_mixed_register_v1_corpus_runs_twice_on_published_arena",
+    ): ("--test", "mixed_register_v1_corpus"),
 }
 RUST_TEST_ARGV_OVERRIDES = {
     (
@@ -1879,6 +1888,7 @@ PROCESS_SOURCE_PATHS = (
 )
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
+    "crates/od-host/tests/mixed_register_v1_corpus.rs",
     "crates/od-testkit/src/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
     "crates/od-host/src/paged_host_loop.rs",
