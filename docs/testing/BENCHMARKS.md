@@ -1593,6 +1593,16 @@ small slowdown in long one-RIP controls for a repeatable reduction in
 dispatch time on the two-RIP profiles.
 [Report and raw audits](../reports/STAGE_3_S3-31g_2026-11-19.md)
 
+### S3-31h. One-RIP cost on the current S0-09 dispatcher
+
+Fresh signed cold and warm runs share the same fixture inputs,
+retirement counts, and checked per-process `nice -5`. A separate
+warm driver compares the three paths inside one resident session.
+The evidence retains all samples and the CPU load trace. The
+production choice follows the complete-call measurements on the
+one-, two-, and three-RIP fixtures.
+[Report and reproduction](../reports/STAGE_3_S3-31h_2026-11-19.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

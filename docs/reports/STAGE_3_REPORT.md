@@ -1300,6 +1300,16 @@ favoured the JIT. The 64- and 4096-iteration warm one-RIP controls were
 workloads remain open.
 [S3-31g report, verification and raw evidence](STAGE_3_S3-31g_2026-11-19.md)
 
+S3-31h measured the current and pre-memo S0-09 routes on `5968160`,
+with `nice -5` verified at the start of each measuring process. The
+same-process run found a 1.9–2.6% penalty on the long one-RIP profiles.
+Moving index rebasing to the transition path recovered about 1% there.
+With separate binaries, the prototype had higher normalized
+JIT/interpreter ratios on two RIPs. The current implementation is
+retained. On this build, JIT won every measured cold and warm pair at
+64 and 4,096 iterations for one and two RIPs.
+[Current register-loop timings and decision](STAGE_3_S3-31h_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in
