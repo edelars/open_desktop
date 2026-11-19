@@ -1065,6 +1065,28 @@ the FCOMI/FNINIT neighboring encodings as admitted FCMOV forms and
 decode errors changed. This resolves the old library-suite blocker
 for the five recorded failures.
 
+### Signed VMHost selector after interpreter specialization, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` returned
+`vmhost_process_only`. All 46 selected steps passed on the source tree
+containing S3-40t, including the generated-code fault probe, control
+races, process isolation and invalid-state connection closure.
+The 359 unselected local steps retained `not_run`. Physical x86 and Mac
+mini suites also retained `not_run`. A separate audit verified all 46
+step logs and the input manifest.
+
+| Binding | Value |
+|---|---|
+| Run ID | `stage3-20261119-110128-bed10f404f` |
+| Revision | `9a6e4e9f12b9299c20e8f338654e414f837bbf7b` |
+| Source fingerprint at start and end | `33b21ff8347ace127feee75433f21bef390ad5151f653992cd81c76ed15e827c` |
+| Input manifest SHA-256 | `6ff5202189414872a28acef549025cecd577c4d073d1fe279d50243d0d6cf28d` |
+| Summary SHA-256 | `6ee113625e4b80b2d66e69c1c031ae4eca6ebf5bebddea9953f9fdd1cfcf4460` |
+
+The full 359-step local run above pertains to the post-MOV source
+snapshot. S3-40t has its own [ISA and host checks](STAGE_3_S3-40t_2026-11-19.md#проверки-рабочего-дерева).
+Final S3-41 acceptance remains open.
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced
