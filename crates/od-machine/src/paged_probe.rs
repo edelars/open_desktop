@@ -15,7 +15,10 @@ use od_isa::execute::{
     step_paged_cr3_probe, step_paged_firmware_probe_with_cr3, step_paged_probe,
     step_paged_probe_with_rdtsc, step_paged_stack_probe,
 };
-use od_isa::interrupt::{Cpl0Int3Delivery, Cpl0PageFaultDelivery, deliver_page_fault_cpl0_set};
+use od_isa::interrupt::{
+    Cpl0GeneralProtectionDelivery, Cpl0Int3Delivery, Cpl0PageFaultDelivery,
+    deliver_firmware_page_fault, deliver_firmware_synchronous_fault,
+};
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
 };
@@ -72,6 +75,11 @@ pub enum PagedProbeIntegrationError {
     },
     FirmwarePageFaultDelivery {
         failure: Cpl0PageFaultDelivery,
+        delivery_fault: Option<PageFaultRecord>,
+    },
+    FirmwareSynchronousFaultDelivery {
+        fault: ArchitecturalFault,
+        failure: Cpl0GeneralProtectionDelivery,
         delivery_fault: Option<PageFaultRecord>,
     },
 }
@@ -440,7 +448,7 @@ fn run_paged_probe_inner(
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
     let mut translation_context_changes = Vec::new();
-    let mut page_fault_delivered_at = None;
+    let mut fault_delivered_at = None;
     if !cpu_cr3_profile
         && !cpu_cr0_wp_profile
         && !firmware_boot_profile
@@ -672,29 +680,26 @@ fn run_paged_probe_inner(
             CpuProbeExit::Fault(fault) => {
                 if firmware_boot_profile
                     && state.idtr.is_some()
-                    && page_fault_delivered_at != Some(instructions_executed)
-                    && let Some(record) = page_fault.as_ref()
-                    && record.fault() == &fault
+                    && fault_delivered_at != Some(instructions_executed)
                     && let ProbeBus::Exclusive(bus) = &mut bus
                 {
                     let (physical_memory, _) = bus.split_for_pio_step();
                     let mut delivery_memory = step.memory(physical_memory, &mut committed_write);
-                    match deliver_page_fault_cpl0_set(state, &mut delivery_memory, record, context)
-                    {
-                        Cpl0PageFaultDelivery::Delivered { .. } => {
+                    match delivery_memory.deliver_firmware_fault(
+                        state,
+                        &fault,
+                        page_fault.as_ref(),
+                        context,
+                    ) {
+                        Some(Ok(())) => {
                             // The fault did not retire. Refuse another delivery
                             // until the handler retires, so a faulting entry cannot spin.
-                            page_fault_delivered_at = Some(instructions_executed);
+                            fault_delivered_at = Some(instructions_executed);
                             continue;
                         }
-                        failure => {
+                        Some(Err(error)) => {
                             return report(
-                                PagedProbeExit::IntegrationError(
-                                    PagedProbeIntegrationError::FirmwarePageFaultDelivery {
-                                        failure,
-                                        delivery_fault: delivery_memory.page_fault,
-                                    },
-                                ),
+                                PagedProbeExit::IntegrationError(error),
                                 instructions_executed,
                                 current_rflags_defined,
                                 page_fault,
@@ -702,6 +707,7 @@ fn run_paged_probe_inner(
                                 &translation_context_changes,
                             );
                         }
+                        None => {}
                     }
                 }
                 return report(
@@ -1002,6 +1008,39 @@ struct PagedProbeMemory<'a> {
 }
 
 impl PagedProbeMemory<'_> {
+    fn deliver_firmware_fault(
+        &mut self,
+        state: &mut LongModeState,
+        fault: &ArchitecturalFault,
+        original_page_fault: Option<&PageFaultRecord>,
+        context: AccessContext,
+    ) -> Option<Result<(), PagedProbeIntegrationError>> {
+        if fault.vector == 14 {
+            let record = original_page_fault.filter(|record| record.fault() == fault)?;
+            return Some(
+                match deliver_firmware_page_fault(state, self, record, context) {
+                    Cpl0PageFaultDelivery::Delivered { .. } => Ok(()),
+                    failure => Err(PagedProbeIntegrationError::FirmwarePageFaultDelivery {
+                        failure,
+                        delivery_fault: self.page_fault.take(),
+                    }),
+                },
+            );
+        }
+        Some(
+            match deliver_firmware_synchronous_fault(state, self, fault, context)? {
+                Cpl0GeneralProtectionDelivery::Delivered { .. } => Ok(()),
+                failure => Err(
+                    PagedProbeIntegrationError::FirmwareSynchronousFaultDelivery {
+                        fault: fault.clone(),
+                        failure,
+                        delivery_fault: self.page_fault.take(),
+                    },
+                ),
+            },
+        )
+    }
+
     fn access(
         &mut self,
         address: u64,

@@ -1013,6 +1013,26 @@ pub fn deliver_page_fault_cpl0_set(
     record: &crate::memory::PageFaultRecord,
     context: AccessContext,
 ) -> Cpl0PageFaultDelivery {
+    deliver_cpl0_page_fault(state, memory, record, context, false)
+}
+
+/// Deliver a tracked page fault through the firmware's guest IDT.
+pub fn deliver_firmware_page_fault(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    record: &crate::memory::PageFaultRecord,
+    context: AccessContext,
+) -> Cpl0PageFaultDelivery {
+    deliver_cpl0_page_fault(state, memory, record, context, true)
+}
+
+fn deliver_cpl0_page_fault(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    record: &crate::memory::PageFaultRecord,
+    context: AccessContext,
+    firmware: bool,
+) -> Cpl0PageFaultDelivery {
     use Cpl0PageFaultDelivery::Refused;
     use Cpl0PageFaultRefusal as Refusal;
     let refuse = Refused;
@@ -1026,13 +1046,16 @@ pub fn deliver_page_fault_cpl0_set(
     if state.rip != record.saved_rip() {
         return refuse(Refusal::FaultRipMismatch);
     }
+    if firmware && context.privilege != PrivilegeLevel::Ring0 {
+        return refuse(Refusal::NotRing0Long64);
+    }
     let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
     };
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !fault_shadow_admitted(state, firmware) {
         return refuse(Refusal::StiShadowActive);
     }
     let mut gate = match resolve_cpl0_gate(state, memory, context, 14, from_cpl3, false) {
@@ -1057,6 +1080,7 @@ pub fn deliver_page_fault_cpl0_set(
     ) {
         Ok((target_rip, new_rsp)) => {
             state.cr2 = Some(linear_address);
+            clear_firmware_fault_shadow(state, firmware);
             Cpl0PageFaultDelivery::Delivered {
                 target_rip,
                 new_rsp,
@@ -1064,6 +1088,21 @@ pub fn deliver_page_fault_cpl0_set(
             }
         }
         Err(failure) => pf_gate_failure(failure),
+    }
+}
+
+fn fault_shadow_admitted(state: &LongModeState, firmware: bool) -> bool {
+    state.sti_shadow == Some(crate::StiShadow::Clear)
+        // Boot firmware keeps IF clear and opens a shadow only via MOV SS.
+        // A synchronous event ends that shadow on successful entry.
+        || (firmware
+            && state.sti_shadow == Some(crate::StiShadow::Blocking)
+            && state.rflags & (1 << 9) == 0)
+}
+
+fn clear_firmware_fault_shadow(state: &mut LongModeState, firmware: bool) {
+    if firmware {
+        state.sti_shadow = Some(crate::StiShadow::Clear);
     }
 }
 
@@ -1249,16 +1288,60 @@ pub fn deliver_general_protection_cpl0_set(
     let Some(error_code) = fault.error_code else {
         return refuse(Refusal::MissingFaultMetadata);
     };
+    deliver_synchronous_fault(state, memory, context, 13, Some(error_code), false)
+}
+
+/// Deliver one of the non-page synchronous faults produced by the firmware
+/// probe. An unsupported vector leaves the fault at the machine boundary.
+pub fn deliver_firmware_synchronous_fault(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    fault: &crate::memory::ArchitecturalFault,
+    context: AccessContext,
+) -> Option<Cpl0GeneralProtectionDelivery> {
+    use Cpl0GeneralProtectionDelivery::Refused;
+    use Cpl0GeneralProtectionRefusal::MissingFaultMetadata;
+
+    let error_code = match (fault.vector, fault.error_code) {
+        (6, None) => None,                   // #UD
+        (11..=13, Some(code)) => Some(code), // #NP, #SS, #GP
+        (6 | 11..=13, _) => return Some(Refused(MissingFaultMetadata)),
+        _ => return None,
+    };
+    Some(deliver_synchronous_fault(
+        state,
+        memory,
+        context,
+        fault.vector,
+        error_code,
+        true,
+    ))
+}
+
+fn deliver_synchronous_fault(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    vector: u8,
+    error_code: Option<u32>,
+    firmware: bool,
+) -> Cpl0GeneralProtectionDelivery {
+    use Cpl0GeneralProtectionDelivery::Refused;
+    use Cpl0GeneralProtectionRefusal as Refusal;
+    let refuse = Refused;
+    if firmware && context.privilege != PrivilegeLevel::Ring0 {
+        return refuse(Refusal::NotRing0Long64);
+    }
     let Some(from_cpl3) = delivery_source(state, context) else {
         return refuse(Refusal::NotRing0Long64);
     };
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !fault_shadow_admitted(state, firmware) {
         return refuse(Refusal::StiShadowActive);
     }
-    let mut gate = match resolve_cpl0_gate(state, memory, context, 13, from_cpl3, false) {
+    let mut gate = match resolve_cpl0_gate(state, memory, context, vector, from_cpl3, false) {
         Ok(gate) => gate,
         Err(failure) => return gp_gate_failure(failure),
     };
@@ -1277,13 +1360,16 @@ pub fn deliver_general_protection_cpl0_set(
         &gate,
         saved_rflags,
         saved_rip,
-        Some(u64::from(error_code)),
+        error_code.map(u64::from),
     ) {
-        Ok((target_rip, new_rsp)) => Cpl0GeneralProtectionDelivery::Delivered {
-            target_rip,
-            new_rsp,
-            trap_gate: gate.trap_gate,
-        },
+        Ok((target_rip, new_rsp)) => {
+            clear_firmware_fault_shadow(state, firmware);
+            Cpl0GeneralProtectionDelivery::Delivered {
+                target_rip,
+                new_rsp,
+                trap_gate: gate.trap_gate,
+            }
+        }
         Err(failure) => gp_gate_failure(failure),
     }
 }
@@ -1735,6 +1821,26 @@ pub fn deliver_int3_cpl0_set(
     return_rip: u64,
     context: AccessContext,
 ) -> Cpl0Int3Delivery {
+    deliver_int3(state, memory, return_rip, context, false)
+}
+
+/// Deliver the firmware probe's explicit INT3 through its installed IDT.
+pub fn deliver_firmware_int3(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    return_rip: u64,
+    context: AccessContext,
+) -> Cpl0Int3Delivery {
+    deliver_int3(state, memory, return_rip, context, true)
+}
+
+fn deliver_int3(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    return_rip: u64,
+    context: AccessContext,
+    firmware: bool,
+) -> Cpl0Int3Delivery {
     use Cpl0Int3Refusal as Refusal;
     let refuse = Cpl0Int3Delivery::Refused;
     if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
@@ -1743,7 +1849,7 @@ pub fn deliver_int3_cpl0_set(
     if state.activity != Some(crate::CpuActivity::Running) {
         return refuse(Refusal::ActivityOutsideProfile);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !fault_shadow_admitted(state, firmware) {
         return refuse(Refusal::StiShadowActive);
     }
     let gate = match resolve_cpl0_gate(state, memory, context, 3, false, false) {
@@ -1767,11 +1873,14 @@ pub fn deliver_int3_cpl0_set(
         return_rip,
         None,
     ) {
-        Ok((target_rip, new_rsp)) => Cpl0Int3Delivery::Delivered {
-            target_rip,
-            new_rsp,
-            trap_gate: gate.trap_gate,
-        },
+        Ok((target_rip, new_rsp)) => {
+            clear_firmware_fault_shadow(state, firmware);
+            Cpl0Int3Delivery::Delivered {
+                target_rip,
+                new_rsp,
+                trap_gate: gate.trap_gate,
+            }
+        }
         Err(failure) => int3_gate_failure(failure),
     }
 }

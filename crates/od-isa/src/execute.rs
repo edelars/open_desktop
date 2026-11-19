@@ -20167,8 +20167,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.length == 1
                 && instruction.prefixes == Prefixes::default() =>
         {
-            use crate::interrupt::{Cpl0Int3Delivery, deliver_int3_cpl0_set};
-            return match deliver_int3_cpl0_set(state, memory, next_rip, context) {
+            use crate::interrupt::{Cpl0Int3Delivery, deliver_firmware_int3};
+            return match deliver_firmware_int3(state, memory, next_rip, context) {
                 Cpl0Int3Delivery::Delivered { .. } => result(PagedProbeExit::Retired, 1),
                 failure => result(PagedProbeExit::FirmwareBreakpointDelivery(failure), 0),
             };
@@ -20451,9 +20451,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: firmware immediate shifts extract page table indexes and search the map.
+        // S7-04: page indices use shifts, and the startup diagnostic rotates hex digits.
         Operation::Shift {
-            kind: kind @ (ShiftKind::Shl | ShiftKind::Shr),
+            kind: kind @ (ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Rol),
             dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
             source: None,
             count: Operand::Immediate(immediate),
@@ -20464,12 +20464,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 instruction.operand_size,
                 OperandSize::Dword | OperandSize::Qword
             )
-            && (matches!(destination, Operand::Register(_))
-                && matches!(instruction.opcode.byte, 0xc1 | 0xd1)
-                || (instruction.opcode.byte == 0xc1
-                    && kind == ShiftKind::Shr
-                    && instruction.operand_size == OperandSize::Qword
-                    && instruction.address_size == OperandSize::Qword))
+            && match (destination, kind, instruction.opcode.byte) {
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => true,
+                (Operand::Register(_), ShiftKind::Rol, 0xc1) => {
+                    instruction.operand_size == OperandSize::Qword
+                }
+                (Operand::Memory(_), ShiftKind::Shr, 0xc1) => {
+                    instruction.operand_size == OperandSize::Qword
+                        && instruction.address_size == OperandSize::Qword
+                }
+                _ => false,
+            }
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20716,13 +20721,35 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     (
                         OpcodeMap::Primary,
                         Operation::Mov {
-                            dst: Operand::Register(_),
-                            src: Operand::Register(_),
+                            dst: Operand::Register(destination),
+                            src: Operand::Register(source),
                         },
-                    ) => matches!(
-                        (instruction.opcode.byte, instruction.operand_size),
-                        (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword)
-                    ),
+                    ) => match (instruction.opcode.byte, instruction.operand_size) {
+                        (0x88, OperandSize::Byte) => {
+                            destination == RegisterView::low(Register::Rax, OperandSize::Byte)
+                                && source == RegisterView::low(Register::Rbx, OperandSize::Byte)
+                                && instruction.prefixes == Prefixes::default()
+                        }
+                        (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword) => true,
+                        _ => false,
+                    },
+                    (
+                        OpcodeMap::Primary,
+                        Operation::Mov {
+                            dst: Operand::Register(destination),
+                            src: Operand::Memory(source),
+                        },
+                    ) if instruction.opcode.byte == 0x8a => {
+                        destination == RegisterView::low(Register::Rbx, OperandSize::Byte)
+                            && source.displacement == 0
+                            && source.scale == 1
+                            && matches!(
+                                (source.base, source.index),
+                                (AddressBase::Register(Register::Rsi), None)
+                                    | (AddressBase::Register(Register::Rdi), Some(Register::Rax))
+                            )
+                            && instruction.prefixes == Prefixes::default()
+                    }
                     (OpcodeMap::Primary, _) => matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x88, OperandSize::Byte)
@@ -20736,7 +20763,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         instruction.operand_size == OperandSize::Dword
                             && matches!(
                                 (instruction.opcode.byte, src),
-                                (0xb6, _) | (0xb7, Operand::Register(_))
+                                (0xb6, _)
+                                    | (0xb7, Operand::Register(_))
+                                    | (
+                                        0xb7,
+                                        Operand::Memory(MemoryOperand {
+                                            base: AddressBase::Register(Register::Rdi),
+                                            index: None,
+                                            displacement: 0 | 2 | 4,
+                                            ..
+                                        })
+                                    )
                             )
                     }
                     _ => false,
@@ -23254,27 +23291,40 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: handoff and memory-map parsing dispatch through linked jump tables.
-        Operation::IndirectJump {
-            operand:
-                operand @ Operand::Memory(MemoryOperand {
-                    base: AddressBase::None,
-                    index: Some(_),
-                    scale: 8,
-                    address_size: OperandSize::Qword,
-                    size: OperandSize::Qword,
-                    ..
-                }),
-        } if firmware_boot_profile
-            && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xff
-            && ((instruction.length == 7 && instruction.prefixes == Prefixes::default())
-                || (instruction.length == 8
-                    && instruction.prefixes
-                        == (Prefixes {
-                            rex: Some(0x42),
-                            ..Prefixes::default()
-                        }))) =>
+        // S7-04: linked jump tables and the startup diagnostic's stackless returns.
+        Operation::IndirectJump { operand }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xff
+                && match operand {
+                    Operand::Memory(MemoryOperand {
+                        base: AddressBase::None,
+                        index: Some(_),
+                        scale: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                        ..
+                    }) => {
+                        (instruction.length == 7 && instruction.prefixes == Prefixes::default())
+                            || (instruction.length == 8
+                                && instruction.prefixes
+                                    == (Prefixes {
+                                        rex: Some(0x42),
+                                        ..Prefixes::default()
+                                    }))
+                    }
+                    Operand::Register(register) => {
+                        instruction.length == 3
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: Some(0x41),
+                                    ..Prefixes::default()
+                                })
+                            && (register == RegisterView::low(Register::R9, OperandSize::Qword)
+                                || register == RegisterView::low(Register::R12, OperandSize::Qword))
+                    }
+                    _ => false,
+                } =>
         {
             let target = match read_operand(state, memory, context, next_rip, operand) {
                 Ok(target) => target,

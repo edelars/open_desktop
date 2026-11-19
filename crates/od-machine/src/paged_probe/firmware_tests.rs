@@ -78,6 +78,12 @@ fn fixture(code: &[u8]) -> (LongModeState, MachineBus) {
         AccessWidth::Qword,
         0x00af9b000000ffff,
     );
+    write(
+        &mut bus,
+        DATA_PHYSICAL + 0x210,
+        AccessWidth::Qword,
+        0x00cf93000000ffff,
+    );
     set_gate(&mut bus, 3, BREAKPOINT);
     set_gate(&mut bus, 14, PAGE_FAULT);
     let mut state = LongModeState {
@@ -247,4 +253,100 @@ fn firmware_without_idtr_keeps_reporting_faults_at_the_boundary() {
     assert_eq!(report.page_fault.unwrap().cr2_value(), GUARD + 8);
     assert_eq!(report.instructions_executed, 0);
     assert_eq!(state, before);
+}
+
+#[test]
+fn firmware_synchronous_faults_keep_original_rip_and_optional_error_code() {
+    let absent_data = 0x00cf13000000ffff;
+    let present_code = 0x00af9b000000ffff;
+    for (vector, code, rax, descriptor, error_code) in [
+        (6, &[0x0f, 0x0b][..], 0, absent_data, None), // UD2
+        (11, &[0x8e, 0xd8][..], 0x10, absent_data, Some(0x10)), // MOV DS,AX
+        (12, &[0x8e, 0xd0][..], 0x10, absent_data, Some(0x10)), // MOV SS,AX
+        (13, &[0x0f, 0x22, 0xe0][..], 0x600, absent_data, Some(0)), // MOV CR4,RAX clears PAE
+        (13, &[0x8e, 0xd0][..], 0x10, present_code, Some(0x10)), // MOV SS,AX needs a data descriptor
+    ] {
+        let (mut state, mut bus) = fixture(code);
+        set_gate(&mut bus, vector, PAGE_FAULT);
+        write(
+            &mut bus,
+            DATA_PHYSICAL + 0x210,
+            AccessWidth::Qword,
+            descriptor,
+        );
+        state.gpr[Register::Rax as usize] = rax;
+        state.cr2 = Some(GUARD);
+        let report = step(&mut state, &mut bus, 1);
+        assert_eq!(
+            report.exit,
+            PagedProbeExit::BudgetExhausted,
+            "vector {vector}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state.rip, PAGE_FAULT + 1);
+        assert_eq!(state.cr2, Some(GUARD));
+        assert_eq!(state.cr4, Some(0x620));
+        assert_eq!(state.ss_selector, Some(16));
+        assert_eq!(state.gpr[Register::Rax as usize], rax);
+        let mut expected: Vec<u64> = error_code.into_iter().collect();
+        expected.extend([CODE, 8, 2 | RF, STACK, 16]);
+        let rsp = state.gpr[Register::Rsp as usize];
+        assert_eq!(rsp, STACK - expected.len() as u64 * 8);
+        assert_eq!(read_frame(&mut bus, rsp, expected.len()), expected);
+    }
+}
+
+#[test]
+fn firmware_event_entry_ends_the_mov_ss_shadow_after_successful_delivery() {
+    for (next, target) in [
+        (&[0xcc][..], BREAKPOINT),
+        (&[0x48, 0x8b, 0x03][..], PAGE_FAULT + 1),
+        (&[0x0f, 0x0b][..], PAGE_FAULT + 1),
+    ] {
+        let mut code = vec![0x8e, 0xd0]; // MOV SS,AX
+        code.extend_from_slice(next);
+        let (mut state, mut bus) = fixture(&code);
+        set_gate(&mut bus, 6, PAGE_FAULT);
+        state.gpr[Register::Rax as usize] = 0x10;
+        let first = step(&mut state, &mut bus, 1);
+        assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(state.rip, CODE + 2);
+        assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+        let second = step(&mut state, &mut bus, 1);
+        assert_eq!(second.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(state.rip, target);
+        assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    }
+}
+
+#[test]
+fn firmware_synchronous_delivery_error_keeps_the_original_exception() {
+    let (mut state, mut bus) = fixture(&[0x8e, 0xd0, 0x0f, 0x0b]); // MOV SS,AX; UD2
+    state.gpr[Register::Rax as usize] = 16;
+    state.idtr.as_mut().unwrap().base = GUARD - 6 * 16;
+    let first = step(&mut state, &mut bus, 1);
+    assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+    let before = state.clone();
+    let report = step(&mut state, &mut bus, 1);
+    assert_eq!(report.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(report.page_fault, None);
+    let PagedProbeExit::IntegrationError(
+        PagedProbeIntegrationError::FirmwareSynchronousFaultDelivery {
+            fault,
+            failure:
+                Cpl0GeneralProtectionDelivery::Aborted {
+                    phase: od_isa::interrupt::Cpl0GeneralProtectionPhase::IdtGateRead,
+                    ..
+                },
+            delivery_fault: Some(delivery),
+        },
+    ) = report.exit
+    else {
+        panic!("unexpected #UD delivery result: {:?}", report.exit);
+    };
+    assert_eq!((fault.vector, fault.error_code), (6, None));
+    assert_eq!(delivery.cr2_value(), GUARD);
+    assert_eq!(delivery.context().origin, AccessOrigin::DescriptorTable);
 }
