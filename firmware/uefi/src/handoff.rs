@@ -11,11 +11,21 @@ pub const MAX_HANDOFF_REGIONS: usize = 128;
 pub const BOOT_PAGE_TABLES_GPA: u64 = 0x0060_0000;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
+const FV_APP_HEADER_SIZE: usize = 0xA8;
 const CRC_OFFSET: usize = 0x14;
 const NO_OWNER: u32 = u32::MAX;
 const DEVICE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
+const HANDOFF_MINOR_FV_APP: u16 = 5;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum FirmwareFvApp {
+    Hello = 1,
+    Ebs = 2,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Handoff<'a> {
@@ -23,6 +33,7 @@ pub struct Handoff<'a> {
     version_minor: u16,
     tsc_hz: u64,
     board_profile: u32,
+    fv_app: Option<FirmwareFvApp>,
     region_table_offset: usize,
     region_count: usize,
     region_entry_size: usize,
@@ -41,6 +52,7 @@ pub enum HandoffError {
     },
     InvalidHeaderSize(u32),
     InvalidTotalSize(u32),
+    InvalidFvApp(u32),
     MisalignedOffset {
         table: &'static str,
         offset: u32,
@@ -187,6 +199,7 @@ impl HandoffError {
             Self::InvalidTscFrequency(hz) => (STOP_HANDOFF_TSC, hz),
             Self::InvalidSerialLength(length) => (STOP_HANDOFF_SERIAL, u64::from(length)),
             Self::InvalidSerial => (STOP_HANDOFF_SERIAL, 0),
+            Self::InvalidFvApp(value) => (STOP_HANDOFF_FV_APP, u64::from(value)),
             Self::NonZeroHeaderReserved { offset } => (STOP_HANDOFF_SIZE, offset as u64),
             Self::InvalidBootReservation { kind: 9 } => (STOP_HANDOFF_SHADOW, 9),
             Self::InvalidBootReservation { kind } => (STOP_HANDOFF_REGION, u64::from(kind)),
@@ -220,14 +233,14 @@ fn crc32_with_zeroed_field(bytes: &[u8]) -> u32 {
     crate::crc32::with_zeroed_word(bytes, CRC_OFFSET)
 }
 
-fn table_fits(offset: u32, count: u32, entry_size: u32, total: usize) -> bool {
+fn table_fits(offset: u32, count: u32, entry_size: u32, header_size: usize, total: usize) -> bool {
     let Some(size) = (count as usize).checked_mul(entry_size as usize) else {
         return false;
     };
     let Some(end) = (offset as usize).checked_add(size) else {
         return false;
     };
-    offset as usize >= HEADER_SIZE && end <= total
+    offset as usize >= header_size && end <= total
 }
 
 fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
@@ -432,7 +445,7 @@ fn validate_devices(
             }
         }
     }
-    if version_minor >= HANDOFF_MINOR_RTC && !seen[DEVICE_RTC_CMOS as usize] {
+    if version_minor == HANDOFF_MINOR_RTC && !seen[DEVICE_RTC_CMOS as usize] {
         return Err(HandoffError::MissingDeviceType {
             kind: DEVICE_RTC_CMOS,
         });
@@ -491,16 +504,21 @@ impl<'a> Handoff<'a> {
         if major != 1 {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
-        if minor > supported_minor_max || minor > HANDOFF_MINOR_RTC {
+        if minor > supported_minor_max || minor > HANDOFF_MINOR_MAX {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
         let header_size = u32_at(bytes, 0x0C);
-        if header_size as usize != HEADER_SIZE {
+        let expected_header = if minor == HANDOFF_MINOR_FV_APP {
+            FV_APP_HEADER_SIZE
+        } else {
+            HEADER_SIZE
+        };
+        if header_size as usize != expected_header {
             return Err(HandoffError::InvalidHeaderSize(header_size));
         }
         let total_size = u32_at(bytes, 0x10);
         let total = total_size as usize;
-        if !(HEADER_SIZE..=HANDOFF_WINDOW_SIZE).contains(&total)
+        if !(expected_header..=HANDOFF_WINDOW_SIZE).contains(&total)
             || total > bytes.len()
             || total % 8 != 0
         {
@@ -534,7 +552,13 @@ impl<'a> Handoff<'a> {
                 offset: region_offset,
             });
         }
-        if !table_fits(region_offset, region_count, region_entry_size, total) {
+        if !table_fits(
+            region_offset,
+            region_count,
+            region_entry_size,
+            expected_header,
+            total,
+        ) {
             return Err(HandoffError::TableOutOfBounds { table: "region" });
         }
         let device_offset = u32_at(bytes, 0x3C);
@@ -546,6 +570,7 @@ impl<'a> Handoff<'a> {
             2 => (8..=9).contains(&device_count),
             3 => device_count == 9,
             HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
+            HANDOFF_MINOR_FV_APP => (7..=10).contains(&device_count),
             _ => false,
         };
         if !valid_device_count {
@@ -566,7 +591,13 @@ impl<'a> Handoff<'a> {
                 offset: device_offset,
             });
         }
-        if !table_fits(device_offset, device_count, device_entry_size, total) {
+        if !table_fits(
+            device_offset,
+            device_count,
+            device_entry_size,
+            expected_header,
+            total,
+        ) {
             return Err(HandoffError::TableOutOfBounds { table: "device" });
         }
         let region_end = table_end(region_offset, region_count, region_entry_size);
@@ -587,11 +618,25 @@ impl<'a> Handoff<'a> {
         )?;
         validate_devices(bytes, device_offset as usize, device_count as usize, minor)?;
         validate_header_fields(bytes)?;
+        let fv_app = if minor == HANDOFF_MINOR_FV_APP {
+            if u32_at(bytes, 0xA4) != 0 {
+                return Err(HandoffError::NonZeroHeaderReserved { offset: 0xA4 });
+            }
+            match u32_at(bytes, 0xA0) {
+                0 => None,
+                1 => Some(FirmwareFvApp::Hello),
+                2 => Some(FirmwareFvApp::Ebs),
+                value => return Err(HandoffError::InvalidFvApp(value)),
+            }
+        } else {
+            None
+        };
         Ok(Self {
             bytes: &bytes[..total],
             version_minor: minor,
             tsc_hz: u64_at(bytes, 0x20),
             board_profile: u32_at(bytes, 0x28),
+            fv_app,
             region_table_offset: region_offset as usize,
             region_count: region_count as usize,
             region_entry_size: region_entry_size as usize,
@@ -614,6 +659,10 @@ impl<'a> Handoff<'a> {
 
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
+    }
+
+    pub fn fv_app(&self) -> Option<FirmwareFvApp> {
+        self.fv_app
     }
 
     pub const fn version_minor(&self) -> u16 {
@@ -1002,6 +1051,57 @@ mod tests {
         assert_eq!(parsed.device_count, 7);
         assert_eq!(parsed.device_entry_size, 0x30);
         assert_eq!(parsed.bytes().len(), b.len());
+    }
+
+    #[test]
+    fn validates_the_v15_fv_app_extension() {
+        let mut bytes = sample();
+        bytes.splice(HEADER_SIZE..HEADER_SIZE, [0; 8]);
+        let total = bytes.len() as u32;
+        bytes[0x0A..0x0C].copy_from_slice(&5u16.to_le_bytes());
+        bytes[0x0C..0x10].copy_from_slice(&0xA8u32.to_le_bytes());
+        bytes[0x10..0x14].copy_from_slice(&total.to_le_bytes());
+        bytes[0x30..0x34].copy_from_slice(&0xA8u32.to_le_bytes());
+        bytes[0x3C..0x40].copy_from_slice(&0xC8u32.to_le_bytes());
+        for (raw, expected) in [
+            (0, None),
+            (1, Some(FirmwareFvApp::Hello)),
+            (2, Some(FirmwareFvApp::Ebs)),
+        ] {
+            bytes[0xA0] = raw;
+            seal(&mut bytes);
+            assert_eq!(Handoff::parse(&bytes, 5).unwrap().fv_app(), expected);
+        }
+        assert_eq!(
+            Handoff::parse(&bytes, 4),
+            Err(HandoffError::UnsupportedVersion { major: 1, minor: 5 })
+        );
+        bytes[0xA0] = 3;
+        assert!(matches!(
+            Handoff::parse(&bytes, 5),
+            Err(HandoffError::BadCrc { .. })
+        ));
+        seal(&mut bytes);
+        let error = Handoff::parse(&bytes, 5).unwrap_err();
+        assert_eq!(error, HandoffError::InvalidFvApp(3));
+        assert_eq!(
+            error.stop_code_detail(),
+            (crate::stop::STOP_HANDOFF_FV_APP, 3)
+        );
+        bytes[0xA0] = 1;
+        bytes[0xA7] = 1;
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse(&bytes, 5),
+            Err(HandoffError::NonZeroHeaderReserved { offset: 0xA4 })
+        );
+        bytes[0xA7] = 0;
+        bytes[0x30..0x34].copy_from_slice(&0xA0u32.to_le_bytes());
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse(&bytes, 5),
+            Err(HandoffError::TableOutOfBounds { table: "region" })
+        );
     }
 
     #[test]

@@ -1,0 +1,44 @@
+{
+  "missing_app_instruction_budget": 4000000,
+  "cases": [
+    {
+      "name": "boot_core",
+      "fv_app": null,
+      "fixture": "boot_core_com1.txt",
+      "fixture_sha256": "c1b00d5cdbfe39cc120f4cd18b0e61f5c267bb905c93ec63097e738deb8554a6",
+      "repetitions": 1,
+      "returncode": 0,
+      "status": "completed",
+      "fw_stop": null,
+      "instruction_budget": 4000000,
+      "max_quanta": 3500
+    },
+    {
+      "name": "hello",
+      "fv_app": "hello",
+      "fixture": "hello_com1.txt",
+      "fixture_sha256": "542b5d97076ddbba1454ca321d3427fa501c45dcdea944faba0ab8fe51981f87",
+      "repetitions": 5,
+      "returncode": 6,
+      "status": "firmware_stop",
+      "fw_stop": {
+        "code": "0x21",
+        "detail": "0x0000000000000000"
+      },
+      "instruction_budget": 4000000,
+      "max_quanta": 3500
+    },
+    {
+      "name": "ebs",
+      "fv_app": "ebs",
+      "fixture": "ebs_com1.txt",
+      "fixture_sha256": "f787adc47889256c0349924bb4c71d358dcbd5a426b529e043284df4148286d9",
+      "repetitions": 5,
+      "returncode": 0,
+      "status": "completed",
+      "fw_stop": null,
+      "instruction_budget": 4000000,
+      "max_quanta": 3500
+    }
+  ]
+}

@@ -251,7 +251,7 @@ pub use firmware_board::{
     FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_HANDOFF_GPA,
     FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
     FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
-    FirmwareBoardError, FirmwareRunReport, LoadedFirmwareBoard, load_firmware_image,
+    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard, load_firmware_image,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};

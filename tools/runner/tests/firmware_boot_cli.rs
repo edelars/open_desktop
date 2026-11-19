@@ -47,6 +47,10 @@ struct Run {
 }
 
 fn invoke(image: &[u8], budget: &str) -> Run {
+    invoke_with_args(image, budget, &[])
+}
+
+fn invoke_with_args(image: &[u8], budget: &str, extra: &[&str]) -> Run {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir();
     let bin = dir.join(format!("od-runner-fw-{}-{id}.bin", std::process::id()));
@@ -59,10 +63,45 @@ fn invoke(image: &[u8], budget: &str) -> Run {
         .arg("--com1-out")
         .arg(&com1)
         .args(["--budget", budget])
+        .args(extra)
         .output()
         .unwrap();
     fs::remove_file(&bin).unwrap();
     Run { output, com1 }
+}
+
+#[test]
+fn fv_app_rejects_invalid_selection_before_launch() {
+    let legacy = image(&[0xf4]);
+    for (extra, error) in [
+        (&["--fv-app", "other"][..], "expected hello or ebs"),
+        (
+            &["--fv-app", "hello", "--fv-app", "ebs"][..],
+            "duplicate option --fv-app",
+        ),
+    ] {
+        let run = invoke_with_args(&legacy, "64", extra);
+        assert_eq!(run.output.status.code(), Some(3));
+        let result = report(&run);
+        assert_eq!(result["status"], "invalid_input");
+        assert!(result["error"]["detail"].as_str().unwrap().contains(error));
+        assert!(!run.com1.exists());
+    }
+}
+
+#[test]
+fn fv_app_requires_a_compatible_firmware_before_launch() {
+    let run = invoke_with_args(&image(&[0xf4]), "64", &["--fv-app", "ebs"]);
+    assert_eq!(run.output.status.code(), Some(4));
+    let result = report(&run);
+    assert_eq!(result["status"], "loader_error");
+    assert!(
+        result["error"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("handoff_minor_max")
+    );
+    assert!(!run.com1.exists());
 }
 
 fn report(run: &Run) -> Value {

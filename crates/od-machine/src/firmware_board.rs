@@ -120,6 +120,7 @@ const SHADOW_END: u64 = FIRMWARE_LINK_BASE + FIRMWARE_IMAGE_BYTES as u64;
 // Handoff block v1.0 layout (FIRMWARE_BOOT.md section 6).
 const HANDOFF_MAGIC: &[u8; 8] = b"ODHANDOF";
 const HANDOFF_HEADER_BYTES: usize = 0xA0;
+const FV_APP_HANDOFF_HEADER_BYTES: usize = 0xA8;
 const REGION_ENTRY_BYTES: usize = 32;
 const DEVICE_ENTRY_BYTES: usize = 48;
 /// Devices of handoff v1.0; the optional NVMe entry of v1.1 follows them.
@@ -159,12 +160,21 @@ const DEVICE_CODE_ACPI_PM: u32 = 9;
 /// RTC/CMOS ports and deterministic UTC base time (handoff v1.4, S7-14).
 const DEVICE_CODE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
+const HANDOFF_MINOR_FV_APP: u16 = 5;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
 /// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
 const HANDOFF_MINOR_ACPI: u16 = 2;
 const HANDOFF_MINOR_NVME_PCI: u16 = 3;
+
+/// A diagnostic application selected from the built-in firmware volume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum FirmwareFvApp {
+    Hello = 1,
+    Ebs = 2,
+}
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,6 +220,8 @@ pub struct FirmwareBoardConfig {
     /// adds handoff device code 10 and requires an image with `handoff_minor_max >= 4`.
     /// This value is explicit configuration; the machine never reads host wall time.
     pub rtc_base_unix_seconds: Option<u64>,
+    /// A present selector requests the handoff v1.5 header extension.
+    pub fv_app: Option<FirmwareFvApp>,
     /// Linux profile (S4-37a1), opt-in. Requires `acpi_pm`, `acpi_tables` and
     /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
     /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
@@ -240,6 +252,7 @@ impl Default for FirmwareBoardConfig {
             acpi_pm: false,
             acpi_tables: false,
             rtc_base_unix_seconds: None,
+            fv_app: None,
             linux_profile: false,
             vcpu_count: 1,
         }
@@ -652,8 +665,10 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 }
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
-fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
-    if devices.iter().any(|d| d.code == DEVICE_CODE_RTC_CMOS) {
+fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
+    if config.fv_app.is_some() {
+        HANDOFF_MINOR_FV_APP
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_RTC_CMOS) {
         HANDOFF_MINOR_RTC
     } else if devices
         .iter()
@@ -901,7 +916,12 @@ fn build_handoff(
     devices: &[DeviceEntry],
     regions: &[HandoffRegion],
 ) -> Vec<u8> {
-    let region_table_offset = HANDOFF_HEADER_BYTES;
+    let header_size = if config.fv_app.is_some() {
+        FV_APP_HANDOFF_HEADER_BYTES
+    } else {
+        HANDOFF_HEADER_BYTES
+    };
+    let region_table_offset = header_size;
     let device_table_offset = region_table_offset + REGION_ENTRY_BYTES * regions.len();
     let total_size = device_table_offset + DEVICE_ENTRY_BYTES * devices.len();
     let mut block = vec![0u8; total_size];
@@ -916,8 +936,8 @@ fn build_handoff(
     };
     block[..8].copy_from_slice(HANDOFF_MAGIC);
     put16(&mut block, 0x08, 1);
-    put16(&mut block, 0x0A, handoff_minor(devices));
-    put32(&mut block, 0x0C, HANDOFF_HEADER_BYTES as u32);
+    put16(&mut block, 0x0A, handoff_minor(config, devices));
+    put32(&mut block, 0x0C, header_size as u32);
     put32(&mut block, 0x10, total_size as u32);
     // 0x14 crc32 is filled last.
     put32(&mut block, 0x1C, 1);
@@ -932,6 +952,9 @@ fn build_handoff(
     block[0x48..0x58].copy_from_slice(&config.system_uuid);
     put16(&mut block, 0x58, config.serial.len() as u16);
     block[0x60..0x60 + config.serial.len()].copy_from_slice(&config.serial);
+    if let Some(app) = config.fv_app {
+        put32(&mut block, HANDOFF_HEADER_BYTES, app as u32);
+    }
     for (index, region) in regions.iter().enumerate() {
         let at = region_table_offset + index * REGION_ENTRY_BYTES;
         put32(&mut block, at, region.kind);
@@ -3839,7 +3862,7 @@ fn load_firmware_image_inner(
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
-    let entry_offset = validate_image(image, handoff_minor(&devices))?;
+    let entry_offset = validate_image(image, handoff_minor(config, &devices))?;
     if config.nvme_pci {
         return Err(FirmwareBoardError::Config(
             "nvme_pci needs Linux direct boot",
@@ -6140,6 +6163,35 @@ mod tests {
             le_u64(entry, 0x28).unwrap(),
             u64::from(ACPI_RESET_VALUE) | u64::from(ACPI_SLP_TYP_S5) << 8
         );
+    }
+
+    #[test]
+    fn fv_app_extends_only_selected_boots_and_requires_minor_five_support() {
+        let current_image = test_image(&[0xf4], &[(0x2A, &5u16.to_le_bytes())]);
+        let legacy = load_firmware_image(&current_image, &reference_config()).unwrap();
+        assert_eq!(hex(legacy.handoff_block()), REFERENCE_HANDOFF_HEX);
+
+        for app in [FirmwareFvApp::Hello, FirmwareFvApp::Ebs] {
+            let config = FirmwareBoardConfig {
+                fv_app: Some(app),
+                ..reference_config()
+            };
+            assert!(matches!(
+                load_firmware_image(&minor4_image(&[0xf4]), &config),
+                Err(FirmwareBoardError::ImageHeader {
+                    field: "handoff_minor_max",
+                    value: 4
+                })
+            ));
+            let board = load_firmware_image(&current_image, &config).unwrap();
+            let bytes = board.handoff_block();
+            assert_eq!(le_u16(bytes, 0x0A).unwrap(), 5);
+            assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
+            assert_eq!(le_u32(bytes, 0x30).unwrap(), 0xA8);
+            assert_eq!(le_u32(bytes, 0xA0).unwrap(), app as u32);
+            assert_eq!(le_u32(bytes, 0xA4).unwrap(), 0);
+            assert!(crc_is_valid(bytes));
+        }
     }
 
     #[test]

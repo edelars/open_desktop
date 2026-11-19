@@ -25,7 +25,9 @@ use od_firmware::bs::protocol::{
     OPEN_GET_PROTOCOL,
 };
 use od_firmware::device_path::{DEVICE_PATH_PROTOCOL_GUID, DevicePathNode};
-use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
+use od_firmware::handoff::{
+    BOOT_PAGE_TABLES_GPA, FirmwareFvApp, HANDOFF_MINOR_MAX, HANDOFF_WINDOW_SIZE, Handoff,
+};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
     DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
@@ -35,7 +37,8 @@ use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError, PageOwner, P
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
-    STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
+    STOP_NO_BOOT_OPTIONS, STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex,
+    format_stop_line,
 };
 use od_firmware::uefi::guid::Guid;
 use od_firmware::uefi::runtime::{RESET_COLD, RESET_WARM, ResetType};
@@ -50,8 +53,6 @@ unsafe extern "C" {
     static od_fw_exception_stubs: u8;
 }
 
-// Keep this equal to the image header's handoff_minor_max in build_firmware.py.
-const HANDOFF_MINOR_MAX: u16 = 4;
 const VERSION_LINE: &[u8] = concat!("OD-FW version ", env!("CARGO_PKG_VERSION"), "\r\n").as_bytes();
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
@@ -239,7 +240,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }
-    verify_embedded_image(&system);
+    boot_fv_image(&system, handoff.fv_app());
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
@@ -1297,15 +1298,25 @@ fn verify_service_boundaries(system: &SystemTable) {
 }
 
 #[inline(never)]
-fn verify_embedded_image(system: &SystemTable) {
+fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
+    // Console initialization and failed applications can leave an open COM1 line.
+    fn fail(detail: u64) -> ! {
+        com1_write(b"\r\n");
+        stop(STOP_BOOT_SERVICES, detail);
+    }
+
     let Ok(archive) = od_firmware::fv::embedded() else {
-        stop(STOP_BOOT_SERVICES, 69);
+        fail(69);
     };
-    if archive.get("hello").is_none() {
+    if requested.is_none() && archive.get("hello").is_none() {
         return;
     }
+    let name = match requested {
+        Some(FirmwareFvApp::Ebs) => "ebs",
+        _ => "hello",
+    };
     let mut path_buffer = [0; 64];
-    let Some(path) = od_firmware::bs::image::firmware_file_device_path("hello", &mut path_buffer)
+    let Some(path) = od_firmware::bs::image::firmware_file_device_path(name, &mut path_buffer)
     else {
         stop(STOP_INTERNAL, 70);
     };
@@ -1319,24 +1330,31 @@ fn verify_embedded_image(system: &SystemTable) {
         let start = ptr::addr_of!((*boot).start_image).read_volatile();
         let mut parent = ptr::null_mut();
         if install(&mut parent, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS {
-            stop(STOP_BOOT_SERVICES, 71);
+            fail(71);
         }
         let mut image = ptr::null_mut();
         match load(0, parent, path.as_ptr().cast(), ptr::null(), 0, &mut image) {
             Status::SUCCESS => {
-                if start(image, ptr::null_mut(), ptr::null_mut()) != Status::SUCCESS {
-                    stop(STOP_BOOT_SERVICES, 72);
+                let status = start(image, ptr::null_mut(), ptr::null_mut());
+                if requested == Some(FirmwareFvApp::Ebs) {
+                    fail(75);
+                }
+                if status != Status::SUCCESS {
+                    fail(72);
                 }
                 com1_write(b"OD-FW image hello: EFI_SUCCESS\r\n");
             }
-            Status::LOAD_ERROR if image.is_null() => {
+            Status::LOAD_ERROR if requested.is_none() && image.is_null() => {
                 com1_write(b"OD-FW image hello: EFI_LOAD_ERROR\r\n");
             }
-            status => stop(STOP_BOOT_SERVICES, status.raw() as u64),
+            status => fail(status.raw() as u64),
         }
         if uninstall(parent, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS {
-            stop(STOP_BOOT_SERVICES, 73);
+            fail(73);
         }
+    }
+    if requested == Some(FirmwareFvApp::Hello) {
+        stop(STOP_NO_BOOT_OPTIONS, 0);
     }
 }
 

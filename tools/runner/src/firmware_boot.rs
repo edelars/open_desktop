@@ -5,19 +5,23 @@
 //! time (`retired * 1 ns` per quantum) live in `od-machine`
 //! (`docs/specs/FIRMWARE_BOOT.md` sections 8 and 11).
 
-use od_machine::{FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, PagedProbeExit, load_firmware_image};
+use od_machine::{
+    FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp, PagedProbeExit, load_firmware_image,
+};
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
 
-const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps>";
+const USAGE: &str =
+    "boot-firmware --image <bin> --com1-out <file> --budget <steps> [--fv-app hello|ebs]";
 
 struct Options {
     image: String,
     com1_out: String,
     budget: u64,
+    fv_app: Option<FirmwareFvApp>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -33,7 +37,11 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let mut board = match load_firmware_image(&image, &FirmwareBoardConfig::default()) {
+    let config = FirmwareBoardConfig {
+        fv_app: options.fv_app,
+        ..FirmwareBoardConfig::default()
+    };
+    let mut board = match load_firmware_image(&image, &config) {
         Ok(board) => board,
         Err(error) => return emit(failure("loader_error", "loader", format!("{error:?}")), 4),
     };
@@ -106,6 +114,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut image, mut com1_out, mut budget) = (None, None, None);
+    let mut fv_app = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -122,6 +131,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         .map_err(|_| format!("invalid --budget '{value}'"))?,
                 );
             }
+            "--fv-app" if fv_app.is_none() => {
+                fv_app = Some(match value.as_str() {
+                    "hello" => FirmwareFvApp::Hello,
+                    "ebs" => FirmwareFvApp::Ebs,
+                    _ => return Err(format!("invalid --fv-app '{value}'; expected hello or ebs")),
+                });
+            }
             other => {
                 return Err(format!(
                     "unexpected or duplicate option {other}; usage: {USAGE}"
@@ -134,6 +150,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         image: image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?,
         com1_out: com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?,
         budget: budget.ok_or_else(|| format!("--budget is required; usage: {USAGE}"))?,
+        fv_app,
     })
 }
 

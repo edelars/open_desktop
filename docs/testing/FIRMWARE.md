@@ -1,8 +1,26 @@
 # Методика проверки прошивки
 
-S7-01 определяет проверку формата образа ROM и PE32+ probe и host-side тесты чистой логики. Единая команда и требования к toolchain приведены в [README прошивки](../../firmware/uefi/README.md#команды). Результаты выполнения кода в машине фиксируются в [отчёте этапа 7](../reports/STAGE_7_REPORT.md).
+S7-01 определяет проверку формата образа ROM и PE32+ probe и host-side тесты чистой логики. Требования к toolchain приведены в [README прошивки](../../firmware/uefi/README.md#команды). Результаты выполнения кода в машине фиксируются в [отчёте этапа 7](../reports/STAGE_7_REPORT.md).
 
 Успешный `cargo check --workspace` прошивку **не** проверяет: она не член корневого workspace. Успешная сборка образа не доказывает работу прошивки.
+
+## Одна команда
+
+Запуск из корня проекта с установленными [инструментами сборки прошивки](../../firmware/uefi/README.md#команды).
+
+```sh
+python3 tests/system/firmware_boot_smoke.py
+```
+
+Скрипт собирает release-версию `od-runner`, базовый ROM и один ROM с тестовыми приложениями. На плате с 128 МиБ RAM он проверяет базовую диагностику один раз и по пять раз запускает оба приложения из одного ROM.
+
+| Режим | Проверка гостя и результата runner |
+|---|---|
+| Без `--fv-app` | Базовый ROM завершает диагностику ядра и Boot Services по `HLT`, процесс возвращает `0`. |
+| `--fv-app hello` | `LoadImage` читает PE32+ из FV по пути устройства. Приложение пишет `OD-UEFI hello 0.1.0` через `ConOut` и возвращает `EFI_SUCCESS`. Прошивка печатает статус образа и останавливается по `HLT` с кодом `0x21`, `detail = 0`. Процесс возвращает `6`. |
+| `--fv-app ebs` | Приложение загружается тем же путём, пишет `OD-UEFI ebs` через `ConOut`, вызывает `ExitBootServices`, пишет `!` напрямую в COM1 и выполняет `HLT`. Процесс возвращает `0`. |
+
+Для каждого прогона скрипт сверяет COM1 побайтово, включая CRLF, управляющие последовательности и последний байт `!`. При расхождении он печатает diff с видимыми управляющими байтами. [Манифест](../../tests/fixtures/firmware/manifest.json) задаёт ожидаемые остановы, SHA-256 эталонов и пределы инструкций и квантов. Скрипт сверяет хеш ROM из отчёта runner с хешем собранного образа и печатает время каждого запуска. Отдельная проверка запрашивает `ebs` из базового ROM и ожидает останов `0x35` с `EFI_NOT_FOUND`.
 
 ## Уровни доказательств
 
@@ -12,7 +30,7 @@ S7-01 определяет проверку формата образа ROM и P
 | 0a. Сборка PE32+ EFI-образа (probe) | Что `x86_64-unknown-uefi` и `rust-lld` дают PE32+ (Machine `0x8664`, magic `0x20B`, Subsystem 10, секция `.reloc`, `DataDirectory[5]`). Это не тестовое приложение S7-06 и не RT-образ S7-11 | `python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi` | Есть (S7-01) |
 | 1. Host-side unit-тесты чистой логики | Функции над байтами в `firmware/uefi/` (сейчас: заголовок образа, CRC-32, строка останова, AML-кодировщик, DSDT из manifest и валидатор таблицы — S7-12; далее PE-парсер, FAT, codec переменных, остальные таблицы ACPI и SMBIOS, команды TPM, Authenticode-хеш). Гость не исполняется | `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` | Есть (S7-01), наполняется задачами S7-04…S7-24 |
 | 2. Unit-тесты устройств в `od-machine` | ROM backing, handoff block, NVRAM, NVMe, TPM CRB, ACPI fixed hardware — через `MachineBus`, без прошивки | `cargo test -p od-machine --offline` (модули `firmware_board` и `physical_memory`: S7-03; далее S7-10, S7-14, S7-16, S7-22) | Есть для ROM, shadow, таблиц страниц и handoff block (S7-03) |
-| 3. Freestanding прогон в машине | Runner запускает `od-machine` с образом прошивки и тестовым EFI-приложением; результат — вывод COM1, framebuffer (S10-03), PCR и event log, сравнение с эталонами скриптами `tests/system/` | `cargo run --offline -p od-runner -- boot-firmware --image <bin> --com1-out <file> --budget <steps>` (S7-03); тесты `cargo test -p od-runner --offline --test firmware_boot_cli`; скрипты — S7-08 | Мини-образ S7-03 и ядро S7-04 дают проверенный вывод COM1. Запуск EFI-приложений входит в S7-08 |
+| 3. Freestanding прогон в машине | Runner запускает `od-machine` с образом прошивки и тестовым EFI-приложением; результат — вывод COM1, framebuffer (S10-03), PCR и event log, сравнение с эталонами скриптами `tests/system/` | `cargo run --offline -p od-runner -- boot-firmware --image <bin> --com1-out <file> --budget <steps>` (S7-03); тесты `cargo test -p od-runner --offline --test firmware_boot_cli`; `python3 tests/system/firmware_boot_smoke.py` | Мини-образ S7-03, ядро S7-04 и приложения `hello` и `ebs` (S7-08) дают проверенный вывод COM1 |
 | 4. Реальная ОС | Linux (blocked до этапа 5 и S4-30) и установочный образ Windows до экрана Setup (blocked до S4-30, S4-10, этапа 6, S7-35) через ту же прошивку; факт — лог COM1/экран и перечень запрошенных протоколов (трассировка прошивки) | Появятся в S7-31, S7-32 | Не существует |
 
 Что относится к какому уровню: логика, не зависящая от MMIO, порта ввода-вывода, аллокатора прошивки и состояния CPU, проверяется на уровне 1; всё остальное — только на уровне 3 (правило тестируемости в README прошивки). Не переносить на уровень 1 код, который иначе не проверить: тест, подменяющий железо, не доказывает его работу в машине.
@@ -178,7 +196,7 @@ firmware/uefi/tests/authenticode_reference.py image.efi`. Он читает
 ## Эталоны
 
 - Эталоны — маленькие собственные файлы: ожидаемый текст COM1, JSON-манифесты с хешами, образы ESP, сгенерированные скриптом из `tools/build/`. Чужие образы прошивок, `.aml`, дампы SMBIOS и большие файлы в Git не хранятся.
-- Каталог `tests/fixtures/firmware/` содержит `boot_core_com1.txt` с диагностикой S7-04 и S7-05. Эталоны EFI-приложений и способ генерации ESP входят в S7-08 и S7-18.
+- Каталог `tests/fixtures/firmware/` содержит `boot_core_com1.txt` с диагностикой ядра, `hello_com1.txt` и `ebs_com1.txt` для приложений из FV. Генерация ESP входит в S7-18.
 - Временные артефакты — в `work/stage7/` (каталог `work/` игнорируется Git): образ `work/stage7/firmware.bin`, cargo target `work/stage7/firmware-target/`, probe `work/stage7/efi_probe.efi` (target `work/stage7/firmware-target-efi-probe/`).
 - Новый вывод сверяется с контрактом в разделах 11–12 и фиксируется вместе с изменением кода. Команда выше сохраняет транскрипт для сравнения с эталоном.
 

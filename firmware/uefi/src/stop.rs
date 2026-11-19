@@ -26,8 +26,12 @@ pub const STOP_HANDOFF_TSC: u8 = 0x0A;
 pub const STOP_HANDOFF_SERIAL: u8 = 0x0B;
 /// Firmware shadow reservation does not match the linked image range.
 pub const STOP_HANDOFF_SHADOW: u8 = 0x0C;
+/// Handoff firmware-volume application selector is invalid.
+pub const STOP_HANDOFF_FV_APP: u8 = 0x0D;
 /// Unhandled exception delivered through the firmware IDT.
 pub const STOP_EXCEPTION: u8 = 0x10;
+/// The selected application returned and no further boot option is available.
+pub const STOP_NO_BOOT_OPTIONS: u8 = 0x21;
 /// Internal firmware error (panic handler).
 pub const STOP_INTERNAL: u8 = 0x30;
 /// Firmware-owned page tables could not be prepared.

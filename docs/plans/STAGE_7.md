@@ -431,8 +431,8 @@
 
 ### S7-08. Собрать первый сквозной срез
 
-- [ ] Принято после ревью.
-- **Где:** `tests/system/firmware_boot_smoke.py` (новый), `tests/fixtures/firmware/{boot_core_com1.txt,hello_com1.txt,manifest.json}`, `docs/testing/FIRMWARE.md` (раздел «Одна команда»), `STAGE_7_REPORT.md`.
+- [x] Принято после независимого ревью `gpt-6.1-sol` High 2026-11-19. [Результаты пяти прогонов каждого приложения](../reports/STAGE_7_REPORT.md#s7-08--сквозной-запуск-из-fv).
+- **Где:** `tests/system/firmware_boot_smoke.py`, `tests/fixtures/firmware/{boot_core_com1.txt,hello_com1.txt,ebs_com1.txt,manifest.json}`, `docs/testing/FIRMWARE.md` (раздел «Одна команда»), `STAGE_7_REPORT.md`.
 - **Сделать:**
   1. Скрипт: собирает образ `build_firmware.py`, запускает runner `boot-firmware`, сравнивает COM1 с эталоном, проверяет код завершения и число квантов ≤ бюджета; печатает diff при расхождении.
   2. Два сценария по флагу runner `--fv-app <имя>`: (а) `hello` печатает и возвращает `EFI_SUCCESS`, прошивка печатает статус образа и останавливается `HLT` с кодом «нет boot-опций» (ESP ещё нет); (б) `ebs` печатает, вызывает `ExitBootServices`, пишет `!` в COM1 напрямую и `HLT`. Эталоны COM1 для обоих. Записать оба сценария в `FIRMWARE.md`.

@@ -57,6 +57,9 @@ python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
 # ROM с архивом собственных hello.efi, echo.efi и ebs.efi. Нужен также target x86_64-unknown-uefi.
 python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-with-apps.bin
 
+# Побайтовая проверка COM1 для базового ROM и запусков hello и ebs из FV
+python3 tests/system/firmware_boot_smoke.py
+
 # Host-side тесты чистой логики (clang и target x86_64-unknown-none не нужны)
 cargo test --manifest-path firmware/uefi/Cargo.toml --offline
 

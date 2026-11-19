@@ -62,7 +62,7 @@ HEADER_SIZE = 0x40
 IMAGE_SIZE = 0x0040_0000
 LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
-HANDOFF_MINOR_MAX = 4
+HANDOFF_MINOR_MAX = 5
 CRC_OFFSET = 0x30
 
 # --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
@@ -84,7 +84,7 @@ def crc32_ieee(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFF_FFFF
 
 
-def build_header(entry_offset: int, crc: int = 0) -> bytes:
+def build_header(entry_offset: int, crc: int = 0, *, handoff_minor_max: int = HANDOFF_MINOR_MAX) -> bytes:
     header = bytearray(HEADER_SIZE)
     struct.pack_into(
         "<8sIIQQQHHII",
@@ -97,7 +97,7 @@ def build_header(entry_offset: int, crc: int = 0) -> bytes:
         LINK_BASE,
         entry_offset,
         HANDOFF_MAJOR,
-        HANDOFF_MINOR_MAX,
+        handoff_minor_max,
         0,
         crc,
     )
@@ -109,7 +109,7 @@ def image_crc(image: bytes) -> int:
     return crc32_ieee(image[:CRC_OFFSET] + b"\0\0\0\0" + image[CRC_OFFSET + 4 :])
 
 
-def assemble_image(raw: bytes, entry_offset: int) -> bytes:
+def assemble_image(raw: bytes, entry_offset: int, *, handoff_minor_max: int = HANDOFF_MINOR_MAX) -> bytes:
     """Put the header in front of the flat bytes and pad to exactly IMAGE_SIZE."""
     if len(raw) <= HEADER_SIZE:
         raise BuildError(f"flat image is only {len(raw):#x} bytes, no code after the {HEADER_SIZE:#x}-byte header")
@@ -121,7 +121,7 @@ def assemble_image(raw: bytes, entry_offset: int) -> bytes:
         raise BuildError(f"entry offset {entry_offset:#x} is outside [{HEADER_SIZE:#x}, {IMAGE_SIZE:#x})")
     image = bytearray(IMAGE_SIZE)
     image[: len(raw)] = raw
-    image[:HEADER_SIZE] = build_header(entry_offset)
+    image[:HEADER_SIZE] = build_header(entry_offset, handoff_minor_max=handoff_minor_max)
     struct.pack_into("<I", image, CRC_OFFSET, image_crc(bytes(image)))
     return bytes(image)
 
@@ -555,7 +555,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def build_smoke_image() -> bytes:
     """The --smoke image: the v1 header followed directly by SMOKE_CODE (entry_offset = header size)."""
-    image = assemble_image(bytes(HEADER_SIZE) + SMOKE_CODE, HEADER_SIZE)
+    # The standalone smoke entry has no path for launching an FV application.
+    image = assemble_image(bytes(HEADER_SIZE) + SMOKE_CODE, HEADER_SIZE, handoff_minor_max=4)
     validate_image(image)
     return image
 
