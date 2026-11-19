@@ -217,6 +217,12 @@ fn round(seed: u64) -> Round {
             // The AP has not taken the IPI, and the clock stood while we looked.
             assert_eq!(cell(control, COUNTER_1), counter_1);
             assert_eq!(control.now_ns(), proof.now_ns);
+            control.finish();
+            assert_eq!(
+                VmSnapshot::take_parallel(control, &lapic, &proof, &scheduler),
+                Err(SnapshotError::NotStopped),
+                "a proof of the previous stop cannot be reused after finish"
+            );
             (snapshot, (counter_0, counter_1, proof.now_ns, proof.acks))
         })
         .expect("the board splits");

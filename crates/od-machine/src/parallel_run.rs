@@ -1311,21 +1311,34 @@ impl ParallelControl<'_, '_> {
                 sh.kicks.unpark(cpu);
             }
         }
+        self.wait_for_stop(timeout)
+    }
+
+    /// Wait for an already published STOP request to reach every live worker.
+    fn wait_for_stop(&self, timeout: Duration) -> Result<StopProof, ParallelStopError> {
+        let sh = self.shared;
         let deadline = Instant::now() + timeout;
         loop {
             let unacked: Vec<usize> = (0..sh.count)
                 .filter(|&cpu| !sh.cells[cpu].safe.load(SEQ))
                 .collect();
-            if unacked.is_empty() {
+            let proof = if unacked.is_empty() {
                 // The idle jump that may have been in progress finishes under the owner's lock
                 // and takes no further step while the request stands: read the time under it.
                 let now_ns = lock(&sh.owner).now_ns();
                 let acks = (0..sh.count).map(|cpu| sh.ack_of(cpu)).collect();
-                return Ok(StopProof { acks, now_ns });
-            }
+                Some(StopProof { acks, now_ns })
+            } else {
+                None
+            };
+            // Exiting workers also publish safe, after publishing finish. Only a live run
+            // can acknowledge STOP, so check finish after reading the flags and proof state.
             if sh.finish.load(SEQ) {
                 sh.stop_all.store(false, SEQ);
                 return Err(ParallelStopError::Finished);
+            }
+            if let Some(proof) = proof {
+                return Ok(proof);
             }
             if Instant::now() >= deadline {
                 sh.stop_all.store(false, SEQ);
@@ -1348,19 +1361,24 @@ impl ParallelControl<'_, '_> {
         sh.idle_check();
     }
 
-    /// Whether a stop is in force.
+    /// Whether a stop is in force on a live run.
     pub(crate) fn stopped(&self) -> bool {
-        self.shared.stop_all.load(SEQ)
+        self.shared.stop_all.load(SEQ) && !self.is_finished()
     }
 
     /// Look at (or change) vCPU `cpu` while the machine is stopped. `None` when no stop is in
     /// force or the vCPU has not acknowledged it.
     pub(crate) fn with_vcpu<R>(&self, cpu: usize, f: impl FnOnce(&mut Vcpu) -> R) -> Option<R> {
         let sh = self.shared;
-        if !sh.stop_all.load(SEQ) || !sh.cells[cpu].safe.load(SEQ) {
+        if !self.stopped() || !sh.cells[cpu].safe.load(SEQ) {
             return None;
         }
         let mut guard = lock(&sh.vcpus[cpu]);
+        // Check after observing safe and acquiring the slot. A worker may have published
+        // its terminal safe flag while the controller was entering this access.
+        if !self.stopped() {
+            return None;
+        }
         Some(f(&mut guard))
     }
 
@@ -2235,6 +2253,57 @@ mod tests {
         assert_joined(&report, 2);
         assert_eq!(dword(&mut board, COUNTER_1), ROUNDS);
         assert_eq!(dword(&mut board, COUNTER_0), ROUNDS);
+    }
+
+    #[test]
+    fn an_error_during_stop_is_not_acknowledged_by_the_exiting_workers() {
+        let mut board = exchange_board();
+        let entered = AtomicBool::new(false);
+        let quantum = |call: QuantumCall<'_, '_>| {
+            if call.cpu == 1 {
+                entered.store(true, SEQ);
+                let deadline = Instant::now() + WAIT;
+                while !(call.stop)() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the controller must request STOP"
+                    );
+                    thread::yield_now();
+                }
+                return Err(FirmwareBoardError::Config("error during STOP"));
+            }
+            fixture_quantum(call)
+        };
+        let (report, ()) = run_threads(&mut board, config(32, u64::MAX), &quantum, |control| {
+            assert!(control.wait_until(WAIT, || entered.load(SEQ)));
+            // Pause the controller after publishing the request, until the workers finish.
+            control.shared.stop_all.store(true, SEQ);
+            assert!(control.wait_finished(WAIT));
+            let deadline = Instant::now() + WAIT;
+            while control.shared.exited.load(SEQ) != control.vcpu_count() {
+                assert!(Instant::now() < deadline, "workers must finish");
+                thread::yield_now();
+            }
+            assert!(control.shared.cells.iter().all(|cell| cell.safe.load(SEQ)));
+            let stopped = control.stopped();
+            let access = control.with_vcpu(1, |_| ());
+            assert_eq!(
+                control.wait_for_stop(WAIT),
+                Err(ParallelStopError::Finished)
+            );
+            assert!(!stopped);
+            assert!(access.is_none());
+            assert!(!control.shared.stop_all.load(SEQ));
+        })
+        .unwrap();
+        assert!(matches!(
+            report.finished,
+            ParallelFinish::Error {
+                cpu: 1,
+                error: FirmwareBoardError::Config("error during STOP"),
+            }
+        ));
+        assert_joined(&report, 2);
     }
 
     /// The exchange with `rounds` (at most 127) replies, so that a stop can land in the middle.

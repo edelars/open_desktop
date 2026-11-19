@@ -54,7 +54,7 @@ pub(crate) struct VmSnapshot {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum SnapshotError {
     /// The scheduler is not stopped: [`SmpScheduler::stop_all`] has not been called, or
-    /// [`SmpScheduler::resume`] has since. A snapshot of a running machine is not taken.
+    /// [`SmpScheduler::resume`] has since, or the parallel run has finished.
     NotStopped,
     /// The safe point is not the machine's: another number of vCPUs, a clock that moved since,
     /// or a vCPU whose activity is not the one it acknowledged.
@@ -200,12 +200,16 @@ impl VmSnapshot {
             }
             vcpus.push(vcpu);
         }
-        Ok(Self {
+        let snapshot = Self {
             vcpus,
             apic: lapic.snapshot_pair(),
             now_ns: proof.now_ns,
             scheduler: scheduler.state(),
-        })
+        };
+        if !control.stopped() {
+            return Err(SnapshotError::NotStopped);
+        }
+        Ok(snapshot)
     }
 
     /// The virtual time at which the machine stood.
