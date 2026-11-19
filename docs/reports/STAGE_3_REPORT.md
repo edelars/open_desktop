@@ -1022,6 +1022,49 @@ Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
 remains open.
 [Signed VMHost run and S3-31g results](STAGE_3_S3-31g_2026-11-19.md#verification)
 
+### Local and VMHost selectors after the MOV decoder change, 2026-11-19 UTC
+
+Both selectors used the clean `e31c105` tree after S3-40o
+and its performance reports. `python3 tests/cpu/stage3_harness.py --suite local`
+returned `local_only`. All 359 selected steps passed, including 157
+harness self-tests, 2,020 dispatcher child results and 4,800 memory
+inputs with two runs per input. The local VMHost RESULT contract passed.
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` returned
+`vmhost_process_only`. All 46 selected steps passed, including control races,
+independent VMHost processes, invalid-state connection closure and the
+generated-code fault probe.
+
+| Binding | Local | VMHost process |
+|---|---|---|
+| Run ID | `stage3-20261119-093244-0384d8b398` | `stage3-20261119-100818-3d90f786cc` |
+| Selected steps passed | 359 | 46 |
+| Unselected steps | 46 | 359 |
+| Input manifest SHA-256 | `e8e301511a4857937e2c1e9f4e867695fedf1106a8cdd6236a41c36e566af211` | `e8e301511a4857937e2c1e9f4e867695fedf1106a8cdd6236a41c36e566af211` |
+| Summary SHA-256 | `2955e673b2e648345b75e07569975b3e9793951f0338d8b3235facd2b7ae1382` | `0e76cae843ba0249edff389cfcf817db7ffa898d3bcc03b66d49ef69ab4b8d2f` |
+
+Both runs recorded revision `e31c105ee88f66ccfc5f83e3aa40fd756c693d90` and the same source
+fingerprint `82530645720cc00b959e1b96402884b38294a7f882d7fb67c378661aa202c374` at start and end.
+An independent audit compared all 405 selected step logs with their saved
+SHA-256 values. The dispatcher child's summary
+`ea0b6d2874ee58837dfc1dbe8866fd6866b255b41e4a4b2d9e78324c4e0a35fa` and manifest
+`b5d181fbd6b11aa36b7e0dd9deeb2aecefdcb425fe479ac67f4b77498c451eca` also matched.
+Raw run directories are under `work/stage3-harness/`.
+Physical x86 and Mac mini stayed `not_run` in both selectors.
+Final S3-41 acceptance remains open.
+
+#### Historical x87 baseline checks
+
+All five tests named in [ISSUE-040](../KNOWN_ISSUES.md#issue-040)
+passed in the 2,608-test `od-isa` library run for `b7c9c92`.
+`cargo test --offline -p od-isa --lib` produced the log SHA-256
+`2a5ecab29a6b6fed2eea2fc68eb2459196b37e65e732b2d089ea63ce804aa19a`.
+Comparing the tests with the `9a1376b` baseline shows earlier updates
+to the FABS/FCHS status masks, FST/FSTP special-value negatives and
+the FCOMI/FNINIT neighboring encodings as admitted FCMOV forms and
+decode errors changed. This resolves the old library-suite blocker
+for the five recorded failures.
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced

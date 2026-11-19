@@ -2200,10 +2200,10 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-isa` local Stage 1 test suite; x87 decode/execute admission.
-- **Статус:** открыта; пять тестов падают на Stage 3 baseline commit `9a1376b` и повторно на S3-11 worktree, остальные 706 проходят.
+- **Статус:** устранена для пяти исходных библиотечных тестов. В полном локальном наборе `od-isa` на `b7c9c92` прошли все 2 608 тестов, включая перечисленные пять.
 - **Суть и последствия:** тесты `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically`, `fchs_rejects_invalid_source_and_execution_boundaries_atomically`, `fst_and_fstp_sti_reject_noncanonical_specials_and_bad_infinity_environment_atomically`, `fcomi_family_decodes_only_the_32_bare_indexed_register_forms` и `fninit_accepts_only_bare_db_e3` ожидают `Unsupported`, тогда как соответствующие x87 forms принимаются текущей реализацией. Это не подтверждённый JIT flags дефект, но мешает полному зелёному `od-isa` suite и осложняет проверку Stage 3 изменений.
 - **Основание:** локальный baseline harness [отчёт S3-01](reports/STAGE_3_BASELINE_2026-10-26.md#ограничения-и-следующий-шаг) зафиксировал 703 passed/5 failed; повтор S3-11 дал те же пять имен, serial run также воспроизводит их, а изменённые files не относятся к x87 decoder/execute.
-- **Следующий шаг:** сверить эти ожидания с поддержанным x87 профилем Stage 2, обновить неверные тестовые ожидания или исправить admission только при доказанном semantic дефекте; затем повторить целевые и workspace проверки.
+- **Проверка 2026-11-19:** сверены ожидания тестов на `9a1376b` и `b7c9c92`. Ранее скорректированные тесты прошли на текущем коде. [Команда, результат и SHA-256](reports/STAGE_3_REPORT.md#historical-x87-baseline-checks)
 
 <a id="issue-039"></a>
 
