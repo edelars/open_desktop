@@ -983,7 +983,9 @@ The existing `cold-first-run` and `warm-first-run` commands accept
 selects the same frozen five S3-14 cases and trace used by S3-36b and runs
 `NativeRegisterV1Admission` through `run_multi_cached_native_register_v1_controlled`
 with eager flags and FIFO(16). Without the flag both commands retain their
-existing S3-17 profiles and output. Other commands reject the flag.
+S3-17 profiles. The default FIFO `cold-first-run` also accepts the exact
+S3-14 case list and trace. Use `warm-branch-helper` for the corresponding
+resident FIFO profile on those inputs. Other commands reject the flag.
 
 Both list and trace SHA-256 values, each fixture/program hash, trace visits,
 interpreter outcome and retirement are validated before timing. The generic
@@ -1023,6 +1025,11 @@ for run in 1 2 3; do
     --output "work/tmp/s3-56-repro/warm-$run.json"
 done
 ```
+
+For a FIFO comparison on this same corpus, run `cold-first-run` with the
+paths above and omit `--generic-register`. Run `warm-branch-helper` with
+those paths for the warm side.
+[Matched FIFO/generic runs](../reports/STAGE_3_S3-56_MATCHED_2026-11-19.md)
 
 The [S3 Core report](../reports/STAGE_3_CORE_REPORT.md)
 records the six process runs and their limitations. S3-35a's 1,010-case cold

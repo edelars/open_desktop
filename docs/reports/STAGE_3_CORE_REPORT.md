@@ -392,6 +392,15 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 Сырые данные: [cold 1](data/stage3/s3-56/cold-1.json), [cold 2](data/stage3/s3-56/cold-2.json), [cold 3](data/stage3/s3-56/cold-3.json), [warm 1](data/stage3/s3-56/warm-1.json), [warm 2](data/stage3/s3-56/warm-2.json), [warm 3](data/stage3/s3-56/warm-3.json). `cargo test -p od-bench --offline`: 67 lib + 6 CLI passed; `cargo fmt --all -- --check` и `cargo check -p od-bench --all-targets --offline` прошли. `python3 tools/check_layout.py` сообщает прежние 45 ошибок и не сообщает новых ошибок изменённых документов; `git diff --check` чист. Эти результаты не принимают S3-35/S3-36 или этап 3.
 
+**Сопоставление на текущей ревизии.** S3-56b добавил cold FIFO на точной
+паре S3-14 case list и trace. Подписанный release-бинарь прошёл два
+раунда cold/warm FIFO и generic на этих пяти входах. Все 320 измеренных
+сторон достигли 200 мс. Отношение нормализованных медиан generic/FIFO
+составило 1.107 и 1.114 в cold и 0.995 и 0.992 в warm. Warm диапазоны
+пар перекрылись в каждом раунде. Условие исторической сверки с S3-35a
+остаётся открытым в ISSUE-075.
+[Отчёт и сырые результаты S3-56b](STAGE_3_S3-56_MATCHED_2026-11-19.md)
+
 ## 10. S3-57 — финальное независимое ревью линии
 
 **Статус: частично.** Независимый `gpt-6.1-sol` high reviewer проверил diff

@@ -1161,10 +1161,10 @@ pub fn run(
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
 }
 
-/// Measures one complete register-only corpus pass from an empty FIFO block
-/// cache against the interpreter on the same frozen fixtures. Each measured
-/// JIT sweep owns a new arena/cache; runtime teardown and harness state/reset
-/// validation are intentionally outside the timed intervals.
+/// Measures one complete S3-17 or S3-14 branch/helper corpus pass from an empty
+/// FIFO block cache against the interpreter on the same frozen fixtures. Each
+/// measured JIT sweep owns a new arena/cache. Runtime teardown and harness
+/// state/reset validation are outside the timed intervals.
 pub fn run_cold_first_execution(
     case_list: &Path,
     trace_path: &Path,
@@ -1197,7 +1197,10 @@ fn run_cold_first_profile(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = if generic {
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    let branch_helper = generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256;
+    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = if branch_helper {
         (
             BRANCH_HELPER_CASE_LIST_SHA256,
             BRANCH_HELPER_TRACE_SHA256,
@@ -1214,9 +1217,7 @@ fn run_cold_first_profile(
             "S3-17",
         )
     };
-    if od_testkit::sha256_hex(&list) != list_hash
-        || od_testkit::sha256_hex(&trace_raw) != trace_hash
-    {
+    if case_list_sha256 != list_hash || trace_sha256 != trace_hash {
         return Err(err(format!(
             "case list or trace does not match the frozen {label} corpus"
         )));
@@ -1307,8 +1308,8 @@ fn run_cold_first_profile(
     let report = FirstRunReport {
         schema: 2,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        trace_sha256,
         capture_host: trace.capture_host.clone(),
         measure_host: HostMetadata::current(),
         inputs: trace.inputs.len(),
