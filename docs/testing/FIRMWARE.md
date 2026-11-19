@@ -12,7 +12,7 @@ S7-01 определяет проверку формата образа ROM и P
 | 0a. Сборка PE32+ EFI-образа (probe) | Что `x86_64-unknown-uefi` и `rust-lld` дают PE32+ (Machine `0x8664`, magic `0x20B`, Subsystem 10, секция `.reloc`, `DataDirectory[5]`). Это не тестовое приложение S7-06 и не RT-образ S7-11 | `python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi` | Есть (S7-01) |
 | 1. Host-side unit-тесты чистой логики | Функции над байтами в `firmware/uefi/` (сейчас: заголовок образа, CRC-32, строка останова, AML-кодировщик, DSDT из manifest и валидатор таблицы — S7-12; далее PE-парсер, FAT, codec переменных, остальные таблицы ACPI и SMBIOS, команды TPM, Authenticode-хеш). Гость не исполняется | `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` | Есть (S7-01), наполняется задачами S7-04…S7-24 |
 | 2. Unit-тесты устройств в `od-machine` | ROM backing, handoff block, NVRAM, NVMe, TPM CRB, ACPI fixed hardware — через `MachineBus`, без прошивки | `cargo test -p od-machine --offline` (модули `firmware_board` и `physical_memory`: S7-03; далее S7-10, S7-14, S7-16, S7-22) | Есть для ROM, shadow, таблиц страниц и handoff block (S7-03) |
-| 3. Freestanding прогон в машине | Runner запускает `od-machine` с образом прошивки и тестовым EFI-приложением; результат — вывод COM1, framebuffer (S10-03), PCR и event log, сравнение с эталонами скриптами `tests/system/` | `cargo run --offline -p od-runner -- boot-firmware --image <bin> --com1-out <file> --budget <steps>` (S7-03); тесты `cargo test -p od-runner --offline --test firmware_boot_cli`; скрипты — S7-08 | Подкоманда есть; на мини-образе `--smoke` выход 0, `halted`, `retired = 4`, COM1 ровно `X` (допуск `MOV r8,imm8` / `66 MOV r16,imm16` в paged-кванте), см. ниже; прошивки в машине нет |
+| 3. Freestanding прогон в машине | Runner запускает `od-machine` с образом прошивки и тестовым EFI-приложением; результат — вывод COM1, framebuffer (S10-03), PCR и event log, сравнение с эталонами скриптами `tests/system/` | `cargo run --offline -p od-runner -- boot-firmware --image <bin> --com1-out <file> --budget <steps>` (S7-03); тесты `cargo test -p od-runner --offline --test firmware_boot_cli`; скрипты — S7-08 | Мини-образ S7-03 и ядро S7-04 дают проверенный вывод COM1. Запуск EFI-приложений входит в S7-08 |
 | 4. Реальная ОС | Linux (blocked до этапа 5 и S4-30) и установочный образ Windows до экрана Setup (blocked до S4-30, S4-10, этапа 6, S7-35) через ту же прошивку; факт — лог COM1/экран и перечень запрошенных протоколов (трассировка прошивки) | Появятся в S7-31, S7-32 | Не существует |
 
 Что относится к какому уровню: логика, не зависящая от MMIO, порта ввода-вывода, аллокатора прошивки и состояния CPU, проверяется на уровне 1; всё остальное — только на уровне 3 (правило тестируемости в README прошивки). Не переносить на уровень 1 код, который иначе не проверить: тест, подменяющий железо, не доказывает его работу в машине.
@@ -31,6 +31,26 @@ Probe (`--efi-probe`, `firmware/uefi/probe/efi_probe/`) — только док�
 - `cargo test -p od-runner --offline --test firmware_boot_cli`: отчёт и хеши, бюджет, отказ загрузчика без транскрипта, неверные аргументы.
 - Образ `--smoke` на `boot-firmware` в машине печатает `X` и останавливается по `HLT` (выход `0`, `exit = halted`, `retired = 4`; транскрипт COM1 ровно `X`; тесты `smoke_code_writes_x_to_com1_with_zero_gprs_at_entry` и `smoke_code_prints_x_and_halts`). Это работает благодаря допуску ровно `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1` (CPU_CONTRACT.md, «Расширение S7-03»); остальные формы `MOV imm` остаются `Unsupported`.
 
+## Что проверяет S7-04 (ядро прошивки)
+
+Этот прогон использует настройки платы по умолчанию, 128 МиБ RAM и
+пустой приёмник COM1. Требуется выход `halted` и точное совпадение
+транскрипта, включая CRLF.
+
+```sh
+od_fw_check=$(mktemp -d)
+python3 tools/build/build_firmware.py --out "$od_fw_check/firmware.bin"
+cargo run --release --offline -p od-runner -- boot-firmware \
+  --image "$od_fw_check/firmware.bin" --budget 6000000 \
+  --com1-out "$od_fw_check/boot_core.com1"
+cmp tests/fixtures/firmware/boot_core_com1.txt "$od_fw_check/boot_core.com1"
+```
+
+Эталон содержит версию `0.1.0`, сообщения о переходе на свои
+таблицы, 17 записей памяти и ключи диагностики аллокаторов. Проверка RX
+отдельно подаёт байт через handle UART и сравнивает дополнительную строку
+с его hex-значением. [Результаты для двух конфигураций RAM](../reports/STAGE_7_REPORT.md#s7-04--версия-прошивки-и-com1).
+
 ## Что проверяет S7-12 (AML и DSDT)
 
 - `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` (77 тестов; из них AML 46, DSDT 13, manifest 4, таблица 3): эталонные байты ≥ 30 конструктов (PkgLength 1–4 байта и границы, NameString, Integer, String, EISAID, Name/Scope/Device/Method/Package/Buffer, дескрипторы ResourceTemplate), вычисленные вручную по спецификации и записанные в тесте с выкладкой; три побайтных эталона DSDT (PCI0 + COM1; только COM2 с level/active-low; без устройств), сгенерированные независимой Python-программой по ACPI 6.4 (скрипт не сохранён); отрицательные случаи — переполнение PkgLength, недопустимое имя, ссылка на неопределённое имя, повтор имени в одном Scope (при построении и в готовых байтах), порча контрольной суммы/длины/сигнатуры, неописуемые записи manifest. Это проверка формата на host: DSDT не загружалась в машину или ОС. Разбор `iasl -d` не выполнялся (`iasl` отсутствует).
@@ -40,9 +60,9 @@ Probe (`--efi-probe`, `firmware/uefi/probe/efi_probe/`) — только док�
 ## Эталоны
 
 - Эталоны — маленькие собственные файлы: ожидаемый текст COM1, JSON-манифесты с хешами, образы ESP, сгенерированные скриптом из `tools/build/`. Чужие образы прошивок, `.aml`, дампы SMBIOS и большие файлы в Git не хранятся.
-- Каталог: `tests/fixtures/firmware/`. **Его ещё нет:** создаёт S7-08 (первые эталоны COM1) и S7-18 (способ генерации образов ESP одним скриптом). До этого эталонов нет.
+- Каталог `tests/fixtures/firmware/` содержит `boot_core_com1.txt` для S7-04. Эталоны EFI-приложений и способ генерации ESP входят в S7-08 и S7-18.
 - Временные артефакты — в `work/stage7/` (каталог `work/` игнорируется Git): образ `work/stage7/firmware.bin`, cargo target `work/stage7/firmware-target/`, probe `work/stage7/efi_probe.efi` (target `work/stage7/firmware-target-efi-probe/`).
-- Как обновлять эталон: изменение ожидаемого вывода — только вместе с изменением кода, которое его вызвало, отдельным коммитом с объяснением в сообщении и записью в отчёте задачи; эталон не переписывается «чтобы тест прошёл», а сравнивается с тем, что требует контракт (FIRMWARE_BOOT.md, разделы 11–12). Способ регенерации (скрипт и команда) записывает задача, создающая эталон; здесь он появится после S7-08.
+- Новый вывод сверяется с контрактом в разделах 11–12 и фиксируется вместе с изменением кода. Команда выше сохраняет транскрипт, из которого подготовлен эталон S7-04.
 
 ## Измерения
 

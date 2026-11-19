@@ -5,7 +5,10 @@
 #![no_main]
 
 use core::arch::asm;
+
+mod serial;
 use core::panic::PanicInfo;
+use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
@@ -30,59 +33,14 @@ unsafe extern "C" {
     static od_fw_exception_stubs: u8;
 }
 
-const COM1_BASE: u16 = 0x3F8;
-const LSR_THRE: u8 = 0x20;
-/// Polling limit before a byte is dropped (FIRMWARE_BOOT.md, section 11).
-const TX_POLL_LIMIT: u32 = 65536;
-
 // Keep this equal to the image header's handoff_minor_max in build_firmware.py.
 const HANDOFF_MINOR_MAX: u16 = 4;
+const VERSION_LINE: &[u8] = concat!("OD-FW version ", env!("CARGO_PKG_VERSION"), "\r\n").as_bytes();
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
 const PAGING_ACTIVE_LINE: &[u8] = b"OD-FW S7-04 page tables active\r\n";
 // Three live allocations can each introduce two additional descriptors.
 const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
-
-/// # Safety
-/// Port I/O: the caller must be at CPL0 (or have I/O permission) and `port` must be a real device
-/// register of the machine.
-unsafe fn outb(port: u16, value: u8) {
-    unsafe {
-        asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-    }
-}
-
-/// # Safety
-/// Same as [`outb`].
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    unsafe {
-        asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-    }
-    value
-}
-
-fn com1_init() {
-    // 8N1, divisor 1; IER/FCR/MCR are not written (FIRMWARE_BOOT.md, section 11).
-    unsafe {
-        outb(COM1_BASE + 3, 0x80);
-        outb(COM1_BASE, 0x01);
-        outb(COM1_BASE + 1, 0x00);
-        outb(COM1_BASE + 3, 0x03);
-    }
-}
-
-fn com1_write(bytes: &[u8]) {
-    for &byte in bytes {
-        for _ in 0..TX_POLL_LIMIT {
-            if unsafe { inb(COM1_BASE + 5) } & LSR_THRE != 0 {
-                unsafe { outb(COM1_BASE, byte) };
-                break;
-            }
-        }
-        // On timeout the byte is dropped, never a hang.
-    }
-}
 
 fn halt_forever() -> ! {
     loop {
@@ -113,6 +71,7 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
     };
 
     com1_init();
+    com1_write(VERSION_LINE);
     com1_write(HANDOFF_VALIDATED_LINE);
     let (root, stack_top) = match prepare_paging(handoff) {
         Ok(layout) => layout,
@@ -184,6 +143,11 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     com1_write(b"OD-FW S7-04 pool allocator verified key=0x");
     com1_write(&fixed_hex(key));
     com1_write(b"\r\n");
+    if let Some(byte) = serial::try_read() {
+        com1_write(b"OD-FW S7-04 COM1 RX byte=0x");
+        com1_write(&fixed_hex(u64::from(byte)));
+        com1_write(b"\r\n");
+    }
     halt_forever()
 }
 
