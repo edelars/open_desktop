@@ -1446,6 +1446,14 @@ gap with the historical revision. The exact input prefixes and data
 accesses matched. The remaining postdecode MOV path is tracked in
 ISSUE-521. [STEP entry checks and raw evidence](STAGE_3_S3-40ac_2026-11-19.md)
 
+S3-40ad kept the existing STEP admission and called the same MOV
+transfer helper through a narrow branch before the final dispatch.
+The direct path took 1.0080 and 1.0147 of the ordinary dispatch time in
+the current build and retained a 170.3–170.7 ns gap with the historical
+revision. The exact instruction prefixes and ordered memory accesses
+matched across all 2,400 inputs.
+[Final MOV dispatch and raw evidence](STAGE_3_S3-40ad_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

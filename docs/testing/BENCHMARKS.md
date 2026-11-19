@@ -1682,6 +1682,15 @@ the shared decoder call in both compiled current paths. The historical
 selector arms provide an A/A control. The measurement covers full pairs.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ac_2026-11-19.md)
 
+### S3-40ad. Final MOV dispatch on M1 Pro
+
+Compare the S3-40ac pair with two modes of one STEP path. A runtime
+selector adds a narrow direct call to the existing MOV transfer helper
+after admission. Require parity on both prefixes and verify the common
+STEP and transfer destinations in the signed binaries. Timings cover
+the full paths, including the selector and eligibility predicate.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ad_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
