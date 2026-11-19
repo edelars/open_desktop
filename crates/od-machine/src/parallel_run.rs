@@ -1565,7 +1565,8 @@ fn run_threads_inner<R>(
         rdtsc_clock,
         com1: &com1,
     };
-    if discard_startup_port_ticks {
+    let startup_stop = env.machine_stop_request();
+    if discard_startup_port_ticks && startup_stop.is_none() {
         // The interpreter ignores prior port reads. Once workers are active a
         // pending tick may belong to any vCPU and must be accounted for.
         env.take_device_ticks();
@@ -1591,14 +1592,17 @@ fn run_threads_inner<R>(
         lapics: lapics.clone(),
         vcpus: vcpus.iter_mut().map(Mutex::new).collect(),
     };
-    // Doorbells carried into a new run belong to the BSP worker. Reserve that work before any
-    // peer can finish an idle or zero-budget run. The worker services it at a normal safe point.
-    if source_free
+    // A terminal request on the assembled board takes precedence over the initial scheduler
+    // activity, budget, and work queued by the storage controller.
+    if let Some(reason) = startup_stop {
+        shared.finish_with(ParallelFinish::GuestStop(reason));
+    } else if source_free
         && env
             .nvme
             .as_ref()
             .is_some_and(crate::NvmeHandle::doorbell_pending_or_contended)
     {
+        // Reserve the carried-in doorbell for the BSP before any peer can finish the run.
         shared.cells[BOOT_VCPU_INDEX].nvme_work.store(true, SEQ);
     }
     {
@@ -2139,6 +2143,115 @@ mod tests {
             assert_joined(&repeated, 2);
             assert_eq!(board.vcpu(1).unwrap().state.rip, CODE_1 + 8);
         }
+    }
+
+    #[test]
+    fn a_latched_pm_stop_takes_precedence_at_parallel_startup() {
+        use crate::acpi_pm::{
+            ACPI_PM_BASE_PORT, ACPI_PM_TMR_BLK, ACPI_RESET_REG, ACPI_RESET_VALUE,
+        };
+        use crate::{AccessWidth, PortAddress};
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        for (budget, activity, port, value, reason) in [
+            (
+                64,
+                CpuActivity::Halted,
+                ACPI_PM_BASE_PORT + 5,
+                0x34,
+                MachineStopReason::Shutdown,
+            ),
+            (
+                0,
+                CpuActivity::Running,
+                ACPI_RESET_REG,
+                ACPI_RESET_VALUE,
+                MachineStopReason::Reset,
+            ),
+        ] {
+            let mut board = board(2);
+            let bsp = board.vcpu_mut(0).unwrap();
+            bsp.state.activity = Some(activity);
+            bsp.state.rflags &= !u64::from(EFLAGS_IF);
+            let initial_state = bsp.state.clone();
+            board
+                .bus_mut()
+                .read_port(PortAddress::new(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+                .unwrap();
+            board
+                .bus_mut()
+                .write_port(PortAddress::new(port), AccessWidth::Byte, u32::from(value))
+                .unwrap();
+            let pm = board.acpi_pm().unwrap();
+            assert_eq!(pm.stop_request(), Some(reason));
+            assert!(pm.timer_tick_pending());
+            let start_ns = board.clock().now_ns();
+            let (report, ()) = run(&mut board, config(64, budget), |control| {
+                assert!(control.wait_finished(WAIT));
+            });
+            assert_eq!(
+                report.finished,
+                ParallelFinish::GuestStop(reason),
+                "{report:?}"
+            );
+            assert_joined(&report, 2);
+            assert!(
+                report
+                    .cpus
+                    .iter()
+                    .all(|cpu| cpu.calls == 0 && cpu.retired == 0)
+            );
+            assert_eq!(board.clock().now_ns(), start_ns);
+            assert_eq!(board.vcpu(0).unwrap().state, initial_state);
+            assert!(pm.timer_tick_pending());
+        }
+    }
+
+    #[test]
+    fn a_latched_pm_stop_leaves_startup_nvme_work_pending() {
+        use crate::acpi_pm::{ACPI_RESET_REG, ACPI_RESET_VALUE};
+        use crate::{AccessWidth, PortAddress};
+
+        let (mut board, doorbell, _) = nvme_identify_board();
+        board
+            .bus_mut()
+            .write_physical(
+                GuestPhysicalAddress::new(doorbell),
+                AccessWidth::Dword,
+                1,
+                |_| {},
+            )
+            .unwrap();
+        board
+            .bus_mut()
+            .write_port(
+                PortAddress::new(ACPI_RESET_REG),
+                AccessWidth::Byte,
+                u32::from(ACPI_RESET_VALUE),
+            )
+            .unwrap();
+        let nvme = board.nvme().unwrap();
+        assert!(nvme.doorbell_pending());
+        let start_ns = board.clock().now_ns();
+
+        let (report, ()) = run(&mut board, config(64, 0), |control| {
+            assert!(control.wait_finished(WAIT));
+        });
+        assert_eq!(
+            report.finished,
+            ParallelFinish::GuestStop(MachineStopReason::Reset)
+        );
+        assert_joined(&report, 2);
+        assert!(
+            report
+                .cpus
+                .iter()
+                .all(|cpu| cpu.calls == 0 && cpu.retired == 0)
+        );
+        assert!(nvme.doorbell_pending());
+        assert_eq!(dword(&mut board, NVME_IDENTIFY_BUFFER + 4), 0);
+        assert_eq!(dword(&mut board, NVME_IDENTIFY_CQ + 12), 0);
+        assert_eq!(board.clock().now_ns(), start_ns);
     }
 
     #[test]
