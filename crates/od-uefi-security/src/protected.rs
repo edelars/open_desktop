@@ -6,6 +6,8 @@ pub const IMAGE_CAPACITY: usize = 256 * 1024;
 pub const ORDINARY_VALUE_LIMIT: usize = 16 * 1024;
 pub const PROTECTED_VALUE_LIMIT: usize = 64 * 1024;
 pub const HEADER_BYTES: usize = 24;
+pub const ORDINARY_AREA_LIMIT: usize = 128 * 1024;
+pub const PROTECTED_AREA_LIMIT: usize = IMAGE_CAPACITY - HEADER_BYTES - ORDINARY_AREA_LIMIT;
 const RECORD_HEADER_BYTES: usize = 40;
 const TIMESTAMP_BYTES: usize = 16;
 const HEADER_CRC: usize = 16;
@@ -214,13 +216,20 @@ impl<'a> Image<'a> {
     /// Compares protected records by key, even if ordinary records move during compaction.
     pub fn policy_bytes(&self) -> Result<[Option<&'a [u8]>; PolicyVariable::COUNT], Error> {
         let mut keys = [None; PolicyVariable::COUNT];
+        let (mut ordinary_bytes, mut protected_bytes) = (0, 0);
         for decoded in self.records() {
             let (record, encoded) = decoded?;
             if let Some(key) = record.policy_variable() {
+                protected_bytes += encoded.len();
                 if keys[key as usize].replace(encoded).is_some() {
                     return Err(Error::DuplicatePolicyVariable);
                 }
+            } else {
+                ordinary_bytes += encoded.len();
             }
+        }
+        if ordinary_bytes > ORDINARY_AREA_LIMIT || protected_bytes > PROTECTED_AREA_LIMIT {
+            return Err(Error::Capacity);
         }
         Ok(keys)
     }
@@ -403,5 +412,29 @@ mod tests {
             watermark: None,
         };
         assert_eq!(forged.write(&mut [0; 128]), Err(Error::Record));
+    }
+
+    #[test]
+    fn ordinary_values_cannot_consume_the_policy_capacity() {
+        let value = [0x42; ORDINARY_VALUE_LIMIT];
+        let mut bytes = vec![0; IMAGE_CAPACITY];
+        let mut length = HEADER_BYTES;
+        for letter in b'a'..b'i' {
+            let name = [letter, 0];
+            let record = Record {
+                guid: GLOBAL_VARIABLE,
+                name: Name::new(&name).unwrap(),
+                attributes: 7,
+                value: &value,
+                watermark: None,
+            };
+            length += record.write(&mut bytes[length..]).unwrap();
+        }
+        bytes.truncate(length);
+        Image::write_header(&mut bytes, DEFAULT_FLAGS).unwrap();
+        assert_eq!(
+            Image::new(&bytes).unwrap().policy_bytes(),
+            Err(Error::Capacity)
+        );
     }
 }

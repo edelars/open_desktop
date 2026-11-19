@@ -3,7 +3,7 @@
 const GUID_BYTES: usize = 16;
 const LIST_HEADER_BYTES: usize = GUID_BYTES + 3 * 4;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SignatureType {
     X509,
     Sha256,
@@ -54,13 +54,13 @@ pub struct Signature<'a> {
     bytes: &'a [u8],
 }
 
-impl Signature<'_> {
+impl<'a> Signature<'a> {
     /// Complete EFI_SIGNATURE_DATA, including the owner GUID for event logging.
-    pub fn bytes(&self) -> &[u8] {
+    pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn data(&self) -> &'a [u8] {
         &self.bytes[GUID_BYTES..]
     }
 }

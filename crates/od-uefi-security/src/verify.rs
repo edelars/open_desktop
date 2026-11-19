@@ -34,6 +34,27 @@ pub enum TrustAnchor<'a> {
     ExchangeKey(&'a [u8]),
 }
 
+pub fn validate_certificate(der: &[u8]) -> Result<(), Error> {
+    Certificate::from_der(der)
+        .map(|_| ())
+        .map_err(|_| Error::InvalidCertificate)
+}
+
+pub fn validate_anchor(anchor: TrustAnchor<'_>) -> Result<(), Error> {
+    let allowed = match anchor {
+        TrustAnchor::PlatformKey(bytes) => Candidate::parse(bytes)?.digital_signature,
+        TrustAnchor::ExchangeKey(bytes) => {
+            let certificate = Candidate::parse(bytes)?;
+            certificate.digital_signature || certificate.issuer_max_path.is_some()
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(Error::InvalidCertificate)
+    }
+}
+
 struct Candidate<'a> {
     der: &'a [u8],
     tbs_hash: [u8; 32],

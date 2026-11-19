@@ -6,6 +6,8 @@ use od_uefi_security::protected::{IMAGE_CAPACITY, Image};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod authenticated;
+
 pub const NVRAM_MMIO_BASE: u64 = 0xff00_0000;
 pub const NVRAM_STORE_BYTES: usize = IMAGE_CAPACITY;
 pub const NVRAM_MMIO_BYTES: u64 = NVRAM_STORE_BYTES as u64 + 0x1000;
@@ -19,6 +21,7 @@ const ACTIVE_LEN: u64 = REGISTERS + 16;
 const READ: u32 = 1;
 const WRITE: u32 = 2;
 const FLUSH: u32 = 3;
+const AUTH_UPDATE: u32 = 4;
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"ODNVBANK";
 const SNAPSHOT_HEADER_BYTES: usize = 16;
@@ -180,6 +183,8 @@ enum Status {
     InvalidCommand = 0x8000_0003,
     Exhausted = 0x8000_0004,
     PolicyRejected = 0x8000_0005,
+    VariableNotFound = 0x8000_0006,
+    OutOfResources = 0x8000_0007,
 }
 
 #[derive(Clone, Copy)]
@@ -285,6 +290,12 @@ impl State {
                 Transfer::Write { length, written } if written == length => self.flush(length),
                 _ => Status::Incomplete,
             },
+            AUTH_UPDATE if self.staging.is_some() => match previous {
+                Transfer::Write { length, written } if written == length => {
+                    self.authenticated_update(length)
+                }
+                _ => Status::Incomplete,
+            },
             _ => Status::InvalidCommand,
         };
     }
@@ -301,6 +312,26 @@ impl State {
             Status::Committed
         } else {
             Status::Exhausted
+        }
+    }
+
+    fn authenticated_update(&mut self, length: usize) -> Status {
+        let Some(staged) = &self.staging else {
+            return Status::InvalidCommand;
+        };
+        match authenticated::prepare(self.banks.current().data(), &staged[..length]) {
+            Ok(Some(image)) if self.banks.current().generation != u64::MAX => {
+                self.banks.inactive().data[..image.len()].copy_from_slice(&image);
+                let committed = self.banks.flush(image.len());
+                debug_assert!(committed);
+                Status::Committed
+            }
+            Ok(Some(_)) => Status::Exhausted,
+            Ok(None) => Status::Committed,
+            Err(authenticated::Error::InvalidRequest) => Status::InvalidRange,
+            Err(authenticated::Error::PolicyRejected) => Status::PolicyRejected,
+            Err(authenticated::Error::NotFound) => Status::VariableNotFound,
+            Err(authenticated::Error::OutOfResources) => Status::OutOfResources,
         }
     }
 }
@@ -722,6 +753,250 @@ mod tests {
         status(&mut device, Status::PolicyRejected);
         assert!(device.nvram_snapshot() == snapshot);
         assert_eq!(read_active(&mut device), initial);
+    }
+
+    fn esl(kind: od_uefi_security::siglist::SignatureType, value: &[u8]) -> Vec<u8> {
+        let mut list = kind.guid_bytes().to_vec();
+        list.extend(((28 + 16 + value.len()) as u32).to_le_bytes());
+        list.extend([0; 4]);
+        list.extend(((16 + value.len()) as u32).to_le_bytes());
+        list.extend([0xf0; 16]);
+        list.extend(value);
+        list
+    }
+
+    fn auth_request(guid: Guid, name: &[u8], append: bool, descriptor: &[u8]) -> Vec<u8> {
+        let attributes = AUTHENTICATED_ATTRIBUTES | if append { 0x40 } else { 0 };
+        let mut wire = attributes.to_le_bytes().to_vec();
+        wire.extend(((name.len() / 2) as u16).to_le_bytes());
+        wire.extend([0; 2]);
+        wire.extend(guid.data1.to_le_bytes());
+        wire.extend(guid.data2.to_le_bytes());
+        wire.extend(guid.data3.to_le_bytes());
+        wire.extend(guid.data4);
+        wire.extend(name);
+        wire.extend(descriptor);
+        wire
+    }
+
+    fn unsigned_auth2(second: u8, value: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0xea, 7, 11, 19, 22, 40, second, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        bytes.extend([24, 0, 0, 0, 0, 2, 0xf1, 0x0e]);
+        bytes.extend([
+            0x9d, 0xd2, 0xaf, 0x4a, 0xdf, 0x68, 0xee, 0x49, 0x8a, 0xa9, 0x34, 0x7d, 0x37, 0x56,
+            0x65, 0xa7,
+        ]);
+        bytes.extend(value);
+        bytes
+    }
+
+    fn submit_auth(device: &mut NvramDevice, request: &[u8], expected: Status) {
+        stage(device, request);
+        write_reg(device, CMD, AUTH_UPDATE);
+        status(device, expected);
+    }
+
+    #[test]
+    fn authenticated_mmio_applies_microsoft_dbx_only_with_an_enrolled_kek() {
+        use od_uefi_security::{
+            authvar::Descriptor, protected::PolicyVariable, siglist::SignatureType,
+        };
+
+        let pk_pem =
+            include_bytes!("../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der");
+        let kek_2023 =
+            include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2023.der");
+        let kek_2011 =
+            include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2011.der");
+        let update = include_bytes!(
+            "../../../tests/fixtures/firmware/certs/dbx-update-x64-v1.7.2-signed.efiauth2"
+        );
+        let pk_list = esl(SignatureType::X509, pk_pem);
+        let request = auth_request(IMAGE_SECURITY_DATABASE, b"d\0b\0x\0", true, update);
+        let mut tampered = request.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        for (kek, expected) in [
+            (kek_2011.as_slice(), Status::PolicyRejected),
+            (kek_2023.as_slice(), Status::Committed),
+        ] {
+            let kek_list = esl(SignatureType::X509, kek);
+            let initial = protected_image(
+                DEFAULT_FLAGS,
+                &[
+                    protected_record(GLOBAL_VARIABLE, b"P\0K\0", &pk_list),
+                    protected_record(GLOBAL_VARIABLE, b"K\0E\0K\0", &kek_list),
+                ],
+            );
+            let mut device = NvramDevice::with_protected_store(&initial).unwrap();
+            let original = device.nvram_snapshot();
+            submit_auth(&mut device, &tampered, Status::PolicyRejected);
+            assert!(device.nvram_snapshot() == original);
+            submit_auth(&mut device, &request, expected);
+            let snapshot = device.nvram_snapshot();
+            if expected == Status::PolicyRejected {
+                assert!(snapshot == original);
+                continue;
+            }
+            let mut device = NvramDevice::with_contents(&snapshot).unwrap();
+            let current = read_active(&mut device);
+            let image = Image::new(&current).unwrap();
+            let dbx = image
+                .records()
+                .map(Result::unwrap)
+                .map(|(record, _)| record)
+                .find(|record| record.policy_variable() == Some(PolicyVariable::Dbx))
+                .unwrap();
+            let descriptor = Descriptor::decode(update, true).unwrap();
+            assert_eq!(dbx.value, descriptor.value);
+            assert_eq!(dbx.watermark, descriptor.timestamp);
+            assert_eq!(image.flags, DEFAULT_FLAGS);
+            // An identical, valid APPEND performs no rewrite or generation bump.
+            submit_auth(&mut device, &request, Status::Committed);
+            assert!(device.nvram_snapshot() == snapshot);
+        }
+    }
+
+    #[test]
+    fn setup_mode_checks_layout_and_watermark_and_user_mode_requires_signatures() {
+        use od_uefi_security::{
+            authvar::Descriptor, protected::PolicyVariable, siglist::SignatureType,
+        };
+
+        let initial = protected_image(DEFAULT_FLAGS, &[]);
+        let mut device = NvramDevice::with_protected_store(&initial).unwrap();
+        let add = |second, append, value: &[u8]| {
+            auth_request(
+                IMAGE_SECURITY_DATABASE,
+                b"d\0b\0x\0",
+                append,
+                &unsigned_auth2(second, value),
+            )
+        };
+        let first = esl(SignatureType::Sha256, &[0x31; 32]);
+        let extra = esl(SignatureType::Sha256, &[0x42; 32]);
+        let mut malformed_signed_data = unsigned_auth2(10, &first);
+        malformed_signed_data[16] = 25;
+        malformed_signed_data.insert(40, 0xff);
+        let before = device.nvram_snapshot();
+        let malformed = auth_request(
+            IMAGE_SECURITY_DATABASE,
+            b"d\0b\0x\0",
+            false,
+            &malformed_signed_data,
+        );
+        submit_auth(&mut device, &malformed, Status::PolicyRejected);
+        assert!(device.nvram_snapshot() == before);
+        submit_auth(&mut device, &add(10, false, &first), Status::Committed);
+        let committed = device.nvram_snapshot();
+        submit_auth(&mut device, &add(9, false, &extra), Status::PolicyRejected);
+        assert!(device.nvram_snapshot() == committed);
+        submit_auth(&mut device, &add(9, true, &extra), Status::Committed);
+        let current = read_active(&mut device);
+        let entry = Image::new(&current)
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(entry.value, [first.as_slice(), extra.as_slice()].concat());
+        assert_eq!(
+            entry.watermark,
+            Descriptor::decode(&unsigned_auth2(10, &first), false)
+                .unwrap()
+                .timestamp
+        );
+
+        let before_append = device.nvram_snapshot();
+        submit_auth(&mut device, &add(11, true, &first), Status::Committed);
+        assert!(device.nvram_snapshot() != before_append);
+        let current = read_active(&mut device);
+        let entry = Image::new(&current)
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(entry.value, [first.as_slice(), extra.as_slice()].concat());
+        assert_eq!(
+            entry.watermark,
+            Descriptor::decode(&unsigned_auth2(11, &first), true)
+                .unwrap()
+                .timestamp
+        );
+
+        submit_auth(&mut device, &add(12, false, &[]), Status::Committed);
+        let tombstoned = device.nvram_snapshot();
+        let mut device = NvramDevice::with_contents(&tombstoned).unwrap();
+        submit_auth(&mut device, &add(10, false, &first), Status::PolicyRejected);
+        assert!(device.nvram_snapshot() == tombstoned);
+        let current = read_active(&mut device);
+        let image = Image::new(&current).unwrap();
+        let entry = image.records().next().unwrap().unwrap().0;
+        assert_eq!(entry.policy_variable(), Some(PolicyVariable::Dbx));
+        assert!(entry.value.is_empty());
+        assert!(image.flags.vendor_keys_modified);
+
+        let bad_pk = esl(SignatureType::X509, b"not a certificate");
+        let set_pk = |certificate: &[u8]| {
+            auth_request(
+                GLOBAL_VARIABLE,
+                b"P\0K\0",
+                false,
+                &unsigned_auth2(12, certificate),
+            )
+        };
+        submit_auth(&mut device, &set_pk(&bad_pk), Status::InvalidRange);
+        assert!(device.nvram_snapshot() == tombstoned);
+        let valid_pk =
+            include_bytes!("../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der");
+        submit_auth(
+            &mut device,
+            &set_pk(&esl(SignatureType::X509, valid_pk)),
+            Status::Committed,
+        );
+        let user_mode = device.nvram_snapshot();
+        submit_auth(&mut device, &add(13, false, &first), Status::PolicyRejected);
+        assert!(device.nvram_snapshot() == user_mode);
+    }
+
+    #[test]
+    fn auth_update_capacity_and_legacy_refusals_leave_committed_banks_intact() {
+        use od_uefi_security::siglist::SignatureType;
+
+        let large_esl = |entries: usize| {
+            let entry = esl(SignatureType::Sha256, &[8; 32]);
+            let mut value = entry[..28].to_vec();
+            value[16..20].copy_from_slice(&((28 + 48 * entries) as u32).to_le_bytes());
+            for _ in 0..entries {
+                value.extend(&entry[28..]);
+            }
+            value
+        };
+        let existing = large_esl(1250);
+        let initial = protected_image(
+            DEFAULT_FLAGS,
+            &[
+                protected_record(IMAGE_SECURITY_DATABASE, b"d\0b\0", &existing),
+                protected_record(IMAGE_SECURITY_DATABASE, b"d\0b\0r\0", &existing),
+            ],
+        );
+        let update = auth_request(
+            IMAGE_SECURITY_DATABASE,
+            b"d\0b\0x\0",
+            false,
+            &unsigned_auth2(20, &large_esl(250)),
+        );
+        let mut protected = NvramDevice::with_protected_store(&initial).unwrap();
+        let snapshot = protected.nvram_snapshot();
+        submit_auth(&mut protected, &update, Status::OutOfResources);
+        assert!(protected.nvram_snapshot() == snapshot);
+
+        let mut legacy = NvramDevice::new();
+        let snapshot = legacy.nvram_snapshot();
+        submit_auth(&mut legacy, &update, Status::InvalidCommand);
+        assert!(legacy.nvram_snapshot() == snapshot);
     }
 
     #[test]
