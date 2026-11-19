@@ -1737,6 +1737,28 @@ python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
 
 Два архива совпали побайтно. Извлечённый пакет с GCC 15.2 из принятой rootfs выполнил 4097 блоков с контрольной суммой `ec4675d8578a4e14` на каждом числе потоков. Один поток дал одинаковый вывод при одной, двух и четырёх разрешённых CPU. Проверки неверной суммы, параметров и недостаточной маски CPU завершились без `COMPLETE`. Локальный прогон подтвердил нагрузку и запускатель. Время по часам хоста, CPU-время VM, ожидание блокировок и выбор поддержанного числа vCPU остаются частью S6-38 после S6-37. [Хеши и результат](data/stage6/s6-38-compute-package.txt).
 
+### S6-38 шаг 1 — пробная трасса ожидания блокировок
+
+System Trace в Xcode 27.1 записал 12 секунд параллельного IRIW на четырёх vCPU в release-сборке `od-runner`. Полный прогон завершил миллион раундов с `allowed_only`, без запрещённых исходов и опозданий на барьер. Сборка использовала обычную модель порядка памяти. Хост — MacBook Pro ARM64, macOS 26.7.1 (25G241). [Счётчики и контрольные суммы](data/stage6/s6-38-lock-wait-pilot.json).
+
+В строках `syscall` выбран PID запущенного `od-runner` и вызов `psynch_mutexwait`. У XNU первый аргумент этого вызова — адрес мьютекса. После разрешения ссылок XML значения `waittime` (`duration-waiting`, нс) суммировались по этому адресу и непосредственному вызывающему кадру Rust `Mutex::lock`. Из 1 239 417 вызовов у 1 068 441 записано `waittime`. Шесть методов `LocalApicHandle` захватывают общий `Mutex<PairState>`. В трассе всем шести соответствует один адрес. К нему относятся 43 857 вызовов, в том числе 31 149 с суммарным записанным ожиданием 131 153 192 нс. [Сигнатура XNU](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/syscalls.master), [захваты в LocalApicHandle](../../crates/od-machine/src/local_apic.rs#L228).
+
+`thread-state` показывает интервалы блокировки потоков без кадра захвата. В `syscall` наблюдалось четыре адреса мьютексов. Строки с общим кадром CPL0 имеют тот же адрес, что и вызовы из `Uart16550PollingTx::transfer_holding_to_shift`. Для блокировки таблицы устройств шины в этом прогоне атрибуции нет. Интервалы разных потоков могут перекрываться. Сумма по APIC охватывает только учтённое ядром ожидание в записанных строках. Для S6-38 остаются замеры по обеим блокировкам на одинаковой нагрузке Linux SMP и повторные прогоны на 1, 2 и 4 vCPU.
+
+```sh
+cargo build --release --locked --offline -p od-runner
+trace_dir="$PWD/work/stage6/s6-38-lock-wait"
+mkdir -p "$trace_dir"
+/usr/bin/xctrace record --template 'System Trace' --time-limit 12s \
+  --output "$trace_dir/pilot.trace" --target-stdout "$trace_dir/pilot-run.json" \
+  --launch -- "$PWD/target/release/od-runner" --stage6-litmus \
+  --fixture "$PWD/tests/fixtures/guest/stage6/litmus/iriw.json" \
+  --parallel --vcpus 4 --iterations 1000000
+/usr/bin/xctrace export --input "$trace_dir/pilot.trace" \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="syscall"]' \
+  --output "$trace_dir/pilot-syscall.xml"
+```
+
 ### S6-38 шаг 2 — стеки обычного доступа к общей RAM
 
 Независимое ревью проверило `MachineBus::access_tracked_ram`, tracked 4 KiB walker, `PhysicalMemory` и `RamStorage` на `8a86c0e`. Обычный RAM-операнд проходит без захвата `Mutex` или `RwLock`. В пути записи данные публикуются до Release-обновления поколения страницы. Блокировки устройств и шлюз обновления дескрипторов относятся к отдельным путям. Ревью сохранило оговорку S6-30a о пересекающихся атомарных доступах разной ширины на ARM64. [Контракт RAM](../specs/MEMORY_MODEL.md), [путь на шине](../../crates/od-machine/src/bus.rs#L1192), [хранилище RAM](../../crates/od-machine/src/ram_storage.rs#L112).

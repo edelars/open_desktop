@@ -1,0 +1,86 @@
+{
+  "task": "S6-38 step 1 lock wait pilot",
+  "platform": {
+    "model": "MacBook Pro",
+    "architecture": "ARM64",
+    "os": "macOS 26.7.1 (25G241)",
+    "memory_bytes": 38654705664,
+    "xcode": "27.1 (27A9275)"
+  },
+  "execution": {
+    "mode": "parallel",
+    "fixture": "tests/fixtures/guest/stage6/litmus/iriw.json",
+    "fixture_sha256": "45c203f5a63bd69ece03b4c2f2d1f3b0519db614a353056c07d5bf61fb39ebe4",
+    "vcpus": 4,
+    "rounds": 1000000,
+    "verdict": "allowed_only",
+    "forbidden_outcomes": [],
+    "late_barrier_rounds": 0,
+    "od_runner_sha256": "8dea7583b92deda0ef50dc42fd500d88b1f593ed50648f003c9de937177eb757",
+    "run_json_sha256": "0fff5d53f211c1ebad320bf7c924a330e53ccc2c825603791ed07b0ac6497d4c",
+    "build": {
+      "nonatomic_lock_test": false,
+      "weak_host_ordering": false
+    }
+  },
+  "trace": {
+    "template": "System Trace",
+    "limit_seconds": 12,
+    "table": "syscall",
+    "process": "od-runner",
+    "syscall": "psynch_mutexwait",
+    "duration_field": "waittime (duration-waiting)",
+    "observed_mutex_addresses": 4,
+    "mutex_address_argument": 1
+  },
+  "all_process_mutex_syscalls": {
+    "syscalls": 1239417,
+    "syscalls_with_waittime": 1068441,
+    "waittime_ns": 4967558697
+  },
+  "attributed_to_apic_pair_state": {
+    "syscalls": 43857,
+    "syscalls_with_waittime": 31149,
+    "waittime_ns": 131153192,
+    "addresses": 1
+  },
+  "attributed_by_immediate_local_apic_handle_caller": {
+    "has_timer": {
+      "syscalls": 12166,
+      "syscalls_with_waittime": 9499,
+      "waittime_ns": 33387292
+    },
+    "timer_register_writes": {
+      "syscalls": 10299,
+      "syscalls_with_waittime": 7509,
+      "waittime_ns": 40721199
+    },
+    "eligible": {
+      "syscalls": 9527,
+      "syscalls_with_waittime": 5665,
+      "waittime_ns": 18678695
+    },
+    "take_startup": {
+      "syscalls": 4389,
+      "syscalls_with_waittime": 3071,
+      "waittime_ns": 17188260
+    },
+    "next_timer_deadline": {
+      "syscalls": 4074,
+      "syscalls_with_waittime": 3053,
+      "waittime_ns": 10725275
+    },
+    "pending_nmi": {
+      "syscalls": 3402,
+      "syscalls_with_waittime": 2352,
+      "waittime_ns": 10452471
+    }
+  },
+  "device_table_lock_attribution": "unresolved",
+  "uart_address_with_direct_and_inlined_callers": {
+    "syscalls": 19366,
+    "syscalls_with_waittime": 14360,
+    "waittime_ns": 47775123,
+    "addresses": 1
+  }
+}
