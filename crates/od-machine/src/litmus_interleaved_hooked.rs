@@ -252,7 +252,8 @@ impl<'c> Machine<'c> {
                             ));
                             return Err(FirmwareBoardError::Config(
                                 "litmus interleaved: the step hook exceeded its budget",
-                            ));
+                            )
+                            .into());
                         }
                         Ok(LitmusStepOutcome::Executed { retired }) if retired > 0 => {
                             if let Some(vcpu) = board.vcpu_mut(cpu) {
@@ -271,7 +272,8 @@ impl<'c> Machine<'c> {
                             *hook_failure.borrow_mut() = Some(detail);
                             return Err(FirmwareBoardError::Config(
                                 "litmus interleaved: the step hook failed",
-                            ));
+                            )
+                            .into());
                         }
                     }
                     let cli = CliProfile::NonPviLong64V1;

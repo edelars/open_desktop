@@ -1,0 +1,42 @@
+{
+  "task": "ISSUE-527 Linux CLI compatibility",
+  "baseline_commit": "3f692a0",
+  "platform": "Apple M3 Max ARM64, macOS 26.7.1 (25G241)",
+  "build": "cargo build --release --locked --offline -p od-runner",
+  "binary_sha256": {
+    "before": "5a4d0be1e1808ca4119e81af2b3dd637272bdb849a65227909d2b927da868021",
+    "after": "22a5f71311d720640a56ea162f3c230332dcb741960f0b721a98116bf2422c45"
+  },
+  "inputs": {
+    "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+    "acpi_blob_sha256": "6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d",
+    "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2"
+  },
+  "profile": {
+    "ram_mib": 128,
+    "vcpus": 1,
+    "mode": "stage4a user-mode",
+    "nonce": "SMPUpObservation20261119",
+    "budget": 10000000,
+    "seed": 24301
+  },
+  "cases": {
+    "standalone": {
+      "byte_identical_report_sha256": "982ce979076c72d6a840ab87d0b14f0b041c0daffd1bf86748271e37353b2748",
+      "exit_kind": "budget_exhausted",
+      "retired": 10000000,
+      "quanta": 2148,
+      "virtual_ns": 10000000,
+      "rip": "0x5439a80"
+    },
+    "seeded": {
+      "byte_identical_report_sha256": "e1e7491de2d68610cfd1eab1fa5ae003a1243f05b42f584b0c6920aeee46c890",
+      "exit_kind": "budget_exhausted",
+      "retired": 10000000,
+      "quanta": 80469,
+      "virtual_ns": 10000000,
+      "rip": "0x5439a80"
+    }
+  }
+}

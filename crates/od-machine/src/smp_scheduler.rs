@@ -162,6 +162,12 @@ impl<E> RunFailure<E> {
     pub(crate) fn into_parts(self) -> (Executed, E) {
         *self.0
     }
+
+    pub(crate) fn with_prefix(mut self, prefix: Executed) -> Self {
+        let (executed, _) = self.0.as_mut();
+        *executed = prefix.followed_by(*executed);
+        self
+    }
 }
 
 impl<E> From<E> for RunFailure<E> {
@@ -984,7 +990,7 @@ where
         usize,
         u64,
         &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>>,
 {
     pub(crate) fn new(
         board: &'a mut LoadedFirmwareBoard,
@@ -1030,7 +1036,7 @@ where
         usize,
         u64,
         &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>>,
 {
     type Error = FirmwareBoardError;
 
@@ -1170,7 +1176,7 @@ where
             .vcpu(cpu)
             .ok_or(FirmwareBoardError::Config("smp scheduler: no such vCPU"))?;
         if vcpu.legacy.is_none() {
-            return (self.run)(self.board, cpu, budget, stop).map_err(RunFailure::from);
+            return (self.run)(self.board, cpu, budget, stop);
         }
         let legacy = crate::ap_legacy_exec::run_legacy(self.board, cpu, budget, stop)?;
         let mut executed = legacy.executed;
@@ -1179,10 +1185,8 @@ where
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
             let rest = (self.run)(self.board, cpu, left, stop)
-                .map_err(|error| RunFailure::after(executed, error))?;
-            executed.retired += rest.retired;
-            executed.partial_rep = rest.partial_rep;
-            executed.device_ns += rest.device_ns;
+                .map_err(|failure| failure.with_prefix(executed))?;
+            executed = executed.followed_by(rest);
         }
         Ok(executed)
     }
@@ -2412,7 +2416,7 @@ mod tests {
         usize,
         u64,
         &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError>;
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>>;
 
     /// The boot processor sends `icr` words to vCPU 1 on its first call and halts on its second;
     /// no other vCPU can be run.
@@ -2421,7 +2425,7 @@ mod tests {
         cpu: usize,
         words: &[u32],
         call: &mut u32,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         assert_eq!(cpu, 0, "only the boot processor can run");
         *call += 1;
         if *call == 1 {
@@ -2549,5 +2553,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(host.board().clock().now_ns(), 5);
+    }
+
+    #[test]
+    fn standalone_board_host_charges_failed_progress_before_reporting_error() {
+        const ERROR: FirmwareBoardError = FirmwareBoardError::Config("test: late callback failure");
+        let mut board = assemble_board(&FirmwareBoardConfig::default(), PciEcam::new(), None, None)
+            .unwrap()
+            .into_linux_board(0x1000, 0x1000)
+            .unwrap();
+        let start_ns = board.clock().now_ns();
+        let run: Runner = |_, _, _, _| {
+            Err(RunFailure::after(
+                Executed {
+                    retired: 1,
+                    partial_rep: false,
+                    device_ns: 1000,
+                },
+                ERROR,
+            ))
+        };
+        let mut host = BoardSmpHost::for_standalone_linux(&mut board, run).unwrap();
+        let mut scheduler =
+            SmpScheduler::new(1, QuantumPolicy::Fixed(1), StopRequest::new()).unwrap();
+        scheduler.record_turns();
+        let SmpError::Host(observed) = scheduler.run(&mut host, 1).unwrap_err() else {
+            panic!("expected the original callback error");
+        };
+        assert_eq!(observed, ERROR);
+        assert_eq!(scheduler.counters()[0].retired, 1);
+        assert_eq!(scheduler.turns()[0].retired, 1);
+        assert_eq!(
+            host.board().clock().now_ns() - start_ns,
+            crate::clock_owner::NS_PER_RETIRED + 1000
+        );
     }
 }

@@ -1192,11 +1192,8 @@ impl Worker<'_, '_, '_, '_> {
         }
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
-            let rest =
-                quantum(vcpu, source, left, consecutive_faults, stop).map_err(|failure| {
-                    let (rest, error) = failure.into_parts();
-                    RunFailure::after(executed.followed_by(rest), error)
-                })?;
+            let rest = quantum(vcpu, source, left, consecutive_faults, stop)
+                .map_err(|failure| failure.with_prefix(executed))?;
             executed = executed.followed_by(rest);
         }
         Ok((executed, machine_stop))

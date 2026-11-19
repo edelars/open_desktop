@@ -284,7 +284,7 @@ impl LoadedFirmwareBoard {
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
         set: &Cpl0ProfileSet<'_>,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let lapic = self
             .lapic
             .for_cpu(cpu)
@@ -337,7 +337,6 @@ impl LoadedFirmwareBoard {
             device_ns += pit.take_port_tick_ns();
         }
         quantum_result(report, cpu, &self.vcpus[cpu], device_ns)
-            .map_err(|failure| failure.into_parts().1)
     }
 }
 
@@ -676,6 +675,7 @@ pub(crate) mod fixture {
         budget: u64,
     ) -> Result<Executed, FirmwareBoardError> {
         with_set(|set| board.run_vcpu_set_quantum(cpu, budget, &mut || false, set))
+            .map_err(|failure| failure.into_parts().1)
     }
 
     pub(crate) fn with_set<R>(f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R) -> R {
@@ -870,6 +870,56 @@ mod tests {
 
     fn vector_state(board: &LoadedFirmwareBoard, cpu: usize, vector: u8) -> (bool, bool) {
         board.local_apic_of(cpu).unwrap().vector_state(vector)
+    }
+
+    #[test]
+    fn interleaved_late_error_keeps_the_full_turn_and_clock_charge() {
+        use crate::smp_scheduler::SmpError;
+
+        let mut board = board(1);
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        // A PIT read ends the first call. The next call retires MOV before the refusal.
+        let mut code = vec![0x66, 0xba, 0x61, 0x00, 0xec]; // MOV DX, 0x61; IN AL, DX
+        code.extend(mov_eax(0x1234_5678));
+        code.push(0xf1);
+        patch(&mut board, CODE_0, &code);
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xd01,
+        );
+        let start_ns = board.clock().now_ns();
+        let mut host = BoardSmpHost::new(
+            &mut board,
+            |board: &mut LoadedFirmwareBoard, cpu, budget, stop: &mut dyn FnMut() -> bool| {
+                with_set(|set| board.run_vcpu_set_quantum(cpu, budget, stop, set))
+            },
+        )
+        .unwrap();
+        let mut scheduler =
+            SmpScheduler::new(1, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
+        scheduler.record_turns();
+        let error = scheduler.run(&mut host, 64).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SmpError::Host(FirmwareBoardError::VcpuQuantum { cpu: 0, .. })
+            ),
+            "{error:?}"
+        );
+        let state = &host.board().vcpu(0).unwrap().state;
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678);
+        assert_eq!(state.rip, CODE_0 + code.len() as u64 - 1);
+        assert_eq!(scheduler.counters()[0].retired, 3);
+        assert_eq!(scheduler.counters()[0].steps, 3);
+        assert_eq!(scheduler.turns().len(), 1);
+        assert_eq!(scheduler.turns()[0].retired, 3);
+        assert_eq!(scheduler.turns()[0].steps, 3);
+        assert_eq!(
+            host.board().clock().now_ns() - start_ns,
+            3 * crate::clock_owner::NS_PER_RETIRED + crate::pit_8254::PIT_PORT_B_READ_TICK_NS
+        );
     }
 
     #[test]

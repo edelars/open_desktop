@@ -514,7 +514,7 @@ mod tests {
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         fixture::with_set(|set| board.run_vcpu_set_quantum(cpu, budget, stop, set))
     }
 
@@ -527,7 +527,7 @@ mod tests {
         stop: &mut dyn FnMut() -> bool,
         call: &mut u32,
         send: bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         if cpu != 0 {
             return long_quantum(board, cpu, budget, stop);
         }
@@ -1294,6 +1294,46 @@ mod tests {
         assert_eq!(ap.state.gpr[od_isa::Register::Rax as usize], 0x1234_5678);
     }
 
+    #[test]
+    fn an_interleaved_error_after_handover_charges_both_prefixes() {
+        let mut board = board();
+        fixture::patch(&mut board, LONG_AT, &[0xb8, 0x78, 0x56, 0x34, 0x12, 0xf1]);
+        let bsp = board.vcpu_mut(0).unwrap();
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags &= !(1 << 9);
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        let start_ns = board.clock().now_ns();
+        let mut host = BoardSmpHost::new(&mut board, long_quantum).unwrap();
+        let mut scheduler =
+            SmpScheduler::new(2, QuantumPolicy::Fixed(1024), StopRequest::new()).unwrap();
+        scheduler.record_turns();
+        let error = scheduler.run(&mut host, 1024).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SmpError::Host(FirmwareBoardError::VcpuQuantum { cpu: 1, .. })
+            ),
+            "{error:?}"
+        );
+        assert_eq!(scheduler.counters()[0].retired, 0);
+        assert_eq!(scheduler.counters()[1].retired, LEGACY_STEPS + 1);
+        assert_eq!(scheduler.turns().len(), 1);
+        assert_eq!(scheduler.turns()[0].steps, LEGACY_STEPS + 1);
+        assert_eq!(scheduler.turns()[0].retired, LEGACY_STEPS + 1);
+        assert_eq!(
+            host.board().clock().now_ns() - start_ns,
+            (LEGACY_STEPS + 1) * crate::clock_owner::NS_PER_RETIRED,
+        );
+        let ap = host.board().vcpu(1).unwrap();
+        assert!(ap.legacy.is_none());
+        assert_eq!(ap.state.rip, LONG_AT + 5);
+        assert_eq!(ap.state.gpr[od_isa::Register::Rax as usize], 0x1234_5678);
+    }
+
     fn check_legacy_failure_accounting(handover: bool) {
         use crate::parallel_run::{ParallelConfig, ParallelFinish, run_threads};
         use std::time::Duration;
@@ -1369,7 +1409,7 @@ mod tests {
                         |_: &mut LoadedFirmwareBoard, cpu, _, _: &mut dyn FnMut() -> bool| {
                             assert_eq!(cpu, 1);
                             assert!(handover);
-                            Err(LONG_MODE_ERROR)
+                            Err(LONG_MODE_ERROR.into())
                         },
                     )
                     .unwrap();

@@ -56,7 +56,7 @@ fn interleaved_quantum(
     cpu: usize,
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
-) -> Result<Executed, FirmwareBoardError> {
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     with_set(|set| board.run_vcpu_set_quantum(cpu, budget, stop, set))
 }
 

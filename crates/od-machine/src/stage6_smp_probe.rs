@@ -428,7 +428,7 @@ impl Stage6SmpProbe {
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let (cli, sti, halt) = (
             CliProfile::NonPviLong64V1,
             StiProfile::NonPviLong64V1,
