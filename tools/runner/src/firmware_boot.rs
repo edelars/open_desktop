@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi] [--nvram-reboot-out <file>] [--acpi-out <file>]";
-const DUMP_USAGE: &str = "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi]";
+                    [--fv-app hello|ebs|vars|rt|acpi|gop] [--nvram-reboot-out <file>] \
+                    [--acpi-out <file>] [--framebuffer-out <file>]";
+const DUMP_USAGE: &str = "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop]";
 
 struct Options {
     image: String,
@@ -28,6 +29,7 @@ struct Options {
     fv_app: Option<FirmwareFvApp>,
     nvram_reboot_out: Option<String>,
     acpi_out: Option<String>,
+    framebuffer_out: Option<String>,
 }
 
 fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardConfig {
@@ -62,8 +64,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "vars" => Ok(FirmwareFvApp::Vars),
         "rt" => Ok(FirmwareFvApp::Rt),
         "acpi" => Ok(FirmwareFvApp::Acpi),
+        "gop" => Ok(FirmwareFvApp::Gop),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt or acpi"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi or gop"
         )),
     }
 }
@@ -110,6 +113,11 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
+    if let Some(path) = &options.framebuffer_out
+        && let Err(error) = validate_framebuffer_paths(&options.image, &options.com1_out, path)
+    {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
     let read = File::open(&options.image).and_then(|file| {
         file.take(FIRMWARE_IMAGE_BYTES as u64 + 1)
@@ -124,15 +132,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Err((value, code)) => return emit(value, code),
     };
     if let Some(path) = &options.acpi_out {
-        const ACPI_SUCCESS: &[u8] = b"OD-FW image acpi: EFI_SUCCESS\r\n";
-        if first.code != 6
-            || first.fw_stop != Some((0x21, 0))
-            || !first
-                .board
-                .com1_transcript()
-                .windows(ACPI_SUCCESS.len())
-                .any(|line| line == ACPI_SUCCESS)
-        {
+        if !first.finished_app(b"OD-FW image acpi: EFI_SUCCESS\r\n") {
             first.report["status"] = json!("error");
             first.report["error"] = json!({
                 "kind": "acpi_out",
@@ -152,10 +152,46 @@ pub fn run(args: &[String]) -> ExitCode {
             return emit(failure("run_error", "acpi_out", error), 5);
         }
     }
+    if let Some(path) = &options.framebuffer_out {
+        if !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
+            first.report["status"] = json!("error");
+            first.report["error"] = json!({
+                "kind": "framebuffer_out",
+                "detail": "firmware did not complete the gop application",
+            });
+            return emit(first.report, first.code.max(5));
+        }
+        if let Err(error) = validate_framebuffer_paths(&options.image, &options.com1_out, path) {
+            return emit(failure("invalid_input", "paths", error), 3);
+        }
+        let display = first.board.display();
+        let mode = display.current_mode();
+        let mut pixels = vec![0; mode.frame_bytes() as usize];
+        let frame = match display.read_frame_into(first.board.bus_mut(), &mut pixels) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return emit(
+                    failure("run_error", "framebuffer_out", format!("{error:?}")),
+                    5,
+                );
+            }
+        };
+        if let Err(error) = fs::write(path, &pixels) {
+            return emit(
+                failure("run_error", "framebuffer_out", error.to_string()),
+                5,
+            );
+        }
+        first.report["framebuffer"] = json!({
+            "width": frame.mode.width, "height": frame.mode.height, "stride": frame.mode.stride,
+            "format": frame.mode.format, "generation": frame.generation,
+            "mode_change_count": frame.mode_change_count, "sha256": sha256_hex(&pixels),
+        });
+    }
     let Some(reboot_out) = options.nvram_reboot_out else {
         return emit(first.report, first.code);
     };
-    if !first.finished_vars() {
+    if !first.returned_to_firmware() {
         let mut report = first.report;
         if first.code == 0 {
             report["status"] = json!("error");
@@ -194,7 +230,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return emit(value, code);
         }
     };
-    let completed = second.finished_vars();
+    let completed = second.returned_to_firmware();
     emit(
         json!({
             "schema_version": 1,
@@ -281,6 +317,15 @@ fn validate_output_paths(image: &str, com1: &str, acpi: &str) -> Result<(), Stri
     )
 }
 
+fn validate_framebuffer_paths(image: &str, com1: &str, framebuffer: &str) -> Result<(), String> {
+    validate_distinct_paths(
+        image,
+        com1,
+        framebuffer,
+        "the image, COM1 and framebuffer output paths must be distinct",
+    )
+}
+
 fn validate_distinct_paths(
     image: &str,
     first: &str,
@@ -307,8 +352,17 @@ struct BootRun {
 }
 
 impl BootRun {
-    fn finished_vars(&self) -> bool {
+    fn returned_to_firmware(&self) -> bool {
         self.code == 6 && self.fw_stop == Some((0x21, 0))
+    }
+
+    fn finished_app(&self, success_line: &[u8]) -> bool {
+        self.returned_to_firmware()
+            && self
+                .board
+                .com1_transcript()
+                .windows(success_line.len())
+                .any(|line| line == success_line)
     }
 }
 
@@ -407,6 +461,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut fv_app = None;
     let mut nvram_reboot_out = None;
     let mut acpi_out = None;
+    let mut framebuffer_out = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -417,6 +472,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--image" if image.is_none() => image = Some(value.clone()),
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
+            "--framebuffer-out" if framebuffer_out.is_none() => {
+                framebuffer_out = Some(value.clone())
+            }
             "--nvram-reboot-out" if nvram_reboot_out.is_none() => {
                 nvram_reboot_out = Some(value.clone())
             }
@@ -441,6 +499,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if acpi_out.is_some() && fv_app != Some(FirmwareFvApp::Acpi) {
         return Err("--acpi-out requires --fv-app acpi".to_owned());
     }
+    if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) {
+        return Err("--framebuffer-out requires --fv-app gop".to_owned());
+    }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
     if let Some(reboot_out) = &nvram_reboot_out {
@@ -458,6 +519,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         fv_app,
         nvram_reboot_out,
         acpi_out,
+        framebuffer_out,
     })
 }
 

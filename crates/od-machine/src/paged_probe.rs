@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod firmware_tests;
 
+use crate::display_device::{DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice};
 use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
 use crate::page_walk::MmioDispatchError;
 use crate::{
@@ -182,13 +183,54 @@ pub fn run_paged_probe_with_rdtsc(
     )
 }
 
+/// Devices whose exact register apertures are available to loaded firmware.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FirmwareMmio<'a> {
+    pub(crate) nvram: Option<&'a NvramHandle>,
+    pub(crate) display: Option<&'a DisplayDevice>,
+}
+
+impl FirmwareMmio<'_> {
+    fn windows(self) -> &'static [(u64, u64)] {
+        const DISPLAY: (u64, u64) = (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES);
+        const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
+        match (self.display.is_some(), self.nvram.is_some()) {
+            (true, true) => &[DISPLAY, NVRAM],
+            (true, false) => &[DISPLAY],
+            (false, true) => &[NVRAM],
+            (false, false) => &[],
+        }
+    }
+
+    fn access(
+        self,
+        address: GuestPhysicalAddress,
+        operation: RamAccessOperation,
+    ) -> Result<u64, MmioDispatchError> {
+        if let Some(display) = self.display
+            && (DISPLAY_REGISTERS_BASE..DISPLAY_REGISTERS_BASE + DISPLAY_REGISTERS_BYTES)
+                .contains(&address.get())
+        {
+            return access_display(display, address, operation);
+        }
+        if let Some(nvram) = self.nvram
+            && (NVRAM_MMIO_BASE..NVRAM_MMIO_BASE + NVRAM_MMIO_BYTES).contains(&address.get())
+        {
+            return access_nvram(nvram, address, operation);
+        }
+        Err(MmioDispatchError::Backend(
+            "unbound firmware MMIO access".into(),
+        ))
+    }
+}
+
 /// Run the firmware instruction profile through the shared 4 KiB tracked walker.
 /// Firmware may switch its active CR3 and enter its installed exception handlers.
 pub(crate) fn run_paged_firmware_probe(
     state: &mut LongModeState,
     fp: &mut GuestFpState,
     bus: &mut MachineBus,
-    nvram: Option<&NvramHandle>,
+    mmio: FirmwareMmio<'_>,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -213,7 +255,7 @@ pub(crate) fn run_paged_firmware_probe(
         rflags_defined,
         stop,
         committed_write,
-        Some(ProbeInputs::Firmware { clock, fp, nvram }),
+        Some(ProbeInputs::Firmware { clock, fp, mmio }),
     )
 }
 
@@ -439,7 +481,7 @@ enum ProbeInputs<'a> {
     Firmware {
         clock: Option<VirtualClock>,
         fp: &'a mut GuestFpState,
-        nvram: Option<&'a NvramHandle>,
+        mmio: FirmwareMmio<'a>,
     },
 }
 
@@ -703,8 +745,11 @@ fn run_paged_probe_inner(
                     && let ProbeBus::Exclusive(bus) = &mut bus
                 {
                     let (physical_memory, _) = bus.split_for_pio_step();
-                    let mut delivery_memory =
-                        step.memory(physical_memory, &mut committed_write, None);
+                    let mut delivery_memory = step.memory(
+                        physical_memory,
+                        &mut committed_write,
+                        FirmwareMmio::default(),
+                    );
                     match delivery_memory.deliver_firmware_fault(
                         state,
                         &fault,
@@ -905,7 +950,7 @@ impl ProbeStep {
         &self,
         memory: &'a crate::PhysicalMemory,
         committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
-        nvram: Option<&'a NvramHandle>,
+        mmio: FirmwareMmio<'a>,
     ) -> PagedProbeMemory<'a> {
         PagedProbeMemory {
             memory,
@@ -913,7 +958,7 @@ impl ProbeStep {
             instruction_rip: self.instruction_rip,
             large_ram_profile: self.large_ram_profile,
             firmware_boot_profile: self.firmware_boot_profile,
-            nvram,
+            mmio,
             committed_write,
             page_fault: None,
             memory_error: None,
@@ -932,11 +977,11 @@ impl ProbeStep {
         Option<PageFaultRecord>,
         Option<TrackedAccessError>,
     ) {
-        let nvram = match inputs.as_deref() {
-            Some(ProbeInputs::Firmware { nvram, .. }) => *nvram,
-            _ => None,
+        let mmio = match inputs.as_deref() {
+            Some(ProbeInputs::Firmware { mmio, .. }) => *mmio,
+            _ => FirmwareMmio::default(),
         };
-        let mut memory = self.memory(memory, committed_write, nvram);
+        let mut memory = self.memory(memory, committed_write, mmio);
         let context = AccessContext {
             origin: AccessOrigin::Explicit,
             ..self.context
@@ -1047,7 +1092,7 @@ struct PagedProbeMemory<'a> {
     instruction_rip: u64,
     large_ram_profile: bool,
     firmware_boot_profile: bool,
-    nvram: Option<&'a NvramHandle>,
+    mmio: FirmwareMmio<'a>,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -1106,6 +1151,7 @@ impl PagedProbeMemory<'_> {
             },
             operation,
         };
+        let windows = self.mmio.windows();
         let result = if self.large_ram_profile {
             crate::access_long64_2m_ram(
                 self.memory,
@@ -1113,14 +1159,14 @@ impl PagedProbeMemory<'_> {
                 request,
                 &mut *self.committed_write,
             )
-        } else if let Some(nvram) = self.nvram {
+        } else if !windows.is_empty() {
             crate::page_walk::access_long64_4k_with_mmio(
                 self.memory,
                 &self.paging,
                 request,
                 &mut *self.committed_write,
-                Some(&[(NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES)]),
-                |address, _, operation| access_nvram(nvram, address, operation),
+                Some(windows),
+                |address, _, operation| self.mmio.access(address, operation),
             )
         } else {
             crate::access_long64_4k_ram(
@@ -1187,6 +1233,34 @@ impl PagedProbeMemory<'_> {
             }
         }
     }
+}
+
+fn access_display(
+    display: &DisplayDevice,
+    address: GuestPhysicalAddress,
+    operation: RamAccessOperation,
+) -> Result<u64, MmioDispatchError> {
+    // The tracked walker checks that the whole operand is inside the register aperture.
+    let offset = address.get() - DISPLAY_REGISTERS_BASE;
+    let access = |width| DeviceAccess {
+        space: IoSpace::Mmio,
+        offset,
+        width,
+    };
+    let result = match operation {
+        RamAccessOperation::Read { width } => display.read_mmio(access(width)),
+        RamAccessOperation::Write { width, value } => {
+            display.write_mmio(access(width), value).map(|()| 0)
+        }
+        _ => {
+            return Err(MmioDispatchError::Backend(
+                "display accepts only plain data reads and writes".into(),
+            ));
+        }
+    };
+    result.map_err(|error| {
+        MmioDispatchError::Backend(format!("display access at {offset:#x}: {error:?}"))
+    })
 }
 
 fn access_nvram(

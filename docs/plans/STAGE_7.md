@@ -520,7 +520,7 @@
 
 ### S7-15. Реализовать GOP поверх собственного дисплейного устройства
 
-- [ ] Принято после ревью. Требует S10-03 (по [STAGE_10_REPORT.md](../reports/STAGE_10_REPORT.md) ревью пройдено; проверить статус перед началом). PCI-привязка — `blocked до S10-12`; v1 использует фиксированные адреса из handoff block.
+- [x] Принято после независимых кодового ревью и проверки результатов `gpt-6.1-sol` (`high`) 2026-11-19. [Результаты](../reports/STAGE_7_REPORT.md#s7-15--gop-на-основном-дисплее). Реализация использует фиксированные адреса из handoff block и API кадра S10-03. PCI-привязка зависит от S10-12.
 - **Где:** `firmware/uefi/src/gop/{device,protocol}.rs`, установка `EFI_GRAPHICS_OUTPUT_PROTOCOL` на handle дисплея с Device Path (ACPI/Memory-mapped path до PCI), `docs/specs/UEFI_PROFILE.md` (раздел «GOP»), `docs/specs/DISPLAY_DEVICE.md` §11 (ссылка на реализацию, если нужно уточнение режимов), координация с [S10-18](STAGE_10.md#s10-18-gop-этапа-7-поверх-нашего-устройства).
 - **Сделать:**
   1. Драйвер устройства по `DISPLAY_DEVICE.md`: чтение `ID/VERSION/CAPS`, список поддержанных режимов → `EFI_GRAPHICS_OUTPUT_MODE_INFORMATION` (`PixelBlueGreenRedReserved8BitPerColor`, `PixelsPerScanLine = stride/4`), `FrameBufferBase/Size` из регистров `FB_BASE_*`/`FB_SIZE`.

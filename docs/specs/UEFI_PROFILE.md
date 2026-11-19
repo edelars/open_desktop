@@ -341,6 +341,39 @@ handle. Доступны все восемь функций §10.5. Пути н�
 полезные байты и записывает заголовок.
 [UEFI 2.11, §10.5](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html#device-path-utilities-protocol).
 
+### GOP
+
+При наличии записи дисплея прошивка проверяет принадлежащие ей регионы
+регистров и framebuffer основного экрана. На отдельном handle она публикует
+`EFI_GRAPHICS_OUTPUT_PROTOCOL`, аппаратный Memory Mapped Device Path
+с включительными границами `0xFC00_0000` и `0xFC00_0FFF`, а также
+`EFI_EDID_DISCOVERED_PROTOCOL` и `EFI_EDID_ACTIVE_PROTOCOL` с нулевой
+длиной и указателем `NULL`. Начальный режим 0 соответствует 640×480.
+
+`QueryMode` читает размеры из таблицы устройства и выделяет результат
+в `BootServicesData`. Вызывающий освобождает его через `FreePool`.
+Для номера вне таблицы `QueryMode` возвращает `EFI_INVALID_PARAMETER`,
+а `SetMode` возвращает `EFI_UNSUPPORTED`. `SetMode` подтверждает размеры,
+формат и stride по регистрам устройства, очищает видимую область в чёрный
+и публикует кадр, в том числе при повторной установке текущего режима.
+`PixelsPerScanLine` равен `STRIDE / 4`. `FrameBufferBase` равен базе
+апертуры из регистров. `FrameBufferSize` охватывает `STRIDE × Height`
+байт текущего режима в пределах ёмкости `FB_SIZE`.
+
+`Blt` проверяет прямоугольники и смещения перед записью. Доступны
+заливка, копирование с дисплея в буфер и обратно, а также копирование
+между областями дисплея с учётом перекрытия. Для буфера с ненулевыми
+координатами требуется байтовый `Delta`. `SetMode` и операции `Blt`,
+которые пишут на дисплей, завершаются записью `FRAME_GENERATION`.
+
+`ExitBootServices` оставляет активный режим и физический framebuffer
+доступными ОС. В начальной карте UEFI его апертура имеет тип
+`EfiMemoryMappedIO`, атрибут `EFI_MEMORY_UC` и доступна для отображения ОС
+по `FrameBufferBase`. Сам GOP доступен до завершения Boot Services.
+[UEFI 2.11, §12.9](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html#graphics-output-protocol),
+[UEFI 2.11, §10.3.2.3](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html#memory-mapped-device-path),
+[DISPLAY_DEVICE.md, §11](DISPLAY_DEVICE.md#11-соответствие-uefi-gop).
+
 ### Консоль COM1
 
 Прошивка публикует `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` и

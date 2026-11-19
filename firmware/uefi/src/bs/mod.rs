@@ -11,6 +11,11 @@ mod state;
 
 pub use state::{attach_image_paging, attach_system_tables, attach_watchdog, initialize};
 
+/// The caller is the BSP. Use before dereferencing a Boot Services protocol's private state.
+pub(crate) unsafe fn boot_services_active() -> bool {
+    unsafe { state::try_with(|_| ()) }.is_some()
+}
+
 #[cfg(not(target_os = "uefi"))]
 pub(crate) unsafe fn with_runtime_variables(
     operation: impl FnOnce(&mut crate::rt::variable::RuntimeVariables) -> crate::uefi::status::Status,

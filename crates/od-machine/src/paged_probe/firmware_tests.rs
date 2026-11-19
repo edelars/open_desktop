@@ -138,7 +138,7 @@ fn step_with_fp(
         state,
         fp,
         bus,
-        None,
+        FirmwareMmio::default(),
         ROOT,
         EFER,
         AccessContext {
@@ -203,7 +203,10 @@ fn nvram_dispatch_leaves_unserved_mmio_unwritten_and_clean() {
             instruction_rip: CODE,
             large_ram_profile: false,
             firmware_boot_profile: true,
-            nvram: handle,
+            mmio: FirmwareMmio {
+                nvram: handle,
+                display: None,
+            },
             committed_write: &mut |_| {},
             page_fault: None,
             memory_error: None,

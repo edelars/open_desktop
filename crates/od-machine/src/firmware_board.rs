@@ -35,7 +35,7 @@ use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
-use crate::paged_probe::{run_paged_firmware_probe, run_paged_probe_2m_ram};
+use crate::paged_probe::{FirmwareMmio, run_paged_firmware_probe, run_paged_probe_2m_ram};
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
@@ -176,6 +176,7 @@ const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
 const HANDOFF_MINOR_NVRAM: u16 = 7;
 const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
 const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
+const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -192,6 +193,7 @@ pub enum FirmwareFvApp {
     Vars = 3,
     Rt = 4,
     Acpi = 5,
+    Gop = 6,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -495,6 +497,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "acpi FV application needs ACPI tables",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Gop) && !config.display_enabled {
+        return Err(FirmwareBoardError::Config(
+            "gop FV application needs the primary display",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
@@ -678,7 +685,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.fv_app == Some(FirmwareFvApp::Acpi) {
+    if config.fv_app == Some(FirmwareFvApp::Gop) {
+        HANDOFF_MINOR_FV_APP_GOP
+    } else if config.fv_app == Some(FirmwareFvApp::Acpi) {
         HANDOFF_MINOR_FV_APP_ACPI
     } else if config.fv_app == Some(FirmwareFvApp::Rt) {
         HANDOFF_MINOR_FV_APP_RT
@@ -1270,6 +1279,7 @@ pub struct LoadedFirmwareBoard {
     vcpus: Vec<Vcpu>,
     uart: Uart16550Handle,
     display: DisplayHandle,
+    display_mmio: Option<DisplayDevice>,
     nvme: Option<NvmeHandle>,
     nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -2575,7 +2585,10 @@ impl LoadedFirmwareBoard {
                 &mut vcpu.state,
                 &mut vcpu.guest_fp,
                 &mut self.bus,
-                self.nvram.as_ref(),
+                FirmwareMmio {
+                    nvram: self.nvram.as_ref(),
+                    display: self.display_mmio.as_ref(),
+                },
                 self.page_table_root,
                 FIRMWARE_EFER,
                 context,
@@ -3453,6 +3466,7 @@ pub(crate) struct AssembledBoard {
     bus: MachineBus,
     uart: Uart16550Handle,
     display: DisplayHandle,
+    display_mmio: Option<DisplayDevice>,
     nvme: Option<NvmeHandle>,
     nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -3564,6 +3578,7 @@ pub(crate) fn assemble_board(
     } else {
         DisplayDevice::new_with_handle()
     };
+    let display_mmio = config.display_enabled.then(|| display_device.clone());
     // Bus order: COM1, LAPIC, IOAPIC, optional display, then NVMe,
     // the optional PCI configuration device and the optional ACPI PM block; the
     // `linux_profile` devices (PIT, port B, 8259 pair, CMOS, 0xED, 0x80) are appended
@@ -3738,6 +3753,7 @@ pub(crate) fn assemble_board(
         bus,
         uart,
         display,
+        display_mmio,
         nvme,
         nvram,
         acpi_pm,
@@ -3783,6 +3799,7 @@ impl AssembledBoard {
             mut bus,
             uart,
             display,
+            display_mmio,
             nvme,
             nvram,
             acpi_pm,
@@ -3838,6 +3855,7 @@ impl AssembledBoard {
             vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
             display,
+            display_mmio,
             nvme,
             nvram,
             acpi_pm,
@@ -3912,6 +3930,7 @@ impl AssembledBoard {
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
             display,
+            display_mmio: None,
             nvme,
             nvram,
             acpi_pm,
@@ -7733,6 +7752,51 @@ mod tests {
             5,
             1
         ));
+    }
+
+    #[test]
+    fn firmware_display_mmio_commits_the_bound_device_and_publishes_a_frame() {
+        let code = [
+            0xb8, 0, 0, 0, 0xfc, // mov eax,0xfc000000
+            0x8b, 0x10, // mov edx,[rax]
+            0xb9, 0x80, 0x02, 0, 0, // mov ecx,640
+            0x89, 0x48, 0x40, // mov [rax+0x40],ecx
+            0xb9, 0xe0, 0x01, 0, 0, // mov ecx,480
+            0x89, 0x48, 0x44, // mov [rax+0x44],ecx
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x89, 0x48, 0x48, // mov [rax+0x48],ecx
+            0x89, 0x48, 0x4c, // mov [rax+0x4c],ecx
+            0x89, 0x88, 0x80, 0, 0, 0,    // mov [rax+0x80],ecx
+            0xf4, // hlt
+        ];
+        let mut board = load(&test_image(&code, &[]));
+        let report = board.run_boot(32).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 11);
+        assert_eq!(board.state().gpr[Register::Rdx as usize], 0x4246_444f);
+        let display = board.display();
+        let mode = display.current_mode();
+        assert_eq!((mode.width, mode.height, mode.stride), (640, 480, 2560));
+        assert_eq!(display.frame_generation(), 1);
+        assert!(display.has_current_frame());
+    }
+
+    #[test]
+    fn firmware_display_mmio_rejects_a_wide_register_write_before_retirement() {
+        let code = [
+            0xb8, 0, 0, 0, 0xfc, // mov eax,0xfc000000
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x48, 0x89, 0x88, 0x80, 0, 0, 0,    // mov [rax+0x80],rcx
+            0xf4, // hlt
+        ];
+        let mut board = load(&test_image(&code, &[]));
+        let rip = board.state().rip;
+        let report = board.run_boot(32).unwrap();
+        assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+        assert_eq!(report.retired, 2);
+        assert_eq!(board.state().rip, rip + 10);
+        assert_eq!(board.display().frame_generation(), 0);
+        assert!(format!("{:?}", report.memory_error).contains("UnsupportedWidth"));
     }
 
     #[test]

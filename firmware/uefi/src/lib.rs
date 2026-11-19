@@ -16,6 +16,7 @@ pub mod console;
 mod crc32;
 pub mod device_path;
 pub mod fv;
+pub mod gop;
 pub mod handoff;
 pub mod idt;
 pub mod image;

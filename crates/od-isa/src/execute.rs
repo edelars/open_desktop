@@ -20538,7 +20538,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0x0a, OperandSize::Byte) | (0x0b, OperandSize::Qword)
+                    (0x0a, OperandSize::Byte) | (0x0b, OperandSize::Dword | OperandSize::Qword)
                 ),
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20686,14 +20686,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // The firmware expands memset bytes and scales wide timer counts.
+        // Firmware expands memset bytes and computes timer and framebuffer sizes.
         operation @ (Operation::Imul {
             dst: destination,
-            src: Operand::Register(source),
+            src: source @ (Operand::Register(_) | Operand::Memory(_)),
         }
         | Operation::ImulImmediate {
             dst: destination,
-            src: Operand::Register(source),
+            src: source @ Operand::Register(_),
             ..
         }) if firmware_boot_profile
             && matches!(
@@ -20709,7 +20709,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 || (instruction.operand_size == OperandSize::Dword
                     && matches!(
                         operation,
-                        Operation::ImulImmediate {
+                        Operation::Imul {
+                            src: Operand::Register(_),
+                            ..
+                        } | Operation::ImulImmediate {
                             immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29,
                             ..
                         }
@@ -20720,9 +20723,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
+            let source = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             let (lhs, rhs) = match operation {
-                Operation::ImulImmediate { immediate, .. } => (state.read(source), immediate),
-                _ => (state.read(destination), state.read(source)),
+                Operation::ImulImmediate { immediate, .. } => (source, immediate),
+                _ => (state.read(destination), source),
             };
             let (value, flags) =
                 multiply_truncated(instruction.operand_size, lhs, rhs, state.rflags);
@@ -20880,29 +20890,23 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
-        // The firmware tests stack spills while describing the memory map and PE image.
+        // Firmware tests stack spills and dword display status registers in place.
         Operation::Logic {
             kind: LogicKind::Test,
-            dst: destination @ Operand::Memory(address),
+            dst: destination @ Operand::Memory(_),
             src: source @ (Operand::Immediate(_) | Operand::Register(_)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && (matches!(
+            && matches!(
                 (instruction.opcode.byte, instruction.operand_size, source),
                 (0xf6, OperandSize::Byte, Operand::Immediate(_))
+                    | (0xf7, OperandSize::Dword, Operand::Immediate(_))
                     | (
                         0x85,
                         OperandSize::Dword | OperandSize::Qword,
                         Operand::Register(_)
                     )
-            ) || ((instruction.opcode.byte, instruction.operand_size, source)
-                == (0xf7, OperandSize::Dword, Operand::Immediate(0x400))
-                && instruction.length == 11
-                && instruction.prefixes.rex.is_none()
-                && address.base == AddressBase::Register(Register::Rsp)
-                && address.index.is_none()
-                && address.scale == 1
-                && address.displacement == 0x90))
+            )
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {

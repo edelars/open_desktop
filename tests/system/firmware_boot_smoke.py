@@ -16,6 +16,8 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "firmware"
 BUILDER = ROOT / "tools" / "build" / "build_firmware.py"
+DISPLAY_PATTERN = ROOT / "tools" / "build" / "display_pattern.py"
+DISPLAY_COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 
 
 def build(args: list[str | Path]) -> None:
@@ -49,8 +51,11 @@ def run_case(
     if app := case["fv_app"]:
         args.extend(["--fv-app", app])
     guest_acpi = scratch / f"acpi-memory-{round_number}.bin"
+    guest_frame = scratch / f"gop-frame-{round_number}.raw"
     if case["fv_app"] == "acpi":
         args.extend(["--acpi-out", guest_acpi])
+    if case["fv_app"] == "gop":
+        args.extend(["--framebuffer-out", guest_frame])
     start = time.perf_counter_ns()
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=False)
     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -96,6 +101,17 @@ def run_case(
         ])
         if hashlib.sha256(output.read_bytes()).hexdigest() != case["acpi_blob_sha256"]:
             raise RuntimeError(f"{label} freestanding blob checksum differs from its fixture")
+    if case["fv_app"] == "gop":
+        frame = case["framebuffer"]
+        if report.get("framebuffer") != frame:
+            raise RuntimeError(f"{label} produced unexpected framebuffer metadata: {report}")
+        expected_frame = scratch / "bars.raw"
+        dimensions = ["--width", str(frame["width"]), "--height", str(frame["height"])]
+        if not expected_frame.exists():
+            build([sys.executable, DISPLAY_PATTERN, *dimensions, "--pattern", "bars",
+                   "--seed", "0", "--output", expected_frame])
+        build([sys.executable, DISPLAY_COMPARE, *dimensions, "--tolerance", "0",
+               expected_frame, guest_frame])
 
 
 def check_missing_app(runner: Path, stock: Path, scratch: Path, budget: int) -> None:
