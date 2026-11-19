@@ -1557,6 +1557,15 @@ for the benchmark and signed VMHost. The configured XORPD time range
 crosses parity.
 [Report and reproduction](../reports/STAGE_3_S3-40t_2026-11-19.md)
 
+### S3-40u. Cold and warm checked-memory JIT after empty-profile specialization
+
+The S3-40q driver replays the same corpus with S3-40t applied.
+All 288 intervals and four paired process rounds are preserved.
+Current warm native/interpreter ratios are 1.125 and 1.128.
+Cold ratios are 28.160 and 28.019. Forty-seven current triples
+have no modeled crossover.
+[Report and reproduction](../reports/STAGE_3_S3-40u_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

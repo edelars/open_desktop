@@ -1234,6 +1234,14 @@ rounds. The configured XORPD range straddled parity. The benchmark
 by 45,760 bytes. Current JIT and historical comparisons remain to be measured.
 [Control measurements and binary sizes](STAGE_3_S3-40t_2026-11-19.md)
 
+S3-40u repeated the same checked-memory comparison after S3-40t.
+On `e74f721`, warm native/interpreter medians were 1.125 and 1.128,
+and cold medians were 28.160 and 28.019. The interpreter still took
+2.226 and 2.250 times the historical duration on the frozen corpus.
+The one-cold/repeated-warm model found no crossover in 47 of 48
+current observations. S3-40q remains specific to its earlier build.
+[Post-specialization performance measurements](STAGE_3_S3-40u_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
