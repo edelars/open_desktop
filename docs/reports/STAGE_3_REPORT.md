@@ -1425,6 +1425,13 @@ grew from about 5 ns at budget 0 to about 158 ns at budget 2. ISSUE-521
 remains open for phase attribution and resolution.
 [M1 Pro RUN timing and reproduction](STAGE_3_S3-40z_2026-11-19.md)
 
+S3-40aa retained the gap on M1 Pro when the experimental RUN path
+used instructions decoded before timing. The pooled current-minus-
+historical gap was 162.2–163.0 ns for public RUN and 176.5–176.8 ns
+for predecoded RUN. The measured paths matched architectural and data
+access outcomes, and the predecoded path made zero FETCH callbacks.
+[Decode boundary controls and raw evidence](STAGE_3_S3-40aa_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

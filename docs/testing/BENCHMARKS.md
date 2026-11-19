@@ -1653,6 +1653,17 @@ set equal work for both builds and six matched rounds rotate budget
 order. The audit compares revisions within each budget and sequence.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40z_2026-11-19.md)
 
+### S3-40aa. RUN fetch and decode boundary on M1 Pro
+
+On the same two S3-34a sequences and budget 2, the diagnostic runner
+compares public RUN with two variants that share an indirect callback
+at the existing decode boundary. One callback calls the original
+decoder and one returns a predecoded instruction. The untimed receipt
+checks six exact FETCH callbacks or zero as appropriate, plus state,
+data and retirement parity. Compare whole-call timings. The callback and
+predecoded lookup are part of the measured paths.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40aa_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
