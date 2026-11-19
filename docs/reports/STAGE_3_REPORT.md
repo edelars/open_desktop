@@ -1101,6 +1101,15 @@ mixed loops were 2.102 and 2.101. Native retirement, helper steps and
 cache activity were checked separately.
 [S3-35g/S3-36i report and raw evidence](STAGE_3_S3-35g_S3-36i_2026-11-19.md)
 
+S3-36j used the post-touch index in NativeRegisterV1 dispatch and
+removed the second cache search on a hit. Both warm straight-line
+mixed FIFO profiles improved in each raw and normalized round. The
+normalized medians fell by 1.86% and 2.58%. The warm loop ranges
+crossed parity, and the interpreter was faster in every pair. Warm and
+cold used signed matched builds with full-state parity and identical
+cache accounting.
+[S3-36j report and raw evidence](STAGE_3_S3-36j_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

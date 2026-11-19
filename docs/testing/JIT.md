@@ -2992,6 +2992,11 @@ and dependency coverage. `InterpreterProgressMismatch` rejects non-advancing
 steps; a helper-only entry is stepped directly without native compilation.
 This does not cover profile-required instructions or data-memory fallback.
 
+On a cache hit, the cached NativeRegisterV1 strategies use the index
+returned by `record_hit` after applying the cache policy. The dispatcher
+checks the selected entry's dependencies and code view before native
+execution.
+
 `cargo test -p od-jit --lib --offline` covers strict versus mixed witness,
 helper-only dispatch, STOP, budget including zero, event, non-advancing native
 and interpreter paths, injected interpreter failures, and post-helper rejection

@@ -1479,12 +1479,13 @@ fn run_cached_native_register_v1_strategy_controlled<
             if reuse_hit {
                 let key = &prepared_key.as_ref().expect("memo exists").key;
                 validate_cached_snapshot(key, code, dependencies)?;
-                let hit_index = cache.find(key);
-                if let Some(index) = hit_index {
-                    cache.record_hit(index).map_err(DispatchError::Cache)?;
-                } else {
-                    cache.record_miss().map_err(DispatchError::Cache)?;
-                }
+                let hit_index = match cache.find(key) {
+                    Some(index) => Some(cache.record_hit(index).map_err(DispatchError::Cache)?),
+                    None => {
+                        cache.record_miss().map_err(DispatchError::Cache)?;
+                        None
+                    }
+                };
                 Ok::<_, DispatchError<B::Error>>((None, hit_index))
             } else {
                 let block = guest_block.as_ref().expect("new block exists");
@@ -1513,12 +1514,13 @@ fn run_cached_native_register_v1_strategy_controlled<
                 )
                 .map_err(DispatchError::TranslationKey)?;
                 validate_cached_snapshot(&key, code, dependencies)?;
-                let hit_index = cache.find(&key);
-                if let Some(index) = hit_index {
-                    cache.record_hit(index).map_err(DispatchError::Cache)?;
-                } else {
-                    cache.record_miss().map_err(DispatchError::Cache)?;
-                }
+                let hit_index = match cache.find(&key) {
+                    Some(index) => Some(cache.record_hit(index).map_err(DispatchError::Cache)?),
+                    None => {
+                        cache.record_miss().map_err(DispatchError::Cache)?;
+                        None
+                    }
+                };
                 if reuse_candidate {
                     prepared_key = Some(PreparedNativeRegisterKey {
                         rip: state.rip,
@@ -1544,10 +1546,8 @@ fn run_cached_native_register_v1_strategy_controlled<
             .as_ref()
             .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.key))
             .expect("key or prepared memo exists");
-        let cached_index = if hit_index.is_some() {
-            // LRU hits can move the matched entry. Resolve its index again
-            // after recording the hit before borrowing the published handle.
-            cache.find(key).expect("hit remains resident")
+        let cached_index = if let Some(index) = hit_index {
+            index
         } else {
             let compilation = match strategy {
                 NativeRegisterV1CacheStrategy::Eager => {

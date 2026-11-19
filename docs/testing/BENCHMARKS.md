@@ -1461,6 +1461,16 @@ share fixed counts across the two modes and check guest state and
 native/interpreter retirement for every call.
 [Report and reproduction](../reports/STAGE_3_S3-35g_S3-36i_2026-11-19.md)
 
+### S3-36j. Single NativeRegisterV1 cache search on a hit
+
+Signed matched release builds compare the old dispatcher with the
+post-touch index path on the four mixed FIFO eager profiles. The cold
+and warm modes each use four matched rounds, eight pairs per profile
+per process and a 30 ms timing floor. The archive preserves fixed
+work and cache footprints, both raw and interpreter-normalized
+comparisons, and separate LRU correctness smoke results.
+[Report and reproduction](../reports/STAGE_3_S3-36j_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
