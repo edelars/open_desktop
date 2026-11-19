@@ -31,8 +31,8 @@
 use crate::clock_owner::ClockOwner;
 use crate::idle_arbiter::SchedActivity;
 use crate::smp_scheduler::{
-    BoundaryReport, Executed, Finished, QuantumPolicy, RunFailure, SmpError, SmpHost, SmpScheduler,
-    SplitMix64, StopRequest,
+    BoundaryReport, Executed, Finished, QuantumPolicy, RunFailure, SchedulerClock, SmpError,
+    SmpHost, SmpScheduler, SplitMix64, StopRequest,
 };
 use crate::{LocalApic, LocalApicHandle, VirtualClockHandle};
 use od_isa::execute::{RunConfig, RunExit, run};
@@ -729,8 +729,8 @@ impl SmpHost for LitmusMachine {
         self.device.handle_for(cpu).unwrap()
     }
 
-    fn clock_owner(&mut self) -> &mut ClockOwner {
-        &mut self.owner
+    fn scheduler_clock(&mut self) -> SchedulerClock<'_> {
+        SchedulerClock::Owned(&mut self.owner)
     }
 
     fn boundary(&mut self, _cpu: usize) -> Result<BoundaryReport, Refusal> {

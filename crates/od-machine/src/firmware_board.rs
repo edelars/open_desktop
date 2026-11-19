@@ -2458,6 +2458,10 @@ impl LoadedFirmwareBoard {
         self.clock.snapshot()
     }
 
+    pub(crate) fn clock_handle(&self) -> &VirtualClockHandle {
+        &self.clock
+    }
+
     /// Explicit virtual-time advance; time never moves on its own
     /// (MACHINE_CONTRACT.md, caller-driven virtual clock).
     pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), FirmwareBoardError> {
@@ -2717,6 +2721,7 @@ impl LoadedFirmwareBoard {
             false,
             false,
             false,
+            false,
         )
     }
 
@@ -2737,6 +2742,7 @@ impl LoadedFirmwareBoard {
         selected_instruction_path_trace: bool,
         selected_elf_stack_copy: bool,
         selected_delay_tsc_call_summary: bool,
+        schedule_standalone: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2836,7 +2842,8 @@ impl LoadedFirmwareBoard {
             if let Some((halted_after_ns, nmi_was_blocked)) = previous_halt.take() {
                 let now = board.clock().now_ns();
                 let woke_for_nmi = !nmi_was_blocked && board.state().nmi_blocked;
-                if !woke_for_nmi
+                if !schedule_standalone
+                    && !woke_for_nmi
                     && board.pit_ioapic_source.is_none()
                     && board.local_apic().eligible().is_some()
                     && board.irq_wake_ns().is_none_or(|wake| wake > now)
@@ -3025,8 +3032,25 @@ impl LoadedFirmwareBoard {
             {
                 return ControlFlow::Break(Err(failure(error)));
             }
+            let mut standalone_time = if schedule_standalone && scheduler_budget.is_some() {
+                let Some(now) = board.clock().now_ns().checked_add(executed.retired) else {
+                    // The scheduler will refuse the retirement charge. Leave device ticks queued.
+                    return ControlFlow::Break(Err(failure(FirmwareBoardError::Clock(
+                        VirtualClockError::TimeOverflow,
+                    ))));
+                };
+                Some(now)
+            } else {
+                None
+            };
             let mut charge_device = |board: &mut Self, ns| {
                 if scheduler_budget.is_some() {
+                    if let Some(time) = &mut standalone_time {
+                        // Preserve the direct loop's prefix if this tick cannot advance the clock.
+                        *time = time
+                            .checked_add(ns)
+                            .ok_or(FirmwareBoardError::Clock(VirtualClockError::TimeOverflow))?;
+                    }
                     executed.device_ns = executed
                         .device_ns
                         .checked_add(ns)
@@ -3155,7 +3179,9 @@ impl LoadedFirmwareBoard {
                 && halted_with_budget
                 && ((wake_allowed
                     && (board.pit_ioapic_source.is_some() || board.irq_wake_ns().is_some()))
-                    || (!board.state().nmi_blocked && board.local_apic().pending_nmi()))
+                    || (!schedule_standalone
+                        && !board.state().nmi_blocked
+                        && board.local_apic().pending_nmi()))
             {
                 *can_resume_halt = true;
                 previous_halt = Some((
@@ -3254,7 +3280,7 @@ impl LoadedFirmwareBoard {
                 .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry)),
             )
         };
-        let result = if self.linux_interleaved
+        let result = if (self.linux_interleaved || schedule_standalone)
             && instruction_budget != 0
             && self.vcpus[BOOT_VCPU_INDEX].activity() == CpuActivity::Running
         {
@@ -3268,29 +3294,32 @@ impl LoadedFirmwareBoard {
             )
             .expect("one vCPU and a nonzero instruction budget");
             let mut outcome = None;
-            let schedule = match BoardSmpHost::new(
-                self,
-                |board: &mut Self, _, budget, stop: &mut dyn FnMut() -> bool| {
-                    let mut executed = Executed::default();
-                    let mut can_resume_halt = false;
-                    match run_quantum(
-                        board,
-                        Some(budget),
-                        stop,
-                        &mut executed,
-                        &mut can_resume_halt,
-                    ) {
-                        ControlFlow::Continue(()) => outcome = None,
-                        ControlFlow::Break(result) => {
-                            outcome = Some(result);
-                            if !can_resume_halt {
-                                stop_request.request();
-                            }
+            let run = |board: &mut Self, _, budget, stop: &mut dyn FnMut() -> bool| {
+                let mut executed = Executed::default();
+                let mut can_resume_halt = false;
+                match run_quantum(
+                    board,
+                    Some(budget),
+                    stop,
+                    &mut executed,
+                    &mut can_resume_halt,
+                ) {
+                    ControlFlow::Continue(()) => outcome = None,
+                    ControlFlow::Break(result) => {
+                        outcome = Some(result);
+                        if !can_resume_halt {
+                            stop_request.request();
                         }
                     }
-                    Ok(executed)
-                },
-            ) {
+                }
+                Ok(executed)
+            };
+            let host = if schedule_standalone {
+                BoardSmpHost::for_standalone_linux(self, run)
+            } else {
+                BoardSmpHost::new(self, run)
+            };
+            let schedule = match host {
                 Ok(mut host) => scheduler.run(&mut host, instruction_budget),
                 Err(error) => Err(SmpError::Host(error)),
             };

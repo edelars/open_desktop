@@ -21,24 +21,22 @@
 //! retired instruction is one step, and so is one return of the interpreter with partial progress
 //! of a `REP`. The shared budget is in retired instructions; the counters are per vCPU.
 //!
-//! Time (D7): the [`ClockOwner`] is the only mover of virtual time. The scheduler charges what a
-//! turn retired (1 ns each) and the device nanoseconds the host reports, and asks it to skip idle
-//! time; the host never touches the clock.
+//! Time (D7): the scheduler charges a quantum's retired instructions and device nanoseconds and
+//! advances idle time through the host's [`SchedulerClock`]. SMP hosts use [`ClockOwner`]. The
+//! standalone one-vCPU Linux host advances the unclaimed clock without LAPIC timer dispatch.
 //!
 //! Not here: threads, priorities, fairness heuristics (no measurement asks for them), switching
 //! inside an instruction. A LAPIC event raised during a turn (an ICR write for another vCPU or for
 //! the running one) is applied at the next boundary, after the turn; a host may end its call
-//! earlier when it sees one. The loop is not wired into `run_linux_boot_cpl0_set`: that loop runs
-//! the boot processor only (see [`BoardSmpHost`]; since S6-16c/S6-16d the other vCPUs execute under
-//! this scheduler, in the tests of those slices).
+//! earlier when it sees one. The standalone Linux host uses only its board interrupt source at
+//! the boundaries and for wakeups.
 
-// No production caller yet: the scheduler is wired in by S6-16/S6-17; tests exercise it now.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
+use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome, IdleStep};
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary};
-use crate::{FirmwareBoardError, LoadedFirmwareBoard, LocalApicHandle};
+use crate::{FirmwareBoardError, LoadedFirmwareBoard, LocalApicHandle, VirtualClockHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -162,6 +160,80 @@ impl<E> From<E> for RunFailure<E> {
     }
 }
 
+pub(crate) enum SchedulerClock<'a> {
+    Owned(&'a mut ClockOwner),
+    Standalone(&'a VirtualClockHandle),
+}
+
+impl SchedulerClock<'_> {
+    fn now_ns(&self) -> u64 {
+        match self {
+            Self::Owned(owner) => owner.now_ns(),
+            Self::Standalone(clock) => clock.snapshot().now_ns(),
+        }
+    }
+
+    fn step_budget(&self, quantum: u64, deadline: Option<u64>) -> u64 {
+        match self {
+            Self::Owned(owner) => owner.step_budget(quantum, deadline),
+            Self::Standalone(_) => quantum,
+        }
+    }
+
+    fn account(&mut self, executed: Executed) -> Result<(), ClockOwnerError> {
+        match self {
+            Self::Owned(owner) => {
+                if executed.retired != 0 {
+                    owner.account_retired(executed.retired)?;
+                }
+                if executed.device_ns != 0 {
+                    owner.account_device_ns(executed.device_ns)?;
+                }
+            }
+            Self::Standalone(clock) => {
+                for ns in [executed.retired, executed.device_ns] {
+                    if ns != 0 {
+                        clock
+                            .advance_standalone(ns)
+                            .map_err(ClockOwnerError::Clock)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn idle_step(
+        &mut self,
+        stopped: bool,
+        views: &[WakeView],
+        deadlines: &[u64],
+    ) -> Result<IdleStep, ClockOwnerError> {
+        match self {
+            Self::Owned(owner) => owner.idle_step(stopped, views, deadlines),
+            Self::Standalone(clock) => {
+                // The one-vCPU Linux host has already checked the board source for a wake now.
+                let (outcome, idle_ns) = match (stopped, deadlines.first()) {
+                    (true, _) => (IdleOutcome::Stopped, 0),
+                    (false, None) => (IdleOutcome::AllIdle, 0),
+                    (false, Some(deadline)) => {
+                        let idle = deadline.saturating_sub(clock.snapshot().now_ns());
+                        clock
+                            .advance_standalone(idle)
+                            .map_err(ClockOwnerError::Clock)?;
+                        (IdleOutcome::NoProgress, idle)
+                    }
+                };
+                Ok(IdleStep {
+                    outcome,
+                    idle_ns,
+                    fired: Vec::new(),
+                })
+            }
+        }
+    }
+}
+
 /// What one boundary of one vCPU applied.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BoundaryReport {
@@ -179,8 +251,11 @@ pub(crate) trait SmpHost {
     /// `RFLAGS.IF` of the vCPU.
     fn if_set(&self, cpu: usize) -> bool;
     fn apic(&self, cpu: usize) -> LocalApicHandle;
-    /// The single owner of the clock of the machine.
-    fn clock_owner(&mut self) -> &mut ClockOwner;
+    /// The board's clock policy, borrowed only while the scheduler operates on it.
+    fn scheduler_clock(&mut self) -> SchedulerClock<'_>;
+    fn lapic_can_wake(&self, cpu: usize) -> bool {
+        self.apic(cpu).eligible().is_some()
+    }
     /// The nearest virtual time (ns) at which the machine, apart from the Local APIC timers the
     /// owner knows, has an edge a vCPU must not run past: the deadline of the board's interrupt
     /// source (the PIT line of the boot processor). `None` (the default) when nothing limits a
@@ -643,7 +718,7 @@ impl SmpScheduler {
             if acks.iter().all(Option::is_some) {
                 return Ok(SafePoint {
                     acks: acks.into_iter().flatten().collect(),
-                    now_ns: host.clock_owner().now_ns(),
+                    now_ns: host.scheduler_clock().now_ns(),
                     rounds,
                 });
             }
@@ -683,7 +758,7 @@ impl SmpScheduler {
         for cpu in 0..self.counters.len() {
             if host.activity(cpu) == SchedActivity::Halted
                 && host.if_set(cpu)
-                && (host.apic(cpu).eligible().is_some() || host.board_wakes(cpu))
+                && (host.lapic_can_wake(cpu) || host.board_wakes(cpu))
             {
                 host.wake(cpu).map_err(SmpError::Host)?;
                 self.counters[cpu].wakes += 1;
@@ -706,7 +781,7 @@ impl SmpScheduler {
             .collect();
         let deadlines: Vec<u64> = host.idle_deadline().into_iter().collect();
         let step = host
-            .clock_owner()
+            .scheduler_clock()
             .idle_step(self.stop.requested(), &views, &deadlines)
             .map_err(SmpError::Clock)?;
         self.idle_ns += step.idle_ns;
@@ -792,8 +867,9 @@ impl SmpScheduler {
             // as the continuous run would, not be given to another vCPU by a new turn.
             let left = quantum_left.min(*remaining);
             let deadline = host.board_deadline();
-            let budget = host.clock_owner().step_budget(left, deadline);
-            let now_before = host.clock_owner().now_ns();
+            let clock = host.scheduler_clock();
+            let budget = clock.step_budget(left, deadline);
+            let now_before = clock.now_ns();
             let (executed, failure) = match host.run(cpu, budget, &mut || stop.requested()) {
                 Ok(executed) => (executed, None),
                 Err(failure) => {
@@ -801,24 +877,15 @@ impl SmpScheduler {
                     (executed, Some(error))
                 }
             };
-            let owner = host.clock_owner();
+            let mut clock = host.scheduler_clock();
             // Condition (c): only the scheduler moves the clock; a host that touched it would make
             // the charge below a double count.
             debug_assert_eq!(
-                owner.now_ns(),
+                clock.now_ns(),
                 now_before,
                 "SmpHost::run must not move the clock"
             );
-            if executed.retired != 0 {
-                owner
-                    .account_retired(executed.retired)
-                    .map_err(SmpError::Clock)?;
-            }
-            if executed.device_ns != 0 {
-                owner
-                    .account_device_ns(executed.device_ns)
-                    .map_err(SmpError::Clock)?;
-            }
+            clock.account(executed).map_err(SmpError::Clock)?;
             let done = executed.retired + u64::from(executed.partial_rep);
             let counters = &mut self.counters[cpu];
             counters.steps += done;
@@ -897,6 +964,7 @@ impl SmpScheduler {
 pub(crate) struct BoardSmpHost<'a, R> {
     board: &'a mut LoadedFirmwareBoard,
     run: R,
+    standalone_linux: bool,
 }
 
 impl<'a, R> BoardSmpHost<'a, R>
@@ -917,7 +985,27 @@ where
                 "smp scheduler: the board has no clock owner (enable_clock_owner)",
             ));
         }
-        Ok(Self { board, run })
+        Ok(Self {
+            board,
+            run,
+            standalone_linux: false,
+        })
+    }
+
+    pub(crate) fn for_standalone_linux(
+        board: &'a mut LoadedFirmwareBoard,
+        run: R,
+    ) -> Result<Self, FirmwareBoardError> {
+        if board.vcpu_count() != 1 || board.clock_owner_enabled() {
+            return Err(FirmwareBoardError::Config(
+                "standalone Linux scheduling requires one vCPU and a standalone clock",
+            ));
+        }
+        Ok(Self {
+            board,
+            run,
+            standalone_linux: true,
+        })
     }
 
     pub(crate) fn board(&self) -> &LoadedFirmwareBoard {
@@ -962,10 +1050,20 @@ where
             .expect("a Local APIC per vCPU")
     }
 
-    fn clock_owner(&mut self) -> &mut ClockOwner {
-        self.board
-            .clock_owner_mut()
-            .expect("checked in BoardSmpHost::new")
+    fn scheduler_clock(&mut self) -> SchedulerClock<'_> {
+        if self.standalone_linux {
+            SchedulerClock::Standalone(self.board.clock_handle())
+        } else {
+            SchedulerClock::Owned(
+                self.board
+                    .clock_owner_mut()
+                    .expect("checked in BoardSmpHost::new"),
+            )
+        }
+    }
+
+    fn lapic_can_wake(&self, cpu: usize) -> bool {
+        !self.standalone_linux && self.apic(cpu).eligible().is_some()
     }
 
     /// The edge of the board's source the clock has not reached. An edge the clock has reached is
@@ -976,6 +1074,10 @@ where
     /// needed for test sources and for the invariant of the trait: a deadline at or before now
     /// would otherwise cut the turns of the other vCPUs to one step each (S6-21 step 1).
     fn board_deadline(&self) -> Option<u64> {
+        if self.standalone_linux {
+            // The Linux quantum keeps its existing interrupt-source budget calculation.
+            return None;
+        }
         let now = self.board.clock().now_ns();
         self.board
             .irq_deadline_ns()
@@ -1012,6 +1114,9 @@ where
     }
 
     fn boundary(&mut self, cpu: usize) -> Result<BoundaryReport, FirmwareBoardError> {
+        if self.standalone_linux {
+            return Ok(BoundaryReport::default());
+        }
         let startup = self.board.apply_pending_startup(cpu)?;
         let nmi = self.board.deliver_pending_nmi(cpu)?;
         Ok(BoundaryReport {
@@ -1247,8 +1352,8 @@ mod tests {
             self.device.handle_for(cpu).unwrap()
         }
 
-        fn clock_owner(&mut self) -> &mut ClockOwner {
-            &mut self.owner
+        fn scheduler_clock(&mut self) -> SchedulerClock<'_> {
+            SchedulerClock::Owned(&mut self.owner)
         }
 
         fn board_deadline(&self) -> Option<u64> {
@@ -2427,7 +2532,12 @@ mod tests {
         let host = BoardSmpHost::new(&mut board, none).unwrap();
         assert_eq!(host.board().clock().now_ns(), 0);
         let mut host = host;
-        host.clock_owner().account_device_ns(5).unwrap();
+        host.scheduler_clock()
+            .account(Executed {
+                device_ns: 5,
+                ..Executed::default()
+            })
+            .unwrap();
         assert_eq!(host.board().clock().now_ns(), 5);
     }
 }

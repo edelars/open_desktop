@@ -1652,14 +1652,20 @@ fn run_linux_direct_board_set_with_post_iret_index(
     // profile answers leaves 1 and 0x8000_0001 for what it declares.
     let cpuid_boundary =
         members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1;
-    let result = if capture_execution_observations {
+    let schedule_standalone = user_mode
+        && cpuid == CpuidProfile::X8664V1Stage4A
+        && members.irq
+        && !boot.board.clock_owner_enabled()
+        && boot.board.vcpu_count() == 1
+        && boot.board.pit_pic_source().is_some();
+    let result = if capture_execution_observations || schedule_standalone {
         boot.board.run_linux_boot_cpl0_set_with_post_iret_index(
             instruction_budget,
             &set,
             cpuid_boundary,
             members.fetch_cache,
             members.irq,
-            true,
+            capture_execution_observations,
             selected_post_iret_ordinal,
             selected_rdtsc_sample_rip,
             selected_rdtsc_sample_stride,
@@ -1669,6 +1675,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
             selected_instruction_path_trace,
             selected_elf_stack_copy,
             selected_delay_tsc_call_summary,
+            schedule_standalone,
         )
     } else {
         boot.board.run_linux_boot_cpl0_set(
@@ -3900,6 +3907,36 @@ mod tests {
             1,
             "the CLI is the only difference"
         );
+    }
+
+    #[test]
+    fn s6_21_standalone_linux_keeps_the_direct_clock_overflow_prefix() {
+        for (initial_ns, expected_pending_tick) in [(u64::MAX, 1_000), (u64::MAX - 1, 0)] {
+            for profile in [CpuidProfile::DiagnosticV1, CpuidProfile::X8664V1Stage4A] {
+                let (mut boot, file) = boot_with_entry(&[0xEC, 0xF4]); // IN AL,DX; HLT
+                boot.board.state_mut().gpr[Register::Rdx as usize] = 0x608;
+                boot.board.advance_time_ns(initial_ns).unwrap();
+                let error = run_linux_direct_board_set_user_mode(
+                    &mut boot,
+                    &input(&file, &[], BLOB, board_hash()),
+                    64,
+                    LinuxCpl0SetMembers {
+                        cpuid_profile: profile,
+                        pio_u8: true,
+                        ..LinuxCpl0SetMembers::minimal()
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(error.code, "run_failed");
+                assert_eq!(error.retired, Some(1));
+                assert!(error.detail.contains("TimeOverflow"), "{error:?}");
+                assert_eq!(boot.board.clock().now_ns(), u64::MAX);
+                assert_eq!(
+                    boot.board.acpi_pm().unwrap().take_timer_tick_ns(),
+                    expected_pending_tick
+                );
+            }
+        }
     }
 
     fn host_read_port(boot: &mut LinuxDirectBoot, port: u16) -> u32 {
@@ -11212,6 +11249,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
             )
             .expect("board run");
 
@@ -16414,6 +16452,53 @@ mod tests {
                     ))
                 ));
                 assert!(default.board.advance_time_ns(1).is_ok());
+            }
+
+            #[test]
+            fn s6_21_standalone_linux_keeps_the_board_only_irq_and_clock_policy() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let mut direct = board(&code, &eoi_handler(), true).0;
+                let (mut scheduled, file) = board(&code, &eoi_handler(), true);
+                for boot in [&mut direct, &mut scheduled] {
+                    arm_lapic_timer(boot, 0x40, 100);
+                    boot.board.local_apic().write_icr(0, 0, 4 << 8).unwrap();
+                }
+                let direct_report = run(&mut direct, 20_000);
+                let scheduled_report = run_linux_direct_board_set_user_mode(
+                    &mut scheduled,
+                    &input(&file, &[], BLOB, board_hash()),
+                    20_000,
+                    LinuxCpl0SetMembers {
+                        cpuid_profile: CpuidProfile::X8664V1Stage4A,
+                        pio_u8: true,
+                        sti: true,
+                        ..LinuxCpl0SetMembers::minimal()
+                    },
+                )
+                .unwrap();
+                assert_eq!(scheduled_report.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(scheduled_report.retired, direct_report.run.retired);
+                assert_eq!(scheduled_report.quanta, direct_report.run.quanta);
+                assert_eq!(scheduled_report.virtual_ns, direct_report.run.virtual_ns);
+                assert_eq!(scheduled_report.com1, direct_report.run.com1);
+                assert_eq!(scheduled_report.halt_wakes, 1);
+                assert_eq!(
+                    scheduled_report.irqs_delivered,
+                    direct_report.irq.irqs_delivered
+                );
+                assert_eq!(scheduled.board.state(), direct.board.state());
+                let lapic = scheduled.board.local_apic();
+                assert_eq!(lapic.next_timer_deadline(), Some(100));
+                assert_eq!(lapic.vector_state(0x40), (false, false));
+                assert!(lapic.pending_nmi());
+                assert!(!scheduled.board.clock_owner_enabled());
+                assert!(
+                    !scheduled_report
+                        .set_members
+                        .iter()
+                        .any(|name| name == "clock_owner")
+                );
+                assert!(scheduled.board.advance_time_ns(1).is_ok());
             }
 
             #[test]
