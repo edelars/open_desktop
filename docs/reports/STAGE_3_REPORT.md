@@ -1381,10 +1381,45 @@ local Stage 1 child summary and manifest.
 
 - The local archive contains 415 files, SHA-256 `4435276ee46ca326c548edf2f87de6ae3a344e2f2154eb0c8ed688c01d7f2e1e`. [Local archive](data/stage3/s3-41-m1pro-de1f446-20261119/local.json.gz)
 - The process archive contains 174 files, SHA-256 `c8e56dee3e71b0ae487196d77a3958ed6dbc10f17ef5c754d845b241a1271175`. [VMHost process archive](data/stage3/s3-41-m1pro-de1f446-20261119/vmhost-process.json.gz)
+
+### M1 Pro checks after S3-40aj
+
+Both selectors used clean `d48eef9` on the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4 and Rust and Cargo 1.99.0. Both start and
+end source fingerprints were
+`0bcd3d9f5ebe801f68e4af8ed959f28407152c1d18715614f9eb343b44c1dcea`.
+Both pinned the input manifest SHA-256
+`c578c8c302ceaaf808535d2148adffa39b3c557fe83981c327a9fc77da434833`.
+
+| Selector | Run | Passed |
+| --- | --- | ---: |
+| `vmhost-process` | `stage3-20261119-222004-8658d550f4` | 46/46 |
+| `local` | `stage3-20261119-222205-b5496534af` | 359/359 |
+
+The process selector passed the generated fault case and recorded
+SIGSEGV. The original local process finished after the SSH connection
+interrupted. The completed archives were independently revalidated
+after retrieval, including 405 selected step logs and 58 child logs.
+The local result predates the addition of S3-34ds to the selector.
+
+- The local archive contains 415 files, SHA-256 `6f544ac33c406a1312101e447d5527c1fbb0fde6170b0c30ab8656eb6cc5aedf`. [Local archive](data/stage3/s3-41-m1pro-d48eef9-20261119/local.json.gz)
+- The process archive contains 174 files, SHA-256 `f9f5eab5fbcae4252026ebedec512d4491e55fbe3f777294a2e331a665ec3480`. [VMHost process archive](data/stage3/s3-41-m1pro-d48eef9-20261119/vmhost-process.json.gz)
+
+The separate ARM64 C smoke used the concurrent waiter fixture from
+`f88df16` with the exact `libod_host.a` from the signed VMHost build.
+The library SHA-256 was
+`209211df35697b5e819e720b9cf746e8abb3b83a3817d0e6dcbef31adc2739e5`.
+The smoke passed the competing `BUSY` wait, the sole STOP result,
+one byte followed by EOF, and a fresh RUN with a greater invocation ID.
+The same executable passed the pipe `EMFILE` and lost-reader cases.
+[Native observation](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-observation.json)
+[Build and signature provenance](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-provenance.txt)
+
 ### Hardware acceptance
 
-The M1 Pro passed both ARM64 selectors on `de1f446` and passed the
-signed native C ABI cases for lost notification and pipe creation failure.
+The M1 Pro passed both ARM64 selectors on `d48eef9` and passed the
+signed native C ABI cases for concurrent wait, lost notification and
+pipe creation failure.
 The Mac mini configuration, native execution on physical x86 and
 final S3-41 acceptance remain open.
 

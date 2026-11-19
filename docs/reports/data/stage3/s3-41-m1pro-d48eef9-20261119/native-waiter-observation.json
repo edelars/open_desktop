@@ -1,0 +1,5 @@
+{
+  "exit": 0,
+  "stdout": "normal notification: one byte, EOF, then valid result\npipe EMFILE: begin status=5, no active run, retained high-water mark, recovered on greater ID\nconcurrent wait: one BUSY, one STOP result, one notification, later greater ID completed\ninjecting lost notification reader before STOP\nV1 native ABI smoke passed: layout, notification failure, destroy and fresh session\n",
+  "stderr": ""
+}
