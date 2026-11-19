@@ -1003,6 +1003,45 @@ fn replay_cache_trace_failure(
         &fs::read(path).map_err(|error| format!("cannot read failure trace: {error}"))?,
     )
     .map_err(|error| format!("malformed failure trace: {error}"))?;
+    let (cached, after, backend_error) =
+        replay_cache_trace_input(&failure, &failure.failing_input)?;
+    let cached = cached.map(|actual| injected_cached_observation.unwrap_or(actual));
+    if cached != failure.cached || after != failure.cache_after {
+        return Err("saved cache failure did not reproduce: observation/counters differ".into());
+    }
+    let reproduced = if failure.failure_kind == "cache_counter_mismatch"
+        && failure.segment_kind == "retained_hit"
+    {
+        retained_hit_counter_mismatch(failure.sequence_index, &failure.cache_after)
+            .map(|detail| ("cache_counter_mismatch", detail))
+    } else if let Some(cached) = cached.as_ref() {
+        if let Err(detail) = compare(&failure.interpreter, cached) {
+            Some(("interpreter_mismatch", detail))
+        } else if let Err(detail) = compare(&failure.uncached, cached) {
+            Some(("uncached_mismatch", detail))
+        } else {
+            None
+        }
+    } else {
+        backend_error.map(|detail| ("backend_error", detail))
+    };
+    if reproduced
+        .as_ref()
+        .map(|(kind, detail)| (*kind, detail.as_str()))
+        != Some((
+            failure.failure_kind.as_str(),
+            failure.failure_detail.as_str(),
+        ))
+    {
+        return Err("saved cache failure did not reproduce with the same signature".into());
+    }
+    Ok(())
+}
+
+fn replay_cache_trace_input(
+    failure: &CacheTraceFailureEnvelope,
+    input: &Input,
+) -> Result<(Option<Observation>, CacheCounterSnapshot, Option<String>), String> {
     if failure.version != CACHE_TRACE_VERSION
         || failure.profile != PROFILE
         || !matches!(
@@ -1017,7 +1056,7 @@ fn replay_cache_trace_failure(
             } else {
                 2
             }
-        || failure.failure_digest != cache_trace_failure_digest(&failure)
+        || failure.failure_digest != cache_trace_failure_digest(failure)
     {
         return Err("failure trace version, bounds, strategy, or digest differs".into());
     }
@@ -1074,7 +1113,6 @@ fn replay_cache_trace_failure(
     {
         return Err("failure trace source identity or baselines differ".into());
     }
-    let candidate = failure.strategy == "demand_candidate";
     let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
         1,
         od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
@@ -1129,49 +1167,170 @@ fn replay_cache_trace_failure(
     if before != failure.cache_before {
         return Err("failure replay pre-step counters differ".into());
     }
-    let replayed = run_cached_backend(&failure.failing_input, candidate, &mut cache);
-    let (cached, after, backend_error) = match replayed {
-        Ok((actual, counters)) => {
-            let actual = injected_cached_observation.unwrap_or(actual);
-            (Some(actual), counters, None)
-        }
+    let replayed = match run_cached_backend(input, candidate, &mut cache) {
+        Ok((actual, counters)) => (Some(actual), counters, None),
         Err(error) => (None, cache_counter_snapshot(&cache), Some(error)),
     };
-    if cached != failure.cached || after != failure.cache_after {
-        return Err("saved cache failure did not reproduce: observation/counters differ".into());
-    }
-    let reproduced = if failure.failure_kind == "cache_counter_mismatch"
-        && failure.segment_kind == "retained_hit"
-    {
-        retained_hit_counter_mismatch(failure.sequence_index, &failure.cache_after)
-            .map(|detail| ("cache_counter_mismatch", detail))
-    } else if let Some(cached) = cached.as_ref() {
-        if let Err(detail) = compare(&failure.interpreter, cached) {
-            Some(("interpreter_mismatch", detail))
-        } else if let Err(detail) = compare(&failure.uncached, cached) {
-            Some(("uncached_mismatch", detail))
-        } else {
-            None
-        }
-    } else {
-        backend_error.map(|detail| ("backend_error", detail))
-    };
-    if reproduced
-        .as_ref()
-        .map(|(kind, detail)| (*kind, detail.as_str()))
-        != Some((
-            failure.failure_kind.as_str(),
-            failure.failure_detail.as_str(),
-        ))
-    {
-        cache.clear();
-        return Err("saved cache failure did not reproduce with the same signature".into());
-    }
     cache.clear();
     if cache.resident_entries() != 0 {
         return Err("failure replay retained an executable handle after clear".into());
     }
-    Ok(())
+    Ok(replayed)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedGprReduction {
+    version: u32,
+    source_digest: String,
+    input: Input,
+    observations: GeneratedGprObservations,
+}
+
+#[derive(Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedGprObservations {
+    interpreter: Observation,
+    uncached: Observation,
+    cached: Observation,
+}
+
+fn differing_gprs(expected: &Observation, actual: &Observation) -> Option<u16> {
+    let mut adjusted = actual.clone();
+    adjusted.gpr = expected.gpr;
+    if &adjusted != expected {
+        return None;
+    }
+    let mask = expected
+        .gpr
+        .iter()
+        .zip(actual.gpr)
+        .enumerate()
+        .filter(|(_, (expected, actual))| **expected != *actual)
+        .fold(0, |mask, (register, _)| mask | (1 << register));
+    (mask != 0).then_some(mask)
+}
+
+fn generated_gpr_trial<F>(
+    failure: &CacheTraceFailureEnvelope,
+    input: &Input,
+    mask: u16,
+    inject: &mut F,
+) -> Result<Option<GeneratedGprObservations>, String>
+where
+    F: FnMut(&Input, Observation) -> Observation,
+{
+    let original = &failure.failing_input;
+    if input.initial_rflags != original.initial_rflags
+        || !retained_hit_state_only(original, input)
+        || cache_bindings(input) != cache_bindings(original)
+    {
+        return Err("generated reduction changed more than incoming GPR values".into());
+    }
+    let (cached, after, backend_error) = replay_cache_trace_input(failure, input)?;
+    let cached =
+        cached.ok_or_else(|| format!("generated replay backend error: {backend_error:?}"))?;
+    let expected = reference_observation(input);
+    let uncached = run_backend(input, failure.strategy == "demand_candidate")?;
+    if expected != uncached {
+        return Err("generated reduction interpreter and uncached baseline disagree".into());
+    }
+    let saved = &failure.interpreter;
+    let actual = inject(input, cached);
+    // The generated tail uses JZ/JNZ and has no later instruction that writes ZF.
+    const ZERO_FLAG: u64 = 1 << 6;
+    Ok((after == failure.cache_after
+        && (expected.rflags ^ saved.rflags) & ZERO_FLAG == 0
+        && expected.rip == saved.rip
+        && expected.exit == saved.exit
+        && expected.retired_native == saved.retired_native
+        && expected.retired_interpreter == saved.retired_interpreter
+        && expected.remaining_budget == saved.remaining_budget
+        && differing_gprs(&expected, &actual) == Some(mask))
+    .then_some(GeneratedGprObservations {
+        interpreter: expected,
+        uncached,
+        cached: actual,
+    }))
+}
+
+fn generated_gpr_reduction<F>(
+    source_path: &Path,
+    reduced_path: &Path,
+    replay: bool,
+    mut inject: F,
+) -> Result<(), String>
+where
+    F: FnMut(&Input, Observation) -> Observation,
+{
+    let source_bytes = fs::read(source_path).map_err(|error| error.to_string())?;
+    let failure: CacheTraceFailureEnvelope =
+        serde_json::from_slice(&source_bytes).map_err(|error| error.to_string())?;
+    if failure.segment_kind != "generated_corpus"
+        || failure.failure_kind != "interpreter_mismatch"
+        || failure.failure_detail != "gpr"
+    {
+        return Err("expected a generated_corpus cached GPR mismatch".into());
+    }
+    let mask = failure
+        .cached
+        .as_ref()
+        .and_then(|cached| differing_gprs(&failure.interpreter, cached))
+        .ok_or_else(|| {
+            "source failure differs outside GPRs or has no cached mismatch".to_owned()
+        })?;
+    let source_digest = digest(&source_bytes);
+    let mut trial = |input: &Input| -> Result<Option<GeneratedGprObservations>, String> {
+        let first = generated_gpr_trial(&failure, input, mask, &mut inject)?;
+        let second = generated_gpr_trial(&failure, input, mask, &mut inject)?;
+        Ok(if first == second { first } else { None })
+    };
+    let original = &failure.failing_input;
+    if trial(original)?.is_none_or(|observations| {
+        observations.interpreter != failure.interpreter
+            || observations.uncached != failure.uncached
+            || Some(observations.cached) != failure.cached
+    }) {
+        return Err("generated cache failure did not reproduce in two exact replays".into());
+    }
+    if replay {
+        let bytes = fs::read(reduced_path).map_err(|error| error.to_string())?;
+        let reduced: GeneratedGprReduction =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if reduced.version != 1
+            || reduced.source_digest != source_digest
+            || reduced.input == *original
+            || trial(&reduced.input)?.as_ref() != Some(&reduced.observations)
+        {
+            return Err("generated reduction binding or mismatch differs on replay".into());
+        }
+        return Ok(());
+    }
+    let mut input = original.clone();
+    let mut observations = None;
+    for register in 0..input.initial_gpr.len() {
+        if input.initial_gpr[register] == 0 {
+            continue;
+        }
+        let mut candidate = input.clone();
+        candidate.initial_gpr[register] = 0;
+        let candidate = finish_input(candidate);
+        if let Some(results) = trial(&candidate)? {
+            input = candidate;
+            observations = Some(results);
+        }
+    }
+    let observations =
+        observations.ok_or_else(|| "no GPR reduction preserved the cached mismatch".to_owned())?;
+    write_json_create_new(
+        reduced_path,
+        &GeneratedGprReduction {
+            version: 1,
+            source_digest,
+            input,
+            observations,
+        },
+    )
 }
 
 struct RetainedHitTrial {
@@ -3022,6 +3181,24 @@ fn cached_trace_replays_from_empty_cache_and_rejects_corruption() {
 #[test]
 fn cached_failure_trace_replays_saved_prefix_and_failure() {
     let _guard = jit_test_lock();
+    let reduced_replay =
+        std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REPLAY_GENERATED_GPR_REDUCTION");
+    if let Some(path) = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_GENERATED_GPR_FAILURE") {
+        let (reduced_path, replay) = match reduced_replay {
+            Some(path) => (PathBuf::from(path), true),
+            None => (
+                artifact_dir().join("generated-gpr-reduction-v1.json"),
+                false,
+            ),
+        };
+        generated_gpr_reduction(Path::new(&path), &reduced_path, replay, |_, actual| actual)
+            .unwrap_or_else(|error| panic!("generated GPR reduction failed: {error}"));
+        return;
+    }
+    assert!(
+        reduced_replay.is_none(),
+        "generated reduction replay requires the source failure path"
+    );
     if let Some(path) = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE") {
         replay_cache_trace_failure(Path::new(&path), None)
             .unwrap_or_else(|error| panic!("saved cache failure did not replay: {error}"));
@@ -3029,27 +3206,30 @@ fn cached_failure_trace_replays_saved_prefix_and_failure() {
     }
 
     let corpus = load_or_generate_corpus_observations();
-    let prefix_case = &corpus.cases[0];
-    let case = &corpus.cases[1];
+    let case = &corpus.cases[2];
     let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
         1,
         od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
     )
     .unwrap();
-    let prefix_interpreter = prefix_case.backend_runs.interpreter[0].clone().unwrap();
-    let prefix_uncached = prefix_case.backend_runs.eager_native[0].clone().unwrap();
-    let (prefix_cached, prefix_after) =
-        run_cached_backend(&prefix_case.input, false, &mut cache).unwrap();
-    let (_, _, prefix_bindings) = cache_bindings(&prefix_case.input);
-    let prefix = CacheTraceStep {
-        sequence_index: 0,
-        input: prefix_case.input.clone(),
-        bindings: prefix_bindings,
-        interpreter: prefix_interpreter,
-        uncached: prefix_uncached,
-        cached: prefix_cached,
-        cache: prefix_after,
-    };
+    let successful_prefix = corpus.cases[..2]
+        .iter()
+        .enumerate()
+        .map(|(sequence_index, prefix_case)| {
+            let input = &prefix_case.input;
+            let (_, _, bindings) = cache_bindings(input);
+            let (cached, cache) = run_cached_backend(input, false, &mut cache).unwrap();
+            CacheTraceStep {
+                sequence_index,
+                input: input.clone(),
+                bindings,
+                interpreter: prefix_case.backend_runs.interpreter[0].clone().unwrap(),
+                uncached: prefix_case.backend_runs.eager_native[0].clone().unwrap(),
+                cached,
+                cache,
+            }
+        })
+        .collect();
     let before = cache_counter_snapshot(&cache);
     let (cached, after) = run_cached_backend(&case.input, false, &mut cache).unwrap();
     cache.clear();
@@ -3068,8 +3248,8 @@ fn cached_failure_trace_replays_saved_prefix_and_failure() {
         source_inputs_digest: corpus.inputs_digest.clone(),
         segment_kind: "generated_corpus".into(),
         strategy: "eager".into(),
-        sequence_index: 1,
-        successful_prefix: vec![prefix],
+        sequence_index: 2,
+        successful_prefix,
         failing_input: case.input.clone(),
         interpreter,
         uncached,
@@ -3094,6 +3274,50 @@ fn cached_failure_trace_replays_saved_prefix_and_failure() {
             .unwrap_err()
             .contains("did not reproduce")
     );
+
+    // Alter only the returned observation after actual execution, in this self-check.
+    let reduced = artifact_dir().join(format!(
+        "generated-gpr-reduction-selfcheck-{}.json",
+        std::process::id()
+    ));
+    let identity = |_: &Input, actual| actual;
+    assert!(
+        generated_gpr_reduction(&path, &reduced, false, identity)
+            .unwrap_err()
+            .contains("did not reproduce")
+    );
+    assert!(!reduced.exists());
+    let inject = |input: &Input, mut actual: Observation| {
+        if input.initial_gpr[15] != 0 {
+            actual.gpr[0] ^= 1;
+        }
+        actual
+    };
+    generated_gpr_reduction(&path, &reduced, false, inject).unwrap();
+    assert!(generated_gpr_reduction(&path, &reduced, false, inject).is_err());
+    generated_gpr_reduction(&path, &reduced, true, inject).unwrap();
+    let reduced_bytes = fs::read(&reduced).unwrap();
+    let reduced_artifact: GeneratedGprReduction = serde_json::from_slice(&reduced_bytes).unwrap();
+    assert_ne!(
+        failure.failing_input.initial_gpr,
+        reduced_artifact.input.initial_gpr
+    );
+    assert_eq!(
+        failure.failing_input.initial_gpr[15],
+        reduced_artifact.input.initial_gpr[15],
+    );
+    for backend in ["interpreter", "uncached", "cached"] {
+        let mut altered: serde_json::Value = serde_json::from_slice(&reduced_bytes).unwrap();
+        let gpr = &mut altered["observations"][backend]["gpr"][0];
+        *gpr = (gpr.as_u64().unwrap() ^ 1).into();
+        write_json(&reduced, &altered);
+        assert!(
+            generated_gpr_reduction(&path, &reduced, true, inject)
+                .unwrap_err()
+                .contains("binding or mismatch differs")
+        );
+    }
+    fs::remove_file(reduced).unwrap();
 
     let mut corrupted = failure;
     corrupted.failure_digest = "fnv1a64:0000000000000000".into();

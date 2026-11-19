@@ -1357,6 +1357,15 @@ The local selector now requires this gate. The exact gate ran through
 the harness on local ARM64 and all 158 harness self-tests passed.
 [Corpus result and reproduction](STAGE_3_S3-34ds_2026-11-19.md)
 
+### Generated cache-trace GPR reduction
+
+S3-34dt records the reduced input and interpreter, uncached and cached
+observations for a reproduced GPR-only mismatch in a generated
+NativeRegisterV1 cache trace. Four signed ARM64 gates passed. The controlled
+test replayed the actual cache prefix and a deliberately changed observation.
+The ordinary invocation refused to reduce the unreproduced mismatch.
+[Reducer and signed evidence](STAGE_3_S3-34dt_2026-11-19.md)
+
 ### M1 Pro checks after S3-40ah
 
 Both selectors used clean `de1f446` on the Apple M1 Pro with macOS
