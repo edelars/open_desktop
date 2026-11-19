@@ -1,0 +1,37 @@
+{
+  "commit": "e2505af",
+  "report_sha256": "957d0fca604296562689f40e32d95bcfea282eb8764dfaa37b3734d7387fad5f",
+  "seed": 24301,
+  "budget": 2500000000,
+  "nonce": "smpBoot20261119A",
+  "profile": "stage4a-apic",
+  "kernel_observation": "[    0.018178] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs",
+  "stop": {
+    "exit_kind": "unsupported",
+    "rip": "0xffffffff819dfa98",
+    "rip_gpa": "0x19dfa98",
+    "rip_bytes": "f0 81 6b 04 01 00 00 80 48 8b 5d f8 c9 31 c0 31",
+    "unsupported_opcode": "0x81",
+    "cpl": 0
+  },
+  "terminal_vcpu": 0,
+  "vcpus": [
+    {
+      "index": 0,
+      "retired": 1647604355,
+      "activity": "Running"
+    },
+    {
+      "index": 1,
+      "retired": 0,
+      "activity": "WaitForSipi"
+    }
+  ],
+  "guest_verifier": "expected a single complete guest observation with the requested nonce",
+  "kernel_symbol": "kernfs_activate_one+0x58",
+  "runner_sha256": "10626568894972fed7446a0047460a47027f5a5dc4a14012f77ace36775b46ab",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+  "ram_mib": 128
+}
