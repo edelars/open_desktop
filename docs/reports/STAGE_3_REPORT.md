@@ -1162,6 +1162,39 @@ The archives expose each UTF-8 member under `files` and its digest under
 `file_sha256`. Both results cover this local macOS ARM64 snapshot.
 Final S3-41 acceptance remains open, including the deferred hardware checks.
 
+### Local and signed VMHost selectors after S3-40x
+
+On 19 November 2026, both selectors passed on
+`5275d67d6e136c43e9dbb3658586f139342eb74c`. The `local` selector
+passed all 359 selected steps, including 157 harness self-tests,
+2,020 dispatcher results from 1,010 inputs, 4,800 memory inputs replayed
+twice, and the signed VMHost RESULT-state contract. The separate
+`vmhost-process` selector passed all 46 selected steps, including
+process isolation, control races and the expected launcher report of
+`SIGSEGV` in the generated-code fault smoke. ISSUE-044 remains open.
+
+Both runs use `python3 tests/cpu/stage3_harness.py --suite` followed by
+the corresponding selector. Their common start and end fingerprint is
+`20afdb1c48beefddc60a4501bc7d2215d4797e33eeded2adb0a9503d2c532059`.
+Their input manifest SHA-256 is
+`38fec7a5104c5dae3ebf18cb107a56d98b666ea221dbccfe5c495ec05360fa61`.
+
+| Selection | Run ID | Summary SHA-256 |
+| --- | --- | --- |
+| Local | `stage3-20261119-140632-8c6a8a224c` | `e36bf34dcbfd7be07552ca31454eb5a44529eefb53822398f0adc88ec89ea843` |
+| VMHost process | `stage3-20261119-140933-e835171c13` | `c5a1f5f61f8e8e60d302c00e8108a8d0045a970de1ec646d50d20dfb65edaeaa` |
+
+The official validator passed again for both summaries. The selected
+step logs matched all 405 recorded SHA-256 values and source fingerprints.
+The local archive includes the Stage 1 child summary and oracle manifest
+with the hashes recorded by its parent.
+
+- [Local archive, 415 files](data/stage3/s3-41-5275d67-20261119/local.json.gz) has SHA-256 `6a3045381717880de57164c144a3f0d3b798881e595f275018eeeaca572e179f`.
+- [VMHost process archive, 174 files](data/stage3/s3-41-5275d67-20261119/vmhost-process.json.gz) has SHA-256 `79170817b52221a07be10d6279f92b4686db414ffbd09d7bcd68d5b0bea56b79`.
+
+Both results cover the same local macOS ARM64 snapshot. Final S3-41
+acceptance remains open, including the deferred hardware checks.
+
 ### Hardware acceptance
 
 Mac mini/physical-x86 acceptance remains deferred to the end of Stage 3. Local
