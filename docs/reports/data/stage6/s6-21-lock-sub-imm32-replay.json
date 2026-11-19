@@ -1,0 +1,52 @@
+{
+  "base_commit": "d3fc5eb0cb778859685e887e5ea73dae61658849",
+  "runner_sha256": "ddd15271278d80a74bc74fbfe4b88238da0f1acacd3149f0c9c895f5245166bd",
+  "production_patch_sha256": "3723d842e5ecca0463e02e0f005df9fff6ac99978de94ae037eff86b2a33fc55",
+  "report_sha256": "221e12f6d0c06d087a90c3229cee93c69b82d292e6abdddc105231e45aac1d2b",
+  "verifier_report_sha256": "cbc6a3e877539db823e2ee6b8f4439485ba972819c8edea90d6668951f17cd4f",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "kernel_debug_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+  "nonce": "smpBoot20261119A",
+  "profile": "X8664V1Stage4AApic",
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 2500000000,
+  "previous_stop_rip": "0xffffffff817f24ad",
+  "exit_kind": "budget_exhausted",
+  "retired": 2500000000,
+  "retired_cpl3": 9003,
+  "cpus": [
+    {
+      "index": 0,
+      "mode": "Long64",
+      "activity": "Running",
+      "retired": 1901594999
+    },
+    {
+      "index": 1,
+      "mode": "Long64",
+      "activity": "Running",
+      "retired": 598405001
+    }
+  ],
+  "linux_bringup": "[    1.746003] smp: Brought up 1 node, 2 CPUs",
+  "init_exec": "[    2.462734] Run /init as init process",
+  "guest_online": "0-1",
+  "ipi_counts": {
+    "RES": [
+      8,
+      27
+    ],
+    "CAL": [
+      231,
+      134
+    ],
+    "TLB": [
+      0,
+      0
+    ]
+  }
+}

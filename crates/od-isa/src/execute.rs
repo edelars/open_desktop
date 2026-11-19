@@ -77306,7 +77306,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_qword_immediates_sign_extend_the_byte_and_use_one_atomic_rmw() {
+    fn lock_qword_immediates_sign_extend_and_use_one_atomic_rmw() {
         let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
         let config = RunConfig {
             instruction_budget: 1,
@@ -77326,33 +77326,42 @@ mod tests {
         };
         initial.gpr[Register::Rdi as usize] = 0x1000;
         initial.gpr[Register::R14 as usize] = 0x1000;
+        initial.gpr[Register::Rax as usize] = 0xe80;
         let sub = |imm| [0xf0, 0x48, 0x83, 0x2f, imm];
+        let wide_sub = |imm: i32| {
+            let [imm0, imm1, imm2, imm3] = imm.to_le_bytes();
+            [
+                0xf0, 0x48, 0x81, 0xa8, 0x80, 0x01, 0x00, 0x00, imm0, imm1, imm2, imm3,
+            ]
+        };
         let and = [0xf0, 0x49, 0x83, 0x26, 0xcf];
         for (bytes, old, value, arithmetic_flags) in [
-            (sub(1), 1u64, 0, crate::ZF | crate::PF),
+            (&sub(1)[..], 1u64, 0, crate::ZF | crate::PF),
             (
-                sub(1),
+                &sub(1),
                 0,
                 u64::MAX,
                 crate::CF | crate::PF | crate::AF | crate::SF,
             ),
             (
-                sub(1),
+                &sub(1),
                 0x8000_0000_0000_0000,
                 0x7fff_ffff_ffff_ffff,
                 crate::PF | crate::AF | crate::OF,
             ),
-            (sub(0x80), 0, 128, crate::CF),
+            (&sub(0x80), 0, 128, crate::CF),
             (
-                and,
+                &and,
                 0xfedc_ba98_7654_323f,
                 0xfedc_ba98_7654_320f,
                 crate::SF | crate::PF | crate::AF,
             ),
-            (and, 0x30, 0, crate::ZF | crate::PF | crate::AF),
+            (&and, 0x30, 0, crate::ZF | crate::PF | crate::AF),
+            (&wide_sub(0x1000), 0x1000, 0, crate::ZF | crate::PF),
+            (&wide_sub(i32::MIN), 1, 0x8000_0001, crate::CF),
         ] {
             let mut state = initial.clone();
-            let mut memory = Memory::new(&bytes);
+            let mut memory = Memory::new(bytes);
             memory.bytes[..8].copy_from_slice(&old.to_le_bytes());
             let mut expected_ram = memory.bytes.clone();
             expected_ram[..8].copy_from_slice(&value.to_le_bytes());
@@ -77372,7 +77381,7 @@ mod tests {
             );
             assert_eq!(run.instructions_executed, 1);
             assert_eq!(state.rflags, 0x0402 | arithmetic_flags);
-            assert_eq!(state.rip, 5);
+            assert_eq!(state.rip, bytes.len() as u64);
             assert_eq!(state.gpr, initial.gpr);
             assert_eq!(memory.atomic_rmws, [(0x1000, OperandSize::Qword)]);
             assert!(memory.accesses.is_empty());

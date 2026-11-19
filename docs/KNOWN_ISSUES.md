@@ -6579,7 +6579,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 Повтор после ISSUE-553 с двумя vCPU и seed `24301` дошёл до сообщения `Run /init as init process`. CPU1 остановился в `free_pud_range+0x21d` по RIP `0xffffffff817f24ad`. Байты `f0 48 81 a8 80 01 00 00 00 10 00 00` совпали с образом ядра, это `lock subq $0x1000, 0x180(%rax)`. Для приёмки S6-21 требуются вывод `/init` и гостевые счётчики IPI. [Сводка запуска](reports/data/stage6/s6-21-lock-xor-byte-replay.json).
 
-Статус: открыта. Следующий шаг — проверить допуск `F0 REX.W 81 /5 id` с памятью через существующий атомарный SUB и повторить загрузку.
+Статус: исправлено. `F0 REX.W 81 /5 id` с памятью использует существующий атомарный SUB. Повтор прошёл прежний RIP, и строгий верификатор принял полный блок `/init` с двумя online CPU и ненулевыми RES и CAL на обоих. [Реализация и проверки](reports/STAGE_6_REPORT.md#s6-21--lock-sub-qword-с-imm32).
 
 ### ISSUE-555 — S6-38: AND RSP, imm8 останавливает BusyBox в CPL3
 
