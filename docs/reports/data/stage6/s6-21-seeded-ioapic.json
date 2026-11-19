@@ -1,0 +1,74 @@
+{
+  "task": "S6-21 CLI interleaved seed with IOAPIC",
+  "baseline_commit": "4e5a45d",
+  "build": "cargo build --release --locked --offline -p od-runner",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "od_runner_sha256": "2b1deba7d46a4853bb71abbce5987ca29bcc6709295fa762d34bebbf73cc42e9",
+  "baseline_runner_sha256": "e4cd8b77b6868a9ebcb0e0465d0f55677e7f7de3b07b4c0be06164a2396ca03b",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d",
+  "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+  "ram_mib": 128,
+  "baseline_seeded_apic": {
+    "exit_code": 3,
+    "guest_started": false,
+    "error": "invalid_input",
+    "stage": "arguments"
+  },
+  "prefix_stage4a_apic": [
+    {
+      "seed": 24301,
+      "retired": 10000000,
+      "quanta": 80469,
+      "report_sha256": "97ed77373e977a6686a6099944f086d98474cf786709079cf4208abd3286942d"
+    },
+    {
+      "seed": 24302,
+      "retired": 10000000,
+      "quanta": 79973,
+      "report_sha256": "3652c9e7da9d1f7edc417556fbe3c177f397cea0f9d3d3a8fc4d135ce6032d0c"
+    }
+  ],
+  "compatibility_prefix": {
+    "budget": 10000000,
+    "unseeded_stage4a_apic_report_sha256": "4c58ca82094e2592f44b764b1bf0eb9fb0d474be8eec4957924559fba6f41e0f",
+    "seeded_stage4a_seed24301_report_sha256": "30ca8042f9e56e2526c98ed322931cdaa319e42d01ffafae8d44f6955a424a17"
+  },
+  "seeded_pair": {
+    "profile": "stage4a-apic",
+    "mode": "interleaved",
+    "seed": 24301,
+    "vcpus": 1,
+    "budget": 2500000000,
+    "identical_full_report_sha256": "bd067e413f860cce0aa5e820ea78ecee6abc5293e5bf2a74d66ef7391d4115d0",
+    "com1_bytes": 23101,
+    "com1_sha256": "ba4f0392c5e294526a226ed53b31c6eff77279745a21119b718a0ece1885af83",
+    "stop": {
+      "exit_kind": "budget_exhausted",
+      "retired": 2499983157,
+      "cpl3_retired": 11271,
+      "halt_wakes": 16843,
+      "irq0_edges": 228,
+      "irqs_delivered": 18115,
+      "quanta": 21002366,
+      "virtual_ns": 1696902357929,
+      "rip": "0xffffffff8159627c",
+      "syscalls_entered": 1711,
+      "syscalls_returned": 1710
+    },
+    "guest_observation": {
+      "nonce": "SMPUpObservation20261119",
+      "online": "0",
+      "cpus": [
+        0
+      ],
+      "interrupts": [
+        "  0:        228  IO-APIC   2-edge      timer",
+        "  4:          1  IO-APIC   4-edge      ttyS0",
+        "  9:          0  IO-APIC   9-fasteoi   acpi",
+        "LOC:        702   Local timer interrupts"
+      ]
+    }
+  }
+}

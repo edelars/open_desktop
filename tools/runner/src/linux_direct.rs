@@ -88,7 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
- [--vcpus 1] [--seed <u64> (stage4a user mode)] \
+ [--vcpus 1] [--seed <u64> (stage4a or stage4a-apic user mode)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -1590,11 +1590,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if interleaved_seed.is_some()
         && !(budget.is_some_and(|n| n > 0)
             && set_cpl0
-            && cpuid_profile == CpuidProfile::X8664V1Stage4A
+            && cpuid_profile.is_stage4a_family()
             && user_mode)
     {
         return Err(
-            "--seed needs --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+            "--seed needs --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a or stage4a-apic, and --user-mode"
                 .into(),
         );
     }
@@ -4790,8 +4790,13 @@ mod tests {
             );
         }
         assert!(parse_base(&["--seed", "1"]).is_err());
+        let mut apic_profile = profile;
+        apic_profile[5] = "stage4a-apic";
+        let apic_options = parse_base(&[&apic_profile[..], &["--seed", "1"]].concat()).unwrap();
+        assert_eq!(apic_options.cpuid_profile, CpuidProfile::X8664V1Stage4AApic);
+        assert_eq!(apic_options.interleaved_seed, Some(1));
         let mut wrong_profile = profile;
-        wrong_profile[5] = "stage4a-apic";
+        wrong_profile[5] = "diagnostic";
         assert!(parse_base(&[&wrong_profile[..], &["--seed", "1"]].concat()).is_err());
         let mut zero_budget = profile;
         zero_budget[2] = "0";

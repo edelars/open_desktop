@@ -18322,26 +18322,53 @@ mod tests {
             // by the guest at CPL0 before the `IRETQ`. Two edges fall in 20000 ns.
             let mut prefix = apic_setup(u32::from(IRQ_VECTOR));
             prefix.extend(pit_program(0x34, 10));
-            let (mut boot, file) = user_apic_board(&prefix, &USER_SPIN, 0x202);
-            let record = run_user_apic(&mut boot, &file, 20_000);
-            assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
-            assert!(record.irqs_delivered >= 2, "{record:?}");
-            assert_eq!(record.irq_refused_masked, 0, "{record:?}");
-            assert_eq!(record.cpl, 3, "{record:?}");
-            assert!(record.cpl3_retired > 19_000, "{record:?}");
-            assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
-            let source = boot.board.pit_ioapic_source().expect("installed");
-            let stats = source.stats();
-            assert_eq!(stats.acknowledged, record.irqs_delivered, "{stats:?}");
+            for seed in [None, Some(24_301)] {
+                let (mut boot, file) = user_apic_board(&prefix, &USER_SPIN, 0x202);
+                if let Some(seed) = seed {
+                    boot.board.enable_seeded_linux_interleaved(seed).unwrap();
+                }
+                let record = run_user_apic(&mut boot, &file, 20_000);
+                assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+                assert!(record.irqs_delivered >= 2, "{record:?}");
+                assert_eq!(record.irq_refused_masked, 0, "{record:?}");
+                assert_eq!(record.cpl, 3, "{record:?}");
+                assert!(record.cpl3_retired > 19_000, "{record:?}");
+                assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+                let source = boot.board.pit_ioapic_source().expect("installed");
+                let stats = source.stats();
+                assert_eq!(stats.acknowledged, record.irqs_delivered, "{stats:?}");
+                assert_eq!(
+                    (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                    (0, 0, 0),
+                    "{stats:?}"
+                );
+                assert_eq!(
+                    boot.board.local_apic().vector_state(IRQ_VECTOR),
+                    (false, false)
+                );
+            }
+        }
+
+        #[test]
+        fn seeded_linux_ioapic_one_shot_lapic_timer_wakes_hlt() {
+            let code = lapic_timer_guest(u32::from(IRQ_VECTOR), 100);
+            let mut boot = apic_board(&code, true);
+            let file = bzimage_with_entry(&code);
+            boot.board.enable_seeded_linux_interleaved(24_301).unwrap();
+            let stop = run_user_apic(&mut boot, &file, 300);
+            assert_eq!(stop.exit_kind, "budget_exhausted", "{stop:?}");
             assert_eq!(
-                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
-                (0, 0, 0),
-                "{stats:?}"
+                (stop.retired, stop.halt_wakes, stop.irqs_delivered),
+                (299, 1, 1)
             );
+            assert!(stop.halt_idle_ns > 0);
+            assert_eq!(stop.virtual_ns, stop.retired + stop.halt_idle_ns);
+            assert_eq!(stop.gpr[Register::Rax as usize] as u8, 0x5a);
             assert_eq!(
                 boot.board.local_apic().vector_state(IRQ_VECTOR),
                 (false, false)
             );
+            assert_eq!(boot.board.local_apic().next_timer_deadline(), None);
         }
 
         #[test]

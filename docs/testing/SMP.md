@@ -433,7 +433,8 @@ od-runner --stage6-litmus (--fixture FILE | --corpus DIR |
 Для одно-vCPU проверки seed соберите штатный `od-runner`. Пример использует зафиксированное ядро S6-10 из локального каталога этапа 4 и initramfs наблюдения, который собирается из исходников фикстуры.
 
 ```sh
-proof_dir=work/stage6/s6-21-seeded-cli
+profile=stage4a
+proof_dir="work/stage6/s6-21-seeded-cli/$profile"
 mkdir -p "$proof_dir"
 python3 tools/build/build_stage6_smp_initramfs.py --out "$proof_dir/initramfs.cpio"
 cargo build --release --locked --offline -p od-runner
@@ -448,12 +449,14 @@ for attempt in first second; do
     --expected-initramfs-sha256 5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d \
     --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
     --ram-mib 128 --nonce "$nonce" --out "$report" --run --budget 2500000000 \
-    --set-cpl0 --cpuid-profile stage4a --user-mode --vcpus 1 --seed 24301
+    --set-cpl0 --cpuid-profile "$profile" --user-mode --vcpus 1 --seed 24301
   python3 tools/build/build_stage6_smp_initramfs.py \
     --verify-report "$report" --nonce "$nonce" --expect-online 1
 done
 cmp "$proof_dir/seed-first.json" "$proof_dir/seed-second.json"
 ```
+
+Для проверки с IOAPIC установите `profile=stage4a-apic` в этом рецепте. После проверки nonce и CPU0 строка таймера в гостевом `/proc/interrupts` должна содержать `IO-APIC` и `2-edge`. [Результаты с IOAPIC](../reports/STAGE_6_REPORT.md#s6-21-шаг-2--seed-с-ioapic).
 
 Для зачётного прогона на двух vCPU передайте один raw JSON `linux-direct` и nonce, с которым стартовал гость.
 
