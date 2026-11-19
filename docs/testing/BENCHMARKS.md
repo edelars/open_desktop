@@ -1624,6 +1624,16 @@ prototype default не выбран и ускорение не заявляет�
 для dispatch/cache, cold first execution, warm resident execution и FIFO16
 churn описаны отдельно в отчётах S3-18d1, S3-35a, S3-36a и S3-37a.
 
+### S3-37g. Backing invalidation and first redispatch
+
+The signed FIFO16 driver measures separate intervals for ready dispatch,
+a current-version notification, deletion of the oldest two entries
+sharing a backing, and first redispatch at both addresses after a version
+advance. It checks full CPU state against the interpreter and records
+the exact code, metadata and slot counts at 2 and 16 resident entries.
+The archive contains source, calibration, scored samples and an offline
+audit. [Report and reproduction](../reports/STAGE_3_S3-37g_2026-11-19.md)
+
 ## S4-13a: uncached page walk versus experimental one-entry probe cache
 
 `od-bench page-walk-compare` compares the existing pure `probe_long64_4k`

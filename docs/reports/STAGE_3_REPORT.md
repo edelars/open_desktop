@@ -1060,6 +1060,14 @@ mixed loops were 2.102 and 2.101. Native retirement, helper steps and
 cache activity were checked separately.
 [S3-35g/S3-36i report and raw evidence](STAGE_3_S3-35g_S3-36i_2026-11-19.md)
 
+S3-37g timed between-call backing invalidation and redispatch separately.
+Deleting the oldest pair took median 0.221 µs at two resident entries
+and 0.364 µs at sixteen. Both first calls on the new backing version
+took about 5.25 µs together, including recompilation and publication.
+All 33.19 million scored epochs recovered two slots before publication
+and restored the resident footprint after the two calls.
+[S3-37g report and raw evidence](STAGE_3_S3-37g_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in
