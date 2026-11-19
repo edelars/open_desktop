@@ -54891,7 +54891,38 @@ fn firmware_boot_or_qword_memory_clears_cf_and_of_and_preserves_source() {
 }
 
 #[test]
-fn firmware_boot_rip_relative_inc_dec_commit_flags_only_after_write() {
+fn firmware_boot_unsigned_qword_mul_updates_both_implicit_halves_and_flags() {
+    let code = [0x48, 0xf7, 0xe2]; // MUL RDX
+    for (lhs, rhs, low, high) in [(21, 2, 42, 0), (u64::MAX, 2, u64::MAX - 1, 1)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = lhs;
+        cpu.gpr[Register::Rdx as usize] = rhs;
+        cpu.rflags = 0x0ad7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rax as usize] = low;
+        expected.gpr[Register::Rdx as usize] = high;
+        expected.rflags = if high == 0 { 0x02d6 } else { 0x0ad7 };
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_qword_memory_inc_dec_commit_flags_only_after_write() {
     let address = DATA + 0x30;
     let position = DATA_PHYSICAL + 0x30;
     let displacement = (address as i64 - (RIP + 7) as i64) as i32;
@@ -54900,15 +54931,24 @@ fn firmware_boot_rip_relative_inc_dec_commit_flags_only_after_write() {
         error_code: Some(3),
         linear_address: Some(address),
     };
-    for (modrm, written, flags) in [(0x05, 0, 0x57), (0x0d, u64::MAX - 1, 0x83)] {
-        let mut code = [0x48, 0xff, modrm, 0, 0, 0, 0];
-        code[3..].copy_from_slice(&displacement.to_le_bytes());
+    let mut rip_inc = [0x48, 0xff, 0x05, 0, 0, 0, 0];
+    let mut rip_dec = [0x48, 0xff, 0x0d, 0, 0, 0, 0];
+    rip_inc[3..].copy_from_slice(&displacement.to_le_bytes());
+    rip_dec[3..].copy_from_slice(&displacement.to_le_bytes());
+    for (code, written, flags) in [
+        (&rip_inc[..], 0, 0x57),
+        (&rip_dec[..], u64::MAX - 1, 0x83),
+        (&[0x48, 0xff, 0x87, 0, 0x12, 0, 0][..], 0, 0x57), // INC [RDI+0x1200]
+        (&[0x48, 0xff, 0x46, 0x28][..], 0, 0x57),          // INC [RSI+0x28]
+    ] {
         for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
-            let mut memory = Memory::new(&code);
+            let mut memory = Memory::new(code);
             memory.bytes[position - 1..position + 9].fill(0xff);
             memory.fail_read = fail_read.then(|| MemoryError::Architectural(fault.clone()));
             memory.fail_write = fail_write.then(|| MemoryError::Architectural(fault.clone()));
             let mut cpu = state();
+            cpu.gpr[Register::Rdi as usize] = address - 0x1200;
+            cpu.gpr[Register::Rsi as usize] = address - 0x28;
             cpu.rflags = 3;
             let mut expected = cpu.clone();
             let mut expected_bytes = [0xff; 10];
@@ -55024,12 +55064,15 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x85, 0xc0][..], 0x85),                   // address override on TEST
         (&[0xf6, 0x16][..], 0xf6),                         // NOT byte [RSI]
         (&[0x48, 0xf7, 0xd6][..], 0xf7),                   // NOT RSI
+        (&[0x48, 0xf7, 0xea][..], 0xf7),                   // IMUL RDX
+        (&[0xf7, 0xe2][..], 0xf7),                         // MUL EDX
+        (&[0x48, 0xf7, 0x22][..], 0xf7),                   // MUL qword [RDX]
         (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),          // address override on TEST
         (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),             // TEST EDX,imm32
-        (&[0x48, 0xff, 0x03][..], 0xff),                   // INC qword [RBX]
+        (&[0xff, 0x03][..], 0xff),                         // INC dword [RBX]
         (&[0xfe, 0x03][..], 0xfe),                         // INC byte ptr [RBX]
         (&[0x41, 0xfe, 0xc9][..], 0xfe),                   // DEC R9B
-        (&[0x48, 0xff, 0x0b][..], 0xff),                   // DEC qword [RBX]
+        (&[0x67, 0x48, 0xff, 0x0b][..], 0xff),             // address32 DEC qword [EBX]
         (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),             // SHL qword [RBX],21
         (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),             // SHR CX,21
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1),       // address override on SHR

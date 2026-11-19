@@ -1,5 +1,6 @@
 //! Enumerates protocol bindings and opens through UEFI 2.11 §7.3.
 
+use super::notify::{PendingBinding, RegistrationKey};
 use super::{MAX_OPEN_RECORDS, MAX_PROTOCOL_BINDINGS, ProtocolRegistry};
 use crate::bs::{memory::allocate_pool_in, misc, state};
 use crate::device_path::{DEVICE_PATH_PROTOCOL_GUID, DevicePathNode, first_instance_extent};
@@ -9,13 +10,14 @@ use core::ffi::c_void;
 use core::ptr;
 
 pub const LOCATE_ALL_HANDLES: u32 = 0;
-const LOCATE_BY_REGISTER_NOTIFY: u32 = 1;
+pub const LOCATE_BY_REGISTER_NOTIFY: u32 = 1;
 pub const LOCATE_BY_PROTOCOL: u32 = 2;
 
 #[derive(Clone, Copy)]
 enum HandleSearch {
     All,
     Protocol(Guid),
+    Registration(RegistrationKey),
 }
 
 // Callers provide a readable aligned GUID whenever the selected mode uses it.
@@ -29,13 +31,28 @@ unsafe fn decode_handle_search(
         LOCATE_BY_PROTOCOL if !protocol.is_null() => {
             Ok(HandleSearch::Protocol(unsafe { protocol.read() }))
         }
-        LOCATE_BY_REGISTER_NOTIFY if !search_key.is_null() => Err(Status::UNSUPPORTED),
+        LOCATE_BY_REGISTER_NOTIFY if !search_key.is_null() => {
+            Ok(HandleSearch::Registration(search_key))
+        }
         _ => Err(Status::INVALID_PARAMETER),
     }
 }
 
 impl ProtocolRegistry {
-    fn handles(&self, search: HandleSearch, output: &mut [Handle; MAX_PROTOCOL_BINDINGS]) -> usize {
+    fn handles(
+        &mut self,
+        search: HandleSearch,
+        output: &mut [Handle; MAX_PROTOCOL_BINDINGS],
+    ) -> Result<(usize, Option<PendingBinding<'_>>), Status> {
+        if let HandleSearch::Registration(key) = search {
+            return match self.pending_binding(key, None)? {
+                Some(pending) => {
+                    output[0] = pending.binding.handle;
+                    Ok((1, Some(pending)))
+                }
+                None => Ok((0, None)),
+            };
+        }
         let mut count = 0;
         for binding in self.bindings.iter().flatten() {
             if let HandleSearch::Protocol(protocol) = search
@@ -48,7 +65,7 @@ impl ProtocolRegistry {
                 count += 1;
             }
         }
-        count
+        Ok((count, None))
     }
 }
 
@@ -70,7 +87,10 @@ pub unsafe extern "efiapi" fn locate_handle(
         };
         state::with(|state| {
             let mut handles = [ptr::null_mut(); MAX_PROTOCOL_BINDINGS];
-            let count = state.protocols.handles(search, &mut handles);
+            let (count, pending) = match state.protocols.handles(search, &mut handles) {
+                Ok(found) => found,
+                Err(status) => return status,
+            };
             if count == 0 {
                 return Status::NOT_FOUND;
             }
@@ -87,6 +107,9 @@ pub unsafe extern "efiapi" fn locate_handle(
             }
             misc::copy_mem(buffer.cast(), handles.as_ptr().cast(), bytes);
             buffer_size.write(bytes);
+            if let Some(pending) = pending {
+                pending.consume();
+            }
             Status::SUCCESS
         })
     }
@@ -113,7 +136,10 @@ pub unsafe extern "efiapi" fn locate_handle_buffer(
         };
         state::with(|state| {
             let mut handles = [ptr::null_mut(); MAX_PROTOCOL_BINDINGS];
-            let count = state.protocols.handles(search, &mut handles);
+            let (count, pending) = match state.protocols.handles(search, &mut handles) {
+                Ok(found) => found,
+                Err(status) => return status,
+            };
             if count == 0 {
                 return Status::NOT_FOUND;
             }
@@ -126,6 +152,9 @@ pub unsafe extern "efiapi" fn locate_handle_buffer(
             misc::copy_mem(allocation, handles.as_ptr().cast(), bytes);
             buffer.write(allocation.cast());
             handle_count.write(count);
+            if let Some(pending) = pending {
+                pending.consume();
+            }
             Status::SUCCESS
         })
     }
@@ -329,16 +358,25 @@ mod tests {
         let later = registry.install(marker, first, marker).unwrap();
 
         let mut output = [marker; MAX_PROTOCOL_BINDINGS];
-        assert_eq!(registry.handles(HandleSearch::All, &mut output), 2);
+        assert_eq!(
+            registry.handles(HandleSearch::All, &mut output).unwrap().0,
+            2
+        );
         assert_eq!(output[..2], [original, later]);
         assert_eq!(
-            registry.handles(HandleSearch::Protocol(second), &mut output),
+            registry
+                .handles(HandleSearch::Protocol(second), &mut output)
+                .unwrap()
+                .0,
             1
         );
         assert_eq!(output[0], original);
         assert_eq!(registry.uninstall(original, first, marker), Ok(()));
         assert_eq!(
-            registry.handles(HandleSearch::Protocol(first), &mut output),
+            registry
+                .handles(HandleSearch::Protocol(first), &mut output)
+                .unwrap()
+                .0,
             1
         );
         assert_eq!(output[0], later);
@@ -354,10 +392,10 @@ mod tests {
                 decode_handle_search(LOCATE_ALL_HANDLES, unused_protocol, unused_key),
                 Ok(HandleSearch::All)
             ));
-            assert_eq!(
-                decode_handle_search(LOCATE_BY_REGISTER_NOTIFY, unused_protocol, unused_key).err(),
-                Some(Status::UNSUPPORTED)
-            );
+            assert!(matches!(
+                decode_handle_search(LOCATE_BY_REGISTER_NOTIFY, unused_protocol, unused_key),
+                Ok(HandleSearch::Registration(key)) if key == unused_key
+            ));
             assert_eq!(
                 decode_handle_search(LOCATE_BY_PROTOCOL, ptr::null(), unused_key).err(),
                 Some(Status::INVALID_PARAMETER)

@@ -18,7 +18,8 @@ use od_firmware::bs::event::{
 };
 use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::bs::protocol::{
-    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OPEN_BY_DRIVER, OPEN_GET_PROTOCOL,
+    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, LOCATE_BY_REGISTER_NOTIFY, OPEN_BY_DRIVER,
+    OPEN_GET_PROTOCOL,
 };
 use od_firmware::device_path::{DEVICE_PATH_PROTOCOL_GUID, DevicePathNode};
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
@@ -188,6 +189,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_memory_services(&system, key as usize);
     verify_protocol_services(&system);
     verify_event_services(&system);
+    verify_protocol_notify(&system);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -916,6 +918,198 @@ fn verify_event_services(system: &SystemTable) {
         }
     }
     com1_write(b"OD-FW S7-05 event dispatch verified\r\n");
+}
+
+struct ProtocolNotifyProbe {
+    boot: *const BootServices,
+    registration: *mut c_void,
+    handle: Handle,
+    expected_interface: *mut c_void,
+    batch_marker: *const Guid,
+    calls: usize,
+}
+
+unsafe extern "efiapi" fn notify_protocol(_: Event, context: *mut c_void) {
+    let probe = context.cast::<ProtocolNotifyProbe>();
+    unsafe {
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let registration = ptr::addr_of!((*probe).registration).read();
+        let handle = ptr::addr_of!((*probe).handle).read();
+        let expected = ptr::addr_of!((*probe).expected_interface).read();
+        let marker = ptr::addr_of!((*probe).batch_marker).read();
+        let locate = ptr::addr_of!((*boot).locate_protocol).read_volatile();
+        let handle_protocol = ptr::addr_of!((*boot).handle_protocol).read_volatile();
+        let mut found = ptr::null_mut();
+        if locate(&DIAGNOSTIC_PROTOCOL, registration, &mut found) != Status::SUCCESS
+            || found != expected
+            || handle_protocol(handle, &DIAGNOSTIC_PROTOCOL, &mut found) != Status::SUCCESS
+            || found != expected
+            || (!marker.is_null()
+                && (handle_protocol(handle, marker, &mut found) != Status::SUCCESS
+                    || !found.is_null()))
+        {
+            stop(STOP_BOOT_SERVICES, 43);
+        }
+        let calls = ptr::addr_of!((*probe).calls).read();
+        ptr::addr_of_mut!((*probe).calls).write(calls + 1);
+    }
+}
+
+#[inline(never)]
+fn verify_protocol_notify(system: &SystemTable) {
+    // SAFETY: all input and output storage lives through the callbacks.
+    // The callback only accesses the probe through raw pointers.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let register = ptr::addr_of!((*boot).register_protocol_notify).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let reinstall = ptr::addr_of!((*boot).reinstall_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        let Some(install_multiple) =
+            ptr::addr_of!((*boot).install_multiple_protocol_interfaces).read_volatile()
+        else {
+            stop(STOP_BOOT_SERVICES, 41);
+        };
+        let locate_handle = ptr::addr_of!((*boot).locate_handle).read_volatile();
+        let locate_buffer = ptr::addr_of!((*boot).locate_handle_buffer).read_volatile();
+        let locate = ptr::addr_of!((*boot).locate_protocol).read_volatile();
+        let free = ptr::addr_of!((*boot).free_pool).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+
+        let mut probe = ProtocolNotifyProbe {
+            boot,
+            registration: ptr::null_mut(),
+            handle: ptr::null_mut(),
+            expected_interface: ptr::null_mut(),
+            batch_marker: ptr::null(),
+            calls: 0,
+        };
+        let mut existing = ptr::null_mut();
+        let mut event = ptr::null_mut();
+        let mut second_key = ptr::null_mut();
+        let context = ptr::addr_of_mut!(probe).cast();
+        if install(&mut existing, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS
+            || create(
+                EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_protocol),
+                context,
+                &mut event,
+            ) != Status::SUCCESS
+            || register(
+                &DIAGNOSTIC_PROTOCOL,
+                event,
+                ptr::addr_of_mut!(probe.registration),
+            ) != Status::SUCCESS
+            || register(&DIAGNOSTIC_PROTOCOL, event, &mut second_key) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 0
+        {
+            stop(STOP_BOOT_SERVICES, 41);
+        }
+
+        let key = ptr::addr_of!(probe.registration).read();
+        let mut bytes = 0;
+        let mut found = ptr::null_mut();
+        let mut count = 0;
+        let mut buffer = ptr::null_mut();
+        if locate_handle(
+            LOCATE_BY_REGISTER_NOTIFY,
+            ptr::null(),
+            key,
+            &mut bytes,
+            ptr::null_mut(),
+        ) != Status::BUFFER_TOO_SMALL
+            || bytes != size_of::<Handle>()
+            || locate_handle(
+                LOCATE_BY_REGISTER_NOTIFY,
+                ptr::null(),
+                key,
+                &mut bytes,
+                &mut found,
+            ) != Status::SUCCESS
+            || found != existing
+            || locate_buffer(
+                LOCATE_BY_REGISTER_NOTIFY,
+                ptr::null(),
+                second_key,
+                &mut count,
+                &mut buffer,
+            ) != Status::SUCCESS
+            || count != 1
+            || buffer.is_null()
+            || buffer.read() != existing
+            || free(buffer.cast()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 42);
+        }
+
+        let mut interface = 17_u32;
+        let mut replacement = 42_u32;
+        let original = ptr::addr_of_mut!(interface).cast();
+        let replacement = ptr::addr_of_mut!(replacement).cast();
+        let handle = ptr::addr_of_mut!(probe.handle);
+        ptr::addr_of_mut!(probe.expected_interface).write(original);
+        if install(handle, &DIAGNOSTIC_PROTOCOL, 0, original) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 1
+        {
+            stop(STOP_BOOT_SERVICES, 43);
+        }
+        ptr::addr_of_mut!(probe.expected_interface).write(replacement);
+        let installed = handle.read();
+        if reinstall(installed, &DIAGNOSTIC_PROTOCOL, original, replacement) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 2
+        {
+            stop(STOP_BOOT_SERVICES, 43);
+        }
+
+        let batch_marker = Guid {
+            data1: DIAGNOSTIC_PROTOCOL.data1 + 4,
+            ..DIAGNOSTIC_PROTOCOL
+        };
+        let guid = &DIAGNOSTIC_PROTOCOL as *const Guid;
+        let marker = &batch_marker as *const Guid;
+        handle.write(ptr::null_mut());
+        ptr::addr_of_mut!(probe.expected_interface).write(original);
+        ptr::addr_of_mut!(probe.batch_marker).write(marker);
+        if install_multiple(
+            handle,
+            guid,
+            original,
+            guid,
+            replacement,
+            ptr::null::<Guid>(),
+        ) != Status::INVALID_PARAMETER
+            || !handle.read().is_null()
+            || ptr::addr_of!(probe.calls).read() != 2
+            || install_multiple(
+                handle,
+                guid,
+                original,
+                marker,
+                ptr::null_mut::<c_void>(),
+                ptr::null::<Guid>(),
+            ) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 3
+        {
+            stop(STOP_BOOT_SERVICES, 44);
+        }
+        let batch = handle.read();
+        let mut unused = replacement;
+        if locate(guid, key, &mut unused) != Status::NOT_FOUND
+            || !unused.is_null()
+            || close(event) != Status::SUCCESS
+            || locate(guid, key, &mut unused) != Status::INVALID_PARAMETER
+            || locate(guid, second_key, &mut unused) != Status::INVALID_PARAMETER
+            || uninstall(batch, marker, ptr::null_mut()) != Status::SUCCESS
+            || uninstall(batch, guid, original) != Status::SUCCESS
+            || uninstall(installed, guid, replacement) != Status::SUCCESS
+            || uninstall(existing, guid, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 44);
+        }
+    }
+    com1_write(b"OD-FW S7-05 protocol notifications verified\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

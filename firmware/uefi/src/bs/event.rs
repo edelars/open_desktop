@@ -143,7 +143,11 @@ impl EventRegistry {
         }
     }
 
-    fn signal(&mut self, event: Event) -> Status {
+    pub(super) fn contains(&self, event: Event) -> bool {
+        self.find(event).is_ok()
+    }
+
+    pub(super) fn signal(&mut self, event: Event) -> Status {
         let Ok(index) = self.find(event) else {
             return Status::INVALID_PARAMETER;
         };
@@ -247,7 +251,7 @@ fn valid_tpl(tpl: Tpl) -> bool {
 }
 
 /// Call on the BSP after dropping all references into the service state.
-unsafe fn dispatch_pending() {
+pub(super) unsafe fn dispatch_pending() {
     loop {
         // Only scalar values and the guest callback pointer cross the guard.
         let Some(dispatch) =
@@ -349,7 +353,15 @@ pub unsafe extern "efiapi" fn check_event(event: Event) -> Status {
 /// # Safety
 /// Call on the BSP.
 pub unsafe extern "efiapi" fn close_event(event: Event) -> Status {
-    unsafe { state::with(|state| state.events.close(event)) }
+    unsafe {
+        state::with(|state| {
+            let status = state.events.close(event);
+            if status == Status::SUCCESS {
+                state.protocols.unregister_event(event);
+            }
+            status
+        })
+    }
 }
 
 /// # Safety

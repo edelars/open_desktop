@@ -48,6 +48,8 @@ type ReinstallProtocolInterface =
 type UninstallProtocolInterface =
     unsafe extern "efiapi" fn(Handle, *const Guid, *mut c_void) -> Status;
 type HandleProtocol = unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
+type RegisterProtocolNotify =
+    unsafe extern "efiapi" fn(*const Guid, event::Event, *mut *mut c_void) -> Status;
 type LocateProtocol =
     unsafe extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
 type OpenProtocol =
@@ -97,7 +99,7 @@ pub struct BootServices {
     pub uninstall_protocol_interface: UninstallProtocolInterface,
     pub handle_protocol: HandleProtocol,
     reserved: *const c_void,
-    register_protocol_notify: *const c_void,
+    pub register_protocol_notify: RegisterProtocolNotify,
     pub locate_handle: LocateHandle,
     pub locate_device_path: LocateDevicePath,
     install_configuration_table: *const c_void,
@@ -147,7 +149,7 @@ impl BootServices {
             uninstall_protocol_interface: protocol::uninstall_protocol_interface,
             handle_protocol: protocol::handle_protocol,
             reserved: ptr::null(),
-            register_protocol_notify: ptr::null(),
+            register_protocol_notify: protocol::register_protocol_notify,
             locate_handle: protocol::locate_handle,
             locate_device_path: protocol::locate_device_path,
             install_configuration_table: ptr::null(),
@@ -335,6 +337,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, uninstall_protocol_interface), 144);
         assert_eq!(offset_of!(BootServices, handle_protocol), 152);
         assert_eq!(offset_of!(BootServices, reserved), 160);
+        assert_eq!(offset_of!(BootServices, register_protocol_notify), 168);
         assert_eq!(offset_of!(BootServices, open_protocol), 280);
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_handle), 176);

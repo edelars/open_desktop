@@ -20599,8 +20599,36 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // Qword ADD and the firmware's RIP-relative counters have write
-        // intent even on a fault before the read.
+        Operation::Mul {
+            signed: false,
+            operand: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf7
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let (low, high, flags) = multiply_implicit(
+                OperandSize::Qword,
+                false,
+                state.read(source),
+                state.gpr[Register::Rax as usize],
+                state.rflags,
+            );
+            write_implicit_product(state, OperandSize::Qword, low, high);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // Qword ADD, INC and DEC have write intent even on a fault before the read.
         Operation::Arithmetic {
             kind: kind @ (ArithmeticKind::Add | ArithmeticKind::Inc | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
@@ -20610,7 +20638,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && match (kind, source) {
                 (ArithmeticKind::Add, Operand::Register(_)) => instruction.opcode.byte == 0x01,
                 (ArithmeticKind::Inc | ArithmeticKind::Dec, Operand::Immediate(1)) => {
-                    instruction.opcode.byte == 0xff && destination.base == AddressBase::NextRip
+                    instruction.opcode.byte == 0xff
                 }
                 _ => false,
             }

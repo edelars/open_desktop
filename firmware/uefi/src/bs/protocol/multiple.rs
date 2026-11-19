@@ -135,6 +135,10 @@ impl ProtocolRegistry {
         {
             return Err(Status::OUT_OF_RESOURCES);
         }
+        let last_revision = self
+            .last_revision
+            .checked_add(pairs.len())
+            .ok_or(Status::OUT_OF_RESOURCES)?;
         let handle = if requested.is_null() {
             let id = self
                 .last_handle
@@ -145,18 +149,21 @@ impl ProtocolRegistry {
         } else {
             requested
         };
-        for (slot, pair) in self
+        for (offset, (slot, pair)) in self
             .bindings
             .iter_mut()
             .filter(|slot| slot.is_none())
             .zip(pairs)
+            .enumerate()
         {
             *slot = Some(Binding {
                 handle,
                 protocol: pair.protocol,
                 interface: pair.interface,
+                revision: self.last_revision + offset + 1,
             });
         }
+        self.last_revision = last_revision;
         Ok(handle)
     }
 
@@ -238,18 +245,22 @@ unsafe extern "efiapi" fn od_fw_install_multiple_args(
         };
         let pairs = &pairs[..count];
         let requested = handle.read();
-        state::with(|state| {
+        let status = state::with(|state| {
             if let Err(status) = state.protocols.check_device_paths(pairs) {
                 return status;
             }
             match state.protocols.install_bindings(requested, pairs) {
                 Ok(installed) => {
                     handle.write(installed);
+                    state.protocols.signal_installations(state.events, |guid| {
+                        pairs.iter().any(|pair| pair.protocol == guid)
+                    });
                     Status::SUCCESS
                 }
                 Err(status) => status,
             }
-        })
+        });
+        super::dispatch_after_install(status)
     }
 }
 

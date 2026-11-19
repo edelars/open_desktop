@@ -5,13 +5,16 @@ use core::ffi::c_void;
 use core::ptr;
 
 mod multiple;
+mod notify;
 mod query;
 
 pub use multiple::{INSTALL_MULTIPLE, InstallMultiple, UNINSTALL_MULTIPLE, UninstallMultiple};
+pub use notify::register_protocol_notify;
 
 pub use query::{
-    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OpenProtocolInformationEntry, locate_device_path,
-    locate_handle, locate_handle_buffer, open_protocol_information, protocols_per_handle,
+    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, LOCATE_BY_REGISTER_NOTIFY,
+    OpenProtocolInformationEntry, locate_device_path, locate_handle, locate_handle_buffer,
+    open_protocol_information, protocols_per_handle,
 };
 
 const MAX_PROTOCOL_BINDINGS: usize = 128;
@@ -22,6 +25,7 @@ struct Binding {
     handle: Handle,
     protocol: Guid,
     interface: *mut c_void,
+    revision: usize,
 }
 
 const MAX_OPEN_RECORDS: usize = 128;
@@ -47,6 +51,9 @@ pub(crate) struct ProtocolRegistry {
     bindings: [Option<Binding>; MAX_PROTOCOL_BINDINGS],
     opens: [Option<OpenRecord>; MAX_OPEN_RECORDS],
     last_handle: usize,
+    registrations: [Option<notify::Registration>; notify::MAX_REGISTRATIONS],
+    last_registration: usize,
+    last_revision: usize,
 }
 
 impl ProtocolRegistry {
@@ -55,6 +62,9 @@ impl ProtocolRegistry {
             bindings: [None; MAX_PROTOCOL_BINDINGS],
             opens: [None; MAX_OPEN_RECORDS],
             last_handle: 0,
+            registrations: [None; notify::MAX_REGISTRATIONS],
+            last_registration: 0,
+            last_revision: 0,
         }
     }
 
@@ -113,12 +123,18 @@ impl ProtocolRegistry {
         if !self.changes_allowed(index) {
             return Err(Status::ACCESS_DENIED);
         }
+        let revision = self
+            .last_revision
+            .checked_add(1)
+            .ok_or(Status::OUT_OF_RESOURCES)?;
         self.forget_opens(index);
         self.bindings[index] = Some(Binding {
             handle,
             protocol,
             interface: new_interface,
+            revision,
         });
+        self.last_revision = revision;
         Ok(())
     }
 
@@ -292,15 +308,19 @@ pub unsafe extern "efiapi" fn install_protocol_interface(
     unsafe {
         let requested = handle.read();
         let protocol = protocol.read();
-        super::state::with(
-            |state| match state.protocols.install(requested, protocol, interface) {
+        let status = super::state::with(|state| {
+            match state.protocols.install(requested, protocol, interface) {
                 Ok(installed) => {
                     handle.write(installed);
+                    state
+                        .protocols
+                        .signal_installations(state.events, |guid| guid == protocol);
                     Status::SUCCESS
                 }
                 Err(status) => status,
-            },
-        )
+            }
+        });
+        dispatch_after_install(status)
     }
 }
 
@@ -317,14 +337,29 @@ pub unsafe extern "efiapi" fn reinstall_protocol_interface(
     }
     unsafe {
         let protocol = protocol.read();
-        super::state::with(|state| {
+        let status = super::state::with(|state| {
+            if let Err(status) =
+                state
+                    .protocols
+                    .reinstall(handle, protocol, old_interface, new_interface)
+            {
+                return status;
+            }
             state
                 .protocols
-                .reinstall(handle, protocol, old_interface, new_interface)
-                .err()
-                .unwrap_or(Status::SUCCESS)
-        })
+                .signal_installations(state.events, |guid| guid == protocol);
+            Status::SUCCESS
+        });
+        dispatch_after_install(status)
     }
+}
+
+/// Call on the BSP after committing the entire installation and releasing the guard.
+unsafe fn dispatch_after_install(status: Status) -> Status {
+    if status == Status::SUCCESS {
+        unsafe { super::event::dispatch_pending() };
+    }
+    status
 }
 
 /// # Safety
@@ -386,19 +421,38 @@ pub unsafe extern "efiapi" fn locate_protocol(
     registration: *mut c_void,
     interface: *mut *mut c_void,
 ) -> Status {
-    if protocol.is_null() || !registration.is_null() || interface.is_null() {
+    if protocol.is_null() || interface.is_null() {
         return Status::INVALID_PARAMETER;
     }
     unsafe {
         let protocol = protocol.read();
-        super::state::with(|state| match state.protocols.locate_protocol(protocol) {
-            Some(found) => {
-                interface.write(found);
-                Status::SUCCESS
+        super::state::with(|state| {
+            if !registration.is_null() {
+                return match state
+                    .protocols
+                    .pending_binding(registration, Some(protocol))
+                {
+                    Ok(Some(pending)) => {
+                        interface.write(pending.binding.interface);
+                        pending.consume();
+                        Status::SUCCESS
+                    }
+                    Ok(None) => {
+                        interface.write(ptr::null_mut());
+                        Status::NOT_FOUND
+                    }
+                    Err(status) => status,
+                };
             }
-            None => {
-                interface.write(ptr::null_mut());
-                Status::NOT_FOUND
+            match state.protocols.locate_protocol(protocol) {
+                Some(found) => {
+                    interface.write(found);
+                    Status::SUCCESS
+                }
+                None => {
+                    interface.write(ptr::null_mut());
+                    Status::NOT_FOUND
+                }
             }
         })
     }
