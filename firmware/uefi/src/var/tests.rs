@@ -287,6 +287,36 @@ fn platform_seeds_default_values_and_protects_policy_globals() {
     assert_eq!(store.get(GLOBAL_VARIABLE, lang).unwrap().value, b"en-US\0");
 }
 
+#[test]
+fn boot_next_is_persistent_and_boot_current_is_volatile() {
+    let next = Name::new(b"B\0o\0o\0t\0N\0e\0x\0t\0").unwrap();
+    let current = Name::new(b"B\0o\0o\0t\0C\0u\0r\0r\0e\0n\0t\0").unwrap();
+    let mut store = VariableStore::new();
+    assert_eq!(
+        store.set(GLOBAL_VARIABLE, next, BOOT_RUNTIME, &[2, 0]),
+        Err(Status::INVALID_PARAMETER)
+    );
+    assert_eq!(
+        store.set(GLOBAL_VARIABLE, current, NON_VOLATILE_RUNTIME, &[3, 0]),
+        Err(Status::INVALID_PARAMETER)
+    );
+    store
+        .set(GLOBAL_VARIABLE, next, NON_VOLATILE_RUNTIME, &[2, 0])
+        .unwrap();
+    store
+        .set(GLOBAL_VARIABLE, current, BOOT_RUNTIME, &[3, 0])
+        .unwrap();
+    let mut bytes = [0; 128];
+    let size = store.encode_nv(&mut bytes).unwrap();
+    let mut records = Decoder::new(&bytes[..size]).unwrap();
+    let saved = records.next().unwrap().unwrap();
+    assert_eq!((saved.name, saved.value), (next, &[2, 0][..]));
+    assert!(records.next().is_none());
+    store.set(GLOBAL_VARIABLE, next, 0, &[]).unwrap();
+    assert!(store.get(GLOBAL_VARIABLE, next).is_none());
+    assert_eq!(store.get(GLOBAL_VARIABLE, current).unwrap().value, &[3, 0]);
+}
+
 fn encoded_pair() -> ([u8; 160], usize) {
     let mut store = VariableStore::new();
     store

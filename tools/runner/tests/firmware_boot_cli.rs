@@ -167,6 +167,81 @@ fn fv_app_requires_a_compatible_firmware_before_launch() {
     }
 }
 
+#[test]
+fn nvram_snapshot_round_trips_and_cannot_alias_input() {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("od-runner-nvram-{}-{id}", std::process::id()));
+    let input = base.with_extension("in");
+    let output = base.with_extension("out");
+    let snapshot = od_machine::NvramDevice::new().nvram_snapshot();
+    fs::write(&input, &snapshot).unwrap();
+    let mut rom = image(&[0xf4]);
+    rom[0x2a..0x2c].copy_from_slice(&7u16.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+
+    let input_path = input.to_str().unwrap();
+    let valid = invoke_with_args(
+        &rom,
+        "64",
+        &[
+            "--nvram-in",
+            input_path,
+            "--nvram-out",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(valid.output.status.code(), Some(0));
+    assert_eq!(
+        report(&valid)["nvram_snapshot_sha256"],
+        sha256_hex(&snapshot)
+    );
+    assert_eq!(fs::read(&output).unwrap(), snapshot);
+    let alias = invoke_with_args(
+        &rom,
+        "64",
+        &["--nvram-in", input_path, "--nvram-out", input_path],
+    );
+    assert_eq!(alias.output.status.code(), Some(3));
+    assert_eq!(report(&alias)["error"]["kind"], "paths");
+    assert_eq!(fs::read(&input).unwrap(), snapshot);
+    assert!(!alias.com1.exists());
+
+    fs::write(&input, b"short").unwrap();
+    let truncated = invoke_with_args(&rom, "64", &["--nvram-in", input_path]);
+    assert_eq!(truncated.output.status.code(), Some(3));
+    assert_eq!(report(&truncated)["error"]["kind"], "nvram_in");
+    assert!(!truncated.com1.exists());
+    fs::remove_file(valid.com1).unwrap();
+    fs::remove_file(input).unwrap();
+    fs::remove_file(&output).unwrap();
+
+    let alternate = output.with_extension("OUT");
+    fs::write(&output, b"probe").unwrap();
+    let case_insensitive = alternate.exists();
+    fs::remove_file(&output).unwrap();
+    if case_insensitive {
+        let alias = invoke_with_args(
+            &rom,
+            "64",
+            &[
+                "--fv-app",
+                "vars",
+                "--nvram-out",
+                output.to_str().unwrap(),
+                "--nvram-reboot-out",
+                alternate.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(alias.output.status.code(), Some(3));
+        assert_eq!(report(&alias)["error"]["kind"], "paths");
+        assert_eq!(fs::read(&output).unwrap(), snapshot);
+        fs::remove_file(alias.com1).unwrap();
+        fs::remove_file(output).unwrap();
+    }
+}
+
 fn report(run: &Run) -> Value {
     serde_json::from_slice(&run.output.stdout).unwrap()
 }

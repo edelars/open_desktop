@@ -7,6 +7,55 @@ use crate::uefi::status::Status;
 use core::ffi::c_void;
 use core::ptr;
 
+/// An owned scratch allocation in Boot Services data memory.
+#[cfg(target_os = "none")]
+pub(crate) struct BootPool {
+    pointer: ptr::NonNull<u8>,
+    size: usize,
+}
+
+#[cfg(target_os = "none")]
+impl BootPool {
+    /// Call on the BSP with live Boot Services. The payload is uninitialized.
+    pub(crate) unsafe fn allocate(size: usize) -> Result<Self, Status> {
+        let mut pointer = ptr::null_mut();
+        let status = unsafe { allocate_pool(MemoryType::BOOT_SERVICES_DATA, size, &mut pointer) };
+        if status != Status::SUCCESS {
+            return Err(status);
+        }
+        Ok(Self {
+            pointer: ptr::NonNull::new(pointer.cast()).ok_or(Status::DEVICE_ERROR)?,
+            size,
+        })
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut u8 {
+        self.pointer.as_ptr()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.size
+    }
+
+    pub(crate) fn zeroed_prefix(&mut self, size: usize) -> Option<&mut [u8]> {
+        if size > self.size {
+            return None;
+        }
+        // Use the memory service's bounded chunks for large firmware fills.
+        unsafe {
+            misc::set_mem(self.as_ptr().cast(), size, 0);
+            Some(core::slice::from_raw_parts_mut(self.as_ptr(), size))
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
+impl Drop for BootPool {
+    fn drop(&mut self) {
+        unsafe { free_pool(self.as_ptr().cast()) };
+    }
+}
+
 pub struct IdentityPoolMemory;
 
 impl PoolMemory for IdentityPoolMemory {

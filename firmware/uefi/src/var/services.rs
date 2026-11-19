@@ -134,11 +134,15 @@ pub(super) fn global_attributes(guid: Guid, name: Name<'_>) -> Option<u32> {
     if read_only(guid, name) {
         return Some(BOOT_RUNTIME);
     }
+    if matches_ascii(name, b"BootCurrent") {
+        return Some(BOOT_RUNTIME);
+    }
     if matches_ascii(name, b"PlatformLang")
         || matches_ascii(name, b"ConIn")
         || matches_ascii(name, b"ConOut")
         || matches_ascii(name, b"ErrOut")
         || matches_ascii(name, b"Timeout")
+        || matches_ascii(name, b"BootNext")
         || matches_ascii(name, b"BootOrder")
         || boot_option_name(name)
     {

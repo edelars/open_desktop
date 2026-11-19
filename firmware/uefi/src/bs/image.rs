@@ -21,6 +21,8 @@ use crate::uefi::{
 };
 use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, ptr, slice};
 
+#[cfg(any(target_os = "none", test))]
+mod filesystem;
 #[cfg(target_os = "none")]
 mod invoke;
 mod path;
@@ -87,7 +89,27 @@ pub unsafe extern "efiapi" fn load_image(
     source_size: usize,
     image: *mut Handle,
 ) -> Status {
-    if parent.is_null() || image.is_null() {
+    unsafe { load(parent, device_path, source, source_size, image, false) }
+}
+
+/// Use the same LoadImage operation with direct firmware boot attribution.
+#[cfg(target_os = "none")]
+pub(crate) unsafe fn load_boot_option(
+    device_path: *const DevicePathNode,
+    image: *mut Handle,
+) -> Status {
+    unsafe { load(ptr::null_mut(), device_path, ptr::null(), 0, image, true) }
+}
+
+unsafe fn load(
+    parent: Handle,
+    device_path: *const DevicePathNode,
+    source: *const c_void,
+    source_size: usize,
+    image: *mut Handle,
+    firmware_parent: bool,
+) -> Status {
+    if (!firmware_parent && parent.is_null()) || image.is_null() {
         return Status::INVALID_PARAMETER;
     }
     if source.is_null() && device_path.is_null() {
@@ -122,9 +144,26 @@ pub unsafe extern "efiapi" fn load_image(
         Some(bytes)
     };
 
+    #[cfg(target_os = "none")]
+    let file_source = if let (None, Some(full)) = (buffer, full_path) {
+        if !firmware_parent {
+            match unsafe { state::try_with(|state| state.protocols.known_handle(parent)) } {
+                Some(true) => {}
+                Some(false) => return Status::INVALID_PARAMETER,
+                None => return Status::NOT_READY,
+            }
+        }
+        match unsafe { path::path_source(full) } {
+            Ok(source) => Some(source),
+            Err(status) => return status,
+        }
+    } else {
+        None
+    };
+
     unsafe {
         let status = state::with_map_mutation(|state| {
-            if !state.protocols.known_handle(parent) {
+            if !firmware_parent && !state.protocols.known_handle(parent) {
                 return Status::INVALID_PARAMETER;
             }
             let (bytes, location) = if let Some(buffer) = buffer {
@@ -133,9 +172,14 @@ pub unsafe extern "efiapi" fn load_image(
                 (buffer, location)
             } else {
                 #[cfg(target_os = "none")]
-                match path::volume_source(state.protocols, full_path.unwrap()) {
-                    Ok((bytes, location)) => (bytes, Some(location)),
-                    Err(status) => return status,
+                {
+                    let Some((source, location)) = file_source.as_ref() else {
+                        return Status::NOT_FOUND;
+                    };
+                    if !source.still_bound(state.protocols, location.device) {
+                        return Status::NO_MEDIA;
+                    }
+                    (source.as_bytes(), Some(*location))
                 }
                 #[cfg(not(target_os = "none"))]
                 return Status::UNSUPPORTED;
@@ -351,6 +395,8 @@ pub unsafe extern "efiapi" fn load_image(
             });
             Status::SUCCESS
         });
+        #[cfg(target_os = "none")]
+        drop(file_source);
         protocol::dispatch_after_install(status)
     }
 }

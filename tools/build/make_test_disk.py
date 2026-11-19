@@ -121,21 +121,38 @@ def fsinfo(free_clusters: int, available_start: int) -> bytearray:
     return info
 
 
-def fat32_blocks(first_lba: int, count: int):
+def fat32_blocks(first_lba: int, count: int, boot_files: tuple[tuple[bytes, bytes], ...] = ()):
     """Yield logical sector writes. The caller provides an otherwise zeroed ESP."""
     fat_blocks = ((count + 2) * 4 + BLOCK - 1) // BLOCK
     data = RESERVED + FATS * fat_blocks
     data_clusters = count - data
     if data_clusters < 65525:
         raise ValueError("ESP is too small for the FAT32 cluster-count range")
+    fat_entries = [0x0ffffff8, 0xffffffff, *([0x0fffffff] * 4)]
+    boot_dir = (
+        dir_entry(b".          ", 0x10, BOOT)
+        + dir_entry(b"..         ", 0x10, EFI)
+        + dir_entry(b"README  TXT", 0x20, FILE, len(README))
+    )
+    allocated = []
+    for name, content in boot_files:
+        start = len(fat_entries)
+        clusters = (len(content) + BLOCK - 1) // BLOCK
+        if clusters == 0 or start + clusters > data_clusters + 2:
+            raise ValueError("boot file is empty or does not fit in the ESP")
+        fat_entries.extend(range(start + 1, start + clusters))
+        fat_entries.append(0x0fffffff)
+        boot_dir += dir_entry(name, 0x20, start, len(content))
+        allocated.append((start, content))
+    free_clusters = data_clusters + 2 - len(fat_entries)
     boot = boot_sector(first_lba, count, fat_blocks)
-    info = fsinfo(data_clusters - 4, FILE + 1)
+    info = fsinfo(free_clusters, len(fat_entries) if free_clusters else 0xffffffff)
     yield first_lba, boot
     yield first_lba + 1, info
     yield first_lba + 6, boot
     yield first_lba + 7, info
 
-    fat = struct.pack("<6I", 0x0ffffff8, 0xffffffff, *([0x0fffffff] * 4))
+    fat = struct.pack(f"<{len(fat_entries)}I", *fat_entries)
     yield first_lba + RESERVED, fat
     yield first_lba + RESERVED + fat_blocks, fat
 
@@ -147,22 +164,20 @@ def fat32_blocks(first_lba: int, count: int):
         + dir_entry(b"..         ", 0x10)
         + dir_entry(b"BOOT       ", 0x10, BOOT)
     )
-    yield first_lba + data + BOOT - 2, (
-        dir_entry(b".          ", 0x10, BOOT)
-        + dir_entry(b"..         ", 0x10, EFI)
-        + dir_entry(b"README  TXT", 0x20, FILE, len(README))
-    )
+    yield first_lba + data + BOOT - 2, boot_dir
     yield first_lba + data + FILE - 2, README
+    for cluster, content in allocated:
+        yield first_lba + data + cluster - 2, content
 
 
 
-def write_fat32(out: Path, damage: str) -> None:
+def write_fat32(out: Path, damage: str, boot_files: tuple[tuple[bytes, bytes], ...] = ()) -> None:
     with out.open("wb") as disk:
         disk.truncate(FAT32_BLOCKS * BLOCK)
         for lba, data in gpt_regions(FAT32_BLOCKS, FAT32_PARTITIONS, damage):
             disk.seek(lba * BLOCK)
             disk.write(data)
-        for lba, data in fat32_blocks(FAT32_START, FAT32_END - FAT32_START + 1):
+        for lba, data in fat32_blocks(FAT32_START, FAT32_END - FAT32_START + 1, boot_files):
             disk.seek(lba * BLOCK)
             disk.write(data)
 
@@ -171,10 +186,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--damage", choices=("none", "primary", "both"), default="none")
     parser.add_argument("--esp-fat32", action="store_true")
+    parser.add_argument("--bootx64", type=Path, help="place this EFI image at \\EFI\\BOOT\\BOOTX64.EFI")
+    parser.add_argument("--boot-probe", type=Path, help="place this EFI image at \\EFI\\BOOT\\CHECK.EFI")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.esp_fat32:
-        write_fat32(args.out, args.damage)
+        boot_files = tuple(
+            (name, path.read_bytes())
+            for name, path in ((b"BOOTX64 EFI", args.bootx64), (b"CHECK   EFI", args.boot_probe))
+            if path is not None
+        )
+        write_fat32(args.out, args.damage, boot_files)
+    elif args.bootx64 or args.boot_probe:
+        parser.error("--bootx64 and --boot-probe require --esp-fat32")
     else:
         args.out.write_bytes(image(args.damage))
 

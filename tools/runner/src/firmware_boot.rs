@@ -7,8 +7,8 @@
 
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
-    InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NvramConfig, PagedProbeExit,
-    firmware_handoff_block, load_firmware_image,
+    InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
+    PagedProbeExit, firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -19,6 +19,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs] [--nvram-reboot-out <file>] \
+                    [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
 const DUMP_USAGE: &str =
     "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs]";
@@ -29,6 +30,8 @@ struct Options {
     budget: u64,
     fv_app: Option<FirmwareFvApp>,
     nvram_reboot_out: Option<String>,
+    nvram_in: Option<String>,
+    nvram_out: Option<String>,
     acpi_out: Option<String>,
     framebuffer_out: Option<String>,
     nvme_image: Option<String>,
@@ -128,6 +131,9 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
+    if let Err(error) = validate_nvram_paths(&options) {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
     let read = File::open(&options.image).and_then(|file| {
         file.take(FIRMWARE_IMAGE_BYTES as u64 + 1)
@@ -139,6 +145,30 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some());
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
+    }
+    if let Some(path) = &options.nvram_in {
+        let mut bytes = Vec::new();
+        if let Err(error) = File::open(path).and_then(|file| {
+            file.take(NVRAM_SNAPSHOT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        }) {
+            return emit(failure("invalid_input", "nvram_in", error.to_string()), 3);
+        }
+        if bytes.len() != NVRAM_SNAPSHOT_BYTES {
+            return emit(
+                failure(
+                    "invalid_input",
+                    "nvram_in",
+                    "NVRAM snapshot has an invalid size".to_owned(),
+                ),
+                3,
+            );
+        }
+        config.nvram = Some(NvramConfig::Snapshot(bytes));
+    } else if options.nvram_out.is_some()
+        || (options.nvme_image.is_some() && options.fv_app.is_none())
+    {
+        config.nvram.get_or_insert(NvramConfig::Empty);
     }
     let nvme_image = options.nvme_image.as_deref();
     let mut first = match boot(
@@ -207,6 +237,28 @@ pub fn run(args: &[String]) -> ExitCode {
             "format": frame.mode.format, "generation": frame.generation,
             "mode_change_count": frame.mode_change_count, "sha256": sha256_hex(&pixels),
         });
+    }
+    if let Some(path) = &options.nvram_out {
+        if let Err(error) = validate_nvram_paths(&options) {
+            return emit(failure("invalid_input", "paths", error), 3);
+        }
+        let Some(snapshot) = first.board.nvram_snapshot() else {
+            return emit(
+                failure("run_error", "nvram_out", "NVRAM was not bound".to_owned()),
+                5,
+            );
+        };
+        if let Err(error) = fs::write(path, &snapshot) {
+            return emit(failure("run_error", "nvram_out", error.to_string()), 5);
+        }
+        first.report["nvram_snapshot_sha256"] = json!(sha256_hex(&snapshot));
+        // The new snapshot path now has an inode. A previously absent reboot
+        // output can resolve to it on a case-insensitive filesystem.
+        if options.nvram_reboot_out.is_some()
+            && let Err(error) = validate_nvram_paths(&options)
+        {
+            return emit(failure("invalid_input", "paths", error), 3);
+        }
     }
     let Some(reboot_out) = options.nvram_reboot_out else {
         return emit(first.report, first.code);
@@ -367,6 +419,43 @@ fn validate_nvme_paths(image: &str, options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_nvram_paths(options: &Options) -> Result<(), String> {
+    let outputs = [
+        Some(options.com1_out.as_str()),
+        options.nvram_reboot_out.as_deref(),
+        options.acpi_out.as_deref(),
+        options.framebuffer_out.as_deref(),
+    ];
+    let resolve = |path: &str| {
+        RebootPath::resolve(Path::new(path)).map_err(|error| format!("{path}: {error}"))
+    };
+    if let Some(input) = options.nvram_in.as_deref() {
+        let input = resolve(input)?;
+        for other in outputs
+            .into_iter()
+            .chain([options.nvram_out.as_deref()])
+            .flatten()
+        {
+            if input.aliases(&resolve(other)?) {
+                return Err("the NVRAM input and all output paths must be distinct".to_owned());
+            }
+        }
+    }
+    if let Some(output) = options.nvram_out.as_deref() {
+        let output = resolve(output)?;
+        for other in outputs
+            .into_iter()
+            .chain([Some(options.image.as_str()), options.nvme_image.as_deref()])
+            .flatten()
+        {
+            if output.aliases(&resolve(other)?) {
+                return Err("the NVRAM output and all other paths must be distinct".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_distinct_paths(
     image: &str,
     first: &str,
@@ -522,6 +611,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let (mut image, mut com1_out, mut budget) = (None, None, None);
     let mut fv_app = None;
     let mut nvram_reboot_out = None;
+    let mut nvram_in = None;
+    let mut nvram_out = None;
     let mut acpi_out = None;
     let mut framebuffer_out = None;
     let mut nvme_image = None;
@@ -536,6 +627,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
             "--nvme-image" if nvme_image.is_none() => nvme_image = Some(value.clone()),
+            "--nvram-in" if nvram_in.is_none() => nvram_in = Some(value.clone()),
+            "--nvram-out" if nvram_out.is_none() => nvram_out = Some(value.clone()),
             "--framebuffer-out" if framebuffer_out.is_none() => {
                 framebuffer_out = Some(value.clone())
             }
@@ -592,6 +685,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         budget: budget.ok_or_else(|| format!("--budget is required; usage: {USAGE}"))?,
         fv_app,
         nvram_reboot_out,
+        nvram_in,
+        nvram_out,
         acpi_out,
         framebuffer_out,
         nvme_image,

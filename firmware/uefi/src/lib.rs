@@ -12,6 +12,7 @@
 
 pub mod acpi;
 pub mod block;
+pub mod bootmgr;
 pub mod bs;
 pub mod console;
 mod crc32;

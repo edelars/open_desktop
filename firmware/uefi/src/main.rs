@@ -301,7 +301,16 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::fs::simple_fs::install(system_pointer) } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 83);
     }
-    let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app());
+    let storage_boot = handoff.fv_app().is_none()
+        && unsafe { od_firmware::bootmgr::storage_present(system_pointer) };
+    let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app(), !storage_boot);
+    if storage_boot {
+        if unsafe { od_firmware::bootmgr::run(system_pointer) }.is_err() {
+            stop(STOP_BOOT_SERVICES, 84);
+        }
+        com1_write(b"OD-FW no bootable option\r\n");
+        stop(STOP_NO_BOOT_OPTIONS, 1);
+    }
     verify_exit_boot_services(system_pointer, handoff.tsc_hz(), runtime_installed);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
@@ -1379,7 +1388,11 @@ fn processor_id() -> [u32; 2] {
 }
 
 #[inline(never)]
-fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> bool {
+fn boot_fv_image(
+    system: *mut SystemTable,
+    requested: Option<FirmwareFvApp>,
+    allow_default: bool,
+) -> bool {
     // Console initialization and failed applications can leave an open COM1 line.
     fn fail(detail: u64) -> ! {
         com1_write(b"\r\n");
@@ -1390,7 +1403,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
         fail(69);
     };
     let install_runtime = archive.get("runtime").is_some();
-    let boot_application = requested.is_some() || archive.get("hello").is_some();
+    let boot_application = requested.is_some() || (allow_default && archive.get("hello").is_some());
     if !install_runtime && !boot_application {
         return false;
     }

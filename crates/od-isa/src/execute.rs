@@ -20570,7 +20570,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Or,
                     ..
                 } => {
-                    // File.GetInfo and SetInfo combine mismatched words of the information GUID.
+                    // File metadata and path parsing combine word comparisons.
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x08 | 0x0a | 0x80, OperandSize::Byte)
@@ -20583,7 +20583,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && match (instruction.prefixes.rex, source) {
                             (Some(0x44), Operand::Register(src)) => {
                                 destination == RegisterView::low(Register::Rsi, OperandSize::Word)
-                                    && src == RegisterView::low(Register::R11, OperandSize::Word)
+                                    && (src == RegisterView::low(Register::R11, OperandSize::Word)
+                                        || src
+                                            == RegisterView::low(Register::R10, OperandSize::Word))
                             }
                             (Some(0x45), Operand::Register(src)) => {
                                 destination == RegisterView::low(Register::R15, OperandSize::Word)
@@ -20892,6 +20894,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     instruction.operand_size == OperandSize::Qword
                         && instruction.address_size == OperandSize::Qword
                 }
+                (Operand::Memory(operand), ShiftKind::Shr, 0xd1) => {
+                    // FilePath preparation converts its scratch length from bytes to CHAR16 units.
+                    instruction.operand_size == OperandSize::Qword
+                        && instruction.address_size == OperandSize::Qword
+                        && instruction.prefixes.rex == Some(0x48)
+                        && operand.base == AddressBase::Register(Register::Rsp)
+                        && operand.index.is_none()
+                        && operand.scale == 1
+                        && operand.displacement == 0x78
+                }
                 _ => false,
             }
             && instruction.prefixes
@@ -20945,11 +20957,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // Firmware tests stack spills and dword display status registers in place.
         Operation::Logic {
             kind: LogicKind::Test,
-            dst: destination @ Operand::Memory(_),
+            dst: destination @ Operand::Memory(operand),
             src: source @ (Operand::Immediate(_) | Operand::Register(_)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && matches!(
+            && (matches!(
                 (instruction.opcode.byte, instruction.operand_size, source),
                 (0xf6, OperandSize::Byte, Operand::Immediate(_))
                     | (0xf7, OperandSize::Dword, Operand::Immediate(_))
@@ -20958,7 +20970,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         OperandSize::Dword | OperandSize::Qword,
                         Operand::Register(_)
                     )
-            )
+            ) || (instruction.opcode.byte == 0x84
+                && instruction.operand_size == OperandSize::Byte
+                && instruction.prefixes.rex.is_none()
+                && source
+                    == Operand::Register(RegisterView::low(Register::Rax, OperandSize::Byte))
+                && operand.base == AddressBase::Register(Register::Rsp)
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0x17c))
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -21349,7 +21369,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                         rex: Some(0x44),
                                         ..Prefixes::default()
                                     });
-                            original || fv_path
+                            let boot_path = destination
+                                == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                                && source == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                                && instruction.prefixes == Prefixes::default();
+                            original || fv_path || boot_path
                         }
                         (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword) => true,
                         _ => false,

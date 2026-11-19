@@ -436,6 +436,43 @@ Boot Services. Закрытие из уведомления откладывае
 Specification 1.03, 6 декабря 2000](https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/fatgen103.doc)
 и [UEFI 2.11, §§13.3–13.6](https://uefi.org/specs/UEFI/2.11/13_Protocols_Media_Access.html).
 
+### Boot manager
+
+При обычной загрузке с опубликованным Block I/O прошивка пробует
+`BootNext`, затем номера из `BootOrder`. `BootNext` удаляется до первого
+запуска по этой переменной. Политика перебирает активные `Boot####`
+обычной загрузочной категории. Числа в переменных кодируются little-endian,
+описания опций хранятся в UCS-2. Поддерживаются полный Device Path, короткий путь к файлу
+и короткий путь GPT Hard Drive. Сопоставление Hard Drive использует
+номер и GUID раздела. Из списка путей `EFI_LOAD_OPTION` путь для
+загрузки задаёт первый полный Device Path. Блок `OptionalData` после
+всего списка копируется в `LoadOptions` образа. [UEFI 2.11, §§3.1–3.3](https://uefi.org/specs/UEFI/2.11/03_Boot_Manager.html).
+
+Перед загрузкой опции устанавливается volatile-переменная `BootCurrent`.
+Затем сигнализируются `ReadyToBoot` и `AfterReadyToBoot` в этом порядке.
+Boot manager запускает только EFI-приложения. Watchdog запрашивается на
+300 секунд и отключается при возврате. На плате без reset target
+watchdog возвращает `EFI_UNSUPPORTED`, а загрузка продолжается. При
+возврате приложения перебор продолжается независимо от статуса. В
+профиле без клавиатуры и меню ожидания по `Timeout` нет.
+
+После исчерпания списка прошивка ищет `\EFI\BOOT\BOOTX64.EFI` на ESP
+фиксированного NVMe. Для обнаруженного раздела создаётся свободная
+запись `Boot####` с полным путём и номер добавляется в `BootOrder`.
+Сокращённые пути из существующих опций расширяются только на время
+загрузки. Опции с прежними номерами и содержимым сохраняются. Если
+никто не принял управление, COM1 сообщает `no bootable option`, затем
+плата останавливается. Смена носителя и removable-media discovery
+выходят за границы фиксированного NVMe-профиля.
+
+`LoadImage` с `SourceBuffer = NULL` разрешает файловые узлы через
+Simple File System, сохраняя фактический `DeviceHandle`, относительный
+`FilePath` и копию полного пути на новом image handle. Запрос с
+`SourceBuffer` использует переданные байты. Существующий Load File
+обслуживает встроенный FV, `EFI_LOAD_FILE2_PROTOCOL` не используется.
+На пути прямой загрузки прошивкой `LoadedImage.ParentHandle` равен NULL.
+[UEFI 2.11, §7.4.1](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-loadimage), [§9](https://uefi.org/specs/UEFI/2.11/09_Protocols_EFI_Loaded_Image.html), [§10.3.5.4](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html).
+
 ### Консоль COM1
 
 Прошивка публикует `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` и

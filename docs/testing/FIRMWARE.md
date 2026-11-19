@@ -215,6 +215,19 @@ firmware/uefi/tests/authenticode_reference.py image.efi`. Он читает
 - Временные артефакты — в `work/stage7/` (каталог `work/` игнорируется Git): образ `work/stage7/firmware.bin`, cargo target `work/stage7/firmware-target/`, probe `work/stage7/efi_probe.efi` (target `work/stage7/firmware-target-efi-probe/`).
 - Новый вывод сверяется с контрактом в разделах 11–12 и фиксируется вместе с изменением кода. Команда выше сохраняет транскрипт для сравнения с эталоном.
 
+## Гостевая загрузка с ESP
+
+`python3 tests/system/firmware_esp_boot_smoke.py` собирает stock ROM,
+`hello.efi` и проверочное приложение. Генератор ESP размещает их по
+путям `\EFI\BOOT\BOOTX64.EFI` и `\EFI\BOOT\CHECK.EFI` в разреженном
+образе. Тест запускает прошивку без FV-селектора и сверяет полные байты
+COM1, SHA-256 обоих дисков и SHA-256 сохранённых NVRAM snapshots.
+Сценарии проверяют загрузку по умолчанию, отсутствие ESP, fallback после
+отсутствующего файла, приоритет `BootNext` и восстановление снимка.
+Проверочное приложение сверяет `BootCurrent`, `LoadOptions`, `DeviceHandle`
+и оба интерфейса пути. Проверка снимка читает поколения банков и CRC.
+[Формат NVRAM](../specs/NVRAM_DEVICE.md#host-api).
+
 ## Измерения
 
 Измерения пути загрузки (S7-27) и решения по скорости (аллокатор, очереди NVMe, кеш FAT) — только по замерам: повтор ≥10 раз, первый отбрасывать, записывать среднее/p50/p95/разброс и fingerprint (Mac, macOS build, режим сборки, число квантов). До замеров выбор — гипотеза. Методика появится в этом документе вместе с S7-27.

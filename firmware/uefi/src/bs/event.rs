@@ -33,6 +33,21 @@ pub const EVT_NOTIFY_SIGNAL: u32 = 0x200;
 pub const EVT_SIGNAL_EXIT_BOOT_SERVICES: u32 = 0x201;
 const MAX_EVENTS: usize = 64;
 
+#[cfg(target_os = "none")]
+const READY_TO_BOOT: Guid = Guid {
+    data1: 0x7ce8_8fb3,
+    data2: 0x4bd7,
+    data3: 0x4679,
+    data4: [0x87, 0xa8, 0xa8, 0xd8, 0xde, 0xe5, 0x0d, 0x2b],
+};
+#[cfg(target_os = "none")]
+const AFTER_READY_TO_BOOT: Guid = Guid {
+    data1: 0x3a2a_00ad,
+    data2: 0x98b9,
+    data3: 0x4cdf,
+    data4: [0xa4, 0x78, 0x70, 0x27, 0x77, 0xf1, 0xc1, 0x0b],
+};
+
 #[derive(Clone, Copy)]
 struct Notify {
     callback: EventNotify,
@@ -362,6 +377,19 @@ pub(crate) unsafe fn poll_due_events() {
         let _ = state::try_with(|state| state.events.poll_clock());
         dispatch_pending();
     }
+}
+
+/// Signal the two boot groups in order, outside all caller-held state borrows.
+#[cfg(target_os = "none")]
+pub(crate) unsafe fn signal_ready_to_boot() -> Status {
+    for group in [READY_TO_BOOT, AFTER_READY_TO_BOOT] {
+        let result = unsafe { state::try_with(|state| state.events.signal_group(group)) };
+        if result.is_none() {
+            return Status::NOT_READY;
+        }
+        unsafe { dispatch_pending() };
+    }
+    Status::SUCCESS
 }
 
 /// # Safety

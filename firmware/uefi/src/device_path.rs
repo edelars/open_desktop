@@ -75,6 +75,37 @@ pub(crate) unsafe fn path_bytes<'a>(path: *const DevicePathNode) -> Option<&'a [
     Some(unsafe { slice::from_raw_parts(path.cast(), length) })
 }
 
+/// Borrow the first complete device path inside a bounded byte buffer.
+pub(crate) fn path_prefix(bytes: &[u8]) -> Option<&[u8]> {
+    let end = extent(
+        bytes.len().min(MAX_PATH_BYTES),
+        EndAt::EntirePath,
+        |offset| {
+            let header = bytes.get(offset..offset + HEADER_SIZE)?;
+            Some(DevicePathNode {
+                node_type: header[0],
+                subtype: header[1],
+                length: [header[2], header[3]],
+            })
+        },
+    )?;
+    bytes.get(..end + HEADER_SIZE)
+}
+
+/// Walk a complete device path, omitting each instance's End node.
+/// The buffer must already have passed complete path validation.
+pub(crate) unsafe fn path_instances(mut remaining: &[u8]) -> impl Iterator<Item = &[u8]> {
+    core::iter::from_fn(move || {
+        if remaining.is_empty() {
+            return None;
+        }
+        let end = unsafe { first_instance_extent(remaining.as_ptr().cast()) }?;
+        let instance = &remaining[..end];
+        remaining = &remaining[end + HEADER_SIZE..];
+        Some(instance)
+    })
+}
+
 unsafe fn raw_extent(path: *const DevicePathNode, end_at: EndAt) -> Option<usize> {
     if path.is_null() {
         return None;

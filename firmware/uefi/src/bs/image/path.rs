@@ -2,13 +2,18 @@
 
 use crate::bs::protocol::ProtocolRegistry;
 use crate::device_path::{
-    DEVICE_PATH_PROTOCOL_GUID, DevicePathNode, END_PATH_BYTES, HEADER_SIZE, first_instance_extent,
+    DEVICE_PATH_PROTOCOL_GUID, DevicePathNode, END_PATH_BYTES, HEADER_SIZE, path_instances,
 };
 #[cfg(any(target_os = "none", test))]
 use crate::fv::MAX_NAME_SIZE;
 use crate::fv::valid_name;
 use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::{ffi::c_void, ptr};
+
+#[cfg(target_os = "none")]
+use super::filesystem;
+#[cfg(target_os = "none")]
+use crate::fs::simple_fs::{SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, SimpleFileSystem};
 
 pub const LOAD_FILE_PROTOCOL_GUID: Guid = Guid {
     data1: 0x56ec_3091,
@@ -82,6 +87,7 @@ pub fn firmware_file_device_path<'a>(name: &str, output: &'a mut [u8]) -> Option
     Some(output)
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ImagePath<'a> {
     pub full: &'a [u8],
     pub device: Handle,
@@ -113,21 +119,12 @@ impl<'a> ImagePath<'a> {
 /// Device Path interface it registered, like LocateDevicePath.
 unsafe fn matching_instances<'path, 'db>(
     protocols: &'db ProtocolRegistry,
-    mut remaining: &'path [u8],
+    full: &'path [u8],
     protocol: Guid,
 ) -> impl Iterator<Item = (Handle, &'path [u8])> + use<'path, 'db> {
-    core::iter::from_fn(move || {
-        while !remaining.is_empty() {
-            let length = unsafe { first_instance_extent(remaining.as_ptr().cast()) }?;
-            let instance = &remaining[..length];
-            remaining = &remaining[length + HEADER_SIZE..];
-            if let Some((device, prefix)) =
-                unsafe { protocols.closest_device_path(protocol, instance) }
-            {
-                return Some((device, &instance[prefix..]));
-            }
-        }
-        None
+    unsafe { path_instances(full) }.filter_map(move |instance| {
+        let (device, prefix) = unsafe { protocols.closest_device_path(protocol, instance) }?;
+        Some((device, &instance[prefix..]))
     })
 }
 
@@ -167,21 +164,87 @@ pub unsafe fn install_firmware_volume() -> Status {
 }
 
 #[cfg(target_os = "none")]
-pub(super) unsafe fn volume_source<'path>(
-    protocols: &ProtocolRegistry,
-    full: &'path [u8],
-) -> Result<(&'static [u8], ImagePath<'path>), Status> {
-    let matches = unsafe { matching_instances(protocols, full, LOAD_FILE_PROTOCOL_GUID) };
-    for (device, relative) in matches {
-        if protocols.handle_protocol(device, LOAD_FILE_PROTOCOL_GUID)
-            != Ok(ptr::from_ref(&VOLUME_LOAD_FILE).cast_mut().cast())
-        {
-            continue;
+pub(super) enum PathSource {
+    FirmwareVolume(&'static [u8]),
+    File {
+        buffer: filesystem::FileBuffer,
+        provider: ptr::NonNull<SimpleFileSystem>,
+    },
+}
+
+#[cfg(target_os = "none")]
+impl PathSource {
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::FirmwareVolume(bytes) => bytes,
+            Self::File { buffer, .. } => buffer.as_bytes(),
         }
-        match archive_file(relative) {
-            Ok(bytes) => {
+    }
+
+    pub(super) fn still_bound(&self, protocols: &ProtocolRegistry, device: Handle) -> bool {
+        let (guid, expected) = match self {
+            Self::FirmwareVolume(_) => (
+                LOAD_FILE_PROTOCOL_GUID,
+                ptr::from_ref(&VOLUME_LOAD_FILE).cast_mut().cast(),
+            ),
+            Self::File { provider, .. } => {
+                (SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, provider.as_ptr().cast())
+            }
+        };
+        protocols.handle_protocol(device, guid) == Ok(expected)
+    }
+}
+
+#[cfg(target_os = "none")]
+enum Provider {
+    FileSystem(ptr::NonNull<SimpleFileSystem>),
+    FirmwareVolume,
+}
+
+#[cfg(target_os = "none")]
+unsafe fn provider(
+    protocols: &ProtocolRegistry,
+    instance: &[u8],
+) -> Result<Option<(Handle, usize, Provider)>, Status> {
+    if let Some((device, prefix)) =
+        unsafe { protocols.closest_device_path(SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, instance) }
+    {
+        let interface = protocols.handle_protocol(device, SIMPLE_FILE_SYSTEM_PROTOCOL_GUID)?;
+        let interface = ptr::NonNull::new(interface.cast()).ok_or(Status::DEVICE_ERROR)?;
+        return Ok(Some((device, prefix, Provider::FileSystem(interface))));
+    }
+    let Some((device, prefix)) =
+        (unsafe { protocols.closest_device_path(LOAD_FILE_PROTOCOL_GUID, instance) })
+    else {
+        return Ok(None);
+    };
+    let built_in = protocols.handle_protocol(device, LOAD_FILE_PROTOCOL_GUID)
+        == Ok(ptr::from_ref(&VOLUME_LOAD_FILE).cast_mut().cast());
+    Ok(built_in.then_some((device, prefix, Provider::FirmwareVolume)))
+}
+
+/// Fetch the path source without holding the Boot Services registry or allocator
+/// guard across any file protocol call. Preserve the order of path instances.
+#[cfg(target_os = "none")]
+pub(super) unsafe fn path_source(full: &[u8]) -> Result<(PathSource, ImagePath<'_>), Status> {
+    use crate::bs::state;
+
+    for instance in unsafe { path_instances(full) } {
+        let selected = unsafe { state::try_with(|state| provider(state.protocols, instance)) }
+            .ok_or(Status::NOT_READY)??;
+        let Some((device, prefix, selected)) = selected else {
+            continue;
+        };
+        let relative = &instance[prefix..];
+        let result = match selected {
+            Provider::FirmwareVolume => archive_file(relative).map(PathSource::FirmwareVolume),
+            Provider::FileSystem(provider) => unsafe { filesystem::read_file(provider, relative) }
+                .map(|buffer| PathSource::File { buffer, provider }),
+        };
+        match result {
+            Ok(source) => {
                 return Ok((
-                    bytes,
+                    source,
                     ImagePath {
                         full,
                         device,
@@ -189,7 +252,7 @@ pub(super) unsafe fn volume_source<'path>(
                     },
                 ));
             }
-            Err(Status::NOT_FOUND) => {}
+            Err(Status::NOT_FOUND | Status::NO_MEDIA | Status::MEDIA_CHANGED) => continue,
             Err(status) => return Err(status),
         }
     }

@@ -24,7 +24,7 @@ const SNAPSHOT_VERSION: u32 = 1;
 const SNAPSHOT_HEADER_BYTES: usize = 16;
 const BANK_HEADER_BYTES: usize = 16;
 const BANK_BYTES: usize = BANK_HEADER_BYTES + NVRAM_STORE_BYTES;
-const SNAPSHOT_BYTES: usize = SNAPSHOT_HEADER_BYTES + 2 * BANK_BYTES;
+pub const NVRAM_SNAPSHOT_BYTES: usize = SNAPSHOT_HEADER_BYTES + 2 * BANK_BYTES;
 // Empty ODVARSTR v1 from docs/specs/NVRAM_DEVICE.md. The machine treats the
 // bytes as opaque and does not parse the firmware's variable format.
 const EMPTY_STORE: &[u8] = &[
@@ -365,7 +365,7 @@ impl Banks {
     }
 
     fn with_contents(bytes: &[u8]) -> Result<Self, NvramContentsError> {
-        if bytes.len() != SNAPSHOT_BYTES
+        if bytes.len() != NVRAM_SNAPSHOT_BYTES
             || &bytes[..8] != SNAPSHOT_MAGIC
             || bytes[8..12] != SNAPSHOT_VERSION.to_le_bytes()
             || bytes[12..16] != [0; 4]
@@ -387,7 +387,7 @@ impl Banks {
     }
 
     fn snapshot(&self) -> Vec<u8> {
-        let mut bytes = vec![0; SNAPSHOT_BYTES];
+        let mut bytes = vec![0; NVRAM_SNAPSHOT_BYTES];
         bytes[..8].copy_from_slice(SNAPSHOT_MAGIC);
         bytes[8..12].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
         for (slot, bank) in bytes[SNAPSHOT_HEADER_BYTES..]

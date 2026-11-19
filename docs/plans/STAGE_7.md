@@ -578,12 +578,12 @@
 
 ### S7-19. Реализовать boot manager и загрузку приложения с ESP
 
-- [ ] Принято после ревью.
+- [x] Принято после независимого ревью кода и результатов `gpt-6.1-sol` (`high`) 2026-11-19. Пять гостевых сценариев проверили запуск с ESP, одноразовый `BootNext` и восстановление NVRAM. [Результаты](../reports/STAGE_7_REPORT.md#s7-19--boot-manager-и-загрузка-с-esp).
 - **Где:** `firmware/uefi/src/bootmgr/{options,policy,loader}.rs`, `firmware/uefi/src/bs/image.rs` (`LoadImage` по файловому Device Path через `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` + `EFI_LOAD_FILE2` не требуется — записать), переменные `BootOrder`, `Boot####` (`EFI_LOAD_OPTION`), `BootNext`, `BootCurrent`, `Timeout`, `docs/specs/UEFI_PROFILE.md` (раздел «Boot manager»), `tests/system/firmware_esp_boot_smoke.py`.
 - **Сделать:**
-  1. Политика по UEFI 2.11 раздел «Boot Manager»: `BootNext` → `BootOrder` → при отсутствии опций — перечисление Block I/O handles с ESP и путь по умолчанию `\EFI\BOOT\BOOTX64.EFI`; создание `Boot####` для найденного ESP (removable-media поведение записать); `BootCurrent` устанавливается перед `StartImage`; `Timeout` без клавиатуры — не ждать ввода, записать.
+  1. Политика по UEFI 2.11 «Boot Manager» проходит `BootNext` и `BootOrder`. После исчерпания опций проверяет ESP с Block I/O по пути `\EFI\BOOT\BOOTX64.EFI` и создаёт `Boot####` для обнаруженного раздела. `BootCurrent` устанавливается до `ReadyToBoot`. Профиль без клавиатуры запускается без ожидания по `Timeout`. Removable media описывается отдельно от фиксированного NVMe.
   2. Разбор/сборка `EFI_LOAD_OPTION` (атрибуты, описание UCS-2, Device Path, optional data) — host-side тесты.
-  3. Передача `LoadOptions` в `EFI_LOADED_IMAGE_PROTOCOL`; возврат из приложения с ошибкой → следующая опция; все опции неудачны → сообщение на COM1 и `HLT` с кодом (поведение «нет загрузочного устройства»).
+  3. Передача `LoadOptions` в `EFI_LOADED_IMAGE_PROTOCOL`. В режиме без меню возврат из приложения ведёт к следующей опции. При исчерпании кандидатов прошивка выдаёт сообщение на COM1 и останавливает плату.
   4. Smoke: ESP с `hello` под именем `\EFI\BOOT\BOOTX64.EFI`, собранный `make_test_disk.py`; прошивка без FV-приложения грузит его с диска.
 - **Проверить:** `python3 tests/system/firmware_esp_boot_smoke.py` (с диском → `hello` печатает; без ESP → `no bootable option`; с `BootOrder`, указывающим на несуществующий файл → fallback на default path); COM1 эталоны.
 - **Готово:** стандартная цепочка «переменные → ESP → BOOTX64.EFI → приложение» работает на собственном диске.

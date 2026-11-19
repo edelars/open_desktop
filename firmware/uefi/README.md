@@ -148,6 +148,7 @@ COM1 RX и выводит hex-значение одного доступного
 | `src/gop/` | Graphics Output Protocol на основном дисплее, Memory Mapped Device Path и четыре операции `Blt` ([профиль UEFI](../../docs/specs/UEFI_PROFILE.md#gop)) | MMIO и framebuffer |
 | `src/nvme/` | опрос фиксированного контроллера, admin- и I/O-очереди и передача данных через DMA ([контракт NVMe](../../docs/specs/NVME_DEVICE.md)) | MMIO и RAM |
 | `src/block/` | Block I/O, Disk I/O, проверка GPT, Device Path и Partition Info ([профиль хранения](../../docs/specs/UEFI_PROFILE.md#хранилище)) | драйвер NVMe |
+| `src/bootmgr/` | BootNext, BootOrder и запуск EFI-приложений с ESP ([профиль](../../docs/specs/UEFI_PROFILE.md#boot-manager)) | переменные и Boot Services |
 | `src/fat/` | Чтение FAT12, FAT16 и FAT32 с проверкой каталогов и цепочек | байтовый доступ к разделу |
 | `src/fs/` | Simple File System и File Protocol для чтения ESP ([профиль](../../docs/specs/UEFI_PROFILE.md#файловая-система)) | FAT, Disk I/O |
 | `src/main.rs` | бинарь: начало загрузки, диагностика, panic handler | CPU |
