@@ -19105,6 +19105,7 @@ pub fn step_paged_firmware_probe<P: crate::PortIo>(
         context,
         initial_rflags_defined,
         None,
+        None,
     )
 }
 
@@ -19127,6 +19128,30 @@ pub fn step_paged_firmware_probe_with_cr3<P: crate::PortIo>(
         context,
         initial_rflags_defined,
         Some(active_cr3),
+        None,
+    )
+}
+
+/// Run one firmware instruction with the active page-table root and a
+/// time source. A source failure exits through the backend without retiring.
+pub fn step_paged_firmware_probe_with_cr3_and_rdtsc<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+    source: &mut dyn FnMut() -> Result<u64, MemoryError>,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+        Some(source),
     )
 }
 
@@ -19137,6 +19162,7 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
     context: AccessContext,
     initial_rflags_defined: u64,
     active_cr3: Option<u64>,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
 ) -> PagedProbeResult<P::Error> {
     let old_shadow = state.sti_shadow;
     let result = step_paged_probe_mode(
@@ -19155,7 +19181,7 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
-        None,
+        rdtsc,
     );
     if result.instructions_executed != 0 && old_shadow == Some(crate::StiShadow::Blocking) {
         state.sti_shadow = Some(crate::StiShadow::Clear);
@@ -19838,6 +19864,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     initial_rflags_defined: u64,
     rdtsc: Option<&mut dyn FnMut() -> u64>,
 ) -> PagedProbeResult<P::Error> {
+    let mut source = rdtsc.map(|source| move || Ok(source()));
     step_paged_probe_mode(
         user_mov,
         user_load_only,
@@ -19854,7 +19881,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
-        rdtsc,
+        source
+            .as_mut()
+            .map(|source| source as &mut dyn FnMut() -> Result<u64, MemoryError>),
     )
 }
 
@@ -19874,7 +19903,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     pio: &mut P,
     context: AccessContext,
     initial_rflags_defined: u64,
-    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
 ) -> PagedProbeResult<P::Error> {
     let result = |exit, instructions_executed| PagedProbeResult {
         exit,
@@ -28575,7 +28604,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             let Some(source) = rdtsc else {
                 return unsupported();
             };
-            let value = source();
+            let value = match source() {
+                Ok(value) => value,
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             state.gpr[Register::Rax as usize] = u64::from(value as u32);
             state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
             state.rip = next_rip;

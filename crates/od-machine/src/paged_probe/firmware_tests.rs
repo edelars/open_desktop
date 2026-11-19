@@ -139,6 +139,7 @@ fn step(state: &mut LongModeState, bus: &mut MachineBus, budget: u64) -> PagedPr
         od_isa::INTEGER_FLAGS,
         || false,
         |_| {},
+        None,
     )
 }
 

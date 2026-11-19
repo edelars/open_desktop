@@ -54891,6 +54891,94 @@ fn firmware_boot_or_qword_memory_clears_cf_and_of_and_preserves_source() {
 }
 
 #[test]
+fn firmware_rdtsc_reads_the_source_before_committing() {
+    let code = [0x0f, 0x31];
+    let error = MemoryError::Backend("firmware clock overflow".into());
+    let value = 0x9876_5432_fedc_ba98;
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = u64::MAX;
+        cpu.gpr[Register::Rdx as usize] = u64::MAX;
+        let mut expected = cpu.clone();
+        let mut calls = 0;
+        let result = execute::step_paged_firmware_probe_with_cr3_and_rdtsc(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+            0x1000,
+            &mut || {
+                calls += 1;
+                if fail { Err(error.clone()) } else { Ok(value) }
+            },
+        );
+        assert_eq!(calls, 1);
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Backend(error.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += 2;
+            expected.gpr[Register::Rax as usize] = 0xfedc_ba98;
+            expected.gpr[Register::Rdx as usize] = 0x9876_5432;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_rdtsc_does_not_sample_on_fetch_fault_or_prefix() {
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(RIP + 1),
+    };
+    for (code, error, expected_exit) in [
+        (
+            &[0x0f, 0x31][..],
+            Some((RIP + 1, MemoryError::Architectural(fault.clone()))),
+            PagedProbeExit::Fault(fault),
+        ),
+        (
+            &[0x66, 0x0f, 0x31][..],
+            None,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        memory.fail_fetch_at = error;
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut calls = 0;
+        let result = execute::step_paged_firmware_probe_with_cr3_and_rdtsc(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+            0x1000,
+            &mut || {
+                calls += 1;
+                Ok(0)
+            },
+        );
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(calls, 0);
+        assert_eq!(cpu, before);
+    }
+}
+
+#[test]
 fn firmware_boot_unsigned_qword_mul_updates_both_implicit_halves_and_flags() {
     let code = [0x48, 0xf7, 0xe2]; // MUL RDX
     for (lhs, rhs, low, high) in [(21, 2, 42, 0), (u64::MAX, 2, u64::MAX - 1, 1)] {

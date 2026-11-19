@@ -2491,6 +2491,7 @@ impl LoadedFirmwareBoard {
             );
         }
         if firmware_boot_profile {
+            let clock = self.clock();
             let state = &mut self.vcpus[BOOT_VCPU_INDEX].state;
             let report = run_paged_firmware_probe(
                 state,
@@ -2502,6 +2503,7 @@ impl LoadedFirmwareBoard {
                 INTEGER_FLAGS,
                 stop,
                 committed_write,
+                Some(clock),
             );
             if let Some(cr3) = state.cr3 {
                 self.page_table_root = cr3;
@@ -5849,6 +5851,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn firmware_rdtsc_counts_retirement_inside_and_across_quanta() {
+        // RDTSC; MOV R8,RAX; STD; RDTSC; HLT.
+        let image = test_image(&[0x0f, 0x31, 0x49, 0x89, 0xc0, 0xfd, 0x0f, 0x31, 0xf4], &[]);
+        let config = FirmwareBoardConfig {
+            tsc_hz: 625_000_000,
+            ..reference_config()
+        };
+        for budget in [1, 16] {
+            let mut board = load_firmware_image(&image, &config).unwrap();
+            board.advance_time_ns(1).unwrap();
+            let mut retired = 0;
+            let mut quanta = 0;
+            loop {
+                let result = board.run_boot(budget).unwrap();
+                retired += result.retired;
+                quanta += result.quanta;
+                if result.exit == PagedProbeExit::Halted {
+                    break;
+                }
+                assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+                assert!(retired < 5);
+            }
+            assert_eq!(retired, 5);
+            assert_eq!(quanta, if budget == 1 { 5 } else { 1 });
+            // Absolute time advances from 1 ns to 4 ns before the second
+            // sample. Independently rounding 3 ns forward would lose a tick.
+            assert_eq!(board.state().gpr[Register::R8 as usize], 0);
+            assert_eq!(board.state().gpr[Register::Rax as usize], 2);
+            assert_eq!(board.state().gpr[Register::Rdx as usize], 0);
+            assert_eq!(board.clock().now_ns(), 6);
+            assert_eq!(board.clock().tsc(), 3);
+        }
+    }
+
+    #[test]
+    fn firmware_rdtsc_projection_overflow_preserves_the_faulting_instruction() {
+        // STD; CLD; RDTSC; HLT. The sample would overflow after two retirees.
+        let image = test_image(&[0xfd, 0xfc, 0x0f, 0x31, 0xf4], &[]);
+        for (hz, now_ns, expected_error) in [
+            (1, u64::MAX - 1, VirtualClockError::TimeOverflow),
+            (
+                2_000_000_000,
+                u64::MAX / 2 - 1,
+                VirtualClockError::TscOverflow,
+            ),
+        ] {
+            let config = FirmwareBoardConfig {
+                tsc_hz: hz,
+                ..reference_config()
+            };
+            let mut board = load_firmware_image(&image, &config).unwrap();
+            board.advance_time_ns(now_ns).unwrap();
+            let clock = board.clock();
+            let before = board.state().clone();
+            assert!(matches!(
+                board.run_boot(4),
+                Err(FirmwareBoardError::Clock(error)) if error == expected_error
+            ));
+            assert_eq!(board.state().rip, before.rip + 2);
+            assert_eq!(board.state().gpr, before.gpr);
+            assert_eq!(board.state().rflags, before.rflags);
+            assert_eq!(board.clock(), clock);
+        }
+    }
+
     // ---- S4-37a2: PM timer port tick (ISSUE-067) ----
 
     /// `MOV DX,0x609; IN AL,DX x reads; HLT`. The base paged probe has no compare
@@ -6795,14 +6863,20 @@ mod tests {
     }
 
     #[test]
-    fn rdtsc_without_the_linux_profile_stays_unsupported_without_a_tick() {
+    fn rdtsc_without_the_linux_profile_counts_time_only_in_the_firmware_boot_run() {
         let mut board = load_firmware_image(&rdtsc_image(2), &tables_config()).unwrap();
         assert!(board.rdtsc_tick.is_none());
         assert!(!board.has_linux_profile());
+        let raw = board.run(100, || false, |_| {});
+        assert_eq!(raw.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+        assert_eq!(raw.instructions_executed, 0);
+        assert_eq!(board.clock().now_ns(), 0);
+
         let report = board.run_boot(100).unwrap();
-        assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
-        assert_eq!(report.retired, 0, "Unsupported on the first instruction");
-        assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 3, "RDTSC, RDTSC, HLT");
+        assert_eq!(report.virtual_ns, 3, "one ns per retired instruction");
+        assert_eq!(edx_eax(&board), 1, "second RDTSC after one retirement");
         assert_eq!(report.rdtsc_reads, None);
         assert_eq!(report.rdtsc_reads_by_cpl, None);
         assert_eq!(report.pit_port_b_reads, None);
