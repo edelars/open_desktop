@@ -20132,6 +20132,62 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
+        // S7-04: ordinary CMP with one memory operand reads before changing flags.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Cmp,
+            dst,
+            src,
+        } if firmware_boot_profile
+            && matches!(
+                (dst, src),
+                (Operand::Memory(_), Operand::Register(_))
+                    | (Operand::Register(_), Operand::Memory(_))
+            )
+            && instruction.opcode.map == OpcodeMap::Primary
+            && matches!(
+                (instruction.opcode.byte, instruction.operand_size),
+                (0x38 | 0x3a, OperandSize::Byte)
+                    | (
+                        0x39 | 0x3b,
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                    )
+            )
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    operand_override: instruction.operand_size == OperandSize::Word,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let comparison = (|| {
+                let lhs = read_operand(state, memory, context, next_rip, dst)?;
+                let rhs = read_operand(state, memory, context, next_rip, src)?;
+                Ok::<_, MemoryError>(
+                    arithmetic_result(
+                        instruction.operand_size,
+                        ArithmeticKind::Cmp,
+                        lhs,
+                        rhs,
+                        state.rflags,
+                    )
+                    .1,
+                )
+            })();
+            state.rflags = match comparison {
+                Ok(flags) => flags,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // S7-04: register BT indexes within the decoded operand width.
         Operation::Bit {
             kind: BitKind::Test,
