@@ -1036,6 +1036,13 @@ and alternating-RIP inputs still favored the interpreter. The broader cold
 matrix and fine-grained compiler phases remain open.
 [S3-35e report and raw evidence](STAGE_3_S3-35e_2026-11-19.md)
 
+S3-36h measured the dispatcher with one normal-hit search and same-RIP
+continuation selection. Median absolute one-pass time fell 3.73% relative
+to `06bb39a`. The normalized medians fell 2.82% and 3.02% for the two-RIP
+loops. Those loops still favored the interpreter. The signed process suite
+passed 46/46 with the measured patch.
+[S3-36h report and raw evidence](STAGE_3_S3-36h_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

@@ -793,11 +793,11 @@ construction/reset, full result/state validation, and phase-total extraction
 are outside the interval. Warm active phases are block build/admission,
 `key_snapshot_and_initial_lookup`, and the host execution boundary. The lookup
 phase covers minimum sizing, key construction, initial snapshot validation,
-the first `cache.find`, and its hit/miss update for normal lookup. Same-RIP
+one `cache.find`, and its hit/miss update for normal lookup. Same-RIP
 reuse records the prior-entry check in the build phase and hit accounting in
-the lookup phase. A normal hit also performs a second `cache.find` outside
-these phases. Cached-snapshot and code-view revalidation, guards, accounting,
-other cache bookkeeping, and adapter and recorder work contribute to the
+the lookup phase. Next-entry selection at continuation, cached-snapshot
+and code-view revalidation, guards, accounting, other cache bookkeeping,
+and adapter and recorder work contribute to the
 unattributed residual. The host boundary includes backend
 and arena checks, host context, generated entry, and result decoding, so it is
 not pure guest execution time.
@@ -1439,6 +1439,13 @@ calls on the same S0-09 countdown loops. It checks full state and retirement
 outside timing and verifies hit-only cache counters across each warm sample.
 The archive includes the fixed counts, matched builds, alternating order,
 individual timings and offline audit. [Report and reproduction](../reports/STAGE_3_S3-36g_2026-11-19.md)
+
+### S3-36h. Warm hit with the post-touch cache index
+
+Two matched signed builds use the S3-36g driver with the same six warm
+profiles. The candidate reuses the post-touch cache index and records a
+continuation index only for same-RIP returns. All six profiles use fixed
+counts and alternating call order. [Report and raw audit](../reports/STAGE_3_S3-36h_2026-11-19.md)
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 

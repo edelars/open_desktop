@@ -1997,7 +1997,7 @@ where
     let mut retired_total = 0u64;
     let mut blocks_executed = 0u64;
 
-    let mut previous_entry = None;
+    let mut next_cached_entry = None;
     loop {
         if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
             return Ok(result(exit, remaining, retired_total, blocks_executed));
@@ -2010,9 +2010,7 @@ where
         }
 
         let selection = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
-            if let Some((rip, index)) = previous_entry
-                && rip == state.rip
-            {
+            if let Some(index) = next_cached_entry {
                 return Ok(BlockSelection::PreviousEntry(index));
             }
             build_dispatch_block(code, state.rip, admission).map(BlockSelection::Built)
@@ -2034,32 +2032,34 @@ where
                         });
                     }
                 };
-                let (key, hit) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-                    let minimum =
-                        minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
-                            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-                    cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-                    let key = TranslationKey::for_block(
-                        code,
-                        guest_block,
-                        CompileFlavor::S0_09FixtureDispatch,
-                        execution_context,
-                        dependencies,
-                    )
-                    .map_err(DispatchError::TranslationKey)?;
-                    validate_cached_snapshot(&key, code, dependencies)?;
+                let (key, hit_index) =
+                    measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+                        let minimum =
+                            minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
+                                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+                        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+                        let key = TranslationKey::for_block(
+                            code,
+                            guest_block,
+                            CompileFlavor::S0_09FixtureDispatch,
+                            execution_context,
+                            dependencies,
+                        )
+                        .map_err(DispatchError::TranslationKey)?;
+                        validate_cached_snapshot(&key, code, dependencies)?;
 
-                    let hit_index = cache.find(&key);
-                    let hit = hit_index.is_some();
-                    if let Some(index) = hit_index {
-                        cache.record_hit(index).map_err(DispatchError::Cache)?;
-                    } else {
-                        cache.record_miss().map_err(DispatchError::Cache)?;
-                    }
-                    Ok::<_, DispatchError<B::Error>>((key, hit))
-                })?;
+                        let hit_index = if let Some(index) = cache.find(&key) {
+                            Some(cache.record_hit(index).map_err(DispatchError::Cache)?)
+                        } else {
+                            cache.record_miss().map_err(DispatchError::Cache)?;
+                            None
+                        };
+                        Ok::<_, DispatchError<B::Error>>((key, hit_index))
+                    })?;
 
-                if !hit {
+                if let Some(index) = hit_index {
+                    index
+                } else {
                     let compiled =
                         match crate::block_compile::compile_prepared_dispatch_block_observed(
                             code.code_end(),
@@ -2103,8 +2103,6 @@ where
                         })
                         .map_err(DispatchError::Cache)?;
                     index
-                } else {
-                    cache.find(&key).expect("hit index still resident")
                 }
             }
         };
@@ -2117,9 +2115,7 @@ where
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
             return Err(DispatchError::StaleDependencySnapshot);
         }
-        // The most recent resident index is valid until another lookup or install
-        // within this dispatch. No index is retained across invocations.
-        previous_entry = Some((cached_key.entry_rip(), cached_index));
+        let entry_rip = cached_key.entry_rip();
         let cached = cache.entry(cached_index).expect("cache index valid");
         let cached_block = &cached.block;
         let published = &cached.published;
@@ -2174,6 +2170,8 @@ where
                 if let Some(exit) = event_exit(control) {
                     return Ok(result(exit, remaining, retired_total, blocks_executed));
                 }
+                // The cache is exclusively borrowed until the next iteration.
+                next_cached_entry = (state.rip == entry_rip).then_some(cached_index);
             }
             RuntimeExitTag::BudgetExhausted => {
                 if remaining != 0 {
