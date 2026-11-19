@@ -1432,6 +1432,13 @@ for predecoded RUN. The measured paths matched architectural and data
 access outcomes, and the predecoded path made zero FETCH callbacks.
 [Decode boundary controls and raw evidence](STAGE_3_S3-40aa_2026-11-19.md)
 
+S3-40ab compared predecoded RUN, RUN using an out-of-line tracked STEP,
+and a direct pair of calls to the same STEP. On both sequences the
+current-minus-historical gap remained at 170.3–170.5 ns in the direct
+pair. Disassembly verified the shared call destination and the untimed
+checks verified ordered memory effects, two retirements and zero FETCH.
+[RUN loop controls and raw evidence](STAGE_3_S3-40ab_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

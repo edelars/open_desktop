@@ -1664,6 +1664,15 @@ data and retirement parity. Compare whole-call timings. The callback and
 predecoded lookup are part of the measured paths.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40aa_2026-11-19.md)
 
+### S3-40ab. RUN loop and common STEP boundary on M1 Pro
+
+This three-arm diagnostic uses the S3-40aa predecoded control, a RUN
+with a shared out-of-line tracked STEP and two direct calls to that same
+STEP. The runner checks the common call destination in disassembly,
+validates two retirements and equivalent state and accesses, and repeats
+the comparison in six matched rounds. Timings cover complete arms.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ab_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
