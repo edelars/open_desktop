@@ -1,0 +1,44 @@
+{
+  "commit": "7c4ee2f",
+  "runner_sha256": "a0677673b9b7c32887cdddad9de9f48d3f3820578320247cffcea14c97f8a094",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "kernel_debug_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+  "profile": "stage4a-apic",
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 2500000000,
+  "previous_stop_rip": "0xffffffff819dfa98",
+  "stop_rip": "0xffffffff8194cae8",
+  "stop_gpa": "0x194cae8",
+  "stop_bytes": "f0 48 83 2f 01",
+  "kernel_symbol": "put_fs_context+0xe8",
+  "runs": [
+    {
+      "variant": "diskless",
+      "nonce": "smpBoot20261119A",
+      "report_sha256": "ecf7ab66f2f590ddd8cfe3c5a543fe5f680663d4eff9a6539ba3812e47d7dbe7",
+      "retired_bsp": 1648247679,
+      "ap_activity": "WaitForSipi",
+      "retired_ap": 0,
+      "exit_detail": "Unsupported { opcode: 131 }",
+      "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+      "acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+      "kernel_observation": "[    0.018178] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs",
+      "guest_verifier": "expected a single complete guest observation with the requested nonce"
+    },
+    {
+      "variant": "raw",
+      "nonce": "s6-workloads20261119",
+      "report_sha256": "72385907554bcc80be8d058b7f5388c706083d4d0c53663a58f63a0259aa410f",
+      "retired_bsp": 1648043827,
+      "ap_activity": "WaitForSipi",
+      "retired_ap": 0,
+      "exit_detail": "Unsupported { opcode: 131 }",
+      "initramfs_sha256": "d3664e5eb5ed2a044f8452c13fb05c8a0d05e4495e0ba6b17b85403a1e057b43",
+      "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+      "kernel_observation": "[    0.018177] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs",
+      "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+    }
+  ]
+}

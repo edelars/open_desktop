@@ -1409,6 +1409,8 @@ python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
 
 В однопроцессорном контрольном запуске с Linux 7.0.0-38, `stage4a-apic`, seed `24301` и бюджетом 300 млн инструкций полные JSON до и после совпали побайтно. Оба завершились по бюджету. SHA-256 отчётов `3bf7db884ea243e23cc7aeb334e9e92bdfd73db49010ce5c192676f1f2611b2e`.
 
+В release `7c4ee2f` два запуска с тем же ядром и seed прошли RIP ISSUE-547 и остановились позже на `LOCK SUB qword ptr [RDI], 1` в `put_fs_context+0xe8`. BSP выполнил 1 648 247 679 инструкций в бездисковом запуске и 1 648 043 827 с RAW. CPU1 в обоих запусках остался в `WaitForSipi`. [ISSUE-549](../KNOWN_ISSUES.md#issue-549--s6-21-lock-sub-qword-с-imm8-останавливает-загрузку-до-sipi) · [Сводка запуска](data/stage6/s6-21-lock-sub-qword-stop.json).
+
 ### S6-22 — PCI/NVMe на SMP-плате LinuxDirect
 
 `load_linux_direct_board_with_nvme_and_vcpus` собирает ту же PCI/NVMe-плату, что и однопроцессорный загрузчик, и сверяет её manifest и число LAPIC. Плата подходит для обоих планировщиков LinuxDirect с APIC. В режиме чередования запись MMIO завершает квант, затем завершения NVMe и DMA публикуются до следующей инструкции и обновляется уровень INTx. Контроллер обслуживает очередь, ожидавшую к началу запуска, до выбора первого vCPU. При STOP очередь остаётся доступной после возобновления.
