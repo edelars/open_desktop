@@ -141,6 +141,27 @@ pub(crate) struct Executed {
     pub(crate) device_ns: u64,
 }
 
+/// Effects known to have completed before a quantum failed. The scheduler owns their charge.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct RunFailure<E>(Box<(Executed, E)>);
+
+impl<E> RunFailure<E> {
+    #[cold]
+    pub(crate) fn after(executed: Executed, error: E) -> Self {
+        Self(Box::new((executed, error)))
+    }
+
+    pub(crate) fn into_parts(self) -> (Executed, E) {
+        *self.0
+    }
+}
+
+impl<E> From<E> for RunFailure<E> {
+    fn from(error: E) -> Self {
+        Self::after(Executed::default(), error)
+    }
+}
+
 /// What one boundary of one vCPU applied.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BoundaryReport {
@@ -222,7 +243,7 @@ pub(crate) trait SmpHost {
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, Self::Error>;
+    ) -> Result<Executed, RunFailure<Self::Error>>;
 }
 
 /// Why a run ended without an error.
@@ -773,9 +794,13 @@ impl SmpScheduler {
             let deadline = host.board_deadline();
             let budget = host.clock_owner().step_budget(left, deadline);
             let now_before = host.clock_owner().now_ns();
-            let executed = host
-                .run(cpu, budget, &mut || stop.requested())
-                .map_err(SmpError::Host)?;
+            let (executed, failure) = match host.run(cpu, budget, &mut || stop.requested()) {
+                Ok(executed) => (executed, None),
+                Err(failure) => {
+                    let (executed, error) = failure.into_parts();
+                    (executed, Some(error))
+                }
+            };
             let owner = host.clock_owner();
             // Condition (c): only the scheduler moves the clock; a host that touched it would make
             // the charge below a double count.
@@ -802,6 +827,17 @@ impl SmpScheduler {
             retired += executed.retired;
             quantum_left = quantum_left.saturating_sub(done);
             *remaining = remaining.saturating_sub(executed.retired);
+            if let Some(error) = failure {
+                if let Some(turns) = self.turns.as_mut() {
+                    turns.push(TurnRecord {
+                        cpu,
+                        quantum,
+                        steps,
+                        retired,
+                    });
+                }
+                return Err(SmpError::Host(error));
+            }
             let running = host.activity(cpu) == SchedActivity::Running;
             if done == 0 && executed.device_ns == 0 && running && !stop.requested() {
                 return Err(SmpError::NoProgress { cpu });
@@ -1013,13 +1049,13 @@ where
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, FirmwareBoardError> {
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let vcpu = self
             .board
             .vcpu(cpu)
             .ok_or(FirmwareBoardError::Config("smp scheduler: no such vCPU"))?;
         if vcpu.legacy.is_none() {
-            return (self.run)(self.board, cpu, budget, stop);
+            return (self.run)(self.board, cpu, budget, stop).map_err(RunFailure::from);
         }
         let legacy = crate::ap_legacy_exec::run_legacy(self.board, cpu, budget, stop)?;
         let mut executed = legacy.executed;
@@ -1027,7 +1063,8 @@ where
         // call, because the scheduler takes a call without a step for lack of progress.
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
-            let rest = (self.run)(self.board, cpu, left, stop)?;
+            let rest = (self.run)(self.board, cpu, left, stop)
+                .map_err(|error| RunFailure::after(executed, error))?;
             executed.retired += rest.retired;
             executed.partial_rep = rest.partial_rep;
             executed.device_ns += rest.device_ns;
@@ -1287,7 +1324,7 @@ mod tests {
             cpu: usize,
             budget: u64,
             stop: &mut dyn FnMut() -> bool,
-        ) -> Result<Executed, Infallible> {
+        ) -> Result<Executed, RunFailure<Infallible>> {
             assert_eq!(
                 self.activity(cpu),
                 SchedActivity::Running,

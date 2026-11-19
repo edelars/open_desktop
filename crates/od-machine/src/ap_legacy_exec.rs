@@ -24,7 +24,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::bus::{DescriptorGate, SplitLockGate};
-use crate::smp_scheduler::Executed;
+use crate::smp_scheduler::{Executed, RunFailure};
 use crate::vcpu::LegacyCpu;
 use crate::{
     FirmwareBoardError, GuestPhysicalAddress, LoadedFirmwareBoard, MemoryRegionKind, PhysicalMemory,
@@ -171,11 +171,9 @@ impl RealModeMemory for BoardRam<'_> {
 /// becomes the long-mode state (neither costs a step, so a call that is handed such a processor
 /// retires nothing and hands over at once); `stop()` is polled (true: the call ends); the budget is
 /// checked (used up: the call ends). Then one step of the model. A refusal ends the call with
-/// [`FirmwareBoardError::ApLegacyRefused`]; the model and the memory are unchanged by the refused
-/// step, and what earlier steps of the call retired stays in the vCPU. Those steps are in neither
-/// the counters of the scheduler nor the clock: the error replaces the `Executed` of the call, so
-/// the scheduler charges nothing for it (a refusal ends the run; the clock and the counters of an
-/// errored run are short by the steps of the last call).
+/// [`FirmwareBoardError::ApLegacyRefused`]. The refused instruction does not retire. Completed
+/// steps stay in the vCPU and their execution counts accompany the refusal for the scheduler to
+/// charge. A protected-mode refusal can leave the page-walk A/D prefix committed.
 ///
 /// At the hand-over `IA32_EFER` of the model goes to `guest_efer`; the state is
 /// [`ProtectedCpu::into_long_mode`] of the model with the vCPU's own `state` as the preserved one,
@@ -185,7 +183,7 @@ pub(crate) fn run_legacy(
     cpu: usize,
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
-) -> Result<LegacyRun, FirmwareBoardError> {
+) -> Result<LegacyRun, RunFailure<FirmwareBoardError>> {
     let vcpu = board
         .vcpu_mut(cpu)
         .ok_or(FirmwareBoardError::Config("ap legacy: no such vCPU"))?;
@@ -208,7 +206,7 @@ pub(crate) fn run_legacy_on(
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
     gate: Option<&dyn SplitLockGate>,
-) -> Result<LegacyRun, FirmwareBoardError> {
+) -> Result<LegacyRun, RunFailure<FirmwareBoardError>> {
     const NO_LEGACY: FirmwareBoardError =
         FirmwareBoardError::Config("ap legacy: the vCPU is not in a legacy mode");
     let mut model = vcpu.legacy.take().ok_or(NO_LEGACY)?;
@@ -281,7 +279,10 @@ pub(crate) fn run_legacy_on(
     };
     if let Some(refusal) = refusal {
         vcpu.legacy = Some(model);
-        return Err(FirmwareBoardError::ApLegacyRefused { cpu, refusal });
+        return Err(RunFailure::after(
+            executed,
+            FirmwareBoardError::ApLegacyRefused { cpu, refusal },
+        ));
     }
     if let Some((state, efer)) = handed_over {
         vcpu.state = state;
@@ -1216,6 +1217,136 @@ mod tests {
     }
 
     #[test]
+    fn legacy_prefix_is_charged_when_the_next_real_mode_instruction_is_refused() {
+        check_legacy_failure_accounting(false);
+    }
+
+    #[test]
+    fn legacy_prefix_is_charged_when_the_same_call_fails_after_handover() {
+        check_legacy_failure_accounting(true);
+    }
+
+    fn check_legacy_failure_accounting(handover: bool) {
+        use crate::parallel_run::{ParallelConfig, ParallelFinish, run_threads};
+        use std::time::Duration;
+
+        const REFUSED_IP: u32 = 17; // CLI, four MOVs, then LOCK BTS.
+        const LONG_MODE_ERROR: FirmwareBoardError =
+            FirmwareBoardError::Config("test: long-mode callback failed");
+        let expected_retired = if handover { LEGACY_STEPS } else { 6 };
+        let check_error = |error| {
+            if handover {
+                assert_eq!(error, LONG_MODE_ERROR);
+            } else {
+                assert!(matches!(
+                    error,
+                    FirmwareBoardError::ApLegacyRefused {
+                        cpu: 1,
+                        refusal: ApLegacyRefusal::Real(RealModeRefusal::Unsupported {
+                            cs: 0x800,
+                            ip: REFUSED_IP,
+                            linear: 0x8011,
+                            bytes,
+                        }),
+                    } if bytes.first() == Some(&0x90)
+                ));
+            }
+        };
+
+        for parallel in [false, true] {
+            for quantum in [1, 1024] {
+                let mut board = board();
+                if !handover {
+                    fixture::patch(&mut board, REAL_AT + u64::from(REFUSED_IP), &[0x90]);
+                }
+                let bsp = board.vcpu_mut(0).unwrap();
+                bsp.state.activity = Some(CpuActivity::Halted);
+                bsp.state.rflags &= !(1 << 9);
+                board
+                    .local_apic_of(0)
+                    .unwrap()
+                    .write_icr(0, 1, sipi(SIPI_VECTOR))
+                    .unwrap();
+                let baseline_ns = board.clock().now_ns();
+                let lock_generation = generation(&mut board, LOCK);
+
+                if parallel {
+                    let (report, ()) = run_threads(
+                        &mut board,
+                        ParallelConfig {
+                            quantum,
+                            ..ParallelConfig::default()
+                        },
+                        &|call| {
+                            assert_eq!(call.cpu, 1);
+                            assert!(handover);
+                            Err(LONG_MODE_ERROR)
+                        },
+                        |control| assert!(control.wait_finished(Duration::from_secs(10))),
+                    )
+                    .unwrap();
+                    let ParallelFinish::Error { cpu: 1, error } = report.finished else {
+                        panic!("{:?}", report.finished);
+                    };
+                    check_error(error);
+                    assert_eq!(report.cpus[0].retired, 0);
+                    assert_eq!(report.cpus[1].retired, expected_retired);
+                    assert_eq!(
+                        report.cpus[1].calls,
+                        if quantum == 1 { expected_retired } else { 1 }
+                    );
+                } else {
+                    let mut host = BoardSmpHost::new(
+                        &mut board,
+                        |_: &mut LoadedFirmwareBoard, cpu, _, _: &mut dyn FnMut() -> bool| {
+                            assert_eq!(cpu, 1);
+                            assert!(handover);
+                            Err(LONG_MODE_ERROR)
+                        },
+                    )
+                    .unwrap();
+                    let mut scheduler =
+                        SmpScheduler::new(2, QuantumPolicy::Fixed(quantum), StopRequest::new())
+                            .unwrap();
+                    scheduler.record_turns();
+                    let SmpError::Host(error) = scheduler.run(&mut host, 1_000).unwrap_err() else {
+                        panic!("expected the original host error");
+                    };
+                    check_error(error);
+                    assert_eq!(scheduler.counters()[0].retired, 0);
+                    assert_eq!(scheduler.counters()[1].retired, expected_retired);
+                    assert_eq!(scheduler.counters()[1].steps, expected_retired);
+                    assert_eq!(
+                        scheduler
+                            .turns()
+                            .iter()
+                            .map(|turn| turn.retired)
+                            .sum::<u64>(),
+                        expected_retired
+                    );
+                }
+
+                assert_eq!(board.clock().now_ns() - baseline_ns, expected_retired);
+                let ap = board.vcpu(1).unwrap();
+                assert_eq!(ap.activity(), CpuActivity::Running);
+                if handover {
+                    assert!(ap.legacy.is_none());
+                    assert_eq!(ap.state.rip, LONG_AT);
+                } else {
+                    let Some(LegacyCpu::Real(cpu)) = ap.legacy else {
+                        panic!("expected the real-mode AP");
+                    };
+                    assert_eq!(cpu.mode.eip, REFUSED_IP);
+                    assert_eq!(cpu.mode.ds.selector, 0x800);
+                }
+                assert_eq!(ram(&mut board, LOCK, 4), [1, 0, 0, 0]);
+                // BoardRam tracks the four byte stores of the legacy dword operand.
+                assert_eq!(generation(&mut board, LOCK), lock_generation + 4);
+            }
+        }
+    }
+
+    #[test]
     fn stop_is_read_before_every_step() {
         let mut board = board_with(2, &trampoline(CELLS_AT as u32));
         board
@@ -1239,11 +1370,17 @@ mod tests {
         assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Running);
         // A vCPU that is not in a legacy mode is not run by this module.
         assert_eq!(
-            run_legacy(&mut board, 0, 10, &mut || false).unwrap_err(),
+            run_legacy(&mut board, 0, 10, &mut || false)
+                .unwrap_err()
+                .into_parts()
+                .1,
             FirmwareBoardError::Config("ap legacy: the vCPU is not in a legacy mode")
         );
         assert_eq!(
-            run_legacy(&mut board, 7, 10, &mut || false).unwrap_err(),
+            run_legacy(&mut board, 7, 10, &mut || false)
+                .unwrap_err()
+                .into_parts()
+                .1,
             FirmwareBoardError::Config("ap legacy: no such vCPU")
         );
     }
@@ -1305,7 +1442,8 @@ mod tests {
             Err(FirmwareBoardError::ApLegacyRefused {
                 cpu: 1,
                 refusal: ApLegacyRefusal::DescriptorGate("test lease timeout".into()),
-            })
+            }
+            .into())
         );
         assert_eq!(ap.legacy, before);
         assert_eq!(memory.load_u8(access).unwrap(), 0x9a);
@@ -1441,7 +1579,8 @@ mod tests {
                             linear: descriptor_at as u32,
                         }
                     ),
-                })
+                }
+                .into())
             );
             assert_eq!(ap.legacy, before);
             assert!(!gate.held.get());

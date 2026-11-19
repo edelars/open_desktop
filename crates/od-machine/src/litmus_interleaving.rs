@@ -31,8 +31,8 @@
 use crate::clock_owner::ClockOwner;
 use crate::idle_arbiter::SchedActivity;
 use crate::smp_scheduler::{
-    BoundaryReport, Executed, Finished, QuantumPolicy, SmpError, SmpHost, SmpScheduler, SplitMix64,
-    StopRequest,
+    BoundaryReport, Executed, Finished, QuantumPolicy, RunFailure, SmpError, SmpHost, SmpScheduler,
+    SplitMix64, StopRequest,
 };
 use crate::{LocalApic, LocalApicHandle, VirtualClockHandle};
 use od_isa::execute::{RunConfig, RunExit, run};
@@ -746,7 +746,7 @@ impl SmpHost for LitmusMachine {
         cpu: usize,
         budget: u64,
         stop: &mut dyn FnMut() -> bool,
-    ) -> Result<Executed, Refusal> {
+    ) -> Result<Executed, RunFailure<Refusal>> {
         assert!(budget >= 1);
         let slot = &mut self.cpus[cpu];
         if slot.state.rip == slot.end_rip {
@@ -778,7 +778,8 @@ impl SmpHost for LitmusMachine {
                 rip: before,
                 asm,
                 opcode,
-            }));
+            })
+            .into());
         }
         let partial = result.exit == RunExit::RepIterationBudgetExhausted;
         if !matches!(
@@ -791,7 +792,8 @@ impl SmpHost for LitmusMachine {
                 cpu,
                 rip: before,
                 exit: format!("{:?}", result.exit),
-            });
+            }
+            .into());
         }
         let after = slot.state.rip;
         // A step ends on an instruction boundary, or on the restart point of the same `REP`.

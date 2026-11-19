@@ -69,7 +69,7 @@ use crate::firmware_board::{
 };
 use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, NoIrqSource};
-use crate::smp_scheduler::{Executed, StopAck};
+use crate::smp_scheduler::{Executed, RunFailure, StopAck};
 use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary, Vcpu};
 use crate::{ExecutionMode, LocalApicHandle, MachineStopReason, PhysicalMemory};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1042,7 +1042,7 @@ impl Worker<'_, '_, '_, '_> {
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
         let nvme_pending = SERVICE_NVME.then_some(nvme_pending);
-        let (executed, machine_stop) = if cpu == BOOT_VCPU_INDEX && sh.source_free {
+        let dispatched = if cpu == BOOT_VCPU_INDEX && sh.source_free {
             // The lock of the board's source and the clock owner's lock are held for the budget
             // only: the call itself runs under none of them.
             let budget = {
@@ -1062,7 +1062,7 @@ impl Worker<'_, '_, '_, '_> {
                 consecutive_faults,
                 &mut stop,
                 nvme_pending,
-            )?
+            )
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
             let budget = {
@@ -1080,7 +1080,7 @@ impl Worker<'_, '_, '_, '_> {
                 consecutive_faults,
                 &mut stop,
                 nvme_pending,
-            )?
+            )
         } else {
             let budget = lock(&sh.owner).step_budget(left, None);
             self.dispatch(
@@ -1092,7 +1092,17 @@ impl Worker<'_, '_, '_, '_> {
                 consecutive_faults,
                 &mut stop,
                 nvme_pending,
-            )?
+            )
+        };
+        let (executed, machine_stop, failure) = match dispatched {
+            Ok((executed, reason)) => (executed, reason, None),
+            Err(failure) => {
+                let (executed, error) = failure.into_parts();
+                if executed == Executed::default() {
+                    return Err(error);
+                }
+                (executed, None, Some(error))
+            }
         };
         // The charge: the clock owner is the only mover of time (D7).
         {
@@ -1117,6 +1127,9 @@ impl Worker<'_, '_, '_, '_> {
             .remaining
             .try_update(SEQ, SEQ, |left| Some(left.saturating_sub(executed.retired)))
             .map_or(0, |before| before.saturating_sub(executed.retired));
+        if let Some(error) = failure {
+            return Err(error);
+        }
         if let Some(reason) = machine_stop {
             sh.finish_with(ParallelFinish::GuestStop(reason));
         } else if left_after == 0 {
@@ -1138,7 +1151,7 @@ impl Worker<'_, '_, '_, '_> {
         consecutive_faults: &mut u64,
         stop: &mut dyn FnMut() -> bool,
         mut nvme_pending: Option<&mut bool>,
-    ) -> Result<(Executed, Option<MachineStopReason>), FirmwareBoardError> {
+    ) -> Result<(Executed, Option<MachineStopReason>), RunFailure<FirmwareBoardError>> {
         let cpu = self.cpu;
         let mut machine_stop = None;
         let mut quantum = |vcpu: &mut Vcpu,
@@ -1179,7 +1192,8 @@ impl Worker<'_, '_, '_, '_> {
         }
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
-            let rest = quantum(vcpu, source, left, consecutive_faults, stop)?;
+            let rest = quantum(vcpu, source, left, consecutive_faults, stop)
+                .map_err(|error| RunFailure::after(executed, error))?;
             executed.retired += rest.retired;
             executed.partial_rep = rest.partial_rep;
             executed.device_ns += rest.device_ns;
