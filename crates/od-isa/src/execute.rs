@@ -44375,7 +44375,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || matches!(instruction.operation, Operation::FstSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || instruction.operation == Operation::Ftst && bounded_x87_ftst_source(state).is_none()
-        || instruction.operation == Operation::Fxam && bounded_x87_fxam_cc(state).is_none()
+        || matches!(instruction.operation, Operation::Fxam) && bounded_x87_fxam_cc(state).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -44393,7 +44393,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
-    let fsqrt = if instruction.operation == Operation::Fsqrt {
+    let fsqrt = if matches!(instruction.operation, Operation::Fsqrt) {
         match bounded_x87_fsqrt_result(state) {
             Some(result) => Some(result),
             None => {
@@ -44405,7 +44405,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
-    let fprem = if instruction.operation == Operation::Fprem {
+    let fprem = if matches!(instruction.operation, Operation::Fprem) {
         match bounded_x87_fprem_result(state) {
             Some(result) => Some(result),
             None => {
@@ -44417,7 +44417,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
-    let fprem1 = if instruction.operation == Operation::Fprem1 {
+    let fprem1 = if matches!(instruction.operation, Operation::Fprem1) {
         match bounded_x87_fprem1_result(state) {
             Some(result) => Some(result),
             None => {
@@ -44555,7 +44555,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             opcode: instruction.opcode.byte,
         });
     }
-    if instruction.operation == Operation::Fucomp && bounded_x87_fcom_result(state, 1).is_none() {
+    if matches!(instruction.operation, Operation::Fucomp)
+        && bounded_x87_fcom_result(state, 1).is_none()
+    {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -46880,7 +46882,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::FldM64FpRax {
+    if matches!(instruction.operation, Operation::FldM64FpRax) {
         let destination = fild_destination.expect("FLD m64 destination was prevalidated");
         let address = state.gpr[Register::Rax as usize];
         let last = match address.checked_add(7) {

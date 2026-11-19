@@ -1454,6 +1454,14 @@ revision. The exact instruction prefixes and ordered memory accesses
 matched across all 2,400 inputs.
 [Final MOV dispatch and raw evidence](STAGE_3_S3-40ad_2026-11-19.md)
 
+S3-40ae changed six unit-variant predicates identified in the M1 Pro
+profile. The signed measured STEP went from 99 to 93 static
+`Operation::eq` call sites. Ordinary RUN took 5.62–6.74% less time at
+budgets 1 and 2 across the two MOV sequences by paired medians. All
+six rounds improved at both nonzero budgets. The zero-budget ranges
+included 1.0. The bounded MOV and x87 correctness checks passed.
+[RUN comparison and profiles](STAGE_3_S3-40ae_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

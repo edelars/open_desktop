@@ -35,6 +35,12 @@ S3-40t использует статически пустую конфигура
 тела цикла и шага.
 [Проверки поведения, замеры и размер бинарников](../../docs/reports/STAGE_3_S3-40t_2026-11-19.md)
 
+S3-40ae использует `matches!` для шести проверок вариантов x87 без
+полей. Проверки сохраняют условия допуска. На M1 Pro время обычного
+`execute::run` сократилось на 5,6–6,7% на двух MOV-последовательностях
+при бюджетах 1 и 2 по парным медианам.
+[Проверки и замеры](../../docs/reports/STAGE_3_S3-40ae_2026-11-19.md)
+
 S2-37a/b add two separate local-only scalar approximation instructions:
 register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
 `Binary32` references and update only the destination low dword; the rest of

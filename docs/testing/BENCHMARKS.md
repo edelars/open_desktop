@@ -1691,6 +1691,15 @@ STEP and transfer destinations in the signed binaries. Timings cover
 the full paths, including the selector and eligibility predicate.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ad_2026-11-19.md)
 
+### S3-40ae. Unit-variant predicates in interpreter RUN on M1 Pro
+
+Use the unchanged S3-40z driver and fixed sweep counts to compare
+stock `5275d67` and the same source with six unit-variant predicates
+changed. Verify the six removed calls in the signed binaries and check
+the full MOV prefixes at budgets 0, 1 and 2. Six matched rounds
+at nice −5 record whole RUN calls for both sequences.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ae_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
