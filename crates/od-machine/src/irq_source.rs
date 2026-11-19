@@ -48,6 +48,8 @@ pub(crate) trait BoardIrqSource: Send {
     fn try_refresh_device_lines(&self) -> bool {
         true
     }
+    /// Publish current device line levels while the scheduler owns the machine exclusively.
+    fn refresh_device_lines(&self) {}
 
     /// Whether this source needs a post-quantum device line refresh.
     fn needs_device_line_refresh(&self) -> bool {

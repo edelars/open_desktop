@@ -14,7 +14,7 @@ pub struct LinuxInterleavedRunReport {
 
 pub type LinuxInterleavedVcpu = LinuxVcpuRunState;
 
-/// Run a diskless APIC LinuxDirect board with seeded quanta and one shared instruction budget.
+/// Run an APIC LinuxDirect board with seeded quanta and one shared instruction budget.
 /// INIT/SIPI and the AP trampoline run inside the same scheduler as long-mode Linux.
 pub fn run_linux_direct_board_set_user_mode_interleaved(
     boot: &mut LinuxDirectBoot,
@@ -23,12 +23,9 @@ pub fn run_linux_direct_board_set_user_mode_interleaved(
     mut members: LinuxCpl0SetMembers,
     seed: u64,
 ) -> Result<LinuxInterleavedRunReport, LinuxDirectError> {
-    if members.cpuid_profile != CpuidProfile::X8664V1Stage4AApic
-        || boot.board.nvme().is_some()
-        || members.diagnostic_past_c7
-    {
+    if members.cpuid_profile != CpuidProfile::X8664V1Stage4AApic || members.diagnostic_past_c7 {
         return Err(run_error(
-            "interleaved SMP LinuxDirect requires the diskless APIC profile",
+            "interleaved SMP LinuxDirect requires the Stage4AApic profile",
             0,
         ));
     }
@@ -69,6 +66,9 @@ pub fn run_linux_direct_board_set_user_mode_interleaved(
     let stop_request = StopRequest::new();
     if stop_reason.is_some() {
         stop_request.request();
+    } else {
+        // Host-submitted work can wake an AP even before the first guest quantum.
+        boot.board.service_exclusive_linux_nvme();
     }
     let mut scheduler = SmpScheduler::new(count, QuantumPolicy::seeded(seed), stop_request.clone())
         .map_err(|error| run_error(error, 0))?;

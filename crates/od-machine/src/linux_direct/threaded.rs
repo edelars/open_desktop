@@ -55,7 +55,7 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
     })
 }
 
-/// Run a diskless Stage4AApic LinuxDirect board on one worker per vCPU, with a shared budget.
+/// Run a Stage4AApic LinuxDirect board on one worker per vCPU, with a shared budget.
 pub fn run_linux_direct_board_set_user_mode_parallel(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
@@ -63,12 +63,9 @@ pub fn run_linux_direct_board_set_user_mode_parallel(
     members: LinuxCpl0SetMembers,
     options: LinuxThreadedOptions,
 ) -> Result<LinuxParallelRunReport, LinuxDirectError> {
-    if boot.board.vcpu_count() < 2
-        || members.cpuid_profile != CpuidProfile::X8664V1Stage4AApic
-        || boot.board.nvme().is_some()
-    {
+    if boot.board.vcpu_count() < 2 || members.cpuid_profile != CpuidProfile::X8664V1Stage4AApic {
         return Err(run_error(
-            "parallel LinuxDirect requires a diskless Stage4AApic SMP board",
+            "parallel LinuxDirect requires a Stage4AApic SMP board",
             0,
         ));
     }

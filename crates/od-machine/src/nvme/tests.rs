@@ -560,8 +560,14 @@ fn doorbell_of_a_queue_that_does_not_exist_raises_the_invalid_register_event() {
     let mut rig = Rig::enabled();
     let (aer_cid, none) = rig.admin_try(Sqe::new(OPC_AER));
     assert!(none.is_none(), "AER stays outstanding");
+    assert!(!rig.nvme.doorbell_pending());
     rig.set_dword(IO1_SQ_DOORBELL, 1);
-    rig.service();
+    assert!(rig.nvme.doorbell_pending());
+    let service = rig
+        .nvme
+        .try_service_one_pending_ram(rig.bus.physical_memory(), |_| {})
+        .unwrap();
+    assert_eq!((service.commands, service.completions), (0, 1));
     let event = rig.poll_admin().expect("event completion");
     assert_eq!(event.cid, aer_cid);
     // Event type 0 (error), info 0 (invalid doorbell register), log page 1.
@@ -1353,7 +1359,8 @@ fn async_event_completes_with_event_type_info_and_log_page() {
     let mut rig = Rig::enabled();
     let (aer, _) = rig.admin_try(Sqe::new(OPC_AER));
     rig.set_dword(ADMIN_SQ_DOORBELL, 0xFFFF);
-    rig.service();
+    assert!(rig.nvme.doorbell_pending());
+    assert_eq!(rig.service().completions, 1);
     let event = rig.poll_admin().expect("event completion");
     assert_eq!(event.cid, aer);
     // Type 0 (error status), info 1 (invalid doorbell write value), log page 1.

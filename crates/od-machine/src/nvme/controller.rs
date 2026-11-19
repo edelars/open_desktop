@@ -492,6 +492,9 @@ impl NvmeState {
                 }
             }
         }
+        // An invalid doorbell can complete an outstanding Asynchronous Event Request
+        // even though no submission tail or completion head changed.
+        self.pending = self.pending || self.aer.next_ready().is_some();
         Ok(())
     }
 
@@ -738,7 +741,6 @@ impl NvmeHandle {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn pci_interrupt_line(&self) -> bool {
         lock(&self.state).pci_interrupt_line()
     }

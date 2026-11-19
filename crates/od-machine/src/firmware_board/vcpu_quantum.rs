@@ -357,6 +357,7 @@ impl LoadedFirmwareBoard {
         self.pump_uart_transmit(0);
 
         let linux = linux_faults.is_some();
+        let service_nvme = linux && self.nvme.is_some();
         let set = if linux {
             set.route_pci_config_through_port_io()
         } else {
@@ -375,7 +376,7 @@ impl LoadedFirmwareBoard {
                 gate: None,
                 rdtsc_clock: linux.then_some(&self.clock),
                 check_acpi_stop: linux,
-                stop_after_mmio: false,
+                stop_after_mmio: service_nvme,
                 stop_on_pit_write: linux,
             },
             inputs,
@@ -391,6 +392,18 @@ impl LoadedFirmwareBoard {
         );
 
         self.pump_uart_transmit(report.instructions_executed);
+        if service_nvme
+            && !stop()
+            && self
+                .acpi_pm
+                .as_ref()
+                .and_then(AcpiPmHandle::stop_request)
+                .is_none()
+        {
+            // The store has released the bus. Complete its DMA and publish INTx before
+            // another CPU runs or the scheduler reports that the budget has been used.
+            self.service_exclusive_linux_nvme();
+        }
         let mut device_ns = rdtsc_ns;
         if let Some(pm) = &self.acpi_pm {
             device_ns += pm.take_timer_tick_ns();
@@ -405,6 +418,14 @@ impl LoadedFirmwareBoard {
             irq,
             device_ns,
         })
+    }
+    pub(crate) fn service_exclusive_linux_nvme(&mut self) {
+        if let Some(nvme) = &self.nvme {
+            if nvme.doorbell_pending() {
+                nvme.service(&mut self.bus, |_| {});
+            }
+            self.irq_source.refresh_device_lines();
+        }
     }
 }
 

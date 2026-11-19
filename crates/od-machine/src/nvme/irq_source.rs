@@ -31,12 +31,16 @@ impl NvmeIoapicIrqSource {
         let Some(level) = self.nvme.try_pci_interrupt_line() else {
             return false;
         };
+        self.publish(level);
+        true
+    }
+
+    fn publish(&self, level: bool) {
         // Re-present an asserted level even after it was accepted: a masked
         // IOAPIC may have been reset since the last sample.
         if (level || self.accepted_level.get()) && self.io_apic.set_nvme_line(level).is_ok() {
             self.accepted_level.set(level);
         }
-        true
     }
 }
 
@@ -47,6 +51,11 @@ impl BoardIrqSource for NvmeIoapicIrqSource {
 
     fn try_refresh_device_lines(&self) -> bool {
         self.sample()
+    }
+
+    fn refresh_device_lines(&self) {
+        self.publish(self.nvme.pci_interrupt_line());
+        self.inner.refresh_device_lines();
     }
 
     fn pending_vector(&self) -> Option<u8> {

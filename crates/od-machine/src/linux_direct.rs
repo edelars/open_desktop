@@ -390,7 +390,17 @@ pub fn load_linux_direct_board_with_nvme(
     input: &LinuxDirectInput<'_>,
     nvme: NvmeConfig,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
-    load_linux_direct_board_inner(input, Some(nvme), 1)
+    load_linux_direct_board_with_nvme_and_vcpus(input, nvme, 1)
+}
+
+/// Load a LinuxDirect PCI/NVMe board whose ACPI manifest and MADT match the supplied topology.
+/// Attach the namespace to the resulting NVMe handle before starting the APIC Linux profile.
+pub fn load_linux_direct_board_with_nvme_and_vcpus(
+    input: &LinuxDirectInput<'_>,
+    nvme: NvmeConfig,
+    vcpu_count: usize,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, Some(nvme), vcpu_count)
 }
 
 fn load_linux_direct_board_inner(
@@ -1913,6 +1923,16 @@ mod tests {
         include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin");
     const FOUR_CPU_BLOB: &[u8] =
         include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-4-vcpus.bin");
+    const NVME_SMP_BLOBS: [(usize, &[u8]); 2] = [
+        (
+            2,
+            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-2-vcpus.bin"),
+        ),
+        (
+            4,
+            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-4-vcpus.bin"),
+        ),
+    ];
     /// `tables_config_with_ecam().acpi_manifest_hash()`, the hash of the fixture blob (S4-31d/g).
     const FIXTURE_HASH: &str = "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2";
     const MIB: u64 = 1 << 20;
@@ -2194,6 +2214,73 @@ mod tests {
         ap.guest_efer = efer;
         ap.legacy = None;
         boot.board.state_mut().activity = Some(od_isa::CpuActivity::Halted);
+    }
+
+    #[test]
+    fn disk_backed_linux_direct_checks_nvme_manifest_and_madt_then_runs_both_schedulers() {
+        let file = bzimage_with_entry(&[0xf4]); // HLT
+        let hash = FirmwareBoardConfig {
+            nvme_pci: true,
+            nvme: Some(NvmeConfig::default()),
+            acpi_pm: true,
+            acpi_tables: true,
+            pci_ecam: true,
+            linux_profile: true,
+            ..FirmwareBoardConfig::default()
+        }
+        .acpi_manifest_hash()
+        .unwrap();
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        for (count, blob) in NVME_SMP_BLOBS {
+            let input = input(&file, &[], blob, hash);
+            let mut boot =
+                load_linux_direct_board_with_nvme_and_vcpus(&input, NvmeConfig::default(), count)
+                    .unwrap();
+            assert_eq!(boot.board.vcpu_count(), count);
+            assert!(boot.board.nvme().unwrap().has_pci_transport());
+            let incompatible_count = if count == 2 { 4 } else { 2 };
+            assert_eq!(
+                refusal(load_linux_direct_board_with_nvme_and_vcpus(
+                    &input,
+                    NvmeConfig::default(),
+                    incompatible_count
+                )),
+                ("acpi_blob_invalid", "acpi_blob")
+            );
+            assert_eq!(
+                refusal(load_linux_direct_board_with_vcpus(&input, count)),
+                ("acpi_manifest_mismatch", "acpi_blob")
+            );
+            let report = run_linux_direct_board_set_user_mode_interleaved(
+                &mut boot, &input, 1, members, 24301,
+            )
+            .unwrap();
+            assert_eq!(report.stop.retired, 1);
+            assert_eq!(report.vcpus.len(), count);
+
+            let mut boot =
+                load_linux_direct_board_with_nvme_and_vcpus(&input, NvmeConfig::default(), count)
+                    .unwrap();
+            let report = run_linux_direct_board_set_user_mode_parallel(
+                &mut boot,
+                &input,
+                1,
+                members,
+                LinuxThreadedOptions {
+                    quantum: 16,
+                    timeout: std::time::Duration::from_secs(5),
+                },
+            )
+            .unwrap();
+            assert_eq!(report.stop.retired, 1);
+            assert_eq!(
+                (report.threads_started, report.threads_exited),
+                (count, count)
+            );
+        }
     }
 
     #[test]

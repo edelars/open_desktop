@@ -1951,6 +1951,62 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_linux_ap_doorbell_drains_before_the_next_instruction_or_at_exact_budget() {
+        for (budget, stop_before_dma) in [(3, false), (64, false), (3, true)] {
+            let (mut board, doorbell, cr3) = nvme_identify_board();
+            let nvme = board.nvme().unwrap();
+            let code = [
+                mov_eax(1),
+                mov_ebx(u32::try_from(doorbell).unwrap()),
+                vec![0x89, 0x03], // mov [rbx], eax: ring the admin SQ doorbell
+                mov_ebx((NVME_IDENTIFY_BUFFER + 4) as u32),
+                vec![0x8b, 0x03, 0xf4], // mov eax, [rbx]; hlt
+            ]
+            .concat();
+            patch(&mut board, CODE_1, &code);
+            install(
+                &mut board,
+                1,
+                long_state(CODE_1, STACK_1, cr3, false),
+                0xD01,
+            );
+            let mut faults = 0;
+            let first = with_set(|set| {
+                board.run_exclusive_set_quantum(
+                    1,
+                    budget,
+                    &mut || stop_before_dma && nvme.doorbell_pending(),
+                    set,
+                    Some(&mut faults),
+                    None,
+                )
+            })
+            .unwrap();
+            assert_eq!(first.cpu.instructions_executed, 3);
+            if stop_before_dma {
+                assert!(nvme.doorbell_pending());
+                assert_eq!(dword(&mut board, NVME_IDENTIFY_CQ + 12), 0);
+                board.service_exclusive_linux_nvme();
+            }
+            assert!(!nvme.doorbell_pending());
+            assert_eq!(
+                dword(&mut board, NVME_IDENTIFY_CQ + 12),
+                NVME_IDENTIFY_CID | (1 << 16)
+            );
+            assert_eq!(read(&mut board, NVME_IDENTIFY_BUFFER + 4, 8), b"OD-NVME-");
+            let next = with_set(|set| {
+                board.run_exclusive_set_quantum(1, 3, &mut || false, set, Some(&mut faults), None)
+            })
+            .unwrap();
+            assert_eq!(next.cpu.instructions_executed, 3);
+            assert_eq!(
+                board.vcpu(1).unwrap().state.gpr[Register::Rax as usize],
+                u64::from(u32::from_le_bytes(*b"OD-N"))
+            );
+        }
+    }
+
+    #[test]
     fn a_guest_nvme_doorbell_completes_dma_before_the_next_instruction_or_budget_stop() {
         for (budget, stop_before_dma) in [(3, false), (64, false), (64, true), (3, true)] {
             let (mut board, doorbell, cr3) = nvme_identify_board();
@@ -2184,11 +2240,16 @@ mod tests {
     #[test]
     fn a_startup_nvme_completion_interrupt_wakes_the_halted_destination() {
         use crate::apic_pair::{NVME_PIN, SCI_LEVEL_LOW};
+        use crate::firmware_board::vcpu_quantum::{is_quantum_boundary, quantum_progress};
+        use crate::smp_scheduler::{
+            BoardSmpHost, Finished, QuantumPolicy, SmpScheduler, StopRequest,
+        };
         use crate::{AccessWidth, IO_APIC_MMIO_BASE};
 
-        for (cpu, vector, handler_rip, counter, code_rip, stack) in [
-            (0, TO_BSP, HANDLER_0, COUNTER_0, CODE_0, STACK_0),
-            (1, TO_AP, HANDLER_1, COUNTER_1, CODE_1, STACK_1),
+        for (cpu, vector, handler_rip, counter, code_rip, stack, interleaved) in [
+            (0, TO_BSP, HANDLER_0, COUNTER_0, CODE_0, STACK_0, false),
+            (1, TO_AP, HANDLER_1, COUNTER_1, CODE_1, STACK_1, false),
+            (1, TO_AP, HANDLER_1, COUNTER_1, CODE_1, STACK_1, true),
         ] {
             let (mut board, doorbell, cr3) = nvme_identify_board();
             assert!(board.enable_pit_ioapic_irq());
@@ -2243,15 +2304,56 @@ mod tests {
             assert!(nvme.doorbell_pending());
             let start_ns = board.clock().now_ns();
 
-            let (report, ()) = run(&mut board, config(64, 64), |control| {
-                assert!(control.wait_finished(WAIT));
-            });
-            assert_eq!(report.finished, ParallelFinish::AllIdle);
-            assert_joined(&report, 2);
-            assert_eq!(report.cpus[cpu].wakes, 1, "target {cpu}: {report:?}");
+            let (wakes, retired, other_retired) = if interleaved {
+                board.enable_clock_owner().unwrap();
+                board.service_exclusive_linux_nvme();
+                let mut scheduler =
+                    SmpScheduler::new(2, QuantumPolicy::Fixed(64), StopRequest::new()).unwrap();
+                let mut faults = [0; 2];
+                let mut host = BoardSmpHost::new(
+                    &mut board,
+                    |board: &mut LoadedFirmwareBoard,
+                     index,
+                     budget,
+                     stop: &mut dyn FnMut() -> bool| {
+                        let report = with_set(|set| {
+                            board.run_exclusive_set_quantum(
+                                index,
+                                budget,
+                                stop,
+                                set,
+                                Some(&mut faults[index]),
+                                None,
+                            )
+                        })?;
+                        assert!(
+                            is_quantum_boundary(&report.cpu.exit),
+                            "{:?}",
+                            report.cpu.exit
+                        );
+                        Ok(quantum_progress(&report.cpu, report.device_ns))
+                    },
+                )
+                .unwrap();
+                assert_eq!(scheduler.run(&mut host, 64).unwrap(), Finished::AllIdle);
+                let cpus = scheduler.counters();
+                (cpus[cpu].wakes, cpus[cpu].retired, cpus[1 - cpu].retired)
+            } else {
+                let (report, ()) = run(&mut board, config(64, 64), |control| {
+                    assert!(control.wait_finished(WAIT));
+                });
+                assert_eq!(report.finished, ParallelFinish::AllIdle);
+                assert_joined(&report, 2);
+                (
+                    report.cpus[cpu].wakes,
+                    report.cpus[cpu].retired,
+                    report.cpus[1 - cpu].retired,
+                )
+            };
+            assert_eq!(wakes, 1, "target {cpu}, interleaved {interleaved}");
             assert_eq!(dword(&mut board, counter), 1);
-            assert_eq!(report.cpus[1 - cpu].retired, 0);
-            assert_eq!(board.clock().now_ns() - start_ns, report.cpus[cpu].retired);
+            assert_eq!(other_retired, 0);
+            assert_eq!(board.clock().now_ns() - start_ns, retired);
             assert_eq!(
                 board.local_apic_of(cpu).unwrap().vector_state(vector),
                 (false, false)
