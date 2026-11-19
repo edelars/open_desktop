@@ -1670,6 +1670,19 @@ stale V3 handle, native tail parity with the interpreter and slot
 reuse at bounded capacity.
 [Report and reproduction](../reports/STAGE_3_S3-37h_2026-11-19.md)
 
+### S3-37i. Sustained S0-09 Session pressure and process memory
+
+The signed release driver runs two concurrent processes, each with
+one live retained Session, 20 immutable guest blocks and FIFO16.
+Each process executes 64 checkpoints over at least 660 seconds.
+Sweeps verify interpreter-equivalent state and exact publication,
+hit and eviction counts. Checkpoints verify STOP, entry refusal,
+clear, a fresh lease, refill and destruction. The Mach self-task
+RSS snapshots are per process. Logical code and metadata occupancy
+come from the Session counters. The archive reproduces both the
+build and the offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-37i_2026-11-19.md)
+
 ## S4-13a: uncached page walk versus experimental one-entry probe cache
 
 `od-bench page-walk-compare` compares the existing pure `probe_long64_4k`

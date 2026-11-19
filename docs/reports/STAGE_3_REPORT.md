@@ -1127,6 +1127,16 @@ warm interval. Each epoch verified one committed store, rejection
 of the stale active handle and restoration of resident accounting.
 [S3-37h report and raw evidence](STAGE_3_S3-37h_2026-11-19.md)
 
+S3-37i ran the retained S0-09 Session in two independent signed
+processes. Each completed 64 pressure and lifecycle checkpoints over
+at least 660 seconds. Together they verified 335,331,840
+publications and 335,327,744 evictions. Full occupancy held
+at 16 entries per process. Checkpoints verified STOP before RUN, typed
+entry refusal, exclusive lease enforcement, clear, refill and destroy.
+The report keeps process RSS snapshots separate from per-Session code
+and logical metadata accounting.
+[S3-37i report and raw evidence](STAGE_3_S3-37i_2026-11-19.md)
+
 S3-31g added invocation-local reuse of the previous resident S0-09 entry.
 For the two alternating-RIP inputs, normalized warm time was 9.05% and
 7.36% of the prior dispatcher. Normalized cold time was 20.36% and 7.52%.
