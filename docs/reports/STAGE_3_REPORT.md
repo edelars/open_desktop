@@ -1550,6 +1550,13 @@ budgets 1 and 2 on the two MOV sequences. All six rounds improved.
 The MOV checks and focused x87 cases passed.
 [RUN comparison and evidence](STAGE_3_S3-40af_2026-11-19.md)
 
+S3-40ag directly compared `5bc5ec6` with `d24865d` after both x87
+guard changes. The paired ratios at budget 2 were 1.9716 and
+1.9770 on the two MOV sequences. The pooled differences were
+134.2 and 134.7 ns. The difference at budget 0 was 5.3 ns.
+The remaining interpreter gap is tracked in ISSUE-521.
+[Historical comparison and evidence](STAGE_3_S3-40ag_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

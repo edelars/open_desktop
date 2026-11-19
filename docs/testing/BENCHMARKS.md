@@ -1708,6 +1708,14 @@ three selected calls in the linked STEP. Timings cover whole RUN
 calls at budgets 0, 1 and 2 on the same 2,400 inputs.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40af_2026-11-19.md)
 
+### S3-40ag. Historical residual in public interpreter RUN
+
+Use the unchanged S3-40z driver and fixed counts to compare
+`d24865d` and `5bc5ec6` on the same input sequences at budgets 0,
+1 and 2. Check the complete prefix state and ordered accesses
+for each build before recording six paired rounds at nice −5.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ag_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
