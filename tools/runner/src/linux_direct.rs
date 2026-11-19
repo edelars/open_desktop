@@ -97,7 +97,7 @@ const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blo
  [--parallel --vcpus 2|4 [--quantum <steps>] [--timeout-s <seconds>]] \
  [--rootfs-raw <working-copy.raw> (--vcpus 2|4, stage4a-apic user mode, new report path)] \
  [--s6-compute <workers,blocks,checksum> [--s6-timing] (needs RAW; also supports --vcpus 1)] \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--stop-on-sigterm] [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>` unless sent through bootconfig.
@@ -172,6 +172,9 @@ struct Options {
     /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
     execution_observations_quantum_trace: bool,
     execution_observations_elf_stack_copy: bool,
+    /// `--stop-on-sigterm` (S4-41c-1): SIGTERM ends the run at the next quantum boundary as a
+    /// budget exit; the report says `stop.host_stop: true` and the exit code is 0.
+    stop_on_sigterm: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -197,6 +200,19 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    // S4-41c-1: before the load, so a SIGTERM during the load is remembered, not fatal.
+    if options.stop_on_sigterm
+        && let Err(detail) = crate::host_stop::install()
+    {
+        let value = refusal(
+            "invalid_input",
+            "stop_on_sigterm",
+            detail,
+            json!({"retired": 0, "guest_started": false}),
+        );
+        println!("{value}");
+        return ExitCode::from(3);
+    }
     let (rootfs, mut report_file) = if let Some(path) = &options.rootfs_raw {
         let backend = match open_rootfs(path) {
             Ok(backend) => backend,
@@ -812,6 +828,11 @@ fn evaluate_with_rootfs(
                             .expect("validated compute parameters"),
                     )
                 });
+                if options.stop_on_sigterm
+                    && let Some(flag) = crate::host_stop::installed()
+                {
+                    boot.board.set_host_stop(flag);
+                }
                 let run_started = Instant::now();
                 let result = if let Some(parallel) = &options.parallel {
                     let scheduler = &mut evidence["parallel_scheduler"];
@@ -1013,6 +1034,10 @@ fn evaluate_with_rootfs(
                         evidence["guest_started"] = json!(true);
                         evidence["retired"] = json!(record.retired);
                         evidence["stop"] = describe_stop(&record, budget);
+                        if options.stop_on_sigterm {
+                            evidence["stop"]["host_stop"] =
+                                json!(boot.board.take_host_stop_honoured());
+                        }
                         if let Some(setup) = &checkpoint_setup {
                             evidence["checkpoints"] = checkpoints::evidence(setup, &record);
                         }
@@ -1537,6 +1562,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
     let mut user_mode = false;
+    let mut stop_on_sigterm = false;
     let mut linux_norandmaps = false;
     let mut linux_no_randomize_kstack_offset = false;
     let mut budget = None;
@@ -1637,6 +1663,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             if std::mem::replace(&mut diagnostic_past_c7, true) {
                 return Err(format!(
                     "duplicate option --diagnostic-past-c7; usage: {USAGE}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--stop-on-sigterm" {
+            if std::mem::replace(&mut stop_on_sigterm, true) {
+                return Err(format!(
+                    "duplicate option --stop-on-sigterm; usage: {USAGE}"
                 ));
             }
             index += 1;
@@ -1924,6 +1959,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .into(),
         );
     }
+    // S4-41c-1: only the single-vCPU CPL0-set loop looks at the host stop request; the base
+    // probe, the threaded, parallel and interleaved runners would ignore it silently.
+    if stop_on_sigterm && !(run && set_cpl0 && vcpu_count == 1 && parallel.is_none()) {
+        return Err(format!(
+            "--stop-on-sigterm needs --run, --set-cpl0 and a single vCPU without --parallel; usage: {USAGE}"
+        ));
+    }
     // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
     // `diagnostic` profile) never turns it on.
     if user_mode && !cpuid_profile.is_stage4a_family() {
@@ -2132,6 +2174,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_delay_call_summary,
         execution_observations_quantum_trace,
         execution_observations_elf_stack_copy,
+        stop_on_sigterm,
     })
 }
 
@@ -3548,6 +3591,7 @@ mod tests {
                 execution_observations_delay_call_summary: false,
                 execution_observations_quantum_trace: false,
                 execution_observations_elf_stack_copy: false,
+                stop_on_sigterm: false,
             };
             Self { dir, options }
         }
@@ -4592,6 +4636,110 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn stop_on_sigterm_is_opt_in_and_needs_the_single_vcpu_set_loop() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let with = |tail: &[&str]| parse_base(&[&run[..], tail].concat());
+        assert!(!with(&[]).unwrap().stop_on_sigterm);
+        assert!(with(&["--stop-on-sigterm"]).unwrap().stop_on_sigterm);
+        assert!(with(&["--stop-on-sigterm", "--stop-on-sigterm"]).is_err());
+        // The base probe loop, a run that does not start, and the multi-vCPU runners would
+        // ignore the request, so they refuse it.
+        assert!(parse_base(&["--stop-on-sigterm"]).is_err());
+        assert!(parse_base(&["--run", "--budget", "1", "--stop-on-sigterm"]).is_err());
+        assert!(
+            with(&[
+                "--stop-on-sigterm",
+                "--vcpus",
+                "2",
+                "--seed",
+                "1",
+                "--cpuid-profile",
+                "stage4a-apic",
+                "--user-mode"
+            ])
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s4_41c_a_real_sigterm_ends_the_run_with_a_report_and_without_it_the_key_is_false() {
+        unsafe extern "C" {
+            fn raise(signum: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        let _guard = crate::host_stop::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::host_stop::install().expect("installs");
+        crate::host_stop::clear_for_test();
+
+        // JMP $ with a budget that would take hours: only the signal can end it.
+        let mut case = Case::new(
+            "sigterm",
+            &bzimage_with_entry(&[0xEB, 0xFE]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.set_cpl0 = true;
+        case.options.stop_on_sigterm = true;
+        case.options.budget = Some(1_000_000_000_000);
+        // The signal is repeated until the run returns, so a slow start (the load before the first
+        // quantum takes a few hundred ms in a debug build, more under load) cannot lose it. The
+        // state at the moment of the stop is covered by the board tests; this one checks the
+        // process path: handler, flag, report, exit code.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_for_signaller = done.clone();
+        let signaller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            while !done_for_signaller.load(std::sync::atomic::Ordering::Acquire) {
+                // SAFETY: `raise` is the C library function; the handler is installed above.
+                assert_eq!(unsafe { raise(15) }, 0);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let started = Instant::now();
+        let (value, exit) = evaluate(&case.options);
+        done.store(true, std::sync::atomic::Ordering::Release);
+        signaller.join().unwrap();
+        assert_eq!(exit, 0, "{value:#}");
+        assert!(started.elapsed() < Duration::from_secs(60), "{value:#}");
+        assert_eq!(value["stop"]["host_stop"], true, "{value:#}");
+        assert_eq!(value["stop"]["exit_kind"], "budget_exhausted", "{value:#}");
+        let retired = value["retired"].as_u64().unwrap();
+        assert!(retired < 1_000_000_000_000, "{value:#}");
+        assert_eq!(value["stop"]["retired"], value["retired"]);
+
+        // Same option, no signal: the key is present and false, the budget decides.
+        crate::host_stop::clear_for_test();
+        let mut quiet = Case::new(
+            "sigterm-quiet",
+            &bzimage_with_entry(&[0xEB, 0xFE]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        quiet.options.set_cpl0 = true;
+        quiet.options.stop_on_sigterm = true;
+        quiet.options.budget = Some(5_000);
+        let (value, exit) = evaluate(&quiet.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["stop"]["host_stop"], false, "{value:#}");
+        assert_eq!(value["retired"], 5_000, "{value:#}");
+
+        // Without the option the key is absent: the report is as it was.
+        let mut plain = Case::new(
+            "sigterm-off",
+            &bzimage_with_entry(&[0xEB, 0xFE]),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        plain.options.set_cpl0 = true;
+        plain.options.budget = Some(5_000);
+        let (value, _) = evaluate(&plain.options);
+        assert!(value["stop"].get("host_stop").is_none(), "{value:#}");
+        crate::host_stop::restore_default_for_test();
     }
 
     #[test]
@@ -7421,6 +7569,7 @@ mod tests {
             execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
+            stop_on_sigterm: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -7485,6 +7634,7 @@ mod tests {
             execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
+            stop_on_sigterm: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -7553,6 +7703,7 @@ mod tests {
             execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
+            stop_on_sigterm: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -7642,6 +7793,7 @@ mod tests {
             execution_observations_delay_call_summary: false,
             execution_observations_quantum_trace: false,
             execution_observations_elf_stack_copy: false,
+            stop_on_sigterm: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

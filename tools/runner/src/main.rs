@@ -7,6 +7,7 @@ use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
 mod firmware_boot;
+mod host_stop;
 mod linux_direct;
 mod linux_discovery;
 mod linux_gate;

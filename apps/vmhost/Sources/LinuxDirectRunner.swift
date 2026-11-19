@@ -129,7 +129,9 @@ struct LinuxDirectConfig: Equatable {
                          "--expected-vmlinuz-sha256", expectedVmlinuzSHA256, "--expected-initramfs-sha256", expectedInitramfsSHA256,
                          "--expected-acpi-manifest-hash", expectedAcpiManifestHash, "--ram-mib", String(ramMiB), "--out", out,
                          "--run", "--budget", String(budget)]
-        if setCPL0 { arguments.append("--set-cpl0") }
+        // S4-41c-2: `stop` sends SIGTERM; with this option the runner ends the run at its next quantum boundary, writes the report
+        // (`stop.host_stop` true) and exits 0, so a stopped run is a status. Without `--set-cpl0` the runner refuses the option.
+        if setCPL0 { arguments += ["--set-cpl0", "--stop-on-sigterm"] }
         if let cpuidProfile { arguments += ["--cpuid-profile", cpuidProfile] }
         if userMode { arguments.append("--user-mode") }
         return arguments
@@ -196,6 +198,8 @@ struct LinuxDirectStatus: Equatable {
     var com1Text: String
     var syscallJournal: SyscallJournal?
     var guestStarted: Bool
+    /// The run was ended by `stop` (SIGTERM) at a quantum boundary (S4-41c-2): `stop.host_stop` of the report, false when absent.
+    var hostStop = false
     /// The whole report, re-serialized with sorted keys: two sessions of the same input compare equal byte for byte.
     var report: Data
 
@@ -235,9 +239,16 @@ struct LinuxDirectStatus: Equatable {
             }
             journal = SyscallJournal(entered: entered, returned: returned, entries: entries)
         }
+        var hostStop = false
+        if let raw = stop["host_stop"] {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                throw LinuxDirectError.runnerFailed("host_stop is not a boolean")
+            }
+            hostStop = number.boolValue
+        }
         let normalized = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return LinuxDirectStatus(exitKind: exitKind, retired: retired, cpl3Retired: unsignedInteger(stop["cpl3_retired"]),
-                                 com1Text: com1, syscallJournal: journal, guestStarted: true, report: normalized)
+                                 com1Text: com1, syscallJournal: journal, guestStarted: true, hostStop: hostStop, report: normalized)
     }
 
     /// The status as the JSON that the `--linux-direct` mode prints.
@@ -245,6 +256,8 @@ struct LinuxDirectStatus: Equatable {
         var result: [String: Any] = ["status": "ok", "exit_kind": exitKind, "retired": retired, "com1_text": com1Text,
                                      "guest_started": guestStarted]
         if let cpl3Retired { result["cpl3_retired"] = cpl3Retired }
+        // Only when true, so the status of a run that was not stopped is as it was.
+        if hostStop { result["host_stop"] = true }
         if let syscallJournal {
             result["syscall_journal"] = [
                 "entered": syscallJournal.entered, "returned": syscallJournal.returned,
