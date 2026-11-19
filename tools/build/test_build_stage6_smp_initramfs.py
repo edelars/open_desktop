@@ -73,6 +73,27 @@ class SmpInitramfsTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(BuildError):
                 parse_observation(transcript, NONCE)
 
+    def test_smp_verification_requires_matching_kernel_summary_and_ipis(self):
+        summary = "[    1.234500] smp: Brought up 1 node, 2 CPUs\r\n"
+        valid = summary + two_cpu_transcript()
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text(json.dumps({"stop": {"com1_text": valid}}))
+            self.assertEqual(verify_report(report, NONCE, 2, require_smp_evidence=True)["cpus"], [0, 1])
+        cases = {
+            "missing summary": two_cpu_transcript(),
+            "late summary": two_cpu_transcript() + summary,
+            "duplicate summary": summary + valid,
+            "wrong count": valid.replace("2 CPUs", "1 CPU"),
+            "IPI missing on AP": valid.replace("3  Function call", "0  Function call"),
+            "no IPI rows": "\r\n".join(
+                line for line in valid.splitlines() if not line.startswith(("RES:", "CAL:"))
+            ),
+        }
+        for name, transcript in cases.items():
+            with self.subTest(name=name), self.assertRaises(BuildError):
+                parse_observation(transcript, NONCE, require_smp_evidence=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -426,6 +426,18 @@ od-runner --stage6-litmus (--fixture FILE | --corpus DIR |
 
 Результат на корпусе S6-05 (`--corpus`, полный перебор): при срезе S6-19b было 8 `equal` и 7 `unsupported` (LOCK-CMPXCHG-MUTEX, LOCK-XADD, SB-LOCK, SB-LOCK-LOCAL, SB-LOCK-XADD, SB-XCHG, XCHG-MUTEX; LOCK-INC счётчик тоже); **после S6-20 — 15 fixture = 15 `equal`**, счётчик LOCK-INC тоже `equal`; ожидания CLI-теста `stage6_litmus_cli.rs` изменены с «unsupported = 7» на «equal = 15, unsupported = 0» (эталон читается из fixture, не из прогона; гистограммы и число расписаний всех 15 совпадают с `s6-19-litmus-interleaving.json`, проверено тестом). Команды: `cargo test -p od-runner --offline --test stage6_litmus_cli`; `od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus`; `od-runner --stage6-litmus --fixture tests/fixtures/guest/stage6/litmus/sb.json --mode seed --seeds 0..=99`.
 
+### S6-21 — гостевые доказательства запуска Linux SMP
+
+Для зачётного прогона на двух vCPU передайте один raw JSON `linux-direct` и nonce, с которым стартовал гость.
+
+```sh
+python3 tools/build/build_stage6_smp_initramfs.py \
+  --verify-report work/stage6/s6-21/boot.json \
+  --nonce smpBoot20261119 --expect-online 2 --require-smp-evidence
+```
+
+Проверка требует один полный блок `/init`, online CPU `0–1`, согласованный заголовок `/proc/interrupts` и предшествующую строку ядра `smp: Brought up …, 2 CPUs`. На каждом online CPU хотя бы один из рядов `RES`, `CAL` или `TLB` должен иметь ненулевое значение. Формат строки ядра зафиксирован в S6-02. Предупреждения ядра и детерминизм повторных запусков входят в общую проверку S6-21. Для одно-vCPU наблюдения используйте только `--expect-online 1`. [План S6-21](../plans/STAGE_6.md#s6-21-запустить-второй-процессор-в-linux) · [Инвентарь S6-02](../reports/data/stage6/ap-start-inventory.json).
+
 ### S6-38 — вычислительная нагрузка гостя
 
 `s6_smp_workloads` делит заданное общее число блоков на соседние непересекающиеся диапазоны. Блок `i` начинает со значения `i + 1` и выполняет 256 раундов сдвигов, XOR и умножения `uint64_t`. Контрольная сумма складывает значения блоков по модулю 2⁶⁴. Один, два и четыре рабочих потока выполняют одинаковый объём работы и проверяют число обработанных блоков и ожидаемую контрольную сумму. Каждый поток закреплён на отдельном разрешённом CPU. [Гостевой исходник](../../guest/linux/tests/s6_smp_workloads.c).

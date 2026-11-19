@@ -17,6 +17,9 @@ REPO = Path(__file__).resolve().parents[2]
 SOURCE = REPO / "tests/fixtures/guest/stage6/smp-init/init.S"
 LAYOUT = REPO / "tests/fixtures/guest/stage4/initramfs/layout.ld"
 DEFAULT_OUTPUT = REPO / "work/stage6/smp-init/initramfs.cpio"
+SMP_BRINGUP = re.compile(
+    r"(?:\[\s*[0-9]+\.[0-9]+\]\s*)?smp: Brought up [1-9][0-9]* nodes?, ([1-9][0-9]{0,3}) CPUs?"
+)
 
 
 def build_archive() -> bytes:
@@ -62,7 +65,9 @@ def parse_online(cpulist: str) -> list[int]:
     return cpus
 
 
-def parse_observation(transcript: str, nonce: str) -> dict[str, object]:
+def parse_observation(
+    transcript: str, nonce: str, *, require_smp_evidence: bool = False
+) -> dict[str, object]:
     validate_nonce(nonce)
     lines = transcript.splitlines()
     if any(line.startswith("OD_SMP_ERROR ") for line in lines):
@@ -106,10 +111,26 @@ def parse_observation(transcript: str, nonce: str) -> dict[str, object]:
             raise BuildError(f"invalid guest IPI row: {line!r}")
         ipis[label] = [int(count) for count in counts]
 
+    if require_smp_evidence:
+        if len(cpus) < 2:
+            raise BuildError("SMP evidence requires at least two online CPUs")
+        brought_up = [
+            int(match[1])
+            for line in lines[:begin[0]]
+            if (match := SMP_BRINGUP.fullmatch(line.strip())) is not None
+        ]
+        if brought_up != [len(cpus)]:
+            raise BuildError("expected one matching kernel SMP bring-up summary before the observation")
+        for index, cpu in enumerate(cpus):
+            if not any(counts[index] > 0 for counts in ipis.values()):
+                raise BuildError(f"CPU{cpu} has no nonzero guest IPI count")
+
     return {"nonce": nonce, "online": online, "cpus": cpus, "interrupts": interrupts, "ipi_counts": ipis}
 
 
-def verify_report(path: Path, nonce: str, expected_online: int | None) -> dict[str, object]:
+def verify_report(
+    path: Path, nonce: str, expected_online: int | None, *, require_smp_evidence: bool = False
+) -> dict[str, object]:
     report = json.loads(path.read_text())
     try:
         transcript = report["stop"]["com1_text"]
@@ -117,7 +138,7 @@ def verify_report(path: Path, nonce: str, expected_online: int | None) -> dict[s
         raise BuildError("missing stop.com1_text in the Linux run report") from error
     if not isinstance(transcript, str):
         raise BuildError("stop.com1_text is not text")
-    observation = parse_observation(transcript, nonce)
+    observation = parse_observation(transcript, nonce, require_smp_evidence=require_smp_evidence)
     if expected_online is not None and observation["cpus"] != list(range(expected_online)):
         raise BuildError(f"expected online CPUs 0 through {expected_online - 1}")
     return observation
@@ -130,16 +151,26 @@ def main() -> int:
     mode.add_argument("--verify-report", type=Path, help="Linux run JSON to verify")
     parser.add_argument("--nonce", help="expected nonce in the guest observation")
     parser.add_argument("--expect-online", type=int, help="require this many online CPUs starting at zero")
+    parser.add_argument(
+        "--require-smp-evidence", action="store_true",
+        help="require the kernel bring-up summary and a nonzero guest IPI count for each online CPU",
+    )
     args = parser.parse_args()
     if args.verify_report is not None and args.nonce is None:
         parser.error("--verify-report requires --nonce")
-    if args.verify_report is None and (args.nonce is not None or args.expect_online is not None):
-        parser.error("--nonce and --expect-online apply to --verify-report")
+    if args.verify_report is None and (
+        args.nonce is not None or args.expect_online is not None or args.require_smp_evidence
+    ):
+        parser.error("--nonce, --expect-online and --require-smp-evidence apply to --verify-report")
     if args.expect_online is not None and not 1 <= args.expect_online <= 4096:
         parser.error("--expect-online must be between 1 and 4096")
     try:
         if args.verify_report is not None:
-            print(json.dumps(verify_report(args.verify_report, args.nonce, args.expect_online), indent=2))
+            observation = verify_report(
+                args.verify_report, args.nonce, args.expect_online,
+                require_smp_evidence=args.require_smp_evidence,
+            )
+            print(json.dumps(observation, indent=2))
             return 0
         output = args.out or DEFAULT_OUTPUT
         archive = build_archive()
