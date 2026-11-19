@@ -1,6 +1,5 @@
-//! Binary of the firmware image. The S7-04 entry parses and validates the boot handoff, then
-//! reports that result on COM1 and stops. Own page tables, allocators and UEFI services are not
-//! implemented yet. The entry `_start` is in `start.S`; the panic handler reports stop code `0x30`.
+//! Binary of the firmware image. The S7-04 entry validates the boot handoff and prepares its
+//! own identity page tables on the machine's initial map. The entry `_start` is in `start.S`.
 
 #![no_std]
 #![no_main]
@@ -10,7 +9,13 @@ use core::panic::PanicInfo;
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::handoff::{HANDOFF_WINDOW_SIZE, Handoff};
-use od_firmware::stop::{STOP_INTERNAL, STOP_INVALID_RDI, format_stop_line};
+use od_firmware::paging::{BootPaging, PagingError, ShadowSections};
+use od_firmware::stop::{STOP_INTERNAL, STOP_INVALID_RDI, STOP_PAGING, format_stop_line};
+
+unsafe extern "C" {
+    static __shadow_read_only_start: u8;
+    static __shadow_writable_start: u8;
+}
 
 const COM1_BASE: u16 = 0x3F8;
 const LSR_THRE: u8 = 0x20;
@@ -20,6 +25,7 @@ const TX_POLL_LIMIT: u32 = 65536;
 // Keep this equal to the image header's handoff_minor_max in build_firmware.py.
 const HANDOFF_MINOR_MAX: u16 = 4;
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
+const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
 
 /// # Safety
 /// Port I/O: the caller must be at CPL0 (or have I/O permission) and `port` must be a real device
@@ -85,7 +91,8 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
     // identity-mapped, readable RAM at HANDOFF_GPA for the duration of firmware execution.
     let bytes =
         unsafe { core::slice::from_raw_parts(handoff_gpa as *const u8, HANDOFF_WINDOW_SIZE) };
-    let _handoff = match Handoff::parse_for_boot(bytes, HANDOFF_MINOR_MAX) {
+    let parsed = Handoff::parse_for_boot(bytes, HANDOFF_MINOR_MAX);
+    let handoff = match &parsed {
         Ok(handoff) => handoff,
         Err(error) => {
             let (code, detail) = error.stop_code_detail();
@@ -95,7 +102,29 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
 
     com1_init();
     com1_write(HANDOFF_VALIDATED_LINE);
+    if let Err(error) = prepare_paging(handoff) {
+        stop(STOP_PAGING, error.stop_detail());
+    }
+    com1_write(PAGING_PREPARED_LINE);
     halt_forever()
+}
+
+#[inline(never)]
+fn prepare_paging(handoff: &Handoff<'_>) -> Result<(), PagingError> {
+    let paging = BootPaging::plan(handoff)?;
+    // SAFETY: the accepted handoff describes this boot's identity-mapped RAM.
+    // The chosen page-aligned run belongs to a single ordinary RAM extent
+    // distinct from the shadow, the handoff, the active tables and the stack.
+    let words =
+        unsafe { core::slice::from_raw_parts_mut(paging.root() as *mut u64, paging.table_words()) };
+    paging.build(
+        words,
+        ShadowSections {
+            read_only_start: (&raw const __shadow_read_only_start) as u64,
+            writable_start: (&raw const __shadow_writable_start) as u64,
+        },
+    )?;
+    Ok(())
 }
 
 #[panic_handler]

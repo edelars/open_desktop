@@ -52495,12 +52495,161 @@ fn firmware_boot_qword_cmov_reads_the_condition_and_preserves_flags() {
 }
 
 #[test]
-fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
+fn firmware_boot_paging_alu_uses_operand_width_and_defined_flags() {
+    const ARITH: u64 = 0x8d5;
+    const MUL_DEFINED: u64 = (DEFINED & !ARITH) | 0x801;
+    for (code, reg, input, value, flags, defined) in [
+        (
+            &[0x48, 0x0f, 0xaf, 0xc1][..],
+            Register::Rax,
+            2,
+            u64::MAX - 1,
+            0x6d6,
+            MUL_DEFINED,
+        ),
+        (
+            &[0x48, 0x0f, 0xaf, 0xc1][..],
+            Register::Rax,
+            1 << 63,
+            1 << 63,
+            0xed7,
+            MUL_DEFINED,
+        ),
+        (
+            &[0xf7, 0xd9][..],
+            Register::Rcx,
+            0xfeed_ffff_8000_0000,
+            0x8000_0000,
+            0xe87,
+            DEFINED | 0x10,
+        ),
+        (
+            &[0x49, 0x81, 0xe3, 0x00, 0xf0, 0xff, 0xff][..],
+            Register::R11,
+            0x8000_0000_0000_1234,
+            0x8000_0000_0000_1000,
+            0x696,
+            DEFINED,
+        ),
+        (
+            &[0x81, 0xe7, 0xff, 0x01, 0x00, 0x00][..],
+            Register::Rdi,
+            0x8421_8421_0000_0200,
+            0,
+            0x656,
+            DEFINED,
+        ),
+        (
+            &[0x48, 0x83, 0xc8, 0x03][..],
+            Register::Rax,
+            0x8000_0000_0000_1000,
+            0x8000_0000_0000_1003,
+            0x696,
+            DEFINED,
+        ),
+        (
+            &[0x48, 0x21, 0xc5][..],
+            Register::Rbp,
+            0x8abc_def0_0100_0201,
+            0x8000_0000_0100_0001,
+            0x692,
+            DEFINED,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = u64::MAX;
+        cpu.gpr[Register::Rax as usize] = 0x8000_0000_01ff_00ff;
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected, "{code:02x?} input={input:#x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_rep_stosq_preserves_progress_on_fault_and_honors_bound() {
+    let code = [0xf3, 0x48, 0xab];
+    let value = 0x1122_3344_5566_7788u64;
+    let start = DATA + 0x10;
+    let second = start - 8;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(second),
+    };
+    for (count, fail_second, exit, completed) in [
+        (0, false, PagedProbeExit::Retired, 0),
+        (2, false, PagedProbeExit::Retired, 2),
+        (2, true, PagedProbeExit::Fault(fault.clone()), 1),
+        (
+            execute::REP_ITERATION_WORK_LIMIT + 1,
+            false,
+            PagedProbeExit::Unsupported { opcode: 0xab },
+            0,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        if fail_second {
+            memory.fail_write_on = Some((2, MemoryError::Architectural(fault.clone())));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rdi as usize] = start;
+        cpu.gpr[Register::Rax as usize] = value;
+        cpu.gpr[Register::Rcx as usize] = count;
+        cpu.rflags |= 1 << 10;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        expected.gpr[Register::Rdi as usize] -= completed * 8;
+        expected.gpr[Register::Rcx as usize] -= completed;
+        expected.rip += if retired { code.len() as u64 } else { 0 };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        let attempts = completed as usize + usize::from(fail_second);
+        assert_eq!(memory.write_addresses, [start, second][..attempts]);
+        for (index, offset) in [0x10, 0x08].into_iter().enumerate() {
+            let position = DATA_PHYSICAL + offset;
+            let expected_value = if index < completed as usize { value } else { 0 };
+            assert_eq!(
+                memory.bytes[position..position + 8],
+                expected_value.to_le_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_shifts_mask_count_and_define_only_architectural_flags() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const SHIFT_DEFINED: u64 = 0x0c5;
     for (code, reg, input, value, flags, initial_defined, defined) in [
         (
-            [0x48, 0xc1, 0xe9, 0x15],
+            &[0x48, 0xc1, 0xe9, 0x15][..],
             Register::Rcx,
             0x0030_0000,
             1,
@@ -52509,7 +52658,7 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
             SHIFT_DEFINED,
         ),
         (
-            [0x49, 0xc1, 0xe8, 0x41],
+            &[0x49, 0xc1, 0xe8, 0x41][..],
             Register::R8,
             0x8000_0000_0000_0001,
             0x4000_0000_0000_0000,
@@ -52518,7 +52667,7 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
             SHIFT_DEFINED | 0x800,
         ),
         (
-            [0x48, 0xc1, 0xe9, 0x40],
+            &[0x48, 0xc1, 0xe9, 0x40][..],
             Register::Rcx,
             0x8000_0000_0000_0001,
             0x8000_0000_0000_0001,
@@ -52527,7 +52676,7 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
             0x010,
         ),
         (
-            [0x48, 0xc1, 0xe0, 0x0c],
+            &[0x48, 0xc1, 0xe0, 0x0c][..],
             Register::Rax,
             0x12_3456,
             0x1_2345_6000,
@@ -52536,7 +52685,7 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
             SHIFT_DEFINED,
         ),
         (
-            [0x49, 0xc1, 0xe0, 0x01],
+            &[0x49, 0xc1, 0xe0, 0x01][..],
             Register::R8,
             0x4000_0000_0000_0001,
             0x8000_0000_0000_0002,
@@ -52544,8 +52693,27 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
             0,
             SHIFT_DEFINED | 0x800,
         ),
+        (
+            &[0xc1, 0xef, 0x15][..],
+            Register::Rdi,
+            0xfeed_ffff_0030_0000,
+            1,
+            0x001,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            &[0xc1, 0xef, 0x20][..],
+            Register::Rdi,
+            0xfeed_ffff_8000_0001,
+            0x8000_0001,
+            ARITHMETIC_FLAGS,
+            0x010,
+            0x010,
+        ),
     ] {
-        let mut memory = Memory::new(&code);
+        let raw_count = code[code.len() - 1];
+        let mut memory = Memory::new(code);
         let mut cpu = state();
         cpu.gpr[reg as usize] = input;
         cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
@@ -52564,7 +52732,7 @@ fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
         assert_eq!(result.exit, PagedProbeExit::Retired);
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(result.rflags_defined, defined);
-        let observed_flags = if code[3] == 0x40 {
+        let observed_flags = if matches!(raw_count, 0x20 | 0x40) {
             ARITHMETIC_FLAGS
         } else {
             defined
@@ -53495,7 +53663,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
         (&[0x48, 0xff, 0x0b][..], 0xff),             // DEC qword [RBX]
         (&[0x48, 0xc1, 0x2b, 0x15][..], 0xc1),       // SHR qword [RBX],21
-        (&[0xc1, 0xe9, 0x15][..], 0xc1),             // SHR ECX,21
+        (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),       // SHR CX,21
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1), // address override on SHR
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store

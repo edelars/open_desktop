@@ -6344,3 +6344,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-18, `od-machine`, PCI-профиль NVMe. Открыто.
 - **Основание и последствие.** Цепочка PCI capabilities содержит MSI-X. PCI Express Device Capabilities для FLR и обработка Initiate FLR отсутствуют. Для полного NVMe over PCIe Transport 1.4 требуется Function Level Reset. Принятый S7-16 охватывает минимальную модель регистров, очередей и прерываний. [PCIe Transport 1.4, §3.8.5.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=26).
 - **Следующий шаг.** Реализовать capability и согласовать сброс PCI-функции с очередями, MSI-X и backend при расширении PCIe-профиля. Проверить чтение capability и reset через обычный гостевой путь PCI.
+
+<a id="issue-522"></a>
+
+### ISSUE-522 — S7-04: активация собственных таблиц и стека прошивки
+
+- **Дата и компонент.** 2026-11-18, UEFI и paged firmware CPU-профиль. Открыто.
+- **Основание.** После строки `OD-FW S7-04 page tables prepared` прошивка останавливается с `CR3 = 0x600000`. Новая структура 4 KiB и резерв стека с guard готовы в RAM. Рабочий стек и трансляция ещё принадлежат стартовой среде машины.
+- **Следующий шаг.** Выполнить гостевой `MOV CR3` и переход на новый `RSP`. Подтвердить чтение инструкций с нового root, переход через границу кванта и `#PF` при обращении к guard. Освободить временные таблицы в карте UEFI после успешного перехода. [Отчёт проверки](reports/STAGE_7_REPORT.md#s7-04--подготовка-собственных-таблиц-и-стека).

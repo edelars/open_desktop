@@ -30,8 +30,12 @@ SECTIONS
         *(.text .text.*)
     } :image
 
-    .rodata : ALIGN(16) { *(.rodata .rodata.*) } :image
-    .data   : ALIGN(16) { *(.data .data.*) } :image
+    . = ALIGN(4096);
+    __shadow_read_only_start = .;
+    .rodata : ALIGN(4096) { *(.rodata .rodata.*) } :image
+    . = ALIGN(4096);
+    __shadow_writable_start = .;
+    .data : ALIGN(4096) { *(.data .data.*) } :image
 
     /*
      * Zeroed by the startup code. The flat image is zero-padded to IMAGE_SIZE, so .bss also lies

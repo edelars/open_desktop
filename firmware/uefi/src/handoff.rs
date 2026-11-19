@@ -246,11 +246,11 @@ fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
 }
 
 #[derive(Clone, Copy)]
-struct RegionRecord {
-    kind: u32,
+pub(crate) struct RegionRecord {
+    pub(crate) kind: u32,
     attrs: u32,
-    base: u64,
-    length: u64,
+    pub(crate) base: u64,
+    pub(crate) length: u64,
     owner: u32,
 }
 
@@ -601,6 +601,10 @@ impl<'a> Handoff<'a> {
         let handoff = Self::parse(bytes, supported_minor_max)?;
         handoff.validate_boot_reservations()?;
         Ok(handoff)
+    }
+
+    pub(crate) fn regions(&self) -> impl Iterator<Item = RegionRecord> + '_ {
+        (0..self.region_count).map(|index| region_at(self.bytes, self.region_table_offset, index))
     }
 
     pub fn bytes(&self) -> &'a [u8] {
@@ -1467,6 +1471,128 @@ mod tests {
         b[0x61] = b'X';
         seal(&mut b);
         assert_eq!(Handoff::parse(&b, 2), Err(HandoffError::InvalidSerial));
+    }
+
+    fn boot_leaf(words: &[u64], root: u64, page: u64) -> u64 {
+        let mut table = 0;
+        for shift in [39, 30, 21] {
+            let entry = words[table + ((page >> shift) & 511) as usize];
+            if entry == 0 {
+                return 0;
+            }
+            assert_eq!(entry & (4095 | (1 << 63)), 3);
+            table = ((entry & !4095) - root) as usize / 8;
+        }
+        words[table + ((page >> 12) & 511) as usize]
+    }
+
+    #[test]
+    fn firmware_paging_reserves_stack_and_maps_image_permissions() {
+        use crate::paging::{BootPaging, PagingError, ShadowSections};
+
+        const NX: u64 = 1 << 63;
+        let bytes = sample_board_map(true);
+        let handoff = Handoff::parse_for_boot(&bytes, 2).unwrap();
+        let paging = BootPaging::plan(&handoff).unwrap();
+        assert_eq!(paging.root(), 0x15_0000);
+        let shadow = ShadowSections {
+            read_only_start: 0x20_4000,
+            writable_start: 0x20_5000,
+        };
+        let mut words = vec![u64::MAX; paging.table_words()];
+        assert_eq!(
+            paging.build(&mut words[1..], shadow),
+            Err(PagingError::WrongStorageLength)
+        );
+        assert_eq!(
+            paging.build(
+                &mut words,
+                ShadowSections {
+                    writable_start: 0x20_5001,
+                    ..shadow
+                }
+            ),
+            Err(PagingError::InvalidShadowBoundaries)
+        );
+        assert!(words.iter().all(|&word| word == u64::MAX));
+        let used = paging.build(&mut words, shadow).unwrap();
+        assert_eq!(used, 0x43);
+        let leaf = |page| boot_leaf(&words, paging.root(), page);
+        assert_eq!(leaf(0), NX | 3);
+        assert_eq!(leaf(0xE0000), NX | 0xE0000 | 3);
+        assert_eq!(leaf(0xEF000), NX | 0xEF000 | 3);
+        assert_eq!(leaf(0x10_0000), NX | 0x10_0000 | 1);
+        assert_eq!(leaf(0x11_0000), NX | 0x11_0000 | 3);
+        assert_eq!(leaf(0x60_0000), NX | 0x60_0000 | 3);
+        assert_eq!(leaf(0x20_3000), 0x20_3000 | 1);
+        assert_eq!(leaf(0x20_4000), NX | 0x20_4000 | 1);
+        assert_eq!(leaf(0x20_5000), NX | 0x20_5000 | 3);
+        assert_eq!(leaf(paging.root()), NX | paging.root() | 3);
+        assert_eq!(leaf(paging.guard_page()), 0);
+        assert_eq!(paging.stack_top() - paging.guard_page(), 0x41_000);
+        let stack_base = paging.guard_page() + 4096;
+        assert_eq!(leaf(stack_base), NX | stack_base | 3);
+        let stack_last = paging.stack_top() - 4096;
+        assert_eq!(leaf(stack_last), NX | stack_last | 3);
+        assert_eq!(leaf(128 * 1024 * 1024), 0);
+    }
+
+    #[test]
+    fn firmware_paging_covers_sparse_board_at_the_physical_address_limit() {
+        use crate::paging::{BootPaging, ShadowSections};
+
+        const NX: u64 = 1 << 63;
+        const PHYSICAL_END: u64 = 1 << 36;
+        let mut bytes = sample_sparse_board_map();
+        let region_count = u32_at(&bytes, 0x34) as usize;
+        let high_ram = HEADER_SIZE + (region_count - 1) * 0x20;
+        let high_base = u64_at(&bytes, high_ram + 8);
+        assert_eq!(high_base, 0x1_0000_0000);
+
+        // Expand the final mapped high-RAM region from 128 MiB to the top of
+        // the 36-bit physical address space. All lower mappings are preserved.
+        let high_len = u64_at(&bytes, high_ram + 16);
+        let new_high_len = PHYSICAL_END - high_base;
+        let extra_pt = (new_high_len - high_len) >> 21;
+        let extra_pd = ((new_high_len - 1) >> 30) - ((high_len - 1) >> 30);
+        let extra_bytes = (extra_pt + extra_pd) * 4096;
+        let temporary = HEADER_SIZE + 5 * 0x20;
+        let temporary_len = u64_at(&bytes, temporary + 16);
+        let low_ram = temporary + 0x20;
+        let low_base = u64_at(&bytes, low_ram + 8);
+        let low_len = u64_at(&bytes, low_ram + 16);
+        for (at, value) in [
+            (high_ram + 16, new_high_len),
+            (temporary + 16, temporary_len + extra_bytes),
+            (low_ram + 8, low_base + extra_bytes),
+            (low_ram + 16, low_len - extra_bytes),
+        ] {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        seal(&mut bytes);
+
+        let handoff = Handoff::parse_for_boot(&bytes, 2).unwrap();
+        let paging = BootPaging::plan(&handoff).unwrap();
+        assert_eq!(paging.root(), low_base + extra_bytes);
+        let mut words = vec![0; paging.table_words()];
+        let used = paging
+            .build(
+                &mut words,
+                ShadowSections {
+                    read_only_start: 0x20_4000,
+                    writable_start: 0x20_5000,
+                },
+            )
+            .unwrap();
+        assert_eq!(used as u64 * 4096, temporary_len + extra_bytes);
+        let leaf = |page| boot_leaf(&words, paging.root(), page);
+        assert_eq!(leaf(paging.guard_page()), 0);
+        assert_eq!(leaf(0xFC00_0000), NX | 0xFC00_0000 | 3);
+        assert_eq!(leaf(0xFC00_3000), 0);
+        assert_eq!(leaf(0xF400_0000), NX | 0xF400_0000 | 3);
+        assert_eq!(leaf(0xFFC0_0000), NX | 0xFFC0_0000 | 1);
+        assert_eq!(leaf(high_base), NX | high_base | 3);
+        assert_eq!(leaf(PHYSICAL_END - 4096), NX | (PHYSICAL_END - 4096) | 3);
     }
 
     #[test]

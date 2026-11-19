@@ -108,10 +108,12 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 `_start` проверяет GPA в `RDI`, зануляет `.bss` и передаёт управление
 `od_fw_main` по внутреннему System V ABI. Ошибка GPA останавливает прошивку
 со строкой `OD-FW STOP` через COM1. Rust-точка входа сверяет GPA и разбирает
-handoff block. `boot-firmware` на полном ROM подтверждает строку
-`OD-FW S7-04 handoff validated` с CRLF и остановку `HLT`. Набор проверок
-и оставшийся объём инициализации приведены в отчёте этапа.
-[Проверка S7-04](../../docs/reports/STAGE_7_REPORT.md#s7-04--успешный-разбор-handoff-и-hlt).
+handoff block. Затем прошивка готовит собственные таблицы 4 KiB и
+резерв стека. `boot-firmware` на полном ROM подтверждает строки
+`OD-FW S7-04 handoff validated` и `OD-FW S7-04 page tables prepared`
+с CRLF и последующий `HLT`. Переход на собственные CR3 и RSP входит
+в следующий срез S7-04.
+[Проверка S7-04](../../docs/reports/STAGE_7_REPORT.md#s7-04--подготовка-собственных-таблиц-и-стека).
 
 ## Карта модулей
 

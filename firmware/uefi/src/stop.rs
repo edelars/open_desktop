@@ -28,6 +28,8 @@ pub const STOP_HANDOFF_SERIAL: u8 = 0x0B;
 pub const STOP_HANDOFF_SHADOW: u8 = 0x0C;
 /// Internal firmware error (panic handler).
 pub const STOP_INTERNAL: u8 = 0x30;
+/// Firmware-owned page tables could not be prepared.
+pub const STOP_PAGING: u8 = 0x31;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";

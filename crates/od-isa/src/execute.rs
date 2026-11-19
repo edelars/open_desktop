@@ -20055,14 +20055,20 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 | ArithmeticKind::Sub
                 | ArithmeticKind::Cmp
                 | ArithmeticKind::Inc
-                | ArithmeticKind::Dec,
+                | ArithmeticKind::Dec
+                | ArithmeticKind::Neg,
             dst: Operand::Register(destination),
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
         | Operation::Logic {
-            kind: LogicKind::Xor | LogicKind::Or,
+            kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
             dst: Operand::Register(destination),
             src: source @ Operand::Register(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::And | LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Immediate(_),
         }
         | Operation::Logic {
             kind: LogicKind::Test,
@@ -20081,6 +20087,27 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             OperandSize::Dword | OperandSize::Qword
                         )
                 }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Neg,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0xf7, OperandSize::Dword | OperandSize::Qword)
+                    )
+                }
+                Operation::Logic {
+                    kind: LogicKind::And,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (
+                            0x21 | 0x23 | 0x81 | 0x83,
+                            OperandSize::Dword | OperandSize::Qword
+                        )
+                    )
+                }
                 Operation::Logic {
                     kind: LogicKind::Test,
                     ..
@@ -20098,7 +20125,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x08 | 0x0a, OperandSize::Byte)
-                            | (0x09 | 0x0b, OperandSize::Dword | OperandSize::Qword)
+                            | (
+                                0x09 | 0x0b | 0x81 | 0x83,
+                                OperandSize::Dword | OperandSize::Qword
+                            )
                     )
                 }
                 Operation::Arithmetic { .. } => matches!(
@@ -20157,7 +20187,36 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: the firmware counts page-table blocks with qword immediate shifts.
+        // S7-04: the firmware's bounded memset uses register IMUL to expand its byte.
+        Operation::Imul {
+            dst: destination,
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xaf
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let (value, flags) = multiply_truncated(
+                instruction.operand_size,
+                state.read(destination),
+                state.read(source),
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: firmware immediate shifts extract the indexes of its page tables.
         Operation::Shift {
             kind: kind @ (ShiftKind::Shl | ShiftKind::Shr),
             dst: Operand::Register(destination),
@@ -20167,7 +20226,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xc1
-            && instruction.operand_size == OperandSize::Qword
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20175,14 +20237,20 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }) =>
         {
             let raw_count = immediate as u8;
-            let count = shift_count(kind, instruction.operand_size, raw_count);
+            let size = instruction.operand_size;
+            let count = shift_count(kind, size, raw_count);
+            let mask = if size == OperandSize::Qword {
+                0x3f
+            } else {
+                0x1f
+            };
             let (value, flags) = shift_result(
-                instruction.operand_size,
+                size,
                 kind,
                 state.read(destination),
                 0,
                 count,
-                raw_count & 0x3f,
+                raw_count & mask,
                 state.rflags,
             );
             state.write(destination, value);
@@ -24956,26 +25024,35 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: admit only firmware's bare address-size-64 `F3 AA` REP STOSB.
-        // Bound one paged instruction invocation to REP_ITERATION_WORK_LIMIT
-        // stores; larger counts are refused before any memory/state mutation.
-        Operation::RepStos {
-            size: OperandSize::Byte,
-        } if base_profile
-            && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xaa
-            && instruction.length == 2
-            && instruction.address_size == OperandSize::Qword
-            && instruction.prefixes
-                == (Prefixes {
-                    group1: Some(0xf3),
-                    ..Prefixes::default()
-                }) =>
+        // S7-04: keep the bounded REP STOSB path and admit firmware's page clearing
+        // with REP STOSQ. Larger counts are refused before any state mutation.
+        Operation::RepStos { size }
+            if base_profile
+                && (size == OperandSize::Byte || firmware_boot_profile)
+                && instruction.opcode.map == OpcodeMap::Primary
+                && matches!(
+                    (instruction.opcode.byte, size, instruction.length),
+                    (0xaa, OperandSize::Byte, 2) | (0xab, OperandSize::Qword, 3)
+                )
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        group1: Some(0xf3),
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
         {
             let count = state.gpr[Register::Rcx as usize];
             if count > REP_ITERATION_WORK_LIMIT {
                 return unsupported();
             }
+            let value = state.gpr[Register::Rax as usize] & size.mask();
+            let stride = size.bytes() as i64;
+            let step = if state.rflags & crate::DF == 0 {
+                stride
+            } else {
+                -stride
+            };
             while state.gpr[Register::Rcx as usize] != 0 {
                 let destination = Operand::Memory(MemoryOperand {
                     base: AddressBase::Register(Register::Rdi),
@@ -24983,9 +25060,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     scale: 1,
                     displacement: 0,
                     address_size: OperandSize::Qword,
-                    size: OperandSize::Byte,
+                    size,
                 });
-                let value = state.gpr[Register::Rax as usize] & 0xff;
                 if let Err(error) =
                     write_operand(state, memory, context, next_rip, destination, value)
                 {
@@ -24996,13 +25072,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         error => result(PagedProbeExit::Backend(error), 0),
                     };
                 }
-                let step = if state.rflags & crate::DF == 0 {
-                    1
-                } else {
-                    u64::MAX
-                };
                 state.gpr[Register::Rdi as usize] =
-                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+                    state.gpr[Register::Rdi as usize].wrapping_add_signed(step);
                 state.gpr[Register::Rcx as usize] -= 1;
             }
             state.rip = next_rip;

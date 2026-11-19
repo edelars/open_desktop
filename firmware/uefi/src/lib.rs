@@ -13,6 +13,7 @@
 pub mod acpi;
 pub mod handoff;
 pub mod image;
+pub mod paging;
 pub mod stop;
 
 /// GPA of the handoff block passed in `RDI` at firmware entry (FIRMWARE_BOOT.md, section 5).
