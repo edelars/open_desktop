@@ -1289,7 +1289,7 @@ pub struct PreparedKeyReuseCounts {
 
 struct PreparedNativeRegisterKey {
     rip: u64,
-    block: crate::block::BasicBlock,
+    minimum_key_bytes: usize,
     key: TranslationKey,
 }
 
@@ -1460,12 +1460,16 @@ fn run_cached_native_register_v1_strategy_controlled<
             }
         }
         let (key, hit_index) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-            let block = guest_block
-                .as_ref()
-                .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.block))
-                .expect("block or prepared memo exists");
-            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, block)
-                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+            let minimum = match &guest_block {
+                Some(block) => minimum_cache_key_size::<B::Published>(code, dependencies, block)
+                    .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?,
+                None => {
+                    prepared_key
+                        .as_ref()
+                        .expect("memo exists")
+                        .minimum_key_bytes
+                }
+            };
             cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
             if reuse_hit {
                 let key = &prepared_key.as_ref().expect("memo exists").key;
@@ -1513,8 +1517,8 @@ fn run_cached_native_register_v1_strategy_controlled<
                 if reuse_candidate {
                     prepared_key = Some(PreparedNativeRegisterKey {
                         rip: state.rip,
-                        block: block.clone(),
-                        key: key.clone(),
+                        minimum_key_bytes: minimum,
+                        key,
                     });
                     if TRACK_REUSE_COUNTS {
                         let counts = reuse_counts
@@ -1525,8 +1529,10 @@ fn run_cached_native_register_v1_strategy_controlled<
                             .checked_add(1)
                             .ok_or(DispatchError::AggregateOverflow)?;
                     }
+                    Ok((None, hit_index))
+                } else {
+                    Ok((Some(key), hit_index))
                 }
-                Ok((Some(key), hit_index))
             }
         })?;
         let key = key

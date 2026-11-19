@@ -1409,6 +1409,15 @@ At one iteration the prepared variant's median exceeded ordinary JIT in
 both profiles. Prepared-key reuse remains opt-in. See the
 [refresh report and evidence archive](../reports/STAGE_3_S3-31e_2026-11-19.md).
 
+### S3-31f. Prepared-key ownership on one-pass dispatch
+
+Two matched release builds used the S3-31c timing path with scoring limited
+to `a_1` and `b_1`. Both builds ran the full six-profile correctness preflight.
+The revised opt-in path improved both one-pass medians across rounds after
+normalizing against the ordinary cached dispatcher. The
+[report and evidence archive](../reports/STAGE_3_S3-31f_2026-11-19.md)
+contain raw ranges, the benchmark patch, reproduction steps and build hashes.
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
