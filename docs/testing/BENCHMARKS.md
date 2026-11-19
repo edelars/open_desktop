@@ -1390,6 +1390,15 @@ artifacts share clean source revision and fingerprints
 detached worktree, while timing ran from the main working directory. See the [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and
 [suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
 
+### S3-31d. Exact dependency snapshot comparison
+
+Three local A/B release rounds used `cached-native-loop` with its six fixed
+S3-36f profiles. The standard cached dispatcher now accepts an exact match
+against the key's validated dependency snapshot without allocating or sorting.
+The profile medians improved by 9.3–16.3% after normalization against the
+interpreter control. The [measurement report](../reports/STAGE_3_S3-31d_2026-11-19.md)
+records raw ranges, source provenance, reproduction commands and the archive.
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
