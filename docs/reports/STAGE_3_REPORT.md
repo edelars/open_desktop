@@ -1125,6 +1125,43 @@ in the [S3-34dn](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-val
 and [S3-34do](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact)
 JIT sections.
 
+### Local and signed VMHost selectors after S3-40v
+
+On 19 November 2026, both selectors completed on
+`d9ecaa241c02a2f9b14134224bbc23bb1bc7e340`. The `local` selector
+passed all 359 selected steps, including 157 harness self-tests, 2,020
+dispatcher results from 1,010 inputs, 4,800 memory inputs replayed twice,
+and the signed VMHost RESULT-state contract. The separate
+`vmhost-process` selector passed all 46 selected steps, including the
+control races, process isolation and the expected launcher report of
+`SIGSEGV` during the generated-code fault smoke. ISSUE-044 remains open.
+
+Both commands use `python3 tests/cpu/stage3_harness.py --suite` with the
+selection named above. The common source fingerprint at the start and
+end of both runs is
+`59ba9accfcf1d49f621e1be5edb6faf2220f8e73188e2b34d470d897b222bd15`.
+The common input manifest SHA-256 is
+`a543fbec6dbe8259b9d426c22426f7d3ba131b99b3a06f010a58b31b6e6269e0`.
+
+| Selection | Run ID | Summary SHA-256 |
+| --- | --- | --- |
+| Local | `stage3-20261119-124109-ee27a7b780` | `530669c5468bafbf74529d7086ede28a51d2485cc76c63e31108d42ae82b415b` |
+| VMHost process | `stage3-20261119-125558-5d9aa79440` | `7a8d330345acb6b38c1ecbd05a1b4ae2d04e75a691e6e6a93b603469388e87d9` |
+
+The harness validator passed again for both summaries. SHA-256 and source
+fingerprints matched all 405 selected step records. Both archives retain
+the exact summaries, manifests and logs, including subprocess logs. The local
+archive also retains the Stage 1 child summary and oracle manifest. Their
+SHA-256 values are bound by the parent summary. Signed executable and
+larger generated artifact identities remain in the recorded evidence.
+
+- [Local archive, 415 files](data/stage3/s3-41-d9ecaa2-20261119/local.json.gz) has SHA-256 `85f4a32eadb3a661516b299a0e57461b675f39e45c755f16cf2b103196a1b272`.
+- [VMHost process archive, 174 files](data/stage3/s3-41-d9ecaa2-20261119/vmhost-process.json.gz) has SHA-256 `e8333a942fc0d4d30100fb1f936a603312faa9f4e05405df90cbf1cd458de14d`.
+
+The archives expose each UTF-8 member under `files` and its digest under
+`file_sha256`. Both results cover this local macOS ARM64 snapshot.
+Final S3-41 acceptance remains open, including the deferred hardware checks.
+
 ### Hardware acceptance
 
 Mac mini/physical-x86 acceptance remains deferred to the end of Stage 3. Local
