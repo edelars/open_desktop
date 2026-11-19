@@ -8,7 +8,7 @@ const PE_HEADER_BYTES: usize = 24;
 const OPTIONAL_PREFIX_BYTES: usize = 112;
 const SECTION_HEADER_BYTES: usize = 40;
 const DIRECTORY_BYTES: usize = 8;
-const MAX_SECTIONS: usize = 96;
+pub(super) const MAX_SECTIONS: usize = 96;
 const COFF_AMD64: u16 = 0x8664;
 const COFF_EXECUTABLE_IMAGE: u16 = 0x0002;
 const PE32_PLUS: u16 = 0x020b;
@@ -164,7 +164,7 @@ impl<'a> PeImage<'a> {
         if !image_base.is_multiple_of(65_536)
             || image_size == 0
             || image_size > 0x8000_0000
-            || !image_size.is_multiple_of(section_alignment)
+            || image_size & (section_alignment - 1) != 0
             || image_base.checked_add(u64::from(image_size)).is_none()
         {
             return Err(Error::InvalidImageSize);
@@ -174,7 +174,7 @@ impl<'a> PeImage<'a> {
         let table_end = pe_start
             .checked_add(section_end)
             .ok_or(Error::InvalidHeaderSize)?;
-        if !headers_size.is_multiple_of(file_alignment)
+        if headers_size & (file_alignment - 1) != 0
             || (headers_size as usize) < table_end
             || (headers_size as usize) > file.len()
             || headers_size > image_size
@@ -226,6 +226,10 @@ impl<'a> PeImage<'a> {
         self.entry_rva
     }
 
+    pub(super) fn file(&self) -> &'a [u8] {
+        self.file
+    }
+
     pub fn headers(&self) -> &'a [u8] {
         &self.file[..self.headers_size]
     }
@@ -268,21 +272,23 @@ impl<'a> PeImage<'a> {
     }
 
     fn validate_sections(&self, headers_size: u32) -> Result<(), Error> {
+        let section_mask = self.section_alignment - 1;
+        let file_mask = self.file_alignment - 1;
         for (index, section) in self.section_headers().enumerate() {
             let image = section
                 .image_range()
                 .ok_or(Error::InvalidSectionImageRange)?;
             if image.is_empty()
                 || image.start < headers_size
-                || !image.start.is_multiple_of(self.section_alignment)
+                || image.start & section_mask != 0
                 || image.end > self.image_size
             {
                 return Err(Error::InvalidSectionImageRange);
             }
             let raw = section.file_range().ok_or(Error::InvalidSectionFileRange)?;
             if !raw.is_empty()
-                && (!section.raw_offset.is_multiple_of(self.file_alignment)
-                    || !section.raw_size.is_multiple_of(self.file_alignment)
+                && (section.raw_offset & file_mask != 0
+                    || section.raw_size & file_mask != 0
                     || section.raw_offset < headers_size
                     || raw.end > self.file.len()
                     || (self.section_alignment < 4096 && section.raw_offset != image.start))

@@ -57,6 +57,18 @@ EFI Application (10), Boot Service Driver (11) и Runtime Driver (12).
 нужные перед запуском, относятся к следующим срезам S7-06.
 [Microsoft PE Format, редакция от 2026-09-10](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).
 
+### Дайджест Authenticode
+
+S7-06 вычисляет SHA-256 образа из проверенного `PeImage`. Из заголовков
+исключаются CheckSum и объявленная запись Security. Секции с файловыми
+данными хешируются целиком по возрастанию PointerToRawData, включая raw
+padding. Хвост начинается на файловом смещении
+`SizeOfHeaders + сумма SizeOfRawData` даже при зазорах между секциями.
+Сертификат исключается, когда его диапазон заканчивается на конце файла.
+Другое положение сертификата возвращает `CertificateNotAtEnd`. Проверка
+PKCS#7, цепочки и политики загрузки относится к S7-24.
+[Windows Authenticode Portable Executable Signature Format, v1.0 от 2008-03-21](https://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/Authenticode_PE.docx).
+
 ### Диагностическая таблица Runtime Services
 
 Все 14 слотов имеют собственные сигнатуры UEFI x64. В таблице до

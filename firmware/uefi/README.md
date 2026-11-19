@@ -16,7 +16,7 @@ S7-01 задаёт отдельную freestanding сборку образа ROM
 | Relocation model | `relocation-model=static` в `.cargo/config.toml` | Стандартная модель target — PIE: линкер добавляет `.rela.dyn` и `.got` внутрь образа. Основной образ плоский и перемещений не имеет (FIRMWARE_BOOT.md, раздел 9) |
 | Паника | `panic = "abort"` | Нет раскрутки стека во freestanding |
 | Образ | `rust-objcopy -O binary` из sysroot, затем `tools/build/build_firmware.py` пишет заголовок и дополняет до `0x400000` | Формат — FIRMWARE_BOOT.md, раздел 3.2 |
-| Зависимости | Нет внешних crates (`Cargo.lock` содержит только `od-firmware`) | Политика зависимостей: «не добавлять на будущее» |
+| Зависимости | `sha2 =0.11.1` без default features, версии зафиксированы в `Cargo.lock` | SHA-256 для Authenticode. На `x86_64-unknown-none` применяется `sha2_backend="soft"` |
 
 **RT-образ и тестовые EFI-приложения.** Штатный target `x86_64-unknown-uefi` используется для PE32+ probe S7-01 и предназначен для приложений S7-06. Отдельный PE32+ RT-драйвер (subsystem `EFI_RUNTIME_DRIVER`) использует тот же target по решению 4 [контракта входа](../../docs/specs/FIRMWARE_BOOT.md#9-решение-4-перемещение-rt-части-после-setvirtualaddressmap). Размещение RT-драйвера во встроенном firmware volume входит в S7-11.
 
@@ -77,8 +77,14 @@ cargo run --offline -p od-runner -- boot-firmware --image work/stage7/mini.bin -
 Ручная сборка ELF без образа (для отладки линковки):
 
 ```sh
-cd firmware/uefi && cargo build --release --target x86_64-unknown-none --offline
+cd firmware/uefi && cargo build --release --target x86_64-unknown-none --locked --offline
 ```
+Пакеты для этой сборки должны быть в кеше Cargo. При необходимости
+установить их отдельно через `cargo fetch --target x86_64-unknown-none --locked`.
+Стандартный backend `sha2` на freestanding target наблюдался с отказом
+компиляции LLVM. Настройка target в `.cargo/config.toml` выбирает
+программный backend и сохраняет `relocation-model=static`.
+[ADR-0009, проверка no_std](../../docs/decisions/ADR-0009-vtpm-placement-and-crypto.md#сборка-в-no_std-прошивке-условие-проверки-не-результат).
 
 Бинарь собирается **только** с `--target x86_64-unknown-none`; `cargo build` без target (и `cargo test`) не собирает бинарь на host: он помечен `test = false`.
 

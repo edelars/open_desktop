@@ -157,6 +157,15 @@ BEFORE. Она подтверждает оба способа регистрац
 и их адрес из памяти Runtime Services.
 [Результаты runtime-событий](../reports/STAGE_7_REPORT.md#s7-05--события-в-runtime-памяти).
 
+## Дайджест Authenticode S7-06
+
+Проверки диапазонов SHA-256 входят в `cargo test --manifest-path
+firmware/uefi/Cargo.toml --locked --offline pe::`. Независимый
+расчёт над PE32+ выполняет `python3
+firmware/uefi/tests/authenticode_reference.py image.efi`. Он читает
+заголовки из файла и печатает дайджест для сравнения с результатом
+`pe::authenticode_digest`. [Результаты](../reports/STAGE_7_REPORT.md#s7-06--дайджест-authenticode).
+
 
 [Результаты проверки протоколов](../reports/STAGE_7_REPORT.md#s7-05--привязки-протоколов-uefi).
 
