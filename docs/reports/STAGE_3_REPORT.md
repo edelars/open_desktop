@@ -1150,8 +1150,16 @@ S3-40o added a short route for primary `89` and `8B` with exactly one
 REX.W. Four decoder builds agreed on 943,170 results and ordered fetch
 traces. The selected inlined operand parser gave a 0.211 median paired
 time ratio on the target group and 1.009–1.016 on the three controls.
-A full interpreter-call speedup remains unconfirmed.
+The separate-process full-call results were inconclusive.
 [Decoder change, measurements and reproduction](STAGE_3_S3-40o_2026-11-19.md)
+
+S3-40p compared complete interpreter calls with the two decoder paths
+in the same signed binary on the 2,400 S3-34a inputs. Candidate/reference
+median paired ratios were 0.663 and 0.666 across 32 pairs on each
+sequence. The harness checked complete state, RAM, ordered accesses,
+retirement, budgets and STOP behavior. The remaining historical
+gap and current JIT/interpreter ratios require separate measurements.
+[Full-call measurements and reproduction](STAGE_3_S3-40p_2026-11-19.md)
 
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries

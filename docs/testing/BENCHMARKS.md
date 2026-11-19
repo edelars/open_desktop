@@ -1511,6 +1511,15 @@ Four processes give a 0.211 median candidate/reference ratio on target
 MOV and 1.009–1.016 on register, neighboring MOV and `0F` controls.
 [Report and reproduction](../reports/STAGE_3_S3-40o_2026-11-19.md)
 
+### S3-40p. Full interpreter calls with the updated MOV decoder
+
+One signed build compares ordinary `execute::run` and the equivalent
+path using the previous decoder on the same 2,400 frozen inputs.
+Full-call median paired ratios are 0.663 and 0.666 for the two S3-34a
+sequences. The audit retains all 128 intervals and checks their
+schedule, call counts and corpus identity.
+[Report and reproduction](../reports/STAGE_3_S3-40p_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
