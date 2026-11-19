@@ -6,7 +6,11 @@
 extern crate alloc;
 
 pub mod authvar;
+#[cfg(feature = "protected-nvram")]
+pub mod crc32;
 pub mod pkcs7;
+#[cfg(feature = "protected-nvram")]
+pub mod protected;
 pub mod siglist;
 #[cfg(feature = "verify")]
 pub mod verify;

@@ -3664,6 +3664,11 @@ pub(crate) fn assemble_board(
                 NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?
             }
         };
+        if device.has_protected_store() {
+            return Err(FirmwareBoardError::Nvram(
+                NvramContentsError::ProtectionRequiresFirmware,
+            ));
+        }
         let handle = device.handle();
         mmio.push(MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[DEV_NVRAM].base),
@@ -6649,6 +6654,35 @@ mod tests {
         assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
         assert_eq!(le_u32(bytes, 0xA0).unwrap(), 3);
         assert!(crc_is_valid(bytes));
+    }
+
+    #[test]
+    fn firmware_without_protected_nvram_support_rejects_a_protected_snapshot() {
+        use od_uefi_security::protected::{Flags, HEADER_BYTES, Image};
+
+        let mut store = [0; HEADER_BYTES];
+        Image::write_header(
+            &mut store,
+            Flags {
+                secure_boot_disabled: false,
+                vendor_keys_modified: false,
+            },
+        )
+        .unwrap();
+        let snapshot = NvramDevice::with_protected_store(&store)
+            .unwrap()
+            .nvram_snapshot();
+        let config = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(snapshot)),
+            ..reference_config()
+        };
+        let firmware = test_image(&[0xf4], &[(0x2A, &13u16.to_le_bytes())]);
+        assert!(matches!(
+            load_firmware_image(&firmware, &config),
+            Err(FirmwareBoardError::Nvram(
+                NvramContentsError::ProtectionRequiresFirmware
+            ))
+        ));
     }
 
     #[test]

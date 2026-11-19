@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
+protected-nvram = []
 verify = ["dep:rsa", "dep:x509-cert", "sha2/oid"]
 
 [dependencies]

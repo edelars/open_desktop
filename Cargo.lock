@@ -394,6 +394,7 @@ dependencies = [
  "od-isa",
  "od-jit",
  "od-tpm",
+ "od-uefi-security",
  "serde_json",
  "zeroize",
 ]

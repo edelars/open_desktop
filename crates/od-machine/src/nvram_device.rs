@@ -1,12 +1,13 @@
-//! Two committed generations of opaque firmware variable bytes.
+//! Two committed generations of firmware variables, with an optional protected policy.
 
 use crate::bus::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use crate::crc32::crc32_ieee;
+use od_uefi_security::protected::{IMAGE_CAPACITY, Image};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub const NVRAM_MMIO_BASE: u64 = 0xff00_0000;
-pub const NVRAM_STORE_BYTES: usize = 256 * 1024;
+pub const NVRAM_STORE_BYTES: usize = IMAGE_CAPACITY;
 pub const NVRAM_MMIO_BYTES: u64 = NVRAM_STORE_BYTES as u64 + 0x1000;
 const REGISTERS: u64 = NVRAM_STORE_BYTES as u64;
 const ADDR: u64 = REGISTERS;
@@ -20,7 +21,6 @@ const WRITE: u32 = 2;
 const FLUSH: u32 = 3;
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"ODNVBANK";
-const SNAPSHOT_VERSION: u32 = 1;
 const SNAPSHOT_HEADER_BYTES: usize = 16;
 const BANK_HEADER_BYTES: usize = 16;
 const BANK_BYTES: usize = BANK_HEADER_BYTES + NVRAM_STORE_BYTES;
@@ -37,6 +37,15 @@ pub enum NvramContentsError {
     InvalidHeader,
     NoValidBank,
     AmbiguousGeneration,
+    InvalidProtectedStore,
+    ProtectionRequiresFirmware,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+enum SnapshotFormat {
+    Legacy = 1,
+    Protected = 2,
 }
 
 /// Initial bytes for a new board instance. Every board gets its own banks.
@@ -78,7 +87,15 @@ pub(crate) struct NvramHandle {
 
 impl NvramDevice {
     pub fn new() -> Self {
-        Self::from_banks(Banks::new())
+        Self::from_banks(Banks::new(EMPTY_STORE, SnapshotFormat::Legacy))
+    }
+    /// Initializes a new protected device with an image provided by the trusted host.
+    pub fn with_protected_store(image: &[u8]) -> Result<Self, NvramContentsError> {
+        validate_protected(image)?;
+        Ok(Self::from_banks(Banks::new(
+            image,
+            SnapshotFormat::Protected,
+        )))
     }
 
     /// Reopen a snapshot, recovering the highest valid generation.
@@ -89,6 +106,9 @@ impl NvramDevice {
     pub fn nvram_snapshot(&self) -> Vec<u8> {
         lock(&self.state).banks.snapshot()
     }
+    pub(crate) fn has_protected_store(&self) -> bool {
+        lock(&self.state).banks.format == SnapshotFormat::Protected
+    }
 
     pub(crate) fn handle(&self) -> NvramHandle {
         NvramHandle {
@@ -97,9 +117,12 @@ impl NvramDevice {
     }
 
     fn from_banks(banks: Banks) -> Self {
+        let staging = (banks.format == SnapshotFormat::Protected)
+            .then(|| vec![0; NVRAM_STORE_BYTES].into_boxed_slice());
         Self {
             state: Arc::new(Mutex::new(State {
                 banks,
+                staging,
                 address: 0,
                 length: 0,
                 status: Status::Idle,
@@ -156,6 +179,7 @@ enum Status {
     Incomplete = 0x8000_0002,
     InvalidCommand = 0x8000_0003,
     Exhausted = 0x8000_0004,
+    PolicyRejected = 0x8000_0005,
 }
 
 #[derive(Clone, Copy)]
@@ -167,6 +191,7 @@ enum Transfer {
 
 struct State {
     banks: Banks,
+    staging: Option<Box<[u8]>>,
     address: u32,
     length: u32,
     status: Status,
@@ -211,8 +236,11 @@ impl State {
             if offset as usize != written || written + width > length {
                 return Err(DeviceError::UnknownOffset);
             }
-            self.banks.inactive().data[written..written + width]
-                .copy_from_slice(&value.to_le_bytes()[..width]);
+            let destination = match self.staging.as_deref_mut() {
+                Some(staging) => staging,
+                None => &mut self.banks.inactive().data,
+            };
+            destination[written..written + width].copy_from_slice(&value.to_le_bytes()[..width]);
             self.transfer = Transfer::Write {
                 length,
                 written: written + width,
@@ -245,25 +273,51 @@ impl State {
                 if self.banks.current().generation == u64::MAX {
                     Status::Exhausted
                 } else {
-                    self.banks.inactive().invalidate();
+                    if self.staging.is_none() {
+                        self.banks.inactive().invalidate();
+                    }
                     self.transfer = Transfer::Write { length, written: 0 };
                     Status::WriteReady
                 }
             }
             READ | WRITE => Status::InvalidRange,
             FLUSH => match previous {
-                Transfer::Write { length, written } if written == length => {
-                    if self.banks.flush(length) {
-                        Status::Committed
-                    } else {
-                        Status::Exhausted
-                    }
-                }
+                Transfer::Write { length, written } if written == length => self.flush(length),
                 _ => Status::Incomplete,
             },
             _ => Status::InvalidCommand,
         };
     }
+
+    fn flush(&mut self, length: usize) -> Status {
+        if let Some(staging) = &self.staging {
+            let candidate = &staging[..length];
+            if !preserves_protected_policy(self.banks.current().data(), candidate) {
+                return Status::PolicyRejected;
+            }
+            self.banks.inactive().data[..length].copy_from_slice(candidate);
+        }
+        if self.banks.flush(length) {
+            Status::Committed
+        } else {
+            Status::Exhausted
+        }
+    }
+}
+
+fn validate_protected(bytes: &[u8]) -> Result<(), NvramContentsError> {
+    Image::new(bytes)
+        .and_then(|image| image.policy_bytes())
+        .map(|_| ())
+        .map_err(|_| NvramContentsError::InvalidProtectedStore)
+}
+
+fn preserves_protected_policy(current: &[u8], candidate: &[u8]) -> bool {
+    let (Ok(current), Ok(candidate)) = (Image::new(current), Image::new(candidate)) else {
+        return false;
+    };
+    current.flags == candidate.flags
+        && matches!((current.policy_bytes(), candidate.policy_bytes()), (Ok(old), Ok(new)) if old == new)
 }
 
 fn validate_access(access: DeviceAccess) -> Result<(), DeviceError> {
@@ -293,6 +347,10 @@ struct Bank {
 }
 
 impl Bank {
+    fn data(&self) -> &[u8] {
+        &self.data[..self.length]
+    }
+
     fn invalid() -> Self {
         Self {
             generation: 0,
@@ -349,16 +407,18 @@ fn bank_checksum(generation: u64, bytes: &[u8]) -> u32 {
 }
 
 struct Banks {
+    format: SnapshotFormat,
     banks: [Bank; 2],
     active: usize,
 }
 
 impl Banks {
-    fn new() -> Self {
+    fn new(image: &[u8], format: SnapshotFormat) -> Self {
         let mut first = Bank::invalid();
-        first.data[..EMPTY_STORE.len()].copy_from_slice(EMPTY_STORE);
-        first.seal(1, EMPTY_STORE.len());
+        first.data[..image.len()].copy_from_slice(image);
+        first.seal(1, image.len());
         Self {
+            format,
             banks: [first, Bank::invalid()],
             active: 0,
         }
@@ -367,20 +427,40 @@ impl Banks {
     fn with_contents(bytes: &[u8]) -> Result<Self, NvramContentsError> {
         if bytes.len() != NVRAM_SNAPSHOT_BYTES
             || &bytes[..8] != SNAPSHOT_MAGIC
-            || bytes[8..12] != SNAPSHOT_VERSION.to_le_bytes()
             || bytes[12..16] != [0; 4]
         {
             return Err(NvramContentsError::InvalidHeader);
         }
+        let format = match u32::from_le_bytes(bytes[8..12].try_into().unwrap()) {
+            1 => SnapshotFormat::Legacy,
+            2 => SnapshotFormat::Protected,
+            _ => return Err(NvramContentsError::InvalidHeader),
+        };
         let middle = SNAPSHOT_HEADER_BYTES + BANK_BYTES;
-        let first = Bank::decode(&bytes[SNAPSHOT_HEADER_BYTES..middle]);
-        let second = Bank::decode(&bytes[middle..]);
+        let first_slot = &bytes[SNAPSHOT_HEADER_BYTES..middle];
+        let second_slot = &bytes[middle..];
+        let first = Bank::decode(first_slot);
+        let second = Bank::decode(second_slot);
+        if format == SnapshotFormat::Protected {
+            for (slot, bank) in [(first_slot, &first), (second_slot, &second)] {
+                let padding = if bank.generation != 0 {
+                    validate_protected(bank.data())?;
+                    &slot[BANK_HEADER_BYTES + bank.length..]
+                } else {
+                    slot
+                };
+                if padding.iter().any(|&byte| byte != 0) {
+                    return Err(NvramContentsError::InvalidProtectedStore);
+                }
+            }
+        }
         let active = match (first.generation, second.generation) {
             (0, 0) => return Err(NvramContentsError::NoValidBank),
             (a, b) if a == b => return Err(NvramContentsError::AmbiguousGeneration),
             (a, b) => usize::from(b > a),
         };
         Ok(Self {
+            format,
             banks: [first, second],
             active,
         })
@@ -389,7 +469,7 @@ impl Banks {
     fn snapshot(&self) -> Vec<u8> {
         let mut bytes = vec![0; NVRAM_SNAPSHOT_BYTES];
         bytes[..8].copy_from_slice(SNAPSHOT_MAGIC);
-        bytes[8..12].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(self.format as u32).to_le_bytes());
         for (slot, bank) in bytes[SNAPSHOT_HEADER_BYTES..]
             .chunks_exact_mut(BANK_BYTES)
             .zip(&self.banks)
@@ -420,6 +500,14 @@ impl Banks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use od_uefi_security::{
+        Guid, Name,
+        authvar::Timestamp,
+        protected::{
+            AUTHENTICATED_ATTRIBUTES, Flags, GLOBAL_VARIABLE, HEADER_BYTES,
+            IMAGE_SECURITY_DATABASE, Record,
+        },
+    };
 
     fn access(offset: u64, width: AccessWidth) -> DeviceAccess {
         DeviceAccess {
@@ -458,7 +546,7 @@ mod tests {
             .collect()
     }
 
-    fn replace(device: &mut NvramDevice, bytes: &[u8]) {
+    fn stage(device: &mut NvramDevice, bytes: &[u8]) {
         start(device, WRITE, 0, bytes.len());
         status(device, Status::WriteReady);
         for (offset, &byte) in bytes.iter().enumerate() {
@@ -466,8 +554,174 @@ mod tests {
                 .write(access(offset as u64, AccessWidth::Byte), u64::from(byte))
                 .unwrap();
         }
+    }
+    fn replace(device: &mut NvramDevice, bytes: &[u8]) {
+        stage(device, bytes);
         write_reg(device, CMD, FLUSH);
         status(device, Status::Committed);
+    }
+
+    const DEFAULT_FLAGS: Flags = Flags {
+        secure_boot_disabled: false,
+        vendor_keys_modified: false,
+    };
+
+    fn protected_record<'a>(guid: Guid, name: &'a [u8], payload: &'a [u8]) -> Record<'a> {
+        Record {
+            guid,
+            name: Name::new(name).unwrap(),
+            value: payload,
+            attributes: AUTHENTICATED_ATTRIBUTES,
+            watermark: Timestamp::from_bytes(&[
+                0xea, 7, 11, 19, 22, 12, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+        }
+    }
+
+    fn protected_image(flags: Flags, records: &[Record<'_>]) -> Vec<u8> {
+        let mut image = vec![0; NVRAM_STORE_BYTES];
+        let mut length = HEADER_BYTES;
+        for record in records {
+            length += record.write(&mut image[length..]).unwrap();
+        }
+        image.truncate(length);
+        Image::write_header(&mut image, flags).unwrap();
+        image
+    }
+
+    #[test]
+    fn protected_raw_flush_preserves_policy_and_timestamp_in_both_banks() {
+        let pk = protected_record(GLOBAL_VARIABLE, b"P\0K\0", b"platform key");
+        let dbx = protected_record(IMAGE_SECURITY_DATABASE, b"d\0b\0x\0", b"revocations");
+        let initial = protected_image(DEFAULT_FLAGS, &[pk, dbx]);
+        let mut device = NvramDevice::with_protected_store(&initial).unwrap();
+        assert!(device.has_protected_store());
+
+        let timeout = Record {
+            guid: GLOBAL_VARIABLE,
+            name: Name::new(b"T\0i\0m\0e\0o\0u\0t\0").unwrap(),
+            value: &[7, 0],
+            attributes: 7,
+            watermark: None,
+        };
+        let updated = protected_image(DEFAULT_FLAGS, &[dbx, timeout, pk]);
+        replace(&mut device, &updated);
+        assert_eq!(read_active(&mut device), updated);
+        let snapshot = device.nvram_snapshot();
+        assert_eq!(&snapshot[8..12], &2_u32.to_le_bytes());
+
+        let attempts = [
+            protected_image(DEFAULT_FLAGS, &[pk]),
+            protected_image(
+                DEFAULT_FLAGS,
+                &[
+                    Record {
+                        value: b"new platform key",
+                        ..pk
+                    },
+                    dbx,
+                ],
+            ),
+            protected_image(
+                DEFAULT_FLAGS,
+                &[
+                    pk,
+                    Record {
+                        watermark: None,
+                        ..dbx
+                    },
+                ],
+            ),
+            protected_image(DEFAULT_FLAGS, &[pk, Record { value: b"", ..dbx }]),
+            protected_image(DEFAULT_FLAGS, &[pk, pk, dbx]),
+            protected_image(
+                Flags {
+                    secure_boot_disabled: true,
+                    ..DEFAULT_FLAGS
+                },
+                &[pk, dbx],
+            ),
+            protected_image(
+                Flags {
+                    vendor_keys_modified: true,
+                    ..DEFAULT_FLAGS
+                },
+                &[pk, dbx],
+            ),
+            protected_image(DEFAULT_FLAGS, &[]),
+            EMPTY_STORE.to_vec(),
+        ];
+        for candidate in attempts {
+            stage(&mut device, &candidate);
+            assert!(device.nvram_snapshot() == snapshot);
+            write_reg(&mut device, CMD, FLUSH);
+            status(&mut device, Status::PolicyRejected);
+            assert!(device.nvram_snapshot() == snapshot);
+        }
+        start(&mut device, WRITE, 0, updated.len());
+        status(&mut device, Status::WriteReady);
+        write_reg(&mut device, CMD, FLUSH);
+        status(&mut device, Status::Incomplete);
+        assert!(device.nvram_snapshot() == snapshot);
+
+        let mut reopened = NvramDevice::with_contents(&snapshot).unwrap();
+        assert!(reopened.has_protected_store());
+        assert_eq!(read_active(&mut reopened), updated);
+        assert!(reopened.nvram_snapshot() == snapshot);
+    }
+
+    #[test]
+    fn protected_reopen_rejects_corruption_instead_of_loading_an_older_policy() {
+        let pk = protected_record(GLOBAL_VARIABLE, b"P\0K\0", b"platform key");
+        let initial = protected_image(DEFAULT_FLAGS, &[pk]);
+        let mut device = NvramDevice::with_protected_store(&initial).unwrap();
+        replace(&mut device, &initial);
+        let snapshot = device.nvram_snapshot();
+        let slot = SNAPSHOT_HEADER_BYTES + BANK_BYTES;
+        for flip in [
+            slot + BANK_HEADER_BYTES + initial.len() - 1,
+            slot + BANK_HEADER_BYTES + initial.len(),
+        ] {
+            let mut corrupted = snapshot.clone();
+            corrupted[flip] ^= 1;
+            assert_eq!(
+                NvramDevice::with_contents(&corrupted).err(),
+                Some(NvramContentsError::InvalidProtectedStore)
+            );
+        }
+        let mut erased_header = snapshot;
+        erased_header[slot..slot + BANK_HEADER_BYTES].fill(0);
+        assert_eq!(
+            NvramDevice::with_contents(&erased_header).err(),
+            Some(NvramContentsError::InvalidProtectedStore)
+        );
+
+        // Even a valid bank envelope cannot turn a non-protected image into protected state.
+        let v1_in_v2 = Banks::new(EMPTY_STORE, SnapshotFormat::Protected).snapshot();
+        assert_eq!(
+            NvramDevice::with_contents(&v1_in_v2).err(),
+            Some(NvramContentsError::InvalidProtectedStore)
+        );
+        assert_eq!(
+            NvramDevice::with_protected_store(EMPTY_STORE).err(),
+            Some(NvramContentsError::InvalidProtectedStore)
+        );
+    }
+
+    #[test]
+    fn raw_writes_cannot_enroll_platform_key_in_a_fresh_protected_store() {
+        let initial = protected_image(DEFAULT_FLAGS, &[]);
+        let mut device = NvramDevice::with_protected_store(&initial).unwrap();
+        let snapshot = device.nvram_snapshot();
+        let staged = protected_image(
+            DEFAULT_FLAGS,
+            &[protected_record(GLOBAL_VARIABLE, b"P\0K\0", b"key")],
+        );
+        stage(&mut device, &staged);
+        write_reg(&mut device, CMD, FLUSH);
+        status(&mut device, Status::PolicyRejected);
+        assert!(device.nvram_snapshot() == snapshot);
+        assert_eq!(read_active(&mut device), initial);
     }
 
     #[test]
@@ -583,7 +837,7 @@ mod tests {
 
     #[test]
     fn range_and_generation_errors_leave_active_data_intact() {
-        let mut banks = Banks::new();
+        let mut banks = Banks::new(EMPTY_STORE, SnapshotFormat::Legacy);
         banks.banks[0].seal(u64::MAX, EMPTY_STORE.len());
         let mut device = NvramDevice::with_contents(&banks.snapshot()).unwrap();
         start(&mut device, READ, u32::MAX, 8);
@@ -597,7 +851,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_unversioned_and_ambiguous_host_snapshots() {
-        let mut banks = Banks::new();
+        let mut banks = Banks::new(EMPTY_STORE, SnapshotFormat::Legacy);
         let mut snapshot = banks.snapshot();
         assert!(matches!(
             NvramDevice::with_contents(&snapshot[..15]),
