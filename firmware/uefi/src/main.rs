@@ -1,5 +1,5 @@
 //! Binary of the firmware image. The S7-04 entry validates the boot handoff and prepares its
-//! own identity page tables on the machine's initial map. The entry `_start` is in `start.S`.
+//! own identity page tables, and prints the initial EFI memory map after switching stacks.
 
 #![no_std]
 #![no_main]
@@ -9,8 +9,13 @@ use core::panic::PanicInfo;
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::handoff::{HANDOFF_WINDOW_SIZE, Handoff};
+use od_firmware::mem::map::{
+    DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
+};
 use od_firmware::paging::{BootPaging, PagingError, ShadowSections};
-use od_firmware::stop::{STOP_INTERNAL, STOP_INVALID_RDI, STOP_PAGING, format_stop_line};
+use od_firmware::stop::{
+    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGING, fixed_hex, format_stop_line,
+};
 
 unsafe extern "C" {
     static __shadow_read_only_start: u8;
@@ -88,11 +93,7 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
         stop(STOP_INVALID_RDI, handoff_gpa);
     }
 
-    // SAFETY: the firmware entry contract guarantees the fixed 64 KiB handoff window is
-    // identity-mapped, readable RAM at HANDOFF_GPA for the duration of firmware execution.
-    let bytes =
-        unsafe { core::slice::from_raw_parts(handoff_gpa as *const u8, HANDOFF_WINDOW_SIZE) };
-    let parsed = Handoff::parse_for_boot(bytes, HANDOFF_MINOR_MAX);
+    let parsed = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX);
     let handoff = match &parsed {
         Ok(handoff) => handoff,
         Err(error) => {
@@ -114,20 +115,84 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
     unsafe {
         asm!(
             "mov cr3, rax",
-            "mov rsp, {stack}",
+            "mov rsp, rsi",
             "call {entry}",
             "ud2",
             in("rax") root,
-            stack = in(reg) stack_top,
+            in("rdi") root,
+            in("rsi") stack_top,
             entry = sym paging_active,
             options(noreturn),
         )
     }
 }
 
-extern "C" fn paging_active() -> ! {
+extern "C" fn paging_active(active_cr3: u64) -> ! {
     com1_write(PAGING_ACTIVE_LINE);
+    let parsed = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX);
+    let handoff = match &parsed {
+        Ok(handoff) => handoff,
+        Err(error) => {
+            let (code, detail) = error.stop_code_detail();
+            stop(code, detail);
+        }
+    };
+    let paging = match BootPaging::plan(handoff) {
+        Ok(paging) => paging,
+        Err(error) => stop(STOP_PAGING, error.stop_detail()),
+    };
+    let mut descriptors = [MemoryDescriptor::EMPTY; MAX_INITIAL_DESCRIPTORS];
+    let map = match MemoryMap::from_active_paging(
+        &paging,
+        active_cr3,
+        shadow_sections(),
+        &mut descriptors,
+    ) {
+        Ok(map) => map,
+        Err(MemoryMapError::TablesNotActive) => stop(STOP_MEMORY_MAP, 1),
+        Err(MemoryMapError::InvalidPlacement) => stop(STOP_MEMORY_MAP, 2),
+        Err(MemoryMapError::BufferTooSmall { required }) => {
+            stop(STOP_MEMORY_MAP, 3 | ((required as u64) << 32))
+        }
+        Err(MemoryMapError::Paging(error)) => stop(STOP_PAGING, error.stop_detail()),
+    };
+    com1_write_memory_map(&map);
     halt_forever()
+}
+
+fn boot_handoff_bytes() -> &'static [u8] {
+    // SAFETY: both the initial and activated maps include the fixed readable
+    // handoff window. The firmware never writes to these bytes.
+    unsafe { core::slice::from_raw_parts(HANDOFF_GPA as *const u8, HANDOFF_WINDOW_SIZE) }
+}
+
+fn shadow_sections() -> ShadowSections {
+    ShadowSections {
+        read_only_start: (&raw const __shadow_read_only_start) as u64,
+        writable_start: (&raw const __shadow_writable_start) as u64,
+    }
+}
+
+#[inline(never)]
+fn com1_write_memory_map(map: &MemoryMap<'_>) {
+    com1_write(b"OD-FW S7-04 memory map key=0x");
+    com1_write(&fixed_hex(map.key()));
+    com1_write(b" version=0x");
+    com1_write(&fixed_hex(u64::from(DESCRIPTOR_VERSION)));
+    com1_write(b" count=0x");
+    com1_write(&fixed_hex(map.descriptors().len() as u64));
+    com1_write(b"\r\n");
+    for descriptor in map.descriptors() {
+        com1_write(b"OD-FW MEM type=0x");
+        com1_write(&fixed_hex(u64::from(descriptor.memory_type)));
+        com1_write(b" base=0x");
+        com1_write(&fixed_hex(descriptor.physical_start));
+        com1_write(b" pages=0x");
+        com1_write(&fixed_hex(descriptor.number_of_pages));
+        com1_write(b" attr=0x");
+        com1_write(&fixed_hex(descriptor.attribute));
+        com1_write(b"\r\n");
+    }
 }
 
 #[inline(never)]
@@ -138,13 +203,7 @@ fn prepare_paging(handoff: &Handoff<'_>) -> Result<(u64, u64), PagingError> {
     // distinct from the shadow, the handoff, the active tables and the stack.
     let words =
         unsafe { core::slice::from_raw_parts_mut(paging.root() as *mut u64, paging.table_words()) };
-    paging.build(
-        words,
-        ShadowSections {
-            read_only_start: (&raw const __shadow_read_only_start) as u64,
-            writable_start: (&raw const __shadow_writable_start) as u64,
-        },
-    )?;
+    paging.build(words, shadow_sections())?;
     Ok((paging.root(), paging.stack_top()))
 }
 

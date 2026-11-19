@@ -20106,6 +20106,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         operation @ (Operation::Arithmetic {
             kind:
                 ArithmeticKind::Add
+                | ArithmeticKind::Adc
                 | ArithmeticKind::Sub
                 | ArithmeticKind::Cmp
                 | ArithmeticKind::Inc
@@ -20118,6 +20119,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
             dst: Operand::Register(destination),
             src: source @ Operand::Register(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Memory(_),
         }
         | Operation::Logic {
             kind: LogicKind::And | LogicKind::Or,
@@ -20140,6 +20146,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             instruction.operand_size,
                             OperandSize::Dword | OperandSize::Qword
                         )
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Adc,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x11 | 0x13, OperandSize::Dword | OperandSize::Qword)
+                    )
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Neg,
@@ -20168,9 +20183,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0xa8 | 0xf6, OperandSize::Byte)
+                        (0x84 | 0xa8 | 0xf6, OperandSize::Byte)
                             | (0x85 | 0xa9, OperandSize::Dword | OperandSize::Qword)
                     )
+                }
+                Operation::Logic {
+                    kind: LogicKind::Or,
+                    src: Operand::Memory(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x0a && instruction.operand_size == OperandSize::Byte
                 }
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20214,7 +20236,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 Operand::Register(register) => state.read(register),
                 Operand::Immediate(value) => value,
                 Operand::Memory(_) => {
-                    unreachable!("firmware register arithmetic has no memory operand")
+                    match read_operand(state, memory, context, next_rip, source) {
+                        Ok(value) => value,
+                        Err(MemoryError::Architectural(fault)) => {
+                            return result(PagedProbeExit::Fault(fault), 0);
+                        }
+                        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                    }
                 }
             };
             let lhs = state.read(destination);
@@ -20273,7 +20301,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // S7-04: firmware immediate shifts extract the indexes of its page tables.
         Operation::Shift {
             kind: kind @ (ShiftKind::Shl | ShiftKind::Shr),
-            dst: Operand::Register(destination),
+            dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
             source: None,
             count: Operand::Immediate(immediate),
             ..
@@ -20284,6 +20312,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 instruction.operand_size,
                 OperandSize::Dword | OperandSize::Qword
             )
+            && (matches!(destination, Operand::Register(_))
+                || (kind == ShiftKind::Shr
+                    && instruction.operand_size == OperandSize::Qword
+                    && instruction.address_size == OperandSize::Qword))
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20298,16 +20330,25 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             } else {
                 0x1f
             };
-            let (value, flags) = shift_result(
-                size,
-                kind,
-                state.read(destination),
-                0,
-                count,
-                raw_count & mask,
-                state.rflags,
-            );
-            state.write(destination, value);
+            let shift =
+                |lhs| shift_result(size, kind, lhs, 0, count, raw_count & mask, state.rflags);
+            let flags = match destination {
+                Operand::Register(register) => {
+                    let (value, flags) = shift(state.read(register));
+                    state.write(register, value);
+                    flags
+                }
+                Operand::Memory(operand) => {
+                    match update_memory_operand(state, memory, context, next_rip, operand, shift) {
+                        Ok(flags) => flags,
+                        Err(MemoryError::Architectural(fault)) => {
+                            return result(PagedProbeExit::Fault(fault), 0);
+                        }
+                        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                    }
+                }
+                _ => unreachable!("shift destination is a register or memory"),
+            };
             state.rflags = flags;
             state.rip = next_rip;
             return PagedProbeResult {
@@ -20316,6 +20357,44 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction
                     .flag_effects_for_count(raw_count)
                     .apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: TEST can consume a byte from a stack spill while describing the map.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: destination @ Operand::Memory(_),
+            src: Operand::Immediate(immediate),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf6
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let value = match read_operand(state, memory, context, next_rip, destination) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rflags = logic_result(
+                OperandSize::Byte,
+                LogicKind::Test,
+                value,
+                immediate,
+                state.rflags,
+            )
+            .1;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
         // S7-04: qword ADD to memory has write intent even on a fault before the read.
@@ -20334,16 +20413,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
-            let arithmetic = (|| {
-                let address = destination.access_address_48(state, next_rip)?;
-                let size = destination.size;
-                let lhs = memory.read_for_write_integer(address, context, size)?;
-                let rhs = state.read(source);
-                let (value, flags) =
-                    arithmetic_result(size, ArithmeticKind::Add, lhs, rhs, state.rflags);
-                memory.write_integer(address, context, size, value)?;
-                Ok::<_, MemoryError>(flags)
-            })();
+            let rhs = state.read(source);
+            let arithmetic =
+                update_memory_operand(state, memory, context, next_rip, destination, |lhs| {
+                    arithmetic_result(
+                        destination.size,
+                        ArithmeticKind::Add,
+                        lhs,
+                        rhs,
+                        state.rflags,
+                    )
+                });
             state.rflags = match arithmetic {
                 Ok(flags) => flags,
                 Err(MemoryError::Architectural(fault)) => {
@@ -20491,10 +20571,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ),
                     (OpcodeMap::Primary, _) => matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (
-                            0x89,
-                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
-                        ) | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
+                        (0x88, OperandSize::Byte)
+                            | (
+                                0x89,
+                                OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                            )
+                            | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
                     ),
                     (OpcodeMap::Escape0f, Operation::Extend { .. }) => {
                         instruction.opcode.byte == 0xb6
@@ -20535,20 +20617,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         {
             state.rip = next_rip;
         }
-        // S7-04: admit only the firmware helper's operand-size-prefixed NOP
-        // (`66 90`) in the base paged profile. This is intentionally local to
-        // this profile and does not widen generic/JIT NOP admission.
+        // S7-04: the firmware compiler also emits bare one-byte alignment pads.
+        // The base profile keeps its exact `66 90` form.
         Operation::Nop
-            if base_profile
-                && instruction.opcode.map == OpcodeMap::Primary
+            if instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x90
-                && instruction.length == 2
-                && instruction.operand_size == OperandSize::Word
-                && instruction.prefixes
-                    == (Prefixes {
-                        operand_override: true,
-                        ..Prefixes::default()
-                    }) =>
+                && ((firmware_boot_profile
+                    && instruction.length == 1
+                    && instruction.prefixes == Prefixes::default())
+                    || (base_profile
+                        && instruction.length == 2
+                        && instruction.operand_size == OperandSize::Word
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            }))) =>
         {
             state.rip = next_rip;
         }
@@ -23010,12 +23094,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: the handoff parser dispatches through a linked jump table.
+        // S7-04: handoff and memory-map parsing dispatch through linked jump tables.
         Operation::IndirectJump {
             operand:
                 operand @ Operand::Memory(MemoryOperand {
                     base: AddressBase::None,
-                    index: Some(Register::Rcx),
+                    index: Some(_),
                     scale: 8,
                     address_size: OperandSize::Qword,
                     size: OperandSize::Qword,
@@ -23024,8 +23108,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0xff
-            && instruction.length == 7
-            && instruction.prefixes == Prefixes::default() =>
+            && ((instruction.length == 7 && instruction.prefixes == Prefixes::default())
+                || (instruction.length == 8
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x42),
+                            ..Prefixes::default()
+                        }))) =>
         {
             let target = match read_operand(state, memory, context, next_rip, operand) {
                 Ok(target) => target,
@@ -66329,6 +66418,23 @@ fn write_operand(
         }
     }
     Ok(())
+}
+
+// Unlocked read-modify-write for a profiled backend. The destination has
+// write intent during the read, and CPU flags are available only after store.
+fn update_memory_operand(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: MemoryOperand,
+    update: impl FnOnce(u64) -> (u64, u64),
+) -> Result<u64, MemoryError> {
+    let address = destination.access_address_48(state, next_rip)?;
+    let old = memory.read_for_write_integer(address, context, destination.size)?;
+    let (value, flags) = update(old);
+    memory.write_integer(address, context, destination.size, value)?;
+    Ok(flags)
 }
 
 /// Width-aware integer arithmetic, using a 128-bit lane for carry/borrow even

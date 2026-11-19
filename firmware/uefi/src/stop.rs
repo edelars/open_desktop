@@ -30,6 +30,8 @@ pub const STOP_HANDOFF_SHADOW: u8 = 0x0C;
 pub const STOP_INTERNAL: u8 = 0x30;
 /// Firmware-owned page tables could not be prepared.
 pub const STOP_PAGING: u8 = 0x31;
+/// The initial EFI memory map could not be produced.
+pub const STOP_MEMORY_MAP: u8 = 0x32;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";
@@ -54,14 +56,19 @@ pub fn format_stop_line(code: u8, detail: u64) -> [u8; STOP_LINE_LEN] {
         &mut line,
     );
     put(MIDDLE, &mut line);
-    let mut digits = [0u8; 16];
-    for (index, digit) in digits.iter_mut().enumerate() {
-        *digit = HEX[((detail >> (60 - 4 * index)) & 0xF) as usize];
-    }
-    put(&digits, &mut line);
+    put(&fixed_hex(detail), &mut line);
     put(SUFFIX, &mut line);
     debug_assert_eq!(at, STOP_LINE_LEN);
     line
+}
+
+/// Renders 16 upper-case hexadecimal digits without a prefix.
+pub fn fixed_hex(value: u64) -> [u8; 16] {
+    let mut digits = [0u8; 16];
+    for (index, digit) in digits.iter_mut().enumerate() {
+        *digit = HEX[((value >> (60 - 4 * index)) & 0xf) as usize];
+    }
+    digits
 }
 
 #[cfg(test)]

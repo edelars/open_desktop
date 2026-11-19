@@ -5,6 +5,7 @@
 //! values and consistency with the complete board memory map are validated by later steps.
 
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
+pub const MAX_HANDOFF_REGIONS: usize = 128;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
 const CRC_OFFSET: usize = 0x14;
@@ -243,6 +244,22 @@ fn table_fits(offset: u32, count: u32, entry_size: u32, total: usize) -> bool {
 
 fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
     offset as usize + count as usize * entry_size as usize
+}
+
+/// Region codes from FIRMWARE_BOOT.md section 6.2.
+pub(crate) mod region_kind {
+    pub(crate) const RAM: u32 = 1;
+    pub(crate) const RESERVED: u32 = 2;
+    pub(crate) const MMIO: u32 = 3;
+    pub(crate) const ROM: u32 = 4;
+    pub(crate) const NVRAM: u32 = 5;
+    pub(crate) const FRAMEBUFFER: u32 = 6;
+    pub(crate) const HANDOFF: u32 = 7;
+    pub(crate) const BOOT_STACK: u32 = 8;
+    pub(crate) const FIRMWARE_SHADOW: u32 = 9;
+    pub(crate) const BOOT_PAGE_TABLES: u32 = 10;
+    pub(crate) const ACPI_TABLES: u32 = 11;
+    pub(crate) const ACPI_NVS: u32 = 12;
 }
 
 #[derive(Clone, Copy)]
@@ -511,7 +528,7 @@ impl<'a> Handoff<'a> {
         let region_offset = u32_at(bytes, 0x30);
         let region_count = u32_at(bytes, 0x34);
         let region_entry_size = u32_at(bytes, 0x38);
-        if !(1..=128).contains(&region_count) {
+        if !(1..=MAX_HANDOFF_REGIONS as u32).contains(&region_count) {
             return Err(HandoffError::InvalidTableCount {
                 table: "region",
                 count: region_count,
@@ -1471,6 +1488,151 @@ mod tests {
         b[0x61] = b'X';
         seal(&mut b);
         assert_eq!(Handoff::parse(&b, 2), Err(HandoffError::InvalidSerial));
+    }
+
+    #[test]
+    fn firmware_memory_map_overlays_only_the_active_boot_reservations() {
+        use crate::mem::map::{
+            MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError, MemoryType,
+        };
+        use crate::paging::{BootPaging, PAGE_BYTES, ShadowSections};
+
+        let bytes = sample_board_map(true);
+        let handoff = Handoff::parse_for_boot(&bytes, 2).unwrap();
+        let paging = BootPaging::plan(&handoff).unwrap();
+        let root = paging.root();
+        let shadow = ShadowSections {
+            read_only_start: 0x20_4000,
+            writable_start: 0x20_5000,
+        };
+        let mut buffer = [MemoryDescriptor::EMPTY; MAX_INITIAL_DESCRIPTORS];
+        assert!(matches!(
+            MemoryMap::from_active_paging(&paging, 0x60_0000, shadow, &mut buffer),
+            Err(MemoryMapError::TablesNotActive)
+        ));
+        assert!(buffer.iter().all(|&d| d == MemoryDescriptor::EMPTY));
+        let map = MemoryMap::from_active_paging(&paging, root, shadow, &mut buffer).unwrap();
+        assert_eq!(map.key(), 1);
+        let entries = map.descriptors();
+        let required = entries.len();
+        let find = |address| {
+            entries
+                .iter()
+                .find(|d| {
+                    let end = d.physical_start + d.number_of_pages * PAGE_BYTES;
+                    d.physical_start <= address && address < end
+                })
+                .unwrap()
+        };
+        for (address, expected_kind, attribute) in [
+            (0, MemoryType::Conventional, 8),
+            (0xE0000, MemoryType::AcpiReclaim, 8),
+            (0xEF000, MemoryType::AcpiNvs, 8),
+            (0x10_0000, MemoryType::Reserved, 8),
+            (0x11_0000, MemoryType::BootServicesData, 8),
+            (root, MemoryType::BootServicesData, 8),
+            (paging.guard_page(), MemoryType::Reserved, 0),
+            (
+                paging.guard_page() + PAGE_BYTES,
+                MemoryType::BootServicesData,
+                8,
+            ),
+            (paging.stack_top(), MemoryType::Conventional, 8),
+            (0x20_0000, MemoryType::BootServicesCode, 8),
+            (shadow.read_only_start, MemoryType::BootServicesData, 8),
+            (shadow.writable_start, MemoryType::BootServicesData, 8),
+            (0x60_0000, MemoryType::Conventional, 8),
+        ] {
+            let desc = find(address);
+            assert_eq!(desc.memory_type, expected_kind as u32, "{address:#x}");
+            assert_eq!(desc.attribute, attribute, "{address:#x}");
+        }
+        assert_eq!(find(paging.guard_page()).number_of_pages, 1);
+        assert!(
+            entries
+                .iter()
+                .all(|d| d.virtual_start == 0 && d.number_of_pages != 0)
+        );
+        let mut next = 0;
+        for region in handoff.regions() {
+            let mut at = region.base;
+            while at < region.base + region.length {
+                let desc = &entries[next];
+                assert_eq!(desc.physical_start, at);
+                at += desc.number_of_pages * PAGE_BYTES;
+                next += 1;
+            }
+            assert_eq!(at, region.base + region.length);
+        }
+        assert_eq!(next, required);
+
+        for capacity in (required - 1)..=(required + 1) {
+            let mut storage = vec![MemoryDescriptor::EMPTY; capacity];
+            let result = MemoryMap::from_active_paging(&paging, root, shadow, &mut storage);
+            if capacity < required {
+                assert!(matches!(
+                    result,
+                    Err(MemoryMapError::BufferTooSmall { required: needed }) if needed == required
+                ));
+                assert!(storage.iter().all(|&d| d == MemoryDescriptor::EMPTY));
+            } else {
+                assert_eq!(result.unwrap().descriptors(), entries);
+                assert!(
+                    storage[required..]
+                        .iter()
+                        .all(|&d| d == MemoryDescriptor::EMPTY)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn firmware_memory_map_preserves_sparse_device_types_and_high_ram() {
+        use crate::mem::map::{MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryType};
+        use crate::paging::{BootPaging, PAGE_BYTES, ShadowSections};
+
+        let mut bytes = sample_sparse_board_map();
+        // Reuse the second framebuffer's non-overlapping aperture as a
+        // synthetic NVRAM record to check its distinct attributes.
+        let second_fb = HEADER_SIZE + 8 * 0x20;
+        assert_eq!(u32_at(&bytes, second_fb), region_kind::FRAMEBUFFER);
+        bytes[second_fb..second_fb + 4].copy_from_slice(&region_kind::NVRAM.to_le_bytes());
+        seal(&mut bytes);
+        let handoff = Handoff::parse_for_boot(&bytes, 2).unwrap();
+        let paging = BootPaging::plan(&handoff).unwrap();
+        assert!(paging.root() > 0x60_0000);
+        let mut buffer = [MemoryDescriptor::EMPTY; MAX_INITIAL_DESCRIPTORS];
+        let map = MemoryMap::from_active_paging(
+            &paging,
+            paging.root(),
+            ShadowSections {
+                read_only_start: 0x20_4000,
+                writable_start: 0x20_5000,
+            },
+            &mut buffer,
+        )
+        .unwrap();
+        let find = |address| {
+            map.descriptors()
+                .iter()
+                .find(|d| d.physical_start == address)
+        };
+        for (base, ty, attributes) in [
+            (0xF400_0000, MemoryType::MemoryMappedIo, 1),
+            (0xF800_0000, MemoryType::MemoryMappedIo, 1 | (1 << 63)),
+            (0xFC00_0000, MemoryType::MemoryMappedIo, 1),
+            (0xFC00_3000, MemoryType::Reserved, 0),
+            (0xFFC0_0000, MemoryType::Reserved, 1),
+            (0x1_0000_0000, MemoryType::Conventional, 8),
+        ] {
+            let desc = find(base).unwrap();
+            assert_eq!(desc.memory_type, ty as u32, "{base:#x}");
+            assert_eq!(desc.attribute, attributes, "{base:#x}");
+        }
+        assert!(map.descriptors().iter().all(|d| {
+            let end = d.physical_start + d.number_of_pages * PAGE_BYTES;
+            end <= 0xFC00_1000 || d.physical_start >= 0xFC00_3000
+        }));
     }
 
     fn boot_leaf(words: &[u64], root: u64, page: u64) -> u64 {

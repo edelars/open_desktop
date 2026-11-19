@@ -1,6 +1,6 @@
 //! Builds the firmware's four-level identity map in a caller-supplied RAM reservation.
 
-use crate::handoff::Handoff;
+use crate::handoff::{Handoff, region_kind::*};
 
 pub const PAGE_BYTES: u64 = 4096;
 const ENTRIES: usize = 512;
@@ -9,20 +9,6 @@ const LOW_RAM_END: u64 = 1024 * 1024;
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
 const NO_EXECUTE: u64 = 1 << 63;
-
-// Region codes from FIRMWARE_BOOT.md section 6.2.
-const RAM: u32 = 1;
-const RESERVED: u32 = 2;
-const MMIO: u32 = 3;
-const ROM: u32 = 4;
-const NVRAM: u32 = 5;
-const FRAMEBUFFER: u32 = 6;
-const HANDOFF: u32 = 7;
-const BOOT_STACK: u32 = 8;
-const FIRMWARE_SHADOW: u32 = 9;
-const BOOT_PAGE_TABLES: u32 = 10;
-const ACPI_TABLES: u32 = 11;
-const ACPI_NVS: u32 = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PagingError {
@@ -106,12 +92,14 @@ impl<'view, 'bytes> BootPaging<'view, 'bytes> {
         self.guard_page() + PAGE_BYTES + STACK_BYTES
     }
 
-    /// The supplied storage must represent exactly the planned range at `root()`.
-    /// A failure can leave partially prepared entries. The caller must keep the current CR3.
-    pub fn build(&self, words: &mut [u64], shadow: ShadowSections) -> Result<usize, PagingError> {
-        if words.len() != self.table_words() {
-            return Err(PagingError::WrongStorageLength);
-        }
+    pub(crate) fn handoff(&self) -> &Handoff<'bytes> {
+        self.handoff
+    }
+
+    pub(crate) fn validate_shadow_sections(
+        &self,
+        shadow: ShadowSections,
+    ) -> Result<(), PagingError> {
         let image = self
             .handoff
             .regions()
@@ -125,6 +113,16 @@ impl<'view, 'bytes> BootPaging<'view, 'bytes> {
         {
             return Err(PagingError::InvalidShadowBoundaries);
         }
+        Ok(())
+    }
+
+    /// The supplied storage must represent exactly the planned range at `root()`.
+    /// A failure can leave partially prepared entries. The caller must keep the current CR3.
+    pub fn build(&self, words: &mut [u64], shadow: ShadowSections) -> Result<usize, PagingError> {
+        if words.len() != self.table_words() {
+            return Err(PagingError::WrongStorageLength);
+        }
+        self.validate_shadow_sections(shadow)?;
 
         let mut tables = Tables {
             words,
