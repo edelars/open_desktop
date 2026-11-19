@@ -61,13 +61,24 @@ Conventional. Запрос больше физической ёмкости пр
 |---|---|
 | `InstallProtocolInterface` | С `EFI_NATIVE_INTERFACE` создаёт handle при NULL на входе или добавляет GUID к существующему handle. Дубликат GUID на том же handle даёт `EFI_INVALID_PARAMETER`. Исчерпание записей даёт `EFI_OUT_OF_RESOURCES`. |
 | `ReinstallProtocolInterface` | Сверяет прежний указатель и заменяет его на новый с сохранением handle. |
-| `UninstallProtocolInterface` | Удаляет запись после сверки указателя. Отсутствующая привязка даёт `EFI_NOT_FOUND`. |
+| `UninstallProtocolInterface` | Удаляет запись после сверки указателя. На действующем handle отсутствие привязки или несовпадение указателя даёт `EFI_NOT_FOUND`. |
 | `HandleProtocol` | Ищет GUID на указанном действующем handle. При отсутствии GUID возвращает `EFI_UNSUPPORTED` и записывает NULL. |
 | `LocateProtocol` | При NULL в `Registration` возвращает первую найденную привязку GUID. При отсутствии привязки возвращает `EFI_NOT_FOUND` и записывает NULL. |
+| `OpenProtocol` | Поддерживает `BY_HANDLE_PROTOCOL`, `GET_PROTOCOL`, `TEST_PROTOCOL` и `BY_DRIVER`. Повторный `BY_DRIVER` того же агента даёт `EFI_ALREADY_STARTED` с указателем интерфейса. Другой драйвер получает `EFI_ACCESS_DENIED` с неизменённым выходом. Для `TEST_PROTOCOL` выход указателя игнорируется. |
+| `CloseProtocol` | Удаляет все записи указанной пары agent/controller для выбранной привязки. При отсутствии записей возвращает `EFI_NOT_FOUND`. |
+
+Таблица открытий вмещает до 128 записей, с отдельным счётчиком для
+совпадающих handle, GUID, agent, controller и режима. Для `BY_DRIVER`
+требуются существующие agent и controller. Для остальных поддержанных
+режимов запись сохраняется при переданном agent. Только открытие
+`BY_DRIVER` блокирует удаление и переустановку. После закрытия владельцем
+остальные записи не препятствуют этим операциям. Успешная переустановка
+или удаление снимает их. Режимы `BY_CHILD_CONTROLLER`, `EXCLUSIVE` и
+`BY_DRIVER | EXCLUSIVE` возвращают `EFI_UNSUPPORTED`.
 
 Эти операции используют ту же эксклюзивную секцию BSP, что сервисы памяти.
 Запись в базе протоколов обходится без выделения памяти и сохраняет
-`MapKey`. Списки открытий, поиск массивов handles и уведомления идут
+`MapKey`. Перечисление handles, отчёт об открытиях и уведомления идут
 отдельными срезами S7-05.
 [UEFI 2.11, §7.3](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#protocol-handler-services).
 

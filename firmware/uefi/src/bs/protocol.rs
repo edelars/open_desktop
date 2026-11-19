@@ -14,9 +14,28 @@ struct Binding {
     interface: *mut c_void,
 }
 
+const MAX_OPEN_RECORDS: usize = 128;
+pub const OPEN_BY_HANDLE_PROTOCOL: u32 = 0x01;
+pub const OPEN_GET_PROTOCOL: u32 = 0x02;
+pub const OPEN_TEST_PROTOCOL: u32 = 0x04;
+const OPEN_BY_CHILD_CONTROLLER: u32 = 0x08;
+pub const OPEN_BY_DRIVER: u32 = 0x10;
+const OPEN_EXCLUSIVE: u32 = 0x20;
+const OPEN_BY_DRIVER_EXCLUSIVE: u32 = OPEN_BY_DRIVER | OPEN_EXCLUSIVE;
+
+#[derive(Clone, Copy)]
+struct OpenRecord {
+    binding: usize,
+    agent: Handle,
+    controller: Handle,
+    attributes: u32,
+    count: u32,
+}
+
 /// A handle remains valid exactly while this database contains a binding for it.
 pub(crate) struct ProtocolRegistry {
     bindings: [Option<Binding>; MAX_PROTOCOL_BINDINGS],
+    opens: [Option<OpenRecord>; MAX_OPEN_RECORDS],
     last_handle: usize,
 }
 
@@ -24,6 +43,7 @@ impl ProtocolRegistry {
     pub(crate) const fn new() -> Self {
         Self {
             bindings: [None; MAX_PROTOCOL_BINDINGS],
+            opens: [None; MAX_OPEN_RECORDS],
             last_handle: 0,
         }
     }
@@ -100,6 +120,10 @@ impl ProtocolRegistry {
         new_interface: *mut c_void,
     ) -> Result<(), Status> {
         let index = self.existing_interface(handle, protocol, old_interface)?;
+        if !self.changes_allowed(index) {
+            return Err(Status::ACCESS_DENIED);
+        }
+        self.forget_opens(index);
         self.bindings[index] = Some(Binding {
             handle,
             protocol,
@@ -115,6 +139,10 @@ impl ProtocolRegistry {
         interface: *mut c_void,
     ) -> Result<(), Status> {
         let index = self.existing_interface(handle, protocol, interface)?;
+        if !self.changes_allowed(index) {
+            return Err(Status::ACCESS_DENIED);
+        }
+        self.forget_opens(index);
         self.bindings[index] = None;
         Ok(())
     }
@@ -129,6 +157,124 @@ impl ProtocolRegistry {
             .find(|binding| binding.handle == handle && binding.protocol == protocol)
             .map(|binding| binding.interface)
             .ok_or(Status::UNSUPPORTED)
+    }
+
+    fn changes_allowed(&self, binding: usize) -> bool {
+        !self
+            .opens
+            .iter()
+            .flatten()
+            .any(|open| open.binding == binding && open.attributes == OPEN_BY_DRIVER)
+    }
+
+    fn forget_opens(&mut self, binding: usize) {
+        for slot in &mut self.opens {
+            if slot.is_some_and(|open| open.binding == binding) {
+                *slot = None;
+            }
+        }
+    }
+
+    fn open(
+        &mut self,
+        handle: Handle,
+        guid: Guid,
+        agent: Handle,
+        controller: Handle,
+        attributes: u32,
+    ) -> Result<(Status, *mut c_void), Status> {
+        if !self.known_handle(handle) {
+            return Err(Status::INVALID_PARAMETER);
+        }
+        match attributes {
+            OPEN_BY_HANDLE_PROTOCOL | OPEN_GET_PROTOCOL | OPEN_TEST_PROTOCOL | OPEN_BY_DRIVER => {}
+            OPEN_BY_CHILD_CONTROLLER | OPEN_EXCLUSIVE | OPEN_BY_DRIVER_EXCLUSIVE => {
+                return Err(Status::UNSUPPORTED);
+            }
+            _ => return Err(Status::INVALID_PARAMETER),
+        }
+        if (attributes == OPEN_BY_DRIVER && (agent.is_null() || controller.is_null()))
+            || (!agent.is_null() && !self.known_handle(agent))
+            || (!controller.is_null() && !self.known_handle(controller))
+        {
+            return Err(Status::INVALID_PARAMETER);
+        }
+
+        let binding = self
+            .binding_index(handle, guid)
+            .ok_or(Status::UNSUPPORTED)?;
+        let interface = self.bindings[binding]
+            .map(|entry| entry.interface)
+            .ok_or(Status::UNSUPPORTED)?;
+        if agent.is_null() {
+            return Ok((Status::SUCCESS, interface));
+        }
+        if attributes == OPEN_BY_DRIVER
+            && let Some(existing) = self
+                .opens
+                .iter()
+                .flatten()
+                .find(|open| open.binding == binding && open.attributes == OPEN_BY_DRIVER)
+        {
+            return if existing.agent == agent {
+                Ok((Status::ALREADY_STARTED, interface))
+            } else {
+                Err(Status::ACCESS_DENIED)
+            };
+        }
+
+        if let Some(existing) = self.opens.iter_mut().flatten().find(|open| {
+            open.binding == binding
+                && open.agent == agent
+                && open.controller == controller
+                && open.attributes == attributes
+        }) {
+            existing.count = existing
+                .count
+                .checked_add(1)
+                .ok_or(Status::OUT_OF_RESOURCES)?;
+        } else {
+            let slot = self
+                .opens
+                .iter_mut()
+                .find(|open| open.is_none())
+                .ok_or(Status::OUT_OF_RESOURCES)?;
+            *slot = Some(OpenRecord {
+                binding,
+                agent,
+                controller,
+                attributes,
+                count: 1,
+            });
+        }
+        Ok((Status::SUCCESS, interface))
+    }
+
+    fn close(
+        &mut self,
+        handle: Handle,
+        guid: Guid,
+        agent: Handle,
+        controller: Handle,
+    ) -> Result<(), Status> {
+        if handle.is_null() || agent.is_null() {
+            return Err(Status::INVALID_PARAMETER);
+        }
+        let binding = self.binding_index(handle, guid).ok_or(Status::NOT_FOUND)?;
+        let mut found = false;
+        for slot in &mut self.opens {
+            if slot.is_some_and(|open| {
+                open.binding == binding && open.agent == agent && open.controller == controller
+            }) {
+                *slot = None;
+                found = true;
+            }
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(Status::NOT_FOUND)
+        }
     }
 
     fn locate_protocol(&self, protocol: Guid) -> Option<*mut c_void> {
@@ -268,6 +414,69 @@ pub unsafe extern "efiapi" fn locate_protocol(
     }
 }
 
+/// # Safety
+/// Call on the BSP. A non-null GUID pointer must be readable and aligned.
+/// For non-TEST requests the interface output is writable, aligned and
+/// outside firmware-private state.
+pub unsafe extern "efiapi" fn open_protocol(
+    handle: Handle,
+    protocol: *const Guid,
+    interface: *mut *mut c_void,
+    agent: Handle,
+    controller: Handle,
+    attributes: u32,
+) -> Status {
+    let test_only = attributes == OPEN_TEST_PROTOCOL;
+    if handle.is_null() || protocol.is_null() || (!test_only && interface.is_null()) {
+        return Status::INVALID_PARAMETER;
+    }
+    unsafe {
+        let protocol = protocol.read();
+        super::state::with(|state| {
+            match state
+                .protocols
+                .open(handle, protocol, agent, controller, attributes)
+            {
+                Ok((status, found)) => {
+                    if !test_only {
+                        interface.write(found);
+                    }
+                    status
+                }
+                Err(status) => {
+                    if !test_only && status == Status::UNSUPPORTED {
+                        interface.write(ptr::null_mut());
+                    }
+                    status
+                }
+            }
+        })
+    }
+}
+
+/// # Safety
+/// Call on the BSP. A non-null GUID pointer must be readable and aligned.
+pub unsafe extern "efiapi" fn close_protocol(
+    handle: Handle,
+    protocol: *const Guid,
+    agent: Handle,
+    controller: Handle,
+) -> Status {
+    if handle.is_null() || protocol.is_null() || agent.is_null() {
+        return Status::INVALID_PARAMETER;
+    }
+    unsafe {
+        let protocol = protocol.read();
+        super::state::with(|state| {
+            state
+                .protocols
+                .close(handle, protocol, agent, controller)
+                .err()
+                .unwrap_or(Status::SUCCESS)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +558,111 @@ mod tests {
         assert_eq!(registry.uninstall(handle, guid(1), marker), Ok(()));
         let later = registry.install(ptr::null_mut(), guid(42), marker).unwrap();
         assert_eq!(later.addr(), handle.addr() + 1);
+    }
+
+    #[test]
+    fn driver_opens_pin_bindings_until_close_and_read_only_opens_do_not() {
+        let mut registry = ProtocolRegistry::new();
+        let mut contents = 0xa5u8;
+        let interface = ptr::addr_of_mut!(contents).cast();
+        let none = ptr::null_mut();
+        let driver = registry.install(none, guid(1), none).unwrap();
+        let other = registry.install(none, guid(1), none).unwrap();
+        let target = registry.install(none, guid(2), interface).unwrap();
+
+        assert_eq!(
+            registry.open(target, guid(2), none, target, OPEN_BY_DRIVER),
+            Err(Status::INVALID_PARAMETER)
+        );
+        assert_eq!(
+            registry.open(target, guid(9), driver, target, OPEN_BY_DRIVER),
+            Err(Status::UNSUPPORTED)
+        );
+        assert_eq!(
+            registry.open(target, guid(2), driver, target, OPEN_BY_DRIVER),
+            Ok((Status::SUCCESS, interface))
+        );
+        assert_eq!(
+            registry.open(target, guid(2), driver, target, OPEN_BY_DRIVER),
+            Ok((Status::ALREADY_STARTED, interface))
+        );
+        assert_eq!(
+            registry.open(target, guid(2), other, target, OPEN_BY_DRIVER),
+            Err(Status::ACCESS_DENIED)
+        );
+        assert_eq!(
+            registry.uninstall(target, guid(2), interface),
+            Err(Status::ACCESS_DENIED)
+        );
+        assert_eq!(
+            registry.reinstall(target, guid(2), interface, none),
+            Err(Status::ACCESS_DENIED)
+        );
+        assert_eq!(registry.handle_protocol(target, guid(2)), Ok(interface));
+        assert_eq!(
+            registry.close(target, guid(2), driver, none),
+            Err(Status::NOT_FOUND)
+        );
+        assert_eq!(registry.close(target, guid(2), driver, target), Ok(()));
+        assert_eq!(
+            registry.close(target, guid(2), driver, target),
+            Err(Status::NOT_FOUND)
+        );
+
+        for attributes in [
+            OPEN_BY_HANDLE_PROTOCOL,
+            OPEN_GET_PROTOCOL,
+            OPEN_TEST_PROTOCOL,
+        ] {
+            assert_eq!(
+                registry.open(target, guid(2), other, none, attributes),
+                Ok((Status::SUCCESS, interface))
+            );
+        }
+        assert_eq!(
+            registry.open(target, guid(2), other, none, OPEN_GET_PROTOCOL),
+            Ok((Status::SUCCESS, interface))
+        );
+        assert_eq!(registry.opens.iter().flatten().count(), 3);
+        assert_eq!(
+            registry
+                .opens
+                .iter()
+                .flatten()
+                .find(|record| record.attributes == OPEN_GET_PROTOCOL)
+                .unwrap()
+                .count,
+            2
+        );
+        let get_record = registry
+            .opens
+            .iter_mut()
+            .flatten()
+            .find(|record| record.attributes == OPEN_GET_PROTOCOL)
+            .unwrap();
+        get_record.count = u32::MAX;
+        assert_eq!(
+            registry.open(target, guid(2), other, none, OPEN_GET_PROTOCOL),
+            Err(Status::OUT_OF_RESOURCES)
+        );
+        assert_eq!(
+            registry
+                .opens
+                .iter()
+                .flatten()
+                .find(|record| record.attributes == OPEN_GET_PROTOCOL)
+                .unwrap()
+                .count,
+            u32::MAX
+        );
+        assert_eq!(registry.close(target, guid(2), other, none), Ok(()));
+        assert!(registry.opens.iter().all(Option::is_none));
+        assert_eq!(
+            registry.open(target, guid(2), other, none, OPEN_GET_PROTOCOL),
+            Ok((Status::SUCCESS, interface))
+        );
+        assert_eq!(registry.reinstall(target, guid(2), interface, none), Ok(()));
+        assert!(registry.opens.iter().all(Option::is_none));
+        assert_eq!(registry.handle_protocol(target, guid(2)), Ok(none));
     }
 }

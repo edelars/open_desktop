@@ -35,6 +35,9 @@ type UninstallProtocolInterface =
 type HandleProtocol = unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
 type LocateProtocol =
     unsafe extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
+type OpenProtocol =
+    unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void, Handle, Handle, u32) -> Status;
+type CloseProtocol = unsafe extern "efiapi" fn(Handle, *const Guid, Handle, Handle) -> Status;
 type CalculateCrc32 = unsafe extern "efiapi" fn(*const c_void, usize, *mut u32) -> Status;
 type CopyMem = unsafe extern "efiapi" fn(*mut c_void, *const c_void, usize);
 type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
@@ -74,8 +77,8 @@ pub struct BootServices {
     set_watchdog_timer: *const c_void,
     connect_controller: *const c_void,
     disconnect_controller: *const c_void,
-    open_protocol: *const c_void,
-    close_protocol: *const c_void,
+    pub open_protocol: OpenProtocol,
+    pub close_protocol: CloseProtocol,
     open_protocol_information: *const c_void,
     protocols_per_handle: *const c_void,
     locate_handle_buffer: *const c_void,
@@ -124,8 +127,8 @@ impl BootServices {
             set_watchdog_timer: ptr::null(),
             connect_controller: ptr::null(),
             disconnect_controller: ptr::null(),
-            open_protocol: ptr::null(),
-            close_protocol: ptr::null(),
+            open_protocol: protocol::open_protocol,
+            close_protocol: protocol::close_protocol,
             open_protocol_information: ptr::null(),
             protocols_per_handle: ptr::null(),
             locate_handle_buffer: ptr::null(),
@@ -292,6 +295,8 @@ mod tests {
         assert_eq!(offset_of!(BootServices, uninstall_protocol_interface), 144);
         assert_eq!(offset_of!(BootServices, handle_protocol), 152);
         assert_eq!(offset_of!(BootServices, reserved), 160);
+        assert_eq!(offset_of!(BootServices, open_protocol), 280);
+        assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(offset_of!(BootServices, calculate_crc32), 344);
         assert_eq!(offset_of!(BootServices, copy_mem), 352);

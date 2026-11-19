@@ -11,6 +11,8 @@ impl Status {
     pub const NOT_READY: Self = Self(Self::ERROR_BIT | 6);
     pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
     pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);
+    pub const ACCESS_DENIED: Self = Self(Self::ERROR_BIT | 15);
+    pub const ALREADY_STARTED: Self = Self(Self::ERROR_BIT | 20);
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);
 

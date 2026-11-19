@@ -5,6 +5,7 @@
 #![no_main]
 
 use core::arch::asm;
+use core::ffi::c_void;
 use core::ptr;
 
 mod serial;
@@ -13,6 +14,7 @@ use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::memory::IdentityPoolMemory;
+use od_firmware::bs::protocol::{OPEN_BY_DRIVER, OPEN_GET_PROTOCOL};
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
@@ -28,6 +30,7 @@ use od_firmware::stop::{
 use od_firmware::uefi::guid::Guid;
 use od_firmware::uefi::status::Status;
 use od_firmware::uefi::system_table::{BootServices, RuntimeServices, SystemTable};
+use od_firmware::uefi::types::Handle;
 
 unsafe extern "C" {
     static __shadow_read_only_start: u8;
@@ -360,6 +363,7 @@ fn verify_protocol_services(system: &SystemTable) {
         {
             stop(STOP_BOOT_SERVICES, 13);
         }
+        verify_tracked_open(boot, handle, contents);
         if reinstall(handle, &DIAGNOSTIC_PROTOCOL, contents, ptr::null_mut()) != Status::SUCCESS
             || handle_protocol(handle, &DIAGNOSTIC_PROTOCOL, &mut found) != Status::SUCCESS
             || !found.is_null()
@@ -379,6 +383,90 @@ fn verify_protocol_services(system: &SystemTable) {
         }
     }
     com1_write(b"OD-FW S7-05 Boot Services protocol registry verified\r\n");
+}
+
+/// The BSP owns the live diagnostic table and the installed interface.
+#[inline(never)]
+unsafe fn verify_tracked_open(boot: *const BootServices, handle: Handle, contents: *mut c_void) {
+    let agent_guid = Guid {
+        data1: DIAGNOSTIC_PROTOCOL.data1 + 1,
+        ..DIAGNOSTIC_PROTOCOL
+    };
+    let mut owner = ptr::null_mut();
+    let mut other = ptr::null_mut();
+    let mut found = ptr::null_mut();
+    unsafe {
+        let open = ptr::addr_of!((*boot).open_protocol).read_volatile();
+        let close = ptr::addr_of!((*boot).close_protocol).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let reinstall = ptr::addr_of!((*boot).reinstall_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        if install(&mut owner, &agent_guid, 0, ptr::null_mut()) != Status::SUCCESS
+            || install(&mut other, &agent_guid, 0, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 17);
+        }
+        if open(
+            handle,
+            &DIAGNOSTIC_PROTOCOL,
+            &mut found,
+            owner,
+            handle,
+            OPEN_BY_DRIVER,
+        ) != Status::SUCCESS
+            || found != contents
+        {
+            stop(STOP_BOOT_SERVICES, 18);
+        }
+        found = ptr::null_mut();
+        if open(
+            handle,
+            &DIAGNOSTIC_PROTOCOL,
+            &mut found,
+            owner,
+            handle,
+            OPEN_BY_DRIVER,
+        ) != Status::ALREADY_STARTED
+            || found != contents
+        {
+            stop(STOP_BOOT_SERVICES, 19);
+        }
+        found = ptr::null_mut();
+        if open(
+            handle,
+            &DIAGNOSTIC_PROTOCOL,
+            &mut found,
+            other,
+            handle,
+            OPEN_BY_DRIVER,
+        ) != Status::ACCESS_DENIED
+            || !found.is_null()
+            || uninstall(handle, &DIAGNOSTIC_PROTOCOL, contents) != Status::ACCESS_DENIED
+            || reinstall(handle, &DIAGNOSTIC_PROTOCOL, contents, ptr::null_mut())
+                != Status::ACCESS_DENIED
+        {
+            stop(STOP_BOOT_SERVICES, 20);
+        }
+        if open(
+            handle,
+            &DIAGNOSTIC_PROTOCOL,
+            &mut found,
+            other,
+            ptr::null_mut(),
+            OPEN_GET_PROTOCOL,
+        ) != Status::SUCCESS
+            || found != contents
+            || close(handle, &DIAGNOSTIC_PROTOCOL, owner, handle) != Status::SUCCESS
+            || close(handle, &DIAGNOSTIC_PROTOCOL, owner, handle) != Status::NOT_FOUND
+        {
+            stop(STOP_BOOT_SERVICES, 21);
+        }
+        if uninstall(owner, &agent_guid, ptr::null_mut()) != Status::SUCCESS
+            || uninstall(other, &agent_guid, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 22);
+        }
+    }
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;
