@@ -1037,7 +1037,7 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
-    /// S6-21: `F0 REX.W 29 /r` (LOCK SUB m64, r64). CPL0 set only.
+    /// Stage 6: `F0 [REX] 29 /r` (LOCK SUB m32/r32 or m64/r64). CPL0 set only.
     LockSubMemReg {
         destination: MemoryOperand,
         source: RegisterView,
@@ -3535,11 +3535,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_memory_or_candidate = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0x80 | 0x81 | 0x83)
             && prefixes.group1 == Some(0xf0);
-        // S4-38L7ai / S6-21: memory ADD and qword SUB with a register source.
+        // S4-38L7ai and Stage 6: memory ADD and SUB with a register source.
         let locked_memory_arithmetic_reg_candidate = opcode.map == OpcodeMap::Primary
             && prefixes.group1 == Some(0xf0)
-            && (opcode.byte == 0x01
-                || (opcode.byte == 0x29 && prefixes.rex.is_some_and(|rex| rex & 8 != 0)));
+            && matches!(opcode.byte, 0x01 | 0x29);
         // S4-38L7n/S4-38L7t: and for the qword memory BTS/BTR (`F0 REX.W 0F AB|B3 /r`); the
         // executor admits them only in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and
         // `0F BA` forms are unchanged.
@@ -9253,7 +9252,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             },
                         }
                     } else if locked_memory_arithmetic_reg_candidate {
-                        // LOCK ADD m32/m64 or LOCK SUB m64 with a register source.
+                        // LOCK ADD or SUB m32/m64 with a register source.
                         let stale_rex = prefix_bytes[..prefix_count]
                             .iter()
                             .enumerate()
@@ -25511,7 +25510,7 @@ mod tests {
             (&[0xf0, 0x48, 0x03, 0x43, 0x3d][..], 0x03),
             (&[0xf0, 0x02, 0x43, 0x3d][..], 0x02),
             (&[0xf0, 0x05, 1, 0, 0, 0][..], 0x05),
-            (&[0xf0, 0x29, 0x43, 0x3d][..], 0x29),
+            (&[0xf0, 0x28, 0x43, 0x3d][..], 0x28),
             (&[0xf0, 0x09, 0x43, 0x3d][..], 0x09),
         ] {
             let mut memory = Memory::new(bytes);
@@ -25527,10 +25526,29 @@ mod tests {
     }
 
     #[test]
-    fn lock_sub_register_source_requires_qword_memory_destination() {
-        for (bytes, base, source) in [
-            ([0xf0, 0x48, 0x29, 0x42, 0x28], Register::Rdx, Register::Rax),
-            ([0xf0, 0x4d, 0x29, 0x42, 0x28], Register::R10, Register::R8),
+    fn lock_sub_register_source_requires_dword_or_qword_memory_destination() {
+        for (bytes, base, source, displacement, width) in [
+            (
+                [0xf0, 0x48, 0x29, 0x42, 0x28],
+                Register::Rdx,
+                Register::Rax,
+                0x28,
+                OperandSize::Qword,
+            ),
+            (
+                [0xf0, 0x4d, 0x29, 0x42, 0x28],
+                Register::R10,
+                Register::R8,
+                0x28,
+                OperandSize::Qword,
+            ),
+            (
+                [0xf0, 0x44, 0x29, 0x6b, 0x34],
+                Register::Rbx,
+                Register::R13,
+                0x34,
+                OperandSize::Dword,
+            ),
         ] {
             let decoded = Memory::new(&bytes).decode().unwrap();
             assert_eq!(usize::from(decoded.length), bytes.len());
@@ -25540,9 +25558,9 @@ mod tests {
                 decoded.operation,
                 Operation::LockSubMemReg { destination, source: register }
                     if destination.base == AddressBase::Register(base)
-                        && destination.displacement == 0x28
-                        && destination.size == OperandSize::Qword
-                        && register == RegisterView::low(source, OperandSize::Qword)
+                        && destination.displacement == displacement
+                        && destination.size == width
+                        && register == RegisterView::low(source, width)
             ));
         }
         for (bytes, byte) in [

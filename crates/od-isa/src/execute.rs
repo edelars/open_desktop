@@ -44717,7 +44717,7 @@ fn step_configured(
         | Operation::LockSubMem { .. }
         // S4-38L7ai: and for LOCK ADD m32/m64, r32/r64.
         | Operation::LockAddMemReg { .. }
-        // S6-21: LOCK SUB m64, r64.
+        // Stage 6: LOCK SUB m32/r32 or m64/r64.
         | Operation::LockSubMemReg { .. }
         // S4-38L7ag/S6-21: LOCK AND m8 or m64, imm8.
         | Operation::LockAndMem { .. }
@@ -77167,6 +77167,53 @@ mod tests {
         assert_eq!(bare, before_bare);
         assert!(memory.atomic_rmws.is_empty());
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn lock_sub_dword_register_updates_only_four_bytes_and_defines_flags() {
+        let bytes = [0xf0, 0x44, 0x29, 0x6b, 0x34];
+        let mut state = LongModeState {
+            cr0: Some(Cr0Profile::BASE),
+            cr4: Some(Cr4Profile::BASE),
+            sti_shadow: Some(crate::StiShadow::Clear),
+            activity: Some(crate::CpuActivity::Running),
+            rflags: 0x0cd7,
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rbx as usize] = 0xfd4;
+        state.gpr[Register::R13 as usize] = 0xdead_beef_0000_0001;
+        let mut expected = state.clone();
+        expected.rip += bytes.len() as u64;
+        expected.rflags = 0x0402 | crate::OF | crate::AF | crate::PF;
+        let mut memory = Memory::new(&bytes);
+        memory.bytes[8..12].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        let mut expected_ram = memory.bytes.clone();
+        expected_ram[8..12].copy_from_slice(&0x7fff_ffffu32.to_le_bytes());
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            crate::INTEGER_FLAGS,
+            &Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        assert_eq!(state, expected);
+        assert_eq!(memory.bytes, expected_ram);
+        assert_eq!(memory.atomic_rmws, [(0x1008, OperandSize::Dword)]);
     }
 
     #[test]

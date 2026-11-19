@@ -6599,6 +6599,12 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 Статус: исправлено в CPL3. Один префикс `67` у прямого near `CALL rel32` использует существующий 64-битный расчёт цели и адреса возврата. Гостевой повтор перешёл в целевую функцию и дошёл до ISSUE-559. [Реализация и проверки](reports/STAGE_6_REPORT.md#s6-38--прямой-call-с-префиксом-67-в-cpl3).
 
+### ISSUE-558 — S6-22: LOCK SUB m32, r32 останавливает CPU1 в folios_put_refs
+
+Загрузка Linux с двумя vCPU и RAW остановилась на CPU1 по RIP `0xffffffff8179b0cd` в `folios_put_refs+0x8d`. Байты `f0 44 29 6b 34` совпали с ядром и декодируются как `lock subl %r13d, 0x34(%rbx)`. Ту же остановку подтвердил поточный контроль. Гостевой вывод нагрузок ещё отсутствует. [Сводка запусков](reports/data/stage6/s6-22-lock-sub-dword-reg-replay.json).
+
+Статус: исправлено. Форма использует существующий атомарный SUB. Регрессии проверяют выбор R13D, четыре байта записи и флаги. Гостевой повтор прошёл `folios_put_refs`, вошёл в `/s6-smp-init` и остановился в CPL3 на ISSUE-559. [Реализация и проверки](reports/STAGE_6_REPORT.md#s6-22--lock-sub-dword-с-регистром).
+
 ### ISSUE-559 — S6-22/S6-38: MOVSXD останавливает общий путь запуска BusyBox
 
 Однопроцессорный повтор после ISSUE-557 выполнил `CALL`, `ENDBR64` и `PUSH RBP`. BusyBox остановился по RIP `0x476295` с байтами `48 63 c6` (`MOVSXD RAX, ESI`). Байты совпадают с исполняемым сегментом ELF. [Сводка запуска](reports/data/stage6/s6-38-compute-up-addr32-call-replay.json).

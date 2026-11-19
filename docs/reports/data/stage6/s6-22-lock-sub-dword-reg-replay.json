@@ -1,0 +1,77 @@
+{
+  "baseline_interleaved": {
+    "base_commit": "2d0147dadebaedd1c10b4f98ef6efe0f95652588",
+    "runner_sha256": "a884430f8e30e5560bca866b6fca643844a51606d3ac6ede2e962db87335ad0a",
+    "patch_sha256": {
+      "lock-sub-imm32": "3723d842e5ecca0463e02e0f005df9fff6ac99978de94ae037eff86b2a33fc55",
+      "push-cpl3": "9082253d102cc9da53a9cf66e4529e8a97299ec769a15178dc44c9830ddb7486"
+    },
+    "report_sha256": "2a1508eb0dfe777a9ef47a9958b6ffb97f2b99a843a6201129c8a3d9b9b5bc45",
+    "profile": "X8664V1Stage4AApic",
+    "nonce": "s6-workloads20261119",
+    "seed": 24301,
+    "vcpus": 2,
+    "budget": 3000000000,
+    "ram_mib": 128,
+    "inputs": {
+      "vmlinuz": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "initramfs": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+      "acpi_blob": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f"
+    },
+    "raw_namespace_sectors": 4194304,
+    "cpl": 0,
+    "retired": 2080376395,
+    "terminal_vcpu": 1,
+    "retired_by_vcpu": [
+      1853869659,
+      226506736
+    ],
+    "rip": "0xffffffff8179b0cd",
+    "rip_gpa": "0x179b0cd",
+    "rip_bytes": "f0 44 29 6b 34 75 66 80 7b 33 f4 0f 84 1b 01 00",
+    "kernel_symbol": "folios_put_refs+0x8d",
+    "exit_detail": "Unsupported { opcode: 41 }",
+    "linux_bringup": "[    1.745883] smp: Brought up 1 node, 2 CPUs",
+    "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+    "elapsed_wall_s_from_output_timestamps": 1164.534,
+    "boot_retired_per_s": 1786446
+  },
+  "baseline_parallel": {
+    "report_sha256": "141777aa6047da56857b55c75fabe775656bd28adbf3411d7963b2cde830d365",
+    "runner_sha256": "d44ac21757779c5bd34254db17c7a0bb862d10db75af3c6d379770688458380a",
+    "nonce": "s6-workloadsParallel20261119",
+    "retired": 2081448875,
+    "terminal_vcpu": 1,
+    "rip": "0xffffffff8179b0cd",
+    "rip_bytes": "f0 44 29 6b 34 75 66 80 7b 33 f4 0f 84 1b 01 00",
+    "exit_detail": "Unsupported { opcode: 41 }",
+    "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+  },
+  "replay_interleaved": {
+    "base_commit": "8c2045d1a1ddaa0a3a406f59c3f4acfe4e82b784",
+    "runner_sha256": "cd5991c966d17abed3ee24dd2566c1e0728a45494de0ae8929292f21547d89fd",
+    "patch_sha256": {
+      "addr32-call": "3315f65eb5f924dc3032c181d9009395ad2ed6db71581f3849b4ee5c47dfd987",
+      "lock-sub-dword-reg": "eb2c46153582fce95148edd2d43f28c67cf31ae475953aeb197097a04b211609"
+    },
+    "report_sha256": "9dca1755fc4ae38582d9c70d9b6e510dafc094e5d4398a1cb27ac44cb3165e94",
+    "elapsed_wall_s_from_output_timestamps": 1103.766,
+    "retired": 2400040311,
+    "retired_cpl3": 14,
+    "terminal_vcpu": 0,
+    "retired_by_vcpu": [
+      1998522611,
+      401517700
+    ],
+    "cpl": 3,
+    "rip": "0x476295",
+    "rip_gpa": "0x7964295",
+    "rip_bytes": "48 63 c6 48 89 e5 41 57 41 56 41 55 41 54 49 89",
+    "exit_detail": "Unsupported { opcode: 99 }",
+    "guest_observations": [
+      "[    1.745883] smp: Brought up 1 node, 2 CPUs",
+      "[    2.535573] Run /s6-smp-init as init process"
+    ],
+    "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+  }
+}
