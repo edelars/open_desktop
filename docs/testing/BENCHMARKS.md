@@ -1645,6 +1645,14 @@ checks cold/warm cache counters and pairs JIT timings with the
 interpreter on the same work. The M1 Pro audit covers 432 intervals.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40y_2026-11-19.md)
 
+### S3-40z. Public RUN budgets on M1 Pro
+
+The same S3-34a cases time RUN at budgets 0, 1 and 2 on `d24865d` and
+`5275d67`. The driver validates each exact instruction prefix. Pilots
+set equal work for both builds and six matched rounds rotate budget
+order. The audit compares revisions within each budget and sequence.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40z_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

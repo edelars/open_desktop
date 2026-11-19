@@ -1375,6 +1375,13 @@ cold took roughly 31 times interpreter time. Every between-build JIT
 range for `5275d67` versus `d9ecaa2` crossed parity.
 [M1 Pro checked-memory measurements](STAGE_3_S3-40y_2026-11-19.md)
 
+S3-40z compared `5275d67` and `d24865d` on M1 Pro at RUN budgets 0, 1
+and 2. Current/historical median ratios were about 1.285 for budget 0,
+2.056–2.075 for budget 1 and 2.140–2.143 for budget 2. The absolute gap
+grew from about 5 ns at budget 0 to about 158 ns at budget 2. ISSUE-521
+remains open for phase attribution and resolution.
+[M1 Pro RUN timing and reproduction](STAGE_3_S3-40z_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
