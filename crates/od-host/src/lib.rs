@@ -2367,6 +2367,8 @@ pub struct PagedFetchedLoadSession {
     atomic_mode_drops: u64,
     /// S6-41d: the host policy `execute_atomic` asks; `None` is `mode_admitted_on_host`.
     atomic_mode_policy: Option<fn(od_jit::arm64::memory_order::MemoryOrderMode) -> bool>,
+    #[cfg(test)]
+    replace_mfence_for_ram_probe: bool,
     admissions: u64,
     resets: u64,
     /// S6-42: the vCPU's part of the process `MAP_JIT` region. With a part the
@@ -3395,6 +3397,21 @@ impl PagedFetchedLoadSession {
                     &fetch_committed_writes,
                 )
             })?;
+            #[cfg(test)]
+            let compiled = if self.replace_mfence_for_ram_probe {
+                let mut compiled = compiled;
+                assert_eq!(&snapshot.bytes[..offset], &[0x0f, 0xae, 0xf0]);
+                let [instruction] = compiled.layout.instructions.as_slice() else {
+                    panic!("the SB control needs exactly one MFENCE");
+                };
+                assert!(instruction.helper_call_word.is_none());
+                let word = &mut compiled.words[instruction.effects_start];
+                assert_eq!(*word, 0xd503_3bbf);
+                *word = 0xd503_201f; // NOP, applied before publication.
+                compiled
+            } else {
+                compiled
+            };
             let block =
                 atomic_inline::AtomicInlineBlock::publish_in(compiled, part).map_err(|error| {
                     fail(

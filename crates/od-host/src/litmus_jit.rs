@@ -116,7 +116,7 @@ pub fn jit_classification(case: &LitmusCase) -> Vec<JitInstruction> {
         .collect()
 }
 
-/// What the hook did, summed over all vCPUs of a run (atomics: every vCPU thread adds).
+/// What the hook did, summed over all vCPUs after they finish the run.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct JitLitmusCounters {
     /// Instructions executed through `execute_atomic`.
@@ -156,13 +156,24 @@ impl JitLitmusCounters {
     pub fn counted(&self) -> bool {
         self.jit_retired > 0 && self.jit_calls > 0 && self.fallback() == 0
     }
+
+    fn accumulate(&mut self, other: &Self) {
+        self.jit_retired += other.jit_retired;
+        self.jit_calls += other.jit_calls;
+        self.blocks_admitted += other.blocks_admitted;
+        self.blocks_reused += other.blocks_reused;
+        self.helper_calls += other.helper_calls;
+        self.ordinary_declined += other.ordinary_declined;
+        self.helper_declined += other.helper_declined;
+    }
 }
 
 struct SessionSlot {
     owner: u64,
     cpu: usize,
     thread: usize,
-    session: PagedFetchedLoadSession,
+    session: Option<PagedFetchedLoadSession>,
+    counters: JitLitmusCounters,
 }
 
 thread_local! {
@@ -189,13 +200,11 @@ pub struct JitLitmusHook {
     is_jit: Vec<Vec<bool>>,
     /// `parts[cpu * threads + thread]`.
     parts: Mutex<Vec<Option<JitRegionPart>>>,
-    jit_retired: AtomicU64,
-    jit_calls: AtomicU64,
-    admitted: AtomicU64,
-    reused: AtomicU64,
-    helper_calls: AtomicU64,
-    ordinary_declined: AtomicU64,
-    helper_declined: AtomicU64,
+    completed: Mutex<JitLitmusCounters>,
+    #[cfg(test)]
+    ram_probe: bool,
+    #[cfg(test)]
+    replace_mfence: bool,
 }
 
 impl JitLitmusHook {
@@ -222,13 +231,11 @@ impl JitLitmusHook {
             threads,
             is_jit,
             parts: Mutex::new(parts),
-            jit_retired: AtomicU64::new(0),
-            jit_calls: AtomicU64::new(0),
-            admitted: AtomicU64::new(0),
-            reused: AtomicU64::new(0),
-            helper_calls: AtomicU64::new(0),
-            ordinary_declined: AtomicU64::new(0),
-            helper_declined: AtomicU64::new(0),
+            completed: Mutex::new(JitLitmusCounters::default()),
+            #[cfg(test)]
+            ram_probe: false,
+            #[cfg(test)]
+            replace_mfence: false,
         })
     }
 
@@ -240,17 +247,14 @@ impl JitLitmusHook {
     }
 
     fn counters(&self, rounds: u64) -> JitLitmusCounters {
-        JitLitmusCounters {
-            jit_retired: self.jit_retired.load(Ordering::SeqCst),
-            jit_calls: self.jit_calls.load(Ordering::SeqCst),
-            blocks_admitted: self.admitted.load(Ordering::SeqCst),
-            blocks_reused: self.reused.load(Ordering::SeqCst),
-            helper_calls: self.helper_calls.load(Ordering::SeqCst),
-            ordinary_declined: self.ordinary_declined.load(Ordering::SeqCst),
-            helper_declined: self.helper_declined.load(Ordering::SeqCst),
-            jit_forms_per_round: self.jit_forms_per_round(),
-            rounds,
-        }
+        let mut counters = self
+            .completed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        counters.jit_forms_per_round = self.jit_forms_per_round();
+        counters.rounds = rounds;
+        counters
     }
 }
 
@@ -267,10 +271,6 @@ impl LitmusStepHook for JitLitmusHook {
                     step.index, step.thread
                 )
             })?;
-        if !jit {
-            self.ordinary_declined.fetch_add(1, Ordering::Relaxed);
-            return Ok(LitmusStepOutcome::Declined);
-        }
         SESSIONS.with(|cell| {
             let mut slots = cell.borrow_mut();
             let position = match slots.iter().position(|slot| {
@@ -278,23 +278,38 @@ impl LitmusStepHook for JitLitmusHook {
             }) {
                 Some(position) => position,
                 None => {
-                    let part = self
-                        .parts
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get_mut(step.cpu * self.threads + step.thread)
-                        .and_then(Option::take)
-                        .ok_or("no region part left for the session")?;
                     slots.push(SessionSlot {
                         owner: self.owner,
                         cpu: step.cpu,
                         thread: step.thread,
-                        session: PagedFetchedLoadSession::with_region_part(part),
+                        session: None,
+                        counters: JitLitmusCounters::default(),
                     });
                     slots.len() - 1
                 }
             };
-            let session = &mut slots[position].session;
+            let slot = &mut slots[position];
+            if !jit {
+                slot.counters.ordinary_declined += 1;
+                return Ok(LitmusStepOutcome::Declined);
+            }
+            if slot.session.is_none() {
+                let part = self
+                    .parts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(step.cpu * self.threads + step.thread)
+                    .and_then(Option::take)
+                    .ok_or("no region part left for the session")?;
+                let session = PagedFetchedLoadSession::with_region_part(part);
+                #[cfg(test)]
+                let session = PagedFetchedLoadSession {
+                    replace_mfence_for_ram_probe: self.replace_mfence,
+                    ..session
+                };
+                slot.session = Some(session);
+            }
+            let session = slot.session.as_mut().expect("the slot has a session");
             // The session refuses a CPU-owned CR3 (it takes the root as an argument): the litmus
             // vCPU carries its CR3 in the state, so it is lent to the call and put back.
             let saved_cr3 = step.state.cr3.take();
@@ -313,15 +328,19 @@ impl LitmusStepHook for JitLitmusHook {
                     step.cpu, step.thread, step.index, error.kind
                 )
             })?;
-            self.jit_calls.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            if self.ram_probe {
+                assert!(report.fetch_committed_writes.is_empty());
+            }
+            let counters = &mut slot.counters;
+            counters.jit_calls += 1;
             match report.admission {
-                PagedFetchAdmission::Admitted => self.admitted.fetch_add(1, Ordering::Relaxed),
-                PagedFetchAdmission::Reused => self.reused.fetch_add(1, Ordering::Relaxed),
-            };
-            self.helper_calls
-                .fetch_add(u64::from(report.run.helper_calls), Ordering::Relaxed);
+                PagedFetchAdmission::Admitted => counters.blocks_admitted += 1,
+                PagedFetchAdmission::Reused => counters.blocks_reused += 1,
+            }
+            counters.helper_calls += u64::from(report.run.helper_calls);
             let retired = report.run.retired;
-            self.jit_retired.fetch_add(retired, Ordering::Relaxed);
+            counters.jit_retired += retired;
             match report.run.exit {
                 AtomicInlineExit::Complete | AtomicInlineExit::BudgetExhausted if retired > 0 => {
                     Ok(LitmusStepOutcome::Executed { retired })
@@ -329,7 +348,7 @@ impl LitmusStepHook for JitLitmusHook {
                 AtomicInlineExit::Declined | AtomicInlineExit::BudgetExhausted => {
                     // The helper declined the operand (nothing was changed by that instruction):
                     // the interpreter executes it, and the run records the fallback.
-                    self.helper_declined.fetch_add(1, Ordering::Relaxed);
+                    counters.helper_declined += 1;
                     if retired > 0 {
                         Ok(LitmusStepOutcome::Executed { retired })
                     } else {
@@ -362,6 +381,13 @@ impl LitmusStepHook for JitLitmusHook {
                 gone
             })
             .unwrap_or_default();
+        // Publish only after this vCPU has left the measured rounds.
+        {
+            let mut completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
+            for slot in &dropped {
+                completed.accumulate(&slot.counters);
+            }
+        }
         // Dropped here, on the vCPU's own thread, outside the borrow.
         drop(dropped);
     }
@@ -495,6 +521,99 @@ mod tests {
         crate::tests::JIT_TEST_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn ram_probe_mfence(
+        vcpus: usize,
+        rounds: u64,
+        replace_mfence: bool,
+    ) -> (LitmusParallelReport, JitLitmusCounters) {
+        let case = fixture("sb-mfence.json");
+        let region = region_for(vcpus, case.vcpus()).unwrap();
+        let mut hook = JitLitmusHook::new(&case, vcpus, &region).unwrap();
+        hook.ram_probe = true;
+        hook.replace_mfence = replace_mfence;
+        let report =
+            od_machine::run_litmus_parallel_ram_probe(&case, vcpus, rounds, Some(&hook)).unwrap();
+        let jit = hook.counters(rounds);
+        assert_eq!(report.rounds, rounds);
+        assert_eq!(report.late_barrier_rounds, 0);
+        assert_eq!(report.hooked_retired, 2 * rounds);
+        assert_eq!(report.interpreted_retired, 4 * rounds);
+        assert_eq!(jit.jit_calls, 2 * rounds);
+        assert_eq!(jit.jit_retired, 2 * rounds);
+        assert_eq!(jit.ordinary_declined, 4 * rounds);
+        assert_eq!(jit.helper_calls, 0);
+        assert_eq!(jit.helper_declined, 0);
+        assert!(jit.counted());
+        (report, jit)
+    }
+
+    #[test]
+    fn s6_41e_ram_probe_counts_guest_movs_and_emitted_mfence() {
+        let _guard = jit_lock();
+        for vcpus in [2, 4] {
+            let (report, _) = ram_probe_mfence(vcpus, 100, false);
+            assert_eq!(report.verdict, LitmusParallelVerdict::Allowed);
+        }
+    }
+
+    #[test]
+    #[ignore = "hardware sensitivity probe: run the release weak-host-ordering build"]
+    fn s6_41e_ram_probe_weak_sb_and_mfence_mutation() {
+        let _guard = jit_lock();
+        assert!(
+            od_machine::BUILD_WEAK_HOST_ORDERING,
+            "enable od-machine/weak-host-ordering"
+        );
+        let rounds = std::env::var("OD_S6_SB_RAM_ROUNDS")
+            .map_or(200_000, |value| value.parse().expect("round count"));
+        let both_zero = |report: &LitmusParallelReport| {
+            report
+                .histogram
+                .iter()
+                .find(|entry| entry.values == [0, 0, 1, 1])
+                .map_or(0, |entry| entry.rounds)
+        };
+        let mut sensitive = true;
+        for vcpus in [2, 4] {
+            for file in ["mp.json", "sb.json"] {
+                let case = fixture(file);
+                let report =
+                    od_machine::run_litmus_parallel_ram_probe(&case, vcpus, rounds, None).unwrap();
+                assert_eq!(report.rounds, rounds);
+                assert_eq!(report.late_barrier_rounds, 0);
+                assert_eq!(report.hooked_retired, 0);
+                assert_eq!(report.interpreted_retired, 4 * rounds);
+                let counts: Vec<_> = report
+                    .histogram
+                    .iter()
+                    .map(|entry| (&entry.values, entry.rounds))
+                    .collect();
+                eprintln!("{vcpus} vCPU {file}: {counts:?}");
+                if file == "sb.json" {
+                    sensitive &= both_zero(&report) != 0;
+                }
+            }
+            for (label, replace) in [("DMB ISH", false), ("NOP", true)] {
+                let (report, jit) = ram_probe_mfence(vcpus, rounds, replace);
+                let counts: Vec<_> = report
+                    .histogram
+                    .iter()
+                    .map(|entry| (&entry.values, entry.rounds))
+                    .collect();
+                eprintln!("{vcpus} vCPU SB-MFENCE {label}: {counts:?}, JIT {jit:?}");
+                if replace {
+                    sensitive &= both_zero(&report) != 0;
+                } else {
+                    assert_eq!(report.verdict, LitmusParallelVerdict::Allowed);
+                }
+            }
+        }
+        assert!(
+            sensitive,
+            "inconclusive: the weak SB and NOP controls must both show (0,0)"
+        );
     }
 
     /// The classification names which instructions the JIT takes and why the others stay with the

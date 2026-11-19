@@ -437,6 +437,45 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     quantum_result(report, cpu, vcpu, device_ns)
 }
 
+/// The CPL0 interpreter for a litmus probe with no board-device or IRQ polling.
+pub(crate) fn run_litmus_ram_quantum(
+    bus: &MachineBus,
+    vcpu: &mut Vcpu,
+    cpu: usize,
+    gate: &dyn SplitLockGate,
+    budget: u64,
+    stop: &mut dyn FnMut() -> bool,
+    set: &Cpl0ProfileSet<'_>,
+) -> Result<Executed, FirmwareBoardError> {
+    let (cr3, efer, _) = quantum_inputs(vcpu)?;
+    let report = run_cpl0_set_loop(
+        &mut vcpu.state,
+        LoopBus::Shared(bus),
+        Some(gate),
+        cpu,
+        cr3,
+        efer,
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        },
+        budget,
+        INTEGER_FLAGS,
+        set,
+        None,
+        stop,
+        |_| {},
+        false,
+        None,
+        None,
+        None,
+        None,
+        ExceptionDeliveryMode::Quantum,
+    );
+    quantum_result(report, cpu, vcpu, 0)
+}
+
 #[cfg(test)]
 /// The machine and the guests the tests of this module and of the SIPI path
 /// (`ap_legacy_exec`) run on.

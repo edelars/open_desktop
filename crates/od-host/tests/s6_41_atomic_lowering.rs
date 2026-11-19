@@ -837,6 +837,261 @@ fn s6_41e_compiled_mfence_prevents_store_buffering() {
     }
 }
 
+struct NativeSbThread {
+    store: MemoryOperand,
+    load: MemoryOperand,
+    value: u16,
+    result: od_isa::Register,
+    fence: Option<u32>,
+    bytes: Vec<u8>,
+    instructions: u64,
+}
+
+fn decode_native_sb_thread(program: &[od_machine::LitmusInstruction]) -> NativeSbThread {
+    use long_decode::{Operand, Operation as GuestOp};
+    let (store, fence, load) = match program {
+        [store, load] => (store, None, load),
+        [store, fence, load] => (store, Some(fence), load),
+        _ => panic!("expected the SB guest thread"),
+    };
+    let decode = |bytes: &[u8]| {
+        let instruction = long_decode::decode(&mut CodeBytes(bytes.to_vec()), 0, ring0()).unwrap();
+        assert_eq!(usize::from(instruction.length), bytes.len());
+        instruction.operation
+    };
+    let GuestOp::MovImmediate {
+        dst: Operand::Memory(store_operand),
+        value,
+    } = decode(&store.bytes)
+    else {
+        panic!("expected the guest immediate store");
+    };
+    let GuestOp::Mov {
+        dst: Operand::Register(result),
+        src: Operand::Memory(load_operand),
+    } = decode(&load.bytes)
+    else {
+        panic!("expected the guest load");
+    };
+    for operand in [store_operand, load_operand] {
+        assert_eq!(operand.size, OperandSize::Dword);
+        assert_eq!(operand.address_size, OperandSize::Qword);
+        assert_eq!(operand.base, GuestBase::None);
+        assert!(operand.index.is_none());
+        assert!(matches!(operand.displacement, 0x1000 | 0x1004));
+    }
+    assert_ne!(store_operand.displacement, load_operand.displacement);
+    assert_eq!(result.size(), OperandSize::Dword);
+    assert!(matches!(
+        result.register(),
+        od_isa::Register::Rax | od_isa::Register::Rbx
+    ));
+    assert_eq!(value, 1);
+    let fence = fence.map(|instruction| {
+        assert_eq!(instruction.bytes, [0x0f, 0xae, 0xf0]);
+        let block =
+            compile_atomic_block(&adapted(&instruction.bytes), MemoryOrderMode::Parallel).unwrap();
+        let [instruction] = block.layout.instructions.as_slice() else {
+            panic!("expected one compiled MFENCE");
+        };
+        assert!(instruction.helper_call_word.is_none());
+        let word = block.words[instruction.effects_start];
+        assert_eq!(word, 0xd503_3bbf);
+        word
+    });
+    NativeSbThread {
+        store: store_operand,
+        load: load_operand,
+        value: value as u16,
+        result: result.register(),
+        fence,
+        bytes: program
+            .iter()
+            .flat_map(|instruction| instruction.bytes.iter().copied())
+            .collect(),
+        instructions: program.len() as u64,
+    }
+}
+
+struct NativeSbHook {
+    threads: Vec<NativeSbThread>,
+    entries: Vec<PairFn>,
+}
+
+impl od_machine::LitmusStepHook for NativeSbHook {
+    fn step(
+        &self,
+        step: od_machine::LitmusStep<'_>,
+    ) -> Result<od_machine::LitmusStepOutcome, String> {
+        use od_machine::{GuestLinearAddress, Long64ProbeConfig, ProbeOutcome, probe_long64_4k};
+
+        let thread = &self.threads[step.thread];
+        assert_eq!(step.index, 0);
+        assert!(step.budget >= thread.instructions);
+        let memory = step.bus.atomic_inline_memory();
+        let config = Long64ProbeConfig::new(
+            step.state.cr0.unwrap(),
+            step.cr3,
+            step.state.cr4.unwrap(),
+            step.efer,
+        )
+        .unwrap();
+        let locate = |linear, kind| {
+            let probe = probe_long64_4k(
+                memory,
+                &config,
+                GuestLinearAddress::new(linear),
+                kind,
+                ring0(),
+            );
+            let ProbeOutcome::Translated(translation) = probe.outcome.unwrap() else {
+                panic!("the SB cell or code must be mapped");
+            };
+            assert_eq!(translation.physical.get(), linear);
+            translation.physical
+        };
+        let rip = step.state.rip;
+        assert!(matches!(rip, 0x2000 | 0x3000));
+        let next_rip = rip + thread.bytes.len() as u64;
+        let mut fetched = [0; 21];
+        let fetched = &mut fetched[..thread.bytes.len()];
+        memory
+            .load_bytes(locate(rip, AccessKind::Fetch), fetched)
+            .unwrap();
+        assert_eq!(fetched, thread.bytes);
+        let store_at = thread
+            .store
+            .access_address_48(step.state, next_rip)
+            .unwrap();
+        let load_at = thread.load.access_address_48(step.state, next_rip).unwrap();
+        let store = memory
+            .atomic_operand_window(locate(store_at, AccessKind::Write), 4)
+            .unwrap();
+        let load = memory
+            .atomic_operand_window(locate(load_at, AccessKind::Read), 4)
+            .unwrap();
+        // SAFETY: the live PublishedCode keeps this entry mapped through the joined run.
+        // The two validated operands are naturally aligned dwords in RAM, separate from all
+        // code and page tables. The exact leaf body uses two pointer arguments and no helper.
+        let value =
+            unsafe { (self.entries[step.thread])(store.host_ptr().cast(), load.host_ptr().cast()) };
+        step.state.gpr[thread.result as usize] = value;
+        step.state.rip = next_rip;
+        // These fixed data cells have no code observers inside the test block. Publish the
+        // completed store after its paired load so the generation RMW cannot order the pair.
+        store.generation().fetch_add(1, Ordering::Release);
+        Ok(od_machine::LitmusStepOutcome::Executed {
+            retired: thread.instructions,
+        })
+    }
+
+    fn thread_exit(&self, _: usize) {}
+}
+
+fn native_guest_sb(
+    fixture: &od_machine::LitmusCase,
+    vcpus: usize,
+    rounds: u64,
+    mutate: bool,
+) -> od_machine::LitmusParallelReport {
+    let threads: Vec<_> = fixture
+        .program()
+        .iter()
+        .map(|p| decode_native_sb_thread(p))
+        .collect();
+    let mut image = Image::new();
+    let mut fence_words = Vec::new();
+    for (thread, program) in threads.iter().enumerate() {
+        image.begin(&thread.to_string());
+        image.encoder.movz_x(x(9), program.value, 0).unwrap();
+        // Use weak ordinary accesses on the real parallel board in all sensitivity controls.
+        store(&mut image, MemoryOrderMode::Interleaved, 0);
+        if let Some(word) = program.fence {
+            let offset = image.encoder.position() * 4;
+            fence(&mut image, MemoryOrderMode::Parallel, FenceKind::Full);
+            fence_words.push((offset, word));
+        }
+        load(&mut image, MemoryOrderMode::Interleaved, 1, 3);
+        ret_with(&mut image, 3);
+    }
+    let (mut bytes, addresses) = image.finish();
+    for (offset, word) in fence_words {
+        let place = &mut bytes[offset..offset + 4];
+        assert_eq!(place, word.to_le_bytes());
+        place.copy_from_slice(&if mutate { 0xd503_201f } else { word }.to_le_bytes());
+    }
+    let published = PublishedCode::publish(&bytes).unwrap();
+    let entries = (0..threads.len())
+        .map(|thread| pair_fn(entry(&published, &addresses, &thread.to_string())))
+        .collect();
+    let expected = threads
+        .iter()
+        .map(|thread| thread.instructions)
+        .sum::<u64>()
+        * rounds;
+    let hook = NativeSbHook { threads, entries };
+    let report =
+        od_machine::run_litmus_parallel_ram_probe(fixture, vcpus, rounds, Some(&hook)).unwrap();
+    assert_eq!(report.rounds, rounds);
+    assert_eq!(report.late_barrier_rounds, 0);
+    assert_eq!(report.interpreted_retired, 0);
+    assert_eq!(report.hooked_retired, expected);
+    drop(published);
+    report
+}
+
+#[test]
+#[ignore = "hardware sensitivity probe using two/three decoded guest instructions"]
+fn s6_41e_native_guest_sb_detects_the_emitted_mfence_mutation() {
+    let _guard = JIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/guest/stage6/litmus");
+    let sb = od_machine::LitmusCase::from_fixture_file(&root.join("sb.json")).unwrap();
+    let mfence = od_machine::LitmusCase::from_fixture_file(&root.join("sb-mfence.json")).unwrap();
+    let rounds: u64 = std::env::var("OD_S6_SB_RAM_ROUNDS")
+        .map_or(200_000, |value| value.parse().expect("round count"));
+    // Resetting two dwords and executing two stores can raise the same generation each round.
+    // Leave room for those writes and for the fixture setup on a fresh machine.
+    assert!(rounds > 0 && rounds.checked_mul(16).is_some());
+    let mut sensitive = true;
+    for vcpus in [2, 4] {
+        for (label, case, mutate) in [
+            ("weak SB", &sb, false),
+            ("DMB ISH", &mfence, false),
+            ("NOP", &mfence, true),
+        ] {
+            let report = native_guest_sb(case, vcpus, rounds, mutate);
+            let counts: Vec<_> = report
+                .histogram
+                .iter()
+                .map(|entry| (&entry.values, entry.rounds))
+                .collect();
+            eprintln!(
+                "{vcpus} vCPU {label}: {counts:?}, native guest retired {}, fence slots {}",
+                report.hooked_retired,
+                report.hooked_retired - 4 * rounds,
+            );
+            let zero = report
+                .histogram
+                .iter()
+                .find(|entry| entry.values == [0, 0, 1, 1])
+                .map_or(0, |entry| entry.rounds);
+            if label == "DMB ISH" {
+                assert_eq!(report.verdict, od_machine::LitmusParallelVerdict::Allowed);
+                assert_eq!(zero, 0);
+            } else {
+                sensitive &= zero != 0;
+            }
+        }
+    }
+    assert!(
+        sensitive,
+        "inconclusive: both weak guest controls must show (0,0)"
+    );
+}
+
 #[test]
 fn s6_41_ordering_litmus_on_generated_code() {
     let _guard = JIT_LOCK

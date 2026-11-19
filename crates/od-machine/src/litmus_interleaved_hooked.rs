@@ -121,7 +121,7 @@ impl<'c> Machine<'c> {
                 case.id
             )));
         }
-        let board = build_board(case, threads, true).map_err(LitmusError::Load)?;
+        let board = build_board(case, threads, true, false).map_err(LitmusError::Load)?;
         let ends = case
             .threads
             .iter()

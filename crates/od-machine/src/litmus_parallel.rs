@@ -31,7 +31,7 @@
 //! check: that is the job of the weakened builds (`weak-host-ordering`, `nonatomic-lock-test`,
 //! `SMP.md` 5.1).
 
-use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
+use crate::firmware_board::vcpu_quantum::{run_litmus_ram_quantum, run_vcpu_set_quantum_shared};
 use crate::firmware_board::{FIRMWARE_CR0, FIRMWARE_CR4, assemble_board};
 use crate::litmus::{LitmusCase, LitmusError};
 use crate::litmus_interleaving::{Case, Field, Outcome};
@@ -303,6 +303,7 @@ struct Driver<'c> {
     failure: Mutex<Option<String>>,
     /// S6-41e: the step hook (the JIT of `od-host`), `None` for the interpreter-only run of S6-36.
     hook: Option<&'c dyn LitmusStepHook>,
+    ram_probe: bool,
     /// Instructions the hook executed and instructions the interpreter executed, all rounds.
     hooked_retired: AtomicU64,
     interpreted_retired: AtomicU64,
@@ -442,18 +443,30 @@ impl Driver<'_> {
                     } else {
                         budget.max(1).min(total - retired)
                     };
-                    let executed = run_vcpu_set_quantum_shared(
-                        env,
-                        vcpu,
-                        cpu,
-                        lapic,
-                        &mut *source,
-                        Some(gate),
-                        interpreter_budget,
-                        &mut poll,
-                        &set,
-                        consecutive_faults,
-                    );
+                    let executed = if self.ram_probe {
+                        run_litmus_ram_quantum(
+                            env.bus,
+                            vcpu,
+                            cpu,
+                            gate,
+                            interpreter_budget,
+                            &mut poll,
+                            &set,
+                        )
+                    } else {
+                        run_vcpu_set_quantum_shared(
+                            env,
+                            vcpu,
+                            cpu,
+                            lapic,
+                            &mut *source,
+                            Some(gate),
+                            interpreter_budget,
+                            &mut poll,
+                            &set,
+                            consecutive_faults,
+                        )
+                    };
                     let executed = match executed {
                         Ok(executed) => executed,
                         Err(error) => {
@@ -628,6 +641,7 @@ pub(crate) fn build_board(
     case: &Case,
     vcpus: usize,
     pages_4k: bool,
+    preaccessed: bool,
 ) -> Result<LoadedFirmwareBoard, String> {
     let config = FirmwareBoardConfig {
         vcpu_count: vcpus,
@@ -647,10 +661,11 @@ pub(crate) fn build_board(
             .map_err(|error| format!("patch {at:#x}: {error:?}"))
     };
     let entry = |value: u64| value.to_le_bytes();
-    patch(TABLES, &entry((TABLES + 0x1000) | 3))?;
-    patch(TABLES + 0x1000, &entry((TABLES + 0x2000) | 3))?;
+    let branch_flags = if preaccessed { 0x23 } else { 3 };
+    patch(TABLES, &entry((TABLES + 0x1000) | branch_flags))?;
+    patch(TABLES + 0x1000, &entry((TABLES + 0x2000) | branch_flags))?;
     if pages_4k {
-        patch(TABLES + 0x2000, &entry((TABLES + 0x3000) | 3))?;
+        patch(TABLES + 0x2000, &entry((TABLES + 0x3000) | branch_flags))?;
         let mut table = vec![0u8; 0x1000];
         for page in 0..512u64 {
             // Present, writable, accessed, dirty: the walks set no bit in a table.
@@ -659,7 +674,10 @@ pub(crate) fn build_board(
         }
         patch(TABLES + 0x3000, &table)?;
     } else {
-        patch(TABLES + 0x2000, &entry(0x83))?;
+        patch(
+            TABLES + 0x2000,
+            &entry(if preaccessed { 0xe3 } else { 0x83 }),
+        )?;
     }
     let mut gdt = [0u8; 24];
     gdt[8..16].copy_from_slice(&0x00AF_9B00_0000_FFFFu64.to_le_bytes());
@@ -694,7 +712,7 @@ pub fn run_litmus_parallel(
     vcpus: usize,
     rounds: u64,
 ) -> Result<LitmusParallelReport, LitmusError> {
-    run_litmus_parallel_with(case, vcpus, rounds, None)
+    run_litmus_parallel_with(case, vcpus, rounds, None, false)
 }
 
 /// S6-41e: [`run_litmus_parallel`] with a [`LitmusStepHook`] that takes instructions before the
@@ -705,7 +723,18 @@ pub fn run_litmus_parallel_hooked(
     rounds: u64,
     hook: &dyn LitmusStepHook,
 ) -> Result<LitmusParallelReport, LitmusError> {
-    run_litmus_parallel_with(case, vcpus, rounds, Some(hook))
+    run_litmus_parallel_with(case, vcpus, rounds, Some(hook), false)
+}
+
+/// An ordering sensitivity probe over pre-accessed guest RAM using the same fixtures, vCPU
+/// workers and round barriers. It bypasses device polling inside the guest instruction window.
+pub fn run_litmus_parallel_ram_probe(
+    case: &LitmusCase,
+    vcpus: usize,
+    rounds: u64,
+    hook: Option<&dyn LitmusStepHook>,
+) -> Result<LitmusParallelReport, LitmusError> {
+    run_litmus_parallel_with(case, vcpus, rounds, hook, true)
 }
 
 fn run_litmus_parallel_with(
@@ -713,6 +742,7 @@ fn run_litmus_parallel_with(
     vcpus: usize,
     rounds: u64,
     hook: Option<&dyn LitmusStepHook>,
+    ram_probe: bool,
 ) -> Result<LitmusParallelReport, LitmusError> {
     let case = case.case();
     let threads = case.threads.len();
@@ -732,7 +762,8 @@ fn run_litmus_parallel_with(
             "the number of rounds is at least 1".into(),
         ));
     }
-    let mut board = build_board(case, vcpus, hook.is_some()).map_err(LitmusError::Load)?;
+    let mut board = build_board(case, vcpus, hook.is_some() || ram_probe, ram_probe)
+        .map_err(LitmusError::Load)?;
     let driver = Driver {
         case,
         rounds,
@@ -748,6 +779,7 @@ fn run_litmus_parallel_with(
         late_barrier_rounds: AtomicU64::new(0),
         failure: Mutex::new(None),
         hook,
+        ram_probe,
         hooked_retired: AtomicU64::new(0),
         interpreted_retired: AtomicU64::new(0),
     };

@@ -466,6 +466,7 @@ pub use litmus_interleaved_hooked::{
 pub use litmus_parallel::{
     LITMUS_PARALLEL_MAX_VCPUS, LitmusParallelOutcome, LitmusParallelReport, LitmusParallelVerdict,
     LitmusStep, LitmusStepHook, LitmusStepOutcome, run_litmus_parallel, run_litmus_parallel_hooked,
+    run_litmus_parallel_ram_probe,
 };
 
 pub use stage6_smp_probe::{
