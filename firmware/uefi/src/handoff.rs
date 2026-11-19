@@ -215,22 +215,7 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn crc32_with_zeroed_field(bytes: &[u8]) -> u32 {
-    let mut state = 0xFFFF_FFFFu32;
-    for (index, &byte) in bytes.iter().enumerate() {
-        state ^= u32::from(if (CRC_OFFSET..CRC_OFFSET + 4).contains(&index) {
-            0
-        } else {
-            byte
-        });
-        for _ in 0..8 {
-            state = if state & 1 != 0 {
-                (state >> 1) ^ 0xEDB8_8320
-            } else {
-                state >> 1
-            };
-        }
-    }
-    state ^ 0xFFFF_FFFF
+    crate::crc32::with_zeroed_word(bytes, CRC_OFFSET)
 }
 
 fn table_fits(offset: u32, count: u32, entry_size: u32, total: usize) -> bool {

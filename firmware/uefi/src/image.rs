@@ -96,30 +96,12 @@ impl ImageHeader {
     }
 }
 
-/// CRC-32 IEEE 802.3, reflected: polynomial `0xEDB8_8320`, init and final XOR `0xFFFF_FFFF`.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    crc32_update(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
-}
+pub use crate::crc32::crc32;
 
-fn crc32_update(mut state: u32, bytes: &[u8]) -> u32 {
-    for &byte in bytes {
-        state ^= u32::from(byte);
-        for _ in 0..8 {
-            state = if state & 1 != 0 {
-                (state >> 1) ^ 0xEDB8_8320
-            } else {
-                state >> 1
-            };
-        }
-    }
-    state
-}
-
-/// CRC-32 of the whole image with the `image_crc32` field treated as zero.
+/// CRC-32 of the whole image with the image CRC field treated as zero.
 pub fn image_crc32(image: &[u8]) -> u32 {
-    let state = crc32_update(0xFFFF_FFFF, &image[..CRC_OFFSET]);
-    let state = crc32_update(state, &[0; 4]);
-    crc32_update(state, &image[CRC_OFFSET + 4..]) ^ 0xFFFF_FFFF
+    assert!(image.len() >= CRC_OFFSET + size_of::<u32>());
+    crate::crc32::with_zeroed_word(image, CRC_OFFSET)
 }
 
 /// Checks a complete in-memory image against the v1 contract and returns its header.

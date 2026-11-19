@@ -5,6 +5,7 @@
 #![no_main]
 
 use core::arch::asm;
+use core::ptr;
 
 mod serial;
 use core::panic::PanicInfo;
@@ -22,9 +23,11 @@ use od_firmware::mem::pages::{
 };
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
-    STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR,
-    STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
+    STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
+    STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
 };
+use od_firmware::uefi::status::Status;
+use od_firmware::uefi::system_table::{BootServices, RuntimeServices, SystemTable};
 
 unsafe extern "C" {
     static __shadow_read_only_start: u8;
@@ -41,6 +44,9 @@ const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
 const PAGING_ACTIVE_LINE: &[u8] = b"OD-FW S7-04 page tables active\r\n";
 // Three live allocations can each introduce two additional descriptors.
 const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
+static FIRMWARE_VENDOR: [u16; 13] = [
+    0x4f, 0x70, 0x65, 0x6e, 0x20, 0x44, 0x65, 0x73, 0x6b, 0x74, 0x6f, 0x70, 0,
+];
 
 fn halt_forever() -> ! {
     loop {
@@ -148,7 +154,61 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         com1_write(&fixed_hex(u64::from(byte)));
         com1_write(b"\r\n");
     }
+    let mut boot = BootServices::diagnostic();
+    let mut runtime = RuntimeServices::diagnostic();
+    boot.update_crc32();
+    runtime.update_crc32();
+    let mut system = SystemTable::diagnostic(
+        FIRMWARE_VENDOR.as_ptr(),
+        ptr::addr_of_mut!(runtime),
+        ptr::addr_of_mut!(boot),
+    );
+    system.update_crc32();
+    verify_boot_services(&system);
+    // Keep the full wire representations inspectable in RAM at the diagnostic halt.
+    unsafe {
+        asm!(
+            "/* {system} {boot} {runtime} */",
+            system = in(reg) &system,
+            boot = in(reg) &boot,
+            runtime = in(reg) &runtime,
+            options(nostack, preserves_flags),
+        );
+    }
     halt_forever()
+}
+
+#[inline(never)]
+fn verify_boot_services(system: &SystemTable) {
+    let mut buffer = [0u8; 10];
+    let mut checksum = 0;
+    // SAFETY: the System Table points to the live diagnostic tables on the boot
+    // stack. Each service receives valid buffers and the correct x64 EFI ABI.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let calculate_crc32 = ptr::addr_of!((*boot).calculate_crc32).read_volatile();
+        let copy_mem = ptr::addr_of!((*boot).copy_mem).read_volatile();
+        let set_mem = ptr::addr_of!((*boot).set_mem).read_volatile();
+        set_mem(buffer.as_mut_ptr().cast(), buffer.len(), 0xa5);
+        if calculate_crc32(buffer.as_ptr().cast(), buffer.len(), &mut checksum) != Status::SUCCESS
+            || checksum != 0xd42a82ad
+        {
+            stop(STOP_BOOT_SERVICES, 1);
+        }
+
+        let data = buffer.as_mut_ptr();
+        let shifted = data.add(1);
+        copy_mem(data.cast(), b"123456789".as_ptr().cast(), 9);
+        copy_mem(shifted.cast(), data.cast(), 9);
+        if calculate_crc32(shifted.cast(), 9, &mut checksum) != Status::SUCCESS
+            || checksum != 0xcbf43926
+        {
+            stop(STOP_BOOT_SERVICES, 2);
+        }
+    }
+    com1_write(b"OD-FW S7-05 Boot Services utilities verified ST=0x");
+    com1_write(&fixed_hex(ptr::from_ref(system).addr() as u64));
+    com1_write(b"\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

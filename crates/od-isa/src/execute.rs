@@ -20243,12 +20243,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ Operand::Register(_),
         }
         | Operation::Logic {
-            kind: LogicKind::Or,
+            kind: LogicKind::Xor | LogicKind::Or,
             dst: Operand::Register(destination),
             src: source @ Operand::Memory(_),
         }
         | Operation::Logic {
-            kind: LogicKind::And | LogicKind::Or,
+            kind: LogicKind::And | LogicKind::Or | LogicKind::Not,
             dst: Operand::Register(destination),
             src: source @ Operand::Immediate(_),
         }
@@ -20364,6 +20364,21 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         )
                     )
                 }
+                Operation::Logic {
+                    kind: LogicKind::Not,
+                    ..
+                } => {
+                    instruction.opcode.byte == 0xf7
+                        && instruction.operand_size == OperandSize::Dword
+                }
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    src: Operand::Memory(_),
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword)
+                ),
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     ..
@@ -20885,14 +20900,23 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         }
         Operation::StackRegister {
             push: true,
-            register: Register::Rcx,
-        } if allow_stack_forms
-            && instruction.length == 1
-            && instruction.opcode.byte == 0x51
-            && instruction.prefixes == Prefixes::default()
-            && instruction.operand_size == OperandSize::Qword =>
+            register,
+        } if instruction.operand_size == OperandSize::Qword
+            && ((allow_stack_forms
+                && register == Register::Rcx
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x51
+                && instruction.prefixes == Prefixes::default())
+                || (firmware_boot_profile
+                    && instruction.opcode.map == OpcodeMap::Primary
+                    && matches!(instruction.opcode.byte, 0x50..=0x57)
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: instruction.prefixes.rex,
+                            ..Prefixes::default()
+                        }))) =>
         {
-            let value = state.gpr[Register::Rcx as usize];
+            let value = state.gpr[register as usize];
             if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
             {
                 return match error {
@@ -21539,13 +21563,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: register qword CMOVcc in firmware, or the existing exact dword forms.
+        // Register dword and qword CMOVcc in firmware, or the existing exact dword forms.
         Operation::ConditionalMove {
             condition,
             dst: destination,
             src: Operand::Register(source),
         } if (firmware_boot_profile
-            && instruction.operand_size == OperandSize::Qword
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -23359,9 +23386,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             && instruction.length == 5
                             && instruction.prefixes == Prefixes::default()
                     }
-                    Operation::IndirectCall {
-                        operand: Operand::Memory(_),
-                    } => {
+                    Operation::IndirectCall { .. } => {
                         firmware_boot_profile
                             && instruction.opcode.byte == 0xff
                             && instruction.address_size == OperandSize::Qword
@@ -25339,9 +25364,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: the handoff CRC uses two indexed dword reads. Firmware boot
-        // takes the table displacement from the decoded instruction. The
-        // diagnostic profile retains the address from its original ROM.
+        // S7-04: the diagnostic handoff CRC uses these exact indexed dword reads.
         Operation::Logic {
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
@@ -25362,7 +25385,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     && source.index == Some(Register::R14)))
             && source.base == AddressBase::None
             && source.scale == 4
-            && (source.displacement == 0x202680 || firmware_boot_profile)
+            && source.displacement == 0x202680
             && source.address_size == OperandSize::Qword
             && source.size == OperandSize::Dword =>
         {

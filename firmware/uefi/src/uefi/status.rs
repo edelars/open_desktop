@@ -1,0 +1,32 @@
+/// Native-width EFI_STATUS. Warnings have the high bit clear.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct Status(usize);
+
+impl Status {
+    pub const SUCCESS: Self = Self(0);
+    pub const INVALID_PARAMETER: Self = Self(Self::ERROR_BIT | 2);
+
+    const ERROR_BIT: usize = 1 << (usize::BITS - 1);
+
+    pub const fn is_error(self) -> bool {
+        self.0 & Self::ERROR_BIT != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_distinguishes_errors_from_success_and_warnings() {
+        assert_eq!(
+            core::mem::size_of::<Status>(),
+            core::mem::size_of::<usize>()
+        );
+        assert!(!Status::SUCCESS.is_error());
+        assert!(!Status(1).is_error());
+        assert!(Status::INVALID_PARAMETER.is_error());
+        assert_eq!(Status::INVALID_PARAMETER.0, Status::ERROR_BIT | 2);
+    }
+}
