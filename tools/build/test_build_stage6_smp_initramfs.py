@@ -75,7 +75,7 @@ class SmpInitramfsTests(unittest.TestCase):
 
     def test_smp_verification_requires_matching_kernel_summary_and_ipis(self):
         summary = "[    1.234500] smp: Brought up 1 node, 2 CPUs\r\n"
-        valid = summary + two_cpu_transcript()
+        valid = summary + two_cpu_transcript() + "watchdog: Hard lockup detector is disabled\r\n"
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "report.json"
             report.write_text(json.dumps({"stop": {"com1_text": valid}}))
@@ -84,6 +84,7 @@ class SmpInitramfsTests(unittest.TestCase):
             "missing summary": two_cpu_transcript(),
             "late summary": two_cpu_transcript() + summary,
             "duplicate summary": summary + valid,
+            "duplicate summary after init": valid + summary,
             "wrong count": valid.replace("2 CPUs", "1 CPU"),
             "IPI missing on AP": valid.replace("3  Function call", "0  Function call"),
             "no IPI rows": "\r\n".join(
@@ -93,6 +94,19 @@ class SmpInitramfsTests(unittest.TestCase):
         for name, transcript in cases.items():
             with self.subTest(name=name), self.assertRaises(BuildError):
                 parse_observation(transcript, NONCE, require_smp_evidence=True)
+
+    def test_smp_verification_rejects_kernel_diagnostics_even_after_init(self):
+        valid = "[    1.234500] smp: Brought up 1 node, 2 CPUs\n" + two_cpu_transcript()
+        for diagnostic in (
+            "watchdog: BUG: soft lockup - CPU#1 stuck for 26s!",
+            "rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:",
+            "[Firmware Bug]: CPU   1: APIC ID mismatch. CPUID: 0x0001 APIC: 0x0000",
+            "Kernel panic - not syncing: stopped",
+        ):
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(
+                BuildError, "kernel diagnostic invalidates the run"
+            ):
+                parse_observation(valid + diagnostic + "\n", NONCE, require_smp_evidence=True)
 
 
 if __name__ == "__main__":

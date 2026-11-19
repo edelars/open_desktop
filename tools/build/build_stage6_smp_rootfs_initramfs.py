@@ -13,7 +13,7 @@ import stat
 import zlib
 
 from build_stage4_initramfs import BuildError, pack_cpio, parse_cpio, sha256
-from build_stage6_smp_initramfs import SMP_BRINGUP, parse_online, read_com1_text
+from build_stage6_smp_initramfs import parse_online, read_com1_text, reject_kernel_failures, verify_bringup
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -32,11 +32,6 @@ WORKLOAD_COUNTS = (
 PASS = re.compile(
     r"OD_S6_22_PASS nonce=([A-Za-z0-9._-]+) case=([a-z]+)"
     r" cpus=([0-9]{1,3}),([0-9]{1,3}) checked=([0-9]{1,8})"
-)
-LINUX_FAILURE = re.compile(
-    r"\b(?:BUG|Oops):|Kernel panic|detected (?:soft|hard) lockup"
-    r"|\brcu\b[^\r\n]*\bdetected stalls?\b|\btask\b[^\r\n]*\bblocked for more than [0-9]+ seconds",
-    re.I,
 )
 
 STAGE5_HANDOFF = b"""/bin/busybox mount -o move /proc /newroot/proc || fail 'proc mount handoff failed'
@@ -104,19 +99,8 @@ def read_workload_lines(path: Path, nonce: str) -> list[str]:
         raise BuildError("invalid workload nonce")
     # Kernel output may be interleaved with complete marker lines on COM1.
     lines = [line.strip() for line in read_com1_text(path).splitlines()]
-    if any(LINUX_FAILURE.search(line) for line in lines):
-        raise BuildError("kernel reported a BUG, panic, oops, lockup or task/CPU stall")
+    reject_kernel_failures(lines)
     return lines
-
-
-def verify_bringup(lines: list[str], first_marker: int, expected_online: int) -> None:
-    brought_up = [
-        (index, int(match[1]))
-        for index, line in enumerate(lines)
-        if (match := SMP_BRINGUP.fullmatch(line)) is not None
-    ]
-    if len(brought_up) != 1 or brought_up[0][0] >= first_marker or brought_up[0][1] != expected_online:
-        raise BuildError("expected one matching kernel SMP bring-up summary before the workloads")
 
 
 def verify_online(line: str, task: int, nonce: str, expected: int) -> list[int]:

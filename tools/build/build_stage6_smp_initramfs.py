@@ -20,6 +20,28 @@ DEFAULT_OUTPUT = REPO / "work/stage6/smp-init/initramfs.cpio"
 SMP_BRINGUP = re.compile(
     r"(?:\[\s*[0-9]+\.[0-9]+\]\s*)?smp: Brought up [1-9][0-9]* nodes?, ([1-9][0-9]{0,3}) CPUs?"
 )
+LINUX_FAILURE = re.compile(
+    r"\b(?:BUG|Oops):|Kernel panic|detected (?:soft|hard) lockup"
+    r"|\brcu\b[^\r\n]*\bdetected stalls?\b|\btask\b[^\r\n]*\bblocked for more than [0-9]+ seconds"
+    r"|\bAPIC ID mismatch\b",
+    re.I,
+)
+
+
+def reject_kernel_failures(lines: list[str]) -> None:
+    for line in lines:
+        if LINUX_FAILURE.search(line):
+            raise BuildError(f"kernel diagnostic invalidates the run: {line.strip()}")
+
+
+def verify_bringup(lines: list[str], first_marker: int, expected_online: int) -> None:
+    brought_up = [
+        (index, int(match[1]))
+        for index, line in enumerate(lines)
+        if (match := SMP_BRINGUP.fullmatch(line.strip())) is not None
+    ]
+    if len(brought_up) != 1 or brought_up[0][0] >= first_marker or brought_up[0][1] != expected_online:
+        raise BuildError("expected one matching kernel SMP bring-up summary before the guest observation")
 
 
 def build_archive() -> bytes:
@@ -70,6 +92,8 @@ def parse_observation(
 ) -> dict[str, object]:
     validate_nonce(nonce)
     lines = transcript.splitlines()
+    if require_smp_evidence:
+        reject_kernel_failures(lines)
     if any(line.startswith("OD_SMP_ERROR ") for line in lines):
         raise BuildError("guest /init reported an observation error")
     begin = [i for i, line in enumerate(lines) if line.startswith("OD_SMP_V1 ")]
@@ -114,13 +138,7 @@ def parse_observation(
     if require_smp_evidence:
         if len(cpus) < 2:
             raise BuildError("SMP evidence requires at least two online CPUs")
-        brought_up = [
-            int(match[1])
-            for line in lines[:begin[0]]
-            if (match := SMP_BRINGUP.fullmatch(line.strip())) is not None
-        ]
-        if brought_up != [len(cpus)]:
-            raise BuildError("expected one matching kernel SMP bring-up summary before the observation")
+        verify_bringup(lines, begin[0], len(cpus))
         for index, cpu in enumerate(cpus):
             if not any(counts[index] > 0 for counts in ipis.values()):
                 raise BuildError(f"CPU{cpu} has no nonzero guest IPI count")

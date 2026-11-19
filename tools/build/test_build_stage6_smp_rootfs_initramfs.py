@@ -67,6 +67,7 @@ class SmpWorkloadReportTests(unittest.TestCase):
             "kernel lockup": good + "[    2.50] watchdog: Watchdog detected hard LOCKUP on cpu 1",
             "hung task": good + "[    2.50] INFO: task kworker/1:0:23 blocked for more than 120 seconds.",
             "kernel oops": good + "[    2.50] Oops: general protection fault, probably for non-canonical address",
+            "kernel APIC mismatch": good + "[Firmware Bug]: CPUID leaf 0xb subleaf 0 APIC ID mismatch 0 != 1",
         }
         for label, transcript in invalid.items():
             with self.subTest(label=label), self.assertRaises(BuildError):
