@@ -1,7 +1,7 @@
 //! Linux CPL0 instruction profiles and their per-vCPU backing state.
 
 use super::LinuxCpl0SetMembers;
-use crate::vcpu::Vcpu;
+use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet, GuestFpState, MovCr3Long64V1};
 use od_isa::msr::MsrProfile;
 use od_isa::{CliProfile, HaltProfile, StiProfile};
@@ -11,6 +11,7 @@ use std::fmt::Arguments;
 /// Backs the ISA profile for one vCPU. The caller commits these cells when execution stops,
 /// including on an error after a retired prefix.
 pub(super) struct LinuxVcpuCells {
+    is_bsp: bool,
     efer: Cell<u64>,
     star: Cell<u64>,
     lstar: Cell<u64>,
@@ -26,6 +27,7 @@ pub(super) struct LinuxVcpuCells {
 impl LinuxVcpuCells {
     pub(super) fn from_vcpu(vcpu: &Vcpu) -> Self {
         Self {
+            is_bsp: vcpu.index == BOOT_VCPU_INDEX,
             efer: Cell::new(vcpu.guest_efer),
             star: Cell::new(vcpu.guest_star),
             lstar: Cell::new(vcpu.guest_lstar),
@@ -134,7 +136,7 @@ impl LinuxCpl0Profile {
             record_member(format_args!("msr:tdx_keyid_partitioning_read"));
         }
         if members.msr_apic_base {
-            set = set.with_msr_apic_base();
+            set = set.with_msr_apic_base_for_vcpu(cpu.is_bsp);
             record_member(format_args!("msr:apic_base"));
         }
         if members.fp_state {
@@ -191,15 +193,88 @@ mod tests {
     use super::*;
     use crate::firmware_board::FirmwareBoardError;
     use crate::firmware_board::vcpu_quantum::{
-        fixture::{CODE_1, STACK_1, TABLES_1, board, install, long_state, patch, tables},
+        fixture::{
+            CODE_0, CODE_1, STACK_0, STACK_1, TABLES_0, TABLES_1, board, install, long_state,
+            patch, tables,
+        },
         run_vcpu_set_quantum_shared,
     };
     use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
-    use crate::vcpu::BOOT_VCPU_INDEX;
-    use od_isa::CpuActivity;
+    use crate::smp_scheduler::{Executed, RunFailure};
     use od_isa::cpuid::CpuidProfile;
     use od_isa::real_mode_exec::EFLAGS_IF;
+    use od_isa::{CpuActivity, Register};
     use std::time::Duration;
+
+    fn run_profile_quantum(
+        profile: &LinuxCpl0Profile,
+        call: QuantumCall<'_, '_>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+        let cells = LinuxVcpuCells::from_vcpu(call.vcpu);
+        let pci_config = Cell::new(0);
+        let set = profile.bind(&cells, &pci_config, |_| {});
+        let outcome = run_vcpu_set_quantum_shared(
+            call.env,
+            call.vcpu,
+            call.cpu,
+            call.lapic,
+            call.source,
+            Some(call.gate),
+            call.budget,
+            call.stop,
+            &set,
+            call.consecutive_faults,
+            call.machine_stop,
+            call.nvme_pending,
+        );
+        cells.commit(call.vcpu);
+        outcome
+    }
+
+    #[test]
+    fn linux_profile_reports_and_accepts_each_vcpus_own_apic_base() {
+        const EFER: u64 = 0xD00;
+        let mut board = board(2);
+        let code = [0xB9, 0x1B, 0, 0, 0, 0x0F, 0x32, 0x0F, 0x30, 0xF4];
+        for (cpu, code_address, stack, page_tables, phys) in [
+            (BOOT_VCPU_INDEX, CODE_0, STACK_0, TABLES_0, 0x60_0000),
+            (1, CODE_1, STACK_1, TABLES_1, 0x80_0000),
+        ] {
+            let cr3 = tables(&mut board, page_tables, phys, 0);
+            patch(&mut board, code_address, &code);
+            install(
+                &mut board,
+                cpu,
+                long_state(code_address, stack, cr3, false),
+                EFER,
+            );
+        }
+        let profile = LinuxCpl0Profile::new(
+            LinuxCpl0SetMembers {
+                cpuid: false,
+                cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+                msr_apic_base: true,
+                halt: true,
+                pci_config: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+            false,
+            EFER,
+        );
+        let quantum = |call: QuantumCall<'_, '_>| run_profile_quantum(&profile, call);
+        let (report, ()) =
+            run_threads(&mut board, ParallelConfig::default(), &quantum, |control| {
+                assert!(control.wait_finished(Duration::from_secs(5)));
+            })
+            .unwrap();
+        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        for (cpu, expected) in [(BOOT_VCPU_INDEX, 0xFEE0_0900), (1, 0xFEE0_0800)] {
+            assert_eq!(report.cpus[cpu].retired, 4);
+            let state = &board.vcpu(cpu).unwrap().state;
+            assert_eq!(state.gpr[Register::Rax as usize], expected, "vCPU {cpu}");
+            assert_eq!(state.gpr[Register::Rdx as usize], 0);
+        }
+    }
 
     #[test]
     fn linux_profile_commits_the_ap_msr_and_fp_state_before_a_worker_error() {
@@ -245,25 +320,7 @@ mod tests {
         let profile = LinuxCpl0Profile::new(members, false, EFER);
         let quantum = |call: QuantumCall<'_, '_>| {
             assert_eq!(call.cpu, AP);
-            let cells = LinuxVcpuCells::from_vcpu(call.vcpu);
-            let pci_config = Cell::new(0);
-            let set = profile.bind(&cells, &pci_config, |_| {});
-            let outcome = run_vcpu_set_quantum_shared(
-                call.env,
-                call.vcpu,
-                call.cpu,
-                call.lapic,
-                call.source,
-                Some(call.gate),
-                call.budget,
-                call.stop,
-                &set,
-                call.consecutive_faults,
-                call.machine_stop,
-                call.nvme_pending,
-            );
-            cells.commit(call.vcpu);
-            outcome
+            run_profile_quantum(&profile, call)
         };
         let config = ParallelConfig {
             quantum: 64,

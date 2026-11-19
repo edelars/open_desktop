@@ -174,9 +174,7 @@ pub(crate) enum NmiBoundary {
 /// the state taken for a snapshot (S6-24).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Vcpu {
-    /// Position of this processor in the board's vCPU set, equal to its APIC ID (S6-11). Nothing
-    /// outside tests reads it: the Local APIC of this processor is found by the same index.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Position of this processor in the board's vCPU set, equal to its APIC ID (S6-11).
     pub(crate) index: usize,
     /// The direct-entry CPU state the interpreter runs on.
     pub(crate) state: LongModeState,

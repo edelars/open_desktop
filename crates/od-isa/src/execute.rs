@@ -1931,7 +1931,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_syscall_mask: Option<&'a Cell<u64>>,
     msr_kernel_gs_base: Option<&'a Cell<u64>>,
     msr_tdx_keyid_partitioning_read: bool,
-    msr_apic_base: bool,
+    msr_apic_base: Option<bool>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1962,7 +1962,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_syscall_mask: None,
             msr_kernel_gs_base: None,
             msr_tdx_keyid_partitioning_read: false,
-            msr_apic_base: false,
+            msr_apic_base: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2182,8 +2182,14 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// `#GP(0)` of an unmodelled index and `WRMSR` of it stays `Unsupported` (stage4a).
     ///
     /// Precedence: an MSR profile that handles the index would keep it; today none covers `0x1B`.
-    pub const fn with_msr_apic_base(mut self) -> Self {
-        self.msr_apic_base = true;
+    pub const fn with_msr_apic_base(self) -> Self {
+        self.with_msr_apic_base_for_vcpu(true)
+    }
+
+    /// Admit the same fixed-value MSR for the selected vCPU. Application processors read and
+    /// accept only `0xFEE00800`, with the BSP bit clear. Independent of the CPUID member.
+    pub const fn with_msr_apic_base_for_vcpu(mut self, is_bsp: bool) -> Self {
+        self.msr_apic_base = Some(is_bsp);
         self
     }
 
@@ -2577,8 +2583,8 @@ struct GuestMsrCells<'a> {
     kernel_gs_base: Option<&'a Cell<u64>>,
     /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
     tdx_keyid_partitioning_read: bool,
-    /// S4-38L8g: `RDMSR`/`WRMSR` of IA32_APIC_BASE (`0x1B`) with the constant `0xFEE00900`; no cell.
-    apic_base: bool,
+    /// The BSP bit of the fixed IA32_APIC_BASE value when the member is selected.
+    apic_base: Option<bool>,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -29148,7 +29154,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_syscall_mask.is_some()
                 || set.msr_kernel_gs_base.is_some()
                 || set.msr_tdx_keyid_partitioning_read
-                || set.msr_apic_base
+                || set.msr_apic_base.is_some()
                 || set.syscall
             {
                 Some(GuestMsrCells {
@@ -42680,16 +42686,13 @@ fn step_configured(
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
         }
-        // S4-38L8g: IA32_APIC_BASE (`0x1B`) with the set's member: `RDMSR` gives the constant
-        // `0xFEE00900` (base | EN | BSP) and `WRMSR` accepts exactly that value (no state
-        // changes but RIP). Same conditions as the other cells. Every other `WRMSR` value falls
-        // through to the existing refusal (`Unsupported`) before any change; without the member
-        // both forms keep their previous answer (stage4a: `#GP(0)` / `Unsupported`).
+        // IA32_APIC_BASE (`0x1B`) is fixed for each vCPU. `WRMSR` accepts exactly the value
+        // returned by `RDMSR` and advances RIP. Other values fall through to the existing refusal.
         if matches!(
             instruction.operation,
             Operation::ReadMsr | Operation::WriteMsr
         ) && msr_index == 0x1b
-            && guest_msr_cells.is_some_and(|cells| cells.apic_base)
+            && let Some(is_bsp) = guest_msr_cells.and_then(|cells| cells.apic_base)
             && !msr_profile.is_some_and(|profile| profile.handles_index(0x1b))
             && control_policy.is_some()
             && context.privilege == PrivilegeLevel::Ring0
@@ -42697,16 +42700,20 @@ fn step_configured(
             && instruction.length == 2
             && instruction.prefixes == Prefixes::default()
         {
-            const APIC_BASE: u64 = crate::msr::ApicBaseCpu::ENABLED;
+            const BSP_BIT: u64 = 1 << 8;
+            let mut apic_base = crate::msr::ApicBaseCpu::ENABLED;
+            if !is_bsp {
+                apic_base &= !BSP_BIT;
+            }
             if instruction.operation == Operation::ReadMsr {
-                state.gpr[Register::Rax as usize] = APIC_BASE & 0xffff_ffff;
-                state.gpr[Register::Rdx as usize] = APIC_BASE >> 32;
+                state.gpr[Register::Rax as usize] = apic_base & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = apic_base >> 32;
                 state.rip = next_rip;
                 return Ok(StepOutcome::Advanced);
             }
             let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
                 | u64::from(state.gpr[Register::Rax as usize] as u32);
-            if value == APIC_BASE {
+            if value == apic_base {
                 state.rip = next_rip;
                 return Ok(StepOutcome::Advanced);
             }

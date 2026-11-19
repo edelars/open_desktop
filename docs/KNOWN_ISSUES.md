@@ -6467,11 +6467,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-537 — бит BSP в IA32_APIC_BASE на AP
 
-Открыто с 2026-11-19. Набор CPL0 LinuxDirect с `msr:apic_base` возвращает одну константу `0xFEE00900` для любого vCPU. При включённом LAPIC это правильное значение для BSP, но AP тоже видит установленный бит BSP. Это расходится с индивидуальной идентичностью vCPU. [Набор CPL0](../crates/od-isa/src/execute.rs) · [Профиль LinuxDirect](../crates/od-machine/src/linux_direct/profile.rs).
+Подтверждено 2026-11-19. Набор CPL0 LinuxDirect с `msr:apic_base` возвращал `0xFEE00900` для любого vCPU. AP видел установленный бит BSP. [Набор CPL0](../crates/od-isa/src/execute.rs) · [Профиль LinuxDirect](../crates/od-machine/src/linux_direct/profile.rs).
 
 Воспроизведение на `484fc9c`: в фикстуре из тестов `linux_direct::profile` установить BSP и AP в CPL0/long mode, обоим задать гостевые байты `b9 1b 00 00 00 0f 32 f4`, выключить IF и запустить через `run_threads` с `X8664V1Stage4AApic`, `msr_apic_base: true`, `halt: true` и `pci_config: false`. После трёх retired на каждом прочитать EDX:EAX. Ожидается `0xFEE00900` на BSP и `0xFEE00800` на AP. Диагностика получила `0xFEE00900` на обоих. [Результат S6-21](reports/STAGE_6_REPORT.md#s6-21--бит-bsp-в-ia32_apic_base-на-ap).
 
-Следующий шаг S6-21 — согласовать изменение набора CPL0 с линией S4-38, привязать значение MSR к выбранному vCPU и сохранить прежний результат однопроцессорного профиля. Затем проверить BSP и AP через тот же интерпретатор и подтвердить поведение на реальной загрузке Linux SMP после S6-18a.
+Исправлено в S6-21. Профиль CPL0 выдаёт значение MSR выбранного vCPU. Регрессия с двумя потоками проверяет чтение и точную запись на BSP и AP. Сквозная проверка при загрузке Linux SMP ждёт S6-18a. [Результаты](reports/STAGE_6_REPORT.md#s6-21--бит-bsp-в-ia32_apic_base-на-ap).
 
 ### ISSUE-538 — общий PCI CONFIG_ADDRESS для поточного LinuxDirect
 

@@ -42367,6 +42367,32 @@ fn wrmsr_apic_base_accepts_only_the_matching_value() {
 }
 
 #[test]
+fn application_processor_apic_base_accepts_only_its_own_value() {
+    const AP_APIC_BASE: u64 = 0xfee0_0800;
+    let set = base().with_msr_apic_base_for_vcpu(false);
+    let (state, mut expected, result) = run_star(&set, &RDMSR, (APIC_BASE_MSR, u64::MAX, 1), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip += 2;
+    expected.gpr[0] = AP_APIC_BASE;
+    expected.gpr[2] = 0;
+    assert_eq!(state, expected);
+
+    let (state, mut expected, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, AP_APIC_BASE, 0), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip += 2;
+    assert_eq!(state, expected);
+
+    for (eax, edx) in [(0xfee0_0900, 0), (0xfee0_0000, 0), (AP_APIC_BASE, 1)] {
+        let (state, before, result) = run_star(&set, &WRMSR, (APIC_BASE_MSR, eax, edx), 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
 fn apic_base_without_the_member_keeps_the_previous_answer() {
     // No member: RDMSR is the refusal of the set (0x32), WRMSR is Unsupported (0x30).
     let set = base();
