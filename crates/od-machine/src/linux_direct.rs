@@ -2018,12 +2018,63 @@ mod tests {
 
     #[test]
     fn linux_direct_loads_the_board_topology_only_with_matching_madt() {
+        use crate::{AccessWidth, IO_APIC_MMIO_BASE};
+
         let file = bzimage();
-        let up = input(&file, &[], BLOB, board_hash());
-        let smp = input(&file, &[], SMP_BLOB, board_hash());
-        let boot = load_linux_direct_board_with_vcpus(&smp, 2).expect("loads two vCPUs");
-        assert_eq!(boot.board.vcpu_count(), 2);
-        assert_eq!(boot.retired, 0);
+        let manifest = board_hash();
+        for (count, blob) in [(1, BLOB), (2, SMP_BLOB), (4, FOUR_CPU_BLOB)] {
+            let input = input(&file, &[], blob, manifest);
+            let mut boot = load_linux_direct_board_with_vcpus(&input, count).unwrap();
+            assert_eq!(boot.board.vcpu_count(), count);
+            assert_eq!(boot.retired, 0);
+
+            let acpi = validate_acpi_blob(blob, &manifest).unwrap();
+            let descriptor = acpi
+                .tables
+                .iter()
+                .find(|table| table.signature == *b"APIC")
+                .unwrap();
+            let mut madt = vec![0; descriptor.length as usize];
+            read(
+                &mut boot.board,
+                acpi.table_address(b"APIC").unwrap(),
+                &mut madt,
+            )
+            .unwrap();
+            assert_eq!(madt, acpi.table_bytes(blob, descriptor));
+            let mut entries = &madt[44..];
+            let mut lapic_ids = Vec::new();
+            let mut ioapic_id = None;
+            while !entries.is_empty() {
+                let (entry, rest) = entries.split_at(usize::from(entries[1]));
+                match entry[0] {
+                    0 => lapic_ids.push(entry[3]),
+                    1 => ioapic_id = Some(entry[2]),
+                    _ => {}
+                }
+                entries = rest;
+            }
+            assert_eq!(lapic_ids, (0..count as u8).collect::<Vec<_>>());
+            let bus = boot.board.bus_mut();
+            bus.write_physical(
+                GuestPhysicalAddress::new(IO_APIC_MMIO_BASE),
+                AccessWidth::Dword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+            let id = bus
+                .read_physical(
+                    GuestPhysicalAddress::new(IO_APIC_MMIO_BASE + 0x10),
+                    AccessWidth::Dword,
+                )
+                .unwrap()
+                >> 24;
+            assert_eq!(u64::from(ioapic_id.unwrap()), id);
+            assert_eq!(id, count as u64);
+        }
+        let up = input(&file, &[], BLOB, manifest);
+        let smp = input(&file, &[], SMP_BLOB, manifest);
         assert_eq!(
             refusal(load_linux_direct_board_with_vcpus(&up, 2)),
             ("acpi_blob_invalid", "acpi_blob")
