@@ -1248,11 +1248,43 @@ python3 tests/cpu/stage3_harness.py --suite vmhost-process
 - The local archive contains 415 files and has SHA-256 `f41e2a67af238c5128d8383e1b847b15931b4ca8d06c9146b29eb312303d5c14`. [Local archive](data/stage3/s3-41-m1pro-f6b5214-20261119/local.json.gz)
 - The process archive contains 174 files and has SHA-256 `bcce08310ae84e9168dbcb920cd4e8a683dbc3a11108799f4aa7026cc5152782`. [VMHost process archive](data/stage3/s3-41-m1pro-f6b5214-20261119/vmhost-process.json.gz)
 
+### M1 Pro checks at 8c159c8
+
+Both selectors used clean `8c159c8` on the same M1 Pro and toolchain.
+The path and content hash matched the local checkout across all 12,202
+tracked files. Both runs reported the same start and end fingerprint
+`8e21f03f807dbe20363d2659b3e5a289cf212cf02f027e1f39446538be06c34f`
+and the input manifest SHA-256
+`e02811d871baf271a973003f119d306f0c221cd00db4daa83a05eb938d5b346b`.
+
+| Selector | Run | Passed | Failed | Exit |
+| --- | --- | ---: | ---: | ---: |
+| `local` | `stage3-20261119-191048-c8b76d5691` | 359 | 0 | 0 |
+| `vmhost-process` | `stage3-20261119-192202-3e0efe50b1` | 45 | 1 | 1 |
+
+The local run passed the live final-summary validator. The process
+run stopped at `process_generated_fault`. The launcher reported a
+closed channel during a frame. The required diagnostic names SIGSEGV.
+Process-group cleanup confirmed an empty group. Twelve diagnostic
+repeats with the exact signed launcher and helper plus phase tracing
+recorded the same transport error followed by a child wait status of 11.
+The original failure and the traced repeats are retained. The next
+check isolates the order of channel close and wait status.
+[ISSUE-523](../KNOWN_ISSUES.md#issue-523)
+
+The transferred evidence was checked against all 405 selected step logs,
+58 VMHost child logs, the input manifests, and the local Stage 1 child
+summary and manifest.
+
+- The local archive contains 415 files, SHA-256 `7ceb2f32bce3b0e07cad3b5f5b0e4a15c310232cbcee2f5070212130dbc15129`. [Local archive](data/stage3/s3-41-m1pro-8c159c8-20261119/local.json.gz)
+- The rejected process run and traced repeats contain 210 files, SHA-256 `ef288ad76a53a74358d7f5624e6507a020be8834c5f0bf9cad7d91d1f1f1f942`. [VMHost diagnostic archive](data/stage3/s3-41-m1pro-8c159c8-20261119/vmhost-process.json.gz)
+
 ### Hardware acceptance
 
-The full ARM64 local and VMHost process selectors passed on the M1 Pro.
-The Mac mini configuration and native execution on physical x86 remain
-open, as does final S3-41 acceptance.
+The M1 Pro passed both ARM64 selectors on `f6b5214` and the local
+selector on `8c159c8`. ISSUE-523 tracks the latest VMHost process failure.
+The Mac mini configuration, native execution on physical x86 and
+final S3-41 acceptance remain open.
 
 ### Performance measurements
 
