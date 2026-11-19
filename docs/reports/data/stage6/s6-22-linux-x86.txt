@@ -1,0 +1,24 @@
+S6-22 step 1, 2026-11-19
+OrbStack on macOS ARM64, installed Docker image rust:1.99.0-bookworm (19059486ff9d)
+Docker overrides: --platform linux/amd64 --pull never --network none --cpuset-cpus 2,5
+Only guest/linux/tests/s6_smp_workloads.c was mounted read-only, as /workload.c.
+
+x86_64
+gcc (Debian 12.2.0-14+deb12u1) 12.2.0
+pid 1's current affinity list: 2,5
+gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -pthread /workload.c -o /tmp/s6-smp
+af02464585a22dcbc489eaf2b44355188c1ce54e7bc81796f01e173907925e51  /workload.c
+d097ab7124d50fa4af22e3ad48ef60cf20440d33de065319d139b0c50f2b3748  /tmp/s6-smp
+
+timeout 30 /tmp/s6-smp run20261119 (10 executions, each exit 0, identical stdout)
+OD_S6_22_PASS nonce=run20261119 case=counter cpus=2,5 checked=20000
+OD_S6_22_PASS nonce=run20261119 case=condition cpus=2,5 checked=256
+OD_S6_22_PASS nonce=run20261119 case=exchange cpus=2,5 checked=128
+OD_S6_22_PASS nonce=run20261119 case=mapping cpus=2,5 checked=32
+OD_S6_22_PASS nonce=run20261119 case=processes cpus=2,5 checked=32
+435ce6eea8176bc636e623165ef5111022ce56eadb0e0d06257d4236d5dca205  stdout
+
+timeout 30 taskset -c 2 /tmp/s6-smp run20261119 (exit 1, empty stdout)
+OD_S6_22_FAIL nonce=run20261119 case=setup operation=requires-two-allowed-cpus
+timeout 30 /tmp/s6-smp 'bad nonce' (exit 1, empty stdout)
+OD_S6_22_FAIL nonce=invalid case=setup operation=nonce
