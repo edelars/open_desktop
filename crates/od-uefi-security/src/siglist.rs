@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn decodes_microsoft_dbx_without_altering_signature_data() {
-        let bytes = include_bytes!("../../../../tests/fixtures/firmware/certs/dbx-x64-v1.7.2.bin");
+        let bytes = include_bytes!("../../../tests/fixtures/firmware/certs/dbx-x64-v1.7.2.bin");
         let mut lists = signature_lists(bytes);
         let decoded = lists.next().unwrap().unwrap();
         assert!(lists.next().is_none());
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn decodes_concatenated_x509_and_revocation_lists() {
         let cert =
-            include_bytes!("../../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der");
+            include_bytes!("../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der");
         let revocation = [5; 48];
         let mut bytes = list(SignatureType::X509, cert);
         bytes.extend(list(SignatureType::X509Sha256, &revocation));

@@ -1,10 +1,8 @@
 //! EFI_VARIABLE_AUTHENTICATION_2 decoding and detached input hashing, UEFI 2.11 §8.2.6.
 
-use core::cmp::Ordering;
-
 use sha2::{Digest, Sha256};
 
-use crate::{uefi::guid::Guid, var::codec::Name};
+use crate::{Guid, Name};
 
 const TIMESTAMP_BYTES: usize = 16;
 const CERT_HEADER_BYTES: usize = 24;

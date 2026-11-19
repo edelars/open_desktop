@@ -620,6 +620,10 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 
 На плате с MMIO CRB прошивка публикует TPM2 в XSDT и устройство `MSFT0101` в DSDT. Она инициализирует TPM через locality 0 и предоставляет `EFI_TCG2_PROTOCOL` с единственным активным банком SHA-256. GetEventLog выдаёт формат TCG_2, а события после первого чтения доступны в retained final events table. Измеряются ROM, конфигурация, переменные загрузки, проверенная GPT, исполняемые PE и переход ExitBootServices. PE измеряется по Authenticode до выполнения. Полный набор форматов, PCR и ограничений описан в [VTPM.md](VTPM.md#measured-boot).
 
+## Secure Boot
+
+На S7-24 реализованы декодеры `EFI_SIGNATURE_LIST`, Auth2 и detached PKCS#7. С общим верификатором подтверждена проверка RSA-2048/SHA-256 Microsoft `dbx` update до зачисленного KEK 2023, а также отказы для чужого ключа и испорченной подписи. Защищённые переменные, проверка образов и измерение PCR7 ещё в работе. [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md), [план S7-24](../plans/STAGE_7.md#s7-24-реализовать-secure-boot).
+
 ## Переменные
 
 S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их до `ExitBootServices`, а `rt` обслуживает проверку физического и виртуального режимов после выхода. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. В runtime видимы записи с `EFI_VARIABLE_RUNTIME_ACCESS`.

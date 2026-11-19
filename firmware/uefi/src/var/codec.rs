@@ -2,9 +2,9 @@
 
 use crate::crc32::with_zeroed_word;
 use crate::uefi::guid::Guid;
+pub use od_uefi_security::{MAX_NAME_UNITS, Name, valid_name_unit as valid_unit};
 
 pub const MAX_STORE_BYTES: usize = 256 * 1024;
-pub const MAX_NAME_UNITS: usize = 127;
 pub const MAX_VALUE_BYTES: usize = 16 * 1024;
 pub const HEADER_BYTES: usize = 24;
 pub(super) const RECORD_HEADER_BYTES: usize = 40;
@@ -13,34 +13,6 @@ const VERSION: u16 = 1;
 const HEADER_CRC: usize = 16;
 const RECORD_CRC: usize = 36;
 const LIVE: u8 = 1;
-
-/// A nonempty, bounded UCS-2 name represented as little-endian bytes without NUL.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Name<'a>(&'a [u8]);
-
-impl<'a> Name<'a> {
-    pub fn new(bytes: &'a [u8]) -> Option<Self> {
-        if bytes.is_empty() || bytes.len() % 2 != 0 || bytes.len() > MAX_NAME_UNITS * 2 {
-            return None;
-        }
-        let name = Self(bytes);
-        name.units().all(valid_unit).then_some(name)
-    }
-
-    pub fn units(self) -> impl Iterator<Item = u16> + 'a {
-        self.0
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-    }
-
-    pub const fn as_bytes(self) -> &'a [u8] {
-        self.0
-    }
-}
-
-pub const fn valid_unit(unit: u16) -> bool {
-    unit != 0 && !(unit >= 0xd800 && unit <= 0xdfff)
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record<'a> {
@@ -119,20 +91,21 @@ pub(super) fn write_header(out: &mut [u8], total: usize) {
 }
 
 pub(super) const fn record_size(name: Name<'_>, value_size: usize) -> usize {
-    RECORD_HEADER_BYTES + name.0.len() + value_size
+    RECORD_HEADER_BYTES + name.as_bytes().len() + value_size
 }
 
 pub(super) fn write_record(out: &mut [u8], record: Record<'_>) {
-    let name_end = RECORD_HEADER_BYTES + record.name.0.len();
+    let name = record.name.as_bytes();
+    let name_end = RECORD_HEADER_BYTES + name.len();
     out[8] = LIVE;
     out[9] = 0;
-    out[10..12].copy_from_slice(&((record.name.0.len() / 2) as u16).to_le_bytes());
+    out[10..12].copy_from_slice(&((name.len() / 2) as u16).to_le_bytes());
     out[12..16].copy_from_slice(&record.attributes.to_le_bytes());
     out[20..24].copy_from_slice(&record.guid.data1.to_le_bytes());
     out[24..26].copy_from_slice(&record.guid.data2.to_le_bytes());
     out[26..28].copy_from_slice(&record.guid.data3.to_le_bytes());
     out[28..36].copy_from_slice(&record.guid.data4);
-    out[RECORD_HEADER_BYTES..name_end].copy_from_slice(record.name.0);
+    out[RECORD_HEADER_BYTES..name_end].copy_from_slice(name);
     copy_bytes(&mut out[name_end..], record.value);
     seal_record(out, record.value.len());
 }

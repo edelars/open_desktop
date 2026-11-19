@@ -1,4 +1,3 @@
 //! UEFI Secure Boot formats and policy.
 
-pub mod authvar;
-pub mod siglist;
+pub use od_uefi_security::{authvar, pkcs7, siglist};

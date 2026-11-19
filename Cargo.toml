@@ -6,6 +6,7 @@ members = [
     "crates/od-machine",
     "crates/od-storage",
     "crates/od-tpm",
+    "crates/od-uefi-security",
     "crates/od-host",
     "crates/od-testkit",
     "tools/runner",

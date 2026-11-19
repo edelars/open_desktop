@@ -5,7 +5,7 @@
       "name": "boot_core",
       "fv_app": null,
       "fixture": "boot_core_com1.txt",
-      "fixture_sha256": "83a2fe7ebf2472546abcd83dfb3f5283eea38eb25fcc247f539ddb6902019592",
+      "fixture_sha256": "8288090c3524776b01c37ac5bce72c991f9bddc956bc9429ff13b6d8f16f7167",
       "repetitions": 1,
       "returncode": 0,
       "status": "completed",
@@ -17,7 +17,7 @@
       "name": "hello",
       "fv_app": "hello",
       "fixture": "hello_com1.txt",
-      "fixture_sha256": "b93adadd7847d53773e84b5dcad95c8cadfb165e90db5deb52ac426228e8904f",
+      "fixture_sha256": "5f5fd617ab1c7dcebf07f767da19161debdd54af9eeb57f6cb144d01c20b2693",
       "repetitions": 5,
       "returncode": 6,
       "status": "firmware_stop",
@@ -32,7 +32,7 @@
       "name": "ebs",
       "fv_app": "ebs",
       "fixture": "ebs_com1.txt",
-      "fixture_sha256": "caad5f7b47d4034361c097bad6f03845bc43f49d308d6654763a0f29b5b3443d",
+      "fixture_sha256": "d9e26584b7cd7a59d888f8a45f603df21babf5d73bb9f4a59b4e44bbe14b00ed",
       "repetitions": 5,
       "returncode": 0,
       "status": "completed",
@@ -44,7 +44,7 @@
       "name": "vars",
       "fv_app": "vars",
       "fixture": "vars_com1.txt",
-      "fixture_sha256": "13e4b384461027b58fcad3d6479d9ecdf3a10ed28780833eb00aee2a5557f28c",
+      "fixture_sha256": "e5b48672b0c9765ee390970516be8833488b1704ba744fe9f96df9bed01a3688",
       "repetitions": 1,
       "returncode": 6,
       "status": "firmware_stop",
@@ -59,7 +59,7 @@
       "name": "rt",
       "fv_app": "rt",
       "fixture": "rt_com1.txt",
-      "fixture_sha256": "d8534130da0601c6721131a37d0e93ca67094d93a25b692338b9d79febfa2183",
+      "fixture_sha256": "8576d2237d3188371d0aa11fed9472b5b9491704265b148c4d446435dda5aef4",
       "repetitions": 5,
       "returncode": 0,
       "status": "completed",
@@ -73,7 +73,7 @@
       "name": "acpi",
       "fv_app": "acpi",
       "fixture": "acpi_com1.txt",
-      "fixture_sha256": "c460b04894ced54dc68a07c4e1ef788978bd5cd45feb619523f0a2c736d95a0f",
+      "fixture_sha256": "b2ca8f3ad5381fadb2e606f09f97e6949bf688a176c8ab92f2b524c4f1f62c17",
       "acpi_blob_sha256": "640786919725fe3f8188fb58083b4188a0c9bca348be7ec64b1faf8a9c1d1f01",
       "repetitions": 5,
       "returncode": 6,
@@ -89,7 +89,7 @@
       "name": "gop",
       "fv_app": "gop",
       "fixture": "gop_com1.txt",
-      "fixture_sha256": "9176e57b8bc80cccb8c8ed387fbee821d8ede4d403b2d8b3d16eb09bcbdbe87a",
+      "fixture_sha256": "dba8ad57f3ffe2fec7a67213dc278cb53e4d8508d8ba46ae9f6afad71713cf6e",
       "framebuffer": {
         "width": 640,
         "height": 480,
@@ -114,7 +114,7 @@
       "fv_app": "blk",
       "nvme_damage": "none",
       "fixture": "blk_com1.txt",
-      "fixture_sha256": "c3a3bab70481d3bfa00f95d6e3832ded2a59bdc2d52edac17c715f14df4ac121",
+      "fixture_sha256": "68797efd47efd8a56cb8a55e24a09d0b1decaa6bdc8afd4ecd2880f0ab52052f",
       "repetitions": 3,
       "returncode": 6,
       "status": "firmware_stop",
@@ -131,7 +131,7 @@
       "fv_app": "blk",
       "nvme_damage": "primary",
       "fixture": "blk_com1.txt",
-      "fixture_sha256": "c3a3bab70481d3bfa00f95d6e3832ded2a59bdc2d52edac17c715f14df4ac121",
+      "fixture_sha256": "68797efd47efd8a56cb8a55e24a09d0b1decaa6bdc8afd4ecd2880f0ab52052f",
       "repetitions": 3,
       "returncode": 6,
       "status": "firmware_stop",
@@ -148,7 +148,7 @@
       "fv_app": "blk",
       "nvme_damage": "both",
       "fixture": "blk_no_gpt_com1.txt",
-      "fixture_sha256": "6f26bc1e7bbc3c1096ca64f65a91a337fb607e6103c0ff80778349099fe83271",
+      "fixture_sha256": "41ae1a50586a25380a3b2479d7bc40ffc81a9601a2c8f8a151668ffacd7995e0",
       "repetitions": 3,
       "returncode": 6,
       "status": "firmware_stop",
@@ -164,7 +164,7 @@
       "name": "fs",
       "fv_app": "fs",
       "fixture": "fs_com1.txt",
-      "fixture_sha256": "506840f6a2157642f237d88dc0c028d08305fd00425a5107e3424df639901b20",
+      "fixture_sha256": "99d7f53b35a11474d1ae4d45c8b968532ef1ad514fdf7c29f2a63e219ed63a48",
       "repetitions": 3,
       "returncode": 6,
       "status": "firmware_stop",
@@ -172,7 +172,7 @@
         "code": "0x21",
         "detail": "0x0000000000000000"
       },
-      "instruction_budget": 12000000,
+      "instruction_budget": 12500000,
       "max_quanta": 5000,
       "nvme_image_sha256": "fc96c4644e6bf1a0783b2718f19966ddfc1d148aac982af6d1bb51cc58af20e0"
     }
@@ -188,11 +188,11 @@
     "boots": [
       {
         "fixture": "nvram_first_com1.txt",
-        "fixture_sha256": "ed6859ce6177068c7a52053060ee17fe8470cc4d415ddf65df91ba530eeca180"
+        "fixture_sha256": "262ac6e1dc89bfd98fd26b05cbada7313938e8f989023b9724861f759cc6a797"
       },
       {
         "fixture": "nvram_second_com1.txt",
-        "fixture_sha256": "d8bff277b9e84cb333b1b9b7d042a3d7924ec6290ac0945c29930e9c8beaa52e"
+        "fixture_sha256": "2572c37fe45ade1c51b1430281059fbc11812027c87c6bebad3b3317c8dbc48b"
       }
     ]
   }

@@ -222,6 +222,7 @@ open_desktop/
   crates/od-isa/              CPU state, decoder, interpreter
   crates/od-jit/              IR, ARM64 emitter, JIT runtime
   crates/od-machine/          MMU, bus, устройства, scheduler
+  crates/od-uefi-security/    общие форматы и проверка UEFI Secure Boot
   crates/od-storage/          Диски и снимки
   crates/od-host/             Host ABI и macOS memory/I/O primitives
   crates/od-testkit/          Собственные генераторы и сравнение
