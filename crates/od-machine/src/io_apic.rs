@@ -896,6 +896,19 @@ mod tests {
     }
 
     #[test]
+    fn smp_ioapic_id_is_outside_the_cpu_id_range_after_reset() {
+        for count in [2, 4] {
+            let (mut bus, io, _) = setup_with(LocalApic::with_cpus(count).unwrap());
+            let id = (count as u64) << 24;
+            assert_eq!(window(&mut bus, 0).unwrap(), id);
+            assert_eq!(window(&mut bus, 2).unwrap(), id);
+            window_write(&mut bus, 0, 7 << 24).unwrap();
+            io.reset().unwrap();
+            assert_eq!(window(&mut bus, 0).unwrap(), id);
+        }
+    }
+
+    #[test]
     fn masked_active_low_is_stored_on_entries_without_a_line() {
         let (mut bus, _io, _apic) = setup();
         let low = u64::from(MASK | LEVEL | POLARITY_LOW);

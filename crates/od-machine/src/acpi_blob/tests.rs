@@ -62,6 +62,42 @@ fn stage4_blob_is_built_for_this_boards_manifest() {
 }
 
 #[test]
+fn manifest_match_alone_does_not_make_a_madt_fit_an_smp_board() {
+    let hash = board_hash();
+    assert!(validate_acpi_blob_for_vcpus(FIXTURE, &hash, 1).is_ok());
+    for expected_vcpus in [2, 4] {
+        assert!(matches!(
+            validate_acpi_blob_for_vcpus(FIXTURE, &hash, expected_vcpus),
+            Err(AcpiBlobError::InvalidMadtTopology { expected_vcpus: actual })
+                if actual == expected_vcpus
+        ));
+    }
+}
+
+#[test]
+fn a_valid_manifest_and_checksum_do_not_accept_inconsistent_apic_base_or_flags() {
+    let hash = board_hash();
+    let info = validate_acpi_blob(FIXTURE, &hash).unwrap();
+    let table = info
+        .tables
+        .iter()
+        .find(|table| table.signature == *b"APIC")
+        .unwrap();
+    let start = info.payload_offset + table.payload_offset as usize;
+    let end = start + table.length as usize;
+    for (offset, value) in [(40, 0), (44 + 8 + 8, 1)] {
+        let mut blob = FIXTURE.to_vec();
+        blob[start + offset] = value;
+        seal(&mut blob[start..end]);
+        assert!(validate_acpi_blob(&blob, &hash).is_ok());
+        assert_eq!(
+            validate_acpi_blob_for_vcpus(&blob, &hash, 1),
+            Err(AcpiBlobError::InvalidMadtTopology { expected_vcpus: 1 })
+        );
+    }
+}
+
+#[test]
 fn the_fixture_layout_is_the_documented_one() {
     // Offsets written out here deliberately: a drift of the builder fails this test.
     let info = validate_acpi_blob(FIXTURE, &board_hash()).unwrap();

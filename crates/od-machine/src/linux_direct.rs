@@ -16,7 +16,7 @@
 //!    and its manifest hash
 //! 3. ACPI blob: the expected  acpi_manifest_mismatch (the operator's hash is not the board's)
 //!    hash must be the BOARD'S | acpi_manifest_mismatch | acpi_blob_invalid
-//!    (the SAME validate_acpi_blob call gives the bytes loaded)
+//!    (the SAME validate_acpi_blob_for_vcpus call gives the bytes loaded)
 //! 4. command line             cmdline_invalid | cmdline_too_long
 //! 5. placement / initrd       initrd_too_large | placement_invalid
 //! 6. E820 and boot_params     e820_invalid | boot_params_invalid
@@ -38,7 +38,7 @@
 
 use crate::PagedProbeExit;
 use crate::acpi_blob::{
-    AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
+    AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob_for_vcpus,
 };
 use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwareBoard};
 use crate::irq_source::IrqCounters;
@@ -295,7 +295,15 @@ fn load_error(error: LinuxLoadError) -> LinuxDirectError {
 pub fn load_linux_direct_board(
     input: &LinuxDirectInput<'_>,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
-    load_linux_direct_board_inner(input, None)
+    load_linux_direct_board_with_vcpus(input, 1)
+}
+
+/// Load a diskless board whose vCPU count matches its ACPI MADT.
+pub fn load_linux_direct_board_with_vcpus(
+    input: &LinuxDirectInput<'_>,
+    vcpu_count: usize,
+) -> Result<LinuxDirectBoot, LinuxDirectError> {
+    load_linux_direct_board_inner(input, None, vcpu_count)
 }
 
 /// As the diskless loader, with a PCI NVMe endpoint and its own ACPI manifest.
@@ -305,17 +313,19 @@ pub fn load_linux_direct_board_with_nvme(
     input: &LinuxDirectInput<'_>,
     nvme: NvmeConfig,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
-    load_linux_direct_board_inner(input, Some(nvme))
+    load_linux_direct_board_inner(input, Some(nvme), 1)
 }
 
 fn load_linux_direct_board_inner(
     input: &LinuxDirectInput<'_>,
     nvme: Option<NvmeConfig>,
+    vcpu_count: usize,
 ) -> Result<LinuxDirectBoot, LinuxDirectError> {
     // 1. Header first: a truncated or foreign kernel is refused before anything else is looked at.
     parse_linux_bzimage_header(input.bzimage).map_err(header_error)?;
     // 2. The board this module assembles, and its own manifest hash.
     let config = FirmwareBoardConfig {
+        vcpu_count,
         ram_bytes: input.ram_bytes,
         nvme_pci: nvme.is_some(),
         nvme,
@@ -343,7 +353,8 @@ fn load_linux_direct_board_inner(
     }
     //    The validated description and the bytes copied to the guest come from this one call;
     //    `load_linux_direct` slices the very same `input.acpi_blob` (and checks its length).
-    let acpi = validate_acpi_blob(input.acpi_blob, &board_hash).map_err(acpi_error)?;
+    let acpi = validate_acpi_blob_for_vcpus(input.acpi_blob, &board_hash, vcpu_count)
+        .map_err(acpi_error)?;
     let initrd = (!input.initrd.is_empty()).then_some(input.initrd);
     let mut loaded = load_linux_direct(&LinuxLoadInput {
         config: &config,
@@ -1692,6 +1703,7 @@ fn le64(bytes: &[u8], at: usize) -> u64 {
 mod tests {
     use super::*;
     use crate::linux_placement::{LinuxRange, LinuxZone};
+    use crate::validate_acpi_blob;
 
     fn code(error: LinuxLoadError) -> (&'static str, &'static str) {
         let error = load_error(error);
@@ -1867,6 +1879,29 @@ mod tests {
         // builds that board (plus `linux_profile`, which does not change the hash).
         assert_eq!(hex(&board_hash()), FIXTURE_HASH);
         assert!(validate_acpi_blob(BLOB, &board_hash()).is_ok());
+    }
+
+    #[test]
+    fn linux_direct_loads_the_board_topology_only_with_matching_madt() {
+        let file = bzimage();
+        let up = input(&file, &[], BLOB, board_hash());
+        let smp = input(
+            &file,
+            &[],
+            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin"),
+            board_hash(),
+        );
+        let boot = load_linux_direct_board_with_vcpus(&smp, 2).expect("loads two vCPUs");
+        assert_eq!(boot.board.vcpu_count(), 2);
+        assert_eq!(boot.retired, 0);
+        assert_eq!(
+            refusal(load_linux_direct_board_with_vcpus(&up, 2)),
+            ("acpi_blob_invalid", "acpi_blob")
+        );
+        assert_eq!(
+            refusal(load_linux_direct_board(&smp)),
+            ("acpi_blob_invalid", "acpi_blob")
+        );
     }
 
     #[test]

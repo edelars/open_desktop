@@ -26,7 +26,7 @@ pub(crate) const NVME_PIN: usize = 16;
 const LEVEL_PINS: [usize; 3] = [4, SCI_PIN, NVME_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
-/// IOAPIC ID loaded at reset: the value the firmware MADT declares (S4-31f).
+/// IOAPIC ID loaded at reset on a single-vCPU board.
 pub(crate) const IO_APIC_RESET_ID: u8 = 1;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -69,6 +69,16 @@ impl Default for Route {
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
             dest: [0; IO_APIC_PINS],
+        }
+    }
+}
+
+impl Route {
+    fn for_vcpus(cpu_count: usize) -> Self {
+        Self {
+            // The MADT assigns Local APIC IDs 0..cpu_count and the next ID to the IOAPIC.
+            id: cpu_count as u8,
+            ..Self::default()
         }
     }
 }
@@ -261,9 +271,10 @@ impl Timer {
 }
 impl PairState {
     pub fn new(cpus: Vec<CpuApic>) -> Self {
+        let route = Route::for_vcpus(cpus.len());
         Self {
             cpus,
-            route: Route::default(),
+            route,
             wake: WakeSink::default(),
         }
     }
@@ -426,7 +437,7 @@ impl PairState {
         if LEVEL_PINS.into_iter().any(|pin| self.level_remote_irr(pin)) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        self.route = Route::default();
+        self.route = Route::for_vcpus(self.cpus.len());
         Ok(())
     }
 
@@ -448,7 +459,7 @@ impl PairState {
             apic.local = State::default();
             apic.timer_writes = 0;
         }
-        next.route = Route::default();
+        next.route = Route::for_vcpus(next.cpus.len());
         *self = next;
         Ok(())
     }

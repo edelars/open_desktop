@@ -170,6 +170,10 @@ pub enum AcpiBlobError {
     NonZeroGap {
         payload_offset: usize,
     },
+    /// The MADT processor and I/O APIC entries do not describe the configured board.
+    InvalidMadtTopology {
+        expected_vcpus: usize,
+    },
     /// A table every blob needs (DSDT, FADT, MADT, XSDT) is not in the directory.
     MissingTable {
         signature: [u8; 4],
@@ -553,6 +557,69 @@ pub fn validate_acpi_blob(
     };
     check_rsdp_and_references(blob, &info)?;
     Ok(info)
+}
+
+/// Validate the ACPI package and bind its MADT to this board's configured processor count.
+/// The v2 manifest hash covers device records. The count is checked against the table itself.
+pub fn validate_acpi_blob_for_vcpus(
+    blob: &[u8],
+    expected_manifest_hash: &AcpiManifestHash,
+    expected_vcpus: usize,
+) -> Result<ValidatedAcpiBlob, AcpiBlobError> {
+    let info = validate_acpi_blob(blob, expected_manifest_hash)?;
+    let error = AcpiBlobError::InvalidMadtTopology { expected_vcpus };
+    if !(1..=crate::vcpu::MAX_VCPUS).contains(&expected_vcpus) {
+        return Err(error);
+    }
+    let madt = info
+        .tables
+        .iter()
+        .find(|table| table.signature == *b"APIC")
+        .ok_or(AcpiBlobError::MissingTable {
+            signature: *b"APIC",
+        })?;
+    if !madt_matches_vcpus(info.table_bytes(blob, madt), expected_vcpus as u8) {
+        return Err(error);
+    }
+    Ok(info)
+}
+
+fn madt_matches_vcpus(madt: &[u8], expected: u8) -> bool {
+    let Some(mut records) = madt.get(44..) else {
+        return false;
+    };
+    if madt[36..40] != (crate::LOCAL_APIC_MMIO_BASE as u32).to_le_bytes()
+        || madt[40..44] != 1u32.to_le_bytes()
+    {
+        return false;
+    }
+    let mut local_apics = 0;
+    let mut io_apic = false;
+    while let [kind, length, ..] = records {
+        let Some((entry, rest)) = records.split_at_checked(usize::from(*length)) else {
+            return false;
+        };
+        match kind {
+            0 if local_apics < expected
+                && entry == [0, 8, local_apics, local_apics, 1, 0, 0, 0] =>
+            {
+                local_apics += 1;
+            }
+            1 if !io_apic
+                && entry.len() == 12
+                && entry[2] == expected
+                && entry[3] == 0
+                && entry[4..8] == (crate::IO_APIC_MMIO_BASE as u32).to_le_bytes()
+                && entry[8..12] == [0; 4] =>
+            {
+                io_apic = true;
+            }
+            2 if entry.len() == 10 => {}
+            _ => return false,
+        }
+        records = rest;
+    }
+    records.is_empty() && local_apics == expected && io_apic
 }
 
 /// RSDP, XSDT, FADT and FACS of a blob whose directory, tables and gaps are already checked.

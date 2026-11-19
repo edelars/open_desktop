@@ -98,6 +98,7 @@ pub use acpi_blob::{
     ACPI_BLOB_MAX_TABLES, ACPI_BLOB_RSDP_SLOT_BYTES, ACPI_BLOB_VERSION, ACPI_MANIFEST_HASH_TAG,
     ACPI_RECLAIM_END, ACPI_REGION_BASE, ACPI_REGION_END, AcpiBlobError, AcpiBlobTable,
     AcpiManifestHash, ValidatedAcpiBlob, acpi_manifest_hash, validate_acpi_blob,
+    validate_acpi_blob_for_vcpus,
 };
 
 pub use absent_ports::{
@@ -198,9 +199,9 @@ pub use linux_direct::{
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
     LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, SYSCALL_JOURNAL_CAPACITY,
     SyscallJournal, SyscallJournalEntry, load_linux_direct_board,
-    load_linux_direct_board_with_nvme, run_linux_direct_board, run_linux_direct_board_set,
-    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
-    run_linux_direct_board_set_user_mode_threaded,
+    load_linux_direct_board_with_nvme, load_linux_direct_board_with_vcpus, run_linux_direct_board,
+    run_linux_direct_board_set, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode, run_linux_direct_board_set_user_mode_threaded,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
     run_linux_direct_board_set_user_mode_with_elf_stack_copy,
     run_linux_direct_board_set_user_mode_with_execution_observations,
