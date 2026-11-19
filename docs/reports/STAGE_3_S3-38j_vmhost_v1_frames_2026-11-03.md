@@ -93,3 +93,48 @@ The updated smoke passed ten consecutive runs against the signed VMHost from
 instead of the final `FE` failed the exact RESULT comparison. The process
 manifest self-test passed with the updated success marker. The previous
 40/40 process run predates this fixture change.
+
+## Active completion and staging bounds, 2026-11-19 UTC
+
+The process test starts a long-running `JNZ -2` invocation and records the
+two new pipe descriptors through macOS `proc_pidinfo(PROC_PIDLISTFDS)`. It
+sends 380 nonmatching STOPs and waits until the VMHost socket is unwritable
+on the duplicated host endpoint. The client then sends the matching STOP
+and withholds reads until both pipe descriptors retire. The VMHost endpoint
+is still unwritable at retirement. Draining yields the 380 ordered
+`INVALID_REQUEST_ID` ACKs, the successful STOP ACK and the stopped RESULT
+with the expected register state and RIP. The retired-instruction count is
+schedule-dependent. A signed test-only build that serviced completion only
+with an empty queue or a writable socket failed the pipe-retirement check.
+
+The staging audit covers the retained decoder prefix and queued response
+bytes. `ControlFrameDecoder.append` fills the 16-byte header first, validates
+the declared payload against 8192 bytes, and fills only the rest of that
+frame. It clears the prefix when decoding is complete. The maximum prefix
+is 8208 bytes. `queueV1Frame` checks each append against the 16416-byte queue
+capacity; sending only removes bytes. For ordinary reads the reactor asks
+for `POLLIN` below 8224 bytes. A 4096-byte read can complete at most one
+staged command plus 256 more frames. Each command queues at most 28 bytes,
+and the active invocation can add one terminal frame of at most 80 bytes.
+The 8192-byte reserve covers that batch and its terminal frame.
+
+A signed diagnostic build logged `buffered.count` after each decoder append
+and `outgoing.count` after each enqueue. An invalid STOP body of 8192 bytes
+reached an 8208-byte prefix and failed after decoding at the command check.
+Peak queue lengths were 13312 bytes in the 8192-STOP idle flood and 5120 bytes
+in the active-completion scenario. These observations measure logical bytes
+in the two buffers. Deterministic scope-1 `INVALID_STATE` batch closure remains
+open.
+
+The updated focused process smoke passed 30 consecutive runs. The process
+manifest self-test passed with the active-completion marker.
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` completed as
+`vmhost_process_only` with all 40 selected steps passed and 351 unselected
+steps recorded as `not_run`. Run `stage3-20261119-023609-4f275d011a` used the
+changes above on base revision `b0bbaa8878d1843e788e4d5bcc8ce17358c4153c`.
+The initial and final source fingerprint was
+`af1452bf10657ea722e5f1e221c2ffe9fe6a5e0506fb1ca23b0524efb5e03c4c`.
+The input manifest SHA-256 is
+`2ff50a15ee39c50f46859be1b78bc36067643187444ea223129266cacab4b0dd`.
+The summary SHA-256 is
+`6731bfcbd8c218e2765af5a29e6f3b548e2d84ba4bc6ba0b8904a3a7fcf33f8f`.

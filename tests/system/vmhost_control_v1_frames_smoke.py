@@ -2,6 +2,7 @@
 """Exercise bounded control V1 framing and admission in one VMHost process."""
 
 import argparse
+import ctypes
 import fcntl
 import os
 import select
@@ -16,15 +17,20 @@ import time
 MAGIC = b"ODCP"
 VERSION = 1
 HELLO, READY, RUN, RUN_ACK, STOP, STOP_ACK, RESULT, ERROR = 1, 2, 3, 4, 5, 6, 7, 255
+INVALID_REQUEST_ID = 7
 NO_ACTIVE_RUN = 9
+STOP_REQUESTED = 2
 MAX_PAYLOAD = 8192
 PROCESS_TIMEOUT_SECONDS = 5
 IO_TIMEOUT_SECONDS = 2
 FRAGMENT_GAP_SECONDS = 0.05
 BACKPRESSURE_WINDOW_SECONDS = 0.2
 BACKPRESSURE_REQUESTS = 8192
+COMPLETION_PRESSURE_REQUESTS = 380
 BACKPRESSURE_INPUT_BUFFER_BYTES = 32768
 BACKPRESSURE_OUTPUT_BUFFER_BYTES = 4096
+PROC_PIDLISTFDS = 1
+PROX_FDTYPE_PIPE = 6
 CODE = bytes.fromhex("4803c3 4803c3")
 RUN_RESULT = struct.pack(
     "<6QIIQ", 0x99, 0x22, 0x33, 0x44, 6, 0x206, 0, 0, 2
@@ -299,6 +305,78 @@ def stop_acks_survive_output_backpressure(vmhost):
             process.wait()
 
 
+def process_pipe_fds(pid):
+    # macOS sys/proc_info.h declares proc_fdinfo as int32_t + uint32_t.
+    proc_pidinfo = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_pidinfo
+    proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    proc_pidinfo.restype = ctypes.c_int
+    buffer = ctypes.create_string_buffer(1024)
+    size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, len(buffer))
+    if size <= 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f"proc_pidinfo({pid}): {os.strerror(error)}")
+    record = struct.Struct("=iI")
+    if size >= len(buffer) or size % record.size:
+        raise RuntimeError(f"incomplete descriptor list for VMHost {pid}: {size} bytes")
+    return {fd for fd, kind in record.iter_unpack(buffer.raw[:size]) if kind == PROX_FDTYPE_PIPE}
+
+
+def wait_for_condition(condition, failure):
+    deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+    while not condition():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(failure)
+        time.sleep(0.005)
+
+
+def active_run_completes_under_output_backpressure(vmhost):
+    process, channel, peer = launch_vmhost(vmhost, backpressure=True)
+    try:
+        with channel, peer:
+            channel.sendall(frame(HELLO, 0))
+            expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "completion pressure READY")
+            idle_pipes = process_pipe_fds(process.pid)
+            loop = bytes.fromhex("75 fe")
+            channel.sendall(frame(RUN, 1, run_payload(loop, budget=2**64 - 1)))
+            expect_frame(channel, (RUN_ACK, 1, struct.pack("<I", 0)), "completion pressure RUN ACK")
+            run_pipes = process_pipe_fds(process.pid) - idle_pipes
+            if len(run_pipes) != 2:
+                raise RuntimeError(f"expected both RUN completion pipe ends, found {run_pipes}")
+
+            # 7600 bytes of mismatch ACKs saturate the 4096-byte socket buffer
+            # while leaving room to read the matching STOP and queue RESULT.
+            request_ids = range(100, 100 + COMPLETION_PRESSURE_REQUESTS)
+            channel.sendall(b"".join(frame(STOP, request_id) for request_id in request_ids))
+            wait_for_condition(
+                lambda: not select.select([], [peer], [], 0)[1],
+                "VMHost output socket stayed writable during completion probe",
+            )
+            channel.sendall(frame(STOP, 1))
+            wait_for_condition(
+                lambda: not (run_pipes & process_pipe_fds(process.pid)),
+                "RUN completion pipe did not retire while VMHost output was blocked",
+            )
+            if select.select([], [peer], [], 0)[1]:
+                raise RuntimeError("VMHost output became writable before the client drained it")
+
+            mismatch = struct.pack("<I", INVALID_REQUEST_ID)
+            for request_id in request_ids:
+                expect_frame(channel, (STOP_ACK, request_id, mismatch), "mismatched STOP under pressure")
+            expect_frame(channel, (STOP_ACK, 1, struct.pack("<I", 0)), "matching STOP under pressure")
+            kind, request_id, result = read_frame(channel)
+            expected = struct.pack("<6QII", 0x11, 0x22, 0x33, 0x44, 0, 0x202, STOP_REQUESTED, 0)
+            # The retired-instruction count depends on when the owner sees STOP.
+            if (kind, request_id, result[:-8]) != (RESULT, 1, expected):
+                raise RuntimeError(
+                    f"incorrect RESULT after completion under pressure: {(kind, request_id, result)!r}"
+                )
+        finish_process(process, 0, "idle EOF after completion under backpressure")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -311,9 +389,10 @@ def main():
     partial_frame_eof_tears_down(args.vmhost)
     oversized_length_closes_without_body(args.vmhost)
     stop_acks_survive_output_backpressure(args.vmhost)
+    active_run_completes_under_output_backpressure(args.vmhost)
     print(
         "VMHost control V1 smoke passed: fragmented/coalesced frames, "
-        "maximum RUN length, bounded EOF teardown, oversized length, backpressure"
+        "maximum RUN length, bounded EOF teardown, oversized length, backpressure, active completion"
     )
 
 
