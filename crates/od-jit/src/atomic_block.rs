@@ -165,20 +165,58 @@ impl AtomicBlockLayout {
 /// of the runtime context and the second one only when `generation_count` is at least 2; a
 /// `generation_count` of 0 is a contract violation of the caller (the context must name at least
 /// the page of the data), not a supported case.
+/// The compiler owns the instruction words and their matching metadata. Callers can inspect them
+/// through shared references.
+///
+/// ```compile_fail
+/// fn discard_instructions(block: &mut od_jit::atomic_block::AtomicBlock) {
+///     block.words.clear();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn discard_sites(block: &mut od_jit::atomic_block::AtomicBlock) {
+///     block.sites.clear();
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtomicBlock {
-    pub words: Vec<u32>,
-    pub layout: AtomicBlockLayout,
+    words: Vec<u32>,
+    layout: AtomicBlockLayout,
     /// The sites the helper reads, one per memory instruction in program order (the block stores
     /// the index before each call); empty when the block holds fences only.
-    pub sites: Vec<AtomicSiteV4>,
-    pub mode: MemoryOrderMode,
-    pub guest_rip: u64,
-    /// The RIP after the last instruction of the block.
-    pub next_rip: u64,
+    sites: Vec<AtomicSiteV4>,
+    mode: MemoryOrderMode,
+    guest_rip: u64,
+    next_rip: u64,
 }
 
 impl AtomicBlock {
+    pub fn words(&self) -> &[u32] {
+        &self.words
+    }
+
+    pub fn layout(&self) -> &AtomicBlockLayout {
+        &self.layout
+    }
+
+    pub fn sites(&self) -> &[AtomicSiteV4] {
+        &self.sites
+    }
+
+    pub fn mode(&self) -> MemoryOrderMode {
+        self.mode
+    }
+
+    pub fn guest_rip(&self) -> u64 {
+        self.guest_rip
+    }
+
+    /// The RIP after the last instruction of the block.
+    pub fn next_rip(&self) -> u64 {
+        self.next_rip
+    }
+
     pub fn instruction_count(&self) -> usize {
         self.layout.instructions.len()
     }

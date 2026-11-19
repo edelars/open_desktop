@@ -978,7 +978,7 @@ fn s6_41c_a_declining_helper_status_is_returned_before_the_atomic_operation() {
     assert_eq!(context.committed_valid, 0);
     assert_eq!(CELL.load(Ordering::Relaxed), 7);
     assert_eq!(state, before);
-    let _: Option<&AtomicSiteV4> = block.block().sites.first();
+    let _: Option<&AtomicSiteV4> = block.block().sites().first();
 }
 
 /// (б) Another vCPU (host thread) sees the generation rise after the atomic write, and the

@@ -3195,7 +3195,7 @@ impl PagedFetchedLoadSession {
     pub fn admitted_atomic_words(&self) -> Option<&[u32]> {
         self.admitted_atomic
             .as_ref()
-            .map(|admitted| admitted.block.block().words.as_slice())
+            .map(|admitted| admitted.block.block().words())
     }
 
     /// How many times a change of the execution mode of the bus dropped the admitted atomic
@@ -3398,27 +3398,20 @@ impl PagedFetchedLoadSession {
                 )
             })?;
             #[cfg(test)]
-            let compiled = if self.replace_mfence_for_ram_probe {
-                let mut compiled = compiled;
+            let published = if self.replace_mfence_for_ram_probe {
                 assert_eq!(&snapshot.bytes[..offset], &[0x0f, 0xae, 0xf0]);
-                let [instruction] = compiled.layout.instructions.as_slice() else {
-                    panic!("the SB control needs exactly one MFENCE");
-                };
-                assert!(instruction.helper_call_word.is_none());
-                let word = &mut compiled.words[instruction.effects_start];
-                assert_eq!(*word, 0xd503_3bbf);
-                *word = 0xd503_201f; // NOP, applied before publication.
-                compiled
+                atomic_inline::AtomicInlineBlock::publish_mfence_probe_control(compiled, part)
             } else {
-                compiled
+                atomic_inline::AtomicInlineBlock::publish_in(compiled, part)
             };
-            let block =
-                atomic_inline::AtomicInlineBlock::publish_in(compiled, part).map_err(|error| {
-                    fail(
-                        PagedFetchedLoadErrorKind::Publish(error),
-                        &fetch_committed_writes,
-                    )
-                })?;
+            #[cfg(not(test))]
+            let published = atomic_inline::AtomicInlineBlock::publish_in(compiled, part);
+            let block = published.map_err(|error| {
+                fail(
+                    PagedFetchedLoadErrorKind::Publish(error),
+                    &fetch_committed_writes,
+                )
+            })?;
             self.admitted_atomic = Some(AdmittedAtomic {
                 linear_base: snapshot.linear_base,
                 physical_page: snapshot.physical_base,

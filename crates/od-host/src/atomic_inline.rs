@@ -266,13 +266,49 @@ impl AtomicInlineBlock {
         block: AtomicBlock,
         part: Option<&crate::jit_region::ActiveJitPart>,
     ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_compiled(
+            block,
+            part,
+            #[cfg(test)]
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_mfence_probe_control(
+        block: AtomicBlock,
+        part: Option<&crate::jit_region::ActiveJitPart>,
+    ) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_compiled(block, part, true)
+    }
+
+    fn publish_compiled(
+        block: AtomicBlock,
+        part: Option<&crate::jit_region::ActiveJitPart>,
+        #[cfg(test)] replace_mfence: bool,
+    ) -> Result<Self, ExecutableMemoryError> {
         let bytes: Vec<u8> = block
-            .words
+            .words()
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
+        #[cfg(test)]
+        let bytes = if replace_mfence {
+            // The weak SB control changes only the fence, keeping the call ABI and site map.
+            let [instruction] = block.layout().instructions.as_slice() else {
+                panic!("the SB control needs exactly one MFENCE");
+            };
+            assert!(instruction.helper_call_word.is_none());
+            assert_eq!(block.words()[instruction.effects_start], 0xd503_3bbf);
+            let mut bytes = bytes;
+            let offset = instruction.effects_start * size_of::<u32>();
+            bytes[offset..offset + size_of::<u32>()].copy_from_slice(&0xd503_201fu32.to_le_bytes());
+            bytes
+        } else {
+            bytes
+        };
         let code = PublishedCode::publish_with_metadata_in(&bytes, None, None, part)?;
-        let sites = block.sites.clone().into_boxed_slice();
+        let sites = block.sites().into();
         Ok(Self { code, block, sites })
     }
 
@@ -385,7 +421,7 @@ impl AtomicInlineBlock {
                 located: Vec::new(),
             };
             context.host = (&mut host as *mut HelperHost<'_>).cast::<c_void>();
-            // SAFETY: `context` is the record of a block built by `compile_atomic_block`: the
+            // SAFETY: publication uses the immutable compiler output (`AtomicBlock`). The
             // state pointer is the caller's live `&mut LongModeState` (not used by the caller
             // during the call), the stop byte is a live atomic byte or null, `locate_helper` is
             // this module's helper, `host` points to the live `host` above and `site` to the

@@ -937,7 +937,7 @@ fn s6_41d_code_built_for_interleaved_does_not_run_in_parallel() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let items = vec![lock_add_m32(), xchg_m64(PAGE0_SLOTS[1])];
     let code = code_of(&items);
-    let words_of = |order| block_of(&items, order).block().words.clone();
+    let words_of = |order| block_of(&items, order).block().words().to_vec();
     let (interleaved_words, parallel_words) = (
         words_of(MemoryOrderMode::Interleaved),
         words_of(MemoryOrderMode::Parallel),

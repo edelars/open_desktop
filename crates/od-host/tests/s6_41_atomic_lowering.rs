@@ -787,11 +787,11 @@ fn s6_41e_compiled_mfence_prevents_store_buffering() {
 
     let block = compile_atomic_block(&adapted(&[0x0f, 0xae, 0xf0]), MemoryOrderMode::Parallel)
         .expect("compile the guest MFENCE through the V4 path");
-    let [instruction] = block.layout.instructions.as_slice() else {
+    let [instruction] = block.layout().instructions.as_slice() else {
         panic!("expected one guest instruction in the block");
     };
     assert!(instruction.helper_call_word.is_none());
-    let fence_word = block.words[instruction.effects_start];
+    let fence_word = block.words()[instruction.effects_start];
     // Only this position-independent instruction can be run outside the V4 ABI.
     assert_eq!(fence_word, DMB_ISH);
 
@@ -891,11 +891,11 @@ fn decode_native_sb_thread(program: &[od_machine::LitmusInstruction]) -> NativeS
         assert_eq!(instruction.bytes, [0x0f, 0xae, 0xf0]);
         let block =
             compile_atomic_block(&adapted(&instruction.bytes), MemoryOrderMode::Parallel).unwrap();
-        let [instruction] = block.layout.instructions.as_slice() else {
+        let [instruction] = block.layout().instructions.as_slice() else {
             panic!("expected one compiled MFENCE");
         };
         assert!(instruction.helper_call_word.is_none());
-        let word = block.words[instruction.effects_start];
+        let word = block.words()[instruction.effects_start];
         assert_eq!(word, 0xd503_3bbf);
         word
     });
