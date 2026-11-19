@@ -270,6 +270,7 @@ impl Stepper for Quantum<'_, '_> {
         let before = self.quantum.stats(cpu);
         let result = self.quantum.run_accounted(HostQuantumCall {
             cpu,
+            vcpu_count: self.call.vcpu_count,
             state: &mut *self.call.state,
             skip_first_boundary: &mut *self.call.skip_first_boundary,
             bus: self.call.bus,

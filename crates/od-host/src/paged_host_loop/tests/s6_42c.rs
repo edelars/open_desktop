@@ -293,6 +293,57 @@ fn host_config(end_when_idle: bool) -> HostParallelConfig {
     }
 }
 
+#[test]
+fn s6_42d_host_cpuid_reports_the_boards_vcpus() {
+    use od_isa::cpuid::CpuidProfile;
+
+    let _guard = jit_guard();
+    let profile = CpuidProfile::X8664V1Stage4AApic;
+    let code = [0xB8, 1, 0, 0, 0, 0x0F, 0xA2, 0xF4]; // MOV EAX,1; CPUID; HLT
+    for (vcpus, config_slots) in [(1, 1), (2, 2), (2, 3)] {
+        let mut board = board(vcpus);
+        for (cpu, (code_at, stack)) in [(CODE_0, STACK_TOP_0), (CODE_1, STACK_TOP_1)]
+            .into_iter()
+            .take(vcpus)
+            .enumerate()
+        {
+            install(&mut board, cpu, &code, code_at, stack);
+        }
+        let parts = (0..config_slots).map(|_| None).collect();
+        let quantum = JitHostQuantum::new(parts, vec![config(); config_slots], RFLAGS_DEFINED)
+            .with_cpl0_cpuid(profile);
+        let (report, registers) = run_accounted_host_threads(
+            &mut board,
+            host_config(false),
+            &quantum.nmi_paging(),
+            &|call| quantum.run_accounted(call),
+            &|_| quantum.thread_exit(),
+            |control| {
+                assert!(control.wait_until(WAIT, || { (0..vcpus).all(|cpu| control.halted(cpu)) }));
+                control.stop_all(WAIT).unwrap();
+                (0..vcpus)
+                    .map(|cpu| {
+                        control
+                            .with_state(cpu, |state| state.gpr[Register::Rbx as usize])
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, HostParallelFinish::Stopped);
+        assert_eq!(report.retired, vec![3; vcpus]);
+        for (cpu, ebx) in registers.into_iter().enumerate() {
+            let expected = profile.query_for_vcpu(1, 0, cpu as u32, vcpus as u32);
+            assert_eq!(
+                ebx,
+                u64::from(expected.ebx),
+                "vCPU {cpu} of {vcpus} with {config_slots} host configuration slots"
+            );
+        }
+    }
+}
+
 fn cell(control: &od_machine::HostParallelControl<'_, '_>, at: u64) -> u64 {
     control
         .bus()

@@ -142,6 +142,8 @@ impl std::fmt::Debug for HostSplitGate<'_> {
 pub struct HostQuantumCall<'a> {
     /// Index of the vCPU (equal to its APIC ID).
     pub cpu: usize,
+    /// Number of vCPUs exposed by the guest board.
+    pub vcpu_count: u8,
     /// The CPU state of the vCPU; the thread owns it for the call.
     pub state: &'a mut LongModeState,
     /// The vCPU's restart point inside a partial REP. The executor preserves it until it
@@ -560,6 +562,7 @@ fn run_host_threads_inner<R>(
         let nvme_only = nvme_pending.as_deref_mut().is_some_and(std::mem::take);
         let result = run(HostQuantumCall {
             cpu: call.cpu,
+            vcpu_count: call.vcpu.cpuid.cpu_count,
             state: &mut call.vcpu.state,
             skip_first_boundary: &mut call.vcpu.skip_first_boundary,
             bus: call.env.bus,

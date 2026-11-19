@@ -116,7 +116,7 @@ pub struct JitHostQuantum {
 impl JitHostQuantum {
     /// `parts[cpu]` is the part of vCPU `cpu` (`None` uses the interpreter for the parallel run);
     /// `configs[cpu]` is its translation and access context; `rflags_defined` is the interpreter's
-    /// initial definedness mask. The three vectors have one element per vCPU.
+    /// initial definedness mask. Supply one entry in each vector per vCPU.
     pub fn new(
         parts: Vec<Option<JitRegionPart>>,
         configs: Vec<PagedHostLoopConfig>,
@@ -153,7 +153,8 @@ impl JitHostQuantum {
         self
     }
 
-    /// Enable the CPL0 set and execute guest CPUID in its interpreter with the selected profile.
+    /// Enable the CPL0 set and execute guest CPUID with the selected profile and the board's
+    /// topology supplied by the host call.
     #[must_use]
     pub fn with_cpl0_cpuid(mut self, profile: CpuidProfile) -> Self {
         self.cpuid = Some(profile);
@@ -348,7 +349,7 @@ impl JitHostQuantum {
                 set = match &self.cpuid {
                     Some(profile) => base_set
                         .with_cpuid(profile)
-                        .with_cpuid_topology(cpu as u8, self.configs.len() as u8),
+                        .with_cpuid_topology(cpu as u8, call.vcpu_count),
                     None => base_set,
                 };
                 LoopBusRef::SharedSet(
