@@ -20365,7 +20365,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (
                             0x21 | 0x23 | 0x25 | 0x81 | 0x83,
                             OperandSize::Dword | OperandSize::Qword
-                        ) | (0x20 | 0x22, OperandSize::Byte)
+                        ) | (0x20 | 0x22 | 0x80, OperandSize::Byte)
                     )
                 }
                 Operation::Logic {
@@ -28721,7 +28721,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
         }
         // The base profile admits bare byte and 66-prefixed word immediates.
-        // Firmware also uses REX to select SPL/BPL/SIL/DIL or R8B–R15B.
+        // Firmware also uses REX for low byte aliases and R8W–R15W.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
@@ -28738,14 +28738,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 rex: instruction.prefixes.rex,
                                 ..Prefixes::default()
                             }))))
-                || (instruction.length == 4
-                    && matches!(instruction.opcode.byte, 0xb8..=0xbf)
-                    && instruction.prefixes
-                        == (Prefixes {
-                            operand_override: true,
-                            ..Prefixes::default()
-                        })
-                    && destination.size() == OperandSize::Word)) =>
+                || (matches!(instruction.opcode.byte, 0xb8..=0xbf)
+                    && destination.size() == OperandSize::Word
+                    && ((instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            }))
+                        || (firmware_boot_profile
+                            && instruction.length == 5
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: Some(0x41),
+                                    operand_override: true,
+                                    ..Prefixes::default()
+                                }))))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;

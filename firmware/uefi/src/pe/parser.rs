@@ -11,6 +11,7 @@ const DIRECTORY_BYTES: usize = 8;
 pub(super) const MAX_SECTIONS: usize = 96;
 const COFF_AMD64: u16 = 0x8664;
 const COFF_EXECUTABLE_IMAGE: u16 = 0x0002;
+const COFF_RELOCATIONS_STRIPPED: u16 = 0x0001;
 const PE32_PLUS: u16 = 0x020b;
 const SECURITY_DIRECTORY: usize = 4;
 const BASE_RELOCATION_DIRECTORY: usize = 5;
@@ -57,6 +58,7 @@ pub struct PeImage<'a> {
     security_entry_file_offset: Option<usize>,
     section_alignment: u32,
     file_alignment: u32,
+    relocations_stripped: bool,
     base_relocations: Option<Range<u32>>,
     certificates: Option<Range<usize>>,
 }
@@ -119,7 +121,8 @@ impl<'a> PeImage<'a> {
         if read_u16(coff, 4) != COFF_AMD64 {
             return Err(Error::UnsupportedMachine);
         }
-        if read_u16(coff, 22) & COFF_EXECUTABLE_IMAGE == 0 {
+        let characteristics = read_u16(coff, 22);
+        if characteristics & COFF_EXECUTABLE_IMAGE == 0 {
             return Err(Error::NotExecutable);
         }
         let section_count = usize::from(read_u16(coff, 6));
@@ -201,6 +204,7 @@ impl<'a> PeImage<'a> {
             }),
             section_alignment,
             file_alignment,
+            relocations_stripped: characteristics & COFF_RELOCATIONS_STRIPPED != 0,
             base_relocations: None,
             certificates: None,
         };
@@ -224,6 +228,27 @@ impl<'a> PeImage<'a> {
 
     pub fn entry_rva(&self) -> u32 {
         self.entry_rva
+    }
+
+    pub fn section_alignment(&self) -> u32 {
+        self.section_alignment
+    }
+
+    pub fn relocations_stripped(&self) -> bool {
+        self.relocations_stripped
+    }
+
+    pub(super) fn relocation_data(&self) -> Option<(u32, &'a [u8])> {
+        let range = self.base_relocations.as_ref()?;
+        let length = (range.end - range.start) as usize;
+        let bytes = self
+            .sections()
+            .find_map(|section| {
+                let start = range.start.checked_sub(section.virtual_address)? as usize;
+                section.file_data.get(start..start.checked_add(length)?)
+            })
+            .expect("parsed relocations are in one file-backed section");
+        Some((range.start, bytes))
     }
 
     pub(super) fn file(&self) -> &'a [u8] {

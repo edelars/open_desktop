@@ -52949,6 +52949,62 @@ fn firmware_boot_qword_shr_to_memory_updates_flags_only_after_store() {
 }
 
 #[test]
+fn firmware_boot_word_immediate_preserves_the_upper_extended_register() {
+    let code = [0x66, 0x41, 0xbb, 0x01, 0x00];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R11 as usize] = 0xaabb_ccdd_1122_ffff;
+    cpu.rflags = 0xed7;
+    let before = cpu.clone();
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xbb });
+    assert_eq!(cpu, before);
+
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R11 as usize] = 0xaabb_ccdd_1122_0001;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_byte_and_immediate_uses_the_rex_low_byte_alias() {
+    let code = [0x40, 0x80, 0xe5, 0x01];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rbp as usize] = 0x1122_3344_5566_77a7;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rbp as usize] = 0x1122_3344_5566_7701;
+    expected.rflags = 0x612;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED | 0x10,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_boot_qword_xor_accepts_the_sign_extended_immediate_form() {
     for (immediate, value, flags) in [
         (0x3f, 0xaabb_ccdd_1122_331b, 0x696),
