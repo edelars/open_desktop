@@ -2887,6 +2887,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }))
     }
 
+    #[inline(always)]
+    fn mov_operands(
+        &mut self,
+        byte: u8,
+        prefixes: Prefixes,
+        size: OperandSize,
+    ) -> Result<(Operand, Operand), DecodeError> {
+        let rex = prefixes.rex.unwrap_or(0);
+        let modrm = self.byte()?;
+        let reg = view(
+            ((modrm >> 3) & 7) | ((rex & 4) << 1),
+            size,
+            prefixes.rex.is_some(),
+        );
+        let rm = self.rm_operand(modrm, prefixes, size)?;
+        let reg = Operand::Register(reg);
+        let (dst, src) = if byte & 2 == 0 { (rm, reg) } else { (reg, rm) };
+        Ok((dst, src))
+    }
+
     fn decode(&mut self) -> Result<Instruction, DecodeError> {
         let mut prefixes = Prefixes::default();
         let mut groups = 0u8;
@@ -2962,6 +2982,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 byte: first,
             }
         };
+        // A lone REX.W has no legacy prefix rules to apply to a primary MOV.
+        // The shared operand decoder preserves the existing byte-fetch order.
+        if prefix_count == 1
+            && matches!(prefixes.rex, Some(0x48..=0x4f))
+            && matches!((opcode.map, opcode.byte), (OpcodeMap::Primary, 0x89 | 0x8b))
+        {
+            let size = OperandSize::Qword;
+            let (dst, src) = self.mov_operands(opcode.byte, prefixes, size)?;
+            return Ok(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: size,
+                address_size: OperandSize::Qword,
+                operation: Operation::Mov { dst, src },
+            });
+        }
         // §2.1.1 specifies useful encodings with at most one prefix per group.
         // Duplicate groups are outside this slice: do not manufacture #UD or
         // claim a universal last-prefix-wins rule.
@@ -10107,15 +10144,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if byte & 1 == 0 {
                     size = OperandSize::Byte;
                 }
-                let modrm = self.byte()?;
-                let reg = view(
-                    ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    size,
-                    prefixes.rex.is_some(),
-                );
-                let rm = self.rm_operand(modrm, prefixes, size)?;
-                let reg = Operand::Register(reg);
-                let (dst, src) = if byte & 2 == 0 { (rm, reg) } else { (reg, rm) };
+                let (dst, src) = self.mov_operands(byte, prefixes, size)?;
                 let exact_rax_form = byte == 0x8b
                     && self.length == 4
                     && prefixes.rex == Some(0x48)
@@ -10878,6 +10907,47 @@ mod tests {
 
         fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
             panic!("decoder performed a memory fence")
+        }
+    }
+
+    #[test]
+    fn single_rex_w_mov_keeps_operand_fetch_order() {
+        let reg = Operand::Register(RegisterView::low(Register::R8, OperandSize::Qword));
+        let operand = Operand::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::R12),
+            index: Some(Register::R13),
+            scale: 4,
+            displacement: -16,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Qword,
+        });
+        for (opcode, dst, src) in [(0x89, operand, reg), (0x8b, reg, operand)] {
+            let bytes = [0x4f, opcode, 0x84, 0xac, 0xf0, 0xff, 0xff, 0xff];
+            let mut memory = Memory::new(&bytes);
+            let addresses = (memory.base..memory.base + bytes.len() as u64).collect::<Vec<_>>();
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.operation, Operation::Mov { dst, src });
+            assert_eq!(decoded.length, bytes.len() as u8);
+            assert_eq!(decoded.prefixes.rex, Some(0x4f));
+            assert_eq!(decoded.operand_size, OperandSize::Qword);
+            assert_eq!(decoded.address_size, OperandSize::Qword);
+            assert_eq!(memory.fetched, addresses);
+
+            for (offset, &address) in addresses.iter().enumerate() {
+                let mut memory = Memory::new(&bytes);
+                memory.fault_at = Some(offset);
+                assert_eq!(
+                    memory.decode(),
+                    Err(DecodeError::Memory(MemoryError::Architectural(
+                        ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(20),
+                            linear_address: Some(address),
+                        }
+                    )))
+                );
+                assert_eq!(memory.fetched.as_slice(), &addresses[..=offset]);
+            }
         }
     }
 

@@ -1146,6 +1146,13 @@ probe took 212–316 ns with full state and memory-event parity.
 The result is scoped to the two fixed instruction streams.
 [MOV decoder controls and raw evidence](STAGE_3_S3-40n_2026-11-19.md)
 
+S3-40o added a short route for primary `89` and `8B` with exactly one
+REX.W. Four decoder builds agreed on 943,170 results and ordered fetch
+traces. The selected inlined operand parser gave a 0.211 median paired
+time ratio on the target group and 1.009–1.016 on the three controls.
+A full interpreter-call speedup remains unconfirmed.
+[Decoder change, measurements and reproduction](STAGE_3_S3-40o_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

@@ -1501,6 +1501,16 @@ state, RAM, ordered callbacks and retirement. The archive preserves
 three processes with six rotations per sequence.
 [Report and reproduction](../reports/STAGE_3_S3-40n_2026-11-19.md)
 
+### S3-40o. Single-REX.W primary MOV
+
+The signed release comparison tests four decoder builds for exact decoded
+results and ordered fetch requests, including injected failures. A second
+driver times the selected and original decoder in the same process.
+It keeps per-side call counts fixed and alternates measurement order.
+Four processes give a 0.211 median candidate/reference ratio on target
+MOV and 1.009–1.016 on register, neighboring MOV and `0F` controls.
+[Report and reproduction](../reports/STAGE_3_S3-40o_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

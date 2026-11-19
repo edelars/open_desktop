@@ -25,6 +25,11 @@ S2-09 физически подтвердил три положительные 
 S0 corpus на одном Intel CPU; это не полное ISA покрытие. Evidence — в
 [CPU_ORACLE](../../docs/testing/CPU_ORACLE.md#native-v2-s2-09-границы-физического-подтверждения).
 
+S3-40o сокращает выбор операции для первичных MOV `89` и `8B` с одним
+REX.W. Общий разбор операндов сохраняет порядок чтения инструкции и
+приоритет ошибок fetch.
+[Проверки и замеры](../../docs/reports/STAGE_3_S3-40o_2026-11-19.md)
+
 S2-37a/b add two separate local-only scalar approximation instructions:
 register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
 `Binary32` references and update only the destination low dword; the rest of
