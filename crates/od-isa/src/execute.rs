@@ -30015,19 +30015,18 @@ fn step_tracked_with_stop(
     rflags_defined: &mut u64,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
-    step_tracked_with_profiles(
+    step_configured_with_profile_mode::<true>(
         state,
         memory,
         context,
         rflags_defined,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-        stop_requested,
+        ExecutionProfiles::EMPTY,
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested,
+        },
     )
 }
 
@@ -137849,6 +137848,110 @@ mod tests {
                     assert_eq!(reference_memory.bytes, memory.bytes);
                     assert_eq!(reference_memory.accesses, memory.accesses);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bare_tracked_step_matches_configured_empty_profile() {
+        let mut initial = LongModeState {
+            rip: 0x2000,
+            ..Default::default()
+        };
+        initial.gpr[Register::Rax as usize] = 0x0123_4567_89ab_cdef;
+        initial.gpr[Register::Rbx as usize] = 0x1008;
+        initial.gpr[Register::Rcx as usize] = 3;
+        initial.gpr[Register::Rsi as usize] = 0x1000;
+        initial.gpr[Register::Rdi as usize] = 0x1008;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        let flags_defined = crate::INTEGER_FLAGS & !crate::AF;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x1008),
+        };
+        for (code, error, expected) in [
+            (&[0x48, 0x89, 0x03][..], None, StepOutcome::Advanced),
+            (
+                &[0x48, 0x8b, 0x03],
+                Some(MemoryError::Architectural(fault.clone())),
+                StepOutcome::Fault(fault),
+            ),
+            (&[0xf3, 0xa4], None, StepOutcome::StopRequested),
+        ] {
+            let observe = |bare| {
+                let mut state = initial.clone();
+                let mut memory = Memory::at(code, initial.rip);
+                memory.error = error.clone();
+                let mut defined = flags_defined;
+                let mut polls = 0;
+                let mut stop_requested = || {
+                    polls += 1;
+                    true
+                };
+                let outcome = if bare {
+                    step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        context,
+                        &mut defined,
+                        &mut stop_requested,
+                    )
+                } else {
+                    step_configured(
+                        &mut state,
+                        &mut memory,
+                        context,
+                        &mut defined,
+                        ExecutionProfiles::EMPTY,
+                        StepRuntime {
+                            rdtsc_source: None,
+                            sti_sequence: None,
+                            exact_hlt_only: false,
+                            stop_requested: &mut stop_requested,
+                        },
+                    )
+                };
+                (outcome.unwrap(), state, memory, defined, polls)
+            };
+
+            let (outcome, state, memory, defined, polls) = observe(true);
+            let (
+                configured_outcome,
+                configured_state,
+                configured_memory,
+                configured_defined,
+                configured_polls,
+            ) = observe(false);
+            assert_eq!(outcome, expected);
+            assert_eq!(outcome, configured_outcome);
+            assert_eq!(state, configured_state);
+            assert_eq!(defined, configured_defined);
+            assert_eq!(defined, flags_defined);
+            assert_eq!(memory.bytes, configured_memory.bytes);
+            assert_eq!(memory.fetches, configured_memory.fetches);
+            assert_eq!(memory.fetch_contexts, configured_memory.fetch_contexts);
+            assert_eq!(memory.accesses, configured_memory.accesses);
+            assert_eq!(memory.contexts, configured_memory.contexts);
+            assert_eq!(polls, configured_polls);
+            assert_eq!(polls, usize::from(outcome == StepOutcome::StopRequested));
+
+            if outcome == StepOutcome::StopRequested {
+                assert_eq!(state.rip, initial.rip);
+                assert_eq!(state.gpr[Register::Rcx as usize], 2);
+                assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+                assert_eq!(state.gpr[Register::Rdi as usize], 0x1009);
+                assert_eq!(
+                    memory.accesses,
+                    [
+                        (AccessKind::Read, 0x1000, 1),
+                        (AccessKind::Write, 0x1008, 1)
+                    ]
+                );
+                assert_eq!(memory.bytes[8], memory.bytes[0]);
             }
         }
     }

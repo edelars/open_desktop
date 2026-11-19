@@ -1585,6 +1585,15 @@ the startup UID, `nice -5` and QoS in every process. The archive
 retains raw rows, host load and offline replay.
 [Report and reproduction](../reports/STAGE_3_S3-40w_2026-11-19.md)
 
+### S3-40x. Statically empty profiles in ordinary STEP
+
+The S3-40w driver compares two signed builds from the same revision
+with the ordinary STEP change applied to the candidate. Each build
+passes the same release correctness gates. Six alternating rounds
+use shared sweep counts and verify `nice -5`, UID and QoS. The
+archive retains all 432 scored intervals and the host-load trace.
+[Report and reproduction](../reports/STAGE_3_S3-40x_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

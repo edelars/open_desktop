@@ -1317,6 +1317,14 @@ were 0.740 and 0.730. The two measured profiles retain an interpreter
 gap. ISSUE-521 remains open.
 [Interpreter measurements and reproduction](STAGE_3_S3-40w_2026-11-19.md)
 
+S3-40x reuses the statically empty-profile executor for ordinary
+STEP. The two S3-34a STEP-pair ratios were 0.747 and 0.743, with
+a gain in every matched round. RUN and decode ranges crossed
+parity. The signed benchmark text section fell by 184,192 bytes.
+The differential test covers MOV access, a data fault and REP STOP.
+The historical RUN gap remains open.
+[STEP measurements and reproduction](STAGE_3_S3-40x_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
