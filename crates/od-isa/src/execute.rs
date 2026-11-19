@@ -20076,7 +20076,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => {
                     instruction.opcode.byte == 0xff
-                        && instruction.operand_size == OperandSize::Qword
+                        && matches!(
+                            instruction.operand_size,
+                            OperandSize::Dword | OperandSize::Qword
+                        )
                 }
                 Operation::Logic {
                     kind: LogicKind::Test,
@@ -20362,7 +20365,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         },
                     ) => matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0x89 | 0x8b, OperandSize::Qword)
+                        (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword)
                     ),
                     (OpcodeMap::Primary, _) => matches!(
                         (instruction.opcode.byte, instruction.operand_size),
@@ -21089,6 +21092,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             state.activity = Some(crate::CpuActivity::Halted);
             return result(PagedProbeExit::Halted, 1);
+        }
+        // S7-04: the firmware clears IF before its final HLT.
+        Operation::Cli
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xfa
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.rflags &= !(1 << 9);
+            state.rip = next_rip;
         }
         // S7-04: only the exact bare CLD form is admitted by the base probe profile.
         // It clears DF and makes that flag defined; STD and prefixed forms stay unsupported.

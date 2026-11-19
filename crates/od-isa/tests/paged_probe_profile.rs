@@ -51785,7 +51785,7 @@ fn firmware_boot_movzx_reads_one_byte_and_preserves_state_on_fault() {
 }
 
 #[test]
-fn firmware_boot_register_transfers_use_qword_and_movzx_byte_views() {
+fn firmware_boot_register_transfers_use_decoded_register_views() {
     for (code, destination, source, input, expected_value) in [
         (
             &[0x48, 0x89, 0xdf][..],
@@ -51800,6 +51800,20 @@ fn firmware_boot_register_transfers_use_qword_and_movzx_byte_views() {
             Register::R15,
             0x9234_5678_9abc_def0,
             0x9234_5678_9abc_def0,
+        ),
+        (
+            &[0x89, 0xc8][..],
+            Register::Rax,
+            Register::Rcx,
+            0xaabb_ccdd_eeff_807f,
+            0xeeff_807f,
+        ),
+        (
+            &[0x45, 0x8b, 0xcd][..],
+            Register::R9,
+            Register::R13,
+            0xfedc_ba98_7654_3210,
+            0x7654_3210,
         ),
         (
             &[0x0f, 0xb6, 0xc4][..],
@@ -52042,7 +52056,7 @@ fn firmware_boot_test_byte_immediate_reads_the_decoded_register_alias() {
 }
 
 #[test]
-fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
+fn firmware_boot_inc_dec_preserve_cf_and_its_definedness() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const CF: u64 = 1;
     for (code, reg, input, result, old_cf, old_cf_defined, flags) in [
@@ -52074,6 +52088,24 @@ fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
             0x814,
         ),
         (&[0x49, 0xff, 0xc8][..], Register::R8, 1, 0, 0, 0, 0x044),
+        (
+            &[0xff, 0xcf][..],
+            Register::Rdi,
+            0x1234_5678_8000_0000,
+            0x7fff_ffff,
+            CF,
+            CF,
+            0x814,
+        ),
+        (
+            &[0x41, 0xff, 0xc0][..],
+            Register::R8,
+            u64::MAX,
+            0,
+            CF,
+            0,
+            0x054,
+        ),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
@@ -52100,6 +52132,64 @@ fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
             initial_defined | (ARITHMETIC_FLAGS & !CF)
         );
         assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_cli_clears_only_if_and_keeps_base_and_sti_unsupported() {
+    const IF: u64 = 1 << 9;
+    for (code, firmware, exit) in [
+        (&[0xfa][..], true, PagedProbeExit::Retired),
+        (
+            &[0xfa][..],
+            false,
+            PagedProbeExit::Unsupported { opcode: 0xfa },
+        ),
+        (
+            &[0x66, 0xfa][..],
+            true,
+            PagedProbeExit::Unsupported { opcode: 0xfa },
+        ),
+        (
+            &[0xfb][..],
+            true,
+            PagedProbeExit::Unsupported { opcode: 0xfb },
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let retires = exit == PagedProbeExit::Retired;
+        if retires {
+            expected.rflags &= !IF;
+            expected.rip += code.len() as u64;
+        }
+        let mut pio = Pio::default();
+        let result = if firmware {
+            execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        } else {
+            execute::step_paged_probe(
+                PagedCpl0ProbeV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        };
+        assert_eq!(result.exit, exit, "{code:02x?}");
+        assert_eq!(result.instructions_executed, u64::from(retires));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
@@ -53254,9 +53344,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),    // address override on TEST
         (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
         (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
-        (&[0xff, 0xc3][..], 0xff),                   // INC EBX
         (&[0x48, 0xff, 0x0b][..], 0xff),             // DEC qword [RBX]
-        (&[0xff, 0xcb][..], 0xff),                   // DEC EBX
         (&[0x48, 0xc1, 0x2b, 0x15][..], 0xc1),       // SHR qword [RBX],21
         (&[0xc1, 0xe9, 0x15][..], 0xc1),             // SHR ECX,21
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1), // address override on SHR
@@ -53273,10 +53361,8 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
         (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // prefixed NOP
         (&[0x0f, 0x18, 0x00][..], 0x18),             // PREFETCHNTA
-        (&[0x8b, 0xc1][..], 0x8b),                   // dword register MOV
         (&[0xc7, 0x54, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // reserved C7 /2
         (&[0x64, 0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // segment override on dword immediate store
-        (&[0x89, 0xc0][..], 0x89),                               // MOV EAX,EAX
         (&[0x67, 0x48, 0x89, 0xc9][..], 0x89), // address override on qword register MOV
         (&[0xff, 0xe1][..], 0xff),             // JMP RCX
         (&[0xff, 0x24, 0xc5, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX index
