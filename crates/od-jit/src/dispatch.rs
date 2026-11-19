@@ -322,7 +322,8 @@ trait CachedEntryStore<H> {
     ) -> Result<(), CacheError>;
     fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError>;
     fn remove(&mut self, index: usize) -> Result<(), CacheError>;
-    fn record_hit(&mut self, index: usize) -> Result<(), CacheError>;
+    // Return the current index after applying the eviction policy's hit handling.
+    fn record_hit(&mut self, index: usize) -> Result<usize, CacheError>;
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
     fn record_publish(&mut self, code_bytes: usize) -> Result<(), CacheError>;
@@ -555,8 +556,9 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self, _index: usize) -> Result<(), CacheError> {
-        Self::add_counter(&mut self.counters.hits)
+    fn record_hit(&mut self, _index: usize) -> Result<usize, CacheError> {
+        Self::add_counter(&mut self.counters.hits)?;
+        Ok(0)
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.misses)
@@ -900,13 +902,14 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self, index: usize) -> Result<(), CacheError> {
+    fn record_hit(&mut self, index: usize) -> Result<usize, CacheError> {
         Self::add_counter(&mut self.counters.hits)?;
         if self.eviction_policy == CacheEvictionPolicy::Lru && index < self.entries.len() {
             let touched = self.entries.remove(index);
             self.entries.push(touched);
+            return Ok(self.entries.len() - 1);
         }
-        Ok(())
+        Ok(index)
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.misses)
@@ -1940,6 +1943,11 @@ where
     C: CachedEntryStore<B::Published>,
     O: PhaseObserver,
 {
+    enum BlockSelection {
+        PreviousEntry(usize),
+        Built(crate::block::BuildOutcome),
+    }
+
     if let Some(value) = state.cr3 {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedCr3State { value },
@@ -1989,6 +1997,7 @@ where
     let mut retired_total = 0u64;
     let mut blocks_executed = 0u64;
 
+    let mut previous_entry = None;
     loop {
         if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
             return Ok(result(exit, remaining, retired_total, blocks_executed));
@@ -2000,88 +2009,105 @@ where
             return Ok(result(exit, remaining, retired_total, blocks_executed));
         }
 
-        let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
-            build_dispatch_block(code, state.rip, admission)
+        let selection = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
+            if let Some((rip, index)) = previous_entry
+                && rip == state.rip
+            {
+                return Ok(BlockSelection::PreviousEntry(index));
+            }
+            build_dispatch_block(code, state.rip, admission).map(BlockSelection::Built)
         })
         .map_err(DispatchError::Compile)?;
-        let guest_block = match &built {
-            crate::block::BuildOutcome::Block(block) => block,
-            crate::block::BuildOutcome::NoBlock(no_block) => {
-                return Err(DispatchError::NoNativePrefix {
-                    rip: no_block.entry_rip,
-                });
-            }
-        };
-        let (key, hit) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
-                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-            cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-            let key = TranslationKey::for_block(
-                code,
-                guest_block,
-                CompileFlavor::S0_09FixtureDispatch,
-                execution_context,
-                dependencies,
-            )
-            .map_err(DispatchError::TranslationKey)?;
-            validate_cached_snapshot(&key, code, dependencies)?;
-
-            let hit_index = cache.find(&key);
-            let hit = hit_index.is_some();
-            if let Some(index) = hit_index {
-                cache.record_hit(index).map_err(DispatchError::Cache)?;
-            } else {
-                cache.record_miss().map_err(DispatchError::Cache)?;
-            }
-            Ok::<_, DispatchError<B::Error>>((key, hit))
-        })?;
-
-        let cached_index = if !hit {
-            let compiled = match crate::block_compile::compile_prepared_dispatch_block_observed(
-                code.code_end(),
-                built,
-                admission,
-                observer,
-            )
-            .map_err(DispatchError::Compile)?
-            {
-                BlockCompileOutcome::Compiled(block) => block,
-                BlockCompileOutcome::NoNativePrefix { rip, .. } => {
-                    return Err(DispatchError::NoNativePrefix { rip });
-                }
-            };
-            cache.record_compile().map_err(DispatchError::Cache)?;
-            let logical_bytes = cache
-                .size_for_candidate(&key, &compiled)
-                .map_err(DispatchError::Cache)?;
-            let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
-            cache
-                .prepare_install(code_bytes, logical_bytes)
-                .map_err(DispatchError::Cache)?;
-
-            validate_cached_snapshot(&key, code, dependencies)?;
-
-            let published = measure(observer, DispatchPhase::Publication, || {
-                backend.publish_cached_block(&compiled)
-            })
-            .map_err(DispatchError::CachePublish)?;
-            cache
-                .record_publish(code_bytes)
-                .map_err(DispatchError::Cache)?;
-            let published = validate_published_candidate(&key, code, dependencies, published)?;
-            let index = cache
-                .install(CachedEntry {
-                    key,
-                    block: compiled,
-                    published,
-                    logical_bytes,
+        let cached_index = match selection {
+            BlockSelection::PreviousEntry(index) => {
+                measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+                    cache.record_hit(index)
                 })
-                .map_err(DispatchError::Cache)?;
-            index
-        } else {
-            cache.find(&key).expect("hit index still resident")
-        };
+                .map_err(DispatchError::Cache)?
+            }
+            BlockSelection::Built(built) => {
+                let guest_block = match &built {
+                    crate::block::BuildOutcome::Block(block) => block,
+                    crate::block::BuildOutcome::NoBlock(no_block) => {
+                        return Err(DispatchError::NoNativePrefix {
+                            rip: no_block.entry_rip,
+                        });
+                    }
+                };
+                let (key, hit) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+                    let minimum =
+                        minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
+                            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+                    cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+                    let key = TranslationKey::for_block(
+                        code,
+                        guest_block,
+                        CompileFlavor::S0_09FixtureDispatch,
+                        execution_context,
+                        dependencies,
+                    )
+                    .map_err(DispatchError::TranslationKey)?;
+                    validate_cached_snapshot(&key, code, dependencies)?;
 
+                    let hit_index = cache.find(&key);
+                    let hit = hit_index.is_some();
+                    if let Some(index) = hit_index {
+                        cache.record_hit(index).map_err(DispatchError::Cache)?;
+                    } else {
+                        cache.record_miss().map_err(DispatchError::Cache)?;
+                    }
+                    Ok::<_, DispatchError<B::Error>>((key, hit))
+                })?;
+
+                if !hit {
+                    let compiled =
+                        match crate::block_compile::compile_prepared_dispatch_block_observed(
+                            code.code_end(),
+                            built,
+                            admission,
+                            observer,
+                        )
+                        .map_err(DispatchError::Compile)?
+                        {
+                            BlockCompileOutcome::Compiled(block) => block,
+                            BlockCompileOutcome::NoNativePrefix { rip, .. } => {
+                                return Err(DispatchError::NoNativePrefix { rip });
+                            }
+                        };
+                    cache.record_compile().map_err(DispatchError::Cache)?;
+                    let logical_bytes = cache
+                        .size_for_candidate(&key, &compiled)
+                        .map_err(DispatchError::Cache)?;
+                    let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
+                    cache
+                        .prepare_install(code_bytes, logical_bytes)
+                        .map_err(DispatchError::Cache)?;
+
+                    validate_cached_snapshot(&key, code, dependencies)?;
+
+                    let published = measure(observer, DispatchPhase::Publication, || {
+                        backend.publish_cached_block(&compiled)
+                    })
+                    .map_err(DispatchError::CachePublish)?;
+                    cache
+                        .record_publish(code_bytes)
+                        .map_err(DispatchError::Cache)?;
+                    let published =
+                        validate_published_candidate(&key, code, dependencies, published)?;
+                    let index = cache
+                        .install(CachedEntry {
+                            key,
+                            block: compiled,
+                            published,
+                            logical_bytes,
+                        })
+                        .map_err(DispatchError::Cache)?;
+                    index
+                } else {
+                    cache.find(&key).expect("hit index still resident")
+                }
+            }
+        };
         let cached_key = &cache.entry(cached_index).expect("cache index valid").key;
         if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
@@ -2091,6 +2117,9 @@ where
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
             return Err(DispatchError::StaleDependencySnapshot);
         }
+        // The most recent resident index is valid until another lookup or install
+        // within this dispatch. No index is retained across invocations.
+        previous_entry = Some((cached_key.entry_rip(), cached_index));
         let cached = cache.entry(cached_index).expect("cache index valid");
         let cached_block = &cached.block;
         let published = &cached.published;
@@ -8732,6 +8761,69 @@ mod tests {
         run_multi_fixture(&c, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
         run_multi_fixture(&a, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
         assert_eq!(fifo.counters().successful_compiles, 4);
+    }
+
+    #[test]
+    fn same_rip_reuse_tracks_the_current_fifo_or_lru_entry() {
+        let base = 0x7200;
+        let second = base + 10;
+        let code = [
+            0x48, 0xB8, 0x11, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xB8, 0x22, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (view, admission) = cached_fixture(&code, base);
+        let dependencies = dependency(view, 1);
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            let tracker = Rc::new(RefCell::new(PublishedTracker {
+                allow_multiple_live: true,
+                ..PublishedTracker::default()
+            }));
+            let mut backend = MockCachedBackend(tracker.clone());
+            let mut cache = MultiEntryBlockCache::with_policy(
+                2,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                policy,
+            )
+            .unwrap();
+            let stop = AtomicU8::new(0);
+            let mut run = |rip, budget| {
+                let mut state = LongModeState {
+                    rip,
+                    ..LongModeState::default()
+                };
+                run_multi_cached_controlled(
+                    view,
+                    &admission,
+                    test_context(),
+                    &dependencies,
+                    &mut state,
+                    budget,
+                    DispatchControl {
+                        stop_rip: None,
+                        stop_requested: &stop,
+                        event_requested: None,
+                    },
+                    &mut cache,
+                    &mut backend,
+                )
+                .unwrap()
+            };
+            run(base, 1);
+            run(second, 1);
+            tracker.borrow_mut().scripted_replies = vec![
+                (base, RuntimeExitTag::DispatchCandidate, 1),
+                (second, RuntimeExitTag::DispatchCandidate, 1),
+                (second, RuntimeExitTag::DispatchCandidate, 1),
+                (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+            ];
+            let result = run(base, 6);
+            assert_eq!(result.exit, DispatchExit::CodeEnd);
+            assert_eq!(result.retired_instructions, 4);
+            assert_eq!(result.remaining_budget, 2);
+            assert_eq!(cache.counters().hits, 4);
+            assert_eq!(cache.counters().successful_publications, 2);
+            assert_eq!(tracker.borrow().executed_ids, [1, 2, 1, 1, 2, 2]);
+        }
     }
 
     #[test]

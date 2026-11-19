@@ -698,8 +698,9 @@ admission and semantics were not established for this corpus.
 real FIFO16 dispatch/cache/compiler path. It reports distinct intervals for
 block build/decode and admission, key/snapshot/lookup, IR lowering, allocation,
 emission plus byte encoding/finalization, publication, and host execution
-boundary. A hit still includes block build and key/lookup. Guards, cache install
-and accounting remain in `other_dispatch_ns`; they are not misreported as a
+boundary. Normal lookup includes block build and key lookup. Same-RIP reuse
+records the previous-entry check and hit accounting in those phases. Guards,
+cache install and other accounting remain in `other_dispatch_ns`; they are not misreported as a
 compiler phase. Stage intervals are non-overlapping and are components of the
 instrumented dispatch pass, not standalone end-to-end measurements.
 An observed phase spans the `Instant` sample taken by `begin` through the clock
@@ -792,10 +793,12 @@ construction/reset, full result/state validation, and phase-total extraction
 are outside the interval. Warm active phases are block build/admission,
 `key_snapshot_and_initial_lookup`, and the host execution boundary. The lookup
 phase covers minimum sizing, key construction, initial snapshot validation,
-the first `cache.find`, and its hit/miss update only. A hit performs a second
-`cache.find`, cached-snapshot and code-view revalidation, guards, accounting,
-and other cache bookkeeping outside the phase samples; adapter and recorder
-work is also in the unattributed residual. The host boundary includes backend
+the first `cache.find`, and its hit/miss update for normal lookup. Same-RIP
+reuse records the prior-entry check in the build phase and hit accounting in
+the lookup phase. A normal hit also performs a second `cache.find` outside
+these phases. Cached-snapshot and code-view revalidation, guards, accounting,
+other cache bookkeeping, and adapter and recorder work contribute to the
+unattributed residual. The host boundary includes backend
 and arena checks, host context, generated entry, and result decoding, so it is
 not pure guest execution time.
 
@@ -1417,6 +1420,14 @@ The revised opt-in path improved both one-pass medians across rounds after
 normalizing against the ordinary cached dispatcher. The
 [report and evidence archive](../reports/STAGE_3_S3-31f_2026-11-19.md)
 contain raw ranges, the benchmark patch, reproduction steps and build hashes.
+
+### S3-36g. Warm retained Session on one- and two-RIP loops
+
+The signed release comparison times complete `Session::run` and interpreter
+calls on the same S0-09 countdown loops. It checks full state and retirement
+outside timing and verifies hit-only cache counters across each warm sample.
+The archive includes the fixed counts, matched builds, alternating order,
+individual timings and offline audit. [Report and reproduction](../reports/STAGE_3_S3-36g_2026-11-19.md)
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 

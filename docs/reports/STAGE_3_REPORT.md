@@ -1020,6 +1020,14 @@ Performance remains a separate acceptance area; no performance result for
 [BENCHMARKS.md](../testing/BENCHMARKS.md); this update introduces no new
 benchmark command or manifest.
 
+S3-36g measured the retained S0-09 `Session::run` on matched warm inputs.
+At 64 and 4096 iterations with one RIP, the dispatcher took 7.6% and 5.6%
+of the previous JIT time by the median absolute comparison. The one-pass
+case cost 3.75% more. The two-RIP controls showed 2.22–3.47% median normalized
+overhead. The signed process suite passed 46/46 with the timed dispatcher
+patch. Cold and broader workload acceptance remain open.
+[S3-36g report and raw evidence](STAGE_3_S3-36g_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

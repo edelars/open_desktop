@@ -361,6 +361,12 @@ publications/evictions/resident bytes. LRU доступен как явная po
 FIFO-vs-LRU measurement. `SingleEntryBlockCache::new` и обычные
 release-on-return executor contracts сохраняют прежнее поведение.
 
+В кешированном S0-09 dispatcher повторный заход на тот же RIP сразу после
+выхода из блока использует индекс последней записи текущего вызова. Операция
+hit возвращает актуальный индекс после учёта FIFO или LRU. Перед входом
+проверяются снимок зависимостей, код и условия остановки. Первый заход и
+смена RIP проходят обычный путь построения блока и поиска ключа.
+
 `od-bench dispatch-cache` имеет implementation-only native mode для uncached
 publication, single-entry arena, FIFO(16) и opt-in LRU(16). Он требует exact
 frozen S3-17 fixture list/trace и проводит admission/oracle checks до timing.
