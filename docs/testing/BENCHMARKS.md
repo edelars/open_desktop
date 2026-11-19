@@ -1491,6 +1491,16 @@ The artifact preserves profile construction, architectural parity
 checks and the raw intervals.
 [Report and reproduction](../reports/STAGE_3_S3-40m_2026-11-19.md)
 
+### S3-40n. MOV decoder controls for S3-34a
+
+The signed release driver times the ordinary decoder, two clones
+that retain the original MOV arm, and the corresponding execution
+controls. Every decoder trial compares the complete decoded
+instructions on the two fixed byte streams. Execution trials check
+state, RAM, ordered callbacks and retirement. The archive preserves
+three processes with six rotations per sequence.
+[Report and reproduction](../reports/STAGE_3_S3-40n_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

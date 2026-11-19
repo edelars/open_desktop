@@ -1127,6 +1127,14 @@ the paired run time by about 26%. The decoder and remaining
 execution cost still require localization.
 [Interpreter controls and ISSUE-521 evidence](STAGE_3_S3-40m_2026-11-19.md)
 
+S3-40n compared the ordinary decoder with two MOV-only clones on
+the same checked-memory inputs. Decoder medians went from 185–276 ns
+to 95–136 ns with the original MOV arm and to 36–47 ns when the clone
+also omitted general predispatch checks. The combined execution
+probe took 212–316 ns with full state and memory-event parity.
+The result is scoped to the two fixed instruction streams.
+[MOV decoder controls and raw evidence](STAGE_3_S3-40n_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
