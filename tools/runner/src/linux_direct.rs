@@ -70,10 +70,11 @@
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
-    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, NvmeBackend, NvmeConfig,
-    load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
-    run_linux_direct_board, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode_interleaved,
+    LinuxExecutionObservations, LinuxStopRecord, LinuxThreadedOptions, LinuxVcpuRunState,
+    MachineStopReason, NvmeBackend, NvmeConfig, load_linux_direct_board_with_nvme_and_vcpus,
+    load_linux_direct_board_with_vcpus, run_linux_direct_board,
+    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode_interleaved,
+    run_linux_direct_board_set_user_mode_parallel,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
@@ -81,6 +82,7 @@ use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use od_machine::{load_linux_direct_board, run_linux_direct_board_set};
@@ -91,7 +93,8 @@ pub(crate) mod series;
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
  [--vcpus 1|2] [--seed <u64> (stage4a or stage4a-apic user mode)] \
- [--rootfs-raw <working-copy.raw> (--vcpus 2|4, seeded stage4a-apic user mode, new report path)] \
+ [--parallel --vcpus 2|4 [--quantum <steps>] [--timeout-s <seconds>]] \
+ [--rootfs-raw <working-copy.raw> (--vcpus 2|4, stage4a-apic user mode, new report path)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -127,6 +130,7 @@ struct Options {
     vcpu_count: usize,
     /// `--seed N`: use the seeded interleaved scheduler for a Stage 6 run.
     interleaved_seed: Option<u64>,
+    parallel: Option<ParallelOptions>,
     /// `--set-cpl0`: run through the CPL0 profile set instead of the base probe profile.
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
@@ -164,6 +168,12 @@ struct Options {
     /// Capture one strictly gated, bounded instruction-path quantum for the S5-07 follow-up.
     execution_observations_quantum_trace: bool,
     execution_observations_elf_stack_copy: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ParallelOptions {
+    quantum: u64,
+    timeout: Duration,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -780,8 +790,32 @@ fn evaluate_with_rootfs(
                     int3: options.cpuid_profile.is_stage4a_family(),
                     ..LinuxCpl0SetMembers::linux_default()
                 };
-                let run_started = std::time::Instant::now();
-                let result = if options.vcpu_count > 1 {
+                let run_started = Instant::now();
+                let result = if let Some(parallel) = &options.parallel {
+                    evidence["parallel_scheduler"] = json!({
+                        "vcpus": options.vcpu_count,
+                        "quantum": parallel.quantum,
+                        "timeout_s": parallel.timeout.as_secs(),
+                    });
+                    run_linux_direct_board_set_user_mode_parallel(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                        LinuxThreadedOptions {
+                            quantum: parallel.quantum,
+                            timeout: parallel.timeout,
+                        },
+                    )
+                    .map(|report| {
+                        let scheduler = &mut evidence["parallel_scheduler"];
+                        scheduler["terminal_vcpu"] = json!(report.terminal_vcpu);
+                        scheduler["cpu_stats"] = describe_vcpus(&report.vcpus);
+                        scheduler["threads_started"] = json!(report.threads_started);
+                        scheduler["threads_exited"] = json!(report.threads_exited);
+                        report.stop
+                    })
+                } else if options.vcpu_count > 1 {
                     run_linux_direct_board_set_user_mode_interleaved(
                         &mut boot,
                         &machine_input,
@@ -792,25 +826,8 @@ fn evaluate_with_rootfs(
                     .map(|report| {
                         evidence["interleaved_scheduler"]["terminal_vcpu"] =
                             json!(report.terminal_vcpu);
-                        evidence["interleaved_scheduler"]["cpu_stats"] = Value::Array(
-                            report
-                                .vcpus
-                                .iter()
-                                .map(|cpu| {
-                                    json!({
-                                        "index": cpu.index,
-                                        "retired": cpu.retired,
-                                        "activity": format!("{:?}", cpu.activity),
-                                    "mode": format!("{:?}", cpu.mode),
-                                        "rip": cpu.rip,
-                                        "rflags": cpu.rflags,
-                                        "gpr": cpu.gpr,
-                                        "cr3": cpu.cr3,
-                                    "guest_efer": cpu.guest_efer,
-                                    })
-                                })
-                                .collect(),
-                        );
+                        evidence["interleaved_scheduler"]["cpu_stats"] =
+                            describe_vcpus(&report.vcpus);
                         report.stop
                     })
                 } else if options.execution_observations_out.is_some() {
@@ -973,6 +990,27 @@ fn evaluate_with_rootfs(
         }
         Err(error) => (machine_refusal(&error, evidence), 4),
     }
+}
+
+fn describe_vcpus(vcpus: &[LinuxVcpuRunState]) -> Value {
+    Value::Array(
+        vcpus
+            .iter()
+            .map(|cpu| {
+                json!({
+                    "index": cpu.index,
+                    "retired": cpu.retired,
+                    "activity": format!("{:?}", cpu.activity),
+                    "mode": format!("{:?}", cpu.mode),
+                    "rip": cpu.rip,
+                    "rflags": cpu.rflags,
+                    "gpr": cpu.gpr,
+                    "cr3": cpu.cr3,
+                    "guest_efer": cpu.guest_efer,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// S4-38L7: the acceptance marker, set right after the arguments are parsed so that every result
@@ -1462,6 +1500,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut budget = None;
     let mut vcpus = None;
     let mut seed = None;
+    let mut parallel = false;
+    let mut quantum = None;
+    let mut timeout_s = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut checkpoint_table: Option<String> = None;
     let mut stack_context_out = None;
@@ -1489,6 +1530,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--run" {
             if std::mem::replace(&mut run, true) {
                 return Err(format!("duplicate option --run; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--parallel" {
+            if std::mem::replace(&mut parallel, true) {
+                return Err("duplicate option --parallel".into());
             }
             index += 1;
             continue;
@@ -1589,6 +1637,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--vcpus" => &mut vcpus,
             "--rootfs-raw" => &mut rootfs_raw,
             "--seed" => &mut seed,
+            "--quantum" => &mut quantum,
+            "--timeout-s" => &mut timeout_s,
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--checkpoint-table" => &mut checkpoint_table,
             "--stack-context-out" => &mut stack_context_out,
@@ -1732,14 +1782,52 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let vcpu_count = match vcpus.map(|text| decimal("--vcpus", text)).transpose()? {
         None | Some(1) => 1,
         Some(2) => 2,
-        Some(4) if rootfs_raw.is_some() => 4,
+        Some(4) if rootfs_raw.is_some() || parallel => 4,
         Some(count) => return Err(format!("unsupported --vcpus {count}: expected 1 or 2")),
     };
     if rootfs_raw.is_some() && !(run && vcpu_count > 1) {
         return Err("--rootfs-raw needs --run with --vcpus 2 or 4".into());
     }
+    let parallel = if parallel {
+        if seed.is_some() {
+            return Err("--parallel conflicts with --seed".into());
+        }
+        if vcpu_count < 2
+            || !budget.is_some_and(|n| n > 0)
+            || cpuid_profile != CpuidProfile::X8664V1Stage4AApic
+            || !user_mode
+        {
+            return Err(
+                "--parallel needs --vcpus 2 or 4, --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
+                    .into(),
+            );
+        }
+        let quantum = quantum
+            .map(|text| decimal("--quantum", text))
+            .transpose()?
+            .unwrap_or(1024);
+        if quantum == 0 {
+            return Err("--quantum must be positive".into());
+        }
+        let timeout = Duration::from_secs(
+            timeout_s
+                .map(|text| decimal("--timeout-s", text))
+                .transpose()?
+                .unwrap_or(120),
+        );
+        if timeout.is_zero() || Instant::now().checked_add(timeout).is_none() {
+            return Err("--timeout-s must be a positive representable duration".into());
+        }
+        Some(ParallelOptions { quantum, timeout })
+    } else {
+        if quantum.is_some() || timeout_s.is_some() {
+            return Err("--quantum and --timeout-s require --parallel".into());
+        }
+        None
+    };
     if run
         && vcpu_count > 1
+        && parallel.is_none()
         && !(seed.is_some()
             && set_cpl0
             && cpuid_profile == CpuidProfile::X8664V1Stage4AApic
@@ -1958,6 +2046,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         budget,
         vcpu_count,
         interleaved_seed,
+        parallel,
         set_cpl0,
         diagnostic_past_c7,
         cpuid_profile,
@@ -3346,6 +3435,7 @@ mod tests {
                 vcpu_count: 1,
                 interleaved_seed: None,
                 rootfs_raw: None,
+                parallel: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -4934,6 +5024,75 @@ mod tests {
         .collect();
         args.extend(extra.iter().map(|s| s.to_string()));
         parse(&args)
+    }
+
+    #[test]
+    fn linux_direct_parallel_requires_an_apic_smp_run_and_uses_its_limits() {
+        let apic_run = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a-apic",
+            "--user-mode",
+        ];
+        let parallel = ["--parallel", "--vcpus", "4", "--rootfs-raw", "working.raw"];
+        let base = [&apic_run[..], &parallel].concat();
+        let defaults = parse_base(&base).unwrap().parallel.unwrap();
+        assert_eq!(defaults.quantum, 1024);
+        assert_eq!(defaults.timeout, Duration::from_secs(120));
+        let options =
+            parse_base(&[&base[..], &["--quantum", "4096", "--timeout-s", "900"]].concat())
+                .unwrap()
+                .parallel
+                .unwrap();
+        assert_eq!(options.quantum, 4096);
+        assert_eq!(options.timeout, Duration::from_secs(900));
+        for tail in [
+            &["--seed", "0"][..],
+            &["--quantum", "0"][..],
+            &["--timeout-s", "0"][..],
+            &["--timeout-s", "18446744073709551615"][..],
+        ] {
+            assert!(parse_base(&[&base[..], tail].concat()).is_err(), "{tail:?}");
+        }
+        assert!(parse_base(&[&apic_run[..], &["--parallel"]].concat()).is_err());
+        assert!(parse_base(&["--parallel", "--vcpus", "2"]).is_err());
+        assert!(parse_base(&["--timeout-s", "1"]).is_err());
+    }
+
+    #[test]
+    fn linux_direct_parallel_reports_each_worker_and_shared_budget() {
+        let boot_image = bzimage_with_entry(&[0xf4]);
+        let blob = include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-4-vcpus.bin");
+        let mut case = Case::new("parallel-smp", &boot_image, &[], blob);
+        case.options.vcpu_count = 4;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4AApic;
+        case.options.set_cpl0 = true;
+        case.options.user_mode = true;
+        case.options.budget = Some(1);
+        case.options.parallel = Some(ParallelOptions {
+            quantum: 16,
+            timeout: Duration::from_secs(5),
+        });
+        let (report, code) = evaluate(&case.options);
+        assert_eq!(code, 0, "{report:#}");
+        assert_eq!(report["stop"]["retired"], 1);
+        let scheduler = &report["parallel_scheduler"];
+        assert_eq!(scheduler["threads_started"], 4);
+        assert_eq!(scheduler["threads_exited"], 4);
+        assert_eq!(scheduler["quantum"], 16);
+        assert_eq!(scheduler["timeout_s"], 5);
+        let cpus = scheduler["cpu_stats"].as_array().unwrap();
+        assert_eq!(cpus.len(), 4);
+        assert_eq!(
+            cpus.iter()
+                .map(|cpu| cpu["retired"].as_u64().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        assert!(report.get("interleaved_scheduler").is_none());
     }
 
     #[test]
@@ -7018,6 +7177,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -7079,6 +7239,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -7144,6 +7305,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
@@ -7230,6 +7392,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
