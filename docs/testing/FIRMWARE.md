@@ -210,8 +210,8 @@ firmware/uefi/tests/authenticode_reference.py image.efi`. Он читает
 
 ## Эталоны
 
-- Эталоны — маленькие собственные файлы: ожидаемый текст COM1, JSON-манифесты с хешами, образы ESP, сгенерированные скриптом из `tools/build/`. Чужие образы прошивок, `.aml`, дампы SMBIOS и большие файлы в Git не хранятся.
-- Каталог `tests/fixtures/firmware/` содержит `boot_core_com1.txt` с диагностикой ядра и `hello_com1.txt`, `ebs_com1.txt`, `vars_com1.txt` для приложений из FV. Генерация ESP входит в S7-18.
+- В Git хранятся небольшие эталоны COM1 и JSON-манифесты с хешами. Образы ESP генерируются при проверке скриптом из `tools/build/`. Чужие образы прошивок, `.aml`, дампы SMBIOS и большие файлы в Git не хранятся.
+- Каталог `tests/fixtures/firmware/` содержит `boot_core_com1.txt` с диагностикой ядра и отдельные транскрипты COM1 для приложений из FV. Для `fs` скрипт `tools/build/make_test_disk.py --esp-fat32 --out <path>` создаёт GPT с разреженным FAT32 ESP. Размер файла 40 MiB даёт FAT32 необходимое число кластеров. Измеренное выделение на APFS составляет 1 753 088 байт. Скрипт пишет BPB, FSInfo, две FAT, корневой каталог и `\EFI\BOOT\README.TXT` собственным кодом. `firmware_boot_smoke.py` проверяет SHA-256, подключает файл к NVMe и сверяет COM1 с `fs_com1.txt`.
 - Временные артефакты — в `work/stage7/` (каталог `work/` игнорируется Git): образ `work/stage7/firmware.bin`, cargo target `work/stage7/firmware-target/`, probe `work/stage7/efi_probe.efi` (target `work/stage7/firmware-target-efi-probe/`).
 - Новый вывод сверяется с контрактом в разделах 11–12 и фиксируется вместе с изменением кода. Команда выше сохраняет транскрипт для сравнения с эталоном.
 

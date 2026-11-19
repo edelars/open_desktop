@@ -76,7 +76,7 @@ fn fv_app_rejects_invalid_selection_before_launch() {
     for (extra, error) in [
         (
             &["--fv-app", "other"][..],
-            "expected hello, ebs, vars, rt, acpi, gop or blk",
+            "expected hello, ebs, vars, rt, acpi, gop, blk or fs",
         ),
         (
             &["--fv-app", "hello", "--fv-app", "ebs"][..],
@@ -86,6 +86,7 @@ fn fv_app_rejects_invalid_selection_before_launch() {
             &["--fv-app", "blk"][..],
             "--fv-app blk requires --nvme-image",
         ),
+        (&["--fv-app", "fs"][..], "--fv-app fs requires --nvme-image"),
     ] {
         let run = invoke_with_args(&legacy, "64", extra);
         assert_eq!(run.output.status.code(), Some(3));
@@ -97,30 +98,33 @@ fn fv_app_rejects_invalid_selection_before_launch() {
 }
 
 #[test]
-fn blk_rejects_v1_10_rom_and_keeps_nvme_input_on_output_alias() {
+fn storage_app_requires_a_compatible_rom_and_rejects_nvme_output_alias() {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("od-runner-disk-{}-{id}.raw", std::process::id()));
     let sector = [0xa5; 512];
     fs::write(&path, sector).unwrap();
-    let mut rom = image(&[0xf4]);
-    rom[0x2a..0x2c].copy_from_slice(&10u16.to_le_bytes());
-    rom[0x30..0x34].fill(0);
-    let crc = crc32(&rom);
-    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
-    let run = invoke_with_args(
-        &rom,
-        "64",
-        &["--fv-app", "blk", "--nvme-image", path.to_str().unwrap()],
-    );
-    assert_eq!(run.output.status.code(), Some(4));
-    assert_eq!(report(&run)["status"], "loader_error");
-    assert!(
-        report(&run)["error"]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("handoff_minor_max")
-    );
-    assert!(!run.com1.exists());
+    for (app, max_minor) in [("blk", 10u16), ("fs", 11)] {
+        let mut rom = image(&[0xf4]);
+        rom[0x2a..0x2c].copy_from_slice(&max_minor.to_le_bytes());
+        rom[0x30..0x34].fill(0);
+        let crc = crc32(&rom);
+        rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+        let run = invoke_with_args(
+            &rom,
+            "64",
+            &["--fv-app", app, "--nvme-image", path.to_str().unwrap()],
+        );
+        assert_eq!(run.output.status.code(), Some(4));
+        let report = report(&run);
+        assert_eq!(report["status"], "loader_error");
+        assert!(
+            report["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("handoff_minor_max")
+        );
+        assert!(!run.com1.exists());
+    }
 
     let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
         .args([

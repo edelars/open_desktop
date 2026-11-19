@@ -51,12 +51,19 @@ def run_case(
     ]
     if app := case["fv_app"]:
         args.extend(["--fv-app", app])
-    if case["fv_app"] == "blk":
+    if case["fv_app"] in ("blk", "fs"):
         disk = scratch / f"{name}.raw"
         if not disk.exists():
-            build([sys.executable, DISK_PATTERN, "--damage", case["nvme_damage"], "--out", disk])
-            if hashlib.sha256(disk.read_bytes()).hexdigest() != case["nvme_image_sha256"]:
-                raise RuntimeError(f"{name} generated disk checksum differs from manifest")
+            disk_options = (
+                ["--esp-fat32"] if case["fv_app"] == "fs" else ["--damage", case["nvme_damage"]]
+            )
+            build([sys.executable, DISK_PATTERN, *disk_options, "--out", disk])
+        digest = hashlib.sha256()
+        with disk.open("rb") as image_file:
+            for block in iter(lambda: image_file.read(64 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != case["nvme_image_sha256"]:
+            raise RuntimeError(f"{name} disk checksum differs from manifest")
         args.extend(["--nvme-image", disk])
     guest_acpi = scratch / f"acpi-memory-{round_number}.bin"
     guest_frame = scratch / f"gop-frame-{round_number}.raw"

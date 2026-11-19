@@ -24,7 +24,8 @@ const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
 const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
 const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
 const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_BLK;
+const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_FS;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
@@ -41,6 +42,7 @@ pub enum FirmwareFvApp {
     Acpi = 5,
     Gop = 6,
     Blk = 7,
+    Fs = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -521,7 +523,11 @@ const fn validate_devices(
             kind: DEVICE_RTC_CMOS,
         });
     }
-    if version_minor == HANDOFF_MINOR_FV_APP_BLK && !seen[device_type::NVME as usize] {
+    if matches!(
+        version_minor,
+        HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS
+    ) && !seen[device_type::NVME as usize]
+    {
         return Err(HandoffError::MissingDeviceType {
             kind: device_type::NVME,
         });
@@ -660,7 +666,9 @@ impl<'a> Handoff<'a> {
             | HANDOFF_MINOR_FV_APP_RT
             | HANDOFF_MINOR_FV_APP_ACPI
             | HANDOFF_MINOR_FV_APP_GOP => device_count >= 7 && device_count <= 10,
-            HANDOFF_MINOR_FV_APP_BLK => device_count >= 8 && device_count <= 10,
+            HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS => {
+                device_count >= 8 && device_count <= 10
+            }
             _ => false,
         };
         if !valid_device_count {
@@ -746,6 +754,7 @@ impl<'a> Handoff<'a> {
                 5 if minor >= HANDOFF_MINOR_FV_APP_ACPI => Some(FirmwareFvApp::Acpi),
                 6 if minor >= HANDOFF_MINOR_FV_APP_GOP => Some(FirmwareFvApp::Gop),
                 7 if minor >= HANDOFF_MINOR_FV_APP_BLK => Some(FirmwareFvApp::Blk),
+                8 if minor >= HANDOFF_MINOR_FV_APP_FS => Some(FirmwareFvApp::Fs),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
@@ -761,6 +770,9 @@ impl<'a> Handoff<'a> {
             return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
         }
         if minor == HANDOFF_MINOR_FV_APP_BLK && fv_app != Some(FirmwareFvApp::Blk) {
+            return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
+        }
+        if minor == HANDOFF_MINOR_FV_APP_FS && fv_app != Some(FirmwareFvApp::Fs) {
             return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
         }
         if minor >= HANDOFF_MINOR_FV_APP_ACPI {

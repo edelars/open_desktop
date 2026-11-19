@@ -18,10 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs] [--nvram-reboot-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
 const DUMP_USAGE: &str =
-    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk]";
+    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs]";
 
 struct Options {
     image: String,
@@ -55,7 +55,7 @@ fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardCon
             Vec::new()
         },
         nvram: (rt || reboot).then_some(NvramConfig::Empty),
-        nvme: (fv_app == Some(FirmwareFvApp::Blk)).then(Default::default),
+        nvme: matches!(fv_app, Some(FirmwareFvApp::Blk | FirmwareFvApp::Fs)).then(Default::default),
         ..FirmwareBoardConfig::default()
     }
 }
@@ -69,8 +69,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "acpi" => Ok(FirmwareFvApp::Acpi),
         "gop" => Ok(FirmwareFvApp::Gop),
         "blk" => Ok(FirmwareFvApp::Blk),
+        "fs" => Ok(FirmwareFvApp::Fs),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop or blk"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk or fs"
         )),
     }
 }
@@ -565,8 +566,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) {
         return Err("--framebuffer-out requires --fv-app gop".to_owned());
     }
-    if fv_app == Some(FirmwareFvApp::Blk) && nvme_image.is_none() {
-        return Err("--fv-app blk requires --nvme-image".to_owned());
+    let storage_app = match fv_app {
+        Some(FirmwareFvApp::Blk) => Some("blk"),
+        Some(FirmwareFvApp::Fs) => Some("fs"),
+        _ => None,
+    };
+    if let Some(app) = storage_app
+        && nvme_image.is_none()
+    {
+        return Err(format!("--fv-app {app} requires --nvme-image"));
     }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;

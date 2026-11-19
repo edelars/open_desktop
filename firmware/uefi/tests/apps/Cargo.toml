@@ -36,6 +36,13 @@ bench = false
 doc = false
 
 [[bin]]
+name = "fs"
+path = "fs/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "hello"
 path = "hello/main.rs"
 test = false

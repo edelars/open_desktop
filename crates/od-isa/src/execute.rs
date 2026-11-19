@@ -20185,6 +20185,28 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             // The interpreter executes in order and has no guest data cache.
             state.rip = next_rip;
         }
+        // The FAT BPB sector-size check emits REP BSF on a nonzero dword.
+        Operation::BitScan {
+            kind: BitScanKind::Forward,
+            dst,
+            src: Operand::Register(src),
+        } if firmware_boot_profile
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            commit_bit_scan(state, BitScanKind::Forward, dst, state.read(src));
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // S7-04: the firmware can install descriptor tables for the first time.
         Operation::LoadGdtr { source } | Operation::LoadIdtr { source }
             if firmware_boot_profile
@@ -20548,6 +20570,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Or,
                     ..
                 } => {
+                    // File.GetInfo and SetInfo combine mismatched words of the information GUID.
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x08 | 0x0a | 0x80, OperandSize::Byte)
@@ -20555,7 +20578,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 0x09 | 0x0b | 0x0d | 0x81 | 0x83,
                                 OperandSize::Dword | OperandSize::Qword
                             )
-                    )
+                    ) || (instruction.opcode.byte == 0x09
+                        && instruction.operand_size == OperandSize::Word
+                        && match (instruction.prefixes.rex, source) {
+                            (Some(0x44), Operand::Register(src)) => {
+                                destination == RegisterView::low(Register::Rsi, OperandSize::Word)
+                                    && src == RegisterView::low(Register::R11, OperandSize::Word)
+                            }
+                            (Some(0x45), Operand::Register(src)) => {
+                                destination == RegisterView::low(Register::R15, OperandSize::Word)
+                                    && src == RegisterView::low(Register::R14, OperandSize::Word)
+                            }
+                            _ => false,
+                        })
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Add,
@@ -20611,12 +20646,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 ),
                 Operation::Logic {
                     kind: LogicKind::Xor,
-                    src: Operand::Memory(_),
+                    src: Operand::Memory(memory),
                     ..
-                } => matches!(
-                    (instruction.opcode.byte, instruction.operand_size),
-                    (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword)
-                ),
+                } => match (instruction.opcode.byte, instruction.operand_size) {
+                    (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword) => true,
+                    (0x33, OperandSize::Qword) => {
+                        // The fs EFI probe compares part of the volume label on the stack.
+                        instruction.prefixes.rex == Some(0x48)
+                            && destination == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                            && memory.address_size == OperandSize::Qword
+                            && memory.base == AddressBase::Register(Register::Rsp)
+                            && memory.index.is_none()
+                            && memory.scale == 1
+                            && memory.displacement == 0x54
+                    }
+                    _ => false,
+                },
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     src: Operand::Immediate(_),
@@ -20626,7 +20671,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x34 | 0x80, OperandSize::Byte)
                             | (0x35 | 0x81 | 0x83, OperandSize::Dword)
-                            | (0x81 | 0x83, OperandSize::Qword)
+                            | (0x35 | 0x81 | 0x83, OperandSize::Qword)
                     )
                 }
                 Operation::Logic {
@@ -20823,12 +20868,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             _ => false,
                         }
                 }
-                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xd3) => {
-                    matches!(
+                (Operand::Register(register), ShiftKind::Shl | ShiftKind::Shr, 0xd3) => {
+                    (matches!(
                         (kind, instruction.operand_size),
                         (ShiftKind::Shl, OperandSize::Dword) | (ShiftKind::Shr, OperandSize::Qword)
-                    ) && count_source
-                        == Operand::Register(RegisterView::low(Register::Rcx, OperandSize::Byte))
+                    ) || (kind == ShiftKind::Shr
+                        && register == RegisterView::low(Register::R9, OperandSize::Dword)
+                        && instruction.prefixes.rex == Some(0x41)))
+                        && count_source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Byte,
+                            ))
                 }
                 (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar, 0xc0) => {
                     instruction.operand_size == OperandSize::Byte
@@ -21022,7 +21073,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 | ArithmeticKind::Inc
                 | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 9)),
+            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 9 | 0x20)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match (kind, source, instruction.operand_size) {
@@ -21044,6 +21095,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && destination.index.is_none()
                         && destination.scale == 1
                         && matches!(destination.displacement, 0x10 | 0x38)
+                }
+                (ArithmeticKind::Add, Operand::Immediate(0x20), size) => {
+                    // FAT directory traversal updates the sector and logical cursors in place.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 5
+                        && destination.base == AddressBase::Register(Register::R14)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(
+                            (size, instruction.prefixes.rex, destination.displacement),
+                            (OperandSize::Dword, Some(0x41), 0x28)
+                                | (OperandSize::Qword, Some(0x49), 0x30)
+                        )
                 }
                 (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
                     instruction.opcode.byte == 0x29
@@ -21164,13 +21228,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         Operation::Bit {
             kind: BitKind::Test,
             dst: Operand::Register(destination),
-            offset: BitOffset::Register(index),
+            offset,
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0xa3
             && matches!(
-                instruction.operand_size,
-                OperandSize::Dword | OperandSize::Qword
+                (instruction.opcode.byte, instruction.operand_size, offset),
+                (0xa3, OperandSize::Dword | OperandSize::Qword, BitOffset::Register(_))
+                    // FAT directory size rounds by testing a remainder bit.
+                    | (0xba, OperandSize::Dword, BitOffset::Immediate(_))
             )
             && instruction.prefixes
                 == (Prefixes {
@@ -21178,7 +21243,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
-            let bit = state.read(index) & (u64::from(operand_width(destination.size())) - 1);
+            let index = match offset {
+                BitOffset::Register(index) => state.read(index),
+                BitOffset::Immediate(index) => u64::from(index),
+            };
+            let bit = index & (u64::from(operand_width(destination.size())) - 1);
             let cf = u64::from(state.read(destination) & (1 << bit) != 0);
             state.rflags = (state.rflags & !crate::CF) | cf;
             state.rip = next_rip;
@@ -21318,13 +21387,34 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     (
                         OpcodeMap::Escape0f,
                         Operation::Extend {
-                            src: Operand::Register(_),
+                            dst,
+                            src: Operand::Register(src),
                             signed: true,
-                            ..
                         },
                     ) => {
                         instruction.opcode.byte == 0xbe
-                            && instruction.operand_size == OperandSize::Qword
+                            && (instruction.operand_size == OperandSize::Qword
+                                || (instruction.prefixes == Prefixes::default()
+                                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte)))
+                    }
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            dst,
+                            src: Operand::Memory(source),
+                            signed: true,
+                        },
+                    ) => {
+                        // The FAT short-name decoder uses the sign bit of an OEM byte.
+                        instruction.opcode.byte == 0xbe
+                            && instruction.prefixes == Prefixes::default()
+                            && dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                            && source.size == OperandSize::Byte
+                            && source.base == AddressBase::Register(Register::Rsp)
+                            && source.index == Some(Register::Rax)
+                            && source.scale == 1
+                            && source.displacement == 0x40
                     }
                     (
                         OpcodeMap::Escape0f,
@@ -61694,29 +61784,7 @@ fn step_configured(
                 }
                 Err(error) => return Err(error),
             };
-            let source_size = match src {
-                Operand::Register(view) => view.size(),
-                Operand::Memory(memory) => memory.size,
-                Operand::Immediate(_) => unreachable!("bit-scan source is register or memory"),
-            };
-            let width = operand_width(source_size);
-            let zero = source == 0;
-            if !zero {
-                let index = match kind {
-                    BitScanKind::Forward => source.trailing_zeros(),
-                    BitScanKind::Reverse => width - 1 - (source.leading_zeros() - (64 - width)),
-                };
-                state.write(dst, u64::from(index));
-            }
-            // Intel SDM 093 Vol.2A pp. 3-107, 3-109: ZF indicates zero,
-            // PF indicates even parity of the source, and CF/OF/SF/AF clear.
-            let flags = if zero { crate::ZF } else { 0 }
-                | if source.count_ones() % 2 == 0 {
-                    crate::PF
-                } else {
-                    0
-                };
-            state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS) | flags;
+            commit_bit_scan(state, kind, dst, source);
         }
         Operation::Xadd {
             destination,
@@ -62136,6 +62204,26 @@ fn step_configured(
     *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+fn commit_bit_scan(state: &mut LongModeState, kind: BitScanKind, dst: RegisterView, source: u64) {
+    let zero = source == 0;
+    if !zero {
+        let index = match kind {
+            BitScanKind::Forward => source.trailing_zeros(),
+            BitScanKind::Reverse => u64::BITS - 1 - source.leading_zeros(),
+        };
+        state.write(dst, u64::from(index));
+    }
+    // Intel SDM 093 Vol.2A pp. 3-107, 3-109: ZF indicates zero,
+    // PF indicates even parity of the source, and CF/OF/SF/AF clear.
+    let flags = if zero { crate::ZF } else { 0 }
+        | if source.count_ones() % 2 == 0 {
+            crate::PF
+        } else {
+            0
+        };
+    state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS) | flags;
 }
 
 fn operand_width(size: OperandSize) -> u32 {

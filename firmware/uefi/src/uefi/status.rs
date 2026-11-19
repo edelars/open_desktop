@@ -6,6 +6,7 @@ pub struct Status(usize);
 impl Status {
     pub const SUCCESS: Self = Self(0);
     pub const WARN_UNKNOWN_GLYPH: Self = Self(1);
+    pub const WARN_DELETE_FAILURE: Self = Self(2);
     pub const LOAD_ERROR: Self = Self(Self::ERROR_BIT | 1);
     pub const INVALID_PARAMETER: Self = Self(Self::ERROR_BIT | 2);
     pub const UNSUPPORTED: Self = Self(Self::ERROR_BIT | 3);
@@ -15,6 +16,7 @@ impl Status {
     pub const DEVICE_ERROR: Self = Self(Self::ERROR_BIT | 7);
     pub const WRITE_PROTECTED: Self = Self(Self::ERROR_BIT | 8);
     pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
+    pub const VOLUME_CORRUPTED: Self = Self(Self::ERROR_BIT | 10);
     pub const NO_MEDIA: Self = Self(Self::ERROR_BIT | 12);
     pub const MEDIA_CHANGED: Self = Self(Self::ERROR_BIT | 13);
     pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);

@@ -565,12 +565,12 @@
 
 ### S7-18. Реализовать собственную FAT и Simple File System
 
-- [ ] Принято после ревью.
+- [x] Принято после независимого ревью кода и результатов `gpt-6.1-sol` (`high`) 2026-11-19. Три гостевых прогона прочитали `\EFI\BOOT\README.TXT` с FAT32 ESP через NVMe. [Результаты](../reports/STAGE_7_REPORT.md#s7-18--чтение-fat-и-simple-file-system).
 - **Где:** `firmware/uefi/src/fat/{bpb,table,dir,lfn,file}.rs`, `firmware/uefi/src/fs/simple_fs.rs` (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`, `EFI_FILE_PROTOCOL`: `Open/Close/Delete/Read/Write/GetPosition/SetPosition/GetInfo/SetInfo/Flush`), `EFI_FILE_INFO`/`EFI_FILE_SYSTEM_INFO`, `tools/build/make_test_disk.py` (FAT-образ ESP для fixtures), `docs/specs/UEFI_PROFILE.md` (раздел «Файловая система»).
 - **Сделать:**
-  1. Решить на ревью источник спецификации: Microsoft Extensible Firmware Initiative FAT32 File System Specification (публичный документ, редакцию записать) и UEFI 2.11 раздел «File System Format». FAT12/16/32 чтение; запись — только в объёме, который нужен boot manager/ОС по S7-30 (Windows Setup пишет в ESP? — выяснить; до выяснения запись `Write/Delete/SetInfo` → `EFI_WRITE_PROTECTED`, записать как границу).
+  1. Читать FAT12/16/32 по Microsoft EFI FAT32 File System Specification 1.03 и UEFI 2.11 §§13.3–13.6. До подтверждения необходимости записи в S7-30 профиль доступен только для чтения. `Write`, `SetInfo` и `Flush` возвращают `EFI_WRITE_PROTECTED`. По §13.5.4 `Delete` закрывает handle со статусом `EFI_WARN_DELETE_FAILURE`.
   2. Длинные имена (LFN, UCS-2), регистронезависимый поиск, пути `\A\B\C`, корень FAT12/16 и FAT32, цепочки кластеров с защитой от циклов, проверка границ каждого смещения.
-  3. Способ создания fixtures: собственный простой писатель FAT32 в `make_test_disk.py` (достаточно для fixtures) **или** системный `newfs_msdos` macOS с записью версии — выбрать и записать в `FIRMWARE.md`; эталонные образы маленькие (≤ 4 MiB) и генерируются скриптом, в Git — манифест с хешами, не образы.
+  3. Генерировать ESP собственным `make_test_disk.py --esp-fat32` и описать его в `FIRMWARE.md`. Минимум FAT32 в 65 525 кластеров требует более 32 MiB логического пространства. Образ NVMe имеет 40 MiB логически и укладывается в 4 MiB выделенных блоков на APFS. В Git хранится манифест с хешами.
   4. Host-side тесты FAT на fixtures: чтение файла по пути, LFN, большой файл через несколько кластеров, отсутствующий файл → `EFI_NOT_FOUND`, цикл в цепочке → `EFI_VOLUME_CORRUPTED`.
 - **Проверить:** `cargo test --manifest-path firmware/uefi/Cargo.toml`; runner: приложение `fs` открывает `\EFI\BOOT\README.TXT` с ESP in-memory диска и печатает содержимое; эталон COM1.
 - **Готово:** прошивка читает файлы с ESP стандартным протоколом; формат — по публичной спецификации собственным кодом.

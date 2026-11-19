@@ -298,6 +298,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     {
         stop(STOP_BOOT_SERVICES, 82);
     }
+    if unsafe { od_firmware::fs::simple_fs::install(system_pointer) } != Status::SUCCESS {
+        stop(STOP_BOOT_SERVICES, 83);
+    }
     let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app());
     verify_exit_boot_services(system_pointer, handoff.tsc_hz(), runtime_installed);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
@@ -1398,6 +1401,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
         Some(FirmwareFvApp::Acpi) => "acpi",
         Some(FirmwareFvApp::Gop) => "gop",
         Some(FirmwareFvApp::Blk) => "blk",
+        Some(FirmwareFvApp::Fs) => "fs",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1455,6 +1459,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
                     Some(FirmwareFvApp::Acpi) => b"OD-FW image acpi: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Gop) => b"OD-FW image gop: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Blk) => b"OD-FW image blk: EFI_SUCCESS\r\n",
+                    Some(FirmwareFvApp::Fs) => b"OD-FW image fs: EFI_SUCCESS\r\n",
                     _ => b"OD-FW image hello: EFI_SUCCESS\r\n",
                 });
             }

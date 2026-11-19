@@ -178,6 +178,7 @@ const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
 const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
 const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
 const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
+const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -196,6 +197,7 @@ pub enum FirmwareFvApp {
     Acpi = 5,
     Gop = 6,
     Blk = 7,
+    Fs = 8,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -504,11 +506,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "gop FV application needs the primary display",
         ));
     }
-    if config.fv_app == Some(FirmwareFvApp::Blk)
+    if matches!(config.fv_app, Some(FirmwareFvApp::Blk | FirmwareFvApp::Fs))
         && (config.nvme.is_none() || config.nvme_pci || config.linux_profile)
     {
         return Err(FirmwareBoardError::Config(
-            "blk FV application needs fixed NVMe MMIO",
+            "storage FV application needs fixed NVMe MMIO",
         ));
     }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
@@ -694,7 +696,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.fv_app == Some(FirmwareFvApp::Blk) {
+    if config.fv_app == Some(FirmwareFvApp::Fs) {
+        HANDOFF_MINOR_FV_APP_FS
+    } else if config.fv_app == Some(FirmwareFvApp::Blk) {
         HANDOFF_MINOR_FV_APP_BLK
     } else if config.fv_app == Some(FirmwareFvApp::Gop) {
         HANDOFF_MINOR_FV_APP_GOP
