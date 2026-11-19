@@ -8939,3 +8939,9 @@ A/B на Apple M3 Max, macOS 26.7.1 (25G241), два release runner на Rust 1.
 OpenSSL 4.1.0 проверил реальный x64 DBX update из `v1.7.2-signed` по Microsoft KEK 2023. В заголовке `AuthInfo` 3244 байта, в payload 13 996 байт. `SignedData` передаётся в bare DER, с detached `id-data` и без signed/unsigned attributes. Для независимой проверки OpenSSL использована оболочка `ContentInfo` и исходный signed payload с атрибутами `0x67`. Подпись прошла `openssl cms -verify` с опубликованным KEK 2023 как trust anchor. [Подписанный выпуск Microsoft](https://github.com/microsoft/secureboot_objects/releases/tag/v1.7.2-signed).
 
 Официальная сборка ROM и runtime EFI-драйвера прошла. SHA-256 ROM `dc09121cd2cb62b27235856daf4ee38d56c33b5075f5b18874efbeaef0f883e3` совпал с исходной сборкой S7-22. Форматирование и `git diff --check` прошли. `check_layout.py` получил прежние 46 отсутствующих ссылок на файлы в `work/`. Graphify обновлён, 59 381 узел и 168 217 связей.
+
+## S7-23 — расширение цели до PTP 1.07
+
+2026-11-19 владелец подтвердил расширение ADR-0009 до обязательного профиля PC Client PTP 1.07 с Errata 1.1. Сверка таблицы 16 с dispatcher выявила 41 отсутствующую обязательную команду из 101. Четыре обязательных платформенных сигнала учитываются отдельно. Выбраны SHA-256 и SHA-384 как начальные банки PCR и ML-KEM-768/ML-DSA-65 как первые обязательные PQC parameter sets. PKI выпуска Windows EK и Windows TBS trace ведутся отдельно. Запись добавляет целевые условия и инвентарь пробелов. S7-23 остаётся в работе. [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md#решение-3-профиль-команд), [матрица](../specs/VTPM.md#целевой-профиль-pc-client-ptp-107), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+
+Независимое архитектурное ревью Sol High одобрило ADR и инвентарь после уточнений по лимитам ML-DSA и NV, self-tests, CRB MMIO и обязательности `ContextSave/ContextLoad`. `git diff --check` прошёл.

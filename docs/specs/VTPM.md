@@ -5,14 +5,43 @@
 
 Срезы фазы B входят в текущую ветку. Коммиты и результаты проверок сведены
 в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
-Для завершения S7-23 требуется решение по редакции TCG EK Credential Profile
-и источнику сертификата EK (T-04).
+Проверены legacy-шаблоны EK по TCG EK Credential Profile 2.7. Для завершения
+S7-23 требуется закрыть обязательные требования PTP 1.07. Издатель EK и
+проверка доверия Windows (T-04) отслеживаются отдельно. [ISSUE-529](../KNOWN_ISSUES.md#issue-529), [ISSUE-528](../KNOWN_ISSUES.md#issue-528).
 Реализация CRB, таблицы TPM2, TCG2,
 measured boot и журнала событий относится к S7-22. Границы TPM/PTP для
 фазы A перечислены в [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope).
 Раздел «Состояние и границы» закреплён [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md).
 
 Нормативные редакции: TPM 2.0 Library version 185, PC Client Platform TPM Profile 1.07 Errata 1.1 ([VIRTUAL_BOARD.md](VIRTUAL_BOARD.md), «Нормативные источники и редакции»). Что именно из них сверено — раздел «Источники и сверка» ниже.
+
+## Целевой профиль PC Client PTP 1.07
+
+2026-11-19 владелец подтвердил PTP 1.07 как цель S7-23. Ниже зафиксирована точка отсчёта для реализации. Указанные настройки — целевой профиль. Фактически объявленные возможности остаются привязаны к проверенной реализации. [ADR-0009, решение 3](../decisions/ADR-0009-vtpm-placement-and-crypto.md#решение-3-профиль-команд), [PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [Errata 1.1](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
+
+| Область | Что требуется | Состояние и необходимые проверки |
+|---|---|---|
+| §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
+| Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
+| §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
+| §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Все 60 кодов текущего dispatcher входят в список команд, 41 отсутствует. Для уже объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
+| §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
+| §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
+
+Отсутствующие коды `M` по `crates/od-tpm/src/dispatch.rs` на коммите `d63ad49`. Имена ниже приведены без префикса `TPM2_`.
+
+| Срез | Команды |
+|---|---|
+| Инициализация и PCR | `IncrementalSelfTest`, `PCR_Allocate` |
+| Credential activation и объекты | `ActivateCredential`, `MakeCredential`, `ObjectChangeAuth`, `Duplicate`, `Import`, `ECDH_KeyGen`, `ECC_Parameters` |
+| Хеширование, аудит и аттестация | `HMAC_Start`, `CertifyCreation`, `GetSessionAuditDigest` |
+| PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
+| Политики | `PolicySigned`, `PolicyTicket`, `PolicyLocality`, `PolicyNV`, `PolicyCounterTimer`, `PolicyCpHash`, `PolicyNameHash`, `PolicyDuplicationSelect`, `PolicyAuthorize`, `PolicyPassword`, `PolicyNvWritten`, `PolicyTemplate`, `PolicyAuthorizeNV`, `PolicyParameters` |
+| Управление и NV | `SetPrimaryPolicy`, `ClockSet`, `ClockRateAdjust`, `TestParms`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth`, `NV_Certify` |
+
+Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
 ## Состояние и границы
 
