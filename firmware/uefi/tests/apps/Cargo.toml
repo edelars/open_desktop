@@ -35,6 +35,13 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "vars"
+path = "vars/main.rs"
+test = false
+bench = false
+doc = false
+
 [profile.dev]
 panic = "abort"
 

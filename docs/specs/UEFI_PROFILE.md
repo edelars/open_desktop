@@ -155,21 +155,22 @@ PKCS#7, цепочки и политики загрузки относится �
 запрещены. Записи строго упорядочены по байтам имени, данные непустые,
 последняя запись заканчивается вместе с архивом. Допускается пустой архив.
 
-`build_firmware.py --with-test-apps` помещает в архив `ebs`, `echo` и `hello`,
+`build_firmware.py --with-test-apps` помещает в архив `ebs`, `echo`, `hello` и `vars`,
 собранные из `firmware/uefi/tests/apps` с target `x86_64-unknown-uefi`.
 `hello` читает Loaded Image через `HandleProtocol`. `ebs` читает карту,
 передаёт её ключ в `ExitBootServices` и при успехе выводит `!` прямым
 `OUT` в COM1 перед `HLT`. `echo` читает `ConIn` через `WaitForKey` и
 отображает символы и названия стрелок в `ConOut` до перевода строки.
+`vars` проверяет четыре [сервиса переменных](#переменные).
 Приложения выводят начальную строку через `ConOut`.
 [UEFI 2.11 §9.1](https://uefi.org/specs/UEFI/2.11/09_Protocols_EFI_Loaded_Image.html), [§12.4](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
 
 ### Диагностическая таблица Runtime Services
 
 Все 14 слотов имеют собственные сигнатуры UEFI x64. В таблице до
-`ExitBootServices` сервисы времени, переменных, виртуальной адресации,
-капсул и старшей части монотонного счётчика возвращают `EFI_UNSUPPORTED`
-и сохраняют выходы. Реализация переменных относится к S7-09.
+`ExitBootServices` сервисы времени, виртуальной адресации, капсул и
+старшей части монотонного счётчика возвращают `EFI_UNSUPPORTED` и сохраняют
+выходы. Четыре слота [переменных](#переменные) обслуживают загрузочную фазу.
 
 `ResetSystem` имеет сигнатуру с результатом VOID. Вызов пишет тип и
 статус в COM1. Для Cold и Warm он пишет значение сброса в ACPI reset-регистр
@@ -460,6 +461,18 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 Редакция 2.11 задаёт для x64 при вызове EFI-образа `FCW = 0x037f` и
 `MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
 реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
+
+## Переменные
+
+S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их через фактическую EFI-таблицу до `ExitBootServices`. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. После завершения `ExitBootServices` эти слоты возвращают `EFI_UNSUPPORTED` до реализации S7-11.
+
+- Ключ содержит GUID поставщика и имя UCS-2 длиной до 127 кодовых единиц. Имена сравниваются с учётом регистра. Малый буфер получает требуемый размер, а `GetVariable` также возвращает атрибуты. Перечисление начинается с пустого имени и проходит по видимым ключам в порядке создания.
+- `RT` требует `BS`. `APPEND_WRITE` добавляет данные, пустой append ничего не меняет. Нулевой размер без append или отсутствие атрибутов доступа удаляет существующую запись. Остальные операции над существующим ключом требуют совпадающих атрибутов. `QueryVariableInfo` игнорирует `APPEND_WRITE` и возвращает общий бюджет таблицы, свободные байты и максимальный размер значения 16 КиБ.
+- `HR` возвращает `EFI_UNSUPPORTED` до поддержки Hardware Error Record Persistence. Устаревший `AUTHENTICATED_WRITE_ACCESS`, `TIME_BASED_AUTHENTICATED_WRITE_ACCESS` и `ENHANCED_AUTHENTICATED_ACCESS` возвращают `EFI_UNSUPPORTED`. Запись ключей защиты загрузки относится к S7-24.
+- `PlatformLang` и `PlatformLangCodes` по умолчанию равны `en-US`. `ConIn`, `ConOut` и `ErrOut` содержат путь COM1, опубликованный на том же handle (`C0938024-BC5E-4EE6-ADF5-89166E13589A`). `Timeout = 0`; загрузочные записи появятся в S7-19. `OsIndicationsSupported = 0`, `SetupMode = 1`, `SecureBoot = 0` и `PlatformLangCodes` доступны только для чтения.
+- Внутренняя модель хранилища после EBS скрывает переменные без `RT` и запрещает изменение volatile `RT`. Изменённая в EBS callback запись с `NV` попадает в снимок до финального перехода. Точные правила кодирования и лимиты приведены в [формате store](NVRAM_DEVICE.md#формат-store). Снимок S7-09 живёт до сброса.
+
+[UEFI 2.11 §3.3](https://uefi.org/specs/UEFI/2.11/03_Boot_Manager.html#globally-defined-variables), [§8.2](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#variable-services).
 
 ## Начальная карта памяти
 

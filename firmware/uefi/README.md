@@ -54,10 +54,10 @@ python3 -m unittest tools/build/test_build_firmware.py
 # Образ прошивки (ROM): ELF -> raw -> заголовок ODFWIMG1 -> ровно 0x400000 байт; печатает SHA-256 и размер
 python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
 
-# ROM с архивом собственных hello.efi, echo.efi и ebs.efi. Нужен также target x86_64-unknown-uefi.
+# ROM с архивом собственных hello.efi, echo.efi, ebs.efi и vars.efi. Нужен target x86_64-unknown-uefi.
 python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-with-apps.bin
 
-# Побайтовая проверка COM1 для базового ROM и запусков hello и ebs из FV
+# Побайтовая проверка COM1 для базового ROM и запусков hello, ebs и vars из FV
 python3 tests/system/firmware_boot_smoke.py
 
 # Host-side тесты чистой логики (clang и target x86_64-unknown-none не нужны)
@@ -144,6 +144,8 @@ COM1 RX и выводит hex-значение одного доступного
 | `src/idt.rs` | формирование 256 гостевых interrupt gates | нет |
 | `src/stop.rs` | форматирование строки останова `OD-FW STOP code=0xNN detail=0x...` без `core::fmt` | нет |
 | `src/mem/` | начальная карта EFI, внутренние аллокаторы страниц и pool, общий MapKey | нет |
+| `src/var/` | таблица переменных, политика UEFI и codec `ODVARSTR` | нет |
+| `src/rt/variable.rs` | EFIAPI для переменных и снимок в Runtime Services Data | нет |
 | `src/main.rs` | бинарь: начало загрузки, диагностика, panic handler | CPU |
 | `src/serial.rs` | инициализация COM1, bounded TX и RX polling | порт ввода-вывода |
 | `src/start.S` | вход `_start`, проверка `RDI`, останов через COM1, зануление `.bss`, установка GDT и селекторов, stubs IDT | CPU |
@@ -151,7 +153,7 @@ COM1 RX и выводит hex-значение одного доступного
 | `linker.ld` | собственный linker script | — |
 | `.cargo/config.toml` | `relocation-model=static` для target прошивки | — |
 | `probe/efi_probe/` | PE32+ build proof (отдельный Cargo-проект, раздел «EFI probe») | — |
-| `include/`, `tests/` | пока пусты (`.gitkeep`); `tests/apps` и fixtures создают S7-06/S7-08 | — |
+| `tests/apps/` | EFI-приложения `hello`, `echo`, `ebs` и `vars` для проверки сервисов в госте | EFI ABI |
 
 ## Тесты AML и DSDT
 

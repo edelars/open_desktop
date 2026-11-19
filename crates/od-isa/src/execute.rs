@@ -20441,7 +20441,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (0xf7, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
-                // The console masks lead and continuation bytes for UTF-8.
+                // The console masks UTF-8 bytes and variable services encode a Boolean.
                 Operation::Logic {
                     kind,
                     dst: Operand::Register(destination),
@@ -20449,7 +20449,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } if instruction.operand_size == OperandSize::Byte
                     && instruction.prefixes == Prefixes::default()
                     && match (kind, instruction.opcode.byte, instruction.length, immediate) {
-                        (LogicKind::And, 0x24, 2, 0x0f | 0x1f | 0x3f)
+                        (LogicKind::And, 0x24, 2, 0x01 | 0x0f | 0x1f | 0x3f)
                         | (LogicKind::Or, 0x0c, 2, 0x80 | 0xc0) => {
                             destination == RegisterView::low(Register::Rax, OperandSize::Byte)
                         }
@@ -20493,7 +20493,23 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (0x84 | 0xa8 | 0xf6, OperandSize::Byte)
                             | (0x85 | 0xa9, OperandSize::Dword | OperandSize::Qword)
                             | (0xf7, OperandSize::Dword)
-                    )
+                    ) || (instruction.opcode.byte == 0x85
+                        && instruction.operand_size == OperandSize::Word
+                        && source == Operand::Register(destination)
+                        && ((instruction.length == 4
+                            && instruction.prefixes.rex == Some(0x45)
+                            && (destination
+                                == RegisterView::low(Register::R8, OperandSize::Word)
+                                || destination
+                                    == RegisterView::low(Register::R9, OperandSize::Word)
+                                || destination
+                                    == RegisterView::low(Register::R10, OperandSize::Word)))
+                            || (instruction.length == 3
+                                && instruction.prefixes.rex.is_none()
+                                && (destination
+                                    == RegisterView::low(Register::Rbp, OperandSize::Word)
+                                    || destination
+                                        == RegisterView::low(Register::Rdx, OperandSize::Word)))))
                 }
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20572,10 +20588,31 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Xor,
                     src: Operand::Immediate(_),
                     ..
-                } => matches!(
-                    (instruction.opcode.byte, instruction.operand_size),
-                    (0x80, OperandSize::Byte) | (0x83, OperandSize::Qword)
-                ),
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x80, OperandSize::Byte) | (0x83, OperandSize::Qword)
+                    ) || (instruction.operand_size == OperandSize::Dword
+                        && instruction.prefixes == Prefixes::default()
+                        && match (instruction.opcode.byte, instruction.length, source) {
+                            (0x35, 5, Operand::Immediate(0xd0)) => {
+                                destination == RegisterView::low(Register::Rax, OperandSize::Dword)
+                            }
+                            (0x81, 6, Operand::Immediate(0xd0)) => {
+                                destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                            }
+                            (0x83, 3, Operand::Immediate(0x53)) => {
+                                destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                            }
+                            _ => false,
+                        })
+                        || (instruction.opcode.byte == 0x81
+                            && instruction.operand_size == OperandSize::Qword
+                            && instruction.length == 7
+                            && instruction.prefixes.rex == Some(0x48)
+                            && destination == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                            && source == Operand::Immediate(0x0074_0073))
+                }
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     ..
@@ -20723,10 +20760,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Primary
             && matches!(
                 instruction.operand_size,
-                OperandSize::Dword | OperandSize::Qword
+                OperandSize::Byte | OperandSize::Dword | OperandSize::Qword
             )
             && match (destination, kind, instruction.opcode.byte) {
                 (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => true,
+                (Operand::Register(register), ShiftKind::Shr, 0xd0) => {
+                    instruction.operand_size == OperandSize::Byte
+                        && instruction.length == 2
+                        && instruction.prefixes == Prefixes::default()
+                        && register == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                        && count_source == Operand::Immediate(1)
+                }
                 (Operand::Register(_), ShiftKind::Shr, 0xd3) => {
                     instruction.operand_size == OperandSize::Qword
                         && count_source
@@ -20794,11 +20838,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // The firmware tests stack spills while describing the memory map and PE image.
         Operation::Logic {
             kind: LogicKind::Test,
-            dst: destination @ Operand::Memory(_),
+            dst: destination @ Operand::Memory(address),
             src: source @ (Operand::Immediate(_) | Operand::Register(_)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && matches!(
+            && (matches!(
                 (instruction.opcode.byte, instruction.operand_size, source),
                 (0xf6, OperandSize::Byte, Operand::Immediate(_))
                     | (
@@ -20806,7 +20850,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         OperandSize::Dword | OperandSize::Qword,
                         Operand::Register(_)
                     )
-            )
+            ) || ((instruction.opcode.byte, instruction.operand_size, source)
+                == (0xf7, OperandSize::Dword, Operand::Immediate(0x400))
+                && instruction.length == 11
+                && instruction.prefixes.rex.is_none()
+                && address.base == AddressBase::Register(Register::Rsp)
+                && address.index.is_none()
+                && address.scale == 1
+                && address.displacement == 0x90))
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -20920,7 +20971,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 | ArithmeticKind::Inc
                 | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: source @ (Operand::Register(_) | Operand::Immediate(1)),
+            src: source @ (Operand::Register(_) | Operand::Immediate(1 | 9)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match (kind, source, instruction.operand_size) {
@@ -20929,6 +20980,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     Operand::Register(_),
                     OperandSize::Dword | OperandSize::Qword,
                 ) => instruction.opcode.byte == 0x01,
+                (ArithmeticKind::Add, Operand::Immediate(9), OperandSize::Qword) => {
+                    // Current firmware advances its default-variable iterator in a stack slot.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 6
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && destination.displacement == 0x10
+                }
                 (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
                     instruction.opcode.byte == 0x29
                 }

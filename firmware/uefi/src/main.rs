@@ -35,6 +35,7 @@ use od_firmware::mem::map::{
 };
 use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError, PageOwner, PoolError};
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
+use od_firmware::rt::variable::RuntimeVariables;
 use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
     STOP_NO_BOOT_OPTIONS, STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex,
@@ -62,6 +63,11 @@ const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
 static FIRMWARE_VENDOR: [u16; 13] = [
     0x4f, 0x70, 0x65, 0x6e, 0x20, 0x44, 0x65, 0x73, 0x6b, 0x74, 0x6f, 0x70, 0,
 ];
+#[repr(C)]
+struct RetainedRuntime {
+    services: RuntimeServicesStorage,
+    variables: RuntimeVariables,
+}
 static mut BOOT_DESCRIPTORS: [MemoryDescriptor; BOOT_DESCRIPTOR_CAPACITY] =
     [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
 static mut BOOT_PAGE_OWNERS: [PageOwner; BOOT_DESCRIPTOR_CAPACITY] =
@@ -181,14 +187,27 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     let runtime_address = match allocator.allocate_pool(
         &mut IdentityPoolMemory,
         MemoryType::RUNTIME_SERVICES_DATA,
-        size_of::<RuntimeServicesStorage>() as u64,
+        size_of::<RetainedRuntime>() as u64,
     ) {
         Ok(address) => address,
         Err(_) => stop(STOP_BOOT_SERVICES, 60),
     };
-    let runtime =
-        ptr::with_exposed_provenance_mut::<RuntimeServicesStorage>(runtime_address as usize);
+    let retained = ptr::with_exposed_provenance_mut::<RetainedRuntime>(runtime_address as usize);
+    // SAFETY: calculate both field addresses in the allocation before initialization.
+    let (runtime, variables) = unsafe {
+        (
+            ptr::addr_of_mut!((*retained).services),
+            ptr::addr_of_mut!((*retained).variables),
+        )
+    };
+    // SAFETY: this pool is exclusive, identity-mapped runtime data.
+    if unsafe { RuntimeVariables::initialize(variables, &od_firmware::console::COM1_DEVICE_PATH) }
+        .is_err()
+    {
+        stop(STOP_BOOT_SERVICES, 76);
+    }
     let mut runtime_storage = RuntimeServicesStorage::diagnostic(diagnostic_reset_system);
+    runtime_storage.variables = variables;
     runtime_storage.table.update_crc32();
     // SAFETY: the pool allocated a live, aligned runtime storage slot.
     unsafe { runtime.write(runtime_storage) };
@@ -1286,7 +1305,7 @@ fn verify_service_boundaries(system: &SystemTable) {
             &mut attributes,
             &mut size,
             ptr::addr_of_mut!(data).cast(),
-        ) != Status::UNSUPPORTED
+        ) != Status::NOT_FOUND
             || attributes != 43
             || size != 1
             || data != 0xa5
@@ -1313,6 +1332,7 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
     }
     let name = match requested {
         Some(FirmwareFvApp::Ebs) => "ebs",
+        Some(FirmwareFvApp::Vars) => "vars",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1342,7 +1362,11 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
                 if status != Status::SUCCESS {
                     fail(72);
                 }
-                com1_write(b"OD-FW image hello: EFI_SUCCESS\r\n");
+                if requested == Some(FirmwareFvApp::Vars) {
+                    com1_write(b"OD-FW image vars: EFI_SUCCESS\r\n");
+                } else {
+                    com1_write(b"OD-FW image hello: EFI_SUCCESS\r\n");
+                }
             }
             Status::LOAD_ERROR if requested.is_none() && image.is_null() => {
                 com1_write(b"OD-FW image hello: EFI_LOAD_ERROR\r\n");
@@ -1353,7 +1377,7 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
             fail(73);
         }
     }
-    if requested == Some(FirmwareFvApp::Hello) {
+    if requested.is_some() {
         stop(STOP_NO_BOOT_OPTIONS, 0);
     }
 }
@@ -1641,6 +1665,8 @@ struct ExitProbe {
     trace: [u8; 4],
     count: usize,
 }
+const EXIT_VAR_NAME: [u16; 7] = [0x4f, 0x44, 0x45, 0x78, 0x69, 0x74, 0];
+const EXIT_VAR_VALUE: [u8; 1] = [0x5a];
 
 unsafe fn record_exit_notification(probe: *mut ExitProbe, value: u8) {
     unsafe {
@@ -1791,6 +1817,19 @@ unsafe extern "efiapi" fn notify_modern_exit(_: Event, context: *mut c_void) {
         {
             stop(STOP_BOOT_SERVICES, 54);
         }
+        let system = ptr::addr_of!((*probe).system).read();
+        let runtime = ptr::addr_of!((*system).runtime_services).read();
+        let set = ptr::addr_of!((*runtime).set_variable).read_volatile();
+        if set(
+            EXIT_VAR_NAME.as_ptr(),
+            &DIAGNOSTIC_PROTOCOL,
+            od_firmware::var::services::NON_VOLATILE_RUNTIME,
+            EXIT_VAR_VALUE.len(),
+            EXIT_VAR_VALUE.as_ptr().cast(),
+        ) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 77);
+        }
         record_exit_notification(probe, b'E');
     }
 }
@@ -1905,10 +1944,38 @@ fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
         {
             stop(STOP_BOOT_SERVICES, 57);
         }
+        verify_retained_variables(system);
         com1_write(b"OD-FW S7-05 exit boot services verified BS=0x");
         com1_write(&fixed_hex(boot.addr() as u64));
         com1_write(b"\r\n");
     }
+}
+
+#[inline(never)]
+unsafe fn verify_retained_variables(system: *mut SystemTable) {
+    use od_firmware::var::codec::Decoder;
+
+    // SAFETY: the private diagnostic still owns the initial identity mapping
+    // and these objects were allocated as RuntimeServicesData before exit.
+    let image = unsafe {
+        let storage = ptr::addr_of!((*system).runtime_services)
+            .read()
+            .cast::<RuntimeServicesStorage>();
+        (*(*storage).variables).nv_image()
+    };
+    let Ok(mut records) = Decoder::new(image) else {
+        stop(STOP_BOOT_SERVICES, 78);
+    };
+    if !records.any(|record| {
+        record.is_ok_and(|record| {
+            record.guid == DIAGNOSTIC_PROTOCOL
+                && record.name.units().eq(EXIT_VAR_NAME[..6].iter().copied())
+                && record.value == EXIT_VAR_VALUE
+        })
+    }) {
+        stop(STOP_BOOT_SERVICES, 78);
+    }
+    com1_write(b"OD-FW S7-09 variable image retained\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

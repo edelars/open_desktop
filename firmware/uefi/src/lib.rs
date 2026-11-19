@@ -22,8 +22,10 @@ pub mod image;
 pub mod mem;
 pub mod paging;
 pub mod pe;
+pub mod rt;
 pub mod stop;
 pub mod uefi;
+pub mod var;
 
 /// GPA of the handoff block passed in `RDI` at firmware entry (FIRMWARE_BOOT.md, section 5).
 pub const HANDOFF_GPA: u64 = 0x0010_0000;

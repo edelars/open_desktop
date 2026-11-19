@@ -251,14 +251,14 @@ impl RuntimeServices {
             set_wakeup_time: runtime::set_wakeup_time,
             set_virtual_address_map: runtime::set_virtual_address_map,
             convert_pointer: runtime::convert_pointer,
-            get_variable: runtime::get_variable,
-            get_next_variable_name: runtime::get_next_variable_name,
-            set_variable: runtime::set_variable,
+            get_variable: crate::rt::variable::get_variable,
+            get_next_variable_name: crate::rt::variable::get_next_variable_name,
+            set_variable: crate::rt::variable::set_variable,
             get_next_high_monotonic_count: runtime::get_next_high_monotonic_count,
             reset_system,
             update_capsule: runtime::update_capsule,
             query_capsule_capabilities: runtime::query_capsule_capabilities,
-            query_variable_info: runtime::query_variable_info,
+            query_variable_info: crate::rt::variable::query_variable_info,
         }
     }
 
@@ -274,6 +274,7 @@ impl RuntimeServices {
 pub struct RuntimeServicesStorage {
     pub table: RuntimeServices,
     pub(crate) event_table: *mut RuntimeEventTable,
+    pub variables: *mut crate::rt::variable::RuntimeVariables,
 }
 
 impl RuntimeServicesStorage {
@@ -281,6 +282,7 @@ impl RuntimeServicesStorage {
         Self {
             table: RuntimeServices::diagnostic(reset_system),
             event_table: ptr::null_mut(),
+            variables: ptr::null_mut(),
         }
     }
 }

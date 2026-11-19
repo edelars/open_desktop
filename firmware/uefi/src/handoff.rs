@@ -17,7 +17,8 @@ const NO_OWNER: u32 = u32::MAX;
 const DEVICE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
 const HANDOFF_MINOR_FV_APP: u16 = 5;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP;
+const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_VARS;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +26,7 @@ const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 pub enum FirmwareFvApp {
     Hello = 1,
     Ebs = 2,
+    Vars = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -508,7 +510,7 @@ impl<'a> Handoff<'a> {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
         let header_size = u32_at(bytes, 0x0C);
-        let expected_header = if minor == HANDOFF_MINOR_FV_APP {
+        let expected_header = if minor >= HANDOFF_MINOR_FV_APP {
             FV_APP_HEADER_SIZE
         } else {
             HEADER_SIZE
@@ -570,7 +572,7 @@ impl<'a> Handoff<'a> {
             2 => (8..=9).contains(&device_count),
             3 => device_count == 9,
             HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
-            HANDOFF_MINOR_FV_APP => (7..=10).contains(&device_count),
+            HANDOFF_MINOR_FV_APP | HANDOFF_MINOR_FV_APP_VARS => (7..=10).contains(&device_count),
             _ => false,
         };
         if !valid_device_count {
@@ -618,7 +620,7 @@ impl<'a> Handoff<'a> {
         )?;
         validate_devices(bytes, device_offset as usize, device_count as usize, minor)?;
         validate_header_fields(bytes)?;
-        let fv_app = if minor == HANDOFF_MINOR_FV_APP {
+        let fv_app = if minor >= HANDOFF_MINOR_FV_APP {
             if u32_at(bytes, 0xA4) != 0 {
                 return Err(HandoffError::NonZeroHeaderReserved { offset: 0xA4 });
             }
@@ -626,6 +628,7 @@ impl<'a> Handoff<'a> {
                 0 => None,
                 1 => Some(FirmwareFvApp::Hello),
                 2 => Some(FirmwareFvApp::Ebs),
+                3 if minor == HANDOFF_MINOR_FV_APP_VARS => Some(FirmwareFvApp::Vars),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
@@ -1088,6 +1091,17 @@ mod tests {
             error.stop_code_detail(),
             (crate::stop::STOP_HANDOFF_FV_APP, 3)
         );
+        bytes[0x0A] = 6;
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse(&bytes, 6).unwrap().fv_app(),
+            Some(FirmwareFvApp::Vars)
+        );
+        assert_eq!(
+            Handoff::parse(&bytes, 5),
+            Err(HandoffError::UnsupportedVersion { major: 1, minor: 6 })
+        );
+        bytes[0x0A] = 5;
         bytes[0xA0] = 1;
         bytes[0xA7] = 1;
         seal(&mut bytes);

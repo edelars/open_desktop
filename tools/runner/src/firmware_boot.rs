@@ -15,7 +15,7 @@ use std::io::Read;
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "boot-firmware --image <bin> --com1-out <file> --budget <steps> [--fv-app hello|ebs]";
+    "boot-firmware --image <bin> --com1-out <file> --budget <steps> [--fv-app hello|ebs|vars]";
 
 struct Options {
     image: String,
@@ -135,7 +135,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 fv_app = Some(match value.as_str() {
                     "hello" => FirmwareFvApp::Hello,
                     "ebs" => FirmwareFvApp::Ebs,
-                    _ => return Err(format!("invalid --fv-app '{value}'; expected hello or ebs")),
+                    "vars" => FirmwareFvApp::Vars,
+                    _ => {
+                        return Err(format!(
+                            "invalid --fv-app '{value}'; expected hello, ebs or vars"
+                        ));
+                    }
                 });
             }
             other => {

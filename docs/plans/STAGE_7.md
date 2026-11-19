@@ -443,7 +443,7 @@
 
 ### S7-09. Реализовать variable services (volatile) и формат хранилища
 
-- [ ] Принято после ревью.
+- [x] Принято после независимого ревью `gpt-6.1-sol` High 2026-11-19. [Гостевой сценарий, codec и результаты проверок](../reports/STAGE_7_REPORT.md#s7-09--переменные-uefi-и-формат-снимка).
 - **Где:** `firmware/uefi/src/var/{store,codec,services}.rs`, `firmware/uefi/src/rt/variable.rs` (слоты RT: `GetVariable`, `GetNextVariableName`, `SetVariable`, `QueryVariableInfo`), `docs/specs/UEFI_PROFILE.md` (раздел «Переменные»), `docs/specs/NVRAM_DEVICE.md` — только раздел «Формат store» (устройство — S7-10).
 - **Сделать:**
   1. Семантика по UEFI 2.11 раздел «Variable Services»: атрибуты `NV/BS/RT/HR/TIME_BASED_AUTHENTICATED_WRITE_ACCESS/APPEND_WRITE/ENHANCED_AUTHENTICATED_ACCESS` (устаревший `AUTHENTICATED_WRITE_ACCESS` отвергать `EFI_UNSUPPORTED`; `ENHANCED_AUTHENTICATED_ACCESS` — принять решение «не поддержан» и записать), запрет `RT` без `BS`, удаление при `DataSize=0` без `APPEND_WRITE` и при `Attributes=0`, `EFI_WRITE_PROTECTED` для read-only переменных, `EFI_INVALID_PARAMETER`, `EFI_NOT_FOUND`, `EFI_BUFFER_TOO_SMALL` с возвратом размера, лимиты (`MaxVariableSize`, общий объём) в `QueryVariableInfo`.

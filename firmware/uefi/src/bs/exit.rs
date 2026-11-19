@@ -131,8 +131,9 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
             if status != Status::SUCCESS {
                 return status;
             }
-            if let Some(mut runtime) = state.runtime_services {
-                runtime.as_mut().event_table = state.events.runtime_event_table();
+            if let Some(runtime) = state.runtime_services {
+                core::ptr::addr_of_mut!((*runtime.as_ptr()).event_table)
+                    .write(state.events.runtime_event_table());
             }
             state.events.disable_timers();
             state.events.signal_group(EXIT_BOOT_SERVICES);
@@ -149,6 +150,13 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
                 return Status::INVALID_PARAMETER;
             };
             system.as_mut().clear_boot_services();
+            if let Some(runtime) = state.runtime_services
+                && let Some(variables) = core::ptr::addr_of!((*runtime.as_ptr()).variables)
+                    .read()
+                    .as_mut()
+            {
+                variables.enter_runtime();
+            }
             state.exit.phase = ExitPhase::Exited;
             Status::SUCCESS
         })

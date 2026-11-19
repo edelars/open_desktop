@@ -1,6 +1,6 @@
 //! UEFI 2.11 §8 wire signatures for runtime slots in the private boot table.
 
-use super::{guid::Guid, status::Status, types::Char16};
+use super::{guid::Guid, status::Status};
 use crate::mem::map::MemoryDescriptor;
 use core::ffi::c_void;
 
@@ -57,11 +57,7 @@ unsupported_services! {
     set_wakeup_time(_enable: u8, _time: *const Time);
     set_virtual_address_map(_size: usize, _descriptor_size: usize, _version: u32, _map: *const MemoryDescriptor);
     convert_pointer(_disposition: usize, _address: *mut *mut c_void);
-    get_variable(_name: *const Char16, _guid: *const Guid, _attributes: *mut u32, _size: *mut usize, _data: *mut c_void);
-    get_next_variable_name(_size: *mut usize, _name: *mut Char16, _guid: *mut Guid);
-    set_variable(_name: *const Char16, _guid: *const Guid, _attributes: u32, _size: usize, _data: *const c_void);
     get_next_high_monotonic_count(_high_count: *mut u32);
     update_capsule(_capsules: *const *const CapsuleHeader, _count: usize, _scatter_gather_list: u64);
     query_capsule_capabilities(_capsules: *const *const CapsuleHeader, _count: usize, _maximum_size: *mut u64, _reset_type: *mut ResetType);
-    query_variable_info(_attributes: u32, _maximum_storage: *mut u64, _remaining_storage: *mut u64, _maximum_size: *mut u64);
 }
