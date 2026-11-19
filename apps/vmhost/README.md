@@ -22,7 +22,16 @@ The launcher accepts `--stop-after-ms N` for a cooperative-stop check. For examp
 
 Run the control-lifecycle regression scenarios with `python3 tests/system/vmhost_control_race_smoke.py [LAUNCHER [VMHOST]]`. It repeats immediate STOP 100 times, checks a finite fragment that completes before its stop delay, sends incomplete header and payload bytes while execution is active, and closes a channel during an active fragment.
 
-If the helper returns an error, the launcher reports it, sends SIGTERM, waits up to 500 ms, then uses SIGKILL if the helper did not exit, and reaps the child. If the control channel closes because the helper has already terminated, the launcher reports its exit status or terminating signal when available (for example, `VMHost terminated by SIGSEGV`).
+If a frame is cut short, the launcher gives the child up to 200 ms to
+produce a wait status. It reports a signal or nonzero exit from that
+status. A clean exit leaves the frame error as the diagnostic. A
+live child goes through SIGTERM, the existing 500 ms cleanup window
+and SIGKILL if needed.
+
+Run `python3 -B tests/system/vmhost_launcher_eof_smoke.py LAUNCHER`
+to check delayed signal, delayed nonzero exit after a partial frame,
+clean exit, cleanup of a child that stays live after closing the channel,
+and immediate handling of an invalid frame.
 
 Run the two-instance crash/stop isolation scenario with `python3 tests/system/vmhost_isolation_smoke.py [VMHOST]`. It starts two active VMHost processes, sends SIGSEGV to one helper, and verifies that the other still accepts STOP and returns its result. This simulates a fatal process exit; it does not induce a fault inside generated code.
 

@@ -1279,10 +1279,28 @@ summary and manifest.
 - The local archive contains 415 files, SHA-256 `7ceb2f32bce3b0e07cad3b5f5b0e4a15c310232cbcee2f5070212130dbc15129`. [Local archive](data/stage3/s3-41-m1pro-8c159c8-20261119/local.json.gz)
 - The rejected process run and traced repeats contain 210 files, SHA-256 `ef288ad76a53a74358d7f5624e6507a020be8834c5f0bf9cad7d91d1f1f1f942`. [VMHost diagnostic archive](data/stage3/s3-41-m1pro-8c159c8-20261119/vmhost-process.json.gz)
 
+### Launcher exit reporting after a truncated frame
+
+A test helper completed HELLO/READY and RUN/RUN_ACK, closed the
+control socket, and then terminated by SIGSEGV. The signed pre-fix
+launcher reported a truncated frame in this sequence. When a frame
+is truncated, the launcher now waits up to 200 ms for the actual
+child status. SIGSEGV and ordinary nonzero exit use that status.
+A clean exit retains the transport diagnostic. A live child goes
+through the existing bounded TERM/KILL cleanup. `ECHILD` ends
+child handling without signalling the PID.
+
+`python3 -B tests/system/vmhost_launcher_eof_smoke.py LAUNCHER`
+passed five scenarios on the signed ARM64 launcher and on a launcher
+linked against a separately compiled `ODShared` module. The signed
+generated-code fault helper passed without phase tracing. The
+RESULT/STOP and external SIGSEGV smokes also passed.
+[ISSUE-523](../KNOWN_ISSUES.md#issue-523)
+
 ### Hardware acceptance
 
 The M1 Pro passed both ARM64 selectors on `f6b5214` and the local
-selector on `8c159c8`. ISSUE-523 tracks the latest VMHost process failure.
+selector on `8c159c8`. The launcher fix has local regression evidence.
 The Mac mini configuration, native execution on physical x86 and
 final S3-41 acceptance remain open.
 
