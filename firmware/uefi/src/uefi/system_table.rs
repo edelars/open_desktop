@@ -311,6 +311,10 @@ pub struct SystemTable {
 }
 
 impl SystemTable {
+    pub fn console_in(&self) -> *mut c_void {
+        self.con_in
+    }
+
     pub fn console_out(&self) -> *mut c_void {
         self.con_out
     }
@@ -346,6 +350,22 @@ impl SystemTable {
 
     pub const fn configuration_tables(&self) -> (*mut ConfigurationTable, usize) {
         (self.configuration_table, self.number_of_table_entries)
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn publish_console(
+        &mut self,
+        handle: Handle,
+        input: *mut c_void,
+        output: *mut c_void,
+    ) {
+        self.console_in_handle = handle;
+        self.con_in = input;
+        self.console_out_handle = handle;
+        self.con_out = output;
+        self.standard_error_handle = handle;
+        self.std_err = output;
+        self.update_crc32();
     }
 
     pub(crate) fn clear_boot_services(&mut self) {

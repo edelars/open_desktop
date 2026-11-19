@@ -369,7 +369,7 @@
 - **Актуальный frontier после ISSUE-292 (2026-11-16):** ISSUE-288 `SETB R10B`, ISSUE-289 `CMP R14,R15`, ISSUE-290 `SETA R11B` and ISSUE-291 `OR R11B,R10B` remain implemented and independently approved. This ISSUE-292 slice adds only exact no-prefix `74 1D` (`JZ rel8 +0x1d`) in base `PagedCpl0ProbeV1`; ZF controls taken/fall-through, flags/definedness are preserved, and canonicality is checked only when taken. Five focused tests cover condition/definedness, target, canonicality, fetch fault, neighbors and CPL3/profile isolation. Full od-isa suite (2,322/1,591/126/29/6/845/7/15, 0 doc tests), 61 paged machine tests, scoped cargo check, fmt and diff-check pass. Runner image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` retired 8,989 and stopped at `44 8B 6C 08 18` (`MOV R13D,dword ptr [RAX+RCX+0x18]`, ISSUE-293), RIP `0x20167a`, `Unsupported { opcode: 139 }`; COM1 empty. Independent review ISSUE-292 approved with no findings. ISSUE-201 remains open for two unrelated stale CLD-unsupported expectations.
 
 - [x] Принято после ревью.
-- **Где:** `firmware/uefi/src/entry.rs` (вход, стек, `.bss`), `firmware/uefi/src/handoff.rs` (разбор handoff block с проверкой magic/версии/размера), `firmware/uefi/src/paging.rs` (собственные таблицы страниц: identity для RAM/ROM/устройств, права W^X где возможно), `firmware/uefi/src/mem/` (page allocator по `EFI_MEMORY_TYPE`, pool allocator поверх него, `GetMemoryMap` представление), `firmware/uefi/src/serial.rs` (COM1 polling TX/RX по профилю `uart16550.rs`), `firmware/uefi/src/panic.rs` (panic → сообщение на COM1 + `HLT`), `docs/specs/UEFI_PROFILE.md` (новый, раздел «Память»).
+- **Где:** `firmware/uefi/src/entry.rs` (вход, стек, `.bss`), `firmware/uefi/src/handoff.rs` (разбор handoff block с проверкой magic/версии/размера), `firmware/uefi/src/paging.rs` (собственные таблицы страниц: identity для RAM/ROM/устройств, права W^X где возможно), `firmware/uefi/src/mem/` (page allocator по `EFI_MEMORY_TYPE`, pool allocator поверх него, `GetMemoryMap` представление), `firmware/uefi/src/console/serial_term.rs` (COM1 polling TX/RX по профилю `uart16550.rs`), `firmware/uefi/src/panic.rs` (panic → сообщение на COM1 + `HLT`), `docs/specs/UEFI_PROFILE.md` (новый, раздел «Память»).
 - **Сделать:**
   1. Вход: сохранить `RDI` (handoff block), поставить собственный стек в выделенной RAM, обнулить `.bss`, перейти в Rust.
   2. Разобрать handoff block; при неизвестной версии/magic — сообщение на COM1 и `HLT` (тест на уровне 1 для парсера).
@@ -418,7 +418,8 @@
 
 ### S7-07. Реализовать консоль на COM1
 
-- [ ] Принято после ревью.
+- [x] Принято 2026-11-19 после независимого ревью `gpt-6.1-sol` high.
+- **Результат.** Один COM1 handle для трёх полей консоли, режим 80×25, UTF-8, готовность клавиш через `WaitForKey` и polling-only ESC. `hello` и `echo` проверены на 128 и 256 МиБ. [Гостевые проверки](../reports/STAGE_7_REPORT.md#s7-07--консоль-com1).
 - **Где:** `firmware/uefi/src/console/{text_out,text_in,serial_term}.rs`, установка `ConOut`/`ConIn`/`StdErr` handles в System Table, `EFI_SERIAL_IO_PROTOCOL` — опционально (записать), `docs/specs/UEFI_PROFILE.md` (раздел «Консоль»).
 - **Сделать:**
   1. `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`: `Reset`, `OutputString` (UCS-2 → UTF-8 для COM1; неотображаемые символы → `?` и `EFI_WARN_UNKNOWN_GLYPH`), `TestString`, `QueryMode`/`SetMode` (один режим 80×25, записать), `SetAttribute` (ANSI-последовательности или игнорирование — записать), `ClearScreen`, `SetCursorPosition`, `EnableCursor`, `Mode` структура.

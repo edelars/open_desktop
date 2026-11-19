@@ -12,6 +12,7 @@
 
 pub mod acpi;
 pub mod bs;
+pub mod console;
 mod crc32;
 pub mod device_path;
 pub mod fv;

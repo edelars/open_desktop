@@ -47,7 +47,7 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
-TEST_APPS = ("ebs", "hello")
+TEST_APPS = ("ebs", "echo", "hello")
 FV_MAGIC = b"ODFVARC\0"
 FV_VERSION = 1
 FV_HEADER_SIZE = 24
@@ -543,7 +543,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--with-test-apps",
         action="store_true",
-        help="build the hello and ebs EFI applications and embed them in the firmware volume",
+        help="build the hello, echo and ebs EFI applications and embed them in the firmware volume",
     )
     args = parser.parse_args(argv)
     if args.with_test_apps and (args.smoke or args.efi_probe is not None):

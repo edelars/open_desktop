@@ -28,6 +28,13 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "echo"
+path = "echo/main.rs"
+test = false
+bench = false
+doc = false
+
 [profile.dev]
 panic = "abort"
 

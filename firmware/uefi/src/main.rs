@@ -8,9 +8,8 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 
-mod serial;
 use core::panic::PanicInfo;
-use serial::{init as com1_init, write as com1_write};
+use od_firmware::console::serial_term::{self, init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::event::{
@@ -172,7 +171,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     com1_write(b"OD-FW S7-04 pool allocator verified key=0x");
     com1_write(&fixed_hex(key));
     com1_write(b"\r\n");
-    if let Some(byte) = serial::try_read() {
+    if let Some(byte) = serial_term::try_read() {
         com1_write(b"OD-FW S7-04 COM1 RX byte=0x");
         com1_write(&fixed_hex(u64::from(byte)));
         com1_write(b"\r\n");
@@ -236,6 +235,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     if unsafe { od_firmware::bs::image::install_firmware_volume() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 68);
+    }
+    if unsafe { od_firmware::console::install() } != Status::SUCCESS {
+        stop(STOP_BOOT_SERVICES, 74);
     }
     verify_embedded_image(&system);
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());

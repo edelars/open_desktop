@@ -352,6 +352,18 @@ pub(super) unsafe fn dispatch_pending() {
     }
 }
 
+/// Drive timer notifications during a protocol's polling call.
+///
+/// # Safety
+/// Call on the BSP without holding any borrow of firmware-private state.
+#[cfg(target_os = "none")]
+pub(crate) unsafe fn poll_due_events() {
+    unsafe {
+        let _ = state::try_with(|state| state.events.poll_clock());
+        dispatch_pending();
+    }
+}
+
 /// # Safety
 /// Call on the BSP. A non-null event output must be aligned, writable and
 /// outside firmware-private state. Notify callbacks obey the EFI ABI.

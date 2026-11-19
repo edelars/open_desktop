@@ -155,11 +155,13 @@ PKCS#7, цепочки и политики загрузки относится �
 запрещены. Записи строго упорядочены по байтам имени, данные непустые,
 последняя запись заканчивается вместе с архивом. Допускается пустой архив.
 
-`build_firmware.py --with-test-apps` помещает в архив `ebs` и `hello`,
+`build_firmware.py --with-test-apps` помещает в архив `ebs`, `echo` и `hello`,
 собранные из `firmware/uefi/tests/apps` с target `x86_64-unknown-uefi`.
 `hello` читает Loaded Image через `HandleProtocol`. `ebs` читает карту,
 передаёт её ключ в `ExitBootServices` и при успехе выводит `!` прямым
-`OUT` в COM1 перед `HLT`. Оба выводят строку через `ConOut`, когда он доступен.
+`OUT` в COM1 перед `HLT`. `echo` читает `ConIn` через `WaitForKey` и
+отображает символы и названия стрелок в `ConOut` до перевода строки.
+Приложения выводят начальную строку через `ConOut`.
 [UEFI 2.11 §9.1](https://uefi.org/specs/UEFI/2.11/09_Protocols_EFI_Loaded_Image.html), [§12.4](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
 
 ### Диагностическая таблица Runtime Services
@@ -316,6 +318,31 @@ handle. Доступны все восемь функций §10.5. Пути н�
 представлен четырёхбайтным `End Entire`. `CreateDeviceNode` обнуляет
 полезные байты и записывает заголовок.
 [UEFI 2.11, §10.5](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html#device-path-utilities-protocol).
+
+### Консоль COM1
+
+Прошивка публикует `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` и
+`EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` на одном handle и пересчитывает CRC
+System Table. `ConOut` и `StdErr` используют один интерфейс вывода.
+Транспорт ввода до подключения USB-клавиатуры в S7-34 — COM1.
+Текущий перечень консольных протоколов состоит из Simple Text Input
+и Simple Text Output.
+
+Вывод поддерживает режим 0 с 80 столбцами и 25 строками. Позиция
+курсора, видимость, цвета и очистка передаются терминалу ANSI.
+Поддерживаются печатная Basic Latin, Latin-1 `U+00A0…U+00FF` кроме
+мягкого дефиса и графические символы UEFI. `OutputString` кодирует
+доступные символы в UTF-8. Неподдержанный символ заменяется на `?` со
+статусом `EFI_WARN_UNKNOWN_GLYPH`, а `TestString` для него возвращает
+`EFI_UNSUPPORTED`. Ошибка передачи COM1 даёт `EFI_DEVICE_ERROR`.
+
+Ввод декодирует тот же репертуар UTF-8 в CHAR16. Последовательности
+ESC с `[` или `O` и суффиксом `A…D` дают четыре scan code стрелок.
+Одиночный ESC выдаётся после двух срабатываний таймера опроса с
+периодом 10 мс. Таймер и `WaitForKey` — отдельные события.
+`WaitForKey` сигналится при готовом ключе. `ReadKeyStroke` продвигает
+таймеры и возвращает `EFI_NOT_READY` при пустой очереди.
+[UEFI 2.11, §12](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
 
 ### События и TPL
 

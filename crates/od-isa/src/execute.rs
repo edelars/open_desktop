@@ -20441,6 +20441,29 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (0xf7, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
+                // The console masks lead and continuation bytes for UTF-8.
+                Operation::Logic {
+                    kind,
+                    dst: Operand::Register(destination),
+                    src: Operand::Immediate(immediate),
+                } if instruction.operand_size == OperandSize::Byte
+                    && instruction.prefixes == Prefixes::default()
+                    && match (kind, instruction.opcode.byte, instruction.length, immediate) {
+                        (LogicKind::And, 0x24, 2, 0x0f | 0x1f | 0x3f)
+                        | (LogicKind::Or, 0x0c, 2, 0x80 | 0xc0) => {
+                            destination == RegisterView::low(Register::Rax, OperandSize::Byte)
+                        }
+                        (LogicKind::Or, 0x80, 3, 0x80) => {
+                            destination == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                        }
+                        (LogicKind::Or, 0x80, 3, 0xe0) => {
+                            destination == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                        }
+                        _ => false,
+                    } =>
+                {
+                    true
+                }
                 Operation::Logic {
                     kind: LogicKind::And,
                     src: Operand::Memory(_),
@@ -21065,6 +21088,36 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }) =>
         {
             state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // EnableCursor stores the normalized BOOLEAN in the console mode.
+        Operation::SetCondition {
+            condition,
+            dst:
+                destination @ Operand::Memory(MemoryOperand {
+                    base: AddressBase::NextRip,
+                    index: None,
+                    scale: 1,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Byte,
+                    ..
+                }),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x95
+            && instruction.length == 7
+            && instruction.prefixes == Prefixes::default() =>
+        {
+            let value = u64::from(condition.evaluate(state.rflags));
+            if let Err(error) = write_operand(state, memory, context, next_rip, destination, value)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
@@ -23772,7 +23825,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: linked jump tables and the startup diagnostic's stackless returns.
+        // Linked jump tables, startup returns, and the EFI app's ConOut tail call.
         Operation::IndirectJump { operand }
             if firmware_boot_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -23793,6 +23846,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                         rex: Some(0x42),
                                         ..Prefixes::default()
                                     }))
+                    }
+                    Operand::Memory(MemoryOperand {
+                        base: AddressBase::Register(Register::Rcx),
+                        index: None,
+                        scale: 1,
+                        displacement: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                        ..
+                    }) => {
+                        instruction.length == 4
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: Some(0x48),
+                                    ..Prefixes::default()
+                                })
                     }
                     Operand::Register(register) => {
                         instruction.length == 3

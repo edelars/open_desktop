@@ -54,7 +54,7 @@ python3 -m unittest tools/build/test_build_firmware.py
 # Образ прошивки (ROM): ELF -> raw -> заголовок ODFWIMG1 -> ровно 0x400000 байт; печатает SHA-256 и размер
 python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
 
-# ROM с архивом собственных hello.efi и ebs.efi. Нужен также target x86_64-unknown-uefi.
+# ROM с архивом собственных hello.efi, echo.efi и ebs.efi. Нужен также target x86_64-unknown-uefi.
 python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-with-apps.bin
 
 # Host-side тесты чистой логики (clang и target x86_64-unknown-none не нужны)

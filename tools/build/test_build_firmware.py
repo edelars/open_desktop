@@ -416,7 +416,7 @@ class FirmwareVolumeBuildTest(unittest.TestCase):
                 else:
                     self.assertEqual(hashlib.sha256(out.read_bytes()).hexdigest(), first_sha256)
             app_dir = target_dir / "test-apps" / BUILDER.PROBE_TARGET / "release"
-            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in ("ebs", "hello")}
+            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in ("ebs", "echo", "hello")}
             for name, pe in files.items():
                 with self.subTest(name=name):
                     self.assertEqual(BUILDER.inspect_pe(pe)["subsystem"], 10)
