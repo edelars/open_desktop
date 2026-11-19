@@ -1078,6 +1078,15 @@ All 33.19 million scored epochs recovered two slots before publication
 and restored the resident footprint after the two calls.
 [S3-37g report and raw evidence](STAGE_3_S3-37g_2026-11-19.md)
 
+S3-37h measured actual native V3 stores into the current artifact's
+pending tail. Across 4.20 million epochs, the complete active-write
+interval including the invalidation callback took median 0.454 µs
+for direct stores and 0.459 µs through an alias. Both first tail
+dispatches took about 5.5 µs together, about four times their paired
+warm interval. Each epoch verified one committed store, rejection
+of the stale active handle and restoration of resident accounting.
+[S3-37h report and raw evidence](STAGE_3_S3-37h_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

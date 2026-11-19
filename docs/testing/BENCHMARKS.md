@@ -1634,6 +1634,17 @@ the exact code, metadata and slot counts at 2 and 16 resident entries.
 The archive contains source, calibration, scored samples and an offline
 audit. [Report and reproduction](../reports/STAGE_3_S3-37g_2026-11-19.md)
 
+### S3-37h. Native write to the active V3 tail
+
+The signed release driver uses the existing tracked owner in a
+test-only source snapshot. It measures active compilation and
+publication, the actual store with its invalidation callback, and
+first and warm dispatch of the updated tail at both addresses.
+Each epoch verifies the retired prefix and store, rejection of the
+stale V3 handle, native tail parity with the interpreter and slot
+reuse at bounded capacity.
+[Report and reproduction](../reports/STAGE_3_S3-37h_2026-11-19.md)
+
 ## S4-13a: uncached page walk versus experimental one-entry probe cache
 
 `od-bench page-walk-compare` compares the existing pure `probe_long64_4k`
