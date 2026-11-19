@@ -1048,6 +1048,11 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
+    /// S6-21: `F0 [REX] 80 /6 ib` (LOCK XOR m8, imm8). CPL0 set only.
+    LockXorMem {
+        destination: MemoryOperand,
+        immediate: u64,
+    },
     /// S4-38L7n/S4-38L7t: `F0 REX.W 0F AB /r` (LOCK BTS m64, r64, `kind` = `BitKind::Set`) and
     /// `F0 REX.W 0F B3 /r` (LOCK BTR m64, r64, `kind` = `BitKind::Reset`), memory operand only. The
     /// register is a signed bit offset into a bit string that starts at the memory operand;
@@ -2657,6 +2662,7 @@ impl Instruction {
             | Operation::OrFsMem { .. }
             | Operation::OrGsMem { .. }
             | Operation::LockOrMem { .. }
+            | Operation::LockXorMem { .. }
             | Operation::LockAndMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::AF,
                 undefined: crate::AF,
@@ -9307,8 +9313,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let group = (modrm >> 3) & 7;
                 if prefixes.group1 == Some(0xf0) {
                     // S4-38 admits memory OR and ADD, plus byte AND. S6-21 admits the
-                    // dword/imm32 SUB and qword/imm8 AND and SUB used by Linux. The shared check handles
-                    // repeated LOCK/REP.
+                    // dword/imm32 SUB, qword/imm8 AND and SUB, and byte XOR used by Linux.
+                    // The shared check handles repeated LOCK/REP.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
@@ -9320,6 +9326,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             (byte, size),
                             (0x81, OperandSize::Dword) | (0x83, OperandSize::Qword)
                         ),
+                        6 => byte == 0x80,
                         _ => false,
                     };
                     if !supported_group
@@ -9504,6 +9511,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             immediate,
                         },
                         5 => Operation::LockSubMem {
+                            destination,
+                            immediate,
+                        },
+                        6 => Operation::LockXorMem {
                             destination,
                             immediate,
                         },
@@ -25250,11 +25261,10 @@ mod tests {
         }
         // Every other form keeps the refusal, with the group opcode.
         for (bytes, byte) in [
-            // ADC, SBB, SUB, XOR, CMP with LOCK (ADD is S4-38L7z, the byte AND S4-38L7ag).
+            // ADC, SBB, byte SUB and CMP with LOCK.
             (&[0xf0, 0x80, 0x53, 0x3d, 0x01][..], 0x80),
             (&[0xf0, 0x80, 0x5b, 0x3d, 0x01][..], 0x80),
             (&[0xf0, 0x80, 0x6b, 0x3d, 0x01][..], 0x80),
-            (&[0xf0, 0x80, 0x73, 0x3d, 0x01][..], 0x80),
             (&[0xf0, 0x80, 0x7b, 0x3d, 0x01][..], 0x80),
             (&[0xf0, 0x83, 0x63, 0x3d, 0x01][..], 0x83),
             (&[0xf0, 0x81, 0x63, 0x3d, 1, 0, 0, 0][..], 0x81),
@@ -25360,6 +25370,48 @@ mod tests {
             assert!(
                 matches!(
                     memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. })
+                        if opcode.map == OpcodeMap::Primary && opcode.byte == byte
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_xor_decodes_only_the_byte_memory_immediate_form() {
+        for (bytes, base, immediate) in [
+            (&[0xf0, 0x80, 0x37, 0x01][..], Register::Rdi, 1),
+            (&[0xf0, 0x45, 0x80, 0x37, 0x80][..], Register::R15, 0x80),
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len());
+            assert_eq!(
+                decoded.flag_effects().defined,
+                crate::ARITHMETIC_FLAGS & !crate::AF
+            );
+            assert_eq!(decoded.flag_effects().undefined, crate::AF);
+            assert!(matches!(
+                decoded.operation,
+                Operation::LockXorMem { destination, immediate: value }
+                    if destination.base == AddressBase::Register(base)
+                        && destination.size == OperandSize::Byte
+                        && value == immediate
+            ));
+        }
+        for (bytes, byte) in [
+            (&[0xf0, 0x80, 0xf7, 1][..], 0x80),
+            (&[0xf0, 0x81, 0x37, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x48, 0x83, 0x37, 1][..], 0x83),
+            (&[0xf0, 0x66, 0x80, 0x37, 1][..], 0x80),
+            (&[0xf0, 0x67, 0x80, 0x37, 1][..], 0x80),
+            (&[0xf0, 0x65, 0x80, 0x37, 1][..], 0x80),
+            (&[0xf0, 0xf0, 0x80, 0x37, 1][..], 0x80),
+            (&[0x45, 0xf0, 0x80, 0x37, 1][..], 0x80),
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
                     Err(DecodeError::Unsupported { opcode, .. })
                         if opcode.map == OpcodeMap::Primary && opcode.byte == byte
                 ),

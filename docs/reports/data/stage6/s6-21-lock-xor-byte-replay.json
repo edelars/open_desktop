@@ -1,0 +1,30 @@
+{
+  "base_commit": "a2ddabe",
+  "runner_sha256": "1f70a25e1f142114a822ec35582dfdca125945ba629aa25f526c178658d546fa",
+  "report_sha256": "fee94eecca72645a284f3c039be1893bcd231332b7b99558b88814d4a79114e8",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "kernel_debug_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+  "nonce": "smpBoot20261119A",
+  "profile": "X8664V1Stage4AApic",
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 2500000000,
+  "previous_stop_rip": "0xffffffff81783cd5",
+  "stop_rip": "0xffffffff817f24ad",
+  "stop_gpa": "0x17f24ad",
+  "stop_bytes": "f0 48 81 a8 80 01 00 00 00 10 00 00",
+  "stop_detail": "Unsupported { opcode: 129 }",
+  "terminal_vcpu": 1,
+  "kernel_symbol": "free_pud_range+0x21d",
+  "retired_bsp": 1858894770,
+  "retired_ap": 469327722,
+  "linux_observations": [
+    "[    1.746003] smp: Brought up 1 node, 2 CPUs",
+    "[    2.351597] IPI shorthand broadcast: enabled",
+    "[    2.462734] Run /init as init process"
+  ],
+  "guest_verifier": "expected a single complete guest observation with the requested nonce"
+}
