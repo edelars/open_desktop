@@ -20085,6 +20085,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             | (0x09 | 0x0b, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
+                Operation::Arithmetic { .. } => matches!(
+                    instruction.operand_size,
+                    OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                ),
                 _ => matches!(
                     instruction.operand_size,
                     OperandSize::Dword | OperandSize::Qword
@@ -20093,6 +20097,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
+                    operand_override: instruction.operand_size == OperandSize::Word,
                     ..Prefixes::default()
                 }) =>
         {
@@ -20493,12 +20498,21 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         }
         Operation::StackRegister {
             push: false,
-            register: Register::Rax,
-        } if allow_stack_forms
-            && instruction.length == 1
-            && instruction.opcode.byte == 0x58
-            && instruction.prefixes == Prefixes::default()
-            && instruction.operand_size == OperandSize::Qword =>
+            register,
+        } if instruction.operand_size == OperandSize::Qword
+            && ((allow_stack_forms
+                && register == Register::Rax
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x58
+                && instruction.prefixes == Prefixes::default())
+                || (firmware_boot_profile
+                    && instruction.opcode.map == OpcodeMap::Primary
+                    && matches!(instruction.opcode.byte, 0x58..=0x5f)
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: instruction.prefixes.rex,
+                            ..Prefixes::default()
+                        }))) =>
         {
             let old_rsp = state.gpr[Register::Rsp as usize];
             let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
@@ -20515,8 +20529,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
+            // For POP RSP the popped value replaces the incremented pointer.
             state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
-            state.gpr[Register::Rax as usize] = value;
+            state.gpr[register as usize] = value;
             state.rip = next_rip;
         }
         // S7-04: the helper restores RBX with the exact bare `5B` form. Read

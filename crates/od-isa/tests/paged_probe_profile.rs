@@ -51306,8 +51306,62 @@ fn firmware_boot_direct_jumps_validate_the_signed_target_before_commit() {
 }
 
 #[test]
+fn firmware_boot_pop_qword_commits_both_registers_after_the_stack_read() {
+    let address = DATA + 0x60;
+    let value = 0x0000_0123_4567_89abu64;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for (code, register) in [
+        (&[0x58][..], Register::Rax),
+        (&[0x41, 0x58][..], Register::R8),
+        (&[0x5c][..], Register::Rsp),
+    ] {
+        for (exit, success) in [
+            (PagedProbeExit::Retired, true),
+            (PagedProbeExit::Fault(fault.clone()), false),
+        ] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL + 0x60..DATA_PHYSICAL + 0x68]
+                .copy_from_slice(&value.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[Register::Rsp as usize] = address;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            if success {
+                expected.gpr[Register::Rsp as usize] = address + 8;
+                expected.gpr[register as usize] = value;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(success));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
 fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
+        (&[0x66, 0x41, 0x83, 0xf9, 3][..], 0x83),
+        (&[0x58][..], 0x58),
         (&[0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6),
         (&[0x48, 0x89, 0xdf][..], 0x89),
         (&[0x4d, 0x09, 0xfd][..], 0x09),
@@ -51761,6 +51815,20 @@ fn firmware_boot_register_arithmetic_uses_the_decoded_width_and_flags() {
             0xdead_beef_0000_0005,
             0xdead_beef_0000_0005,
             0x044,
+        ),
+        (
+            &[0x66, 0x41, 0x83, 0xf9, 3][..],
+            Register::R9 as usize,
+            0xaabb_ccdd_eeff_0003,
+            0xaabb_ccdd_eeff_0003,
+            0x044,
+        ),
+        (
+            &[0x66, 0x83, 0xc0, 0xff][..],
+            rax,
+            0xdead_beef_1234_0001,
+            0xdead_beef_1234_0000,
+            0x055,
         ),
     ] {
         let mut memory = Memory::new(code);
@@ -52752,49 +52820,51 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
-        (&[0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // MOVZX word source
-        (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6), // address32 MOVZX
-        (&[0x48, 0x09, 0x07][..], 0x09),             // OR qword [RDI],RAX
-        (&[0x66, 0x09, 0xf8][..], 0x09),             // OR AX,DI
-        (&[0x67, 0xe9, 0xfc, 0xfc, 0xff, 0xff][..], 0xe9), // prefix on JMP
-        (&[0x67, 0x66, 0x89, 0x58, 0x4c][..], 0x89), // address32 word store
+        (&[0x66, 0x58][..], 0x58),                                  // POP AX
+        (&[0x8f, 0x00][..], 0x8f),                                  // POP [RAX]
+        (&[0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7),                // MOVZX word source
+        (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6),          // address32 MOVZX
+        (&[0x48, 0x09, 0x07][..], 0x09),                            // OR qword [RDI],RAX
+        (&[0x66, 0x09, 0xf8][..], 0x09),                            // OR AX,DI
+        (&[0x67, 0xe9, 0xfc, 0xfc, 0xff, 0xff][..], 0xe9),          // prefix on JMP
+        (&[0x67, 0x66, 0x89, 0x58, 0x4c][..], 0x89),                // address32 word store
         (&[0x67, 0x48, 0xbe, 0, 0, 0, 0, 0x10, 0, 0, 0][..], 0xbe), // prefix on MOV r64,imm64
-        (&[0x44, 0x08, 0x11][..], 0x08),             // OR byte [RCX],R10B
-        (&[0x0a, 0x03][..], 0x0a),                   // OR AL,byte [RBX]
-        (&[0x67, 0x89, 0x70, 0x48][..], 0x89),       // address32 dword store
-        (&[0x0f, 0x93, 0x01][..], 0x93),             // SETAE byte [RCX]
-        (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93),       // address prefix on SETAE CL
-        (&[0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7), // dword store
+        (&[0x44, 0x08, 0x11][..], 0x08),                            // OR byte [RCX],R10B
+        (&[0x0a, 0x03][..], 0x0a),                                  // OR AL,byte [RBX]
+        (&[0x67, 0x89, 0x70, 0x48][..], 0x89),                      // address32 dword store
+        (&[0x0f, 0x93, 0x01][..], 0x93),                            // SETAE byte [RCX]
+        (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93),                      // address prefix on SETAE CL
+        (&[0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7),             // dword store
         (&[0x67, 0x48, 0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7), // address32 store
-        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3),       // BT CX,BX
-        (&[0x0f, 0xab, 0xd9][..], 0xab),             // BTS ECX,EBX
-        (&[0x0f, 0xa3, 0x13][..], 0xa3),             // BT [RBX],EDX
-        (&[0x67, 0x85, 0xc0][..], 0x85),             // address override on TEST
-        (&[0xf6, 0x06, 0x33][..], 0xf6),             // TEST byte [RSI],imm8
-        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),    // address override on TEST
-        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
-        (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
-        (&[0xff, 0xc3][..], 0xff),                   // INC EBX
-        (&[0x49, 0xff, 0xc9][..], 0xff),             // DEC R9
-        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
-        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
-        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
-        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),       // ADD qword [RBX],0x28
-        (&[0x48, 0x03, 0x13][..], 0x03),             // ADD RDX,[RBX]
-        (&[0x66, 0x83, 0xc6, 0xff][..], 0x83),       // ADD SI,-1
-        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
-        (&[0x88, 0x58, 0x4c][..], 0x88),             // byte register store
-        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
-        (&[0x8a, 0x3c, 0x24][..], 0x8a),             // byte load
-        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
-        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // prefixed NOP
-        (&[0x0f, 0x18, 0x00][..], 0x18),             // PREFETCHNTA
-        (&[0x8b, 0xc1][..], 0x8b),                   // dword register MOV
-        (&[0xc7, 0x44, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // nonzero dword
-        (&[0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // different displacement
-        (&[0x89, 0xc0][..], 0x89),                   // MOV EAX,EAX
-        (&[0x67, 0x48, 0x89, 0xc9][..], 0x89),       // address override on qword register MOV
-        (&[0xff, 0xe1][..], 0xff),                   // JMP RCX
+        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3),                      // BT CX,BX
+        (&[0x0f, 0xab, 0xd9][..], 0xab),                            // BTS ECX,EBX
+        (&[0x0f, 0xa3, 0x13][..], 0xa3),                            // BT [RBX],EDX
+        (&[0x67, 0x85, 0xc0][..], 0x85),                            // address override on TEST
+        (&[0xf6, 0x06, 0x33][..], 0xf6),                            // TEST byte [RSI],imm8
+        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),                   // address override on TEST
+        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),                      // TEST EDX,imm32
+        (&[0x48, 0xff, 0x03][..], 0xff),                            // INC qword [RBX]
+        (&[0xff, 0xc3][..], 0xff),                                  // INC EBX
+        (&[0x49, 0xff, 0xc9][..], 0xff),                            // DEC R9
+        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80),                // address32 CMP
+        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),             // address32 store
+        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),                      // ADC R11,0x28
+        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),                      // ADD qword [RBX],0x28
+        (&[0x48, 0x03, 0x13][..], 0x03),                            // ADD RDX,[RBX]
+        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),                      // ADC SI,-1
+        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),                // segment override
+        (&[0x88, 0x58, 0x4c][..], 0x88),                            // byte register store
+        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),                // address32 store
+        (&[0x8a, 0x3c, 0x24][..], 0x8a),                            // byte load
+        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),                // address32 LEA
+        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),                // prefixed NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),                            // PREFETCHNTA
+        (&[0x8b, 0xc1][..], 0x8b),                                  // dword register MOV
+        (&[0xc7, 0x44, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7),          // nonzero dword
+        (&[0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7),          // different displacement
+        (&[0x89, 0xc0][..], 0x89),                                  // MOV EAX,EAX
+        (&[0x67, 0x48, 0x89, 0xc9][..], 0x89), // address override on qword register MOV
+        (&[0xff, 0xe1][..], 0xff),             // JMP RCX
         (&[0xff, 0x24, 0xc5, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX index
         (&[0xff, 0x24, 0x8d, 0xb8, 0x26, 0x20, 0][..], 0xff), // scale four
         (&[0xff, 0xa4, 0xc8, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX base
@@ -52804,12 +52874,12 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x66, 0xe8, 0, 0, 0][..], 0xe8),
         (&[0x48, 0xe8, 0, 0, 0, 0][..], 0xe8),
         (&[0x66, 0x72, 0x2c][..], 0x72),
-        (&[0x66, 0x83, 0xff, 5][..], 0x83),       // CMP DI,imm8
-        (&[0x66, 0x83, 0xeb, 5][..], 0x83),       // SUB BX,imm8
+        (&[0x67, 0x66, 0x83, 0xff, 5][..], 0x83), // prefixed CMP DI,imm8
+        (&[0x66, 0x83, 0xd3, 5][..], 0x83),       // ADC BX,imm8
         (&[0x66, 0x83, 0x3b, 5][..], 0x83),       // CMP [RBX],imm8
-        (&[0x66, 0x41, 0x83, 0xfb, 5][..], 0x83), // CMP R11W,imm8
+        (&[0x66, 0x41, 0x83, 0xdb, 5][..], 0x83), // SBB R11W,imm8
         (&[0x66, 0x67, 0x83, 0xfb, 5][..], 0x83), // address override
-        (&[0x66, 0x81, 0xfb, 5, 0][..], 0x81),    // CMP BX,imm16
+        (&[0x66, 0x81, 0xd3, 5, 0][..], 0x81),    // ADC BX,imm16
         (&[0x46, 0x33, 0x24, 0x85, 0xe0, 0x27, 0x20, 0][..], 0x33), // R8 index
         (&[0x46, 0x33, 0x0c, 0x75, 0xe0, 0x27, 0x20, 0][..], 0x33), // scale two
     ] {
