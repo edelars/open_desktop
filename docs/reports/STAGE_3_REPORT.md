@@ -1346,6 +1346,15 @@ its output intact. The second consumed the sole result and the
 client read one completion byte followed by EOF.
 [Concurrent wait and follow-up RUN](STAGE_3_S3-38f_session_proxy_2026-11-03.md#concurrent-wait-on-one-active-run)
 
+### Local mixed-register arena corpus
+
+S3-34ds validated 1,200 distinct mixed S3-55 inputs from three fixed
+seeds. The exact signed ARM64 test ran two interpreter passes and
+two arena passes per flags mode for each input. It covered full
+state, DF, budget, STOP and distinct native and helper retirements.
+The cache repeats recorded 6,556 warm hits.
+[Corpus result and reproduction](STAGE_3_S3-34ds_2026-11-19.md)
+
 ### M1 Pro checks after S3-40ah
 
 Both selectors used clean `de1f446` on the Apple M1 Pro with macOS

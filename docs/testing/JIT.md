@@ -3007,6 +3007,13 @@ full-state interpreter comparison, eager and demand flags, FIFO and LRU, cold
 and warm cache. The latter exercises the native terminal at both CLD and STD. The test is part of
 `cargo test -p od-host --lib --offline`.
 
+The separate signed integration test
+`generated_mixed_register_v1_corpus_runs_twice_on_published_arena`
+covers 1,200 unique inputs across three fixed seeds. It checks full
+state, DF, both branch outcomes, helper and native retirements, STOP,
+budget, and retained hits with eager and demand flags.
+[S3-34ds result and reproduction](../reports/STAGE_3_S3-34ds_2026-11-19.md)
+
 `python3 tests/cpu/stage3_harness.py --suite local` requires these six
 S3-55 tests under separate exact Cargo identities. The harness records
 each invocation and passing log. Its self-check rejects missing
