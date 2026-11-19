@@ -2491,8 +2491,9 @@ impl LoadedFirmwareBoard {
             );
         }
         if firmware_boot_profile {
-            return run_paged_firmware_probe(
-                &mut self.vcpus[BOOT_VCPU_INDEX].state,
+            let state = &mut self.vcpus[BOOT_VCPU_INDEX].state;
+            let report = run_paged_firmware_probe(
+                state,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -2502,6 +2503,10 @@ impl LoadedFirmwareBoard {
                 stop,
                 committed_write,
             );
+            if let Some(cr3) = state.cr3 {
+                self.page_table_root = cr3;
+            }
+            return report;
         }
         if let Some(tick) = self.rdtsc_tick.clone() {
             let clock = self.clock.clone();
@@ -4410,6 +4415,102 @@ mod tests {
             board.state().gpr[Register::Rsp as usize],
             FIRMWARE_BOOT_STACK_TOP - 8
         );
+    }
+
+    fn firmware_cr3_test_image(root: u64, next: u8) -> Vec<u8> {
+        let mut code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x0f, 0x22, 0xd8, next];
+        code[2..10].copy_from_slice(&root.to_le_bytes());
+        test_image(&code, &[])
+    }
+
+    #[test]
+    fn firmware_mov_cr3_changes_the_next_fetch_in_whole_and_split_quanta() {
+        const ROOT: u64 = 0x15_0000;
+        const CODE_PAGE: u64 = ROOT + 0x4000;
+        let image = firmware_cr3_test_image(ROOT, 0xcc);
+        for split in [false, true] {
+            let mut board = load(&image);
+            for (address, value) in [
+                (ROOT, (ROOT + 0x1000) | 3),
+                (ROOT + 0x1000, (ROOT + 0x2000) | 3),
+                (ROOT + 0x2000 + 8, (ROOT + 0x3000) | 3),
+                (ROOT + 0x3000, CODE_PAGE | 3),
+            ] {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address),
+                        crate::AccessWidth::Qword,
+                        value,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x4d),
+                    crate::AccessWidth::Byte,
+                    0xf4,
+                    |_| {},
+                )
+                .unwrap();
+
+            if split {
+                let first = board.run_boot(2).unwrap();
+                assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(first.retired, 2);
+                assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4d);
+                assert_eq!(board.cr3(), ROOT);
+                assert_eq!(board.state().cr3, Some(ROOT));
+            }
+            let halted = board.run_boot(if split { 1 } else { 3 }).unwrap();
+            assert_eq!(halted.exit, PagedProbeExit::Halted);
+            assert_eq!(halted.retired, if split { 1 } else { 3 });
+            assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4e);
+            assert_eq!(board.cr3(), ROOT);
+            assert_eq!(board.state().cr3, Some(ROOT));
+        }
+    }
+
+    #[test]
+    fn firmware_mov_cr3_commits_only_a_valid_write_and_keeps_it_on_a_later_fault() {
+        let mut board = load(&firmware_cr3_test_image(1 << 36, 0xf4));
+        let boot_root = board.cr3();
+        let invalid = board.run_boot(3).unwrap();
+        assert_eq!(invalid.retired, 1);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4a);
+        assert_eq!(
+            invalid.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(board.state().cr3, None);
+        assert_eq!(board.cr3(), boot_root);
+
+        let mut board = load(&firmware_cr3_test_image(boot_root, 0xf4));
+        assert_eq!(board.run_boot(3).unwrap().exit, PagedProbeExit::Halted);
+        assert_eq!(board.state().cr3, Some(boot_root));
+
+        const EMPTY_ROOT: u64 = 0x16_0000;
+        let mut board = load(&firmware_cr3_test_image(EMPTY_ROOT, 0xf4));
+        let faulted = board.run_boot(3).unwrap();
+        assert_eq!(faulted.retired, 2);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4d);
+        let expected = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(FIRMWARE_LINK_BASE + 0x4d),
+        };
+        assert_eq!(faulted.exit, PagedProbeExit::Fault(expected.clone()));
+        let page_fault = faulted.page_fault.expect("tracked fetch fault");
+        assert_eq!(page_fault.fault(), &expected);
+        assert_eq!(page_fault.access(), od_isa::AccessKind::Fetch);
+        assert_eq!(board.state().cr3, Some(EMPTY_ROOT));
+        assert_eq!(board.cr3(), EMPTY_ROOT);
     }
 
     #[test]

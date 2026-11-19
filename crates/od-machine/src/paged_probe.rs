@@ -9,8 +9,8 @@ use od_isa::execute::{
     PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0FirmwareBootV1, PagedCpl0ProbeV1,
     PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
     PagedProbeRejection as CpuProbeRejection, TranslationContextChange, step_paged_cr0_wp_probe,
-    step_paged_cr3_probe, step_paged_firmware_probe, step_paged_probe, step_paged_probe_with_rdtsc,
-    step_paged_stack_probe,
+    step_paged_cr3_probe, step_paged_firmware_probe_with_cr3, step_paged_probe,
+    step_paged_probe_with_rdtsc, step_paged_stack_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -431,6 +431,7 @@ fn run_paged_probe_inner(
     let mut translation_context_changes = Vec::new();
     if !cpu_cr3_profile
         && !cpu_cr0_wp_profile
+        && !firmware_boot_profile
         && let Some(value) = state.cr3
     {
         return report(
@@ -524,8 +525,8 @@ fn run_paged_probe_inner(
             );
         }
     }
-    let mut active_paging = if cpu_cr3_profile || cpu_cr0_wp_profile {
-        let cr3 = state.cr3.expect("CPU CR3 presence was checked above");
+    let owns_cr3 = cpu_cr3_profile || cpu_cr0_wp_profile || firmware_boot_profile;
+    let mut active_paging = if let (true, Some(cr3)) = (owns_cr3, state.cr3) {
         match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
             Ok(paging) => Some(paging),
             Err(error) => {
@@ -872,13 +873,14 @@ impl ProbeStep {
                 self.rflags_defined,
             )
         } else if self.firmware_boot_profile {
-            step_paged_firmware_probe(
+            step_paged_firmware_probe_with_cr3(
                 PagedCpl0FirmwareBootV1,
                 state,
                 &mut memory,
                 pio,
                 context,
                 self.rflags_defined,
+                self.paging.cr3(),
             )
         } else if let Some(source) = rdtsc {
             step_paged_probe_with_rdtsc(

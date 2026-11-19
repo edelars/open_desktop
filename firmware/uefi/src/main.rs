@@ -26,6 +26,7 @@ const TX_POLL_LIMIT: u32 = 65536;
 const HANDOFF_MINOR_MAX: u16 = 4;
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
+const PAGING_ACTIVE_LINE: &[u8] = b"OD-FW S7-04 page tables active\r\n";
 
 /// # Safety
 /// Port I/O: the caller must be at CPL0 (or have I/O permission) and `port` must be a real device
@@ -102,15 +103,35 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
 
     com1_init();
     com1_write(HANDOFF_VALIDATED_LINE);
-    if let Err(error) = prepare_paging(handoff) {
-        stop(STOP_PAGING, error.stop_detail());
-    }
+    let (root, stack_top) = match prepare_paging(handoff) {
+        Ok(layout) => layout,
+        Err(error) => stop(STOP_PAGING, error.stop_detail()),
+    };
     com1_write(PAGING_PREPARED_LINE);
+    // SAFETY: the prepared root maps the current code and a writable
+    // guard-backed stack. CALL establishes the System V stack alignment
+    // after replacing RSP. The continuation halts and never returns here.
+    unsafe {
+        asm!(
+            "mov cr3, rax",
+            "mov rsp, {stack}",
+            "call {entry}",
+            "ud2",
+            in("rax") root,
+            stack = in(reg) stack_top,
+            entry = sym paging_active,
+            options(noreturn),
+        )
+    }
+}
+
+extern "C" fn paging_active() -> ! {
+    com1_write(PAGING_ACTIVE_LINE);
     halt_forever()
 }
 
 #[inline(never)]
-fn prepare_paging(handoff: &Handoff<'_>) -> Result<(), PagingError> {
+fn prepare_paging(handoff: &Handoff<'_>) -> Result<(u64, u64), PagingError> {
     let paging = BootPaging::plan(handoff)?;
     // SAFETY: the accepted handoff describes this boot's identity-mapped RAM.
     // The chosen page-aligned run belongs to a single ordinary RAM extent
@@ -124,7 +145,7 @@ fn prepare_paging(handoff: &Handoff<'_>) -> Result<(), PagingError> {
             writable_start: (&raw const __shadow_writable_start) as u64,
         },
     )?;
-    Ok(())
+    Ok((paging.root(), paging.stack_top()))
 }
 
 #[panic_handler]

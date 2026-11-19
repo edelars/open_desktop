@@ -18911,6 +18911,16 @@ fn commit_mov_cr3(
     rflags_defined: &mut u64,
 ) -> Result<TranslationContextChange, ArchitecturalFault> {
     let old_cr3 = state.cr3.expect("MOV CR3 profile admission requires CR3");
+    commit_mov_cr3_with_root(state, old_cr3, src, next_rip, rflags_defined)
+}
+
+fn commit_mov_cr3_with_root(
+    state: &mut LongModeState,
+    old_cr3: u64,
+    src: Register,
+    next_rip: u64,
+    rflags_defined: &mut u64,
+) -> Result<TranslationContextChange, ArchitecturalFault> {
     let new_cr3 = state.gpr[src as usize];
     if new_cr3 & !((1u64 << 36) - 1) != 0 {
         return Err(ArchitecturalFault {
@@ -19074,10 +19084,8 @@ pub fn step_paged_probe<P: crate::PortIo>(
     )
 }
 
-/// Execute one instruction from the firmware boot-only extension of
-/// `PagedCpl0ProbeV1`. This separate entry admits the handoff's bare
-/// `MOV ECX,imm32` and `CALL rel32` forms; all other probe entry points keep
-/// their existing allowlist.
+/// Execute one instruction from the firmware extension of the paged probe.
+/// Machine-owned translation is available with no control-register writes.
 pub fn step_paged_firmware_probe<P: crate::PortIo>(
     _profile: PagedCpl0FirmwareBootV1,
     state: &mut LongModeState,
@@ -19085,6 +19093,46 @@ pub fn step_paged_firmware_probe<P: crate::PortIo>(
     pio: &mut P,
     context: AccessContext,
     initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        None,
+    )
+}
+
+/// Run one firmware instruction with the root used for the instruction's
+/// current fetch and data accesses. The machine consumes the returned
+/// translation-context change before executing the next instruction.
+pub fn step_paged_firmware_probe_with_cr3<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+    )
+}
+
+fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: Option<u64>,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_mode(
         false,
@@ -19096,6 +19144,7 @@ pub fn step_paged_firmware_probe<P: crate::PortIo>(
         false,
         0,
         true,
+        active_cr3,
         state,
         memory,
         pio,
@@ -19104,7 +19153,6 @@ pub fn step_paged_firmware_probe<P: crate::PortIo>(
         None,
     )
 }
-
 /// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
 /// an explicit time source for the exact bare `RDTSC` (`0F 31`, no prefixes).
 /// The source is called exactly once per retired `RDTSC`; it owns the TSC and
@@ -19790,6 +19838,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         allow_mov_cr0,
         efer,
         false,
+        None,
         state,
         memory,
         pio,
@@ -19809,6 +19858,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     allow_mov_cr0: bool,
     efer: u64,
     firmware_boot_profile: bool,
+    firmware_boot_cr3: Option<u64>,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     pio: &mut P,
@@ -19848,7 +19898,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
-    if state.cr3.is_some() != allow_cr3 && !allow_cr0_wp {
+    if let Some(active_cr3) = firmware_boot_cr3 {
+        if active_cr3 >> 36 != 0 || state.cr3.is_some_and(|cpu_cr3| cpu_cr3 != active_cr3) {
+            return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+        }
+    } else if state.cr3.is_some() != allow_cr3 && !allow_cr0_wp {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
     }
     if state.cr0.is_none() || state.cr4.is_none() {
@@ -20526,13 +20580,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             };
         }
         Operation::WriteCr3
-            if allow_cr3
+            if (allow_cr3 || firmware_boot_cr3.is_some())
                 && instruction.length == 3
                 && instruction.opcode.byte == 0x22
                 && instruction.prefixes == Prefixes::default() =>
         {
             let mut rflags_defined = initial_rflags_defined;
-            let effect = match commit_mov_cr3(state, Register::Rax, next_rip, &mut rflags_defined) {
+            let old_cr3 = firmware_boot_cr3
+                .or(state.cr3)
+                .expect("MOV CR3 admission requires an active root");
+            let effect = match commit_mov_cr3_with_root(
+                state,
+                old_cr3,
+                Register::Rax,
+                next_rip,
+                &mut rflags_defined,
+            ) {
                 Ok(effect) => effect,
                 Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
             };
