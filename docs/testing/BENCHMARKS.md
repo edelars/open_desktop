@@ -1673,6 +1673,15 @@ validates two retirements and equivalent state and accesses, and repeats
 the comparison in six matched rounds. Timings cover complete arms.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ab_2026-11-19.md)
 
+### S3-40ac. STEP entry checks on M1 Pro
+
+Compare the original S3-40ab pair with a shared STEP that runs its entry
+checks in one arm and bypasses the selected checks in another. Require
+parity after each instruction, including access contexts, and verify
+the shared decoder call in both compiled current paths. The historical
+selector arms provide an A/A control. The measurement covers full pairs.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ac_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

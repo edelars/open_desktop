@@ -1439,6 +1439,13 @@ pair. Disassembly verified the shared call destination and the untimed
 checks verified ordered memory effects, two retirements and zero FETCH.
 [RUN loop controls and raw evidence](STAGE_3_S3-40ab_2026-11-19.md)
 
+S3-40ac compared the original pair and two variants of one STEP path
+with a common decoder call. Bypassing the selected entry checks changed
+the current pooled medians by less than 1 ns and left a 167.4–168.0 ns
+gap with the historical revision. The exact input prefixes and data
+accesses matched. The remaining postdecode MOV path is tracked in
+ISSUE-521. [STEP entry checks and raw evidence](STAGE_3_S3-40ac_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
