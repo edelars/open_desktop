@@ -9,12 +9,11 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0FirmwareBootV1, PagedCpl0ProbeV1,
-    PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
+    GuestFpState, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0FirmwareBootV1,
+    PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
     PagedProbeRejection as CpuProbeRejection, TranslationContextChange, step_paged_cr0_wp_probe,
-    step_paged_cr3_probe, step_paged_firmware_probe_with_cr3,
-    step_paged_firmware_probe_with_cr3_and_rdtsc, step_paged_probe, step_paged_probe_with_rdtsc,
-    step_paged_stack_probe,
+    step_paged_cr3_probe, step_paged_firmware_probe_with_guest_fp, step_paged_probe,
+    step_paged_probe_with_rdtsc, step_paged_stack_probe,
 };
 use od_isa::interrupt::{
     Cpl0GeneralProtectionDelivery, Cpl0Int3Delivery, Cpl0PageFaultDelivery,
@@ -176,7 +175,7 @@ pub fn run_paged_probe_with_rdtsc(
         rflags_defined,
         stop,
         committed_write,
-        Some(ProbeTimeSource::External(source)),
+        Some(ProbeInputs::External(source)),
     )
 }
 
@@ -184,6 +183,7 @@ pub fn run_paged_probe_with_rdtsc(
 /// Firmware may switch its active CR3 and enter its installed exception handlers.
 pub(crate) fn run_paged_firmware_probe(
     state: &mut LongModeState,
+    fp: &mut GuestFpState,
     bus: &mut MachineBus,
     cr3: u64,
     efer: u64,
@@ -209,7 +209,7 @@ pub(crate) fn run_paged_firmware_probe(
         rflags_defined,
         stop,
         committed_write,
-        clock.map(ProbeTimeSource::Firmware),
+        Some(ProbeInputs::Firmware { clock, fp }),
     )
 }
 
@@ -349,7 +349,7 @@ pub(crate) fn run_paged_probe_2m_ram(
         rflags_defined,
         stop,
         committed_write,
-        rdtsc.map(ProbeTimeSource::External),
+        rdtsc.map(ProbeInputs::External),
     )
 }
 
@@ -430,9 +430,12 @@ pub fn run_paged_probe_shared(
     )
 }
 
-enum ProbeTimeSource<'a> {
+enum ProbeInputs<'a> {
     External(&'a mut dyn FnMut() -> u64),
-    Firmware(VirtualClock),
+    Firmware {
+        clock: Option<VirtualClock>,
+        fp: &'a mut GuestFpState,
+    },
 }
 
 fn run_paged_probe_inner(
@@ -450,7 +453,7 @@ fn run_paged_probe_inner(
     rflags_defined: u64,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
-    mut rdtsc: Option<ProbeTimeSource<'_>>,
+    mut inputs: Option<ProbeInputs<'_>>,
 ) -> PagedProbeQuantumReport {
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
@@ -631,7 +634,7 @@ fn run_paged_probe_inner(
                     memory,
                     &mut pio,
                     &mut committed_write,
-                    rdtsc.as_mut(),
+                    inputs.as_mut(),
                 )
             }
             ProbeBus::Shared(bus, vcpu) => {
@@ -642,7 +645,7 @@ fn run_paged_probe_inner(
                     memory,
                     &mut pio,
                     &mut committed_write,
-                    rdtsc.as_mut(),
+                    inputs.as_mut(),
                 )
             }
         };
@@ -908,7 +911,7 @@ impl ProbeStep {
         memory: &crate::PhysicalMemory,
         pio: &mut P,
         committed_write: &mut dyn FnMut(GuestPhysicalRange),
-        rdtsc: Option<&mut ProbeTimeSource<'_>>,
+        inputs: Option<&mut ProbeInputs<'_>>,
     ) -> (
         od_isa::PagedProbeResult<P::Error>,
         Option<PageFaultRecord>,
@@ -951,8 +954,11 @@ impl ProbeStep {
                 self.rflags_defined,
             )
         } else if self.firmware_boot_profile {
-            if let Some(ProbeTimeSource::Firmware(snapshot)) = rdtsc {
-                let mut sample = || {
+            let Some(ProbeInputs::Firmware { clock, fp }) = inputs else {
+                unreachable!("firmware execution uses its vCPU context");
+            };
+            let mut sample = clock.as_ref().map(|snapshot| {
+                move || {
                     let mut clock = *snapshot;
                     clock
                         .advance_time_ns(self.retired_before)
@@ -960,29 +966,22 @@ impl ProbeStep {
                             MemoryError::Backend(format!("firmware RDTSC clock: {error:?}"))
                         })?;
                     Ok(clock.tsc())
-                };
-                step_paged_firmware_probe_with_cr3_and_rdtsc(
-                    PagedCpl0FirmwareBootV1,
-                    state,
-                    &mut memory,
-                    pio,
-                    context,
-                    self.rflags_defined,
-                    self.paging.cr3(),
-                    &mut sample,
-                )
-            } else {
-                step_paged_firmware_probe_with_cr3(
-                    PagedCpl0FirmwareBootV1,
-                    state,
-                    &mut memory,
-                    pio,
-                    context,
-                    self.rflags_defined,
-                    self.paging.cr3(),
-                )
-            }
-        } else if let Some(ProbeTimeSource::External(source)) = rdtsc {
+                }
+            });
+            step_paged_firmware_probe_with_guest_fp(
+                PagedCpl0FirmwareBootV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+                self.paging.cr3(),
+                fp,
+                sample
+                    .as_mut()
+                    .map(|sample| sample as &mut dyn FnMut() -> Result<u64, MemoryError>),
+            )
+        } else if let Some(ProbeInputs::External(source)) = inputs {
             step_paged_probe_with_rdtsc(
                 PagedCpl0ProbeV1,
                 state,

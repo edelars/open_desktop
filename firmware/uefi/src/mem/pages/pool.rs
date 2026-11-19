@@ -88,6 +88,29 @@ impl PageAllocator<'_, '_> {
         memory: &mut impl PoolMemory,
         address: u64,
     ) -> Result<(), PoolError> {
+        let (index, descriptor, _) = self.pool_allocation(memory, address)?;
+        self.release(
+            index..index + 1,
+            descriptor.physical_start..descriptor.end(),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn pool_payload_size(
+        &self,
+        memory: &mut impl PoolMemory,
+        address: u64,
+    ) -> Result<u64, PoolError> {
+        self.pool_allocation(memory, address)
+            .map(|(_, _, size)| size)
+    }
+
+    fn pool_allocation(
+        &self,
+        memory: &mut impl PoolMemory,
+        address: u64,
+    ) -> Result<(usize, MemoryDescriptor, u64), PoolError> {
         let base = address
             .checked_sub(PAYLOAD_OFFSET)
             .ok_or(PoolError::InvalidPointer)?;
@@ -110,8 +133,7 @@ impl PageAllocator<'_, '_> {
         {
             return Err(PoolError::InvalidHeader);
         }
-        self.release(index..index + 1, base..descriptor.end())?;
-        Ok(())
+        Ok((index, descriptor, header.size))
     }
 }
 

@@ -315,7 +315,7 @@ impl EventRegistry {
         old
     }
 
-    fn restore_tpl(&mut self, old_tpl: Tpl) -> bool {
+    pub(super) fn restore_tpl(&mut self, old_tpl: Tpl) -> bool {
         if !valid_tpl(old_tpl) || old_tpl > self.current_tpl {
             return false;
         }
@@ -523,7 +523,12 @@ pub unsafe extern "efiapi" fn raise_tpl(new_tpl: Tpl) -> Tpl {
     let old_tpl = unsafe {
         state::try_with(|state| {
             state.events.poll_clock();
-            state.events.raise_tpl(new_tpl)
+            let previous = state.events.raise_tpl(new_tpl);
+            #[cfg(target_os = "none")]
+            if new_tpl == TPL_HIGH_LEVEL && previous < TPL_HIGH_LEVEL {
+                core::arch::asm!("cli", options(nostack));
+            }
+            previous
         })
     }
     .unwrap_or(TPL_APPLICATION);
@@ -534,16 +539,22 @@ pub unsafe extern "efiapi" fn raise_tpl(new_tpl: Tpl) -> Tpl {
 /// # Safety
 /// Call on the BSP with the TPL returned by the corresponding RaiseTPL.
 pub unsafe extern "efiapi" fn restore_tpl(old_tpl: Tpl) {
-    let restored = unsafe {
+    let restored_from = unsafe {
         state::try_with(|state| {
-            let restored = state.events.restore_tpl(old_tpl);
-            if restored {
-                state.events.poll_clock();
+            let previous = state.events.current_tpl();
+            if !state.events.restore_tpl(old_tpl) {
+                return None;
             }
-            restored
+            state.events.poll_clock();
+            Some(previous)
         })
-    };
-    if restored == Some(true) {
+    }
+    .flatten();
+    if restored_from.is_some() {
+        #[cfg(target_os = "none")]
+        if restored_from == Some(TPL_HIGH_LEVEL) && old_tpl < TPL_HIGH_LEVEL {
+            unsafe { core::arch::asm!("sti", options(nostack)) };
+        }
         unsafe { dispatch_pending() };
     }
 }

@@ -125,8 +125,18 @@ fn fixture(code: &[u8]) -> (LongModeState, MachineBus) {
 }
 
 fn step(state: &mut LongModeState, bus: &mut MachineBus, budget: u64) -> PagedProbeQuantumReport {
+    step_with_fp(state, &mut GuestFpState::initial(), bus, budget)
+}
+
+fn step_with_fp(
+    state: &mut LongModeState,
+    fp: &mut GuestFpState,
+    bus: &mut MachineBus,
+    budget: u64,
+) -> PagedProbeQuantumReport {
     run_paged_firmware_probe(
         state,
+        fp,
         bus,
         ROOT,
         EFER,
@@ -141,6 +151,47 @@ fn step(state: &mut LongModeState, bus: &mut MachineBus, budget: u64) -> PagedPr
         |_| {},
         None,
     )
+}
+
+#[test]
+fn firmware_fx_image_uses_the_same_fp_context_across_quanta() {
+    let (mut state, mut bus) = fixture(&[
+        0x48, 0x0f, 0xae, 0x4b, 0x40, // FXRSTOR64 0x40(RBX)
+        0x48, 0x0f, 0xae, 0x40, 0x40, // FXSAVE64 0x40(RAX)
+    ]);
+    let mut fp = GuestFpState::initial();
+    let source = 0x400;
+    let destination = 0x600;
+    state.gpr[Register::Rbx as usize] = DATA + source - 0x40;
+    state.gpr[Register::Rax as usize] = DATA + destination - 0x40;
+    write(&mut bus, DATA_PHYSICAL + source, AccessWidth::Word, 0x0b7f);
+    write(
+        &mut bus,
+        DATA_PHYSICAL + source + 24,
+        AccessWidth::Dword,
+        0x3f80,
+    );
+    let canary = 0xa5a5_6b6b_2929_c7c7;
+    write(
+        &mut bus,
+        DATA_PHYSICAL + source + 352,
+        AccessWidth::Qword,
+        canary,
+    );
+
+    let restore = step_with_fp(&mut state, &mut fp, &mut bus, 1);
+    assert_eq!(restore.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(restore.instructions_executed, 1);
+    assert_eq!(fp.x87.control_word, 0x0b7f);
+    assert_eq!(fp.sse.mxcsr, 0x3f80);
+    assert_eq!(fp.sse.xmm[12][..8], canary.to_le_bytes());
+
+    let save = step_with_fp(&mut state, &mut fp, &mut bus, 1);
+    assert_eq!(save.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(save.instructions_executed, 1);
+    assert_eq!(read_frame(&mut bus, DATA + destination, 1), [0x0b7f]);
+    assert_eq!(read_frame(&mut bus, DATA + destination + 352, 1), [canary]);
+    assert!(state.x87.is_none() && state.sse.is_none());
 }
 
 #[test]

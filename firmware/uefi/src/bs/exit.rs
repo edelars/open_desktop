@@ -47,6 +47,14 @@ impl BootExit {
         matches!(self.phase, ExitPhase::Boot | ExitPhase::BeforeExit)
     }
 
+    pub(super) fn can_start_image(&self) -> bool {
+        self.phase == ExitPhase::Boot
+    }
+
+    pub(super) fn replace_image(&mut self, image: Handle) -> Handle {
+        core::mem::replace(&mut self.image, image)
+    }
+
     fn begin(&mut self, image: Handle, tpl: event::Tpl) -> Result<bool, Status> {
         if self.phase != ExitPhase::Boot
             || tpl != event::TPL_APPLICATION
@@ -83,10 +91,10 @@ pub unsafe fn set_boot_image_handle(image: Handle) -> Status {
     }
     unsafe {
         state::with(|state| {
-            if state.exit.phase != ExitPhase::Boot {
+            if !state.exit.can_start_image() {
                 return Status::INVALID_PARAMETER;
             }
-            state.exit.image = image;
+            state.exit.replace_image(image);
             Status::SUCCESS
         })
     }

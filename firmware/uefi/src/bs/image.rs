@@ -15,11 +15,20 @@ use crate::uefi::{
 };
 use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, ptr, slice};
 
+#[cfg(target_os = "none")]
+mod invoke;
+
 const MAX_IMAGES: usize = 64;
 
 struct ImageRecord {
     handle: Handle,
     mapped: MappedImage,
+    #[cfg(target_os = "none")]
+    parent: Handle,
+    #[cfg(target_os = "none")]
+    phase: invoke::Phase,
+    #[cfg(target_os = "none")]
+    stack_base: Option<u64>,
 }
 
 // Published interfaces can be held by an EFI caller across service calls.
@@ -35,12 +44,16 @@ static IMAGE_PROTOCOLS: ImageProtocols =
 
 pub(super) struct ImageRegistry {
     records: [Option<ImageRecord>; MAX_IMAGES],
+    #[cfg(target_os = "none")]
+    current: Option<invoke::ActiveImage>,
 }
 
 impl ImageRegistry {
     pub(super) const fn new() -> Self {
         Self {
             records: [const { None }; MAX_IMAGES],
+            #[cfg(target_os = "none")]
+            current: None,
         }
     }
 
@@ -197,7 +210,16 @@ pub unsafe extern "efiapi" fn load_image(
                 Ok(handle) => handle,
                 Err(status) => return status,
             };
-            state.images.records[index] = Some(ImageRecord { handle, mapped });
+            state.images.records[index] = Some(ImageRecord {
+                handle,
+                mapped,
+                #[cfg(target_os = "none")]
+                parent,
+                #[cfg(target_os = "none")]
+                phase: invoke::Phase::Loaded,
+                #[cfg(target_os = "none")]
+                stack_base: None,
+            });
 
             state.allocator.commit_image(plan);
             for run in layout.runs() {
@@ -239,10 +261,16 @@ fn image_types(subsystem: Subsystem) -> (MemoryType, MemoryType) {
 /// Call on the BSP with a loaded image handle.
 pub unsafe extern "efiapi" fn start_image(
     image: Handle,
-    _exit_data_size: *mut usize,
-    _exit_data: *mut *mut Char16,
+    exit_data_size: *mut usize,
+    exit_data: *mut *mut Char16,
 ) -> Status {
+    #[cfg(target_os = "none")]
     unsafe {
+        invoke::start(image, exit_data_size, exit_data)
+    }
+    #[cfg(not(target_os = "none"))]
+    unsafe {
+        let _ = (exit_data_size, exit_data);
         state::with(|state| {
             if state.images.find(image).is_some() {
                 Status::UNSUPPORTED
@@ -257,41 +285,71 @@ pub unsafe extern "efiapi" fn start_image(
 /// Call on the BSP. A loaded image that has not started may exit by unloading.
 pub unsafe extern "efiapi" fn exit(
     image: Handle,
-    _exit_status: Status,
-    _exit_data_size: usize,
-    _exit_data: *const Char16,
+    exit_status: Status,
+    exit_data_size: usize,
+    exit_data: *const Char16,
 ) -> Status {
-    unsafe { unload_image(image) }
+    #[cfg(target_os = "none")]
+    unsafe {
+        invoke::exit(image, exit_status, exit_data_size, exit_data)
+    }
+    #[cfg(not(target_os = "none"))]
+    unsafe {
+        let _ = (exit_status, exit_data_size, exit_data);
+        unload_image(image)
+    }
 }
 
 /// # Safety
 /// Call on the BSP with a loaded image handle.
 pub unsafe extern "efiapi" fn unload_image(image: Handle) -> Status {
     unsafe {
-        state::with_map_mutation(|state| {
+        state::with_map_mutation(|mut state| {
             let Some(index) = state.images.find(image) else {
                 return Status::INVALID_PARAMETER;
             };
-            let Some(tables) = state.active_tables else {
-                return Status::NOT_READY;
-            };
-            let mapped = state.images.records[index].as_ref().unwrap().mapped;
-            let pages = u64::from(mapped.size).div_ceil(PAGE_BYTES);
-            let span = mapped.base..mapped.base + pages * PAGE_BYTES;
-            if !state.protocols.can_remove_image(image) {
-                return Status::ACCESS_DENIED;
+            #[cfg(target_os = "none")]
+            match state.images.records[index].as_ref().unwrap().phase {
+                invoke::Phase::Running => return Status::ACCESS_DENIED,
+                invoke::Phase::Resident => return Status::UNSUPPORTED,
+                invoke::Phase::Loaded | invoke::Phase::Finished => {}
             }
-            if !tables.verify(span.clone(), false) {
-                return Status::DEVICE_ERROR;
-            }
-            if state.allocator.release_image(mapped.base, pages).is_err() {
-                return Status::OUT_OF_RESOURCES;
-            }
-            tables.set(span, true, false);
-            tables.flush();
-            state.protocols.remove_image(image);
-            state.images.records[index] = None;
-            Status::SUCCESS
+            release_record(&mut state, index)
         })
     }
+}
+
+unsafe fn release_record(state: &mut state::ServiceState<'_>, index: usize) -> Status {
+    let Some(tables) = state.active_tables else {
+        return Status::NOT_READY;
+    };
+    let record = state.images.records[index].as_ref().unwrap();
+    let image = record.handle;
+    let mapped = record.mapped;
+    #[cfg(target_os = "none")]
+    if invoke::has_unfinished_child(state.images, image) {
+        return Status::ACCESS_DENIED;
+    }
+    let pages = u64::from(mapped.size).div_ceil(PAGE_BYTES);
+    let span = mapped.base..mapped.base + pages * PAGE_BYTES;
+    if !state.protocols.can_remove_image(image) {
+        return Status::ACCESS_DENIED;
+    }
+    unsafe {
+        #[cfg(target_os = "none")]
+        if let Err(status) = invoke::release_stack(state, index) {
+            return status;
+        }
+        if !tables.verify(span.clone(), false) {
+            return Status::DEVICE_ERROR;
+        }
+        if state.allocator.release_image(mapped.base, pages).is_err() {
+            return Status::OUT_OF_RESOURCES;
+        }
+        tables.set(span, true, false);
+        tables.flush();
+    }
+    state.protocols.remove_image(image);
+    state.images.records[index] = None;
+    Status::SUCCESS
 }

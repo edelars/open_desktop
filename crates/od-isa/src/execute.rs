@@ -19106,6 +19106,7 @@ pub fn step_paged_firmware_probe<P: crate::PortIo>(
         initial_rflags_defined,
         None,
         None,
+        None,
     )
 }
 
@@ -19129,6 +19130,7 @@ pub fn step_paged_firmware_probe_with_cr3<P: crate::PortIo>(
         initial_rflags_defined,
         Some(active_cr3),
         None,
+        None,
     )
 }
 
@@ -19151,7 +19153,32 @@ pub fn step_paged_firmware_probe_with_cr3_and_rdtsc<P: crate::PortIo>(
         context,
         initial_rflags_defined,
         Some(active_cr3),
+        None,
         Some(source),
+    )
+}
+
+/// Execute one firmware instruction using the vCPU's persistent FP context.
+pub fn step_paged_firmware_probe_with_guest_fp<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+    fp: &mut GuestFpState,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+        Some(fp),
+        rdtsc,
     )
 }
 
@@ -19162,6 +19189,7 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
     context: AccessContext,
     initial_rflags_defined: u64,
     active_cr3: Option<u64>,
+    fp: Option<&mut GuestFpState>,
     rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
 ) -> PagedProbeResult<P::Error> {
     let old_shadow = state.sti_shadow;
@@ -19176,6 +19204,7 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
         0,
         true,
         active_cr3,
+        fp,
         state,
         memory,
         pio,
@@ -19876,6 +19905,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         efer,
         false,
         None,
+        None,
         state,
         memory,
         pio,
@@ -19898,6 +19928,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     efer: u64,
     firmware_boot_profile: bool,
     firmware_boot_cr3: Option<u64>,
+    firmware_fp: Option<&mut GuestFpState>,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     pio: &mut P,
@@ -19987,9 +20018,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     if state.sti_shadow.is_none() {
         return reject(PagedProbeRejection::StiShadowMissing);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear)
-        && !(firmware_boot_profile && state.rflags & (1 << 9) == 0)
-    {
+    if !firmware_boot_profile && state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
     if user_mov && state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
@@ -20189,6 +20218,70 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 instructions_executed: 1,
                 rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
             };
+        }
+        Operation::Fxsave64RaxDisp8(area) | Operation::Fxrstor64RbxDisp8(area)
+            if firmware_boot_profile
+                && instruction.length == 5
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xae
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                && area.index.is_none()
+                && area.displacement == 0x40
+                && area.size == OperandSize::Qword
+                && matches!(
+                    (instruction.operation, area.base),
+                    (
+                        Operation::Fxsave64RaxDisp8(_),
+                        AddressBase::Register(Register::Rax)
+                    ) | (
+                        Operation::Fxrstor64RbxDisp8(_),
+                        AddressBase::Register(Register::Rbx)
+                    )
+                ) =>
+        {
+            if state.cr4.unwrap_or_default() & (1 << 9) == 0 {
+                return unsupported();
+            }
+            if state.cr0.unwrap_or_default() & 0xc != 0 {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 7,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            }
+            let address = area.effective_address(state, next_rip);
+            let Some(GuestFpState { x87, sse }) = firmware_fp else {
+                return unsupported();
+            };
+            let operation = if matches!(instruction.operation, Operation::Fxsave64RaxDisp8(_)) {
+                fxsave(
+                    x87,
+                    sse,
+                    memory,
+                    context,
+                    address,
+                    FxsaveLayout::Long64,
+                    true,
+                )
+            } else {
+                read_fxrstor64_narrow(memory, context, address)
+                    .and_then(|image| restore_fxrstor64_image(x87, sse, &image))
+            };
+            if let Err(error) = operation {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
         }
         Operation::Int3
             if firmware_boot_profile
@@ -20456,10 +20549,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Xor,
                     src: Operand::Immediate(_),
                     ..
-                } => {
-                    instruction.opcode.byte == 0x83
-                        && instruction.operand_size == OperandSize::Qword
-                }
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x80, OperandSize::Byte) | (0x83, OperandSize::Qword)
+                ),
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     ..
@@ -20685,7 +20778,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && matches!(
                 (instruction.opcode.byte, instruction.operand_size, source),
                 (0xf6, OperandSize::Byte, Operand::Immediate(_))
-                    | (0x85, OperandSize::Dword, Operand::Register(_))
+                    | (
+                        0x85,
+                        OperandSize::Dword | OperandSize::Qword,
+                        Operand::Register(_)
+                    )
             )
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
@@ -21155,6 +21252,55 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 exit: PagedProbeExit::TranslationContextChange(effect),
                 instructions_executed: 1,
                 rflags_defined,
+            };
+        }
+        Operation::Leave
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0xc9
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            if let Err(error) = leave_stack_frame(state, memory, context) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PushFlags
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x9c
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            if let Err(error) = push_stack_flags(state, memory, context, OperandSize::Qword) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PopFlags
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x9d
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            match popfq_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | (POPFQ_CPL0_FLAGS & crate::INTEGER_FLAGS),
             };
         }
         Operation::StackRegister {
@@ -21800,6 +21946,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.prefixes == Prefixes::default() =>
         {
             state.rflags &= !(1 << 9);
+            state.rip = next_rip;
+        }
+        Operation::Sti
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0xfb
+                && instruction.prefixes == Prefixes::default()
+                && state.sti_shadow.is_some() =>
+        {
+            if state.rflags & (1 << 9) == 0 {
+                state.sti_shadow = Some(crate::StiShadow::Blocking);
+            }
+            state.rflags |= 1 << 9;
             state.rip = next_rip;
         }
         // S7-04: firmware memmove uses STD for overlapping backward copies.
@@ -60506,19 +60665,7 @@ fn step_configured(
             }
         }
         Operation::PushFlags => {
-            // Intel SDM 093 PUSHFW stores the low FLAGS word unchanged, while
-            // PUSHFQ clears VM/RF in the qword image. Neither form modifies
-            // RFLAGS; the selected stack width also controls RSP adjustment.
-            let value = match instruction.operand_size {
-                OperandSize::Word => state.rflags & 0xffff,
-                OperandSize::Qword => state.rflags & 0x00fc_ffff,
-                OperandSize::Byte | OperandSize::Dword => {
-                    unreachable!("long-mode PUSHF supports only word and qword widths")
-                }
-            };
-            if let Err(error) =
-                push_stack_value(state, memory, context, value, instruction.operand_size)
-            {
+            if let Err(error) = push_stack_flags(state, memory, context, instruction.operand_size) {
                 return report_memory_error(error);
             }
         }
@@ -61153,28 +61300,11 @@ fn step_configured(
                 && !instruction.prefixes.operand_override
                 && matches!(instruction.prefixes.rex, None | Some(0x48)) =>
         {
-            // S2-50: POPFQ at CPL0 (Intel SDM Vol. 2, POPF/POPFD/POPFQ). IF is
-            // writable because CPL <= IOPL, and IOPL because CPL = 0. RF and VM are
-            // not changed; the layout of the loaded bits is `POPFQ_CPL0_FLAGS`.
-            if state.rflags & POPFQ_CPL0_TF != 0
-                || state.sti_shadow != Some(crate::StiShadow::Clear)
-            {
-                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
-            }
-            let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
-                Ok(address) => address,
+            match popfq_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return Ok(StepOutcome::Unsupported { opcode: 0x9d }),
                 Err(error) => return report_memory_error(error),
-            };
-            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
-                Ok(value) => value,
-                Err(error) => return report_memory_error(error),
-            };
-            if value & POPFQ_CPL0_TF != 0 {
-                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
             }
-            state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
-            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
         }
         Operation::PopFlags => {
             // This diagnostic slice follows the native user-mode fixture
@@ -61667,21 +61797,9 @@ fn step_configured(
             }
         }
         Operation::Leave => {
-            // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
-            // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
-            // address, #PF otherwise) and only then are RSP and RBP committed; a fault
-            // leaves the state unchanged. RFLAGS and every other register are untouched.
-            let old_rbp = state.gpr[Register::Rbp as usize];
-            let stack_address = match stack_access_address(old_rbp, false, OperandSize::Qword) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
-                Ok(value) => value,
-                Err(error) => return report_memory_error(error),
-            };
-            state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
-            state.gpr[Register::Rbp as usize] = value;
+            if let Err(error) = leave_stack_frame(state, memory, context) {
+                return report_memory_error(error);
+            }
         }
         Operation::FarReturn => {
             return match far_return_cpl0(state, memory, context) {
@@ -65256,6 +65374,54 @@ fn push_stack_value(
     Ok(())
 }
 
+fn push_stack_flags(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    size: OperandSize,
+) -> Result<(), MemoryError> {
+    // PUSHFQ clears VM and RF in the stored image. PUSHFW uses the low word.
+    let value = match size {
+        OperandSize::Word => state.rflags & 0xffff,
+        OperandSize::Qword => state.rflags & 0x00fc_ffff,
+        OperandSize::Byte | OperandSize::Dword => unreachable!("invalid PUSHF width"),
+    };
+    push_stack_value(state, memory, context, value, size)
+}
+
+fn popfq_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<bool, MemoryError> {
+    if state.rflags & POPFQ_CPL0_TF != 0 || state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return Ok(false);
+    }
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    let stack_address = stack_access_address(old_rsp, false, OperandSize::Qword)?;
+    let value = memory.read_integer(stack_address, context, OperandSize::Qword)?;
+    if value & POPFQ_CPL0_TF != 0 {
+        return Ok(false);
+    }
+    state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
+    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+    Ok(true)
+}
+
+fn leave_stack_frame(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<(), MemoryError> {
+    // Read the old [RBP] first. A stack or page fault commits neither register.
+    let old_rbp = state.gpr[Register::Rbp as usize];
+    let address = stack_access_address(old_rbp, false, OperandSize::Qword)?;
+    let value = memory.read_integer(address, context, OperandSize::Qword)?;
+    state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
+    state.gpr[Register::Rbp as usize] = value;
+    Ok(())
+}
+
 /// S2-21d/S2-21f (and `LockXaddMem` outside the CPL0 set, S4-38L7ay): the qword memory XADD
 /// through one `GuestMemory::atomic_rmw_integer` call (S6-20). The register input is saved before
 /// anything is resolved or mutated (it may also provide the memory base or index); the source
@@ -65734,6 +65900,18 @@ fn fxrstor64_cpl0(
     context: AccessContext,
     address: u64,
 ) -> Result<(), MemoryError> {
+    let image = read_fxrstor64_narrow(memory, context, address)?;
+    // The cell is borrowed only after every memory callback has returned.
+    let mut fp = cell.borrow_mut();
+    let GuestFpState { x87, sse } = &mut *fp;
+    restore_fxrstor64_image(x87, sse, &image)
+}
+
+fn read_fxrstor64_narrow(
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+) -> Result<[u8; 512], MemoryError> {
     const IMAGE_BYTES: u64 = 512;
     let last = address.checked_add(IMAGE_BYTES - 1);
     if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
@@ -65743,20 +65921,25 @@ fn fxrstor64_cpl0(
     for (index, chunk) in image.chunks_exact_mut(8).enumerate() {
         memory.read(address + (index as u64) * 8, context, chunk)?;
     }
+    Ok(image)
+}
+
+fn restore_fxrstor64_image(
+    x87: &mut crate::state::X87State,
+    sse: &mut crate::state::SseState,
+    image: &[u8; 512],
+) -> Result<(), MemoryError> {
     let loaded_mxcsr = u32::from_le_bytes(image[24..28].try_into().expect("fixed MXCSR field"));
     if loaded_mxcsr & !crate::TARGET_FXSAVE_MXCSR_MASK != 0 {
         return Err(general_protection().into());
     }
-    // The cell is borrowed only after every memory callback has returned.
-    let mut fp = cell.borrow_mut();
-    let mut restored = fp.clone();
     let mut stack = [[0u8; 10]; 8];
     for (logical, slot) in stack.iter_mut().enumerate() {
         slot.copy_from_slice(&image[32 + logical * 16..32 + logical * 16 + 10]);
     }
     apply_fxrstor64_fields(
-        &mut restored.x87,
-        &mut restored.sse,
+        x87,
+        sse,
         image[0..5].try_into().expect("fixed environment field"),
         image[6..16].try_into().expect("fixed environment field"),
         image[16..24].try_into().expect("fixed environment field"),
@@ -65764,7 +65947,6 @@ fn fxrstor64_cpl0(
         &stack,
         image[160..416].try_into().expect("fixed XMM field"),
     );
-    *fp = restored;
     Ok(())
 }
 

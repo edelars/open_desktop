@@ -2492,9 +2492,10 @@ impl LoadedFirmwareBoard {
         }
         if firmware_boot_profile {
             let clock = self.clock();
-            let state = &mut self.vcpus[BOOT_VCPU_INDEX].state;
+            let vcpu = &mut self.vcpus[BOOT_VCPU_INDEX];
             let report = run_paged_firmware_probe(
-                state,
+                &mut vcpu.state,
+                &mut vcpu.guest_fp,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -2505,7 +2506,7 @@ impl LoadedFirmwareBoard {
                 committed_write,
                 Some(clock),
             );
-            if let Some(cr3) = state.cr3 {
+            if let Some(cr3) = vcpu.state.cr3 {
                 self.page_table_root = cr3;
             }
             return report;

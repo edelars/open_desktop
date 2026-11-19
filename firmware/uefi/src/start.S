@@ -180,3 +180,66 @@ od_fw_exception_stubs:
     andq    $-16, %rsp
     callq   od_fw_exception_stop
     ud2
+/* SysV inputs: context, stack top, EFI entry, ImageHandle, SystemTable. */
+    .section .text,"ax",@progbits
+    .globl od_fw_invoke_image
+    .type od_fw_invoke_image, @function
+od_fw_invoke_image:
+    pushq   %rbx
+    pushq   %rbp
+    pushq   %r12
+    pushq   %r13
+    pushq   %r14
+    pushq   %r15
+    movq    %rdi, %r12
+    movq    %rsp, (%r12)
+    pushfq
+    popq    %rax
+    movq    %rax, 8(%r12)
+    movq    %r12, %rax
+    fxsave64 0x40(%rax)
+
+    movq    %rsi, %rsp
+    subq    $32, %rsp                   /* 16-byte aligned caller home area */
+    leaq    .Lefi_initial_fp(%rip), %rbx
+    fxrstor64 0x40(%rbx)
+    cld
+    sti
+    movq    %rdx, %rax
+    movq    %r8, %rdx                  /* RCX already contains ImageHandle */
+    callq   *%rax
+
+.Lrestore_image_context:
+    movq    %r12, %rbx
+    fxrstor64 0x40(%rbx)
+    movq    (%r12), %rsp
+    movq    8(%r12), %r10
+    pushq   %r10
+    popfq
+    popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %rbp
+    popq    %rbx
+    retq
+    .size od_fw_invoke_image, .-od_fw_invoke_image
+
+/* SysV inputs: an active context and the EFI_STATUS returned to StartImage. */
+    .globl od_fw_exit_image_context
+    .type od_fw_exit_image_context, @function
+od_fw_exit_image_context:
+    movq    %rdi, %r12
+    movq    %rsi, %rax
+    jmp     .Lrestore_image_context
+    .size od_fw_exit_image_context, .-od_fw_exit_image_context
+
+    .section .rodata,"a",@progbits
+    .p2align 4
+.Lefi_initial_fp:
+    .zero   0x40
+    .short  0x037f                     /* FCW */
+    .zero   22
+    .long   0x1f80                     /* MXCSR */
+    .long   0
+    .zero   480

@@ -14,7 +14,7 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 11 | S7-05 (таблицы UEFI и ядро Boot Services); S7-04 (ядро и гостевые проверки, `302ffe5`); S7-01 (сборочная схема `426c98a` принята независимым архитектурным ревью 2026-11-18); S7-00 (коммит `c1ae3dd`; полное независимое ревью scope 2026-11-18 одобрило без замечаний); S7-02 (коммит `9d89aac`; архитектурное ревью 2026-11-18 одобрило полный scope); S7-03 (принята после независимого ревью 2026-11-18); S7-12 (AML/DSDT текущей платы, 176 тестов и ACPICA); S7-16 (минимальный NVMe, Linux Read и MSI-X подтверждены); S7-20 (ADR-0009 принят после полного архитектурного повторного ревью 2026-11-18 без замечаний); S7-21 (phase-A command processor scope принят после независимого ревью 2026-11-18, 264 теста; TPM/PTP compliance не заявляется); S7-30 (статический media/GUID audit принят независимым review 2026-11-18; runtime trace назначен S7-32) |
-| `in_progress` | 3 | S7-06 (PE32+, Authenticode, FV и загрузка из буфера); S7-14 (RTC/CMOS срез принят независимым ревью, коммит `330ea41`; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты); S7-23 (срезы A–C3 в ветке, принято ограниченное ревью среза A, для завершения требуется решение по EK) |
+| `in_progress` | 3 | S7-06 (PE32+, Authenticode, FV, `LoadImage` из буфера и запуск приложений); S7-14 (RTC/CMOS срез принят независимым ревью, коммит `330ea41`; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты); S7-23 (срезы A–C3 в ветке, принято ограниченное ревью среза A, для завершения требуется решение по EK) |
 | `not_started` | 24 | остальные задачи, см. таблицу ниже |
 
 В плане отмечены принятые S7-00, S7-01, S7-02, S7-03, S7-04, S7-05, S7-12, S7-16, S7-20, S7-21 и S7-30.
@@ -29,7 +29,7 @@
 | S7-03 | accepted | — | Независимое ревью одобрило, 2026-11-18 | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner; blocker снят реализацией допуска `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. разделы 5 и S7-03. |
 | S7-04 | accepted | `d33af47`, `55a63ad`, `8d1b394`, `1355b74`, `4cb966c`, `1715a6b`, `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93`, `ebb9ef0`, `571dcc5`, `63d55e1`, `9aff40f`, `743f381`, `9d336c1`, `346948b`, `976c7e2`, `315d5d8`, `331c81b`, `d2aedac`, `83a3b1e`, `8e1b25d`, `fd422dd`, `a9c5566`, `01b4a72`, `a33dd5e`, `832276d`, `1529954`, `46e1792`, `1016c25`, `e16e880`, `d584420`, `652c3a8`, `7bf7a91`, `5afb70b` | Принято 2026-11-19 после независимого архитектурного и кодового ревью Sol High. previous slices reviewed and committed; ISSUE-178 and ISSUE-179 committed; ISSUE-180 and ISSUE-181 committed; ISSUE-182 committed; ISSUE-183 and ISSUE-184 committed; ISSUE-185 through ISSUE-203 committed; ISSUE-204 committed; ISSUE-205 and ISSUE-206 committed; ISSUE-207 committed `4cf38f4`; ISSUE-208 committed `7c9258c`; ISSUE-209 committed `389f5a7`; ISSUE-210 committed `e16e880`; ISSUE-211 committed `d584420`; ISSUE-212 committed `652c3a8`; ISSUE-213 committed `7bf7a91`; ISSUE-214 committed `5afb70b`; ISSUE-215 committed `466fb9c`; ISSUE-216 reviewed/committed `edc52c9`; ISSUE-217 reviewed/committed `deead7c`; ISSUE-218 reviewed/committed `1020422`; ISSUE-219 committed `4a2ea9a`; ISSUE-220 independently reviewed and committed `1070a35`; ISSUE-221 independently reviewed and committed `3b62438` | На 128 и 256 МиБ подтверждены вход, свои таблицы, memory map, аллокаторы, исключения и COM1. Вывод совпадает с эталоном. [Приёмка](#s7-04--остальные-синхронные-исключения-и-приёмка). История допуска инструкций: handoff parser connected; base profile admits exact `8B 4E 0C`/`8B 4E 10` tracked dword reads, exact `81 F9 A0 00 00 00` (`CMP ECX,0xa0`), `89 CD` (`MOV EBP,ECX`), `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), `81 FF 61 FF 00 00` (`CMP EDI,0xff61`), `40 0F 92 C7` (`SETB DIL`), `48 39 EA` (`CMP RDX,RBP`), and `41 0F 93 C0` (`SETAE R8B`), plus exact `41 20 F8` (`AND R8B,DIL`) and `40 F6 C5 07` (`TEST BPL,7`), plus `40 0F 94 C7` (`SETZ DIL`) and `41 84 F8` (`TEST R8B,DIL`), plus `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`) and `0F B7 CB` (`MOVZX ECX,BX`) plus exact `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`) and `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`) and `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`) plus exact `45 31 D2` (`XOR R10D,R10D`) and `45 31 DB` (`XOR R11D,R11D`), `66 90` (NOP), `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`), exact `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`), `4D 89 DF` (`MOV R15,R11`), `4D 21 C7` (`AND R15,R8`), `45 89 CC` (`MOV R12D,R9D`), `45 89 E1` (`MOV R9D,R12D`), `41 C1 E9 08` (`SHR R9D,8`), `45 31 FE` (`XOR R14D,R15D`), exact SIB `46 33 0C B5 80 26 20 00` (`XOR R9D,dword ptr [R14*4+0x202680]`), exact `49 83 C3 02` (`ADD R11,2`), exact `4C 39 DD` (`CMP RBP,R11`), plus `41 C1 EC 08` (`SHR R12D,8`), plus `49 83 FF 14` (`CMP R15,0x14`) and `45 0F 44 F2` (`CMOVZ R14D,R10D`) and `45 0F 44 FA` (`CMOVZ R15D,R10D`) and `45 0F B6 C9` (`MOVZX R9D,R9B`) and `45 31 F1` (`XOR R9D,R14D`); exact JNZ `75 AE` and `75 4A`, exact `NOT R9D` (`41 F7 D1`), `CMP EDI,R9D` (`44 39 CF`), `JNZ rel8 +0x4A` (`75 4A`) and `MOV R14D,dword ptr [RSI+0x34]` (`44 8B 76 34`) and exact `CMP EDI,0x20` (`83 FF 20`) and `44 8B 7E 30` (`MOV R15D,dword ptr [RSI+0x30]`, ISSUE-199), exact `4C 01 FF` (`ADD RDI,R15`, ISSUE-207) and exact `48 39 EF` (`CMP RDI,RBP`, ISSUE-208), exact `77 3D` (`JA rel8 +0x3d`, ISSUE-209), exact `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`, ISSUE-210), `44 8B 66 40` (`MOV R12D,dword ptr [RSI+0x40]`, ISSUE-211), `44 8B 46 44` (`MOV R8D,dword ptr [RSI+0x44]`, ISSUE-212), `85 C9` (`TEST ECX,ECX`, ISSUE-213), `74 35` (`JZ rel8 +0x35`, ISSUE-214) and `41 83 FC 07` (`CMP R12D,7`, ISSUE-215) are admitted; runner retired 8902 instructions and stopped at `41 F6 C5 07` (`TEST R13B,7`, ISSUE-220, RIP `0x200f23`); exact `48 89 74 24 10` (`MOV [RSP+0x10],RSI`, ISSUE-219), `48 89 54 24 30` (`MOV [RSP+0x30],RDX`, ISSUE-218), `41 83 F8 30` (`CMP R8D,0x30`, ISSUE-217) and `74 D0` (`JZ rel8 -0x30`, ISSUE-216) are admitted; ISSUE-200, ISSUE-202 through ISSUE-205 are admitted and committed, ISSUE-206 is admitted and committed; ISSUE-207 is admitted and committed; ISSUE-208 is admitted and committed; ISSUE-209 is admitted and committed; ISSUE-210 is admitted and committed; ISSUE-211 is admitted and committed; ISSUE-212 is admitted and committed; ISSUE-213 is admitted and committed; ISSUE-214 is admitted and committed; ISSUE-215 is admitted and committed `466fb9c`; ISSUE-216 is admitted and committed `edc52c9`; ISSUE-217 is admitted and committed `deead7c`; ISSUE-218 is admitted and committed `1020422`; ISSUE-219 is admitted, independently reviewed and committed `4a2ea9a`; ISSUE-220 (`41 F6 C5 07`, `TEST R13B,7`) is admitted and committed `1070a35`; ISSUE-221 (`74 59`, `JZ rel8 +0x59`) is admitted and committed `3b62438`; ISSUE-222 (`48 89 44 24 08`, `MOV [RSP+8],RAX`) is admitted and committed `31887b9`; ISSUE-223 (`41 81 FD A0 00 00 00`, `CMP R13D,0xA0`) is admitted and committed `fe92cfd`; ISSUE-224 (`72 2A`, `JB/JNAE rel8 +0x2a`) is admitted and committed `597bf68`; ISSUE-225 (`4B 8D 04 64`, `LEA RAX,[R12+R12*2]`) is admitted and committed `313369c`; ISSUE-226 (`48 C1 E0 04`, `SHL RAX,4`) is admitted and committed `f16d39c`; ISSUE-227 (`4C 01 E8`, `ADD RAX,R13`) is admitted and committed `180e6f3`; ISSUE-228 (`48 39 E8`, `CMP RAX,RBP`) is admitted and committed `530446f`; ISSUE-229 (`77 1A`, `JA rel8 +0x1a`) is admitted and independently approved; ISSUE-230 (`4C 39 EF`, `CMP RDI,R13`) is admitted narrowly and independently approved; ISSUE-231 (`76 22`, `JBE rel8 +0x22`) is admitted narrowly and independently approved; ISSUE-232 (`89 1C 24`, `MOV dword ptr [RSP],EBX`) is admitted narrowly and independently approved; ISSUE-239 (`E8 79 05 00 00`, `CALL rel32 +0x579`) is admitted narrowly with tracked qword return-RIP push and A/D/WP fault evidence; ISSUE-240 (`50`, `PUSH RAX`) is admitted narrowly with tracked qword stack write and A/D/WP fault evidence; ISSUE-241 (`4D 85 C0`, `TEST R8,R8`) is admitted narrowly with qword logical flag and AF-undefinedness coverage; ISSUE-242 (`0F 84 49 01 00 00`, `JZ rel32 +0x149`) is admitted narrowly with signed rel32, flag-preservation, taken-only canonicality and fetch-fault evidence; ISSUE-243 (`48 89 F0`, `MOV RAX,RSI`) is admitted and independently reviewed with no findings; ISSUE-244 (`48 8D 71 04`, `LEA RSI,[RCX+4]`) is admitted narrowly and independently reviewed with no findings; ISSUE-245 (`48 39 D6`, `CMP RSI,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-246 (`0F 87 CD 02 00 00`, `JA rel32 +0x2cd`) is admitted narrowly and independently reviewed with no findings; ISSUE-247 (`4C 8D 51 08`, `LEA R10,[RCX+8]`) is admitted narrowly and independently reviewed with no findings; ISSUE-248 (`49 39 D2`, `CMP R10,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-249 (`0F 87 D7 02 00 00`, `JA rel32 +0x2d7`) is implemented narrowly, independently reviewed with no findings; ISSUE-250 (`48 8D 71 10`, `LEA RSI,[RCX+0x10]`) is implemented narrowly independently reviewed with no findings; the runner retires 8,940 and stops at `0F 87 E4 02 00 00` (`JA rel32 +0x2e4`, ISSUE-251, RIP `0x201598`); ISSUE-238 (`4D 89 E1`, `MOV R9,R12`) is admitted and independently reviewed and approved with no findings; ISSUE-237 (`4D 89 F0`, `MOV R8,R14`) is admitted and independently reviewed and approved with no findings; ISSUE-236 (`4C 89 F9`, `MOV RCX,R15`) is admitted and independently reviewed and approved with no findings; ISSUE-235 (`48 8B 54 24 30`, `MOV RDX,qword ptr [RSP+0x30]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-234 (`48 8B 74 24 10`, `MOV RSI,qword ptr [RSP+0x10]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-233 (`48 8D 7C 24 18`, `LEA RDI,[RSP+0x18]`) is admitted and independently reviewed and approved with no findings |
 | S7-05 | accepted | `9341724` … `8bad85d`, [закрывающий срез ABI](#s7-05--завершение-abi-таблиц-uefi) | Срезы и завершение задачи прошли независимое ревью `gpt-6.1-sol` high | Из гостя проверены таблицы, память, протоколы, уведомления, таймеры, события, watchdog и `ExitBootServices`. |
-| S7-06 | in_progress | [парсер PE32+](#s7-06--парсер-pe32), [дайджест Authenticode в госте](#s7-06--гостевой-дайджест-authenticode), [архив и приложения](#s7-06--архив-fv-и-тестовые-приложения), [физический LoadImage](#s7-06--физический-loadimage) | Каждый срез прошёл независимое ревью `gpt-6.1-sol` high | Дальше загрузка по FV Device Path и запуск точек входа через `StartImage`/`Exit`. |
+| S7-06 | in_progress | [парсер PE32+](#s7-06--парсер-pe32), [дайджест Authenticode в госте](#s7-06--гостевой-дайджест-authenticode), [архив и приложения](#s7-06--архив-fv-и-тестовые-приложения), [физический LoadImage](#s7-06--физический-loadimage), [StartImage и Exit](#s7-06--startimage-и-exit) | Каждый срез прошёл независимое ревью `gpt-6.1-sol` high | Дальше загрузка по FV Device Path, Utilities, `Unload` резидентного драйвера и обработка изменённых handles после запуска. |
 | S7-07 | not_started | — | — | Консоль: Simple Text Output/Input на COM1, ConIn/ConOut/StdErr |
 | S7-08 | not_started | — | — | Первый сквозной срез: встроенные приложения → COM1 → эталон |
 | S7-09 | not_started | — | — | Variable services (volatile) и versioned store codec |
@@ -5607,6 +5607,74 @@ macOS 26.7.1 и Rust 1.99.0 оба release-бинарника `od-runner`
 257 тестов firmware, пять CLI-тестов и 30 тестов сборщика.
 Проверены форматирование и workspace, обновлён Graphify. Проверка
 структуры воспроизвела 46 исходных ссылок на отсутствующие `work/`.
+
+### S7-06 — StartImage и Exit
+
+`StartImage` выделяет отдельный стек 256 КиБ RW/NX с guard-страницей.
+Ассемблерный шлюз сохраняет стек, флаги, регистры и FP-контекст
+вызывающего, затем устанавливает `FCW=0x037f`, `MXCSR=0x1f80`, `DF=0`,
+`IF=1` и вызывает EFI entry с 32 байтами shadow space. Обычный возврат
+и `Exit` восстанавливают контекст в одном месте. `Exit` передаёт
+управление шлюзу после освобождения BSP guard. Вложенный запуск
+временно меняет активный handle для `ExitBootServices`.
+[Профиль образов](../specs/UEFI_PROFILE.md#сервисы-загрузки-образов-и-монотонного-счётчика).
+
+Релизные прогоны при 128 и 256 МиБ подтвердили пять сценариев.
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| `hello` возвращает `EFI_SUCCESS`, после возврата handle освобождён | `7d9d0335785d7d946a98261083b3af9b48ae459c7fe6da924473f82e28defec5` | 3 482 757 / 5 714 273 |
+| `Exit` возвращает `EFI_LOAD_ERROR` и байты `41 00 00 00 a5` | `646ee61885f9514e50f799c91dc2baa28b5a34ee8b872d9e0b5d715e9ddc4f7c` | 3 504 812 / 5 736 480 |
+| `ebs` завершает Boot Services и выводит `!` в COM1 | `913a444530189156d8e1468b51a1433c6eca46203792e8894b7b816de4df1108` | 3 266 885 / 5 498 287 |
+| Родитель запускает `hello`, возвращает себе право EBS и выводит `!` | `392055a8423810d609caba50be17555c9cf332de69212d7dd3388e0b741728ed` | 3 289 246 / 5 520 724 |
+| EFI-приложение проверяет IF при входе, подъёме и восстановлении TPL | `24218b8e1a0535a620101b3fbd26b72d42c368d5b195b000e68024db67cb4c21` | 3 485 052 / 5 716 568 |
+
+Для `Exit` вызывающий освободил полученный буфер через `FreePool`.
+Второй запуск с NULL выходом оставил размер 43. В `ebs` и вложенной
+пробе поле BootServices системы стало NULL. `HLT` выполнен внутри
+образа. При остановке `FCW` и `MXCSR` совпали с EFI-профилем, IF и DF были
+сброшены. Чтение активных таблиц подтвердило 64 RW/NX страницы стека и
+неотображённую guard-страницу по `0x7fb8000` и `0xffb8000` на 128 и 256 МиБ.
+Для `hello` и `Exit` штатная диагностика продолжилась на
+исходном стеке и дошла до `HLT` на `0x201782`.
+Проба TPL подтвердила IF=1 на входе, IF=0 после подъёма до
+`TPL_HIGH_LEVEL` и повторного вызова на том же уровне, IF=1 после
+восстановления TPL и сохранение исходного IF вызывающего после возврата.
+
+Прошивочный профиль использует то же FP-состояние vCPU, что CPL0-set.
+Тест с двумя квантами сверил FCW, MXCSR и XMM12 через FXRSTOR64 и FXSAVE64.
+Точные формы шлюза `9c`, `9d`, `fb`, `48 0f ae 40 40` и `48 0f ae 4b 40`
+переиспользуют семантику стековых флагов и формата FX. Для guard-страницы
+допущен `80 f2 01` (`XOR DL,1`). Пролог `ebs` использует `48 85 64 24 08`
+и `c9` для проверки страниц стека и восстановления `RBP`/`RSP`. Тесты
+проверяют отказ чтения, invalid MXCSR и сохранение STI shadow при fault.
+
+Штатный ROM `14f8f225a7dc06a9876afa8dadb22c7a2ca19436598c809cdb2aa03a549bb151`
+дошёл до `HLT` на `0x201772` после 3 401 951 и 5 633 391 инструкций.
+RX добавил 45 байт и 524 инструкции для каждого объёма RAM. В новом
+эталоне 2 921 байт и 39 CRLF. Изменились три строки ROM shadow и
+CRC таблиц ST `64f5fe52` и BS `a7450b17` на 128 МиБ.
+
+Чтобы изолировать изменения CPU от изменений ROM, оба release-бинарника
+загружали один и тот же прежний ROM с 128 МиБ и бюджетом 6 000 000.
+Apple M3 Max, macOS 26.7.1, Rust 1.99.0. После прогрева выполнено
+20 пар с чередованием порядка. Каждый прогон дал эталонный COM1,
+`HLT` на `0x201772` и 3 401 667 инструкций.
+
+| `od-runner` | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База `94d86ac` | 1 679.89 | 1 904.96 | 1 560.69–1 909.01 |
+| С исполнителем EFI-вызова | 1 698.58 | 1 829.55 | 1 633.22–1 850.03 |
+
+Медиана парной разницы +15.34 мс при диапазоне −215.96…+242.65 мс.
+Новый бинарник завершился быстрее в 8 из 20 пар. Изменение скорости
+штатной загрузки остаётся неопределённым по этой серии.
+
+Реализация прошла независимое ревью `gpt-6.1-sol` high. Прошли
+6 106 тестов `od-isa`, 2 150 тестов `od-machine` (15 пропущены),
+257 тестов firmware, пять CLI-тестов и 30 тестов сборщика. Проверены
+форматирование и workspace, обновлён Graphify. Проверка структуры
+воспроизвела исходные 46 ссылок на отсутствующие артефакты `work/`.
 
 ## S7-14 RTC/CMOS, текущий срез
 

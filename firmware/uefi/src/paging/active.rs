@@ -28,7 +28,7 @@ impl ActivePageTables {
             return false;
         }
         for page in span.step_by(PAGE_BYTES as usize) {
-            let Some(pte) = (unsafe { self.leaf(page) }) else {
+            let Some(pte) = (unsafe { self.leaf(page, true) }) else {
                 return false;
             };
             if staging
@@ -47,10 +47,33 @@ impl ActivePageTables {
         let permissions =
             (if writable { WRITABLE } else { 0 }) | (if executable { 0 } else { NO_EXECUTE });
         for page in span.step_by(PAGE_BYTES as usize) {
-            let pte = unsafe { self.leaf(page) }.expect("preflighted image leaf");
+            let pte = unsafe { self.leaf(page, true) }.expect("preflighted image leaf");
             let current = unsafe { pte.read_volatile() };
             unsafe { pte.write_volatile((current & !(WRITABLE | NO_EXECUTE)) | permissions) };
         }
+    }
+
+    /// # Safety
+    /// The caller owns this active table arena on the BSP.
+    #[cfg(any(target_os = "none", test))]
+    pub(crate) unsafe fn has_guard(&self, page: u64) -> bool {
+        unsafe { self.leaf(page, false) }.is_some()
+    }
+
+    /// # Safety
+    /// The aligned leaf was verified under the BSP guard as present before
+    /// enabling the guard page, or non-present before disabling it.
+    #[cfg(any(target_os = "none", test))]
+    #[inline(never)]
+    pub(crate) unsafe fn set_guard(&self, page: u64, enabled: bool) {
+        let pte = unsafe { self.leaf(page, enabled) }.expect("preflighted stack guard leaf");
+        let entry = unsafe { pte.read_volatile() };
+        let new_entry = if enabled {
+            entry & !PRESENT
+        } else {
+            entry | PRESENT
+        };
+        unsafe { pte.write_volatile(new_entry) };
     }
 
     /// # Safety
@@ -62,7 +85,7 @@ impl ActivePageTables {
         }
     }
 
-    unsafe fn leaf(&self, page: u64) -> Option<*mut u64> {
+    unsafe fn leaf(&self, page: u64, present: bool) -> Option<*mut u64> {
         let mut table = self.root;
         for shift in [39, 30, 21] {
             let slot = slot_at(table, page, shift);
@@ -77,7 +100,7 @@ impl ActivePageTables {
         }
         let slot = slot_at(table, page, 12);
         let entry = unsafe { slot.read_volatile() };
-        (entry & (PRESENT | ADDRESS) == PRESENT | page).then_some(slot)
+        (entry & (PRESENT | ADDRESS) == u64::from(present) | page).then_some(slot)
     }
 }
 
@@ -115,6 +138,13 @@ mod tests {
             arena.0[leaf],
             page | PRESENT | WRITABLE | NO_EXECUTE | accessed_dirty
         );
+
+        unsafe { tables.set_guard(page, true) };
+        assert!(unsafe { tables.has_guard(page) });
+        assert!(!unsafe { tables.verify(page..page + PAGE_BYTES, true) });
+        assert_eq!(arena.0[leaf], page | WRITABLE | NO_EXECUTE | accessed_dirty);
+        unsafe { tables.set_guard(page, false) };
+        assert!(unsafe { tables.verify(page..page + PAGE_BYTES, true) });
 
         arena.0[2 * ENTRIES] |= LARGE_PAGE;
         assert!(!unsafe { tables.verify(page..page + PAGE_BYTES, true) });
