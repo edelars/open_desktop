@@ -28115,6 +28115,10 @@ context, size, update)` (`crates/od-isa/src/memory.rs`). Вызов читает
 
 В CPL0-наборе вычитание записывает результат ширины назначения через один вызов `GuestMemory::atomic_rmw_integer` и выставляет CF, PF, AF, ZF, SF и OF по заменённому значению. RIP продвигается после успеха записи. При ошибке доступа исходные память, флаги и RIP сохраняются. Базовый интерпретатор возвращает `Unsupported` с опкодом `81` или `83`, а JIT использует путь интерпретатора. [ISSUE-547](../KNOWN_ISSUES.md#issue-547--s6-21-lock-sub-с-непосредственным-операндом-останавливает-ядро-до-старта-ap) · [ISSUE-549](../KNOWN_ISSUES.md#issue-549--s6-21-lock-sub-qword-с-imm8-останавливает-загрузку-до-sipi).
 
+### S6-21 — LOCK AND m64, imm8
+
+Форма `F0 REX.W 83 /4 ib` с назначением в памяти использует знаково расширенный до 64 бит immediate и один `GuestMemory::atomic_rmw_integer`. CF и OF очищаются, SF, ZF и PF определяет 64-битный результат. AF архитектурно неопределён и сохраняется в конкретном состоянии интерпретатора. REX и адресация следуют общим правилам LOCK group 1. Форма доступна в наборе CPL0 и существующем JIT-адаптере атомарных операций. [ISSUE-550](../KNOWN_ISSUES.md#issue-550--s6-21-lock-and-qword-с-imm8-останавливает-загрузку-до-sipi).
+
 ### S7-04: exact Rust-helper `XOR R12D,dword ptr [R9*4+0x202680]`
 
 Base `PagedCpl0ProbeV1` admits only bytes `46 33 24 8D 80 26 20 00`: opcode `33 /r` makes ModRM.reg (R12D via REX.R) the destination and memory the source. Exact metadata guard requires REX `46`, SIB base-none/index-R9/scale-4, qword address size, displacement `+0x202680`, dword operand, and length 8. Its effective address is `R9*4 + 0x202680` modulo 64-bit address size; the ordinary canonical check and tracked guest read apply. The read completes before any architectural write. A memory #PF/backend error therefore leaves CPU state and flags untouched. On success, shared logical XOR semantics write the dword result to R12D (zero-extending R12), set CF/OF=0 and SF/ZF/PF from the result, preserve concrete AF while marking AF undefined, and advance RIP by 8. Other XOR memory tuples and other execution profiles remain unsupported.

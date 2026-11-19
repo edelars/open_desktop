@@ -1,0 +1,42 @@
+{
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "kernel_debug_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+  "profile": "stage4a-apic",
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 2500000000,
+  "previous_stop_rip": "0xffffffff8194cae8",
+  "stop_rip": "0xffffffff81441223",
+  "stop_gpa": "0x1441223",
+  "stop_bytes": "f0 49 83 26 cf",
+  "kernel_symbol": "copy_process+0x223",
+  "runs": [
+    {
+      "variant": "diskless",
+      "commit": "7a518fd",
+      "nonce": "smpBoot20261119A",
+      "runner_sha256": "0c2bc6c2a042ce408ed55a3f2c8959aa561cf260e2b622d91075687e0f00fc08",
+      "report_sha256": "181bd0ce14458e482e988a611e2be86c3ea9da26d466be06a4bbd2274774cffd",
+      "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+      "acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+      "retired_bsp": 1656449640,
+      "retired_ap": 0,
+      "ap_activity": "WaitForSipi",
+      "guest_verifier": "expected a single complete guest observation with the requested nonce"
+    },
+    {
+      "variant": "raw",
+      "commit": "e42b4b1",
+      "nonce": "s6-workloads20261119",
+      "runner_sha256": "2aa26806f4ad2d90097b643121426e13aeecc5ad15daa132752cd992bee29e8f",
+      "report_sha256": "c8973fad71199b22dbf9dbb9e350325ca5bb79e965f36d85bc89fbb561d5e576",
+      "initramfs_sha256": "d3664e5eb5ed2a044f8452c13fb05c8a0d05e4495e0ba6b17b85403a1e057b43",
+      "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+      "retired_bsp": 1656405531,
+      "retired_ap": 0,
+      "ap_activity": "WaitForSipi",
+      "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+    }
+  ]
+}

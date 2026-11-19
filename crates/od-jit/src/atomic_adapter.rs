@@ -358,9 +358,7 @@ fn lower_one(instruction: &Instruction, b: &mut Builder) -> Result<(), AtomicAda
             let old = b.rmw(AtomicRmwKind::Or, destination, value, None);
             b.flags(AtomicFlagsKind::Or, destination.size, old, Some(value));
         }
-        // LOCK AND m, imm: LDCLR with the complement of the immediate. The decoder produces only
-        // the byte form (`80 /4`; `81 /4` and `83 /4` are refused), the check accepts every width
-        // so that the adapter does not depend on that decoder restriction.
+        // LOCK AND m, imm: LDCLR with the complement of the width-normalized immediate.
         Decoded::LockAndMem {
             destination,
             immediate,
@@ -603,6 +601,32 @@ mod tests {
                 0x2000 + bytes.len() as u64
             );
         }
+    }
+
+    #[test]
+    fn lock_and_qword_imm8_lowers_with_the_sign_extended_mask() {
+        let program = lower(&[0xf0, 0x49, 0x83, 0x26, 0xcf]).unwrap();
+        assert_eq!(rmw_kinds(&program), [AtomicRmwKind::ClearBits]);
+        for value in [0xffff_ffff_ffff_ffcf, 0x30] {
+            assert!(program.operations.iter().any(|op| matches!(
+                op,
+                Operation::Constant { width: IntWidth::W64, value: actual, .. } if *actual == value
+            )));
+        }
+        assert!(matches!(
+            effects(&program).as_slice(),
+            [
+                Operation::AtomicRmw {
+                    width: IntWidth::W64,
+                    ..
+                },
+                Operation::AtomicFlags {
+                    kind: AtomicFlagsKind::And,
+                    width: IntWidth::W64,
+                    ..
+                }
+            ]
+        ));
     }
 
     #[test]

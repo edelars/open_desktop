@@ -1037,9 +1037,8 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
-    /// S4-38L7ag: `F0 [REX] 80 /4 ib` (LOCK AND m8, imm8), memory destination only; the same decode
-    /// branch as `LockOrMem`, byte size only (`81 /4` and `83 /4` stay refused). Executed only in
-    /// the CPL0 set; the destination is always written back.
+    /// `F0 [REX] 80 /4 ib` (S4-38L7ag) or `F0 REX.W 83 /4 ib` (S6-21), memory only.
+    /// The qword immediate is sign-extended. CPL0 set only.
     LockAndMem {
         destination: MemoryOperand,
         immediate: u64,
@@ -9301,7 +9300,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let group = (modrm >> 3) & 7;
                 if prefixes.group1 == Some(0xf0) {
                     // S4-38 admits memory OR and ADD, plus byte AND. S6-21 admits the
-                    // dword/imm32 and qword/imm8 SUB forms used by Linux. The shared check handles
+                    // dword/imm32 SUB and qword/imm8 AND and SUB used by Linux. The shared check handles
                     // repeated LOCK/REP.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
@@ -9309,7 +9308,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
                     let supported_group = match group {
                         0 | 1 => true,
-                        4 => byte == 0x80,
+                        4 => byte == 0x80 || (byte == 0x83 && size == OperandSize::Qword),
                         5 => matches!(
                             (byte, size),
                             (0x81, OperandSize::Dword) | (0x83, OperandSize::Qword)
@@ -25285,7 +25284,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_and_decodes_the_byte_memory_immediate_form_only() {
+    fn lock_and_decodes_byte_and_qword_memory_immediate_forms() {
         // S4-38L7ag: `F0 [REX] 80 /4 ib` with a memory destination. The S4-38L7af diagnostic
         // boundary `lock andb $0xfe, -0x7c691(%rip)` is eight bytes long (the immediate included).
         let mut memory = Memory::new(&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe]);
@@ -25332,11 +25331,22 @@ mod tests {
                 ..
             }
         ));
-        // The dword/qword AND forms and the register form keep the refusal.
+        let decoded = Memory::new(&[0xf0, 0x49, 0x83, 0x26, 0xcf])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 5);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockAndMem { destination, immediate: 0xffff_ffff_ffff_ffcf }
+                if destination.base == AddressBase::Register(Register::R14)
+                    && destination.size == OperandSize::Qword
+        ));
+        // Other widths and opcodes, and the register form, stay unsupported.
         for (bytes, byte) in [
             (&[0xf0, 0x81, 0x63, 0x3d, 1, 0, 0, 0][..], 0x81),
             (&[0xf0, 0x83, 0x63, 0x3d, 0x01][..], 0x83),
-            (&[0xf0, 0x48, 0x83, 0x63, 0x3d, 0x01][..], 0x83),
+            (&[0xf0, 0x48, 0x81, 0x63, 0x3d, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x48, 0x83, 0xe0, 0x01][..], 0x83),
             (&[0xf0, 0x80, 0xe0, 0x01][..], 0x80),
         ] {
             let mut memory = Memory::new(bytes);

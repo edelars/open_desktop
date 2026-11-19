@@ -44691,7 +44691,7 @@ fn step_configured(
         | Operation::LockSubMem { .. }
         // S4-38L7ai: and for LOCK ADD m32/m64, r32/r64.
         | Operation::LockAddMemReg { .. }
-        // S4-38L7ag: and for LOCK AND m8, imm8.
+        // S4-38L7ag/S6-21: LOCK AND m8 or m64, imm8.
         | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. }
@@ -65437,8 +65437,8 @@ fn transfer(
             destination,
             immediate,
         } => {
-            // S4-38L7ag: as LockOrMem, with the shared AND (`logic_result`: CF = OF = 0, SF/ZF/PF
-            // from the byte result, AF kept). One `atomic_rmw_integer` call (S6-20). The
+            // As LockOrMem, with the shared AND (`logic_result`: CF = OF = 0, SF/ZF/PF
+            // from the result at operand width, AF kept). One `atomic_rmw_integer` call (S6-20). The
             // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
             // resolved before any access (a RIP-relative operand is relative to the end of the
             // instruction, immediate included). The result is written back even when it equals
@@ -77145,7 +77145,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_sub_qword_sign_extends_the_byte_and_uses_one_atomic_rmw() {
+    fn lock_qword_immediates_sign_extend_the_byte_and_use_one_atomic_rmw() {
         let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
         let config = RunConfig {
             instruction_budget: 1,
@@ -77164,23 +77164,32 @@ mod tests {
             ..LongModeState::default()
         };
         initial.gpr[Register::Rdi as usize] = 0x1000;
-        for (old, byte, value, arithmetic_flags) in [
-            (1u64, 1, 0, crate::ZF | crate::PF),
+        initial.gpr[Register::R14 as usize] = 0x1000;
+        let sub = |imm| [0xf0, 0x48, 0x83, 0x2f, imm];
+        let and = [0xf0, 0x49, 0x83, 0x26, 0xcf];
+        for (bytes, old, value, arithmetic_flags) in [
+            (sub(1), 1u64, 0, crate::ZF | crate::PF),
             (
+                sub(1),
                 0,
-                1,
                 u64::MAX,
                 crate::CF | crate::PF | crate::AF | crate::SF,
             ),
             (
+                sub(1),
                 0x8000_0000_0000_0000,
-                1,
                 0x7fff_ffff_ffff_ffff,
                 crate::PF | crate::AF | crate::OF,
             ),
-            (0, 0x80, 128, crate::CF),
+            (sub(0x80), 0, 128, crate::CF),
+            (
+                and,
+                0xfedc_ba98_7654_323f,
+                0xfedc_ba98_7654_320f,
+                crate::SF | crate::PF | crate::AF,
+            ),
+            (and, 0x30, 0, crate::ZF | crate::PF | crate::AF),
         ] {
-            let bytes = [0xf0, 0x48, 0x83, 0x2f, byte];
             let mut state = initial.clone();
             let mut memory = Memory::new(&bytes);
             memory.bytes[..8].copy_from_slice(&old.to_le_bytes());
