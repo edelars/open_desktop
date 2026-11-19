@@ -1515,6 +1515,9 @@ fn run_threads_inner<R>(
         uart_ioapic_source,
         com1: &com1,
     };
+    // Discard port-read requests from before the run while the board is quiescent.
+    // Once workers are active a pending tick may belong to any vCPU.
+    env.take_device_ticks();
     let shared = SharedState {
         count,
         config,
@@ -1636,6 +1639,80 @@ mod tests {
                 call.consecutive_faults,
             )
         })
+    }
+
+    #[test]
+    fn a_parallel_quantum_accounts_for_ticks_already_queued_by_its_peer() {
+        use crate::acpi_pm::ACPI_PM_TMR_READ_TICK_NS;
+        use crate::clock_owner::NS_PER_RETIRED;
+        use crate::pit_8254::PIT_PORT_B_READ_TICK_NS;
+        use crate::{ACPI_PM_TMR_BLK, AccessWidth, PortAddress};
+
+        let mut board = board(2);
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        for (cpu, rip, stack) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+            patch(&mut board, rip, &[0xf4]); // HLT
+            install(&mut board, cpu, long_state(rip, stack, cr3, false), 0xd01);
+        }
+        // Standalone host inspection must not count as work of either worker.
+        board
+            .bus_mut()
+            .read_port(PortAddress::new(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+            .unwrap();
+        let start_ns = board.clock().now_ns();
+        let queued = AtomicBool::new(false);
+        let sampled = AtomicBool::new(false);
+        let charged = AtomicU64::new(0);
+        let wait = |flag: &AtomicBool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !flag.load(SEQ) {
+                assert!(Instant::now() < deadline, "the other vCPU did not arrive");
+                thread::yield_now();
+            }
+        };
+        let (report, ended) = run_threads(
+            &mut board,
+            config(16, 64),
+            &|call| {
+                if call.cpu == 0 && !queued.load(SEQ) {
+                    // Hold this call open after the device access, as if vCPU 0 were
+                    // preempted between the port reads and returning its quantum.
+                    for (port, width) in [
+                        (ACPI_PM_TMR_BLK, AccessWidth::Dword),
+                        (0x61, AccessWidth::Byte),
+                    ] {
+                        call.env
+                            .bus
+                            .read_port_shared(PortAddress::new(port), width)
+                            .unwrap();
+                    }
+                    queued.store(true, SEQ);
+                    wait(&sampled);
+                }
+                let first_peer_call = call.cpu == 1 && !sampled.load(SEQ);
+                if first_peer_call {
+                    wait(&queued);
+                }
+                let executed = fixture_quantum(call)?;
+                if first_peer_call {
+                    charged.store(executed.device_ns, SEQ);
+                    sampled.store(true, SEQ);
+                }
+                Ok(executed)
+            },
+            |control| control.wait_finished(Duration::from_secs(15)),
+        )
+        .unwrap();
+        assert!(ended);
+        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        let device_ns = ACPI_PM_TMR_READ_TICK_NS + PIT_PORT_B_READ_TICK_NS;
+        assert_eq!(charged.load(SEQ), device_ns);
+        assert_eq!(report.idle_jumps, 0);
+        assert!(report.cpus.iter().all(|cpu| cpu.retired == 1));
+        assert_eq!(
+            board.clock().now_ns() - start_ns,
+            2 * NS_PER_RETIRED + device_ns
+        );
     }
 
     #[test]

@@ -355,6 +355,19 @@ pub(crate) struct ThreadQuantumEnv<'a> {
 }
 
 impl ThreadQuantumEnv<'_> {
+    /// Take the outstanding device-time requests from the shared board.
+    pub(crate) fn take_device_ticks(&self) -> u64 {
+        let pm_ns = self
+            .acpi_pm
+            .as_ref()
+            .map_or(0, AcpiPmHandle::take_timer_tick_ns);
+        let pit_ns = self
+            .pit
+            .as_ref()
+            .map_or(0, Pit8254Handle::take_port_tick_ns);
+        pm_ns.saturating_add(pit_ns)
+    }
+
     /// [`LoadedFirmwareBoard::pump_uart_transmit`] of the threads: every byte the guest left in
     /// the holding register goes to the log, in the order they complete, with the log's lock held
     /// so that two threads never interleave one byte's two steps.
@@ -399,12 +412,6 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     consecutive_faults: &mut u64,
 ) -> Result<Executed, FirmwareBoardError> {
     let inputs = quantum_inputs(vcpu)?;
-    if let Some(pm) = &env.acpi_pm {
-        pm.take_timer_tick_ns();
-    }
-    if let Some(pit) = &env.pit {
-        pit.take_port_tick_ns();
-    }
     env.pump_uart_transmit();
 
     let report = quantum_loop(
@@ -427,14 +434,9 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     );
 
     env.pump_uart_transmit();
-    let mut device_ns = 0u64;
-    if let Some(pm) = &env.acpi_pm {
-        device_ns += pm.take_timer_tick_ns();
-    }
-    if let Some(pit) = &env.pit {
-        device_ns += pit.take_port_tick_ns();
-    }
-    quantum_result(report, cpu, vcpu, device_ns)
+    // A completed quantum takes pending board requests for the clock owner.
+    // A peer may have queued them before this call.
+    quantum_result(report, cpu, vcpu, env.take_device_ticks())
 }
 
 /// The CPL0 interpreter for a litmus probe with no board-device or IRQ polling.
