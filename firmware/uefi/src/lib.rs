@@ -19,6 +19,7 @@ pub mod idt;
 pub mod image;
 pub mod mem;
 pub mod paging;
+pub mod pe;
 pub mod stop;
 pub mod uefi;
 
