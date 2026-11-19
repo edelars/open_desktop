@@ -2716,6 +2716,14 @@ delivery, owner/MMU integration, Mini, performance, or complete S3-27. See the
 [S3-27e report](../reports/STAGE_3_S3-27e_2026-11-01.md) and
 [JIT testing reference](../testing/JIT.md#bounded-s3-27e-two-site-v2-pc-map-attribution).
 
+#### S3-27h. Отказ для неподдержанной формы 0F C2
+
+Декодер возвращает типизированный `Unsupported`, если после выбора
+`0F C2` ни одна из поддерживаемых комбинаций префиксов не подошла.
+Регрессия проверяет семь вариантов REX, точную длину отказа, fetch
+только до опкода и приоритет ошибки чтения самого опкода.
+[ISSUE-522 и границы проверки](../KNOWN_ISSUES.md#issue-522)
+
 ### S3-28. Реализовать STOP и event safepoints
 
 1. Проверять cooperative STOP/events на документированных instruction/block/helper boundaries, сохраняя ограниченный work interval.

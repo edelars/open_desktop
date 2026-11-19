@@ -6706,6 +6706,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                 }
             }
+            (OpcodeMap::Escape0f, 0xc2) => return Err(self.unsupported(opcode)),
             (OpcodeMap::Escape0f, 0x5a) if cvtss2sd_register => {
                 let modrm = self.byte()?;
                 if modrm == 0 && prefixes.rex.is_none() {
@@ -33273,6 +33274,39 @@ mod tests {
         }
         for bytes in [&[0x66, 0x0f, 0xc2, 0x00][..], &[0x66, 0x0f, 0xc2][..]] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn unadmitted_cmp_predicate_prefixes_stop_at_the_opcode() {
+        for prefix in [0x40, 0x42, 0x43, 0x46, 0x47, 0x48, 0x4f] {
+            let mut memory = Memory::new(&[prefix, 0x0f, 0xc2, 0x25, 0xa1]);
+            memory.fault_at = Some(3);
+            assert_eq!(
+                memory.decode(),
+                Err(DecodeError::Unsupported {
+                    opcode: Opcode {
+                        map: OpcodeMap::Escape0f,
+                        byte: 0xc2,
+                    },
+                    length: 3,
+                })
+            );
+            assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
+
+            memory.fetched.clear();
+            memory.fault_at = Some(2);
+            assert_eq!(
+                memory.decode(),
+                Err(DecodeError::Memory(MemoryError::Architectural(
+                    ArchitecturalFault {
+                        vector: 14,
+                        error_code: Some(20),
+                        linear_address: Some(0x1001),
+                    }
+                )))
+            );
+            assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
         }
     }
 

@@ -970,6 +970,17 @@ at start and finish. The input manifest SHA-256 is
 The summary SHA-256 is
 `a0905ea2d2cc349a6c034693301324d416f754e6cc27ceed72cbc34bb8573159`.
 
+### Unsupported 0F C2 decode boundary, 2026-11-19 UTC
+
+The Stage 3 MOV comparison exposed a baseline host panic when a REX
+prefix reached the general `0F C2` opcode match without satisfying any
+CMP profile guard. The decoder now returns its typed `Unsupported`
+at that boundary. The exact regression covers seven unadmitted REX
+prefixes, including a fault injected at the opcode and one at the
+first unconsumed byte. The complete `od-isa` library suite passed
+2,607 tests. Physical x86 and Mac mini checks remain deferred.
+[ISSUE-522](../KNOWN_ISSUES.md#issue-522)
+
 ### Local next-block SMC regression, 2026-11-19 UTC
 
 Run `stage3-20261119-053704-96e70bb3d6` passed all 359 selected local
