@@ -20088,7 +20088,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0xa8 | 0xf6, OperandSize::Byte)
-                            | (0x85, OperandSize::Dword | OperandSize::Qword)
+                            | (0x85 | 0xa9, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
                 Operation::Logic {
@@ -27894,13 +27894,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the firmware can load a full-width address into any GPR.
+        // S7-04: load a qword immediate, including sign-extended C7 /0 constants.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && matches!(instruction.opcode.byte, 0xb8..=0xbf)
+            && matches!(instruction.opcode.byte, 0xb8..=0xbf | 0xc7)
             && instruction.operand_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {

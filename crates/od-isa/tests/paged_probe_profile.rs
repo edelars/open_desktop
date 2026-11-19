@@ -51119,6 +51119,43 @@ fn firmware_boot_mov_imm64_preserves_all_immediate_bits() {
 }
 
 #[test]
+fn firmware_boot_mov_qword_sign_extends_c7_immediate() {
+    for (code, register, expected_value) in [
+        (
+            [0x49, 0xc7, 0xc0, 0x00, 0x30, 0x20, 0x00],
+            Register::R8,
+            0x203000,
+        ),
+        (
+            [0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x80],
+            Register::Rbx,
+            0xffff_ffff_8000_0000,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[register as usize] = expected_value;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_extended_imm32_fetch_fault_preserves_destination() {
     let rip = RIP + 0xffb;
     let address = rip + 5;
@@ -52454,6 +52491,18 @@ fn firmware_boot_test_wide_registers_updates_flags_without_writing_operands() {
         (
             &[0x48, 0x85, 0xf6][..],
             Register::Rsi,
+            0x8000_0000_0000_0000,
+            0x696,
+        ),
+        (
+            &[0xa9, 0xff, 0x0f, 0x00, 0x00][..],
+            Register::Rax,
+            0xabcdef01_0000_1000,
+            0x656,
+        ),
+        (
+            &[0x48, 0xa9, 0x00, 0x00, 0x00, 0x80][..],
+            Register::Rax,
             0x8000_0000_0000_0000,
             0x696,
         ),
