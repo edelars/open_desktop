@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::acpi::dsdt::{build_dsdt, validate_dsdt};
+use crate::acpi::fadt::build_fadt;
 use crate::acpi::fadt::{build_facs, validate_facs, validate_fadt};
 use crate::acpi::madt::validate_madt;
 use crate::acpi::manifest::{AcpiPmEntry, BoardManifest, DeviceEntry};

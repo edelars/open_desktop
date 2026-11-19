@@ -22998,16 +22998,21 @@ fn firmware_reads_cr0_and_active_cr3_and_undefines_arithmetic_flags() {
 }
 
 #[test]
-fn firmware_variable_snapshot_xor_uses_exact_dword_masks() {
+fn firmware_dword_xor_accepts_immediate_forms_but_rejects_prefixes() {
     for (code, register, mask, exact) in [
         (&[0x35, 0xd0, 0, 0, 0][..], Register::Rax, 0xd0, true),
-        (&[0x35, 0xd1, 0, 0, 0][..], Register::Rax, 0xd0, false),
+        (&[0x67, 0x35, 0xd1, 0, 0, 0][..], Register::Rax, 0xd1, false),
         (&[0x81, 0xf7, 0xd0, 0, 0, 0][..], Register::Rdi, 0xd0, true),
-        (&[0x81, 0xf7, 0xd1, 0, 0, 0][..], Register::Rdi, 0xd0, false),
+        (
+            &[0x81, 0xf6, 0xb4, 0xfa, 0x37, 0][..],
+            Register::Rsi,
+            0x37fab4,
+            true,
+        ),
         (&[0x81, 0xf1, 0xd0, 0, 0, 0][..], Register::Rcx, 0xd0, true),
         (&[0x83, 0xf0, 1][..], Register::Rax, 1, true),
         (&[0x83, 0xf1, 0x53][..], Register::Rcx, 0x53, true),
-        (&[0x83, 0xf1, 0x54][..], Register::Rcx, 0x53, false),
+        (&[0x83, 0xf3, 0xff][..], Register::Rbx, 0xffff_ffff, true),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
@@ -23031,7 +23036,7 @@ fn firmware_variable_snapshot_xor_uses_exact_dword_masks() {
         let (exit, flags) = if exact {
             (PagedProbeExit::Retired, (defined | 0x8c5) & !0x10)
         } else {
-            (PagedProbeExit::Unsupported { opcode: code[0] }, defined)
+            (PagedProbeExit::Unsupported { opcode: 0x35 }, defined)
         };
         assert_eq!(result.exit, exit);
         assert_eq!(result.instructions_executed, u64::from(exact));
@@ -23050,6 +23055,8 @@ fn firmware_variable_name_tests_words_without_changing_registers() {
         (&[0x66, 0x85, 0xed][..], Register::Rbp),
         (&[0x66, 0x85, 0xd2][..], Register::Rdx),
         (&[0x66, 0x85, 0xc9][..], Register::Rcx),
+        (&[0x66, 0x85, 0xf6][..], Register::Rsi),
+        (&[0x66, 0x85, 0xff][..], Register::Rdi),
     ] {
         for (value, expected_flags) in [(0x8000_0000, 0x44), (0xffff_8000, 0x84), (0x8000_0001, 0)]
         {

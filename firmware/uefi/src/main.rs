@@ -282,6 +282,15 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }
+    if unsafe { od_firmware::acpi::install::install(&handoff, system_pointer) } != Status::SUCCESS {
+        stop(STOP_BOOT_SERVICES, 79);
+    }
+    let processor_id = processor_id();
+    if unsafe { od_firmware::smbios::install(&handoff, processor_id, system_pointer) }
+        != Status::SUCCESS
+    {
+        stop(STOP_BOOT_SERVICES, 80);
+    }
     let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app());
     verify_exit_boot_services(system_pointer, handoff.tsc_hz(), runtime_installed);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
@@ -1340,6 +1349,26 @@ fn verify_service_boundaries(system: &SystemTable) {
 }
 
 #[inline(never)]
+fn processor_id() -> [u32; 2] {
+    let signature: u32;
+    let features: u32;
+    // CPUID leaf 1 supplies the architectural SMBIOS Processor ID.
+    // Preserve RBX manually because it is reserved by LLVM for some functions.
+    unsafe {
+        asm!(
+            "push rbx",
+            "cpuid",
+            "pop rbx",
+            inout("eax") 1u32 => signature,
+            out("edx") features,
+            out("ecx") _,
+            options(preserves_flags),
+        );
+    }
+    [signature, features]
+}
+
+#[inline(never)]
 fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> bool {
     // Console initialization and failed applications can leave an open COM1 line.
     fn fail(detail: u64) -> ! {
@@ -1359,6 +1388,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
         Some(FirmwareFvApp::Ebs) => "ebs",
         Some(FirmwareFvApp::Vars) => "vars",
         Some(FirmwareFvApp::Rt) => "rt",
+        Some(FirmwareFvApp::Acpi) => "acpi",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1411,11 +1441,11 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
                 if status != Status::SUCCESS {
                     fail(72);
                 }
-                if requested == Some(FirmwareFvApp::Vars) {
-                    com1_write(b"OD-FW image vars: EFI_SUCCESS\r\n");
-                } else {
-                    com1_write(b"OD-FW image hello: EFI_SUCCESS\r\n");
-                }
+                com1_write(match requested {
+                    Some(FirmwareFvApp::Vars) => b"OD-FW image vars: EFI_SUCCESS\r\n",
+                    Some(FirmwareFvApp::Acpi) => b"OD-FW image acpi: EFI_SUCCESS\r\n",
+                    _ => b"OD-FW image hello: EFI_SUCCESS\r\n",
+                });
             }
             Status::LOAD_ERROR if requested.is_none() && image.is_null() => {
                 com1_write(b"OD-FW image hello: EFI_LOAD_ERROR\r\n");

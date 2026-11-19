@@ -8,28 +8,32 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 }
 
 /// Counts the bytes at the four-byte field offset as zero.
-pub(crate) fn with_zeroed_word(bytes: &[u8], offset: usize) -> u32 {
+pub(crate) const fn with_zeroed_word(bytes: &[u8], offset: usize) -> u32 {
     let mut state = u32::MAX;
-    for (index, &byte) in bytes.iter().enumerate() {
-        let byte = if (offset..offset + 4).contains(&index) {
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = if index >= offset && index - offset < 4 {
             0
         } else {
-            byte
+            bytes[index]
         };
         state = update_byte(state, byte);
+        index += 1;
     }
     state ^ u32::MAX
 }
 
 #[inline(always)]
-fn update_byte(mut state: u32, byte: u8) -> u32 {
-    state ^= u32::from(byte);
-    for _ in 0..8 {
+const fn update_byte(mut state: u32, byte: u8) -> u32 {
+    state ^= byte as u32;
+    let mut bit = 0;
+    while bit < 8 {
         state = if state & 1 != 0 {
             (state >> 1) ^ 0xedb8_8320
         } else {
             state >> 1
         };
+        bit += 1;
     }
     state
 }

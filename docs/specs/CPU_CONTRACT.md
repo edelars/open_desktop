@@ -31509,3 +31509,10 @@ final-immediate fetch fault commits no CPU state or retirement. The
 other CPL0 probes refuse the encoding with opcode `0x83`. The paged
 CPL3 MOV probe stops at the first byte `0x66`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
+
+
+### CPUID и WBINVD в загрузке UEFI (S7-13)
+
+Последовательный профиль `PagedCpl0FirmwareBootV1` исполняет непрефиксный `CPUID` (`0F A2`) с результатами `DiagnosticV1`. SMBIOS записывает `EAX` и `EDX` функции 1. Профиль сохраняет прежние маски возможностей. Номинальная скорость исполнения vCPU определена отдельно в [handoff v1.9](FIRMWARE_BOOT.md#64-правило-расширения-и-версии).
+
+`WBINVD` (`0F 09`) в последовательном интерпретаторе завершает одну инструкцию и продвигает IP. Гостевая память когерентна, кеши данных не моделируются. В Long64 обычный путь проверяет CPL, при CPL3 доставляет `#GP(0)`, а точная форма с LOCK даёт `#UD`. Профиль загрузки UEFI исполняется в CPL0. [Intel SDM, WBINVD](https://cdrdv2-public.intel.com/671110/325383-sdm-vol-2abcd.pdf).

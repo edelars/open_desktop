@@ -53,7 +53,7 @@ class ImageHeaderTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<Q", image, 0)[0], 0x3147_4D49_5746_444F)
         self.assertEqual(struct.unpack_from("<II", image, 0x08), (1, 0x40))
         self.assertEqual(struct.unpack_from("<QQQ", image, 0x10), (0x0040_0000, 0x0020_0000, 0x40))
-        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 8, 0))
+        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 9, 0))
         self.assertEqual(image[0x34:0x40], bytes(12))
         # code after the header is untouched, the tail is zero padding
         self.assertEqual(image[0x40:0x100], sample_raw()[0x40:])
@@ -332,6 +332,21 @@ class PeCheckTest(unittest.TestCase):
 
 
 class CommandLineTest(unittest.TestCase):
+    def test_acpi_mode_refuses_to_overwrite_a_hardlinked_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "handoff.bin"
+            output_path = Path(directory) / "output.bin"
+            original = b"handoff sentinel"
+            input_path.write_bytes(original)
+            os.link(input_path, output_path)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--acpi-blob", input_path, "--out", output_path],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("ACPI output and handoff input must be distinct", result.stderr)
+            self.assertEqual(input_path.read_bytes(), original)
+
     def test_missing_tool_exits_nonzero_with_message(self) -> None:
         env = dict(os.environ)
         env["OD_FW_CLANG"] = "/nonexistent/clang"

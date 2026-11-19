@@ -20178,6 +20178,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        Operation::Cpuid if firmware_boot_profile => {
+            execute_cpuid_leaf(state, CpuidProfile::DiagnosticV1, next_rip);
+        }
+        Operation::Wbinvd if firmware_boot_profile => {
+            // The interpreter executes in order and has no guest data cache.
+            state.rip = next_rip;
+        }
         // S7-04: the firmware can install descriptor tables for the first time.
         Operation::LoadGdtr { source } | Operation::LoadIdtr { source }
             if firmware_boot_profile
@@ -20466,7 +20473,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0xf7, OperandSize::Dword | OperandSize::Qword)
+                        (0xf6, OperandSize::Byte) | (0xf7, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
                 // The console masks UTF-8 bytes and variable services encode a Boolean.
@@ -20509,7 +20516,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (
                             0x21 | 0x23 | 0x25 | 0x81 | 0x83,
                             OperandSize::Dword | OperandSize::Qword
-                        ) | (0x20 | 0x22 | 0x80, OperandSize::Byte)
+                        ) | (0x20 | 0x22 | 0x24 | 0x80, OperandSize::Byte)
                     )
                 }
                 Operation::Logic {
@@ -20523,16 +20530,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             | (0xf7, OperandSize::Dword)
                     ) || (instruction.opcode.byte == 0x85
                         && instruction.operand_size == OperandSize::Word
-                        && source == Operand::Register(destination)
-                        && matches!(
-                            (
-                                instruction.length,
-                                instruction.prefixes.rex,
-                                destination.register()
-                            ),
-                            (4, Some(0x45), Register::R8 | Register::R9 | Register::R10)
-                                | (3, None, Register::Rbp | Register::Rdx | Register::Rcx)
-                        ))
+                        && source == Operand::Register(destination))
                 }
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20566,13 +20564,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: ArithmeticKind::Sub,
                     src: Operand::Memory(_),
                     ..
-                } => {
-                    instruction.opcode.byte == 0x2b
-                        && matches!(
-                            instruction.operand_size,
-                            OperandSize::Dword | OperandSize::Qword
-                        )
-                }
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x2a, OperandSize::Byte) | (0x2b, OperandSize::Dword | OperandSize::Qword)
+                ),
                 Operation::Arithmetic { .. } => {
                     matches!(
                         instruction.operand_size,
@@ -20584,7 +20579,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 kind: ArithmeticKind::Add,
                                 ..
                             },
-                            0x00 | 0x04,
+                            0x00 | 0x04 | 0x80,
                             OperandSize::Byte
                         ) | (
                             Operation::Arithmetic {
@@ -20628,28 +20623,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0x80, OperandSize::Byte) | (0x83, OperandSize::Qword)
-                    ) || (instruction.operand_size == OperandSize::Dword
-                        && instruction.prefixes == Prefixes::default()
-                        && match (instruction.opcode.byte, instruction.length, source) {
-                            (0x35, 5, Operand::Immediate(0xd0))
-                            | (0x83, 3, Operand::Immediate(1)) => {
-                                destination == RegisterView::low(Register::Rax, OperandSize::Dword)
-                            }
-                            (0x81, 6, Operand::Immediate(0xd0)) => {
-                                matches!(destination.register(), Register::Rcx | Register::Rdi)
-                            }
-                            (0x83, 3, Operand::Immediate(0x53)) => {
-                                destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
-                            }
-                            _ => false,
-                        })
-                        || (instruction.opcode.byte == 0x81
-                            && instruction.operand_size == OperandSize::Qword
-                            && instruction.length == 7
-                            && instruction.prefixes.rex == Some(0x48)
-                            && destination == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                            && source == Operand::Immediate(0x0074_0073))
+                        (0x34 | 0x80, OperandSize::Byte)
+                            | (0x35 | 0x81 | 0x83, OperandSize::Dword)
+                            | (0x81 | 0x83, OperandSize::Qword)
+                    )
                 }
                 Operation::Logic {
                     kind: LogicKind::Xor,
@@ -20835,13 +20812,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             _ => false,
                         }
                 }
-                (Operand::Register(_), ShiftKind::Shr, 0xd3) => {
-                    instruction.operand_size == OperandSize::Qword
-                        && count_source
-                            == Operand::Register(RegisterView::low(
-                                Register::Rcx,
-                                OperandSize::Byte,
-                            ))
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xd3) => {
+                    matches!(
+                        (kind, instruction.operand_size),
+                        (ShiftKind::Shl, OperandSize::Dword) | (ShiftKind::Shr, OperandSize::Qword)
+                    ) && count_source
+                        == Operand::Register(RegisterView::low(Register::Rcx, OperandSize::Byte))
                 }
                 (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar, 0xc0) => {
                     instruction.operand_size == OperandSize::Byte
@@ -44317,21 +44293,25 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::Wbinvd {
+        if context.privilege != PrivilegeLevel::Ring0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        // The interpreter executes in order and has no guest data cache.
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if instruction.operation == Operation::Cpuid {
         let Some(profile) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
         };
-        let result = profile.query(
-            state.gpr[Register::Rax as usize] as u32,
-            state.gpr[Register::Rcx as usize] as u32,
-        );
-        state.gpr[Register::Rax as usize] = u64::from(result.eax);
-        state.gpr[Register::Rbx as usize] = u64::from(result.ebx);
-        state.gpr[Register::Rcx as usize] = u64::from(result.ecx);
-        state.gpr[Register::Rdx as usize] = u64::from(result.edx);
-        state.rip = next_rip;
+        execute_cpuid_leaf(state, *profile, next_rip);
         return Ok(StepOutcome::Advanced);
     }
     if instruction.operation == Operation::Syscall {
@@ -46337,6 +46317,7 @@ fn step_configured(
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
         Operation::Cpuid
+        | Operation::Wbinvd
         | Operation::Rdtsc
         | Operation::Cli
         | Operation::Sti
@@ -48962,6 +48943,7 @@ fn step_configured(
             unreachable!("CR operations commit in their explicit profile path")
         }
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
+        Operation::Wbinvd => unreachable!("WBINVD is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
         Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
         Operation::Sti => unreachable!("STI commits in its profile-gated state path"),
@@ -65400,6 +65382,18 @@ fn write_implicit_division(
         state.write(RegisterView::low(Register::Rax, size), quotient);
         state.write(RegisterView::low(Register::Rdx, size), remainder);
     }
+}
+
+fn execute_cpuid_leaf(state: &mut LongModeState, profile: CpuidProfile, next_rip: u64) {
+    let result = profile.query(
+        state.gpr[Register::Rax as usize] as u32,
+        state.gpr[Register::Rcx as usize] as u32,
+    );
+    state.gpr[Register::Rax as usize] = u64::from(result.eax);
+    state.gpr[Register::Rbx as usize] = u64::from(result.ebx);
+    state.gpr[Register::Rcx as usize] = u64::from(result.ecx);
+    state.gpr[Register::Rdx as usize] = u64::from(result.edx);
+    state.rip = next_rip;
 }
 
 fn logic_result(
@@ -164607,6 +164601,54 @@ mod tests {
             );
             assert_eq!(result.exit, exit);
             assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn wbinvd_retires_without_access_and_respects_privilege_and_lock() {
+        for (code, privilege, expected) in [
+            (
+                &[0x0f, 0x09][..],
+                PrivilegeLevel::Ring0,
+                StepOutcome::Advanced,
+            ),
+            (
+                &[0x0f, 0x09][..],
+                PrivilegeLevel::Ring3,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                &[0xf0, 0x0f, 0x09][..],
+                PrivilegeLevel::Ring0,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+        ] {
+            let mut cpu = LongModeState {
+                rip: 0x1000,
+                rflags: 0xad7,
+                gpr: [0xaa55; 16],
+                ..LongModeState::default()
+            };
+            let mut wanted = cpu.clone();
+            if expected == StepOutcome::Advanced {
+                wanted.rip += 2;
+            }
+            let mut memory = Memory::at(code, 0x1000);
+            let context = AccessContext {
+                privilege,
+                ..AccessContext::default()
+            };
+            assert_eq!(step(&mut cpu, &mut memory, context), Ok(expected));
+            assert_eq!(cpu, wanted);
             assert!(memory.accesses.is_empty());
         }
     }

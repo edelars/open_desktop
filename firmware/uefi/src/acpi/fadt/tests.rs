@@ -2,8 +2,8 @@
 //!
 //! The reference tables were assembled field by field from the ACPI FADT/FACS layouts (offsets in
 //! the comments of `reference_fadt`) and written out by a separate Python script that shares no
-//! code with the serializer; the checksum 0x6B was also summed by hand (sum of all other bytes =
-//! 3221 = 0xC95 -> 0x95, and 0x100 - 0x95 = 0x6B). Offsets are used as literals here, not
+//! code with the serializer; the checksum 0x69 was also summed by hand (sum of all other bytes =
+//! 3223 = 0xC97 -> 0x97, and 0x100 - 0x97 = 0x69). Offsets are used as literals here, not
 //! through the constants of the serializer.
 
 use super::*;
@@ -60,29 +60,29 @@ fn fix_checksum(table: &mut [u8]) {
 }
 
 /// FADT revision 6 for the board, 276 bytes. Offsets: header 0..36 (signature `FACP`, Length
-/// 0x114, Revision 6, checksum 0x6B, OEM ID `OPNDSK`, OEM table ID `ODFWFACP`, OEM rev 1,
+/// 0x114, Revision 6, checksum 0x69, OEM ID `OPNDSK`, OEM table ID `ODFWFACP`, OEM rev 1,
 /// creator `ODFW`, creator rev 1); 36 FIRMWARE_CTRL 0xE_F000; 40 DSDT 0xE_0040; 44 INT_MODEL 0;
 /// 45 Preferred_PM_Profile 1; 46 SCI_INT 9; 48..56 SMI_CMD, ACPI_ENABLE/DISABLE, S4BIOS_REQ,
 /// PSTATE_CNT 0; 56 PM1a_EVT_BLK 0x600; 60 PM1b_EVT 0; 64 PM1a_CNT 0x604; 68 PM1b_CNT 0; 72 PM2_CNT
 /// 0; 76 PM_TMR 0x608; 80/84 GPE0/GPE1 0; 88 PM1_EVT_LEN 4; 89 PM1_CNT_LEN 2; 90 PM2_CNT_LEN 0; 91
 /// PM_TMR_LEN 4; 92..96 GPE lens, GPE1_BASE, CST_CNT 0; 96 P_LVL2_LAT 0x0FFF; 98 P_LVL3_LAT 0x0FFF;
 /// 100..109 FLUSH_*, DUTY_*, alarms, CENTURY 0; 109 IAPC_BOOT_ARCH 0x0024 (VGA_NOT_PRESENT bit 2,
-/// CMOS_RTC_NOT_PRESENT bit 5); 111 reserved; 112 Flags 0x470 (bits 4, 5, 6, 10); 116 RESET_REG
+/// CMOS_RTC_NOT_PRESENT bit 5); 111 reserved; 112 Flags 0x471 (bits 0, 4, 5, 6, 10); 116 RESET_REG
 /// (SystemIO 1, width 8, offset 0, access byte 1, address 0x60C); 128 RESET_VALUE 6; 129
-/// ARM_BOOT_ARCH 0; 131 minor version 4; 132 X_FIRMWARE_CTRL; 140 X_DSDT; 148 X_PM1a_EVT_BLK (1,
+/// ARM_BOOT_ARCH 0; 131 minor version 5; 132 X_FIRMWARE_CTRL; 140 X_DSDT; 148 X_PM1a_EVT_BLK (1,
 /// 32, 0, 0, 0x600); 160 X_PM1b_EVT 0; 172 X_PM1a_CNT_BLK (1, 16, 0, 0, 0x604); 184/196 X_PM1b_CNT,
 /// X_PM2_CNT 0; 208 X_PM_TMR_BLK (1, 32, 0, 0, 0x608); 220..276 GPE, sleep registers and the
 /// hypervisor vendor identity 0.
 fn reference_fadt() -> Vec<u8> {
-    hex("46 41 43 50 14 01 00 00 06 6B 4F 50 4E 44 53 4B \
+    hex("46 41 43 50 14 01 00 00 06 69 4F 50 4E 44 53 4B \
          4F 44 46 57 46 41 43 50 01 00 00 00 4F 44 46 57 \
          01 00 00 00 00 F0 0E 00 40 00 0E 00 00 01 09 00 \
          00 00 00 00 00 00 00 00 00 06 00 00 00 00 00 00 \
          04 06 00 00 00 00 00 00 00 00 00 00 08 06 00 00 \
          00 00 00 00 00 00 00 00 04 02 00 04 00 00 00 00 \
          FF 0F FF 0F 00 00 00 00 00 00 00 00 00 24 00 00 \
-         70 04 00 00 01 08 00 01 0C 06 00 00 00 00 00 00 \
-         06 00 00 04 00 F0 0E 00 00 00 00 00 40 00 0E 00 \
+         71 04 00 00 01 08 00 01 0C 06 00 00 00 00 00 00 \
+         06 00 00 05 00 F0 0E 00 00 00 00 00 40 00 0E 00 \
          00 00 00 00 01 20 00 00 00 06 00 00 00 00 00 00 \
          00 00 00 00 00 00 00 00 00 00 00 00 01 10 00 00 \
          04 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
@@ -108,7 +108,7 @@ fn fadt_matches_the_hand_assembled_reference() {
     assert_eq!(table, reference_fadt());
     assert_eq!(table.len(), 276);
     assert_eq!(&table[4..8], &276u32.to_le_bytes());
-    assert_eq!(table[9], 0x6B);
+    assert_eq!(table[9], 0x69);
     assert_eq!(table.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
 }
 
@@ -142,10 +142,11 @@ fn fadt_fields_equal_the_pm_descriptor_and_the_decisions() {
     // SCI GSI 9 (S4-31c), PM profile Desktop.
     assert_eq!(le16(&t, 46), 9);
     assert_eq!(t[45], 1);
-    // Flags: PWR_BUTTON, SLP_BUTTON, FIX_RTC, RESET_REG_SUP set; TMR_VAL_EXT, HW_REDUCED clear.
+    // Flags: WBINVD, PWR_BUTTON, SLP_BUTTON, FIX_RTC, RESET_REG_SUP set; TMR_VAL_EXT, HW_REDUCED clear.
     let flags = le32(&t, 112);
-    assert_eq!(flags, 0x470);
+    assert_eq!(flags, 0x471);
     for (bit, name, expected) in [
+        (0, "WBINVD", true),
         (4, "PWR_BUTTON", true),
         (5, "SLP_BUTTON", true),
         (6, "FIX_RTC", true),
@@ -173,7 +174,7 @@ fn fadt_fields_equal_the_pm_descriptor_and_the_decisions() {
     assert_eq!(t[8], 6);
     assert_eq!(&t[10..16], b"OPNDSK");
     assert_eq!(&t[16..24], b"ODFWFACP");
-    assert_eq!(t[131], 4);
+    assert_eq!(t[131], 5);
 }
 
 #[test]

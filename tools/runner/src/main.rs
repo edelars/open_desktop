@@ -110,6 +110,7 @@ fn main() -> ExitCode {
         Some("--stage6-smp-probe") => return stage6_smp_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         Some("boot-firmware") => return firmware_boot::run(&args[1..]),
+        Some("dump-handoff-block") => return firmware_boot::dump_handoff(&args[1..]),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         Some("s5-nvme-stand") => return s5_nvme_stand::run(&args[1..]),
         Some("linux-direct") => return linux_direct::run(&args[1..]),

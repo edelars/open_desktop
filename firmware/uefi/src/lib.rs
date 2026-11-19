@@ -23,6 +23,7 @@ pub mod mem;
 pub mod paging;
 pub mod pe;
 pub mod rt;
+pub mod smbios;
 pub mod stop;
 pub mod uefi;
 pub mod var;

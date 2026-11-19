@@ -5,14 +5,10 @@
 //! PM entry of the board manifest ([`AcpiPmEntry`], handoff code 9) and on the two table
 //! addresses the caller passes; nothing is read from the machine at run time.
 //!
-//! Sources. Offsets of the FADT, of the FACS and the bit tables were read from the ACPI **6.4**
-//! HTML edition through Context7 where the text was returned (FADT offsets 109, 112, 132, 140,
-//! 268; `IAPC_BOOT_ARCH` bits; flag bits `PWR_BUTTON` 4, `FIX_RTC` 6, `TMR_VAL_EXT` 8; the whole
-//! FACS layout and its version 2). The 6.6 pages answered HTTP 403, so that the 6.6 wording is
-//! NOT VERIFIED; `SLP_BUTTON` 5, `RESET_REG_SUP` 10, `HW_REDUCED_ACPI` 20, the remaining offsets,
-//! the minor version and the latency values are from the ACPI/ACPICA structure as known and are
-//! pinned only by the hand-assembled reference bytes in `fadt/tests.rs`. The FADT length 276 is
-//! the revision-6 length (it ends with the 8-byte hypervisor vendor identity at offset 268).
+//! Layout and flags follow ACPI 6.6 §5.2.9 and §5.2.10:
+//! <https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html>.
+//! The FADT length is 276 bytes, including the eight-byte hypervisor identity
+//! field. FACS revision 2 occupies 64 bytes.
 //!
 //! Fields (see MACHINE_CONTRACT.md, "ACPI fixed hardware (S7-14a)" and "S4-31 hand-over"):
 //! `SMI_CMD`, `ACPI_ENABLE/DISABLE`, `PM1b_*`, `PM2_CNT_BLK`, `GPE0/1` and their lengths are 0;
@@ -30,9 +26,8 @@ use super::table::{SDT_HEADER_LEN, TableError, finish_checksum, validate_table, 
 pub const FADT_SIGNATURE: [u8; 4] = *b"FACP";
 /// FADT major version (the table revision byte).
 pub const FADT_REVISION: u8 = 6;
-/// FADT minor version (offset 131). 4 = the edition that was read (ACPI 6.4); the 6.6 field
-/// layout is the same length, but a 6.6 minor version would claim a text that was not read.
-pub const FADT_MINOR_VERSION: u8 = 4;
+/// Offset 131 follows the literal ACPI 6.6 Table 5.9 entry: minor 5, errata 0.
+pub const FADT_MINOR_VERSION: u8 = 5;
 /// Length of a revision-6 FADT.
 pub const FADT_LEN: usize = 276;
 /// OEM Table ID of the FADT: an own string, 8 bytes.
@@ -46,18 +41,16 @@ pub const PM_PROFILE_DESKTOP: u8 = 1;
 /// the board has no processor power states and no `P_BLK`.
 pub const P_LVL_NOT_SUPPORTED: u16 = 0x0FFF;
 
-/// FADT flags (Table 5.10, bit offsets). Set: `PWR_BUTTON`, `SLP_BUTTON` (no fixed-feature
-/// buttons: a one means "control method device or none"), `FIX_RTC` (no RTC wake status in the
-/// fixed registers), `RESET_REG_SUP`. Everything else is zero, in particular `TMR_VAL_EXT`
-/// (24-bit timer), `HW_REDUCED_ACPI`, `WBINVD*` (only used for sleep states S1..S4, which the
-/// board does not declare) and `PROC_C1` (no C-states claimed).
+/// WBINVD flushes and invalidates the board's (empty) virtual processor caches.
+pub const FLAG_WBINVD: u32 = 1;
 pub const FLAG_PWR_BUTTON: u32 = 1 << 4;
 pub const FLAG_SLP_BUTTON: u32 = 1 << 5;
 pub const FLAG_FIX_RTC: u32 = 1 << 6;
 pub const FLAG_TMR_VAL_EXT: u32 = 1 << 8;
 pub const FLAG_RESET_REG_SUP: u32 = 1 << 10;
 pub const FLAG_HW_REDUCED_ACPI: u32 = 1 << 20;
-pub const FADT_FLAGS: u32 = FLAG_PWR_BUTTON | FLAG_SLP_BUTTON | FLAG_FIX_RTC | FLAG_RESET_REG_SUP;
+pub const FADT_FLAGS: u32 =
+    FLAG_WBINVD | FLAG_PWR_BUTTON | FLAG_SLP_BUTTON | FLAG_FIX_RTC | FLAG_RESET_REG_SUP;
 
 /// `IAPC_BOOT_ARCH` (Table 5.11, bit offsets). `VGA_NOT_PRESENT` is always set. The builder sets
 /// `CMOS_RTC_NOT_PRESENT` only when the handoff has no RTC/CMOS entry (S4-29/S7-14). Zero:

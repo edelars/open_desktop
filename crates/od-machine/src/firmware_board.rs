@@ -125,6 +125,10 @@ const SHADOW_END: u64 = FIRMWARE_LINK_BASE + FIRMWARE_IMAGE_BYTES as u64;
 const HANDOFF_MAGIC: &[u8; 8] = b"ODHANDOF";
 const HANDOFF_HEADER_BYTES: usize = 0xA0;
 const FV_APP_HANDOFF_HEADER_BYTES: usize = 0xA8;
+const ACPI_HANDOFF_HEADER_BYTES: usize = 0xB0;
+
+/// Charge one virtual execution cycle for each retired instruction on this board.
+pub const FIRMWARE_EXECUTION_CYCLE_NS: u64 = 1;
 const REGION_ENTRY_BYTES: usize = 32;
 const DEVICE_ENTRY_BYTES: usize = 48;
 /// Devices of handoff v1.0; the optional NVMe entry of v1.1 follows them.
@@ -171,6 +175,7 @@ const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
 const HANDOFF_MINOR_NVRAM: u16 = 7;
 const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
+const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -186,6 +191,7 @@ pub enum FirmwareFvApp {
     Ebs = 2,
     Vars = 3,
     Rt = 4,
+    Acpi = 5,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -484,6 +490,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "rt FV application needs ACPI fixed hardware, RTC and NVRAM",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Acpi) && !config.acpi_tables {
+        return Err(FirmwareBoardError::Config(
+            "acpi FV application needs ACPI tables",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
@@ -667,7 +678,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.fv_app == Some(FirmwareFvApp::Rt) {
+    if config.fv_app == Some(FirmwareFvApp::Acpi) {
+        HANDOFF_MINOR_FV_APP_ACPI
+    } else if config.fv_app == Some(FirmwareFvApp::Rt) {
         HANDOFF_MINOR_FV_APP_RT
     } else if config.nvram.is_some() {
         HANDOFF_MINOR_NVRAM
@@ -931,7 +944,9 @@ fn build_handoff(
     regions: &[HandoffRegion],
 ) -> Vec<u8> {
     let minor = handoff_minor(config, devices);
-    let header_size = if minor >= HANDOFF_MINOR_FV_APP {
+    let header_size = if minor >= HANDOFF_MINOR_FV_APP_ACPI {
+        ACPI_HANDOFF_HEADER_BYTES
+    } else if minor >= HANDOFF_MINOR_FV_APP {
         FV_APP_HANDOFF_HEADER_BYTES
     } else {
         HANDOFF_HEADER_BYTES
@@ -969,6 +984,13 @@ fn build_handoff(
     block[0x60..0x60 + config.serial.len()].copy_from_slice(&config.serial);
     if let Some(app) = config.fv_app {
         put32(&mut block, HANDOFF_HEADER_BYTES, app as u32);
+    }
+    if minor >= HANDOFF_MINOR_FV_APP_ACPI {
+        put32(
+            &mut block,
+            0xA8,
+            (1_000 / FIRMWARE_EXECUTION_CYCLE_NS) as u32,
+        );
     }
     for (index, region) in regions.iter().enumerate() {
         let at = region_table_offset + index * REGION_ENTRY_BYTES;
@@ -1663,6 +1685,18 @@ impl LoadedFirmwareBoard {
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
         &mut self.bus
+    }
+
+    /// Read the complete fixed ACPI address range in address order for diagnostics.
+    pub fn read_acpi_reservations(&mut self) -> Result<Vec<u8>, FirmwareBoardError> {
+        let mut bytes = vec![0; (FIRMWARE_ACPI_TABLES_BYTES + FIRMWARE_ACPI_FACS_BYTES) as usize];
+        self.bus
+            .read_flat_bytes(
+                GuestPhysicalAddress::new(FIRMWARE_ACPI_TABLES_BASE),
+                &mut bytes,
+            )
+            .map_err(FirmwareBoardError::Bus)?;
+        Ok(bytes)
     }
 
     /// S4-13d diagnostics: SHA-256 over the bytes of every plain-RAM region in address order,
@@ -3331,7 +3365,7 @@ impl LoadedFirmwareBoard {
                     self.com1_log.push(byte);
                 }
             }
-            self.advance_time_ns(report.instructions_executed)
+            self.advance_time_ns(report.instructions_executed * FIRMWARE_EXECUTION_CYCLE_NS)
                 .map_err(|error| LinuxRunFailure { error, retired })?;
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
@@ -3438,6 +3472,48 @@ pub(crate) struct AssembledBoard {
     rdtsc_tick: Option<Arc<AtomicBool>>,
 }
 
+struct FirmwareLayout {
+    devices: Vec<DeviceEntry>,
+    map: MachineMemoryMap,
+    table_pages: u64,
+    handoff: Vec<u8>,
+}
+
+impl FirmwareLayout {
+    fn for_config(config: &FirmwareBoardConfig) -> Result<Self, FirmwareBoardError> {
+        validate_config(config)?;
+        let devices = configured_board_devices(config);
+        let map = board_map(config, &devices)?;
+        let table_pages = boot_page_table_count(&map);
+        let page_table_bytes = table_pages * PAGE;
+        let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
+        debug_assert_eq!(FIRMWARE_BOOT_PAGE_TABLES_GPA, SHADOW_END);
+        let tables_end = FIRMWARE_BOOT_PAGE_TABLES_GPA + page_table_bytes;
+        if tables_end > low_end {
+            return Err(FirmwareBoardError::BootTablesDoNotFit {
+                required_end: tables_end,
+                ram_end: low_end,
+            });
+        }
+        let regions = handoff_regions(&map, &devices, page_table_bytes);
+        if regions.len() > MAX_REGIONS {
+            return Err(FirmwareBoardError::TooManyRegions(regions.len()));
+        }
+        let handoff = build_handoff(config, &devices, &regions);
+        Ok(Self {
+            devices,
+            map,
+            table_pages,
+            handoff,
+        })
+    }
+}
+
+/// Serialize the exact handoff configured for a firmware board without allocating a VM.
+pub fn firmware_handoff_block(config: &FirmwareBoardConfig) -> Result<Vec<u8>, FirmwareBoardError> {
+    Ok(FirmwareLayout::for_config(config)?.handoff)
+}
+
 /// Assemble the board without touching guest memory (S4-37L4): validate the
 /// configuration, build the memory map, handoff block, boot tables, devices and
 /// bus.
@@ -3452,34 +3528,15 @@ pub(crate) fn assemble_board(
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
-    let devices = configured_board_devices(config);
-    validate_config(config)?;
+    let FirmwareLayout {
+        devices,
+        map,
+        table_pages,
+        handoff,
+    } = FirmwareLayout::for_config(config)?;
     let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
-
-    let map = board_map(config, &devices)?;
-    let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
-    let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
     let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
-    // `handoff_regions` still derives the table region from the constant and assumes the
-    // tables start exactly at SHADOW_END. Moving the root requires passing it through there.
-    // A Linux board is assembled through this same path, so the handoff block is built too: the
-    // Linux loader compares its E820 map against it (S4-37L6) before `into_linux_board` drops
-    // the block and replaces the page table root with its own.
-    debug_assert_eq!(page_table_root, FIRMWARE_BOOT_PAGE_TABLES_GPA);
-    debug_assert_eq!(page_table_root, SHADOW_END);
-    let tables_end = page_table_root + page_table_bytes;
-    if tables_end > low_end {
-        return Err(FirmwareBoardError::BootTablesDoNotFit {
-            required_end: tables_end,
-            ram_end: low_end,
-        });
-    }
-    let regions = handoff_regions(&map, &devices, page_table_bytes);
-    if regions.len() > MAX_REGIONS {
-        return Err(FirmwareBoardError::TooManyRegions(regions.len()));
-    }
-    let handoff = build_handoff(config, &devices, &regions);
     let tables = build_boot_tables(&map, page_table_root, table_pages)?;
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
@@ -6237,6 +6294,39 @@ mod tests {
             assert_eq!(le_u32(bytes, 0xA4).unwrap(), 0);
             assert!(crc_is_valid(bytes));
         }
+    }
+
+    #[test]
+    fn acpi_selector_seals_the_same_handoff_for_dump_and_boot() {
+        let legacy = test_image(&[0xf4], &[(0x2A, &8u16.to_le_bytes())]);
+        let image = test_image(&[0xf4], &[(0x2A, &9u16.to_le_bytes())]);
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Acpi),
+            acpi_pm: true,
+            acpi_tables: true,
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            pci_ecam: true,
+            tsc_hz: 700_000_000,
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 8
+            })
+        ));
+        let board = load_firmware_image(&image, &config).unwrap();
+        let block = firmware_handoff_block(&config).unwrap();
+        assert_eq!(block, board.handoff_block());
+        assert!(crc_is_valid(&block));
+        assert_eq!(le_u16(&block, 0x0A).unwrap(), 9);
+        assert_eq!(le_u32(&block, 0x0C).unwrap(), 0xB0);
+        assert_eq!(le_u32(&block, 0xA0).unwrap(), 5);
+        assert_eq!(le_u32(&block, 0xA8).unwrap(), 1000);
+        assert_eq!(le_u64(&block, 0x20).unwrap(), 700_000_000);
+        assert_eq!(le_u32(&block, 0xAC).unwrap(), 0);
+        assert_eq!(le_u32(device_entry(&block, 4), 4).unwrap(), 0);
     }
 
     #[test]

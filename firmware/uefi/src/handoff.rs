@@ -4,7 +4,7 @@
 //! firmware services exist. Region/device record structure is checked; device-specific parameter
 //! values and consistency with the complete board memory map are validated by later steps.
 
-use crate::acpi::manifest::{AcpiPmEntry, DeviceEntry, ManifestError, device_type};
+use crate::acpi::manifest::{ABSENT_ENTRY, AcpiPmEntry, DeviceEntry, ManifestError, device_type};
 
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
@@ -12,6 +12,7 @@ pub const BOOT_PAGE_TABLES_GPA: u64 = 0x0060_0000;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
 const FV_APP_HEADER_SIZE: usize = 0xA8;
+const ACPI_HEADER_SIZE: usize = 0xB0;
 const CRC_OFFSET: usize = 0x14;
 const NO_OWNER: u32 = u32::MAX;
 const DEVICE_RTC_CMOS: u32 = 10;
@@ -20,10 +21,12 @@ const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
 const HANDOFF_MINOR_NVRAM: u16 = 7;
 const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_RT;
+const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_ACPI;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
+const MAX_HANDOFF_DEVICES: usize = DEVICE_RTC_CMOS as usize;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +36,7 @@ pub enum FirmwareFvApp {
     Ebs = 2,
     Vars = 3,
     Rt = 4,
+    Acpi = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +65,7 @@ pub enum HandoffError {
     InvalidHeaderSize(u32),
     InvalidTotalSize(u32),
     InvalidFvApp(u32),
+    InvalidVirtualCpuMHz(u32),
     MisalignedOffset {
         table: &'static str,
         offset: u32,
@@ -205,6 +210,7 @@ impl HandoffError {
             Self::InvalidBoardProfile(profile) => (STOP_HANDOFF_REGION, u64::from(profile)),
             Self::InvalidCpuCount(count) => (STOP_HANDOFF_CPU_COUNT, u64::from(count)),
             Self::InvalidTscFrequency(hz) => (STOP_HANDOFF_TSC, hz),
+            Self::InvalidVirtualCpuMHz(mhz) => (STOP_HANDOFF_CPU_COUNT, u64::from(mhz)),
             Self::InvalidSerialLength(length) => (STOP_HANDOFF_SERIAL, u64::from(length)),
             Self::InvalidSerial => (STOP_HANDOFF_SERIAL, 0),
             Self::InvalidFvApp(value) => (STOP_HANDOFF_FV_APP, u64::from(value)),
@@ -217,31 +223,43 @@ impl HandoffError {
     }
 }
 
-fn u16_at(bytes: &[u8], offset: usize) -> u16 {
+const fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
-fn u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        bytes[offset..offset + 4]
-            .try_into()
-            .expect("validated fixed field"),
-    )
+const fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(
-        bytes[offset..offset + 8]
-            .try_into()
-            .expect("validated fixed field"),
-    )
+const fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
+    ])
 }
 
-fn crc32_with_zeroed_field(bytes: &[u8]) -> u32 {
+const fn crc32_with_zeroed_field(bytes: &[u8]) -> u32 {
     crate::crc32::with_zeroed_word(bytes, CRC_OFFSET)
 }
 
-fn table_fits(offset: u32, count: u32, entry_size: u32, header_size: usize, total: usize) -> bool {
+const fn table_fits(
+    offset: u32,
+    count: u32,
+    entry_size: u32,
+    header_size: usize,
+    total: usize,
+) -> bool {
     let Some(size) = (count as usize).checked_mul(entry_size as usize) else {
         return false;
     };
@@ -251,7 +269,7 @@ fn table_fits(offset: u32, count: u32, entry_size: u32, header_size: usize, tota
     offset as usize >= header_size && end <= total
 }
 
-fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
+const fn table_end(offset: u32, count: u32, entry_size: u32) -> usize {
     offset as usize + count as usize * entry_size as usize
 }
 
@@ -280,7 +298,7 @@ pub(crate) struct RegionRecord {
     owner: u32,
 }
 
-fn region_at(bytes: &[u8], table_offset: usize, index: usize) -> RegionRecord {
+const fn region_at(bytes: &[u8], table_offset: usize, index: usize) -> RegionRecord {
     let at = table_offset + index * 0x20;
     RegionRecord {
         kind: u32_at(bytes, at),
@@ -309,7 +327,14 @@ fn mapped_block_count(bytes: &[u8], offset: usize, count: usize, shift: u32) -> 
     total
 }
 
-fn validate_regions(
+const fn range_within(base: u64, length: u64, limit: u64) -> bool {
+    match base.checked_add(length) {
+        Some(end) => end <= limit,
+        None => false,
+    }
+}
+
+const fn validate_regions(
     bytes: &[u8],
     offset: usize,
     count: usize,
@@ -317,7 +342,8 @@ fn validate_regions(
     version_minor: u16,
 ) -> Result<(), HandoffError> {
     let mut previous_end = 0u64;
-    for index in 0..count {
+    let mut index = 0;
+    while index < count {
         let at = offset + index * 0x20;
         let kind = u32_at(bytes, at);
         let attrs = u32_at(bytes, at + 4);
@@ -326,7 +352,7 @@ fn validate_regions(
         let owner = u32_at(bytes, at + 24);
         let reserved = u32_at(bytes, at + 28);
 
-        if !(1..=12).contains(&kind) || (kind >= 11 && version_minor < 2) {
+        if kind == 0 || kind > 12 || (kind >= 11 && version_minor < 2) {
             return Err(HandoffError::InvalidRegionType { index, kind });
         }
         if (kind == 6 && attrs > 0xFF) || (kind != 6 && attrs != 0) {
@@ -335,9 +361,7 @@ fn validate_regions(
         if base % 0x1000 != 0
             || length == 0
             || length % 0x1000 != 0
-            || base
-                .checked_add(length)
-                .is_none_or(|end| end > (1u64 << 36))
+            || !range_within(base, length, 1 << 36)
         {
             return Err(HandoffError::InvalidRegionRange { index });
         }
@@ -351,18 +375,20 @@ fn validate_regions(
             return Err(HandoffError::RegionsUnsortedOrOverlapping { index });
         }
         previous_end = base + length;
+        index += 1;
     }
     Ok(())
 }
 
-fn validate_devices(
+const fn validate_devices(
     bytes: &[u8],
     offset: usize,
     count: usize,
     version_minor: u16,
 ) -> Result<(), HandoffError> {
     let mut seen = [false; 11];
-    for index in 0..count {
+    let mut index = 0;
+    while index < count {
         let at = offset + index * 0x30;
         let kind = u32_at(bytes, at);
         let flags = u32_at(bytes, at + 4);
@@ -372,7 +398,7 @@ fn validate_devices(
         let present = flags & 1 != 0;
         let pio = flags & 2 != 0;
 
-        if !(1..=10).contains(&kind) {
+        if kind == 0 || kind > DEVICE_RTC_CMOS {
             return Err(HandoffError::InvalidDeviceType { index, kind });
         }
         let required_minor = match kind {
@@ -407,7 +433,11 @@ fn validate_devices(
         {
             return Err(HandoffError::InvalidDeviceFlags { index, flags });
         }
-        if (kind >= 8 || (kind == DEVICE_NVRAM && version_minor >= HANDOFF_MINOR_NVRAM)) && !present
+        if (kind >= 8
+            || (kind == DEVICE_NVRAM
+                && version_minor >= HANDOFF_MINOR_NVRAM
+                && version_minor <= HANDOFF_MINOR_FV_APP_RT))
+            && !present
         {
             return Err(HandoffError::RequiredDeviceNotPresent { index, kind });
         }
@@ -415,10 +445,9 @@ fn validate_devices(
             || (present
                 && (length == 0
                     || if pio {
-                        base > 0xFFFF || base.checked_add(length).is_none_or(|end| end > 0x1_0000)
+                        !range_within(base, length, 0x1_0000)
                     } else {
-                        base.checked_add(length)
-                            .is_none_or(|end| end > (1u64 << 36))
+                        !range_within(base, length, 1 << 36)
                     }))
         {
             return Err(HandoffError::InvalidDeviceRange { index });
@@ -447,11 +476,14 @@ fn validate_devices(
         {
             return Err(HandoffError::InvalidDeviceRange { index });
         }
+        index += 1;
     }
-    for kind in 1..=7 {
+    let mut kind = 1;
+    while kind <= 7 {
         if !seen[kind] {
             return Err(HandoffError::MissingDeviceType { kind: kind as u32 });
         }
+        kind += 1;
     }
     if version_minor == 1 && !seen[8] {
         return Err(HandoffError::MissingDeviceType { kind: 8 });
@@ -460,10 +492,11 @@ fn validate_devices(
         return Err(HandoffError::MissingDeviceType { kind: 9 });
     }
     if version_minor == 3 {
-        for kind in [8, 9] {
-            if !seen[kind] {
-                return Err(HandoffError::MissingDeviceType { kind: kind as u32 });
-            }
+        if !seen[8] {
+            return Err(HandoffError::MissingDeviceType { kind: 8 });
+        }
+        if !seen[9] {
+            return Err(HandoffError::MissingDeviceType { kind: 9 });
         }
     }
     if version_minor == HANDOFF_MINOR_RTC && !seen[DEVICE_RTC_CMOS as usize] {
@@ -471,12 +504,17 @@ fn validate_devices(
             kind: DEVICE_RTC_CMOS,
         });
     }
-    if version_minor == HANDOFF_MINOR_FV_APP_RT {
-        for kind in [9, DEVICE_RTC_CMOS] {
-            if !seen[kind as usize] {
-                return Err(HandoffError::MissingDeviceType { kind });
-            }
-        }
+    if matches!(
+        version_minor,
+        HANDOFF_MINOR_FV_APP_RT | HANDOFF_MINOR_FV_APP_ACPI
+    ) && !seen[9]
+    {
+        return Err(HandoffError::MissingDeviceType { kind: 9 });
+    }
+    if version_minor == HANDOFF_MINOR_FV_APP_RT && !seen[DEVICE_RTC_CMOS as usize] {
+        return Err(HandoffError::MissingDeviceType {
+            kind: DEVICE_RTC_CMOS,
+        });
     }
     Ok(())
 }
@@ -519,13 +557,17 @@ fn validate_header_fields(bytes: &[u8]) -> Result<(), HandoffError> {
 }
 
 impl<'a> Handoff<'a> {
-    /// Validates the fixed header, table extents and CRC before exposing any offsets.
-    pub fn parse(bytes: &'a [u8], supported_minor_max: u16) -> Result<Self, HandoffError> {
+    // Shared framing checks for live boot and the freestanding ACPI carrier.
+    const fn parse_wire(bytes: &'a [u8], supported_minor_max: u16) -> Result<Self, HandoffError> {
         if bytes.len() < HEADER_SIZE {
             return Err(HandoffError::TruncatedHeader);
         }
-        if &bytes[..8] != MAGIC {
-            return Err(HandoffError::BadMagic);
+        let mut index = 0;
+        while index < MAGIC.len() {
+            if bytes[index] != MAGIC[index] {
+                return Err(HandoffError::BadMagic);
+            }
+            index += 1;
         }
         let major = u16_at(bytes, 0x08);
         let minor = u16_at(bytes, 0x0A);
@@ -536,7 +578,9 @@ impl<'a> Handoff<'a> {
             return Err(HandoffError::UnsupportedVersion { major, minor });
         }
         let header_size = u32_at(bytes, 0x0C);
-        let expected_header = if minor >= HANDOFF_MINOR_FV_APP {
+        let expected_header = if minor >= HANDOFF_MINOR_FV_APP_ACPI {
+            ACPI_HEADER_SIZE
+        } else if minor >= HANDOFF_MINOR_FV_APP {
             FV_APP_HEADER_SIZE
         } else {
             HEADER_SIZE
@@ -546,7 +590,8 @@ impl<'a> Handoff<'a> {
         }
         let total_size = u32_at(bytes, 0x10);
         let total = total_size as usize;
-        if !(expected_header..=HANDOFF_WINDOW_SIZE).contains(&total)
+        if total < expected_header
+            || total > HANDOFF_WINDOW_SIZE
             || total > bytes.len()
             || total % 8 != 0
         {
@@ -555,14 +600,15 @@ impl<'a> Handoff<'a> {
         // CRC is the first content check after validating the range it covers. Report corruption
         // uniformly before interpreting table metadata from the damaged block.
         let stored = u32_at(bytes, CRC_OFFSET);
-        let computed = crc32_with_zeroed_field(&bytes[..total]);
+        let contents = bytes.split_at(total).0;
+        let computed = crc32_with_zeroed_field(contents);
         if stored != computed {
             return Err(HandoffError::BadCrc { stored, computed });
         }
         let region_offset = u32_at(bytes, 0x30);
         let region_count = u32_at(bytes, 0x34);
         let region_entry_size = u32_at(bytes, 0x38);
-        if !(1..=MAX_HANDOFF_REGIONS as u32).contains(&region_count) {
+        if region_count == 0 || region_count > MAX_HANDOFF_REGIONS as u32 {
             return Err(HandoffError::InvalidTableCount {
                 table: "region",
                 count: region_count,
@@ -595,13 +641,14 @@ impl<'a> Handoff<'a> {
         let valid_device_count = match minor {
             0 => device_count == 7,
             1 => device_count == 8,
-            2 => (8..=9).contains(&device_count),
+            2 => device_count >= 8 && device_count <= 9,
             3 => device_count == 9,
-            HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
+            HANDOFF_MINOR_RTC => device_count >= 8 && device_count <= 10,
             HANDOFF_MINOR_FV_APP
             | HANDOFF_MINOR_FV_APP_VARS
             | HANDOFF_MINOR_NVRAM
-            | HANDOFF_MINOR_FV_APP_RT => (7..=10).contains(&device_count),
+            | HANDOFF_MINOR_FV_APP_RT
+            | HANDOFF_MINOR_FV_APP_ACPI => device_count >= 7 && device_count <= 10,
             _ => false,
         };
         if !valid_device_count {
@@ -640,14 +687,39 @@ impl<'a> Handoff<'a> {
         {
             return Err(HandoffError::OverlappingTables);
         }
+        Ok(Self {
+            bytes: contents,
+            version_minor: minor,
+            tsc_hz: u64_at(bytes, 0x20),
+            board_profile: u32_at(bytes, 0x28),
+            fv_app: None,
+            region_table_offset: region_offset as usize,
+            region_count: region_count as usize,
+            region_entry_size: region_entry_size as usize,
+            device_table_offset: device_offset as usize,
+            device_count: device_count as usize,
+            device_entry_size: device_entry_size as usize,
+        })
+    }
+
+    /// Validates the sealed block, including the regions, devices and header fields.
+    pub fn parse(bytes: &'a [u8], supported_minor_max: u16) -> Result<Self, HandoffError> {
+        let mut handoff = Self::parse_wire(bytes, supported_minor_max)?;
+        let bytes = handoff.bytes;
+        let minor = handoff.version_minor;
         validate_regions(
             bytes,
-            region_offset as usize,
-            region_count as usize,
-            device_count as usize,
+            handoff.region_table_offset,
+            handoff.region_count,
+            handoff.device_count,
             minor,
         )?;
-        validate_devices(bytes, device_offset as usize, device_count as usize, minor)?;
+        validate_devices(
+            bytes,
+            handoff.device_table_offset,
+            handoff.device_count,
+            minor,
+        )?;
         validate_header_fields(bytes)?;
         let fv_app = if minor >= HANDOFF_MINOR_FV_APP {
             if u32_at(bytes, 0xA4) != 0 {
@@ -659,6 +731,7 @@ impl<'a> Handoff<'a> {
                 2 => Some(FirmwareFvApp::Ebs),
                 3 if minor >= HANDOFF_MINOR_FV_APP_VARS => Some(FirmwareFvApp::Vars),
                 4 if minor >= HANDOFF_MINOR_FV_APP_RT => Some(FirmwareFvApp::Rt),
+                5 if minor >= HANDOFF_MINOR_FV_APP_ACPI => Some(FirmwareFvApp::Acpi),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
@@ -667,19 +740,19 @@ impl<'a> Handoff<'a> {
         if minor == HANDOFF_MINOR_FV_APP_RT && fv_app != Some(FirmwareFvApp::Rt) {
             return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
         }
-        let handoff = Self {
-            bytes: &bytes[..total],
-            version_minor: minor,
-            tsc_hz: u64_at(bytes, 0x20),
-            board_profile: u32_at(bytes, 0x28),
-            fv_app,
-            region_table_offset: region_offset as usize,
-            region_count: region_count as usize,
-            region_entry_size: region_entry_size as usize,
-            device_table_offset: device_offset as usize,
-            device_count: device_count as usize,
-            device_entry_size: device_entry_size as usize,
-        };
+        if minor == HANDOFF_MINOR_FV_APP_ACPI && fv_app != Some(FirmwareFvApp::Acpi) {
+            return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
+        }
+        if minor == HANDOFF_MINOR_FV_APP_ACPI {
+            let mhz = u32_at(bytes, 0xA8);
+            if mhz == 0 || mhz > u16::MAX as u32 {
+                return Err(HandoffError::InvalidVirtualCpuMHz(mhz));
+            }
+            if u32_at(bytes, 0xAC) != 0 {
+                return Err(HandoffError::NonZeroHeaderReserved { offset: 0xAC });
+            }
+        }
+        handoff.fv_app = fv_app;
         if minor >= HANDOFF_MINOR_NVRAM {
             handoff.validate_nvram_region()?;
         }
@@ -707,32 +780,36 @@ impl<'a> Handoff<'a> {
 
     /// Available only in a block with the validated NVRAM device and region.
     pub fn nvram_base(&self) -> Option<u64> {
-        (self.version_minor >= HANDOFF_MINOR_NVRAM).then_some(NVRAM_BASE)
+        self.nvram_owner().map(|_| NVRAM_BASE)
+    }
+
+    fn nvram_owner(&self) -> Option<u32> {
+        (0..self.device_count)
+            .find(|&index| {
+                let at = self.device_table_offset + index * self.device_entry_size;
+                u32_at(self.bytes, at) == DEVICE_NVRAM && u32_at(self.bytes, at + 4) & 1 != 0
+            })
+            .map(|index| index as u32)
     }
 
     fn validate_nvram_region(&self) -> Result<(), HandoffError> {
-        let owner = (0..self.device_count)
-            .find(|&index| {
-                u32_at(
-                    self.bytes,
-                    self.device_table_offset + index * self.device_entry_size,
-                ) == DEVICE_NVRAM
-            })
-            .unwrap() as u32;
         let mut regions = self
             .regions()
             .filter(|region| region.kind == region_kind::NVRAM);
-        if let Some(region) = regions.next()
-            && region.base == NVRAM_BASE
-            && region.length == NVRAM_BYTES
-            && region.owner == owner
-            && regions.next().is_none()
-        {
-            return Ok(());
+        match (self.nvram_owner(), regions.next()) {
+            (None, None) => Ok(()),
+            (Some(owner), Some(region))
+                if region.base == NVRAM_BASE
+                    && region.length == NVRAM_BYTES
+                    && region.owner == owner
+                    && regions.next().is_none() =>
+            {
+                Ok(())
+            }
+            _ => Err(HandoffError::InvalidBootReservation {
+                kind: region_kind::NVRAM,
+            }),
         }
-        Err(HandoffError::InvalidBootReservation {
-            kind: region_kind::NVRAM,
-        })
     }
 
     pub const fn version_minor(&self) -> u16 {
@@ -747,6 +824,27 @@ impl<'a> Handoff<'a> {
         self.board_profile
     }
 
+    pub(crate) fn system_uuid(&self) -> &[u8; 16] {
+        self.bytes[0x48..0x58].try_into().unwrap()
+    }
+
+    pub(crate) fn serial(&self) -> &[u8] {
+        let length = u16_at(self.bytes, 0x58) as usize;
+        &self.bytes[0x60..0x60 + length]
+    }
+
+    pub(crate) fn cpu_count(&self) -> u16 {
+        u32_at(self.bytes, 0x1C) as u16
+    }
+
+    pub(crate) fn virtual_cpu_mhz(&self) -> u16 {
+        if self.version_minor >= HANDOFF_MINOR_FV_APP_ACPI {
+            u32_at(self.bytes, 0xA8) as u16
+        } else {
+            0
+        }
+    }
+
     pub const fn region_count(&self) -> usize {
         self.region_count
     }
@@ -755,25 +853,24 @@ impl<'a> Handoff<'a> {
         self.device_count
     }
 
+    /// Decode the validated handoff entries in wire order.
+    pub const fn device_entries(&self) -> ([DeviceEntry; MAX_HANDOFF_DEVICES], usize) {
+        decode_devices(
+            self.bytes,
+            self.device_table_offset,
+            self.device_entry_size,
+            self.device_count,
+        )
+    }
+
     /// Returns the decoded and validated fixed ACPI hardware entry, if present.
     pub fn acpi_fixed_hardware(&self) -> Result<Option<AcpiPmEntry>, ManifestError> {
         for index in 0..self.device_count {
             let at = self.device_table_offset + index * self.device_entry_size;
-            let kind = u32_at(self.bytes, at);
-            if kind != device_type::ACPI_PM {
+            if u32_at(self.bytes, at) != device_type::ACPI_PM {
                 continue;
             }
-            return AcpiPmEntry::from_entry(&DeviceEntry {
-                device_type: kind,
-                flags: u32_at(self.bytes, at + 4),
-                base: u64_at(self.bytes, at + 8),
-                length: u64_at(self.bytes, at + 16),
-                gsi: u32_at(self.bytes, at + 24),
-                irq_flags: u32_at(self.bytes, at + 28),
-                param0: u64_at(self.bytes, at + 32),
-                param1: u64_at(self.bytes, at + 40),
-            })
-            .map(Some);
+            return AcpiPmEntry::from_entry(&DeviceEntry::read_at(self.bytes, at)).map(Some);
         }
         Ok(None)
     }
@@ -789,35 +886,10 @@ impl<'a> Handoff<'a> {
     /// Checks the fixed boot reservations and the temporary page-table reservation against the
     /// board contract. The caller invokes this after parsing the block and before using its map.
     pub fn validate_boot_reservations(&self) -> Result<(), HandoffError> {
-        let get_one = |kind: u32| -> Result<RegionRecord, HandoffError> {
-            let mut found = None;
-            for index in 0..self.region_count {
-                let region = region_at(self.bytes, self.region_table_offset, index);
-                if region.kind == kind {
-                    if found.is_some() {
-                        return Err(HandoffError::InvalidBootReservation { kind });
-                    }
-                    found = Some(region);
-                }
-            }
-            found.ok_or(HandoffError::InvalidBootReservation { kind })
-        };
-        let check = |kind: u32, base: u64, length: u64| -> Result<RegionRecord, HandoffError> {
-            let region = get_one(kind)?;
-            if region.base != base
-                || region.length != length
-                || region.attrs != 0
-                || region.owner != NO_OWNER
-            {
-                return Err(HandoffError::InvalidBootReservation { kind });
-            }
-            Ok(region)
-        };
-
-        check(7, 0x0010_0000, 0x1_0000)?;
-        check(8, 0x0011_0000, 0x4_0000)?;
-        check(9, 0x0020_0000, 0x40_0000)?;
-        let page_tables = get_one(10)?;
+        self.check_reservation(7, 0x0010_0000, 0x1_0000)?;
+        self.check_reservation(8, 0x0011_0000, 0x4_0000)?;
+        self.check_reservation(9, 0x0020_0000, 0x40_0000)?;
+        let page_tables = self.unique_reservation(10)?;
         let expected_pages =
             mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 21)
                 + mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 30)
@@ -834,30 +906,141 @@ impl<'a> Handoff<'a> {
             });
         }
 
-        let acpi_tables = self.region_count_by_kind(11);
-        let acpi_nvs = self.region_count_by_kind(12);
+        self.validate_acpi_reservations()
+    }
+
+    const fn unique_reservation(&self, kind: u32) -> Result<RegionRecord, HandoffError> {
+        let mut found = None;
+        let mut index = 0;
+        while index < self.region_count {
+            let region = region_at(self.bytes, self.region_table_offset, index);
+            if region.kind == kind {
+                if found.is_some() {
+                    return Err(HandoffError::InvalidBootReservation { kind });
+                }
+                found = Some(region);
+            }
+            index += 1;
+        }
+        match found {
+            Some(region) => Ok(region),
+            None => Err(HandoffError::InvalidBootReservation { kind }),
+        }
+    }
+
+    const fn check_reservation(
+        &self,
+        kind: u32,
+        base: u64,
+        length: u64,
+    ) -> Result<(), HandoffError> {
+        match self.unique_reservation(kind) {
+            Ok(region)
+                if region.base == base
+                    && region.length == length
+                    && region.attrs == 0
+                    && region.owner == NO_OWNER =>
+            {
+                Ok(())
+            }
+            _ => Err(HandoffError::InvalidBootReservation { kind }),
+        }
+    }
+
+    const fn validate_acpi_reservations(&self) -> Result<(), HandoffError> {
+        let mut acpi_tables = 0;
+        let mut acpi_nvs = 0;
+        let mut index = 0;
+        while index < self.region_count {
+            match region_at(self.bytes, self.region_table_offset, index).kind {
+                region_kind::ACPI_TABLES => acpi_tables += 1,
+                region_kind::ACPI_NVS => acpi_nvs += 1,
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut index = 0;
         let mut acpi_device_present = false;
-        for index in 0..self.device_count {
+        while index < self.device_count {
             let at = self.device_table_offset + index * self.device_entry_size;
-            if u32_at(self.bytes, at) == 9 && u32_at(self.bytes, at + 4) & 1 != 0 {
+            if u32_at(self.bytes, at) == device_type::ACPI_PM && u32_at(self.bytes, at + 4) & 1 != 0
+            {
                 acpi_device_present = true;
             }
+            index += 1;
         }
-        if (acpi_tables == 1) != acpi_device_present || acpi_tables != acpi_nvs {
+        if acpi_tables != acpi_device_present as usize || acpi_tables != acpi_nvs {
             return Err(HandoffError::InvalidAcpiReservations);
         }
         if acpi_device_present {
-            check(11, 0x000E_0000, 0xF000)?;
-            check(12, 0x000E_F000, 0x1000)?;
+            use crate::acpi::blob::{
+                ACPI_RECLAIM_END, ACPI_REGION_BASE, ACPI_REGION_END, FACS_ADDRESS,
+            };
+            if let Err(error) = self.check_reservation(
+                region_kind::ACPI_TABLES,
+                ACPI_REGION_BASE,
+                ACPI_RECLAIM_END - ACPI_REGION_BASE,
+            ) {
+                return Err(error);
+            }
+            return self.check_reservation(
+                region_kind::ACPI_NVS,
+                FACS_ADDRESS,
+                ACPI_REGION_END - FACS_ADDRESS,
+            );
         }
         Ok(())
     }
 
-    fn region_count_by_kind(&self, kind: u32) -> usize {
-        (0..self.region_count)
-            .filter(|&index| region_at(self.bytes, self.region_table_offset, index).kind == kind)
-            .count()
+    /// Read the sealed block for data-only ACPI compilation. Check the same
+    /// wire framing, device ranges and ACPI reservations used by live boot.
+    pub const fn acpi_blob_devices(
+        bytes: &'a [u8],
+    ) -> Result<([DeviceEntry; MAX_HANDOFF_DEVICES], usize), HandoffError> {
+        let handoff = match Self::parse_wire(bytes, HANDOFF_MINOR_MAX) {
+            Ok(handoff) => handoff,
+            Err(error) => return Err(error),
+        };
+        if handoff.bytes.len() != bytes.len() {
+            return Err(HandoffError::InvalidTotalSize(bytes.len() as u32));
+        }
+        if let Err(error) = validate_regions(
+            bytes,
+            handoff.region_table_offset,
+            handoff.region_count,
+            handoff.device_count,
+            handoff.version_minor,
+        ) {
+            return Err(error);
+        }
+        if let Err(error) = validate_devices(
+            bytes,
+            handoff.device_table_offset,
+            handoff.device_count,
+            handoff.version_minor,
+        ) {
+            return Err(error);
+        }
+        match handoff.validate_acpi_reservations() {
+            Ok(()) => Ok(handoff.device_entries()),
+            Err(error) => Err(error),
+        }
     }
+}
+
+const fn decode_devices(
+    bytes: &[u8],
+    offset: usize,
+    entry_size: usize,
+    count: usize,
+) -> ([DeviceEntry; MAX_HANDOFF_DEVICES], usize) {
+    let mut devices = [ABSENT_ENTRY; MAX_HANDOFF_DEVICES];
+    let mut index = 0;
+    while index < count {
+        devices[index] = DeviceEntry::read_at(bytes, offset + index * entry_size);
+        index += 1;
+    }
+    (devices, count)
 }
 
 #[cfg(test)]
@@ -898,6 +1081,35 @@ mod tests {
     fn seal(bytes: &mut [u8]) {
         let crc = crc32_with_zeroed_field(bytes);
         bytes[CRC_OFFSET..CRC_OFFSET + 4].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn v19_binds_acpi_metadata_and_offline_devices_to_the_same_handoff() {
+        const BLOCK: &[u8] = include_bytes!("../../../tests/fixtures/firmware/acpi_handoff.bin");
+        let boot = Handoff::parse_for_boot(BLOCK, HANDOFF_MINOR_MAX).unwrap();
+        assert_eq!(boot.fv_app(), Some(FirmwareFvApp::Acpi));
+        assert_eq!(boot.nvram_base(), None);
+        assert_eq!(boot.virtual_cpu_mhz(), 1000);
+        assert_eq!(Handoff::acpi_blob_devices(BLOCK), Ok(boot.device_entries()));
+
+        let mut corrupt = BLOCK.to_vec();
+        corrupt[0xA8] ^= 1;
+        assert!(matches!(
+            Handoff::acpi_blob_devices(&corrupt),
+            Err(HandoffError::BadCrc { .. })
+        ));
+        corrupt[0xA8..0xAC].fill(0);
+        seal(&mut corrupt);
+        assert_eq!(
+            Handoff::parse(&corrupt, HANDOFF_MINOR_MAX),
+            Err(HandoffError::InvalidVirtualCpuMHz(0))
+        );
+        let mut corrupt = BLOCK.to_vec();
+        corrupt.push(0);
+        assert!(matches!(
+            Handoff::acpi_blob_devices(&corrupt),
+            Err(HandoffError::InvalidTotalSize(_))
+        ));
     }
 
     fn sample_with_two_regions() -> Vec<u8> {

@@ -14,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-changed=acpi_blob.ld");
     println!("cargo:rerun-if-env-changed=OD_FW_CLANG");
     println!("cargo:rerun-if-env-changed=OD_FW_FV_ARCHIVE");
+    println!("cargo:rerun-if-env-changed=OD_FW_ACPI_HANDOFF");
 
     let target = env::var("TARGET").unwrap_or_default();
     if target == "x86_64-unknown-uefi" {

@@ -74,7 +74,10 @@ fn invoke_with_args(image: &[u8], budget: &str, extra: &[&str]) -> Run {
 fn fv_app_rejects_invalid_selection_before_launch() {
     let legacy = image(&[0xf4]);
     for (extra, error) in [
-        (&["--fv-app", "other"][..], "expected hello, ebs, vars or rt"),
+        (
+            &["--fv-app", "other"][..],
+            "expected hello, ebs, vars, rt or acpi",
+        ),
         (
             &["--fv-app", "hello", "--fv-app", "ebs"][..],
             "duplicate option --fv-app",

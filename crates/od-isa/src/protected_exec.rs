@@ -181,6 +181,8 @@ pub enum ProtectedInstruction {
     CmpEdxWithDs(u32),
     /// `0f 32`: `RDMSR`; only `ECX = 0xC0000080` (EFER) is modelled.
     Rdmsr,
+    /// `0f 09`: no dirty cache lines in the ordered interpreter.
+    Wbinvd,
     /// `0f 30`: `WRMSR`; only `ECX = 0xC0000080` (EFER) is modelled.
     Wrmsr,
     /// `0f 22 e0`.
@@ -675,6 +677,7 @@ impl ProtectedCpu {
                     Ok((ProtectedInstruction::BtDsImm8 { disp, bit }, 8))
                 }
                 0x32 => Ok((ProtectedInstruction::Rdmsr, 2)),
+                0x09 => Ok((ProtectedInstruction::Wbinvd, 2)),
                 0x30 => Ok((ProtectedInstruction::Wrmsr, 2)),
                 0x22 => match self.fetch(mem, 2)? {
                     0xE0 => Ok((ProtectedInstruction::MovCr4Eax, 3)),
@@ -1090,6 +1093,7 @@ impl ProtectedCpu {
                 self.gpr[EAX] = self.efer as u32;
                 self.gpr[EDX] = (self.efer >> 32) as u32;
             }
+            ProtectedInstruction::Wbinvd => {}
             ProtectedInstruction::Wrmsr => {
                 if self.gpr[ECX] != MSR_EFER {
                     return Err(self.unsupported(mem));
@@ -1312,6 +1316,22 @@ mod tests {
             assert_eq!(*ram, ram_before, "memory unchanged by a refusal");
         }
         result
+    }
+
+    #[test]
+    fn wbinvd_advances_eip_in_protected_mode_without_data_changes() {
+        let mut ram = new_ram();
+        put(&mut ram, 0x2000, &[0x0f, 0x09]);
+        let mut cpu = entry_cpu();
+        let ram_before = ram.clone();
+        let mut expected = cpu;
+        expected.eip += 2;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::Wbinvd)
+        );
+        assert_eq!(cpu, expected);
+        assert_eq!(ram, ram_before);
     }
 
     // ---- the linked bytes ----------------------------------------------------------------

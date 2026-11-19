@@ -6,7 +6,7 @@ section of the freestanding `od-acpi-blob` binary (`firmware/uefi`, target
 `x86_64-unknown-none`), cut out by `tools/build/build_stage4_acpi_blob.py`. Format:
 `firmware/uefi/src/acpi/blob.rs`.
 
-Current fixture SHA-256: `6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d`. The
+Current fixture SHA-256: `1070016a0350872a4eff3ac78cb327ee0942ca189f615953cd978b6aa8f0dc29`. The
 2026-11-08 [S4-31g evidence record](../../../../../docs/reports/data/stage4/s4-31g-full-blob.json)
 preserves the earlier 1072-byte pre-CPU0 blob; the current 1104-byte replacement is documented
 in the [S4-31b CPU namespace follow-up](../../../../../docs/reports/STAGE_4_S4-31B_2026-11-08.md).
@@ -26,3 +26,5 @@ When a serializer, the manifest or the layout changes, regenerate it:
 python3 tools/build/build_stage4_acpi_blob.py
 cp work/stage4/acpi_blob/stage4_acpi_blob.bin tests/fixtures/guest/stage4/acpi_blob/
 ```
+
+S7-13 updates the FADT minor version, WBINVD bit and corresponding checksum.

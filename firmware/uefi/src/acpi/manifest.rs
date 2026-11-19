@@ -74,7 +74,7 @@ pub struct DeviceEntry {
 }
 
 /// An all-zero entry, the filler of unused slots (`DeviceEntry::default()` is not const).
-const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
+pub(crate) const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
     device_type: 0,
     flags: 0,
     base: 0,
@@ -85,29 +85,40 @@ const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
     param1: 0,
 };
 
-fn le32(bytes: &[u8], at: usize) -> u32 {
+const fn le32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-fn le64(bytes: &[u8], at: usize) -> u64 {
-    let mut raw = [0u8; 8];
-    raw.copy_from_slice(&bytes[at..at + 8]);
-    u64::from_le_bytes(raw)
+const fn le64(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[at],
+        bytes[at + 1],
+        bytes[at + 2],
+        bytes[at + 3],
+        bytes[at + 4],
+        bytes[at + 5],
+        bytes[at + 6],
+        bytes[at + 7],
+    ])
 }
 
 impl DeviceEntry {
     /// Decodes an entry (offsets from FIRMWARE_BOOT.md 6.3: `type` 0x00, `flags` 0x04, `base`
     /// 0x08, `length` 0x10, `gsi` 0x18, `irq_flags` 0x1C, `param0` 0x20, `param1` 0x28).
-    pub fn parse(raw: &[u8; DEVICE_ENTRY_SIZE]) -> Self {
+    pub const fn parse(raw: &[u8; DEVICE_ENTRY_SIZE]) -> Self {
+        Self::read_at(raw, 0)
+    }
+
+    pub(crate) const fn read_at(raw: &[u8], start: usize) -> Self {
         DeviceEntry {
-            device_type: le32(raw, 0x00),
-            flags: le32(raw, 0x04),
-            base: le64(raw, 0x08),
-            length: le64(raw, 0x10),
-            gsi: le32(raw, 0x18),
-            irq_flags: le32(raw, 0x1C),
-            param0: le64(raw, 0x20),
-            param1: le64(raw, 0x28),
+            device_type: le32(raw, start),
+            flags: le32(raw, start + 0x04),
+            base: le64(raw, start + 0x08),
+            length: le64(raw, start + 0x10),
+            gsi: le32(raw, start + 0x18),
+            irq_flags: le32(raw, start + 0x1C),
+            param0: le64(raw, start + 0x20),
+            param1: le64(raw, start + 0x28),
         }
     }
 

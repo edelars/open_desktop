@@ -6,8 +6,9 @@
 //! (`docs/specs/FIRMWARE_BOOT.md` sections 8 and 11).
 
 use od_machine::{
-    FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp, LoadedFirmwareBoard,
-    MachineStopReason, NvramConfig, PagedProbeExit, load_firmware_image,
+    FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
+    LoadedFirmwareBoard, MachineStopReason, NvramConfig, PagedProbeExit, firmware_handoff_block,
+    load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -17,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt] [--nvram-reboot-out <file>]";
+                    [--fv-app hello|ebs|vars|rt|acpi] [--nvram-reboot-out <file>] [--acpi-out <file>]";
+const DUMP_USAGE: &str = "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi]";
 
 struct Options {
     image: String,
@@ -25,6 +27,72 @@ struct Options {
     budget: u64,
     fv_app: Option<FirmwareFvApp>,
     nvram_reboot_out: Option<String>,
+    acpi_out: Option<String>,
+}
+
+fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardConfig {
+    let rt = fv_app == Some(FirmwareFvApp::Rt);
+    let acpi = fv_app == Some(FirmwareFvApp::Acpi);
+    FirmwareBoardConfig {
+        fv_app,
+        acpi_pm: rt || acpi,
+        acpi_tables: rt || acpi,
+        rtc_base_unix_seconds: (rt || acpi).then_some(1_704_067_200),
+        pci_ecam: acpi,
+        // Stable fixture identity for the diagnostic firmware-volume application.
+        system_uuid: if acpi {
+            *b"\x79\xa3\x31\x49\x27\x43\x80\x43\xa2\x9b\x88\x19\x20\x31\x6b\x40"
+        } else {
+            [0; 16]
+        },
+        serial: if acpi {
+            b"OD-S7-13".to_vec()
+        } else {
+            Vec::new()
+        },
+        nvram: (rt || reboot).then_some(NvramConfig::Empty),
+        ..FirmwareBoardConfig::default()
+    }
+}
+
+fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
+    match value {
+        "hello" => Ok(FirmwareFvApp::Hello),
+        "ebs" => Ok(FirmwareFvApp::Ebs),
+        "vars" => Ok(FirmwareFvApp::Vars),
+        "rt" => Ok(FirmwareFvApp::Rt),
+        "acpi" => Ok(FirmwareFvApp::Acpi),
+        _ => Err(format!(
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt or acpi"
+        )),
+    }
+}
+
+pub fn dump_handoff(args: &[String]) -> ExitCode {
+    let run = || -> Result<(), String> {
+        let mut out = None;
+        let mut app = None;
+        for option in args.chunks(2) {
+            match option {
+                [name, value] if name == "--out" && out.is_none() => out = Some(value),
+                [name, value] if name == "--fv-app" && app.is_none() => {
+                    app = Some(parse_app(value)?);
+                }
+                _ => return Err(format!("usage: {DUMP_USAGE}")),
+            }
+        }
+        let path = out.ok_or_else(|| format!("usage: {DUMP_USAGE}"))?;
+        let block = firmware_handoff_block(&board_config(app, false))
+            .map_err(|error| format!("{error:?}"))?;
+        fs::write(path, block).map_err(|error| format!("{path}: {error}"))
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("dump-handoff-block: {error}");
+            ExitCode::from(3)
+        }
+    }
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -37,6 +105,11 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
+    if let Some(path) = &options.acpi_out
+        && let Err(error) = validate_output_paths(&options.image, &options.com1_out, path)
+    {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
     let read = File::open(&options.image).and_then(|file| {
         file.take(FIRMWARE_IMAGE_BYTES as u64 + 1)
@@ -45,19 +118,40 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let rt = options.fv_app == Some(FirmwareFvApp::Rt);
-    let config = FirmwareBoardConfig {
-        fv_app: options.fv_app,
-        acpi_pm: rt,
-        acpi_tables: rt,
-        rtc_base_unix_seconds: rt.then_some(1_704_067_200),
-        nvram: (rt || options.nvram_reboot_out.is_some()).then_some(NvramConfig::Empty),
-        ..FirmwareBoardConfig::default()
-    };
-    let first = match boot(&image, &config, options.budget, &options.com1_out) {
+    let config = board_config(options.fv_app, options.nvram_reboot_out.is_some());
+    let mut first = match boot(&image, &config, options.budget, &options.com1_out) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
     };
+    if let Some(path) = &options.acpi_out {
+        const ACPI_SUCCESS: &[u8] = b"OD-FW image acpi: EFI_SUCCESS\r\n";
+        if first.code != 6
+            || first.fw_stop != Some((0x21, 0))
+            || !first
+                .board
+                .com1_transcript()
+                .windows(ACPI_SUCCESS.len())
+                .any(|line| line == ACPI_SUCCESS)
+        {
+            first.report["status"] = json!("error");
+            first.report["error"] = json!({
+                "kind": "acpi_out",
+                "detail": "firmware did not complete the acpi application",
+            });
+            return emit(first.report, first.code.max(5));
+        }
+        let write = validate_output_paths(&options.image, &options.com1_out, path)
+            .and_then(|()| {
+                first
+                    .board
+                    .read_acpi_reservations()
+                    .map_err(|error| format!("{error:?}"))
+            })
+            .and_then(|bytes| fs::write(path, bytes).map_err(|error| error.to_string()));
+        if let Err(error) = write {
+            return emit(failure("run_error", "acpi_out", error), 5);
+        }
+    }
     let Some(reboot_out) = options.nvram_reboot_out else {
         return emit(first.report, first.code);
     };
@@ -170,6 +264,29 @@ impl RebootPath {
 }
 
 fn validate_reboot_paths(image: &str, first: &str, second: &str) -> Result<(), String> {
+    validate_distinct_paths(
+        image,
+        first,
+        second,
+        "the image and both COM1 output paths must be distinct",
+    )
+}
+
+fn validate_output_paths(image: &str, com1: &str, acpi: &str) -> Result<(), String> {
+    validate_distinct_paths(
+        image,
+        com1,
+        acpi,
+        "the image, COM1 and ACPI output paths must be distinct",
+    )
+}
+
+fn validate_distinct_paths(
+    image: &str,
+    first: &str,
+    second: &str,
+    alias_error: &str,
+) -> Result<(), String> {
     let resolve = |path: &str| {
         RebootPath::resolve(Path::new(path)).map_err(|error| format!("{path}: {error}"))
     };
@@ -177,7 +294,7 @@ fn validate_reboot_paths(image: &str, first: &str, second: &str) -> Result<(), S
     let first = resolve(first)?;
     let second = resolve(second)?;
     if image.aliases(&first) || image.aliases(&second) || first.aliases(&second) {
-        return Err("the image and both COM1 output paths must be distinct".to_owned());
+        return Err(alias_error.to_owned());
     }
     Ok(())
 }
@@ -257,7 +374,7 @@ fn boot(
         "activity": state.activity.map(|activity| format!("{activity:?}")),
         "budget": budget,
         "tsc_hz": report.tsc_hz,
-        "time_step_ns_per_instruction": 1,
+        "time_step_ns_per_instruction": FIRMWARE_EXECUTION_CYCLE_NS,
         "virtual_ns": report.virtual_ns,
         "image_sha256": sha256_hex(image),
         "handoff_sha256": handoff_sha256,
@@ -289,6 +406,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let (mut image, mut com1_out, mut budget) = (None, None, None);
     let mut fv_app = None;
     let mut nvram_reboot_out = None;
+    let mut acpi_out = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -298,6 +416,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         match name {
             "--image" if image.is_none() => image = Some(value.clone()),
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
+            "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
             "--nvram-reboot-out" if nvram_reboot_out.is_none() => {
                 nvram_reboot_out = Some(value.clone())
             }
@@ -309,17 +428,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 );
             }
             "--fv-app" if fv_app.is_none() => {
-                fv_app = Some(match value.as_str() {
-                    "hello" => FirmwareFvApp::Hello,
-                    "ebs" => FirmwareFvApp::Ebs,
-                    "vars" => FirmwareFvApp::Vars,
-                    "rt" => FirmwareFvApp::Rt,
-                    _ => {
-                        return Err(format!(
-                            "invalid --fv-app '{value}'; expected hello, ebs, vars or rt"
-                        ));
-                    }
-                });
+                fv_app = Some(parse_app(value)?);
             }
             other => {
                 return Err(format!(
@@ -328,6 +437,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
         }
         index += 2;
+    }
+    if acpi_out.is_some() && fv_app != Some(FirmwareFvApp::Acpi) {
+        return Err("--acpi-out requires --fv-app acpi".to_owned());
     }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
@@ -345,6 +457,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         budget: budget.ok_or_else(|| format!("--budget is required; usage: {USAGE}"))?,
         fv_app,
         nvram_reboot_out,
+        acpi_out,
     })
 }
 

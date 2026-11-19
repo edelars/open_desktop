@@ -48,6 +48,9 @@ def run_case(
     ]
     if app := case["fv_app"]:
         args.extend(["--fv-app", app])
+    guest_acpi = scratch / f"acpi-memory-{round_number}.bin"
+    if case["fv_app"] == "acpi":
+        args.extend(["--acpi-out", guest_acpi])
     start = time.perf_counter_ns()
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=False)
     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -68,6 +71,8 @@ def run_case(
         or report["status"] != case["status"]
         or report["fw_stop"] != case["fw_stop"]
         or report["image_sha256"] != image_sha256
+        or report["page_fault"] is not None
+        or report["memory_error"] is not None
         or not 0 < report["retired"] <= case["instruction_budget"]
         or not 0 < report["quanta"] <= case["max_quanta"]
     ):
@@ -76,6 +81,21 @@ def run_case(
     if not transcript.exists():
         raise RuntimeError(f"{label} produced no COM1 transcript")
     print(f"{label} {elapsed_ms:.2f} ms, {report['retired']} instructions, {report['quanta']} quanta")
+    if case["fv_app"] == "acpi":
+        handoff = scratch / "acpi-handoff.bin"
+        output = scratch / "acpi-blob.bin"
+        build([runner, "dump-handoff-block", "--fv-app", "acpi", "--out", handoff])
+        block = handoff.read_bytes()
+        if (block != (FIXTURES / "acpi_handoff.bin").read_bytes()
+                or hashlib.sha256(block).hexdigest() != report["handoff_sha256"]):
+            raise RuntimeError(f"{label} did not boot the same handoff as the ACPI builder")
+        build([
+            sys.executable, BUILDER, "--acpi-blob", handoff,
+            "--compare-acpi-guest", guest_acpi, "--out", output,
+            "--target-dir", scratch / "acpi-target",
+        ])
+        if hashlib.sha256(output.read_bytes()).hexdigest() != case["acpi_blob_sha256"]:
+            raise RuntimeError(f"{label} freestanding blob checksum differs from its fixture")
 
 
 def check_missing_app(runner: Path, stock: Path, scratch: Path, budget: int) -> None:

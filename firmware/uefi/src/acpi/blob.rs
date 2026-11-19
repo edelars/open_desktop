@@ -45,9 +45,7 @@
 
 use super::bytes::{copy_at, fill_range, head_mut, sub, tail_mut, tri};
 use super::dsdt::{DsdtError, build_dsdt_with_s5};
-use super::fadt::{
-    FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt, build_fadt_with_rtc,
-};
+use super::fadt::{FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt_with_rtc};
 use super::madt::{MadtError, build_madt};
 use super::manifest::{
     AcpiPmEntry, BoardManifest, DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE,
@@ -74,6 +72,8 @@ pub const ACPI_REGION_BASE: u64 = 0x000E_0000;
 pub const ACPI_REGION_END: u64 = 0x000F_0000;
 /// End of the part for the tables (E820 ACPI reclaim); FACS (NVS) starts here.
 pub const ACPI_RECLAIM_END: u64 = 0x000E_F000;
+/// Scratch space for the current fixed firmware-board manifest and its tables.
+pub const BUILD_CAPACITY: usize = crate::paging::PAGE_BYTES as usize;
 
 /// Domain tag of the manifest hash; the trailing digit is the hash scheme version.
 pub const MANIFEST_HASH_TAG: [u8; 16] = *b"ODACPI-MANIFEST1";
@@ -215,7 +215,25 @@ const fn room(out: &[u8], needed: usize) -> Result<(), BlobError> {
 /// MCFG (only with a `PRESENT` PCIe ECAM entry), XSDT; the FACS follows the payload as a
 /// separate segment loaded at 0xE_F000 (see the module comment).
 pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize, BlobError> {
-    let hash = tri!(manifest_hash(devices), BlobError::Manifest);
+    Ok(tri!(build_segments::<true>(devices, out)).end)
+}
+
+/// Split points in the serialized blob for the adjacent reclaim and NVS payloads.
+pub(super) struct AcpiSegments {
+    pub(super) payload: usize,
+    pub(super) facs: usize,
+    pub(super) end: usize,
+}
+
+pub(super) const fn build_segments<const PACKAGE: bool>(
+    devices: &[DeviceEntry],
+    out: &mut [u8],
+) -> Result<AcpiSegments, BlobError> {
+    let hash = if PACKAGE {
+        tri!(manifest_hash(devices), BlobError::Manifest)
+    } else {
+        [0; 32]
+    };
     let (manifest, pm) = tri!(split_devices(devices));
     let with_mcfg = match manifest.device(device_type::PCIE_ECAM) {
         Some(ecam) => ecam.is_present(),
@@ -339,29 +357,35 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
     let facs_len = tri!(build_facs(tail_mut(out, facs_offset)), BlobError::Facs);
     let total_len = facs_offset + facs_len;
     // Anything past `total_len` is not part of the blob and is left alone.
-    let header = head_mut(out, HEADER_LEN);
-    copy_at(header, 0x00, &BLOB_MAGIC);
-    copy_at(header, 0x08, &BLOB_VERSION.to_le_bytes());
-    copy_at(header, 0x0C, &(HEADER_LEN as u32).to_le_bytes());
-    copy_at(header, 0x10, &hash);
-    copy_at(header, 0x30, &ACPI_REGION_BASE.to_le_bytes());
-    copy_at(header, 0x38, &(payload_offset as u32).to_le_bytes());
-    copy_at(header, 0x3C, &(payload_len as u32).to_le_bytes());
-    copy_at(header, 0x40, &ACPI_REGION_BASE.to_le_bytes());
-    copy_at(header, 0x48, &(index as u32).to_le_bytes());
-    copy_at(header, 0x4C, &(total_len as u32).to_le_bytes());
-    copy_at(header, 0x50, &(facs_offset as u32).to_le_bytes());
-    copy_at(header, 0x54, &(facs_len as u32).to_le_bytes());
-    copy_at(header, 0x58, &FACS_ADDRESS.to_le_bytes());
-    let mut i = 0;
-    while i < index {
-        let at = HEADER_LEN + i * DIR_ENTRY_LEN;
-        copy_at(out, at, &signatures[i]);
-        copy_at(out, at + 4, &offsets[i].to_le_bytes());
-        copy_at(out, at + 8, &lengths[i].to_le_bytes());
-        i += 1;
+    if PACKAGE {
+        let header = head_mut(out, HEADER_LEN);
+        copy_at(header, 0x00, &BLOB_MAGIC);
+        copy_at(header, 0x08, &BLOB_VERSION.to_le_bytes());
+        copy_at(header, 0x0C, &(HEADER_LEN as u32).to_le_bytes());
+        copy_at(header, 0x10, &hash);
+        copy_at(header, 0x30, &ACPI_REGION_BASE.to_le_bytes());
+        copy_at(header, 0x38, &(payload_offset as u32).to_le_bytes());
+        copy_at(header, 0x3C, &(payload_len as u32).to_le_bytes());
+        copy_at(header, 0x40, &ACPI_REGION_BASE.to_le_bytes());
+        copy_at(header, 0x48, &(index as u32).to_le_bytes());
+        copy_at(header, 0x4C, &(total_len as u32).to_le_bytes());
+        copy_at(header, 0x50, &(facs_offset as u32).to_le_bytes());
+        copy_at(header, 0x54, &(facs_len as u32).to_le_bytes());
+        copy_at(header, 0x58, &FACS_ADDRESS.to_le_bytes());
+        let mut i = 0;
+        while i < index {
+            let at = HEADER_LEN + i * DIR_ENTRY_LEN;
+            copy_at(out, at, &signatures[i]);
+            copy_at(out, at + 4, &offsets[i].to_le_bytes());
+            copy_at(out, at + 8, &lengths[i].to_le_bytes());
+            i += 1;
+        }
     }
-    Ok(total_len)
+    Ok(AcpiSegments {
+        payload: payload_offset,
+        facs: facs_offset,
+        end: total_len,
+    })
 }
 
 const fn absent(device_type: u32) -> DeviceEntry {

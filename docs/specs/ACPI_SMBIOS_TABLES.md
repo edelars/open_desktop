@@ -1,6 +1,6 @@
 # Таблицы ACPI и SMBIOS из handoff block
 
-**Статус:** документ создан задачей S7-12 [плана этапа 7](../plans/STAGE_7.md#s7-12-реализовать-собственный-aml-кодировщик-и-dsdt-из-manifest) и сейчас содержит разделы «AML и DSDT» (S7-12) и «Состав ACPI-таблиц для Linux-пути этапа 4» (S4-31a). Набор таблиц RSDP, XSDT, FADT (revision 6), FACS, MADT, MCFG и DSDT реализован в срезах S4-31a…g как freestanding-сборка blob v2 (`firmware/uefi/src/acpi/blob.rs`) и проверяется машинным валидатором (`crates/od-machine/src/acpi_blob.rs`); раскладка — в разделе «Blob v2 и раскладка таблиц (S4-31d…g)» ниже. Принятие этих таблиц Linux не проверялось: это S4-38. Разделы по HPET, TPM2 и SMBIOS пишет S7-13; их здесь нет, и эти таблицы не реализованы. Вне blob DSDT не установлена как configuration table UEFI и не проверялась в ОС: это функции над байтами с host-side тестами (уровень 1, [FIRMWARE.md](../testing/FIRMWARE.md)).
+**Статус.** S7-12 определяет AML и DSDT. S4-31 определяет freestanding blob v2. S7-13 использует тот же сериализатор для публикации ACPI из handoff и публикует структуры SMBIOS 3.9 через UEFI System Table. Условия проверки описаны в [плане этапа 7](../plans/STAGE_7.md#s7-13-построить-таблицы-acpi-и-smbios-из-handoff-block).
 
 Раздел «Состав ACPI-таблиц для Linux-пути этапа 4 (S4-31a)» добавлен срезом S4-31a этапа 4 (состав таблиц и сериализатор MCFG).
 
@@ -208,3 +208,39 @@ RSDP, XSDT, FADT, FACS, MADT; DSDT с PNP0C02; E820 запись для ECAM; р
 | FACS | `0xE_F000` | вне payload (`facs_offset`, NVS) | 64 |
 
 Порядок таблиц и адреса следуют из кода сборки (16-выравнивание, зазоры нулевые); при другой конфигурации платы (нет ECAM) MCFG отсутствует, и адреса следующих таблиц сдвигаются. XSDT перечисляет FADT, MADT, MCFG (DSDT и FACS в нём нет); RSDP даёт адрес XSDT и нулевой `RsdtAddress`; FADT указывает на DSDT (`DSDT`/`X_DSDT`) и FACS (`FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`, оба `0xE_F000`). FACS не имеет контрольной суммы и не входит в каталог. Открытые вопросы по FADT/FACS и упаковщику — [ISSUE-497…500](../KNOWN_ISSUES.md).
+
+
+## Публикация таблиц UEFI (S7-13)
+
+Прошивка проверяет handoff и строит таблицы ACPI при наличии записи fixed hardware и согласованных с ней диапазонов. RSDP ревизии 2 установлен под `EFI_ACPI_20_TABLE_GUID` и указывает на XSDT. XSDT содержит FADT и MADT, а при наличии ECAM также MCFG. FADT ссылается на DSDT и FACS. Прошивка размещает FACS в `EfiACPIMemoryNVS` по GPA `0xEF000`, остальные байты в `EfiACPIReclaimMemory` начиная с `0xE0000`. Установщик публикует RSDP после заполнения обоих диапазонов.
+
+FADT использует Major Version 6 и байт Minor Version `0x05`, буквальное значение строки Table 5.9 ACPI 6.6. Общее пояснение о синхронности версий таблицы и документа подразумевало бы `0x06`. В истории редакций ACPI 6.6 отдельного изменения этого поля нет. `WBINVD=1` отражает поддержку инструкции в последовательном интерпретаторе с когерентной памятью и без моделируемых dirty cache lines. `X_FIRMWARE_CTRL` и `FIRMWARE_CTRL` указывают на один FACS, OSPM отдаёт приоритет доступному 64-битному адресу. [ACPI 6.6 §5.2.9](https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt), [история редакций ACPI 6.6](https://uefi.org/specs/ACPI/6.6/Frontmatter/Revision_History.html).
+
+MADT описывает один LAPIC и один IOAPIC из manifest, маршрут SCI с параметрами PM-блока и закреплённое для платы отображение IRQ0 на GSI2. `PCAT_COMPAT=0`. DSDT берёт устройства из тех же записей, а MCFG описывает только переданное окно ECAM. HPET и TPM2 требуют подключённых устройств. Для TPM2 точка расширения находится при формировании набора таблиц, реализация принадлежит S7-22.
+
+`SMBIOS3_TABLE_GUID` указывает на физический 64-битный entry point `_SM3_`. Структуры хранятся рядом в выделенной странице `EfiACPIReclaimMemory`. UEFI-указатель и адрес внутри entry point остаются физическими при переходе в виртуальный режим runtime. [UEFI 2.11 §4.6](https://uefi.org/specs/UEFI/2.11/04_EFI_System_Table.html), [DSP0134 3.9 §§5.2.2, 6.2, 7](https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.9.0.pdf).
+
+| Тип | Источник данных |
+|---|---|
+| 0 | Название, дата и версия прошивки Open Desktop, размер ROM, признаки UEFI и виртуальной машины, ACPI по записи PM-блока. TPM описывается Type 43 при подключении устройства. |
+| 1 | UUID в формате SMBIOS byte order и серийный номер дословно из handoff. Для полной проверки обязательных полей профиль передаёт ненулевой UUID. |
+| 2, 3 | Виртуальные плата и корпус, собственные строки и ссылка на handle корпуса. |
+| 4 | Processor ID из `CPUID(1).EAX/EDX` профиля DiagnosticV1, один виртуальный CPU из handoff. Max Speed и Current Speed из `virtual_cpu_mhz` v1.9. В ранних версиях handoff скорость обозначена как неизвестная. |
+| 16, 17 | Один массив и одно устройство виртуальной RAM. Ёмкость включает вырезанные из RAM загрузочные и ACPI reservation. Большие объёмы используют Extended Size. |
+| 19, 20 | Одна пара записей на непрерывный банк RAM и ссылки на массив и устройство. Разрыв между low RAM и RAM выше 4 GiB сохраняется. |
+| 32, 127 | Состояние загрузки и конец таблицы. |
+
+Type 7 опущен по DSP0134 Table 4, так как внешние кэши не моделируются. Ссылки на кэши Type 4 равны `FFFF`. Type 9 опущен, так как у платы нет обновляемых слотов. Тип 20 включён для сценария этапа 7 независимо от его опциональности в DSP0134.
+
+Для сравнения firmware и data-only результата используются один профиль и один запечатанный handoff.
+
+```sh
+od-runner dump-handoff-block --fv-app acpi --out work/stage7/acpi-handoff.bin
+python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-tests.bin
+od-runner boot-firmware --image work/stage7/firmware-tests.bin --fv-app acpi \
+  --budget 15000000 --com1-out work/stage7/acpi.com1 --acpi-out work/stage7/acpi-guest.bin
+python3 tools/build/build_firmware.py --acpi-blob work/stage7/acpi-handoff.bin \
+  --compare-acpi-guest work/stage7/acpi-guest.bin --out work/stage7/acpi-blob.bin
+```
+
+Ожидаемый код runner для возврата тестового приложения и `STOP 0x21` равен 6. Программа S7-13 читает установленные configuration tables, проверяет указатели и контрольные суммы и исполняет `WBINVD`. Режим `--acpi-blob` вычисляет байты в сборке `x86_64-unknown-none`, а Python извлекает ELF-секцию и проверяет раскладку, контрольные суммы и ссылки. Сравнение охватывает все 64 KiB reclaim и NVS, включая неиспользованное место.

@@ -15,6 +15,13 @@ bench = false
 doc = false
 
 [[bin]]
+name = "acpi"
+path = "acpi/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "hello"
 path = "hello/main.rs"
 test = false

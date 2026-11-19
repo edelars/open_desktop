@@ -47,7 +47,7 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
-TEST_APPS = ("ebs", "echo", "hello", "rt", "vars")
+TEST_APPS = ("acpi", "ebs", "echo", "hello", "rt", "vars")
 FV_MAGIC = b"ODFVARC\0"
 FV_VERSION = 1
 FV_HEADER_SIZE = 24
@@ -63,7 +63,7 @@ HEADER_SIZE = 0x40
 IMAGE_SIZE = 0x0040_0000
 LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
-HANDOFF_MINOR_MAX = 8
+HANDOFF_MINOR_MAX = 9
 CRC_OFFSET = 0x30
 
 # --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
@@ -549,6 +549,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "check its headers and write the .efi to PATH",
     )
     parser.add_argument(
+        "--acpi-blob",
+        type=Path,
+        metavar="HANDOFF.BIN",
+        help="build the freestanding data-only ACPI blob for this sealed handoff block",
+    )
+    parser.add_argument(
+        "--compare-acpi-guest",
+        type=Path,
+        metavar="MEMORY.BIN",
+        help="compare an ACPI blob build with the guest reservations from boot-firmware --acpi-out",
+    )
+    parser.add_argument(
         "--smoke",
         action="store_true",
         help="instead of the ROM image: write the minimal smoke image (entry code writes 'X' to COM1) to --out (default: work/stage7/mini.bin, never the real firmware.bin); "
@@ -563,13 +575,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--with-test-apps",
         action="store_true",
-        help="build test EFI applications (hello, echo, ebs, rt and vars) and embed them in the firmware volume",
+        help="build and embed the test EFI applications in the firmware volume",
     )
     args = parser.parse_args(argv)
-    if args.with_test_apps and (args.smoke or args.efi_probe is not None):
+    if args.acpi_blob is not None and (args.smoke or args.efi_probe is not None):
+        parser.error("--acpi-blob is a separate build mode")
+    if args.compare_acpi_guest is not None and args.acpi_blob is None:
+        parser.error("--compare-acpi-guest requires --acpi-blob")
+    if args.with_test_apps and (args.smoke or args.efi_probe is not None or args.acpi_blob is not None):
         parser.error("--with-test-apps requires a ROM build")
     if args.out is None:
         args.out = DEFAULT_SMOKE_OUT if args.smoke else DEFAULT_OUT
+        if args.acpi_blob is not None:
+            args.out = DEFAULT_OUT.with_name("acpi_blob.bin")
     return args
 
 
@@ -621,6 +639,37 @@ def main_efi_probe(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.acpi_blob is not None:
+        from build_stage4_acpi_blob import BuildError as AcpiBuildError
+        from build_stage4_acpi_blob import build_elf as build_acpi_elf
+        from build_stage4_acpi_blob import compare_guest_memory, extract_section, parse_blob
+
+        try:
+            if args.out.resolve() == args.acpi_blob.resolve() or (
+                args.out.exists() and args.acpi_blob.exists() and args.out.samefile(args.acpi_blob)
+            ):
+                raise AcpiBuildError("the ACPI output and handoff input must be distinct")
+            elf = build_acpi_elf(args.target_dir.absolute(), handoff=args.acpi_blob)
+            blob = extract_section(elf.read_bytes())
+            metadata = parse_blob(blob)
+            if args.compare_acpi_guest is not None:
+                if args.out.resolve() == args.compare_acpi_guest.resolve() or (
+                    args.out.exists() and args.compare_acpi_guest.exists()
+                    and args.out.samefile(args.compare_acpi_guest)
+                ):
+                    raise AcpiBuildError("the ACPI output and guest-memory input must be distinct")
+                compare_guest_memory(blob, args.compare_acpi_guest.read_bytes(), metadata)
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_bytes(blob)
+        except (AcpiBuildError, OSError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        print(f"ACPI blob: {args.out}")
+        print(f"size: {len(blob):#x} ({len(blob)} bytes)")
+        print(f"sha256: {hashlib.sha256(blob).hexdigest()}")
+        if args.compare_acpi_guest is not None:
+            print("ACPI reclaim and NVS bytes equal guest memory")
+        return 0
     if args.smoke:
         if args.efi_probe is not None:
             print("error: --smoke and --efi-probe are mutually exclusive", file=sys.stderr)
