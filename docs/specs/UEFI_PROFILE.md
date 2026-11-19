@@ -27,9 +27,9 @@ Table загруженному EFI-образу проверяет S7-06.
 | Boot Service | Поддержанный профиль |
 |---|---|
 | `LoadImage` | Загружает PE32+ из буфера при NULL Device Path и известном parent handle. Отсутствие источника и пути даёт `EFI_NOT_FOUND`, повреждённый формат даёт `EFI_LOAD_ERROR`, неподдержанный тип или заданный Device Path дают `EFI_UNSUPPORTED`. При ошибке сохраняет выход. |
-| `StartImage` | Один раз вызывает точку входа загруженного образа при `TPL_APPLICATION`. Возвращает статус точки входа или `Exit` и передаёт запрошенный `ExitData`. Ошибочный handle, повторный запуск или неверный TPL дают `EFI_INVALID_PARAMETER`. |
+| `StartImage` | Один раз вызывает точку входа загруженного образа при `TPL_APPLICATION`. До возврата вызывает `ConnectController` с `Recursive=TRUE` для новых и изменённых handles, оставшихся в базе. Возвращает статус точки входа или `Exit` и передаёт запрошенный `ExitData`. Ошибочный handle, повторный запуск или неверный TPL дают `EFI_INVALID_PARAMETER`. |
 | `Exit` | Для текущего запущенного образа передаёт управление в `StartImage`. Для незапущенного образа освобождает его через `UnloadImage`. При ошибочном handle возвращает `EFI_INVALID_PARAMETER`. |
-| `UnloadImage` | Освобождает страницы незапущенного или завершённого выгружаемого образа, возвращает RW/NX и снимает регистрацию. При удержании протокола другим драйвером или попытке выгрузки активного образа возвращает `EFI_ACCESS_DENIED`. Для резидентных драйверов возвращает `EFI_UNSUPPORTED` до подключения их `Unload` callback. |
+| `UnloadImage` | При TPL до `TPL_CALLBACK` освобождает страницы незапущенного или завершённого выгружаемого образа, возвращает RW/NX и снимает регистрацию. Для резидентного драйвера вызывает текущий `LoadedImage.Unload` на отдельном стеке, освобождает образ при `EFI_SUCCESS` и передаёт другие статусы с сохранением образа. NULL callback даёт `EFI_UNSUPPORTED`. При удержании протокола другим драйвером или повторной выгрузке активного образа возвращает `EFI_ACCESS_DENIED`. |
 | `GetNextMonotonicCount` | NULL выход даёт `EFI_INVALID_PARAMETER`. Без энергонезависимой старшей части счётчика сервис возвращает `EFI_DEVICE_ERROR` и сохраняет выход. |
 
 [UEFI 2.11, §§7.4 и 7.5.5](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#image-services).
@@ -226,7 +226,7 @@ Conventional. Запрос больше физической ёмкости пр
 | `OpenProtocolInformation` | Возвращает массив 24-байтовых записей с agent, controller, режимом и счётчиком. Для существующей привязки без открытий выдаёт освобождаемый блок с нулевым числом элементов. |
 | `InstallMultipleProtocolInterfaces` | Принимает список пар GUID и указателей с завершителем NULL GUID. Сначала проверяет весь пакет, затем устанавливает привязки на один handle. Повтор полного Device Path даёт `EFI_ALREADY_STARTED`. |
 | `UninstallMultipleProtocolInterfaces` | Сверяет весь пакет указателей и открытий перед удалением. Любая ошибка даёт `EFI_INVALID_PARAMETER` с сохранением базы и её записей открытий. |
-| `ConnectController` | Для действующего контроллера возвращает `EFI_NOT_FOUND`: этот профиль не запускает драйверы. NULL или неизвестный handle дают `EFI_INVALID_PARAMETER`. |
+| `ConnectController` | Профиль базы протоколов без Driver Binding возвращает `EFI_NOT_FOUND` для действующего контроллера и `EFI_INVALID_PARAMETER` для NULL или неизвестного handle. |
 | `DisconnectController` | Проверяет controller и ненулевой child handle. Ненулевой driver handle даёт `EFI_INVALID_PARAMETER`: диагностический профиль не публикует образы с Driver Binding. Без подходящих открытий `BY_DRIVER` возвращает `EFI_SUCCESS`. При открытии, которое потребовало бы вызова Stop, возвращает `EFI_DEVICE_ERROR` и сохраняет привязку и запись открытия. |
 
 Таблица открытий вмещает до 128 записей, с отдельным счётчиком для

@@ -1,11 +1,16 @@
 //! The owned EFI invocation stack and the Rust side of the assembly boundary.
 
-use super::{release_record, state, unload_image};
-use crate::bs::{event::TPL_APPLICATION, memory::IdentityPoolMemory};
+use super::{release_record, state};
+use crate::bs::{
+    event::{TPL_APPLICATION, TPL_CALLBACK, Tpl},
+    memory::IdentityPoolMemory,
+    protocol::{HandleSnapshot, connect_controller},
+};
 use crate::mem::{map::MemoryType, pages::ImageMemoryRange};
 use crate::paging::PAGE_BYTES;
 use crate::pe::Subsystem;
 use crate::uefi::{
+    loaded_image::{LOADED_IMAGE_PROTOCOL_GUID, LoadedImageProtocol},
     status::Status,
     system_table::SystemTable,
     types::{Char16, Handle},
@@ -20,6 +25,7 @@ pub(super) enum Phase {
     Loaded,
     Running,
     Resident,
+    Unloading,
     Finished,
 }
 
@@ -34,6 +40,15 @@ struct SavedContext {
 }
 
 const _: () = assert!(mem::offset_of!(SavedContext, fx_state) == 0x40);
+
+impl SavedContext {
+    const EMPTY: Self = Self {
+        saved_stack: 0,
+        saved_flags: 0,
+        reserved: [0; 0x30],
+        fx_state: [0; 512],
+    };
+}
 
 struct Frame {
     context: SavedContext,
@@ -60,22 +75,31 @@ pub(super) struct ActiveImage {
     frame: *mut Frame,
 }
 
-struct StartPlan {
+struct Invocation {
     stack_top: u64,
     index: usize,
-    entry: u64,
-    system: *mut SystemTable,
     previous: Option<ActiveImage>,
     previous_exit_handle: Handle,
+    caller_tpl: Tpl,
 }
 
-type Entry = unsafe extern "efiapi" fn(Handle, *mut SystemTable) -> Status;
+struct StartPlan {
+    invocation: Invocation,
+    entry: u64,
+    system: *mut SystemTable,
+    handles: HandleSnapshot,
+}
+
+struct UnloadPlan {
+    invocation: Invocation,
+    callback: unsafe extern "efiapi" fn(Handle) -> Status,
+}
 
 unsafe extern "sysv64" {
     fn od_fw_invoke_image(
         context: *mut SavedContext,
         stack_top: u64,
-        entry: Entry,
+        entry: *const (),
         handle: Handle,
         system: *mut SystemTable,
     ) -> Status;
@@ -94,17 +118,12 @@ pub(super) unsafe fn start(
     }
 
     let mut frame = Frame {
-        context: SavedContext {
-            saved_stack: 0,
-            saved_flags: 0,
-            reserved: [0; 0x30],
-            fx_state: [0; 512],
-        },
+        context: SavedContext::EMPTY,
         exit_data: UnsafeCell::new(ExitData::EMPTY),
         exit_data_output: exit_data,
     };
     let frame_pointer = ptr::addr_of_mut!(frame);
-    let plan = match unsafe { prepare(image, frame_pointer) } {
+    let plan = match unsafe { prepare_start(image, frame_pointer) } {
         Ok(plan) => plan,
         Err(error) => return error,
     };
@@ -114,14 +133,14 @@ pub(super) unsafe fn start(
     let status = unsafe {
         od_fw_invoke_image(
             ptr::addr_of_mut!((*frame_pointer).context),
-            plan.stack_top,
-            mem::transmute::<usize, Entry>(plan.entry as usize),
+            plan.invocation.stack_top,
+            ptr::with_exposed_provenance(plan.entry as usize),
             image,
             plan.system,
         )
     };
 
-    let completion = unsafe { finish(plan, status) };
+    let completion = unsafe { finish_start(plan, status) };
     let data = unsafe { frame.exit_data.get().read() };
     if !frame.exit_data_output.is_null() {
         unsafe {
@@ -132,71 +151,52 @@ pub(super) unsafe fn start(
     completion
 }
 
-unsafe fn prepare(image: Handle, frame: *mut Frame) -> Result<StartPlan, Status> {
+unsafe fn prepare_start(image: Handle, frame: *mut Frame) -> Result<StartPlan, Status> {
     unsafe {
-        state::try_with(|state| {
+        state::try_with(|mut state| {
             let Some(index) = state.images.find(image) else {
                 return Err(Status::INVALID_PARAMETER);
             };
-            let record = state.images.records[index].as_mut().unwrap();
+            let record = state.images.records[index].as_ref().unwrap();
             if record.phase != Phase::Loaded
                 || !state.exit.can_start_image()
                 || state.events.current_tpl() != TPL_APPLICATION
             {
                 return Err(Status::INVALID_PARAMETER);
             }
-            let (Some(system), Some(tables)) = (state.system_table, state.active_tables) else {
+            let Some(system) = state.system_table else {
                 return Err(Status::NOT_READY);
             };
-            // The stack allocation and the two ordinary completion edits
-            // must fit even when the image makes no memory-map calls itself.
-            if state.allocator.map().key().checked_add(3).is_none() {
-                return Err(Status::OUT_OF_RESOURCES);
-            }
-            let regions = [ImageMemoryRange {
-                pages: STACK_SPAN_PAGES,
-                memory_type: MemoryType::BOOT_SERVICES_DATA,
-            }];
-            let stack = state
-                .allocator
-                .plan_image(u64::MAX, true, PAGE_BYTES, &regions)
-                .map_err(|_| Status::OUT_OF_RESOURCES)?;
-            let span = stack.span.clone();
-            if !tables.verify(span.clone(), true) {
-                return Err(Status::DEVICE_ERROR);
-            }
-
-            state.allocator.commit_image(stack);
-            tables.set_guard(span.start, true);
-            tables.flush();
-            record.phase = Phase::Running;
-            record.stack_base = Some(span.start);
-            let active = ActiveImage {
+            let entry = record.mapped.entry_address;
+            let stack_top = allocate_stack(&mut state, index)?;
+            state.images.records[index].as_mut().unwrap().phase = Phase::Running;
+            let previous = state.images.current.replace(ActiveImage {
                 handle: image,
                 frame,
-            };
-            let previous = state.images.current.replace(active);
-            let previous_exit_handle = state.exit.replace_image(image);
+            });
             Ok(StartPlan {
-                stack_top: span.end,
-                index,
-                entry: record.mapped.entry_address,
+                invocation: Invocation {
+                    stack_top,
+                    index,
+                    previous,
+                    previous_exit_handle: state.exit.replace_image(image),
+                    caller_tpl: TPL_APPLICATION,
+                },
+                entry,
                 system: system.as_ptr(),
-                previous,
-                previous_exit_handle,
+                handles: state.protocols.handle_snapshot(),
             })
         })
     }
     .unwrap_or(Err(Status::NOT_READY))
 }
 
-unsafe fn finish(plan: StartPlan, status: Status) -> Status {
+unsafe fn finish_start(plan: StartPlan, status: Status) -> Status {
+    let index = plan.invocation.index;
     let result = unsafe {
         state::try_with(|mut state| {
-            state.images.current = plan.previous;
-            state.exit.replace_image(plan.previous_exit_handle);
-            state.events.restore_tpl(TPL_APPLICATION);
-            let record = state.images.records[plan.index].as_mut().unwrap();
+            restore_service_context(&mut state, plan.invocation);
+            let record = state.images.records[index].as_mut().unwrap();
             record.phase = if record.mapped.subsystem == Subsystem::Application || status.is_error()
             {
                 Phase::Finished
@@ -204,11 +204,11 @@ unsafe fn finish(plan: StartPlan, status: Status) -> Status {
                 Phase::Resident
             };
             let phase = record.phase;
-            if let Err(status) = release_stack(&mut state, plan.index) {
+            if let Err(status) = release_stack(&mut state, index) {
                 return status;
             }
             if phase == Phase::Finished {
-                let release = release_record(&mut state, plan.index);
+                let release = release_record(&mut state, index);
                 if release != Status::SUCCESS {
                     return release;
                 }
@@ -217,13 +217,154 @@ unsafe fn finish(plan: StartPlan, status: Status) -> Status {
         })
     };
     match result {
-        Some(status) => status,
+        Some(status) => {
+            // Call outside the state guard, since driver binding can enter
+            // boot services again.
+            if let Some(handles) =
+                unsafe { state::try_with(|state| state.protocols.changed_handles(&plan.handles)) }
+            {
+                for handle in handles.into_iter().take_while(|handle| !handle.is_null()) {
+                    unsafe { connect_controller(handle, ptr::null(), ptr::null(), 1) };
+                }
+            }
+            status
+        }
         // A successful ExitBootServices terminates this firmware invocation.
         // Its image cannot return control to the boot-services caller.
         None => unsafe {
             core::arch::asm!("cli", "2: hlt", "jmp 2b", options(noreturn, nostack));
         },
     }
+}
+
+pub(super) unsafe fn unload(image: Handle) -> Status {
+    let plan = match unsafe { prepare_unload(image) } {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return Status::SUCCESS,
+        Err(status) => return status,
+    };
+    let mut context = SavedContext::EMPTY;
+    // Firmware passes the image handle in RCX. An unload callback has no
+    // System Table argument and ignores the value placed in RDX.
+    let status = unsafe {
+        od_fw_invoke_image(
+            ptr::addr_of_mut!(context),
+            plan.invocation.stack_top,
+            plan.callback as *const (),
+            image,
+            ptr::null_mut(),
+        )
+    };
+    unsafe {
+        state::with(|mut state| {
+            let index = plan.invocation.index;
+            restore_service_context(&mut state, plan.invocation);
+            let record = state.images.records[index].as_mut().unwrap();
+            if status == Status::SUCCESS {
+                // If release must be retried, the finished phase avoids
+                // calling a callback that has already torn down the driver.
+                record.phase = Phase::Finished;
+                release_record(&mut state, index)
+            } else {
+                record.phase = Phase::Resident;
+                // A failed stack release retains the recorded stack for retry.
+                let _ = release_stack(&mut state, index);
+                status
+            }
+        })
+    }
+}
+
+unsafe fn prepare_unload(image: Handle) -> Result<Option<UnloadPlan>, Status> {
+    unsafe {
+        state::try_with(|mut state| {
+            if !state.exit.can_change_map() {
+                return Err(Status::ACCESS_DENIED);
+            }
+            let Some(index) = state.images.find(image) else {
+                return Err(Status::INVALID_PARAMETER);
+            };
+            let caller_tpl = state.events.current_tpl();
+            if caller_tpl > TPL_CALLBACK {
+                return Err(Status::INVALID_PARAMETER);
+            }
+            match state.images.records[index].as_ref().unwrap().phase {
+                Phase::Running | Phase::Unloading => return Err(Status::ACCESS_DENIED),
+                Phase::Loaded | Phase::Finished => {
+                    return match release_record(&mut state, index) {
+                        Status::SUCCESS => Ok(None),
+                        failure => Err(failure),
+                    };
+                }
+                Phase::Resident => {}
+            }
+            if has_unfinished_child(state.images, image) {
+                return Err(Status::ACCESS_DENIED);
+            }
+            let Ok(interface) = state
+                .protocols
+                .handle_protocol(image, LOADED_IMAGE_PROTOCOL_GUID)
+            else {
+                return Err(Status::UNSUPPORTED);
+            };
+            let interface = interface.cast::<LoadedImageProtocol>();
+            if interface.is_null() {
+                return Err(Status::UNSUPPORTED);
+            }
+            let Some(callback) = ptr::addr_of!((*interface).unload).read() else {
+                return Err(Status::UNSUPPORTED);
+            };
+            release_stack(&mut state, index)?;
+            let stack_top = allocate_stack(&mut state, index)?;
+            state.images.records[index].as_mut().unwrap().phase = Phase::Unloading;
+            Ok(Some(UnloadPlan {
+                invocation: Invocation {
+                    stack_top,
+                    index,
+                    previous: state.images.current.take(),
+                    previous_exit_handle: state.exit.replace_image(ptr::null_mut()),
+                    caller_tpl,
+                },
+                callback,
+            }))
+        })
+    }
+    .unwrap_or(Err(Status::NOT_READY))
+}
+
+fn restore_service_context(state: &mut state::ServiceState<'_>, invocation: Invocation) {
+    state.images.current = invocation.previous;
+    state.exit.replace_image(invocation.previous_exit_handle);
+    state.events.restore_tpl(invocation.caller_tpl);
+}
+
+unsafe fn allocate_stack(state: &mut state::ServiceState<'_>, index: usize) -> Result<u64, Status> {
+    let Some(tables) = state.active_tables else {
+        return Err(Status::NOT_READY);
+    };
+    // Reserve keys for stack allocation, stack release and image release.
+    if state.allocator.map().key().checked_add(3).is_none() {
+        return Err(Status::OUT_OF_RESOURCES);
+    }
+    let regions = [ImageMemoryRange {
+        pages: STACK_SPAN_PAGES,
+        memory_type: MemoryType::BOOT_SERVICES_DATA,
+    }];
+    let stack = state
+        .allocator
+        .plan_image(u64::MAX, true, PAGE_BYTES, &regions)
+        .map_err(|_| Status::OUT_OF_RESOURCES)?;
+    let span = stack.span.clone();
+    unsafe {
+        if !tables.verify(span.clone(), true) {
+            return Err(Status::DEVICE_ERROR);
+        }
+        state.allocator.commit_image(stack);
+        tables.set_guard(span.start, true);
+        tables.flush();
+    }
+    state.images.records[index].as_mut().unwrap().stack_base = Some(span.start);
+    Ok(span.end)
 }
 
 /// Call after the original RSP has been restored. A failed release keeps
@@ -267,7 +408,7 @@ pub(super) unsafe fn exit(
 ) -> Status {
     let action = unsafe { prepare_exit(image, status, data_size, data) };
     match action {
-        Ok(ExitAction::Unload) => unsafe { unload_image(image) },
+        Ok(ExitAction::Unload) => unsafe { unload(image) },
         Ok(ExitAction::Resume(context)) => unsafe { od_fw_exit_image_context(context, status) },
         Err(error) => error,
     }
@@ -287,7 +428,9 @@ unsafe fn prepare_exit(
             match state.images.records[index].as_ref().unwrap().phase {
                 Phase::Loaded => return Ok(ExitAction::Unload),
                 Phase::Running => {}
-                Phase::Resident | Phase::Finished => return Err(Status::INVALID_PARAMETER),
+                Phase::Resident | Phase::Unloading | Phase::Finished => {
+                    return Err(Status::INVALID_PARAMETER);
+                }
             }
             let Some(active) = state.images.current.filter(|active| active.handle == image) else {
                 return Err(Status::INVALID_PARAMETER);
@@ -338,6 +481,10 @@ unsafe fn prepare_exit(
 
 pub(super) fn has_unfinished_child(images: &super::ImageRegistry, parent: Handle) -> bool {
     images.records.iter().flatten().any(|record| {
-        record.parent == parent && matches!(record.phase, Phase::Loaded | Phase::Running)
+        record.parent == parent
+            && matches!(
+                record.phase,
+                Phase::Loaded | Phase::Running | Phase::Unloading
+            )
     })
 }

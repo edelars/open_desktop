@@ -303,17 +303,15 @@ pub unsafe extern "efiapi" fn exit(
 /// # Safety
 /// Call on the BSP with a loaded image handle.
 pub unsafe extern "efiapi" fn unload_image(image: Handle) -> Status {
+    #[cfg(target_os = "none")]
+    return unsafe { invoke::unload(image) };
+
+    #[cfg(not(target_os = "none"))]
     unsafe {
         state::with_map_mutation(|mut state| {
             let Some(index) = state.images.find(image) else {
                 return Status::INVALID_PARAMETER;
             };
-            #[cfg(target_os = "none")]
-            match state.images.records[index].as_ref().unwrap().phase {
-                invoke::Phase::Running => return Status::ACCESS_DENIED,
-                invoke::Phase::Resident => return Status::UNSUPPORTED,
-                invoke::Phase::Loaded | invoke::Phase::Finished => {}
-            }
             release_record(&mut state, index)
         })
     }

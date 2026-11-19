@@ -60,6 +60,16 @@ struct Binding {
     revision: usize,
 }
 
+#[cfg(any(target_os = "none", test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BindingIdentity {
+    handle: Handle,
+    revision: usize,
+}
+
+#[cfg(any(target_os = "none", test))]
+pub(super) struct HandleSnapshot([Option<BindingIdentity>; MAX_PROTOCOL_BINDINGS]);
+
 const MAX_OPEN_RECORDS: usize = 128;
 pub const OPEN_BY_HANDLE_PROTOCOL: u32 = 0x01;
 pub const OPEN_GET_PROTOCOL: u32 = 0x02;
@@ -105,6 +115,41 @@ impl ProtocolRegistry {
             .iter()
             .flatten()
             .any(|binding| binding.handle == handle)
+    }
+
+    #[cfg(any(target_os = "none", test))]
+    pub(super) fn handle_snapshot(&self) -> HandleSnapshot {
+        HandleSnapshot(self.bindings.map(|slot| {
+            slot.map(|binding| BindingIdentity {
+                handle: binding.handle,
+                revision: binding.revision,
+            })
+        }))
+    }
+
+    #[cfg(any(target_os = "none", test))]
+    pub(super) fn changed_handles(
+        &self,
+        before: &HandleSnapshot,
+    ) -> [Handle; MAX_PROTOCOL_BINDINGS] {
+        let after = self.handle_snapshot();
+        let mut changed = [ptr::null_mut(); MAX_PROTOCOL_BINDINGS];
+        let mut count = 0;
+        for (old, new) in before.0.iter().zip(&after.0) {
+            if old == new {
+                continue;
+            }
+            // A removed binding can change a handle that still has another
+            // protocol. A reused slot can affect two distinct handles.
+            for binding in [old, new].into_iter().flatten() {
+                let handle = binding.handle;
+                if self.known_handle(handle) && !changed[..count].contains(&handle) {
+                    changed[count] = handle;
+                    count += 1;
+                }
+            }
+        }
+        changed
     }
 
     pub(super) fn can_install_image(&self) -> bool {
@@ -250,7 +295,11 @@ impl ProtocolRegistry {
         Ok(())
     }
 
-    fn handle_protocol(&self, handle: Handle, protocol: Guid) -> Result<*mut c_void, Status> {
+    pub(super) fn handle_protocol(
+        &self,
+        handle: Handle,
+        protocol: Guid,
+    ) -> Result<*mut c_void, Status> {
         if handle.is_null() || !self.known_handle(handle) {
             return Err(Status::INVALID_PARAMETER);
         }
@@ -629,6 +678,36 @@ mod tests {
             data3: 0x478b,
             data4: [0xa3, 0x63, 0x07, 0x3c, 0, 0x41, 0x25, 0x61],
         }
+    }
+
+    #[test]
+    fn image_handle_snapshot_reports_each_surviving_change_once() {
+        let mut registry = ProtocolRegistry::new();
+        let null = ptr::null_mut();
+        let unchanged = registry.install(null, guid(1), null).unwrap();
+        let removed_binding = registry.install(null, guid(2), null).unwrap();
+        registry.install(removed_binding, guid(3), null).unwrap();
+        let removed_handle = registry.install(null, guid(4), null).unwrap();
+        let updated = registry.install(null, guid(5), null).unwrap();
+        let before = registry.handle_snapshot();
+        assert!(
+            registry
+                .changed_handles(&before)
+                .iter()
+                .all(|handle| handle.is_null())
+        );
+
+        registry.uninstall(removed_binding, guid(3), null).unwrap();
+        registry.uninstall(removed_handle, guid(4), null).unwrap();
+        registry.reinstall(updated, guid(5), null, null).unwrap();
+        registry.install(updated, guid(6), null).unwrap();
+        let created = registry.install(null, guid(7), null).unwrap();
+
+        let changed = registry.changed_handles(&before);
+        assert_eq!(changed[..3], [removed_binding, updated, created]);
+        assert!(!changed.contains(&unchanged));
+        assert!(!changed.contains(&removed_handle));
+        assert!(changed[3..].iter().all(|handle| handle.is_null()));
     }
 
     #[test]
