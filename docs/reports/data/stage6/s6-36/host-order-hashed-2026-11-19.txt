@@ -1,0 +1,39 @@
+S6-60 repeat of the S6-36 host-order sensitivity check
+Source commit e9cd9fb1e22969f3f01e57aa3a31b7f237cca453
+Cargo.lock SHA-256 0694464ee8b8abf3e26d19ac71262a00e37e720786114a9bf06b206c04b33c36
+Apple M3 Max ARM64, macOS 26.7.1 (25G241)
+rustc 1.99.0 (b940084d7 2026-09-28), LLVM 23.1.1, aarch64-apple-darwin
+
+Build commands (run in order):
+  cargo test --locked --offline --release -p od-machine --lib --no-run --message-format=json
+  cargo test --locked --offline --release -p od-machine --lib --no-run --message-format=json --features weak-host-ordering
+
+Selected the native test executable from each Cargo compiler-artifact event
+with target.name=od_machine, profile.test=true and a nonnull executable.
+The normal event listed no features. The weak event listed only
+weak-host-ordering. Ran each exact executable with:
+  env -u OD_S6_HOST_ORDER_JITTER OD_S6_HOST_ORDER_ROUNDS=100000000 "$test_binary" --ignored host_order_litmus --nocapture --test-threads=1
+Hashes were identical before and after execution in each profile. The prior
+S6-36 host-order logs have no test executable hashes for their own runs.
+
+Normal executable target/release/deps/od_machine-533ce3e3cf110c1e
+SHA-256 6ae439705e0febe6fef70011a07c9b6beb2811591145b66fc936ffc8399ff8e8
+
+running 1 test
+test host_order_litmus::with_the_barriers_long_no_forbidden_outcome_appears ... host order litmus [normal build]: 100000000 rounds each, 44.0 s
+  MP    (r(y), r(x)) counts [[48374582, 17472656, 0], [0, 34152762, 0], [0, 0, 0]]; forbidden (1,0): 0
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 230737, 0], [0, 13332900, 86436363]]; forbidden (1,2): 0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1754 filtered out; finished in 44.01s
+
+Weak executable target/release/deps/od_machine-b69a18c5920cbf75
+SHA-256 67b59bfaf49f18577c3157672078e02e963758e8d029bd3048208ddcb33dc5d9
+
+running 1 test
+test host_order_litmus::the_weakened_build_reports_what_this_host_shows ... host order litmus [weak-host-ordering]: 100000000 rounds each, 58.9 s
+  MP    (r(y), r(x)) counts [[38263760, 11237046, 0], [173, 50499021, 0], [0, 0, 0]]; forbidden (1,0): 173
+  2+2W  final (x, y) counts [[0, 0, 0], [0, 666783, 0], [0, 6787429, 92545788]]; forbidden (1,2): 0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1753 filtered out; finished in 58.87s
