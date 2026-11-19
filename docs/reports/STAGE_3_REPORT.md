@@ -1369,6 +1369,12 @@ The differential test covers MOV access, a data fault and REP STOP.
 The historical RUN gap remains open.
 [STEP measurements and reproduction](STAGE_3_S3-40x_2026-11-19.md)
 
+S3-40y rechecked the two S3-34a sequences on Apple M1 Pro. The warm
+`5275d67` JIT took 0.8094 and 0.8205 of its paired interpreter time, and
+cold took roughly 31 times interpreter time. Every between-build JIT
+range for `5275d67` versus `d9ecaa2` crossed parity.
+[M1 Pro checked-memory measurements](STAGE_3_S3-40y_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

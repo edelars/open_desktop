@@ -1636,6 +1636,15 @@ use shared sweep counts and verify `nice -5`, UID and QoS. The
 archive retains all 432 scored intervals and the host-load trace.
 [Report and reproduction](../reports/STAGE_3_S3-40x_2026-11-19.md)
 
+### S3-40y. Checked-memory JIT on M1 Pro
+
+Build `d9ecaa2` and `5275d67` on one host with the archived S3-40v
+driver and pinned inputs. The runner pilots a common sweep count for
+each sequence, then alternates six matched process rounds. Each round
+checks cold/warm cache counters and pairs JIT timings with the
+interpreter on the same work. The M1 Pro audit covers 432 intervals.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40y_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
