@@ -42481,7 +42481,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         _ => {}
     }
-    if instruction.operation == Operation::Hlt {
+    if matches!(instruction.operation, Operation::Hlt) {
         if halt_profile.is_none()
             || instruction.prefixes != Prefixes::default()
             || instruction.length != 1
@@ -42502,7 +42502,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Int3 {
+    if matches!(instruction.operation, Operation::Int3) {
         // S4-38L9e: the bare `CC` is delivered through the IDT gate of vector 3 inside the CPL0
         // profile set under its INT3 member only; everywhere else (bare `run`/`step`, the paged
         // probes, a set without the member, a shadow that is not `Clear`) it is the stop it was.
@@ -42524,7 +42524,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             crate::interrupt::Cpl0Int3Delivery::Aborted { cause, .. } => report_memory_error(cause),
         };
     }
-    if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
+    if matches!(instruction.operation, Operation::Cli)
+        || matches!(instruction.operation, Operation::Sti)
+    {
         let has_cli = cli_profile.is_some() || sti_profile.is_some();
         let is_sti = instruction.operation == Operation::Sti;
         // S4-38L7bp: `sti_cpl0` admits STI (only) in the CPL0 set; it does not admit CLI.

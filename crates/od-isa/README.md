@@ -53,6 +53,12 @@ MOV-последовательностях при бюджетах 1 и 2 сок
 по парным медианам.
 [Профили, проверки и замеры](../../docs/reports/STAGE_3_S3-40ah_2026-11-19.md)
 
+S3-40aj переводит четыре внешние проверки HLT, INT3, CLI и STI на
+`matches!`. На M1 Pro обычный RUN на двух MOV-последовательностях
+при бюджетах 1 и 2 занял на 3,39–3,86% меньше времени по парным
+медианам.
+[Профили, проверки и замеры](../../docs/reports/STAGE_3_S3-40aj_2026-11-19.md)
+
 S2-37a/b add two separate local-only scalar approximation instructions:
 register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
 `Binary32` references and update only the destination low dword; the rest of

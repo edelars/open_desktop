@@ -1608,6 +1608,15 @@ the system instruction guard change. The budget-two ratios were
 ISSUE-521 remains open for the historical interpreter gap.
 [Matched comparison and evidence](STAGE_3_S3-40ai_2026-11-19.md)
 
+S3-40aj used fresh S3-40ai samples to locate HLT, INT3 and CLI
+comparison calls. The candidate replaces four outer predicates
+including the adjacent STI check. The signed STEP has 81 static
+`Operation::eq` calls, down from 86. On M1 Pro its paired RUN
+medians fell by 3.39–3.86% at budgets 1 and 2. The budget-zero
+ranges include unity. Both builds passed focused guard and MOV
+correctness checks.
+[RUN timings, samples and verification](STAGE_3_S3-40aj_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

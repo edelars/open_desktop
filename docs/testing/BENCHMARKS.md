@@ -1733,6 +1733,14 @@ RUN intervals at budgets 0, 1 and 2 and the verifier for signed-build
 provenance, sample validity and exact replay.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ai_2026-11-19.md)
 
+### S3-40aj. HLT and interrupt guards in interpreter RUN
+
+Attribute the signed S3-40ai call sites from isolated stack samples.
+Verify the four outer calls in the stock STEP and their removal in the
+candidate. Run the seven focused guard cases and the full S3-34a MOV
+checks before the unchanged S3-40z timing schedule.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40aj_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
