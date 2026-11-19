@@ -19,6 +19,8 @@ mod tests_c1;
 mod tests_c2;
 #[path = "tests_c3.rs"]
 mod tests_c3;
+#[path = "tests_ek.rs"]
+mod tests_ek;
 #[path = "tests_obj.rs"]
 mod tests_obj;
 

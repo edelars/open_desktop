@@ -6386,3 +6386,19 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Статус** открыта для производственной конфигурации. Тестовый профиль `acpi` v1.9 передаёт ненулевой тестовый UUID, serial и номинальную частоту vCPU.
 - **Условие** в v1.0–v1.8 поля номинальной частоты нет. Если владелец платы оставляет UUID нулевым, прошивка публикует исходное значение. Эти профили сохраняют прежнюю совместимость handoff и не удовлетворяют одноимённым обязательным полям DSP0134 §6.2.
 - **Следующий шаг** при подключении производственной идентичности платы передавать устойчивый UUID и версию handoff с номинальной частотой, затем проверить поля на обычном OS boot path. [Формат](specs/ACPI_SMBIOS_TABLES.md#публикация-таблиц-uefi-s7-13), [DSP0134 3.9 §6.2](https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.9.0.pdf).
+
+<a id="issue-528"></a>
+
+### ISSUE-528 — S7-23: доверие Windows к EK и профиль команд Windows TBS
+
+- **Дата и компонент.** 2026-11-19, `od-tpm`, Windows TPM provisioning и attestation (T-04, K-05…K-10).
+- **Наблюдение.** Новый `Tpm::new` оставляет EK certificate NV-индексы неопределёнными. Host-проверка обоих legacy EK подтвердила цепочку временного тестового CA и сохранение DER. Для применения в Windows нужен издатель с доверенной целевой средой цепочкой, а для новых профилей требуется определить требования к High Range и алгоритмам PTP. До первого Windows TBS trace фактический набор команд provisioning, BitLocker, Windows Hello и attestation неизвестен. [Проверки EK](reports/STAGE_7_REPORT.md#s7-23--шаблоны-ek-и-nv), [Windows T-04](specs/WINDOWS_PLATFORM_REQUIREMENTS.md).
+- **Статус и следующий шаг.** Открыто. Определить допустимого издателя и нужные шаблоны для целевого Windows-профиля, выпустить и проверить соответствие сертификата фактическому EK в host provisioning. При запуске S7-32 зафиксировать коды команд и результаты Windows TBS, включая необходимость `ActivateCredential`/`MakeCredential` и остальных команд вне реализованного профиля. Проверить, что Windows получает сертификат и доверяет цепочке.
+
+<a id="issue-529"></a>
+
+### ISSUE-529 — S7-23: неполный набор обязательных команд PTP 1.07
+
+- **Дата и компонент.** 2026-11-19, `od-tpm`, `TPM_CAP_COMMANDS` и приёмка фазы B.
+- **Основание.** Независимое ревью сравнило объявленные 60 команд с §5.2, таблица 16 PC Client PTP 1.07. Среди отсутствующих обязательных команд есть `ActivateCredential`/`MakeCredential`, `Duplicate`/`Import`, `ObjectChangeAuth`, `PolicySigned`, `PolicyTicket`, `PolicyLocality`, `PolicyNV`, `PolicyCpHash` и `PolicyNameHash`. `PCR_Allocate` в текущем профиле отклоняется. [PC Client PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md), [VTPM](specs/VTPM.md).
+- **Статус и следующий шаг.** Открыто. Зафиксировать инвентарь требований Table 16 с условиями и Errata 1.1, сверить его с принятым набором алгоритмов и режимов. Закрыть применимые пропуски отдельными проверяемыми срезами. Расхождения между обязательным PTP и целевым алгоритмическим профилем требуют согласования требований и отражения в ADR до полной приёмки S7-23.

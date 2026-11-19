@@ -109,6 +109,62 @@ fn secret_pw(t: &mut Tpm, auth_handle: u32, pw: &[u8], s: &Hs, p: &[u8]) -> Vec<
     )
 }
 
+#[test]
+fn low_range_eks_require_endorsement_policy_to_use_as_storage_parents() {
+    use crate::ek::{LowRangeEk, POLICY_A};
+
+    let mut t = started();
+    let empty_secret = secret_params(b"", b"", b"", 0);
+    let mut endorsement_policy = policy_session(&mut t, se::POLICY);
+    let mut owner_policy = policy_session(&mut t, se::POLICY);
+    ok(&secret_pw(&mut t, OWNER, b"", &owner_policy, &empty_secret));
+    let mut hmac = start_hmac(&mut t, NULL, b"", &[0x45; 16]);
+
+    for profile in [LowRangeEk::Rsa2048, LowRangeEk::EccP256] {
+        let response = create_primary(&mut t, ENDORSEMENT, b"", &profile.template());
+        ok(&response);
+        let ek = parse_primary(&response);
+        let child = sealed();
+        let child_data = b"test";
+        let policy_fail = Rc::POLICY_FAIL.in_session(1);
+        err(
+            &create_child(&mut t, ek.handle, b"", b"", child_data, &child),
+            policy_fail,
+        );
+        let inputs = creation_params(b"", child_data, &child, b"", &NO_PCR);
+        let command = hc(cc::CREATE, &[ek.handle], inputs, (ek.handle, &ek.name));
+        err(
+            &use_session(&mut t, &mut hmac, &command, 0, false, false),
+            policy_fail,
+        );
+        err(
+            &use_session(&mut t, &mut owner_policy, &command, 0, true, false),
+            policy_fail,
+        );
+
+        ok(&secret_pw(
+            &mut t,
+            ENDORSEMENT,
+            b"",
+            &endorsement_policy,
+            &empty_secret,
+        ));
+        let first = Sha256::digest(cat(&[&[0; 32], &hex("000001514000000b")]));
+        let expected = Sha256::digest(first);
+        assert_eq!(POLICY_A[..], expected[..]);
+        assert_eq!(digest(&mut t, &endorsement_policy), POLICY_A);
+        ok(&use_session(
+            &mut t,
+            &mut endorsement_policy,
+            &command,
+            0,
+            true,
+            false,
+        ));
+        ok(&flush(&mut t, ek.handle));
+    }
+}
+
 /// Runs a command authorized by the policy or HMAC session `s`; the client nonce rolls on success.
 fn use_session(t: &mut Tpm, s: &mut Hs, c: &Hc, nh: usize, empty: bool, corrupt: bool) -> Vec<u8> {
     let resp = run(t, hmac_command(s, c, empty, corrupt));

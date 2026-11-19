@@ -32,6 +32,7 @@ mod context;
 pub mod crypto;
 mod da;
 pub mod dispatch;
+pub mod ek;
 pub mod hash;
 pub mod hierarchy;
 pub mod marshal;
