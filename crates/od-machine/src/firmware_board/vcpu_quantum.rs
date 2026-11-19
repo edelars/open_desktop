@@ -510,6 +510,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     }
     let inputs = quantum_inputs(vcpu)?;
     env.pump_uart_transmit();
+    let set = set.route_pci_config_through_port_io();
 
     let (report, rdtsc_ns) = quantum_loop(
         vcpu,
@@ -530,7 +531,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
         inputs,
         budget,
         stop,
-        set,
+        &set,
         ExceptionDeliveryMode::Thread(consecutive_faults),
     );
 
@@ -638,6 +639,10 @@ pub(crate) mod fixture {
     pub(crate) const ROUNDS: u32 = 3;
 
     pub(crate) fn board(vcpus: usize) -> LoadedFirmwareBoard {
+        board_with_pci(vcpus, PciEcam::new())
+    }
+
+    pub(crate) fn board_with_pci(vcpus: usize, pci: PciEcam) -> LoadedFirmwareBoard {
         let config = FirmwareBoardConfig {
             vcpu_count: vcpus,
             pci_ecam: true,
@@ -646,7 +651,7 @@ pub(crate) mod fixture {
             linux_profile: true,
             ..FirmwareBoardConfig::default()
         };
-        let mut board = assemble_board(&config, PciEcam::new(), None, None)
+        let mut board = assemble_board(&config, pci, None, None)
             .unwrap()
             .into_linux_board(BOARD_ROOT, 0x1000)
             .unwrap();

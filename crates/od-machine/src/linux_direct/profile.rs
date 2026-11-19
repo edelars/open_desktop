@@ -194,25 +194,27 @@ mod tests {
     use crate::firmware_board::FirmwareBoardError;
     use crate::firmware_board::vcpu_quantum::{
         fixture::{
-            CODE_0, CODE_1, STACK_0, STACK_1, TABLES_0, TABLES_1, board, install, long_state,
-            patch, tables,
+            CODE_0, CODE_1, FLAG, STACK_0, STACK_1, TABLES_0, TABLES_1, board, board_with_pci,
+            install, long_state, patch, tables,
         },
         run_vcpu_set_quantum_shared,
     };
     use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
     use crate::smp_scheduler::{Executed, RunFailure};
+    use crate::{PciEcam, Type0Config};
     use od_isa::cpuid::CpuidProfile;
     use od_isa::real_mode_exec::EFLAGS_IF;
     use od_isa::{CpuActivity, Register};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     fn run_profile_quantum(
         profile: &LinuxCpl0Profile,
         call: QuantumCall<'_, '_>,
+        pci_config: &Cell<u32>,
     ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let cells = LinuxVcpuCells::from_vcpu(call.vcpu);
-        let pci_config = Cell::new(0);
-        let set = profile.bind(&cells, &pci_config, |_| {});
+        let set = profile.bind(&cells, pci_config, |_| {});
         let outcome = run_vcpu_set_quantum_shared(
             call.env,
             call.vcpu,
@@ -261,7 +263,8 @@ mod tests {
             false,
             EFER,
         );
-        let quantum = |call: QuantumCall<'_, '_>| run_profile_quantum(&profile, call);
+        let quantum =
+            |call: QuantumCall<'_, '_>| run_profile_quantum(&profile, call, &Cell::new(0));
         let (report, ()) =
             run_threads(&mut board, ParallelConfig::default(), &quantum, |control| {
                 assert!(control.wait_finished(Duration::from_secs(5)));
@@ -274,6 +277,86 @@ mod tests {
             assert_eq!(state.gpr[Register::Rax as usize], expected, "vCPU {cpu}");
             assert_eq!(state.gpr[Register::Rdx as usize], 0);
         }
+    }
+
+    #[test]
+    fn threaded_linux_profile_shares_pci_config_address_and_data() {
+        const EFER: u64 = 0xD00;
+        let mut pci = PciEcam::new();
+        pci.add_function(
+            0,
+            3,
+            0,
+            Box::new(Type0Config::new(0xD1A6, 1, 1, 0xFF_0000, Some(4096)).unwrap()),
+        )
+        .unwrap();
+        let mut board = board_with_pci(2, pci);
+        let bsp = [
+            0xBA, 0xF8, 0x0C, 0, 0, // mov edx, CONFIG_ADDRESS
+            0xB8, 0x03, 0x18, 0, 0x80, // mov eax, enabled bus 0/slot 3, with reserved bits
+            0xEF, // out dx, eax
+            0xB8, 1, 0, 0, 0, // mov eax, 1
+            0x89, 0x07, // mov [rdi], eax: release the AP
+            0xF4, // hlt
+        ];
+        let ap = [
+            0x8B, 0x07, // mov eax, [rdi]
+            0x85, 0xC0, // test eax, eax
+            0x74, 0xFA, // jz back to the flag load
+            0xBA, 0xF8, 0x0C, 0, 0,    // mov edx, CONFIG_ADDRESS
+            0xED, // in eax, dx
+            0x89, 0xC3, // mov ebx, eax
+            0xBA, 0xFC, 0x0C, 0, 0,    // mov edx, CONFIG_DATA
+            0xED, // in eax, dx
+            0xF4, // hlt
+        ];
+        for (cpu, code, entry, stack, page_tables, phys) in [
+            (
+                BOOT_VCPU_INDEX,
+                bsp.as_slice(),
+                CODE_0,
+                STACK_0,
+                TABLES_0,
+                0x60_0000,
+            ),
+            (1, ap.as_slice(), CODE_1, STACK_1, TABLES_1, 0x80_0000),
+        ] {
+            let cr3 = tables(&mut board, page_tables, phys, 0);
+            patch(&mut board, entry, code);
+            let mut state = long_state(entry, stack, cr3, false);
+            state.gpr[Register::Rdi as usize] = FLAG;
+            install(&mut board, cpu, state, EFER);
+        }
+        let profile = LinuxCpl0Profile::new(
+            LinuxCpl0SetMembers {
+                halt: true,
+                pci_config: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+            false,
+            EFER,
+        );
+        let legacy_latch_written = AtomicBool::new(false);
+        let quantum = |call: QuantumCall<'_, '_>| {
+            let sentinel = 0x8000_0000 | ((call.cpu as u32 + 1) << 11);
+            let pci_config = Cell::new(sentinel);
+            let result = run_profile_quantum(&profile, call, &pci_config);
+            if pci_config.get() != sentinel {
+                legacy_latch_written.store(true, Ordering::Relaxed);
+            }
+            result
+        };
+        let (report, ()) =
+            run_threads(&mut board, ParallelConfig::default(), &quantum, |control| {
+                assert!(control.wait_finished(Duration::from_secs(5)));
+            })
+            .unwrap();
+        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        assert_eq!(report.cpus[BOOT_VCPU_INDEX].retired, 6);
+        let ap = &board.vcpu(1).unwrap().state;
+        assert_eq!(ap.gpr[Register::Rbx as usize], 0x8000_1800);
+        assert_eq!(ap.gpr[Register::Rax as usize], 0x0001_D1A6);
+        assert!(!legacy_latch_written.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -320,7 +403,7 @@ mod tests {
         let profile = LinuxCpl0Profile::new(members, false, EFER);
         let quantum = |call: QuantumCall<'_, '_>| {
             assert_eq!(call.cpu, AP);
-            run_profile_quantum(&profile, call)
+            run_profile_quantum(&profile, call, &Cell::new(0))
         };
         let config = ParallelConfig {
             quantum: 64,

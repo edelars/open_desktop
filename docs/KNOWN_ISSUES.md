@@ -6475,11 +6475,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-538 — общий PCI CONFIG_ADDRESS для поточного LinuxDirect
 
-Открытая зависимость S6-37, подтверждённая 2026-11-19 на `484fc9c`. Набор CPL0 обслуживает dword-доступы к CF8 через `Cell<u32>`, а чтения word/dword из CFC–CFF возвращают значение со всеми установленными битами. Эти формы обходят общий `PortIo` и защёлку `PciEcam`. Копия ячейки на каждом vCPU разделила бы один регистр платы на независимые состояния. [Набор CPL0](../crates/od-isa/src/execute.rs) · [Привязка LinuxDirect](../crates/od-machine/src/linux_direct/profile.rs).
+Подтверждено 2026-11-19 на `484fc9c`. Набор CPL0 в поточном интерпретаторе обслуживал dword-доступы к CF8 через `Cell<u32>` и возвращал все единицы при чтениях word/dword из CFC–CFF. Фикстура на `1e17ba2` показала, что AP читал свою ячейку CF8 после записи BSP. [Набор CPL0](../crates/od-isa/src/execute.rs) · [Привязка LinuxDirect](../crates/od-machine/src/linux_direct/profile.rs).
 
 Проверка через `cargo test --locked --offline -p od-isa --test cpl0_profile_set pci_dword_out_to_config_address_is_stored_and_read_back_by_in` подтверждает запись и чтение CF8 через ячейку при пустом журнале вызовов `PortIo`. Поточный LinuxDirect ещё не подключён. [Результаты S6-37](reports/STAGE_6_REPORT.md#s6-37--состояние-профиля-linux-на-vcpu).
 
-Следующий шаг — согласовать с линией S4-38 передачу PCI-доступов через существующий `PortIo` к общему устройству платы. Проверить, что запись CF8 одним vCPU видна при чтении другим, а CFC обращается к выбранной функции PCI. Сверить прежний результат однопроцессорного LinuxDirect.
+Исправлено в S6-37. Поточные кванты направляют разрешённые обращения PCI через общий `PortIo`. Регрессия подтверждает видимость записи CF8 между BSP и AP и чтение данных выбранной функции. Для окончательной приёмки S6-37 нужны загрузка Linux с несколькими online vCPU и длительные нагрузки. [Проверки](reports/STAGE_6_REPORT.md#s6-37--общая-конфигурация-pci).
 
 ### ISSUE-539 — чужой LAPIC в снимке остановленного прогона
 

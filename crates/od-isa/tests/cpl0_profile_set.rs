@@ -51757,6 +51757,90 @@ fn dword_forms_with_both_members_keep_the_pci_ports_with_the_pci_member() {
 }
 
 #[test]
+fn pci_config_on_port_io_routes_admitted_widths_without_accessing_the_cell() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0xdead_beef);
+    let set = pci_set(&cli, &cell)
+        .route_pci_config_through_port_io()
+        .route_pci_config_through_port_io();
+
+    let pio = DwordPio {
+        dword_value: 0x8000_1800,
+        ..DwordPio::default()
+    };
+    let (_, state, result, pio) = run_dword(&set, &[0xed], PCI_RAX, 0xcf8, pio);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 0x8000_1800);
+    assert_eq!(pio.dword_reads, [0xcf8]);
+    assert_eq!(pio.narrow_calls, 0);
+
+    let (mut expected, state, result, pio) =
+        run_dword(&set, &[0xef], PCI_RAX, 0xcf8, DwordPio::default());
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.dword_writes, [(0xcf8, 0x3333_4444)]);
+    expected.rip += 1;
+    assert_eq!(state, expected);
+
+    let pio = WordPio {
+        word_value: 0x1234,
+        ..WordPio::default()
+    };
+    let (_, state, result, pio) = run_word(&set, &[0x66, 0xed], PCI_RAX, 0xcfe, pio);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_1234);
+    assert_eq!(pio.word_reads, [0xcfe]);
+    assert_eq!(pio.byte_calls, 0);
+
+    let (mut expected, state, result, pio) =
+        run_word(&set, &[0x66, 0xef], PCI_RAX, 0xcfc, WordPio::default());
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.word_writes, [(0xcfc, 0x4444)]);
+    expected.rip += 2;
+    assert_eq!(state, expected);
+    assert_eq!(cell.get(), 0xdead_beef);
+}
+
+#[test]
+fn pci_config_on_port_io_preserves_admission_and_typed_failure() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0xdead_beef);
+    let set = pci_set(&cli, &cell).route_pci_config_through_port_io();
+    let no_pci = pio_set(&cli).route_pci_config_through_port_io();
+    for (profile, code, port) in [
+        (&no_pci, &[0xed][..], 0xcf8),
+        (&set, &[0x66, 0xed], 0xcf8),
+        (&set, &[0xef], 0xcf9),
+        (&set, &[0xef], 0xcfa),
+        (&set, &[0x66, 0xef], 0xcfb),
+        (&set, &[0xf3, 0xed], 0xcfc),
+    ] {
+        let (before, state, result, pio) =
+            run_dword(profile, code, PCI_RAX, port, DwordPio::default());
+        assert!(matches!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. })
+        ));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(pio.dword_reads.is_empty() && pio.dword_writes.is_empty() && pio.narrow_calls == 0);
+    }
+    let pio = DwordPio {
+        fail: true,
+        ..DwordPio::default()
+    };
+    let (before, state, result, pio) = run_dword(&set, &[0xed], PCI_RAX, 0xcfc, pio);
+    assert_eq!(pio.dword_reads, [0xcfc]);
+    assert_eq!(result.exit, Cpl0ProfileSetExit::PortIo("dword read failed"));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(cell.get(), 0xdead_beef);
+}
+
+#[test]
 fn dword_in_out_is_not_reachable_from_cpl3_in_the_set() {
     let cli = CliProfile::NonPviLong64V1;
     let mut state = board_state();
