@@ -10,8 +10,8 @@ pub const TIMER_RELATIVE: u32 = 2;
 
 #[derive(Clone, Copy)]
 pub(super) struct TimerClock {
-    hz: u64,
-    read: fn() -> u64,
+    pub(super) hz: u64,
+    pub(super) read: fn() -> u64,
 }
 
 impl TimerClock {
@@ -76,6 +76,7 @@ impl EventRegistry {
         if !self.timers_active {
             return;
         }
+        self.watchdog.poll(now);
         for index in 0..MAX_EVENTS {
             let Some(timer) = self.timers[index] else {
                 continue;

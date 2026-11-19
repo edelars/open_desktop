@@ -76,6 +76,14 @@ pub unsafe fn attach_system_table(system: *mut SystemTable) {
     BOOT_SERVICES.system_table.set(NonNull::new(system));
 }
 
+/// # Safety
+/// Call once on the BSP before any service calls. The register and reset
+/// value come from validated fixed hardware. The action terminates the run.
+pub unsafe fn attach_watchdog(port: u16, value: u8, reset: fn(u16, u8, u64) -> !) {
+    // SAFETY: the BSP has not exposed the services or started notifications.
+    unsafe { (&mut *BOOT_SERVICES.events.get()).set_watchdog_target(port, value, reset) };
+}
+
 /// The caller must be the BSP. The closure must return before invoking a
 /// notification or yielding control to an EFI image.
 pub(crate) unsafe fn with(operation: impl FnOnce(ServiceState<'_>) -> Status) -> Status {

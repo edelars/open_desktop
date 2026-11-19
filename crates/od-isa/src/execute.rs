@@ -20267,7 +20267,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
         | Operation::Arithmetic {
-            kind: ArithmeticKind::Sub,
+            kind: ArithmeticKind::Sub | ArithmeticKind::Sbb,
             dst: Operand::Register(destination),
             src: source @ Operand::Memory(_),
         }
@@ -20337,6 +20337,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         OperandSize::Dword | OperandSize::Qword,
                         Operand::Immediate(_)
                     ) | (0x19, OperandSize::Qword, Operand::Register(_))
+                        | (0x1b, OperandSize::Qword, Operand::Memory(_))
                 ),
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Neg,
@@ -20574,7 +20575,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             kind: kind @ (ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Rol),
             dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
             source: None,
-            count: Operand::Immediate(immediate),
+            count: count_source @ (Operand::Immediate(_) | Operand::Register(_)),
             ..
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
@@ -20584,6 +20585,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             )
             && match (destination, kind, instruction.opcode.byte) {
                 (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => true,
+                (Operand::Register(_), ShiftKind::Shr, 0xd3) => {
+                    instruction.operand_size == OperandSize::Qword
+                        && count_source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Byte,
+                            ))
+                }
                 (Operand::Register(_), ShiftKind::Rol, 0xc1) => {
                     instruction.operand_size == OperandSize::Qword
                 }
@@ -20599,7 +20608,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
-            let raw_count = immediate as u8;
+            let raw_count = match count_source {
+                Operand::Immediate(immediate) => immediate as u8,
+                Operand::Register(register) => state.read(register) as u8,
+                _ => unreachable!("firmware shift count is immediate or CL"),
+            };
             let size = instruction.operand_size;
             let count = shift_count(kind, size, raw_count);
             let mask = if size == OperandSize::Qword {

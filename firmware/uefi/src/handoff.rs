@@ -4,6 +4,8 @@
 //! firmware services exist. Region/device record structure is checked; device-specific parameter
 //! values and consistency with the complete board memory map are validated by later steps.
 
+use crate::acpi::manifest::{AcpiPmEntry, DeviceEntry, ManifestError, device_type};
+
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
 pub const BOOT_PAGE_TABLES_GPA: u64 = 0x0060_0000;
@@ -632,6 +634,29 @@ impl<'a> Handoff<'a> {
 
     pub const fn device_count(&self) -> usize {
         self.device_count
+    }
+
+    /// Returns the decoded and validated fixed ACPI hardware entry, if present.
+    pub fn acpi_fixed_hardware(&self) -> Result<Option<AcpiPmEntry>, ManifestError> {
+        for index in 0..self.device_count {
+            let at = self.device_table_offset + index * self.device_entry_size;
+            let kind = u32_at(self.bytes, at);
+            if kind != device_type::ACPI_PM {
+                continue;
+            }
+            return AcpiPmEntry::from_entry(&DeviceEntry {
+                device_type: kind,
+                flags: u32_at(self.bytes, at + 4),
+                base: u64_at(self.bytes, at + 8),
+                length: u64_at(self.bytes, at + 16),
+                gsi: u32_at(self.bytes, at + 24),
+                irq_flags: u32_at(self.bytes, at + 28),
+                param0: u64_at(self.bytes, at + 32),
+                param1: u64_at(self.bytes, at + 40),
+            })
+            .map(Some);
+        }
+        Ok(None)
     }
 
     /// Deterministic UTC Unix-seconds base time supplied by handoff v1.4, if present.

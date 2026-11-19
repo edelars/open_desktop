@@ -8,4 +8,4 @@ pub mod misc;
 pub mod protocol;
 mod state;
 
-pub use state::{attach_system_table, initialize};
+pub use state::{attach_system_table, attach_watchdog, initialize};

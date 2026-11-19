@@ -33,6 +33,7 @@ type EventOperation = unsafe extern "efiapi" fn(Event) -> Status;
 type SetTimer = unsafe extern "efiapi" fn(Event, u32, u64) -> Status;
 type WaitForEvent = unsafe extern "efiapi" fn(usize, *const Event, *mut usize) -> Status;
 type Stall = unsafe extern "efiapi" fn(usize) -> Status;
+type SetWatchdogTimer = unsafe extern "efiapi" fn(usize, u64, usize, *const Char16) -> Status;
 type InstallConfigurationTable = unsafe extern "efiapi" fn(*const Guid, *mut c_void) -> Status;
 type ExitBootServices = unsafe extern "efiapi" fn(Handle, usize) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
@@ -115,7 +116,7 @@ pub struct BootServices {
     pub exit_boot_services: ExitBootServices,
     get_next_monotonic_count: *const c_void,
     pub stall: Stall,
-    set_watchdog_timer: *const c_void,
+    pub set_watchdog_timer: SetWatchdogTimer,
     connect_controller: *const c_void,
     disconnect_controller: *const c_void,
     pub open_protocol: OpenProtocol,
@@ -165,7 +166,7 @@ impl BootServices {
             exit_boot_services: exit::exit_boot_services,
             get_next_monotonic_count: ptr::null(),
             stall: event::stall,
-            set_watchdog_timer: ptr::null(),
+            set_watchdog_timer: event::set_watchdog_timer,
             connect_controller: ptr::null(),
             disconnect_controller: ptr::null(),
             open_protocol: protocol::open_protocol,
@@ -368,6 +369,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, reserved), 160);
         assert_eq!(offset_of!(BootServices, register_protocol_notify), 168);
         assert_eq!(offset_of!(BootServices, stall), 248);
+        assert_eq!(offset_of!(BootServices, set_watchdog_timer), 256);
         assert_eq!(offset_of!(BootServices, open_protocol), 280);
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_handle), 176);

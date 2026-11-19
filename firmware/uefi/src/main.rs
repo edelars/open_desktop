@@ -15,7 +15,8 @@ use serial::{init as com1_init, write as com1_write};
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::event::{
     EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_SIGNAL_EXIT_BOOT_SERVICES, EVT_TIMER, Event,
-    TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
+    TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_HIGH_LEVEL,
+    TPL_NOTIFY,
 };
 use od_firmware::bs::exit::{BEFORE_EXIT_BOOT_SERVICES, EXIT_BOOT_SERVICES, set_boot_image_handle};
 use od_firmware::bs::memory::IdentityPoolMemory;
@@ -177,6 +178,16 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     // SAFETY: this is the one BSP initialization; the diagnostic has finished
     // borrowing the allocator. All ensuing accesses go through Boot Services.
     unsafe { od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc) };
+    let fixed_hardware = match handoff.acpi_fixed_hardware() {
+        Ok(entry) => entry,
+        Err(_) => stop(STOP_BOOT_SERVICES, 58),
+    };
+    if let Some(pm) = fixed_hardware {
+        // SAFETY: the ACPI manifest validated the reset target from the handoff.
+        unsafe {
+            od_firmware::bs::attach_watchdog(pm.reset_reg, pm.reset_value, reset_for_watchdog)
+        };
+    }
     let mut boot = BootServices::diagnostic();
     let mut runtime = RuntimeServices::diagnostic();
     boot.update_crc32();
@@ -197,6 +208,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_protocol_notify(&system);
     verify_timer_services(&system, handoff.tsc_hz());
     verify_configuration_services(system_pointer);
+    verify_watchdog_services(&system, fixed_hardware.is_some());
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
@@ -1128,6 +1140,52 @@ fn read_tsc() -> u64 {
         asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
     }
     (u64::from(high) << 32) | u64::from(low)
+}
+
+fn reset_for_watchdog(port: u16, value: u8, code: u64) -> ! {
+    com1_write(b"OD-FW S7-05 watchdog expired code=0x");
+    com1_write(&fixed_hex(code));
+    com1_write(b"\r\n");
+    // SAFETY: this port and value were decoded from validated fixed hardware.
+    unsafe {
+        asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags))
+    };
+    halt_forever()
+}
+
+#[inline(never)]
+fn verify_watchdog_services(system: &SystemTable, has_reset: bool) {
+    const CODE: u64 = 0x10042;
+    // SAFETY: the BSP uses the live service table and empty optional data.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let set = ptr::addr_of!((*boot).set_watchdog_timer).read_volatile();
+        let expected = if has_reset {
+            Status::SUCCESS
+        } else {
+            Status::UNSUPPORTED
+        };
+        if set(0, 0, 0, ptr::null()) != Status::SUCCESS
+            || set(1, 0xffff, 0, ptr::null()) != Status::INVALID_PARAMETER
+            || set(30, CODE, 0, ptr::null()) != expected
+            || set(0, 0, 0, ptr::null()) != Status::SUCCESS
+            || set(1, CODE, 0, ptr::null()) != expected
+        {
+            stop(STOP_BOOT_SERVICES, 59);
+        }
+        if has_reset {
+            let raise = ptr::addr_of!((*boot).raise_tpl).read_volatile();
+            let restore = ptr::addr_of!((*boot).restore_tpl).read_volatile();
+            let stall = ptr::addr_of!((*boot).stall).read_volatile();
+            let old = raise(TPL_HIGH_LEVEL);
+            com1_write(b"OD-FW S7-05 watchdog armed\r\n");
+            if stall(1) != Status::SUCCESS {
+                stop(STOP_BOOT_SERVICES, 59);
+            }
+            restore(old);
+        }
+    }
+    com1_write(b"OD-FW S7-05 watchdog service verified\r\n");
 }
 
 unsafe extern "efiapi" fn count_timer_notifications(_: Event, context: *mut c_void) {

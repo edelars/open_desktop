@@ -55040,6 +55040,83 @@ fn firmware_boot_qword_imul_immediate_writes_only_the_truncated_destination() {
 }
 
 #[test]
+fn firmware_boot_sbb_qword_reads_memory_before_committing_borrow() {
+    let address = DATA + 0x20;
+    let mut code = [0x48, 0x1b, 0x05, 0, 0, 0, 0]; // SBB RAX,[RIP+disp32]
+    let displacement = (address as i64 - (RIP + code.len() as u64) as i64) as i32;
+    code[3..].copy_from_slice(&displacement.to_le_bytes());
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.rflags = 3;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8d5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::Rax as usize] = u64::MAX;
+            expected.rflags = 0x97;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_shr_qword_uses_only_the_masked_cl_count() {
+    let code = [0x49, 0xd3, 0xee]; // SHR R14,CL
+    for (count, value, flags, defined) in [
+        (0x10, 0x4_0002, 0xe12, DEFINED & !0x810),
+        (0x50, 0x4_0002, 0xe12, DEFINED & !0x810),
+        (0x40, 0x4_0002_0001, 0xed7, DEFINED | 0x10),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::R14 as usize] = 0x4_0002_0001;
+        cpu.gpr[Register::Rcx as usize] = 0xfeed_face_beef_fe00 | count;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::R14 as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
 fn firmware_boot_double_qword_shifts_use_the_other_register_and_mask_the_count() {
     for (code, destination, source, input, source_value, value, flags, defined) in [
         (
@@ -55337,6 +55414,8 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x4d, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11,R9,imm8
         (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69),       // IMUL RDX,[RDX],3
         (&[0x45, 0x19, 0xd8][..], 0x19),                   // SBB R8D,R11D
+        (&[0x1b, 0x03][..], 0x1b),                         // SBB EAX,[RBX]
+        (&[0x67, 0x48, 0x1b, 0x03][..], 0x1b),             // address32 SBB RAX,[EBX]
         (&[0x45, 0x0f, 0xac, 0xca, 0x17][..], 0xac),       // SHRD R10D,R9D,23
         (&[0x48, 0x0f, 0xac, 0x0a, 0x17][..], 0xac),       // SHRD qword [RDX],RCX,23
         (&[0x4d, 0x0f, 0xad, 0xca][..], 0xad),             // SHRD R10,R9,CL
@@ -55349,6 +55428,9 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),             // SHL qword [RBX],21
         (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),             // SHR CX,21
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1),       // address override on SHR
+        (&[0x41, 0xd3, 0xee][..], 0xd3),                   // SHR R14D,CL
+        (&[0x49, 0xd3, 0x2e][..], 0xd3),                   // SHR qword [R14],CL
+        (&[0x49, 0xd3, 0xe6][..], 0xd3),                   // SHL R14,CL
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80),       // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),    // address32 store
         (&[0x48, 0x83, 0x12, 0x28][..], 0x83),             // ADC qword [RDX],0x28

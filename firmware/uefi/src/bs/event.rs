@@ -6,11 +6,14 @@ use core::ffi::c_void;
 use core::ptr;
 
 mod timer;
+mod watchdog;
 
 pub use timer::{
     EVT_TIMER, TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, set_timer, stall, wait_for_event,
 };
 use timer::{Timer, TimerClock};
+pub use watchdog::set_watchdog_timer;
+use watchdog::{Watchdog, dispatch_watchdog};
 
 pub type Event = *mut c_void;
 pub type Tpl = usize;
@@ -55,6 +58,7 @@ pub(crate) struct EventRegistry {
     timers: [Option<Timer>; MAX_EVENTS],
     clock: Option<TimerClock>,
     timers_active: bool,
+    watchdog: Watchdog,
     pending: [usize; MAX_EVENTS],
     pending_count: usize,
     last_event: usize,
@@ -68,6 +72,7 @@ impl EventRegistry {
             timers: [None; MAX_EVENTS],
             clock: None,
             timers_active: true,
+            watchdog: Watchdog::new(),
             pending: [0; MAX_EVENTS],
             pending_count: 0,
             last_event: 0,
@@ -191,6 +196,7 @@ impl EventRegistry {
 
     pub(super) fn disable_timers(&mut self) {
         self.timers_active = false;
+        self.watchdog.cancel();
         self.timers.fill(None);
         for entry in self.entries.iter_mut().flatten() {
             if entry.event_type & EVT_TIMER != 0 {
@@ -296,6 +302,7 @@ fn valid_tpl(tpl: Tpl) -> bool {
 
 /// Call on the BSP after dropping all references into the service state.
 pub(super) unsafe fn dispatch_pending() {
+    unsafe { dispatch_watchdog() };
     loop {
         // Only scalar values and the guest callback pointer cross the guard.
         let Some(dispatch) =
@@ -416,13 +423,15 @@ pub unsafe extern "efiapi" fn close_event(event: Event) -> Status {
 /// # Safety
 /// Call on the BSP with a valid TPL at or above the current level.
 pub unsafe extern "efiapi" fn raise_tpl(new_tpl: Tpl) -> Tpl {
-    unsafe {
+    let old_tpl = unsafe {
         state::try_with(|state| {
             state.events.poll_clock();
             state.events.raise_tpl(new_tpl)
         })
     }
-    .unwrap_or(TPL_APPLICATION)
+    .unwrap_or(TPL_APPLICATION);
+    unsafe { dispatch_watchdog() };
+    old_tpl
 }
 
 /// # Safety

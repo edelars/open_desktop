@@ -225,6 +225,23 @@ Boot Services. Указатели Runtime Services и конфигурацион
 Привязка handle загруженного EFI-образа относится к S7-06.
 [UEFI 2.11, §§7.1 и 7.4.6](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-exitbootservices).
 
+### Watchdog
+
+`SetWatchdogTimer` принимает секунды и выставляет один срок на том же
+TSC, который используют Boot Services. Нулевой интервал отменяет
+взведение. Повторное взведение заменяет срок. Коды до `0xffff`
+зарезервированы прошивкой. При взведении через диагностическую таблицу
+такой код даёт `EFI_INVALID_PARAMETER`. Журнал содержит только
+числовой код.
+
+Взведение доступно при наличии валидной записи ACPI fixed hardware
+в handoff. Без неё оно даёт `EFI_UNSUPPORTED`. Просрочка обрабатывается
+в точке опроса даже при маскировании обычных уведомлений. После снятия
+доступа к состоянию прошивка печатает код и пишет байт сброса в
+reset-регистр ACPI из handoff. Машина фиксирует запрос сброса.
+Успешный `ExitBootServices` отменяет watchdog.
+[UEFI 2.11, §7.5.1](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-setwatchdogtimer).
+
 Редакция 2.11 задаёт для x64 при вызове EFI-образа `FCW = 0x037f` и
 `MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
 реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
