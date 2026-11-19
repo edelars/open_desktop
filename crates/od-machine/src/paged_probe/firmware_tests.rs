@@ -144,6 +144,96 @@ fn step(state: &mut LongModeState, bus: &mut MachineBus, budget: u64) -> PagedPr
 }
 
 #[test]
+fn firmware_scalar_loads_can_cross_nonadjacent_read_only_ram_pages() {
+    for (code, loaded) in [
+        (&[0x0f, 0xb7, 0x69, 0x38][..], 0x3412),
+        (&[0x8b, 0x69, 0x38][..], 0x7856_3412),
+        (&[0x48, 0x8b, 0x69, 0x38][..], 0xf0de_bc9a_7856_3412),
+    ] {
+        let (mut state, mut bus) = fixture(code);
+        let operand = GUARD - 1;
+        let second_frame = 0xa000;
+        state.gpr[Register::Rcx as usize] = operand - 0x38;
+        state.gpr[Register::Rbp as usize] = u64::MAX;
+        write(&mut bus, 0x5000, AccessWidth::Qword, DATA_PHYSICAL | 1);
+        write(&mut bus, 0x5008, AccessWidth::Qword, second_frame | 1);
+        write(&mut bus, DATA_PHYSICAL + 0xfff, AccessWidth::Byte, 0x12);
+        write(
+            &mut bus,
+            second_frame,
+            AccessWidth::Qword,
+            0xa5f0_debc_9a78_5634,
+        );
+
+        let mut expected = state.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rbp as usize] = loaded;
+        let report = step(&mut state, &mut bus, 1);
+        assert_eq!(report.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state, expected);
+        assert!(report.page_fault.is_none());
+        for (pte, frame) in [(0x5000, DATA_PHYSICAL), (0x5008, second_frame)] {
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(pte), AccessWidth::Qword)
+                    .unwrap(),
+                frame | 0x21
+            );
+        }
+    }
+}
+
+#[test]
+fn firmware_cross_page_load_reports_the_second_page_fault_without_retiring() {
+    let (mut state, mut bus) = fixture(&[0x8b, 0x69, 0x38]);
+    state.idtr = None;
+    state.gpr[Register::Rcx as usize] = GUARD - 1 - 0x38;
+    state.gpr[Register::Rbp as usize] = u64::MAX;
+    let before = state.clone();
+    let report = step(&mut state, &mut bus, 1);
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(GUARD),
+    };
+    assert_eq!(report.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(report.instructions_executed, 0);
+    assert_eq!(state, before);
+    let record = report.page_fault.unwrap();
+    assert_eq!(record.access(), AccessKind::Read);
+    assert_eq!(record.cr2_value(), GUARD);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap(),
+        DATA_PHYSICAL | 0x23
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn firmware_cross_page_load_preserves_the_backend_error_for_unbacked_data() {
+    let (mut state, mut bus) = fixture(&[0x8b, 0x69, 0x38]);
+    state.gpr[Register::Rcx as usize] = GUARD - 1 - 0x38;
+    let unbacked_frame = 0x1_0000;
+    write(&mut bus, 0x5008, AccessWidth::Qword, unbacked_frame | 1);
+    let before = state.clone();
+    let report = step(&mut state, &mut bus, 1);
+    assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+    assert_eq!(report.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(report.page_fault.is_none());
+    assert!(matches!(
+        report.memory_error,
+        Some(TrackedAccessError::OperandPhysical { address, .. })
+            if address == GuestPhysicalAddress::new(unbacked_frame)
+    ));
+}
+
+#[test]
 fn firmware_breakpoint_retires_and_saves_the_rip_after_int3() {
     let (mut state, mut bus) = fixture(&[0xfd, 0xcc]);
     let original = state.clone();

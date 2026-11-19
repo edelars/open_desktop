@@ -20282,7 +20282,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ Operand::Memory(_),
         }
         | Operation::Logic {
-            kind: LogicKind::And | LogicKind::Or | LogicKind::Not,
+            kind: LogicKind::And | LogicKind::Or | LogicKind::Not | LogicKind::Xor,
             dst: Operand::Register(destination),
             src: source @ Operand::Immediate(_),
         }
@@ -20416,6 +20416,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (operation, instruction.opcode.byte, instruction.operand_size),
                         (
                             Operation::Arithmetic {
+                                kind: ArithmeticKind::Add,
+                                ..
+                            },
+                            0x00,
+                            OperandSize::Byte
+                        ) | (
+                            Operation::Arithmetic {
                                 kind: ArithmeticKind::Cmp,
                                 ..
                             },
@@ -20439,6 +20446,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     (instruction.opcode.byte, instruction.operand_size),
                     (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword)
                 ),
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    src: Operand::Immediate(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x83
+                        && instruction.operand_size == OperandSize::Qword
+                }
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     ..
@@ -20599,7 +20614,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             ))
                 }
                 (Operand::Register(_), ShiftKind::Rol, 0xc1) => {
-                    instruction.operand_size == OperandSize::Qword
+                    matches!(count_source, Operand::Immediate(_))
                 }
                 (Operand::Memory(_), ShiftKind::Shr, 0xc1) => {
                     instruction.operand_size == OperandSize::Qword
@@ -20771,21 +20786,33 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // Qword ADD, INC and DEC have write intent even on a fault before the read.
+        // These memory destinations have write intent even on a fault before the read.
         Operation::Arithmetic {
-            kind: kind @ (ArithmeticKind::Add | ArithmeticKind::Inc | ArithmeticKind::Dec),
+            kind:
+                kind @ (ArithmeticKind::Add
+                | ArithmeticKind::Sub
+                | ArithmeticKind::Inc
+                | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
             src: source @ (Operand::Register(_) | Operand::Immediate(1)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && match (kind, source) {
-                (ArithmeticKind::Add, Operand::Register(_)) => instruction.opcode.byte == 0x01,
-                (ArithmeticKind::Inc | ArithmeticKind::Dec, Operand::Immediate(1)) => {
-                    instruction.opcode.byte == 0xff
+            && match (kind, source, instruction.operand_size) {
+                (
+                    ArithmeticKind::Add,
+                    Operand::Register(_),
+                    OperandSize::Dword | OperandSize::Qword,
+                ) => instruction.opcode.byte == 0x01,
+                (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
+                    instruction.opcode.byte == 0x29
                 }
+                (
+                    ArithmeticKind::Inc | ArithmeticKind::Dec,
+                    Operand::Immediate(1),
+                    OperandSize::Qword,
+                ) => instruction.opcode.byte == 0xff,
                 _ => false,
             }
-            && instruction.operand_size == OperandSize::Qword
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -20872,6 +20899,24 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 instructions_executed: 1,
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
+        }
+        // SHA-2 uses big-endian message words and a big-endian bit count.
+        Operation::Bswap { dst }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && (0xc8..=0xcf).contains(&instruction.opcode.byte)
+                && matches!(
+                    instruction.operand_size,
+                    OperandSize::Dword | OperandSize::Qword
+                )
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            byte_swap_register(state, dst);
+            state.rip = next_rip;
         }
         // S7-04: register BT indexes within the decoded operand width.
         Operation::Bit {
@@ -61168,13 +61213,7 @@ fn step_configured(
             sign_extend_accumulator(state, instruction.operand_size, double_width);
         }
         Operation::Bswap { dst } => {
-            let value = state.read(dst);
-            let reversed = match dst.size() {
-                OperandSize::Dword => u64::from((value as u32).swap_bytes()),
-                OperandSize::Qword => value.swap_bytes(),
-                _ => unreachable!("decoder admits only 32- and 64-bit BSWAP"),
-            };
-            state.write(dst, reversed);
+            byte_swap_register(state, dst);
         }
         Operation::Bit { kind, dst, offset } => {
             let size = match dst {
@@ -64794,6 +64833,16 @@ fn sign_extend_byte_load(dst: RegisterView, value: u64) -> u64 {
     } else {
         i32::from(byte) as u32 as u64
     }
+}
+
+fn byte_swap_register(state: &mut LongModeState, destination: RegisterView) {
+    let value = state.read(destination);
+    let reversed = match destination.size() {
+        OperandSize::Dword => u64::from((value as u32).swap_bytes()),
+        OperandSize::Qword => value.swap_bytes(),
+        _ => unreachable!("decoder admits only 32- and 64-bit BSWAP"),
+    };
+    state.write(destination, reversed);
 }
 
 fn sign_extend_accumulator(state: &mut LongModeState, size: OperandSize, double_width: bool) {

@@ -895,7 +895,7 @@ impl ProbeStep {
             paging: self.paging,
             instruction_rip: self.instruction_rip,
             large_ram_profile: self.large_ram_profile,
-            preserve_access_origin: self.firmware_boot_profile,
+            firmware_boot_profile: self.firmware_boot_profile,
             committed_write,
             page_fault: None,
             memory_error: None,
@@ -1028,7 +1028,7 @@ struct PagedProbeMemory<'a> {
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     large_ram_profile: bool,
-    preserve_access_origin: bool,
+    firmware_boot_profile: bool,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -1077,7 +1077,7 @@ impl PagedProbeMemory<'_> {
         let request = TrackedAccessRequest {
             instruction_rip: self.instruction_rip,
             address: GuestLinearAddress::new(address),
-            context: if self.preserve_access_origin {
+            context: if self.firmware_boot_profile {
                 context
             } else {
                 AccessContext {
@@ -1104,11 +1104,47 @@ impl PagedProbeMemory<'_> {
         };
         match result.outcome {
             Ok(outcome) => Ok(outcome),
-            Err(TrackedAccessError::PageFault { record, .. }) => {
+            Err(error) => self.handle_access_error(request, error),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn handle_access_error(
+        &mut self,
+        request: TrackedAccessRequest,
+        error: TrackedAccessError,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
+        let error = if matches!(error, TrackedAccessError::CrossesPage { .. })
+            && self.firmware_boot_profile
+            && !self.large_ram_profile
+            && request.context.origin == AccessOrigin::Explicit
+            && matches!(
+                request.operation,
+                RamAccessOperation::Read {
+                    width: crate::AccessWidth::Word
+                        | crate::AccessWidth::Dword
+                        | crate::AccessWidth::Qword,
+                }
+            ) {
+            match crate::page_walk::read_long64_4k_bounded_ram_read(
+                self.memory,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            ) {
+                Ok(value) => return Ok(TrackedAccessOutcome::Read(value)),
+                Err(error) => error,
+            }
+        } else {
+            error
+        };
+        match error {
+            TrackedAccessError::PageFault { record, .. } => {
                 self.page_fault = Some(record.clone());
                 Err(MemoryError::Architectural(record.fault().clone()))
             }
-            Err(error) => {
+            error => {
                 let memory_error =
                     MemoryError::Backend(format!("tracked RAM access failed: {error:?}"));
                 self.memory_error = Some(error);
