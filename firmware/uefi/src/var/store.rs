@@ -3,7 +3,7 @@
 use super::codec::{self, HEADER_BYTES, MAX_STORE_BYTES, MAX_VALUE_BYTES, Name, Record};
 use super::services::{
     APPEND_WRITE, BOOTSERVICE_ACCESS, NON_VOLATILE, NON_VOLATILE_RUNTIME, RUNTIME_ACCESS,
-    global_attributes, read_only, valid_write, validate_attributes,
+    global_attributes, persistent_attributes, read_only, valid_write, validate_attributes,
 };
 use crate::uefi::{guid::Guid, status::Status};
 use core::ops::Range;
@@ -204,6 +204,79 @@ impl VariableStore {
             .resize(mutation.previous.clone(), mutation.bytes)
             .unwrap();
         mutation.write_record(&mut self.bytes[target]);
+    }
+
+    pub(crate) fn check_protected_volatile_growth(
+        &self,
+        mutation: &Mutation<'_>,
+    ) -> Result<(), Status> {
+        if !mutation.changes_nv()
+            && self.volatile_size() - mutation.previous.len() + mutation.bytes
+                > CAPACITY - od_uefi_security::protected::ORDINARY_AREA_LIMIT
+        {
+            return Err(Status::OUT_OF_RESOURCES);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn volatile_size(&self) -> usize {
+        self.records()
+            .filter(|(_, record)| record.attributes & NON_VOLATILE == 0)
+            .map(|(range, _)| range.len())
+            .sum()
+    }
+
+    /// Replaces the NV portion using a fully validated v2 image, preserving local volatile state.
+    pub(crate) fn import_protected_nv(
+        &mut self,
+        image: &od_uefi_security::protected::Image<'_>,
+    ) -> Result<(), Status> {
+        image.policy_bytes().map_err(|_| Status::DEVICE_ERROR)?;
+        let mut occupied = self.volatile_size();
+        for entry in image.records() {
+            let (record, bytes) = entry.map_err(|_| Status::DEVICE_ERROR)?;
+            if record.policy_variable().is_none() {
+                if !persistent_attributes(record.attributes, record.guid, record.name)
+                    || !valid_write(record.guid, record.name, record.value, false)
+                    || self
+                        .find(record.guid, record.name)
+                        .is_some_and(|(_, current)| current.attributes & NON_VOLATILE == 0)
+                {
+                    return Err(Status::DEVICE_ERROR);
+                }
+                occupied += bytes.len();
+            }
+        }
+        if occupied > CAPACITY {
+            return Err(Status::OUT_OF_RESOURCES);
+        }
+
+        // Compact volatile records in place. The first pass verified capacity before mutation.
+        let mut read = 0;
+        let mut write = 0;
+        while read < self.used {
+            let encoded = codec::framed_record(&self.bytes[read..self.used]).unwrap();
+            let length = encoded.len();
+            if codec::decode_record(encoded).unwrap().attributes & NON_VOLATILE == 0 {
+                if read != write {
+                    self.bytes.copy_within(read..read + length, write);
+                }
+                write += length;
+            }
+            read += length;
+        }
+        self.used = write;
+        for entry in image.records() {
+            let (record, bytes) = entry.map_err(|_| Status::DEVICE_ERROR)?;
+            if record.policy_variable().is_none() {
+                let existing = self
+                    .find(record.guid, record.name)
+                    .map_or(self.used..self.used, |(range, _)| range);
+                let target = self.resize(existing, bytes.len())?;
+                self.bytes[target].copy_from_slice(bytes);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn seed(&mut self, record: Record<'_>) -> Result<(), Status> {

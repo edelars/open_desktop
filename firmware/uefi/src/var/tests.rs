@@ -27,6 +27,51 @@ fn b() -> Name<'static> {
 }
 
 #[test]
+fn protected_nv_import_rejects_volatile_key_collisions_without_partial_changes() {
+    use od_uefi_security::protected::{Flags, Image, Record as ProtectedRecord};
+
+    fn image(name: Name<'_>) -> Vec<u8> {
+        let mut bytes = vec![0; 128];
+        let length = ProtectedRecord {
+            guid: VENDOR,
+            name,
+            attributes: NON_VOLATILE_RUNTIME,
+            value: b"persistent",
+            watermark: None,
+        }
+        .write(&mut bytes[HEADER_BYTES..])
+        .unwrap();
+        bytes.truncate(HEADER_BYTES + length);
+        Image::write_header(
+            &mut bytes,
+            Flags {
+                secure_boot_disabled: true,
+                vendor_keys_modified: false,
+            },
+        )
+        .unwrap();
+        bytes
+    }
+
+    let mut store = VariableStore::new();
+    store.set(VENDOR, a(), BOOT_RUNTIME, b"volatile").unwrap();
+    let original = store.bytes[..store.used].to_vec();
+    let conflict = image(a());
+    assert_eq!(
+        store.import_protected_nv(&Image::new(&conflict).unwrap()),
+        Err(Status::DEVICE_ERROR)
+    );
+    assert_eq!(&store.bytes[..store.used], original);
+
+    let valid = image(b());
+    store
+        .import_protected_nv(&Image::new(&valid).unwrap())
+        .unwrap();
+    assert_eq!(store.get(VENDOR, a()).unwrap().value, b"volatile");
+    assert_eq!(store.get(VENDOR, b()).unwrap().value, b"persistent");
+}
+
+#[test]
 fn validates_ucs2_name_bounds_and_code_units() {
     assert!(Name::new(b"").is_none());
     assert!(Name::new(b"x").is_none());

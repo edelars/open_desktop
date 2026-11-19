@@ -203,13 +203,35 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
             ptr::addr_of_mut!((*retained).variables),
         )
     };
-    // SAFETY: this pool is exclusive, identity-mapped runtime data.
-    let restore = unsafe {
-        RuntimeVariables::initialize(
-            variables,
-            &od_firmware::console::COM1_DEVICE_PATH,
-            handoff.nvram_base(),
-        )
+    let restore = if handoff.protected_nvram() {
+        const BYTES: usize = od_firmware::var::codec::MAX_STORE_BYTES;
+        let scratch = match allocator.allocate_pool(
+            &mut IdentityPoolMemory,
+            MemoryType::RUNTIME_SERVICES_DATA,
+            BYTES as u64,
+        ) {
+            Ok(address) => ptr::with_exposed_provenance_mut::<[u8; BYTES]>(address as usize),
+            Err(_) => stop(STOP_BOOT_SERVICES, 60),
+        };
+        // SAFETY: the two pools are distinct retained data. The parsed v1.14 handoff owns NVRAM.
+        unsafe {
+            RuntimeVariables::initialize_protected(
+                variables,
+                scratch,
+                &od_firmware::console::COM1_DEVICE_PATH,
+                handoff.nvram_base().unwrap(),
+            )
+        }
+        .map(|_| None)
+    } else {
+        // SAFETY: this pool is exclusive, identity-mapped runtime data.
+        unsafe {
+            RuntimeVariables::initialize(
+                variables,
+                &od_firmware::console::COM1_DEVICE_PATH,
+                handoff.nvram_base(),
+            )
+        }
     };
     let Ok(restore) = restore else {
         stop(STOP_BOOT_SERVICES, 76)

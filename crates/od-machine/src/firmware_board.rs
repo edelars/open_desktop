@@ -183,6 +183,7 @@ const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
 const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
 const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const HANDOFF_MINOR_TPM: u16 = 13;
+const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -678,11 +679,12 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
         config.acpi_tables,
         config.display_enabled,
     );
-    if config.nvram.is_some() {
+    if let Some(nvram) = &config.nvram {
         devices[DEV_NVRAM] = DeviceEntry {
             flags: DEVICE_PRESENT,
             base: NVRAM_MMIO_BASE,
             length: NVRAM_MMIO_BYTES,
+            param0: if nvram.is_protected() { 2 } else { 0 },
             ..DeviceEntry::absent(DEVICE_CODE_NVRAM)
         };
     }
@@ -721,7 +723,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.tpm.is_some() {
+    if config.nvram.as_ref().is_some_and(NvramConfig::is_protected) {
+        HANDOFF_MINOR_PROTECTED_NVRAM
+    } else if config.tpm.is_some() {
         HANDOFF_MINOR_TPM
     } else if config.fv_app == Some(FirmwareFvApp::Fs) {
         HANDOFF_MINOR_FV_APP_FS
@@ -3664,7 +3668,7 @@ pub(crate) fn assemble_board(
                 NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?
             }
         };
-        if device.has_protected_store() {
+        if device.has_protected_store() && !device.secure_boot_disabled() {
             return Err(FirmwareBoardError::Nvram(
                 NvramContentsError::ProtectionRequiresFirmware,
             ));
@@ -6676,13 +6680,46 @@ mod tests {
             nvram: Some(NvramConfig::Snapshot(snapshot)),
             ..reference_config()
         };
-        let firmware = test_image(&[0xf4], &[(0x2A, &13u16.to_le_bytes())]);
+        let legacy = test_image(&[0xf4], &[(0x2A, &13u16.to_le_bytes())]);
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 13
+            })
+        ));
+        let firmware = test_image(
+            &[0xf4],
+            &[(0x2A, &HANDOFF_MINOR_PROTECTED_NVRAM.to_le_bytes())],
+        );
         assert!(matches!(
             load_firmware_image(&firmware, &config),
             Err(FirmwareBoardError::Nvram(
                 NvramContentsError::ProtectionRequiresFirmware
             ))
         ));
+
+        Image::write_header(
+            &mut store,
+            Flags {
+                secure_boot_disabled: true,
+                vendor_keys_modified: false,
+            },
+        )
+        .unwrap();
+        let snapshot = NvramDevice::with_protected_store(&store)
+            .unwrap()
+            .nvram_snapshot();
+        let debug = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(snapshot)),
+            ..config
+        };
+        let board = load_firmware_image(&firmware, &debug).unwrap();
+        let block = board.handoff_block();
+        assert_eq!(le_u16(block, 0x0A).unwrap(), HANDOFF_MINOR_PROTECTED_NVRAM);
+        let device = le_u32(block, 0x3C).unwrap() as usize + DEV_NVRAM * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u64(block, device + 0x20).unwrap(), 2);
+        assert_eq!(le_u64(block, device + 0x28).unwrap(), 0);
     }
 
     #[test]

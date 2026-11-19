@@ -3,6 +3,7 @@
 use crate::bus::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use crate::crc32::crc32_ieee;
 use od_uefi_security::protected::{IMAGE_CAPACITY, Image};
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -66,6 +67,13 @@ enum SnapshotFormat {
 pub enum NvramConfig {
     Empty,
     Snapshot(Vec<u8>),
+}
+
+impl NvramConfig {
+    pub(crate) fn is_protected(&self) -> bool {
+        matches!(self, Self::Snapshot(bytes) if bytes.starts_with(SNAPSHOT_MAGIC)
+            && bytes.get(8..12) == Some(&(SnapshotFormat::Protected as u32).to_le_bytes()))
+    }
 }
 
 impl fmt::Debug for NvramConfig {
@@ -138,6 +146,12 @@ impl NvramDevice {
     }
     pub(crate) fn has_protected_store(&self) -> bool {
         lock(&self.state).banks.format == SnapshotFormat::Protected
+    }
+    pub(crate) fn secure_boot_disabled(&self) -> bool {
+        let state = lock(&self.state);
+        state.banks.format == SnapshotFormat::Protected
+            && Image::new(state.banks.current().data())
+                .is_ok_and(|image| image.flags.secure_boot_disabled)
     }
 
     pub(crate) fn handle(&self) -> NvramHandle {
@@ -364,10 +378,11 @@ impl State {
 }
 
 fn validate_protected(bytes: &[u8]) -> Result<(), NvramContentsError> {
-    Image::new(bytes)
-        .and_then(|image| image.policy_bytes())
-        .map(|_| ())
-        .map_err(|_| NvramContentsError::InvalidProtectedStore)
+    let image = Image::new(bytes).map_err(|_| NvramContentsError::InvalidProtectedStore)?;
+    if image.policy_bytes().is_err() || !has_unique_ordinary_names(&image) {
+        return Err(NvramContentsError::InvalidProtectedStore);
+    }
+    Ok(())
 }
 
 fn preserves_protected_policy(current: &[u8], candidate: &[u8]) -> bool {
@@ -375,7 +390,17 @@ fn preserves_protected_policy(current: &[u8], candidate: &[u8]) -> bool {
         return false;
     };
     current.flags == candidate.flags
+        && has_unique_ordinary_names(&candidate)
         && matches!((current.policy_bytes(), candidate.policy_bytes()), (Ok(old), Ok(new)) if old == new)
+}
+
+fn has_unique_ordinary_names(image: &Image<'_>) -> bool {
+    let mut keys = HashSet::new();
+    image.records().all(|decoded| {
+        decoded.is_ok_and(|(record, _)| {
+            record.policy_variable().is_some() || keys.insert((record.guid, record.name))
+        })
+    })
 }
 
 fn validate_access(access: DeviceAccess) -> Result<(), DeviceError> {
@@ -692,6 +717,7 @@ mod tests {
             ),
             protected_image(DEFAULT_FLAGS, &[pk, Record { value: b"", ..dbx }]),
             protected_image(DEFAULT_FLAGS, &[pk, pk, dbx]),
+            protected_image(DEFAULT_FLAGS, &[pk, dbx, timeout, timeout]),
             protected_image(
                 Flags {
                     secure_boot_disabled: true,

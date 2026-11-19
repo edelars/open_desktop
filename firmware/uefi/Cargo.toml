@@ -18,7 +18,7 @@ handoff-acpi = []
 runtime-driver = []
 
 [dependencies]
-od-uefi-security = { path = "../../crates/od-uefi-security" }
+od-uefi-security = { path = "../../crates/od-uefi-security", features = ["protected-nvram"] }
 sha2 = { version = "=0.11.1", default-features = false }
 
 [lib]

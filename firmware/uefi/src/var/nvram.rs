@@ -37,6 +37,35 @@ impl Nvram {
     }
 
     pub(crate) fn write(self, image: &[u8]) -> Result<(), Status> {
+        self.stage(image)?;
+        self.write_register(CMD, 3);
+        self.expect_status(3)
+    }
+
+    pub(crate) fn authenticated_update(self, request: &[u8]) -> Result<(), Status> {
+        self.stage(request)?;
+        self.write_register(CMD, 4);
+        let status = self.read_register(STATUS);
+        if status == 3 {
+            return Ok(());
+        }
+        const ERRORS: [Status; 7] = [
+            Status::INVALID_PARAMETER,
+            Status::DEVICE_ERROR,
+            Status::DEVICE_ERROR,
+            Status::DEVICE_ERROR,
+            Status::SECURITY_VIOLATION,
+            Status::NOT_FOUND,
+            Status::OUT_OF_RESOURCES,
+        ];
+        let error_index = status.wrapping_sub(0x8000_0001) as usize;
+        Err(ERRORS
+            .get(error_index)
+            .copied()
+            .unwrap_or(Status::DEVICE_ERROR))
+    }
+
+    fn stage(self, image: &[u8]) -> Result<(), Status> {
         if !(1..=MAX_STORE_BYTES).contains(&image.len()) {
             return Err(Status::DEVICE_ERROR);
         }
@@ -47,8 +76,7 @@ impl Nvram {
                 ptr::with_exposed_provenance_mut::<u8>(self.base + index).write_volatile(byte)
             };
         }
-        self.write_register(CMD, 3);
-        self.expect_status(3)
+        Ok(())
     }
 
     fn begin_transfer(self, command: u32, expected: u32, length: usize) -> Result<(), Status> {

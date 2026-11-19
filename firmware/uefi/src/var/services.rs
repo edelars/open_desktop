@@ -105,7 +105,7 @@ pub(crate) fn seed_defaults(
     missing
 }
 
-fn seed_ascii(
+pub(crate) fn seed_ascii(
     store: &mut VariableStore,
     ascii: &[u8],
     attributes: u32,

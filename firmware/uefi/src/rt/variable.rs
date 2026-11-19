@@ -2,7 +2,7 @@
 
 use crate::uefi::{guid::Guid, status::Status, types::Char16};
 use crate::var::{
-    codec::{Decoder, MAX_NAME_UNITS, MAX_STORE_BYTES, MAX_VALUE_BYTES, Name, valid_unit},
+    codec::{Decoder, MAX_NAME_UNITS, MAX_STORE_BYTES, Name, valid_unit},
     nvram::Nvram,
     services::{BootDefaults, NON_VOLATILE_RUNTIME, seed_defaults},
     store::VariableStore,
@@ -13,6 +13,9 @@ use core::{ffi::c_void, slice};
 use super::driver::with_variables;
 #[cfg(not(target_os = "uefi"))]
 use crate::bs::with_runtime_variables as with_variables;
+
+#[path = "protected_variables.rs"]
+mod protected;
 
 const MONOTONIC_GUID: Guid = Guid {
     data1: 0xcf84_fede,
@@ -27,6 +30,7 @@ pub struct RuntimeVariables {
     store: VariableStore,
     nvram_base: usize,
     nv_length: usize,
+    protected_scratch: *mut [u8; MAX_STORE_BYTES],
     nv_image: [u8; MAX_STORE_BYTES],
 }
 
@@ -84,6 +88,7 @@ impl RuntimeVariables {
         if self.nvram_base == 0 {
             return Err(Status::DEVICE_ERROR);
         }
+        self.sync_variables()?;
         let name = Name::new(MONOTONIC_NAME).unwrap();
         let high = match self.store.get(MONOTONIC_GUID, name) {
             None => 0,
@@ -132,6 +137,9 @@ impl RuntimeVariables {
         attributes: u32,
         value: &[u8],
     ) -> Result<(), Status> {
+        if self.is_protected() {
+            return self.set_v2(guid, name, attributes, value);
+        }
         let base = self.nvram_base;
         self.set_with_persistence(guid, name, attributes, value, |image| {
             if base == 0 {
@@ -226,8 +234,13 @@ pub(crate) unsafe extern "efiapi" fn get_variable(
             let Some(name) = Name::new(bytes) else {
                 return Status::INVALID_PARAMETER;
             };
-            let Some(record) = state.store.get(guid.read_unaligned(), name) else {
-                return Status::NOT_FOUND;
+            if let Err(status) = state.sync_variables() {
+                return status;
+            }
+            let record = match state.get_current(guid.read_unaligned(), name) {
+                Ok(Some(record)) => record,
+                Ok(None) => return Status::NOT_FOUND,
+                Err(status) => return status,
             };
             let short = size.read_unaligned() < record.value.len();
             if !short && data.is_null() {
@@ -264,7 +277,10 @@ pub(crate) unsafe extern "efiapi" fn get_next_variable_name(
                 return Status::INVALID_PARAMETER;
             };
             let previous = Name::new(bytes).map(|name| (guid.read_unaligned(), name));
-            let record = match state.store.next(previous) {
+            if let Err(status) = state.sync_variables() {
+                return status;
+            }
+            let record = match state.next_current(previous) {
                 Ok(record) => record,
                 Err(status) => return status,
             };
@@ -296,9 +312,6 @@ pub(crate) unsafe extern "efiapi" fn set_variable(
             if name.is_null() || guid.is_null() || (size != 0 && data.is_null()) {
                 return Status::INVALID_PARAMETER;
             }
-            if size > MAX_VALUE_BYTES {
-                return Status::INVALID_PARAMETER;
-            }
             let mut name_bytes = [0; MAX_NAME_UNITS * 2];
             let Ok(bytes) = read_name(name, MAX_NAME_UNITS + 1, &mut name_bytes) else {
                 return Status::INVALID_PARAMETER;
@@ -306,12 +319,15 @@ pub(crate) unsafe extern "efiapi" fn set_variable(
             let Some(name) = Name::new(bytes) else {
                 return Status::INVALID_PARAMETER;
             };
+            let guid = guid.read_unaligned();
+            if size > state.maximum_request_size(guid, name) {
+                return Status::INVALID_PARAMETER;
+            }
             let value = if size == 0 {
                 &[]
             } else {
                 slice::from_raw_parts(data.cast(), size)
             };
-            let guid = guid.read_unaligned();
             if guid == MONOTONIC_GUID && name.as_bytes() == MONOTONIC_NAME {
                 return Status::WRITE_PROTECTED;
             }
@@ -486,7 +502,10 @@ pub(crate) unsafe extern "efiapi" fn query_variable_info(
             if storage.is_null() || remaining.is_null() || maximum.is_null() {
                 return Status::INVALID_PARAMETER;
             }
-            let info = match state.store.query(attributes) {
+            if let Err(status) = state.sync_variables() {
+                return status;
+            }
+            let info = match state.query_current(attributes) {
                 Ok(info) => info,
                 Err(status) => return status,
             };

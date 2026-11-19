@@ -20470,7 +20470,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             0x83,
                             OperandSize::Dword | OperandSize::Qword,
                             Operand::Immediate(_)
-                        )
+                        ) | (0x80, OperandSize::Byte, Operand::Immediate(_))
                     )
                 }
                 Operation::Arithmetic {
@@ -20498,7 +20498,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (0xf6, OperandSize::Byte) | (0xf7, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
-                // The console masks UTF-8 bytes and variable services encode a Boolean.
+                // The console masks UTF-8 bytes. Variable services encode
+                // Boolean values and protected key discriminants.
                 Operation::Logic {
                     kind,
                     dst: Operand::Register(destination),
@@ -20507,7 +20508,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     && instruction.prefixes == Prefixes::default()
                     && match (kind, instruction.opcode.byte, instruction.length, immediate) {
                         (LogicKind::And, 0x24, 2, 0x01 | 0x0f | 0x1f | 0x3f)
-                        | (LogicKind::Or, 0x0c, 2, 0x80 | 0xc0) => {
+                        | (LogicKind::Or, 0x0c, 2, 0x01..=0x05 | 0x80 | 0xc0) => {
                             destination == RegisterView::low(Register::Rax, OperandSize::Byte)
                         }
                         (LogicKind::Or, 0x80, 3, 0x80) => {
@@ -21653,12 +21654,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.opcode.byte == 0xff
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.address_size == OperandSize::Qword
-                && instruction.length == 7
+                && matches!(
+                    (instruction.length, source.displacement),
+                    (7, 0xc8) | (4, 0x68)
+                )
                 && instruction.prefixes == Prefixes::default()
                 && source.base == AddressBase::Register(Register::Rsp)
                 && source.index.is_none()
-                && source.scale == 1
-                && source.displacement == 0xc8 =>
+                && source.scale == 1 =>
         {
             if let Err(error) = push_stack_source(state, memory, context, next_rip, source) {
                 return match error {

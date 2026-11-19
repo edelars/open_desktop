@@ -155,6 +155,7 @@ unsafe fn apply_virtual_address_map(
             map.convert_pointer(0, address)?;
         }
         map.convert_pointer(OPTIONAL_POINTER, (*variables).nvram_base())?;
+        map.convert_pointer(OPTIONAL_POINTER, (*variables).protected_scratch_base())?;
         (*event_table).validate_virtual_notifications(&map)?;
 
         let mut deltas = [0u64; MAX_IMAGES];
@@ -223,6 +224,8 @@ unsafe extern "efiapi" fn virtualize_private_pointers(_: Event, context: *mut c_
         let variables = (*storage).variables;
         let nvram = ptr::with_exposed_provenance_mut((*variables).nvram_base());
         (*variables).set_nvram_base(convert_address(nvram, OPTIONAL_POINTER).addr());
+        let scratch = ptr::with_exposed_provenance_mut((*variables).protected_scratch_base());
+        (*variables).set_protected_scratch_base(convert_address(scratch, OPTIONAL_POINTER).addr());
         (*storage).variables = convert_address(variables.cast(), 0).cast();
         (*storage).system = convert_address((*storage).system.cast(), 0).cast();
         (*storage).event_table = convert_address((*storage).event_table.cast(), 0).cast();

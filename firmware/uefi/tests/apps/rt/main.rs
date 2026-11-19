@@ -22,6 +22,7 @@ use od_firmware::{
 use od_firmware_test_apps::ascii_to_char16;
 
 mod paging;
+mod secure_vars;
 use paging::{TABLE_PAGES, Tables};
 
 const MAP_CAPACITY: usize = 96;
@@ -46,6 +47,7 @@ struct LoaderContext {
     tables: u64,
     count: usize,
     version: u32,
+    protected_nvram: bool,
     map: [MaybeUninit<MemoryDescriptor>; MAP_CAPACITY],
 }
 
@@ -77,6 +79,16 @@ unsafe extern "efiapi" fn efi_main(image: Handle, system: *mut SystemTable) -> S
             ) != Status::SUCCESS
         {
             return Status::DEVICE_ERROR;
+        }
+        let protected_nvram = match secure_vars::available(runtime) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        if protected_nvram {
+            if !secure_vars::before_exit(boot, runtime) {
+                return Status::DEVICE_ERROR;
+            }
+            trace(b"OD-UEFI protected Auth2 before EBS\r\n");
         }
         let mut boot_count = 0u64;
         if ((*boot).get_next_monotonic_count)(&mut boot_count) != Status::SUCCESS
@@ -119,6 +131,7 @@ unsafe extern "efiapi" fn efi_main(image: Handle, system: *mut SystemTable) -> S
                     ptr::addr_of_mut!((*context).tables).write(pages);
                     ptr::addr_of_mut!((*context).count).write(size / stride);
                     ptr::addr_of_mut!((*context).version).write(version);
+                    ptr::addr_of_mut!((*context).protected_nvram).write(protected_nvram);
                     switch_to_loader_stack(context, stack);
                 }
                 Status::INVALID_PARAMETER => {}
@@ -140,6 +153,7 @@ unsafe extern "efiapi" fn finish(context: *mut LoaderContext) -> ! {
     unsafe {
         let system = (*context).system;
         let version = (*context).version;
+        let protected_nvram = (*context).protected_nvram;
         let map = slice::from_raw_parts_mut(
             ptr::addr_of_mut!((*context).map).cast::<MemoryDescriptor>(),
             (*context).count,
@@ -202,6 +216,16 @@ unsafe extern "efiapi" fn finish(context: *mut LoaderContext) -> ! {
             fail(b'B');
         }
         trace(b"OD-UEFI rt physical\r\n");
+        if protected_nvram {
+            if !secure_vars::after_exit(runtime) {
+                fail(b'X');
+            }
+            trace(b"OD-UEFI protected Auth2 after EBS\r\n");
+            if !secure_vars::verify_authoritative_monotonic(runtime) {
+                fail(b'I');
+            }
+            trace(b"OD-UEFI protected NVRAM direct refresh\r\n");
+        }
         let stride = size_of::<MemoryDescriptor>();
         if convert(0, ptr::null_mut()) != Status::UNSUPPORTED
             || set_map(0, stride, version, map.as_ptr()) != Status::NO_MAPPING
@@ -253,9 +277,15 @@ unsafe extern "efiapi" fn finish(context: *mut LoaderContext) -> ! {
             fail(b'N');
         }
         expect_variable(virtual_runtime, value);
+        if protected_nvram {
+            if !secure_vars::after_virtual_map(virtual_runtime) {
+                fail(b'W');
+            }
+            trace(b"OD-UEFI protected Auth2 after VA\r\n");
+        }
         let mut high = 0u32;
         if ((*virtual_runtime).get_next_high_monotonic_count)(&mut high) != Status::SUCCESS
-            || high != 2
+            || high != if protected_nvram { 43 } else { 2 }
         {
             fail(b'H');
         }
