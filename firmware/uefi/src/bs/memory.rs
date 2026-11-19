@@ -37,7 +37,7 @@ pub unsafe extern "efiapi" fn allocate_pages(
         _ => return Status::INVALID_PARAMETER,
     };
     unsafe {
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             match state
                 .allocator
                 .allocate_pages(placement, memory_type, pages as u64)
@@ -58,7 +58,7 @@ pub unsafe extern "efiapi" fn allocate_pages(
 /// Call on the BSP.
 pub unsafe extern "efiapi" fn free_pages(address: u64, pages: usize) -> Status {
     unsafe {
-        state::with(
+        state::with_map_mutation(
             |state| match state.allocator.free_pages(address, pages as u64) {
                 Ok(()) => Status::SUCCESS,
                 Err(PageError::NotFound) => Status::NOT_FOUND,
@@ -122,15 +122,15 @@ pub unsafe extern "efiapi" fn allocate_pool(
         return Status::INVALID_PARAMETER;
     }
     unsafe {
-        state::with(
-            |state| match allocate_pool_in(state.allocator, memory_type, size) {
+        state::with_map_mutation(|state| {
+            match allocate_pool_in(state.allocator, memory_type, size) {
                 Ok(address) => {
                     buffer.write(address);
                     Status::SUCCESS
                 }
                 Err(status) => status,
-            },
-        )
+            }
+        })
     }
 }
 
@@ -157,7 +157,7 @@ pub(super) unsafe fn allocate_pool_in(
 /// Call on the BSP.
 pub unsafe extern "efiapi" fn free_pool(buffer: *mut c_void) -> Status {
     unsafe {
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             match state
                 .allocator
                 .free_pool(&mut IdentityPoolMemory, buffer.addr() as u64)

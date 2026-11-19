@@ -41,6 +41,9 @@ impl EventRegistry {
         now: u64,
         clock: TimerClock,
     ) -> Status {
+        if !self.timers_active {
+            return Status::NOT_READY;
+        }
         let Ok(index) = self.find(event) else {
             return Status::INVALID_PARAMETER;
         };
@@ -70,6 +73,9 @@ impl EventRegistry {
     }
 
     fn poll_at(&mut self, now: u64) {
+        if !self.timers_active {
+            return;
+        }
         for index in 0..MAX_EVENTS {
             let Some(timer) = self.timers[index] else {
                 continue;
@@ -92,7 +98,9 @@ impl EventRegistry {
     }
 
     pub(super) fn poll_clock(&mut self) {
-        if let Some(clock) = self.clock {
+        if self.timers_active
+            && let Some(clock) = self.clock
+        {
             self.poll_at((clock.read)());
         }
     }
@@ -281,5 +289,35 @@ mod tests {
         assert_eq!(events.find(replacement).unwrap(), index);
         events.poll_at(21);
         assert_eq!(events.check(replacement, false), Status::NOT_READY);
+    }
+
+    #[test]
+    fn exit_drops_scheduled_and_pending_timer_activity() {
+        let clock = clock(10_000_000);
+        let mut events = EventRegistry::new();
+        events.set_clock(clock.hz, clock.read);
+        let timer = create(&mut events, EVT_TIMER | EVT_NOTIFY_SIGNAL, Some(callback));
+        let notification = create(&mut events, EVT_NOTIFY_SIGNAL, Some(callback));
+        assert_eq!(
+            events.arm_at(timer, TIMER_PERIODIC, 1, 0, clock),
+            Status::SUCCESS
+        );
+        let old_tpl = events.raise_tpl(TPL_NOTIFY);
+        events.poll_at(1);
+        assert_eq!(events.signal(notification), Status::SUCCESS);
+        assert_eq!(events.pending_count, 2);
+        events.disable_timers();
+        assert!(events.clock.is_some());
+        assert!(events.timers.iter().all(Option::is_none));
+        assert!(!events.entries[0].unwrap().signaled);
+        assert_eq!(
+            events.arm_at(timer, TIMER_PERIODIC, 1, 2, clock),
+            Status::NOT_READY,
+        );
+        events.poll_at(100);
+        assert!(events.restore_tpl(old_tpl));
+        assert_eq!(events.take_notification().unwrap().event, notification);
+        assert!(events.restore_tpl(old_tpl));
+        assert!(events.take_notification().is_none());
     }
 }

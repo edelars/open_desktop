@@ -134,7 +134,7 @@ pub unsafe extern "efiapi" fn locate_handle_buffer(
             Ok(search) => search,
             Err(status) => return status,
         };
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             let mut handles = [ptr::null_mut(); MAX_PROTOCOL_BINDINGS];
             let (count, pending) = match state.protocols.handles(search, &mut handles) {
                 Ok(found) => found,
@@ -172,7 +172,7 @@ pub unsafe extern "efiapi" fn protocols_per_handle(
         return Status::INVALID_PARAMETER;
     }
     unsafe {
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             let protocols = state
                 .protocols
                 .bindings
@@ -239,7 +239,7 @@ pub unsafe extern "efiapi" fn open_protocol_information(
     }
     unsafe {
         let protocol = protocol.read();
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             let Some(binding) = state.protocols.binding_index(handle, protocol) else {
                 return Status::NOT_FOUND;
             };

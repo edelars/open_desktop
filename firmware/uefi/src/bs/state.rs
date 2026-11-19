@@ -2,6 +2,7 @@
 
 use super::config_table::ConfigurationTables;
 use super::event::EventRegistry;
+use super::exit::BootExit;
 use super::protocol::ProtocolRegistry;
 use crate::mem::pages::PageAllocator;
 use crate::uefi::status::Status;
@@ -16,6 +17,7 @@ struct BspServices {
     events: UnsafeCell<EventRegistry>,
     configuration: UnsafeCell<ConfigurationTables>,
     system_table: Cell<Option<NonNull<SystemTable>>>,
+    exit: UnsafeCell<BootExit>,
 }
 
 // SAFETY: only the BSP accesses these fields. Unsafe entrances require the
@@ -30,6 +32,7 @@ static BOOT_SERVICES: BspServices = BspServices {
     events: UnsafeCell::new(EventRegistry::new()),
     configuration: UnsafeCell::new(ConfigurationTables::new()),
     system_table: Cell::new(None),
+    exit: UnsafeCell::new(BootExit::new()),
 };
 
 pub(crate) struct ServiceState<'a> {
@@ -38,6 +41,7 @@ pub(crate) struct ServiceState<'a> {
     pub events: &'a mut EventRegistry,
     pub configuration: &'a mut ConfigurationTables,
     pub system_table: Option<NonNull<SystemTable>>,
+    pub exit: &'a mut BootExit,
 }
 
 struct BusyGuard<'a>(&'a Cell<bool>);
@@ -78,6 +82,22 @@ pub(crate) unsafe fn with(operation: impl FnOnce(ServiceState<'_>) -> Status) ->
     unsafe { try_with(operation) }.unwrap_or(Status::NOT_READY)
 }
 
+/// The BSP owns state while making a memory-map change. EXIT notifications
+/// can run services that preserve the map, while mutations are frozen.
+pub(crate) unsafe fn with_map_mutation(
+    operation: impl FnOnce(ServiceState<'_>) -> Status,
+) -> Status {
+    unsafe {
+        with(|state| {
+            if state.exit.can_change_map() {
+                operation(state)
+            } else {
+                Status::ACCESS_DENIED
+            }
+        })
+    }
+}
+
 /// Like with(), but returns None when the state is unavailable.
 pub(crate) unsafe fn try_with<R>(operation: impl FnOnce(ServiceState<'_>) -> R) -> Option<R> {
     if BOOT_SERVICES.busy.replace(true) {
@@ -86,6 +106,10 @@ pub(crate) unsafe fn try_with<R>(operation: impl FnOnce(ServiceState<'_>) -> R) 
     let _guard = BusyGuard(&BOOT_SERVICES.busy);
     // SAFETY: the caller executes on the BSP, and the busy flag owns the state.
     unsafe {
+        let exit = &mut *BOOT_SERVICES.exit.get();
+        if exit.exited() {
+            return None;
+        }
         let allocator = (&mut *BOOT_SERVICES.allocator.get()).as_mut()?;
         Some(operation(ServiceState {
             allocator,
@@ -93,6 +117,7 @@ pub(crate) unsafe fn try_with<R>(operation: impl FnOnce(ServiceState<'_>) -> R) 
             events: &mut *BOOT_SERVICES.events.get(),
             configuration: &mut *BOOT_SERVICES.configuration.get(),
             system_table: BOOT_SERVICES.system_table.get(),
+            exit,
         }))
     }
 }

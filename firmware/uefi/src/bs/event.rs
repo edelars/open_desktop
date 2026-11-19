@@ -23,6 +23,7 @@ pub const TPL_HIGH_LEVEL: Tpl = 31;
 
 pub const EVT_NOTIFY_WAIT: u32 = 0x100;
 pub const EVT_NOTIFY_SIGNAL: u32 = 0x200;
+pub const EVT_SIGNAL_EXIT_BOOT_SERVICES: u32 = 0x201;
 const MAX_EVENTS: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -53,6 +54,7 @@ pub(crate) struct EventRegistry {
     entries: [Option<Entry>; MAX_EVENTS],
     timers: [Option<Timer>; MAX_EVENTS],
     clock: Option<TimerClock>,
+    timers_active: bool,
     pending: [usize; MAX_EVENTS],
     pending_count: usize,
     last_event: usize,
@@ -65,6 +67,7 @@ impl EventRegistry {
             entries: [None; MAX_EVENTS],
             timers: [None; MAX_EVENTS],
             clock: None,
+            timers_active: true,
             pending: [0; MAX_EVENTS],
             pending_count: 0,
             last_event: 0,
@@ -178,6 +181,27 @@ impl EventRegistry {
         for index in 0..MAX_EVENTS {
             if self.entries[index].is_some_and(|entry| entry.group == Some(group)) {
                 self.signal_one(index);
+            }
+        }
+    }
+
+    pub(super) fn current_tpl(&self) -> Tpl {
+        self.current_tpl
+    }
+
+    pub(super) fn disable_timers(&mut self) {
+        self.timers_active = false;
+        self.timers.fill(None);
+        for entry in self.entries.iter_mut().flatten() {
+            if entry.event_type & EVT_TIMER != 0 {
+                entry.signaled = false;
+                entry.queued = false;
+            }
+        }
+        for position in (0..self.pending_count).rev() {
+            let index = self.pending[position];
+            if self.entries[index].is_some_and(|entry| entry.event_type & EVT_TIMER != 0) {
+                self.remove_pending(position);
             }
         }
     }
@@ -300,16 +324,15 @@ pub unsafe extern "efiapi" fn create_event(
     context: *mut c_void,
     event: *mut Event,
 ) -> Status {
-    unsafe {
-        create_event_ex(
-            event_type,
-            notify_tpl,
-            function,
-            context,
-            ptr::null(),
-            event,
+    let (event_type, group) = if event_type == EVT_SIGNAL_EXIT_BOOT_SERVICES {
+        (
+            EVT_NOTIFY_SIGNAL,
+            ptr::from_ref(&super::exit::EXIT_BOOT_SERVICES),
         )
-    }
+    } else {
+        (event_type, ptr::null())
+    };
+    unsafe { create_event_ex(event_type, notify_tpl, function, context, group, event) }
 }
 
 /// # Safety

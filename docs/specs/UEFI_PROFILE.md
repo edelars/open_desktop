@@ -201,6 +201,30 @@ handoff. Нулевой интервал означает следующий т�
 [Время и события](FIRMWARE_BOOT.md#8-решение-3-модель-таймеров-и-событий),
 [UEFI 2.11, §7.1](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#event-timer-and-task-priority-services).
 
+### Завершение Boot Services
+
+`ExitBootServices` проверяет активный handle образа и TPL. Первая
+попытка с допустимым handle на `TPL_APPLICATION` доставляет группу
+`BEFORE_EXIT_BOOT_SERVICES`. Её обработчики могут изменить карту.
+По возвращении из них сервис сравнивает `MapKey` с текущим ключом.
+`EFI_INVALID_PARAMETER` при устаревшем ключе оставляет возможность
+получить карту снова. Повтор со свежим ключом продолжает тот же
+переход без вторичного уведомления BEFORE.
+
+При совпадении ключа прошивка замораживает изменения карты, снимает
+таймеры и ожидающие таймерные уведомления, затем доставляет группу
+`EXIT_BOOT_SERVICES`. Специальный тип `EVT_SIGNAL_EXIT_BOOT_SERVICES`
+в `CreateEvent` регистрирует в этой же группе. `Stall` продолжает
+отмерять интервал по TSC, пока выполняется обработчик EXIT. После уведомлений
+обнуляются три пары console handle и interface и указатель Boot Services
+в System Table, пересчитывается CRC и закрывается доступ к состоянию
+Boot Services. Указатели Runtime Services и конфигурационных таблиц
+сохраняются.
+
+Внутренняя диагностика привязывает собственный временный handle.
+Привязка handle загруженного EFI-образа относится к S7-06.
+[UEFI 2.11, §§7.1 и 7.4.6](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-exitbootservices).
+
 Редакция 2.11 задаёт для x64 при вызове EFI-образа `FCW = 0x037f` и
 `MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
 реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).

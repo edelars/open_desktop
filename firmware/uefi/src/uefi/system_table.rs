@@ -5,7 +5,7 @@ use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
 use crate::bs::event::{self, Event, EventNotify, Tpl};
-use crate::bs::{config_table, memory, misc, protocol};
+use crate::bs::{config_table, exit, memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::device_path::DevicePathNode;
 use crate::mem::map::{MemoryDescriptor, MemoryType};
@@ -34,6 +34,7 @@ type SetTimer = unsafe extern "efiapi" fn(Event, u32, u64) -> Status;
 type WaitForEvent = unsafe extern "efiapi" fn(usize, *const Event, *mut usize) -> Status;
 type Stall = unsafe extern "efiapi" fn(usize) -> Status;
 type InstallConfigurationTable = unsafe extern "efiapi" fn(*const Guid, *mut c_void) -> Status;
+type ExitBootServices = unsafe extern "efiapi" fn(Handle, usize) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
 type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
 type GetMemoryMap = unsafe extern "efiapi" fn(
@@ -111,7 +112,7 @@ pub struct BootServices {
     start_image: *const c_void,
     exit: *const c_void,
     unload_image: *const c_void,
-    exit_boot_services: *const c_void,
+    pub exit_boot_services: ExitBootServices,
     get_next_monotonic_count: *const c_void,
     pub stall: Stall,
     set_watchdog_timer: *const c_void,
@@ -161,7 +162,7 @@ impl BootServices {
             start_image: ptr::null(),
             exit: ptr::null(),
             unload_image: ptr::null(),
-            exit_boot_services: ptr::null(),
+            exit_boot_services: exit::exit_boot_services,
             get_next_monotonic_count: ptr::null(),
             stall: event::stall,
             set_watchdog_timer: ptr::null(),
@@ -294,6 +295,17 @@ impl SystemTable {
         (self.configuration_table, self.number_of_table_entries)
     }
 
+    pub(crate) fn clear_boot_services(&mut self) {
+        self.console_in_handle = ptr::null_mut();
+        self.con_in = ptr::null_mut();
+        self.console_out_handle = ptr::null_mut();
+        self.con_out = ptr::null_mut();
+        self.standard_error_handle = ptr::null_mut();
+        self.std_err = ptr::null_mut();
+        self.boot_services = ptr::null_mut();
+        self.update_crc32();
+    }
+
     pub fn update_crc32(&mut self) {
         // SAFETY: the C layout starts with a header, and the explicit padding field
         // covers the only gap between x64 fields. The entire table is initialized.
@@ -361,6 +373,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, locate_handle), 176);
         assert_eq!(offset_of!(BootServices, locate_device_path), 184);
         assert_eq!(offset_of!(BootServices, install_configuration_table), 192);
+        assert_eq!(offset_of!(BootServices, exit_boot_services), 232);
         assert_eq!(offset_of!(BootServices, open_protocol_information), 296);
         assert_eq!(offset_of!(BootServices, protocols_per_handle), 304);
         assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);
@@ -380,6 +393,33 @@ mod tests {
         assert_eq!(offset_of!(BootServices, create_event_ex), 368);
         assert_eq!(offset_of!(RuntimeServices, get_variable), 72);
         assert_eq!(offset_of!(RuntimeServices, query_variable_info), 128);
+    }
+
+    #[test]
+    fn exit_clears_boot_fields_and_preserves_runtime_fields() {
+        let runtime = ptr::without_provenance_mut::<RuntimeServices>(0x1000);
+        let boot = ptr::without_provenance_mut::<BootServices>(0x2000);
+        let config = ptr::without_provenance_mut::<ConfigurationTable>(0x3000);
+        let console = ptr::without_provenance_mut::<c_void>(0x4000);
+        let mut system = SystemTable::diagnostic(ptr::null(), runtime, boot);
+        system.console_in_handle = console;
+        system.con_in = console;
+        system.console_out_handle = console;
+        system.con_out = console;
+        system.standard_error_handle = console;
+        system.std_err = console;
+        system.publish_configuration(config, 1);
+        system.clear_boot_services();
+        assert!(system.console_in_handle.is_null());
+        assert!(system.con_in.is_null());
+        assert!(system.console_out_handle.is_null());
+        assert!(system.con_out.is_null());
+        assert!(system.standard_error_handle.is_null());
+        assert!(system.std_err.is_null());
+        assert!(system.boot_services.is_null());
+        assert_eq!(system.runtime_services, runtime);
+        assert_eq!(system.configuration_tables(), (config, 1));
+        assert_eq!(system.header.crc32, unsafe { table_crc32(&system) });
     }
 
     #[test]

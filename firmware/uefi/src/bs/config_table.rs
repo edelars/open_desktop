@@ -119,7 +119,7 @@ pub unsafe extern "efiapi" fn install_configuration_table(
     }
     let guid = unsafe { guid.read() };
     let status = unsafe {
-        state::with(|state| {
+        state::with_map_mutation(|state| {
             let Some(mut system) = state.system_table else {
                 return Status::NOT_READY;
             };

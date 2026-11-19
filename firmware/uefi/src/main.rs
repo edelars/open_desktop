@@ -14,9 +14,10 @@ use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::event::{
-    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_TIMER, Event, TIMER_CANCEL, TIMER_PERIODIC,
-    TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
+    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_SIGNAL_EXIT_BOOT_SERVICES, EVT_TIMER, Event,
+    TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
 };
+use od_firmware::bs::exit::{BEFORE_EXIT_BOOT_SERVICES, EXIT_BOOT_SERVICES, set_boot_image_handle};
 use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::bs::protocol::{
     LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, LOCATE_BY_REGISTER_NOTIFY, OPEN_BY_DRIVER,
@@ -196,6 +197,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_protocol_notify(&system);
     verify_timer_services(&system, handoff.tsc_hz());
     verify_configuration_services(system_pointer);
+    verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -1367,6 +1369,179 @@ fn verify_configuration_services(system: *mut SystemTable) {
         }
     }
     com1_write(b"OD-FW S7-05 configuration tables verified\r\n");
+}
+
+struct ExitProbe {
+    system: *mut SystemTable,
+    boot: *mut BootServices,
+    tsc_hz: u64,
+    trace: [u8; 4],
+    count: usize,
+}
+
+unsafe fn record_exit_notification(probe: *mut ExitProbe, value: u8) {
+    unsafe {
+        let system = ptr::addr_of!((*probe).system).read();
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let count = ptr::addr_of!((*probe).count).read();
+        if count >= 3 || ptr::addr_of!((*system).boot_services).read() != boot {
+            stop(STOP_BOOT_SERVICES, 54);
+        }
+        ptr::addr_of_mut!((*probe).trace)
+            .cast::<u8>()
+            .add(count)
+            .write(value);
+        ptr::addr_of_mut!((*probe).count).write(count + 1);
+    }
+}
+
+unsafe extern "efiapi" fn notify_before_exit(_: Event, context: *mut c_void) {
+    let probe = context.cast::<ExitProbe>();
+    unsafe {
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let allocate = ptr::addr_of!((*boot).allocate_pool).read_volatile();
+        let mut allocation = ptr::null_mut();
+        // The BEFORE callback owns this LoaderData allocation. Its new
+        // descriptor makes the map key used by the first attempt stale.
+        if allocate(MemoryType::LOADER_DATA, 8, &mut allocation) != Status::SUCCESS
+            || allocation.is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 54);
+        }
+        record_exit_notification(probe, b'B');
+    }
+}
+
+unsafe extern "efiapi" fn notify_modern_exit(_: Event, context: *mut c_void) {
+    let probe = context.cast::<ExitProbe>();
+    unsafe {
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let hz = u128::from(ptr::addr_of!((*probe).tsc_hz).read());
+        let stall = ptr::addr_of!((*boot).stall).read_volatile();
+        let started = read_tsc();
+        if stall(200) != Status::SUCCESS
+            || u128::from(read_tsc() - started) < (200 * hz).div_ceil(1_000_000)
+        {
+            stop(STOP_BOOT_SERVICES, 54);
+        }
+        record_exit_notification(probe, b'E');
+    }
+}
+
+unsafe extern "efiapi" fn notify_legacy_exit(_: Event, context: *mut c_void) {
+    unsafe { record_exit_notification(context.cast(), b'L') };
+}
+
+unsafe extern "efiapi" fn notify_unexpected_exit_timer(_: Event, _: *mut c_void) {
+    stop(STOP_BOOT_SERVICES, 56);
+}
+
+#[inline(never)]
+fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
+    // SAFETY: the environment is the private BSP diagnostic. The System
+    // Table, context, and outputs stay live through both exit attempts.
+    unsafe {
+        let boot = ptr::addr_of!((*system).boot_services).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event).read_volatile();
+        let create_ex = ptr::addr_of!((*boot).create_event_ex).read_volatile();
+        let set_timer = ptr::addr_of!((*boot).set_timer).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let get_map = ptr::addr_of!((*boot).get_memory_map).read_volatile();
+        let exit = ptr::addr_of!((*boot).exit_boot_services).read_volatile();
+        let mut image = ptr::null_mut();
+        let mut before_event = ptr::null_mut();
+        let mut exit_event = ptr::null_mut();
+        let mut legacy_event = ptr::null_mut();
+        let mut timer_event = ptr::null_mut();
+        let mut probe = ExitProbe {
+            system,
+            boot,
+            tsc_hz,
+            trace: [0; 4],
+            count: 0,
+        };
+        let context = ptr::addr_of_mut!(probe).cast();
+        if install(&mut image, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS
+            || set_boot_image_handle(image) != Status::SUCCESS
+            || create_ex(
+                EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_before_exit),
+                context,
+                &BEFORE_EXIT_BOOT_SERVICES,
+                &mut before_event,
+            ) != Status::SUCCESS
+            || create_ex(
+                EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_modern_exit),
+                context,
+                &EXIT_BOOT_SERVICES,
+                &mut exit_event,
+            ) != Status::SUCCESS
+            || create(
+                EVT_SIGNAL_EXIT_BOOT_SERVICES,
+                TPL_CALLBACK,
+                Some(notify_legacy_exit),
+                context,
+                &mut legacy_event,
+            ) != Status::SUCCESS
+            || create(
+                EVT_TIMER | EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_unexpected_exit_timer),
+                ptr::null_mut(),
+                &mut timer_event,
+            ) != Status::SUCCESS
+            || set_timer(timer_event, TIMER_RELATIVE, 1_000) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 53);
+        }
+
+        let mut descriptors = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
+        let mut read_key = || {
+            let mut size = size_of_val(&descriptors);
+            let mut key = 0;
+            if get_map(
+                &mut size,
+                descriptors.as_mut_ptr(),
+                &mut key,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ) != Status::SUCCESS
+            {
+                stop(STOP_BOOT_SERVICES, 55);
+            }
+            key
+        };
+        let key = read_key();
+        let before_trace = ptr::addr_of!(probe.trace);
+        if exit(ptr::null_mut(), key) != Status::INVALID_PARAMETER
+            || ptr::addr_of!(probe.count).read() != 0
+            || exit(image, key) != Status::INVALID_PARAMETER
+            || before_trace.read() != *b"B\0\0\0"
+            || ptr::addr_of!((*system).boot_services).read() != boot
+        {
+            stop(STOP_BOOT_SERVICES, 55);
+        }
+        let fresh_key = read_key();
+        if key.checked_add(1) != Some(fresh_key) || exit(image, fresh_key) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 56);
+        }
+
+        // Only the diagnostic inspects raw memory and prints after the exit.
+        // No Boot Services pointer is used again.
+        let trace = before_trace.read();
+        if !matches!(&trace, b"BEL\0" | b"BLE\0")
+            || ptr::addr_of!(probe.count).read() != 3
+            || !ptr::addr_of!((*system).boot_services).read().is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 57);
+        }
+        com1_write(b"OD-FW S7-05 exit boot services verified BS=0x");
+        com1_write(&fixed_hex(boot.addr() as u64));
+        com1_write(b"\r\n");
+    }
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;
