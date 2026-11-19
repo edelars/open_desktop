@@ -44683,6 +44683,8 @@ fn step_configured(
         | Operation::LockOrMem { .. }
         // S4-38L7z: and for LOCK ADD m8/m32/m64, imm.
         | Operation::LockAddMem { .. }
+        // S6-21: LOCK SUB m32, imm32 for Linux SMP.
+        | Operation::LockSubMem { .. }
         // S4-38L7ai: and for LOCK ADD m32/m64, r32/r64.
         | Operation::LockAddMemReg { .. }
         // S4-38L7ag: and for LOCK AND m8, imm8.
@@ -58815,6 +58817,7 @@ fn step_configured(
         | Operation::LockDecMem { .. }
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
+        | Operation::LockSubMem { .. }
         | Operation::LockAddMemReg { .. }
         | Operation::LockXaddMem { .. }
         // S4-38L9g: and for XADD m32/m64 with a DS override, without LOCK.
@@ -65336,34 +65339,23 @@ fn transfer(
         Operation::LockAddMem {
             destination,
             immediate,
+        }
+        | Operation::LockSubMem {
+            destination,
+            immediate,
         } => {
-            // S4-38L7z: as LockOrMem, but the shared ADD (`arithmetic_result`: all six flags from
-            // the sum at the destination width). One `atomic_rmw_integer` call (S6-20). The
-            // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
-            // resolved before any access (a RIP-relative operand is relative to the end of the
-            // instruction, immediate included). The sum is written back even for a zero addend;
-            // the flags commit only after the call succeeded, so a faulting write leaves memory
-            // and flags untouched.
+            let kind = if matches!(operation, Operation::LockSubMem { .. }) {
+                ArithmeticKind::Sub
+            } else {
+                ArithmeticKind::Add
+            };
             let address = destination.access_address_48(state, next_rip)?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
-                arithmetic_result(
-                    destination.size,
-                    ArithmeticKind::Add,
-                    old,
-                    immediate,
-                    rflags,
-                ).0
+                arithmetic_result(destination.size, kind, old, immediate, rflags).0
             })?;
-            // The flags are a function of the returned old value and the operand, computed outside
-            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
-            let (_, flags) = arithmetic_result(
-                    destination.size,
-                    ArithmeticKind::Add,
-                    old,
-                    immediate,
-                    rflags,
-                );
+            // Use the old value that the atomic update actually replaced.
+            let (_, flags) = arithmetic_result(destination.size, kind, old, immediate, rflags);
             state.rflags = flags;
         }
         Operation::LockAddMemReg {
@@ -65930,15 +65922,15 @@ mod tests {
             size: OperandSize,
             update: &mut dyn FnMut(u64) -> u64,
         ) -> Result<u64, MemoryError> {
+            self.atomic_rmws.push((address, size));
+            if let Some(error) = &self.atomic_error {
+                return Err(error.clone());
+            }
             if size != OperandSize::Qword {
                 let old = self.read_integer(address, context, size)?;
                 let new = update(old);
                 self.write_integer(address, context, size, new)?;
                 return Ok(old);
-            }
-            self.atomic_rmws.push((address, size));
-            if let Some(error) = &self.atomic_error {
-                return Err(error.clone());
             }
             let length = size.bytes();
             let start = address
@@ -77050,6 +77042,102 @@ mod tests {
             assert_eq!(state, before, "{bytes:02x?}");
             assert!(memory.accesses.is_empty(), "{bytes:02x?}");
         }
+    }
+
+    #[test]
+    fn lock_sub_dword_is_one_cpl0_atomic_rmw_with_sub_flags() {
+        let bytes = [0xf0, 0x81, 0x6b, 4, 1, 0, 0, 0x80];
+        let mut initial = LongModeState {
+            cr0: Some(Cr0Profile::BASE),
+            cr4: Some(Cr4Profile::BASE),
+            sti_shadow: Some(crate::StiShadow::Clear),
+            activity: Some(crate::CpuActivity::Running),
+            rflags: 0x0cd7,
+            ..LongModeState::default()
+        };
+        initial.gpr[Register::Rbx as usize] = 0x1000;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+        let config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        };
+        for (old, result, arithmetic_flags) in [
+            (
+                0x7fff_ffffu32,
+                0xffff_fffeu32,
+                crate::CF | crate::SF | crate::OF,
+            ),
+            (0x8000_0001, 0, crate::ZF | crate::PF),
+            (0, 0x7fff_ffff, crate::CF | crate::AF | crate::PF),
+        ] {
+            let mut state = initial.clone();
+            let mut memory = Memory::new(&bytes);
+            memory.bytes[4..8].copy_from_slice(&old.to_le_bytes());
+            let mut expected_ram = memory.bytes.clone();
+            expected_ram[4..8].copy_from_slice(&result.to_le_bytes());
+            let run = run_with_cpl0_profile_set(
+                &mut state,
+                &mut memory,
+                config,
+                crate::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(
+                run.exit,
+                Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+            );
+            assert_eq!(run.instructions_executed, 1);
+            assert_eq!(state.rflags, 0x0402 | arithmetic_flags);
+            assert_eq!(state.rip, bytes.len() as u64);
+            assert_eq!(state.gpr, initial.gpr);
+            assert_eq!(memory.atomic_rmws, [(0x1004, OperandSize::Dword)]);
+            assert_eq!(memory.bytes, expected_ram);
+        }
+
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1004),
+        };
+        let mut state = initial.clone();
+        let mut memory = Memory::new(&bytes);
+        let expected_ram = memory.bytes.clone();
+        memory.atomic_error = Some(MemoryError::Architectural(fault.clone()));
+        let run = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config,
+            crate::INTEGER_FLAGS,
+            &set,
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(run.exit, Cpl0ProfileSetExit::Run(RunExit::Fault(fault)));
+        assert_eq!(run.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert_eq!(memory.atomic_rmws, [(0x1004, OperandSize::Dword)]);
+        assert_eq!(memory.bytes, expected_ram);
+
+        let mut bare = LongModeState::default();
+        bare.gpr[Register::Rbx as usize] = 0x1000;
+        let before_bare = bare.clone();
+        let mut memory = Memory::new(&bytes);
+        assert_eq!(
+            step(&mut bare, &mut memory, context),
+            Ok(StepOutcome::Unsupported { opcode: 0x81 })
+        );
+        assert_eq!(bare, before_bare);
+        assert!(memory.atomic_rmws.is_empty());
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

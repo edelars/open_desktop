@@ -1,0 +1,103 @@
+{
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "d3664e5eb5ed2a044f8452c13fb05c8a0d05e4495e0ba6b17b85403a1e057b43",
+  "raw_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "ram_mib": 128,
+  "profile": "stage4a-apic",
+  "budget": 2500000000,
+  "namespace_sectors": 4194304,
+  "stop_rip": "0xffffffff819dfa98",
+  "stop_gpa": "0x19dfa98",
+  "stop_bytes": "f0 81 6b 04 01 00 00 80",
+  "kernel_symbol": "kernfs_activate_one+0x58",
+  "runs": [
+    {
+      "commit": "64e6bd5",
+      "mode": "interleaved",
+      "vcpus": 2,
+      "seed": 24301,
+      "nonce": "s6-workloads20261119",
+      "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+      "report_sha256": "8c20ccf0577bd9c25ad6cf70bbea29ac522c5b179cdb1f000c9ab137486612af",
+      "kernel_observation": "[    0.018177] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs",
+      "terminal_vcpu": 0,
+      "cpu_stats": [
+        {
+          "index": 0,
+          "activity": "Running",
+          "retired": 1647434987
+        },
+        {
+          "index": 1,
+          "activity": "WaitForSipi",
+          "retired": 0
+        }
+      ],
+      "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+    },
+    {
+      "commit": "583cc45",
+      "mode": "parallel",
+      "vcpus": 2,
+      "quantum": 1024,
+      "timeout_s": 900,
+      "threads_started": 2,
+      "threads_exited": 2,
+      "nonce": "s6-workers220261119",
+      "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+      "report_sha256": "c969623b03a28f555e235a72344056bdb8d7421e1ed2eefa77321b7e5b185793",
+      "kernel_observation": "[    0.018178] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs",
+      "terminal_vcpu": 0,
+      "cpu_stats": [
+        {
+          "index": 0,
+          "activity": "Running",
+          "retired": 1647540873
+        },
+        {
+          "index": 1,
+          "activity": "WaitForSipi",
+          "retired": 0
+        }
+      ],
+      "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+    },
+    {
+      "commit": "583cc45",
+      "mode": "parallel",
+      "vcpus": 4,
+      "quantum": 1024,
+      "timeout_s": 900,
+      "threads_started": 4,
+      "threads_exited": 4,
+      "nonce": "s6-workers420261119",
+      "acpi_blob_sha256": "93ee9d87f3843fcef92104cfc11772ffb21b03c7b49cf990f3ab2afc2aad258c",
+      "report_sha256": "48b2498be56753218245a426ee2f2b4e5fd032edb39200109d35f2286ff50979",
+      "kernel_observation": "[    0.018180] CPU topo: Allowing 4 present CPUs plus 0 hotplug CPUs",
+      "terminal_vcpu": 0,
+      "cpu_stats": [
+        {
+          "index": 0,
+          "activity": "Running",
+          "retired": 1649058685
+        },
+        {
+          "index": 1,
+          "activity": "WaitForSipi",
+          "retired": 0
+        },
+        {
+          "index": 2,
+          "activity": "WaitForSipi",
+          "retired": 0
+        },
+        {
+          "index": 3,
+          "activity": "WaitForSipi",
+          "retired": 0
+        }
+      ],
+      "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+    }
+  ]
+}

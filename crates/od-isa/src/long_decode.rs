@@ -1024,6 +1024,12 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
+    /// S6-21: `F0 [REX] 81 /5 id` with a dword memory destination and no REX.W.
+    /// Executed only in the CPL0 set as one atomic subtraction.
+    LockSubMem {
+        destination: MemoryOperand,
+        immediate: u64,
+    },
     /// S4-38L7ai: `F0 [REX] 01 /r` (LOCK ADD m32, r32, or m64, r64 with REX.W), memory
     /// destination and a general-purpose register source only; the arithmetic is the shared ADD.
     /// Executed only in the CPL0 set; the destination is always written back.
@@ -2568,8 +2574,10 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS & !crate::CF,
                 undefined: 0,
             },
-            // S4-38L7z: as the plain ADD (`Operation::Arithmetic`): all six flags defined.
-            Operation::LockAddMem { .. } | Operation::LockAddMemReg { .. } => FlagEffects {
+            // The locked ADD and SUB forms define the same six flags as plain arithmetic.
+            Operation::LockAddMem { .. }
+            | Operation::LockAddMemReg { .. }
+            | Operation::LockSubMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -9292,18 +9300,20 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // scalar arithmetic/logical group1 selectors are now supported.
                 let group = (modrm >> 3) & 7;
                 if prefixes.group1 == Some(0xf0) {
-                    // S4-38L7s/S4-38L7z: LOCK is admitted for the memory OR (/1) and ADD (/0)
-                    // alone, as the dword and qword (REX.W) forms and the byte form.
-                    // S4-38L7ag adds the byte AND (`80 /4`).
-                    // ADC/SBB/SUB/XOR/CMP, the other AND forms, the register form, 0x66, 0x67, a segment prefix and a REX byte that is not
-                    // immediately before the opcode keep the refusal with this opcode. Repeated
-                    // LOCK/REP prefixes are refused by the shared check above.
+                    // S4-38 admits memory OR and ADD, plus byte AND. S6-21 admits the dword
+                    // immediate SUB used by Linux. The shared prefix check above handles
+                    // repeated LOCK/REP.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
-                    // S4-38L7ag: and the byte AND (`F0 80 /4 ib`) alone for /4.
-                    if !(matches!(group, 0 | 1) || (group == 4 && byte == 0x80))
+                    let supported_group = match group {
+                        0 | 1 => true,
+                        4 => byte == 0x80,
+                        5 => byte == 0x81 && size == OperandSize::Dword,
+                        _ => false,
+                    };
+                    if !supported_group
                         || modrm >> 6 == 3
                         || stale_rex
                         || prefixes.operand_override
@@ -9471,21 +9481,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }
                     }
                 } else if let (Some(0xf0), Operand::Memory(destination)) = (prefixes.group1, dst) {
-                    if group == 0 {
-                        Operation::LockAddMem {
+                    match group {
+                        0 => Operation::LockAddMem {
                             destination,
                             immediate,
-                        }
-                    } else if group == 4 {
-                        Operation::LockAndMem {
+                        },
+                        1 => Operation::LockOrMem {
                             destination,
                             immediate,
-                        }
-                    } else {
-                        Operation::LockOrMem {
+                        },
+                        4 => Operation::LockAndMem {
                             destination,
                             immediate,
-                        }
+                        },
+                        5 => Operation::LockSubMem {
+                            destination,
+                            immediate,
+                        },
+                        _ => unreachable!("validated LOCK group selector"),
                     }
                 } else {
                     binary_operation(group, dst, Operand::Immediate(immediate))
@@ -25408,6 +25421,50 @@ mod tests {
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. })
                         if opcode.map == OpcodeMap::Primary && opcode.byte == byte
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_sub_decodes_only_dword_memory_immediate_forms() {
+        let decoded = Memory::new(&[0xf0, 0x81, 0x6b, 4, 1, 0, 0, 0x80])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 8);
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert_eq!(decoded.flag_effects().undefined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockSubMem { destination, immediate: 0x8000_0001 }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.displacement == 4
+                    && destination.size == OperandSize::Dword
+        ));
+        let rex_r_b = Memory::new(&[0xf0, 0x45, 0x81, 0x6b, 4, 1, 0, 0, 0x80])
+            .decode()
+            .unwrap();
+        assert!(matches!(
+            rex_r_b.operation,
+            Operation::LockSubMem { destination, .. }
+                if destination.base == AddressBase::Register(Register::R11)
+        ));
+        for (bytes, opcode_byte) in [
+            (&[0xf0, 0x80, 0x6b, 4, 1][..], 0x80),
+            (&[0xf0, 0x83, 0x6b, 4, 1][..], 0x83),
+            (&[0xf0, 0x48, 0x81, 0x6b, 4, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x66, 0x81, 0x6b, 4, 1, 0][..], 0x81),
+            (&[0xf0, 0x81, 0xeb, 1, 0, 0, 0][..], 0x81),
+            (&[0x41, 0xf0, 0x81, 0x6b, 4, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x64, 0x81, 0x6b, 4, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x67, 0x81, 0x6b, 4, 1, 0, 0, 0][..], 0x81),
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { opcode, .. })
+                        if opcode.map == OpcodeMap::Primary && opcode.byte == opcode_byte
                 ),
                 "{bytes:02x?}"
             );
