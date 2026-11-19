@@ -14,7 +14,8 @@ use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::event::{
-    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, Event, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
+    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_TIMER, Event, TIMER_CANCEL, TIMER_PERIODIC,
+    TIMER_RELATIVE, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
 };
 use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::bs::protocol::{
@@ -174,7 +175,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     // SAFETY: this is the one BSP initialization; the diagnostic has finished
     // borrowing the allocator. All ensuing accesses go through Boot Services.
-    unsafe { od_firmware::bs::initialize(allocator) };
+    unsafe { od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc) };
     let mut boot = BootServices::diagnostic();
     let mut runtime = RuntimeServices::diagnostic();
     boot.update_crc32();
@@ -190,6 +191,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_protocol_services(&system);
     verify_event_services(&system);
     verify_protocol_notify(&system);
+    verify_timer_services(&system, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -1110,6 +1112,101 @@ fn verify_protocol_notify(system: &SystemTable) {
         }
     }
     com1_write(b"OD-FW S7-05 protocol notifications verified\r\n");
+}
+
+fn read_tsc() -> u64 {
+    let low: u32;
+    let high: u32;
+    // SAFETY: the BSP runs in CPL0. The instruction touches only EDX:EAX.
+    unsafe {
+        asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+unsafe extern "efiapi" fn count_timer_notifications(_: Event, context: *mut c_void) {
+    let count = context.cast::<usize>();
+    // SAFETY: the diagnostic keeps one aligned counter alive through CloseEvent.
+    unsafe { count.write(count.read() + 1) };
+}
+
+#[inline(never)]
+fn verify_timer_services(system: &SystemTable, tsc_hz: u64) {
+    // SAFETY: event arrays, outputs and callback context stay alive through the
+    // service calls and are separate from firmware-private service state.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+        let set_timer = ptr::addr_of!((*boot).set_timer).read_volatile();
+        let wait = ptr::addr_of!((*boot).wait_for_event).read_volatile();
+        let check = ptr::addr_of!((*boot).check_event).read_volatile();
+        let stall = ptr::addr_of!((*boot).stall).read_volatile();
+        let raise = ptr::addr_of!((*boot).raise_tpl).read_volatile();
+        let restore = ptr::addr_of!((*boot).restore_tpl).read_volatile();
+
+        let mut idle = ptr::null_mut();
+        let mut relative = ptr::null_mut();
+        let mut periodic = ptr::null_mut();
+        let mut notifications = 0usize;
+        let counter = ptr::addr_of_mut!(notifications);
+        if create(0, 0, None, ptr::null_mut(), &mut idle) != Status::SUCCESS
+            || create(EVT_TIMER, 0, None, ptr::null_mut(), &mut relative) != Status::SUCCESS
+            || create(
+                EVT_TIMER | EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(count_timer_notifications),
+                counter.cast(),
+                &mut periodic,
+            ) != Status::SUCCESS
+            || set_timer(idle, TIMER_CANCEL, 0) != Status::INVALID_PARAMETER
+        {
+            stop(STOP_BOOT_SERVICES, 45);
+        }
+
+        let mut actual = usize::MAX;
+        let events = [idle, relative];
+        if set_timer(relative, TIMER_RELATIVE, 200) != Status::SUCCESS
+            || wait(events.len(), events.as_ptr(), &mut actual) != Status::SUCCESS
+            || actual != 1
+            || check(relative) != Status::NOT_READY
+        {
+            stop(STOP_BOOT_SERVICES, 46);
+        }
+        let rejected = [idle, periodic];
+        if wait(rejected.len(), rejected.as_ptr(), &mut actual) != Status::INVALID_PARAMETER
+            || actual != 1
+        {
+            stop(STOP_BOOT_SERVICES, 46);
+        }
+
+        let old_tpl = raise(TPL_NOTIFY);
+        if old_tpl != TPL_APPLICATION
+            || wait(events.len(), events.as_ptr(), &mut actual) != Status::UNSUPPORTED
+            || set_timer(periodic, TIMER_PERIODIC, 50) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 47);
+        }
+        let started = read_tsc();
+        if stall(25) != Status::SUCCESS
+            || u128::from(read_tsc() - started) < (25 * u128::from(tsc_hz)).div_ceil(1_000_000)
+            || counter.read() != 0
+            || set_timer(periodic, TIMER_CANCEL, u64::MAX) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 47);
+        }
+        restore(old_tpl);
+        if counter.read() != 1
+            || stall(10) != Status::SUCCESS
+            || counter.read() != 1
+            || close(periodic) != Status::SUCCESS
+            || close(relative) != Status::SUCCESS
+            || close(idle) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 48);
+        }
+    }
+    com1_write(b"OD-FW S7-05 boot timers and waits verified\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

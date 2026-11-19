@@ -39,13 +39,21 @@ impl Drop for BusyGuard<'_> {
     }
 }
 
-/// Takes ownership of the live memory map and page allocations.
+/// Takes ownership of the live map and binds the event timers to the BSP clock.
 ///
 /// # Safety
-/// Invoke once on the BSP, before calling or publishing the services.
-pub unsafe fn initialize(allocator: PageAllocator<'static, 'static>) {
+/// Invoke once on the BSP, before calling or publishing services. The frequency
+/// is from the validated handoff, and the clock reader must not call services.
+pub unsafe fn initialize(
+    allocator: PageAllocator<'static, 'static>,
+    tsc_hz: u64,
+    read_tsc: fn() -> u64,
+) {
     // SAFETY: initialization precedes the first access and has a single caller.
-    unsafe { BOOT_SERVICES.allocator.get().write(Some(allocator)) };
+    unsafe {
+        (&mut *BOOT_SERVICES.events.get()).set_clock(tsc_hz, read_tsc);
+        BOOT_SERVICES.allocator.get().write(Some(allocator));
+    }
 }
 
 /// The caller must be the BSP. The closure must return before invoking a

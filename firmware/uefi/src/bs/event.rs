@@ -5,6 +5,13 @@ use crate::uefi::{guid::Guid, status::Status};
 use core::ffi::c_void;
 use core::ptr;
 
+mod timer;
+
+pub use timer::{
+    EVT_TIMER, TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE, set_timer, stall, wait_for_event,
+};
+use timer::{Timer, TimerClock};
+
 pub type Event = *mut c_void;
 pub type Tpl = usize;
 pub type EventNotify = unsafe extern "efiapi" fn(Event, *mut c_void);
@@ -44,6 +51,8 @@ struct Dispatch {
 
 pub(crate) struct EventRegistry {
     entries: [Option<Entry>; MAX_EVENTS],
+    timers: [Option<Timer>; MAX_EVENTS],
+    clock: Option<TimerClock>,
     pending: [usize; MAX_EVENTS],
     pending_count: usize,
     last_event: usize,
@@ -54,6 +63,8 @@ impl EventRegistry {
     pub(crate) const fn new() -> Self {
         Self {
             entries: [None; MAX_EVENTS],
+            timers: [None; MAX_EVENTS],
+            clock: None,
             pending: [0; MAX_EVENTS],
             pending_count: 0,
             last_event: 0,
@@ -69,7 +80,7 @@ impl EventRegistry {
         context: *mut c_void,
         group: Option<Guid>,
     ) -> Result<Event, Status> {
-        let notify = match event_type {
+        let notify = match event_type & !EVT_TIMER {
             0 => None,
             EVT_NOTIFY_WAIT | EVT_NOTIFY_SIGNAL
                 if matches!(notify_tpl, TPL_CALLBACK | TPL_NOTIFY) =>
@@ -138,7 +149,7 @@ impl EventRegistry {
             return;
         }
         entry.signaled = true;
-        if entry.event_type == EVT_NOTIFY_SIGNAL {
+        if entry.event_type & EVT_NOTIFY_SIGNAL != 0 {
             self.enqueue(index);
         }
     }
@@ -151,6 +162,11 @@ impl EventRegistry {
         let Ok(index) = self.find(event) else {
             return Status::INVALID_PARAMETER;
         };
+        self.signal_at(index);
+        Status::SUCCESS
+    }
+
+    fn signal_at(&mut self, index: usize) {
         if let Some(group) = self.entries[index].and_then(|entry| entry.group) {
             for index in 0..MAX_EVENTS {
                 if self.entries[index].is_some_and(|entry| entry.group == Some(group)) {
@@ -160,7 +176,6 @@ impl EventRegistry {
         } else {
             self.signal_one(index);
         }
-        Status::SUCCESS
     }
 
     fn check(&mut self, event: Event, queue_wait: bool) -> Status {
@@ -170,14 +185,14 @@ impl EventRegistry {
         let Some(entry) = &mut self.entries[index] else {
             return Status::INVALID_PARAMETER;
         };
-        if entry.event_type == EVT_NOTIFY_SIGNAL {
+        if entry.event_type & EVT_NOTIFY_SIGNAL != 0 {
             return Status::INVALID_PARAMETER;
         }
         if entry.signaled {
             entry.signaled = false;
             return Status::SUCCESS;
         }
-        if queue_wait && entry.event_type == EVT_NOTIFY_WAIT {
+        if queue_wait && entry.event_type & EVT_NOTIFY_WAIT != 0 {
             self.enqueue(index);
         }
         Status::NOT_READY
@@ -194,6 +209,7 @@ impl EventRegistry {
             self.remove_pending(position);
         }
         self.entries[index] = None;
+        self.timers[index] = None;
         Status::SUCCESS
     }
 
@@ -212,7 +228,7 @@ impl EventRegistry {
         let index = self.remove_pending(position);
         let entry = self.entries[index].as_mut()?;
         entry.queued = false;
-        if entry.event_type == EVT_NOTIFY_SIGNAL {
+        if entry.event_type & EVT_NOTIFY_SIGNAL != 0 {
             // Handling a signal notification consumes the signal. A callback
             // may signal the same event again for a later dispatch.
             entry.signaled = false;
@@ -330,24 +346,30 @@ pub unsafe extern "efiapi" fn create_event_ex(
 /// # Safety
 /// Call on the BSP. Registered callbacks may execute before return.
 pub unsafe extern "efiapi" fn signal_event(event: Event) -> Status {
-    let status = unsafe { state::with(|state| state.events.signal(event)) };
-    if status == Status::SUCCESS {
-        unsafe { dispatch_pending() };
-    }
+    let status = unsafe {
+        state::with(|state| {
+            state.events.poll_clock();
+            state.events.signal(event)
+        })
+    };
+    unsafe { dispatch_pending() };
     status
 }
 
 /// # Safety
 /// Call on the BSP. Registered wait callbacks may execute before return.
 pub unsafe extern "efiapi" fn check_event(event: Event) -> Status {
-    let status = unsafe { state::with(|state| state.events.check(event, true)) };
+    let status = unsafe {
+        state::with(|state| {
+            state.events.poll_clock();
+            state.events.check(event, true)
+        })
+    };
+    unsafe { dispatch_pending() };
     if status != Status::NOT_READY {
         return status;
     }
-    unsafe {
-        dispatch_pending();
-        state::with(|state| state.events.check(event, false))
-    }
+    unsafe { state::with(|state| state.events.check(event, false)) }
 }
 
 /// # Safety
@@ -367,13 +389,28 @@ pub unsafe extern "efiapi" fn close_event(event: Event) -> Status {
 /// # Safety
 /// Call on the BSP with a valid TPL at or above the current level.
 pub unsafe extern "efiapi" fn raise_tpl(new_tpl: Tpl) -> Tpl {
-    unsafe { state::try_with(|state| state.events.raise_tpl(new_tpl)) }.unwrap_or(TPL_APPLICATION)
+    unsafe {
+        state::try_with(|state| {
+            state.events.poll_clock();
+            state.events.raise_tpl(new_tpl)
+        })
+    }
+    .unwrap_or(TPL_APPLICATION)
 }
 
 /// # Safety
 /// Call on the BSP with the TPL returned by the corresponding RaiseTPL.
 pub unsafe extern "efiapi" fn restore_tpl(old_tpl: Tpl) {
-    if unsafe { state::try_with(|state| state.events.restore_tpl(old_tpl)) } == Some(true) {
+    let restored = unsafe {
+        state::try_with(|state| {
+            let restored = state.events.restore_tpl(old_tpl);
+            if restored {
+                state.events.poll_clock();
+            }
+            restored
+        })
+    };
+    if restored == Some(true) {
         unsafe { dispatch_pending() };
     }
 }

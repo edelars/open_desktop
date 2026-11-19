@@ -20336,7 +20336,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         0x83,
                         OperandSize::Dword | OperandSize::Qword,
                         Operand::Immediate(_)
-                    )
+                    ) | (0x19, OperandSize::Qword, Operand::Register(_))
                 ),
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Neg,
@@ -20374,6 +20374,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x84 | 0xa8 | 0xf6, OperandSize::Byte)
                             | (0x85 | 0xa9, OperandSize::Dword | OperandSize::Qword)
+                            | (0xf7, OperandSize::Dword)
                     )
                 }
                 Operation::Logic {
@@ -20494,13 +20495,21 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: the firmware's bounded memset uses register IMUL to expand its byte.
-        Operation::Imul {
+        // The firmware expands memset bytes and scales wide timer counts.
+        (operation @ (Operation::Imul {
             dst: destination,
             src: Operand::Register(source),
-        } if firmware_boot_profile
-            && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0xaf
+        }
+        | Operation::ImulImmediate {
+            dst: destination,
+            src: Operand::Register(source),
+            ..
+        })) if firmware_boot_profile
+            && matches!(
+                (instruction.opcode.map, instruction.opcode.byte, operation),
+                (OpcodeMap::Escape0f, 0xaf, Operation::Imul { .. })
+                    | (OpcodeMap::Primary, 0x69, Operation::ImulImmediate { .. })
+            )
             && instruction.operand_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -20508,10 +20517,45 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
-            let (value, flags) = multiply_truncated(
-                instruction.operand_size,
+            let (lhs, rhs) = match operation {
+                Operation::ImulImmediate { immediate, .. } => (state.read(source), immediate),
+                _ => (state.read(destination), state.read(source)),
+            };
+            let (value, flags) = multiply_truncated(OperandSize::Qword, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // Timer conversion combines the halves of 128-bit products.
+        Operation::Shift {
+            kind: kind @ (ShiftKind::Shld | ShiftKind::Shrd),
+            dst: Operand::Register(destination),
+            source: Some(Operand::Register(source)),
+            count: Operand::Immediate(immediate),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && matches!(instruction.opcode.byte, 0xa4 | 0xac)
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let raw_count = immediate as u8;
+            let (value, flags) = shift_result(
+                OperandSize::Qword,
+                kind,
                 state.read(destination),
                 state.read(source),
+                shift_count(kind, OperandSize::Qword, raw_count),
+                raw_count & 0x3f,
                 state.rflags,
             );
             state.write(destination, value);
@@ -20520,7 +20564,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,
                 instructions_executed: 1,
-                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
             };
         }
         // S7-04: page indices use shifts, and the startup diagnostic rotates hex digits.
@@ -20650,6 +20696,48 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             );
             write_implicit_product(state, OperandSize::Qword, low, high);
             state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // The periodic timer uses the remainder to keep its original phase.
+        Operation::Divide {
+            signed: false,
+            divisor: Operand::Register(divisor),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf7
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let size = instruction.operand_size;
+            let Some((quotient, remainder)) = divide_implicit(
+                size,
+                false,
+                state.read(divisor),
+                state.gpr[Register::Rax as usize],
+                state.gpr[Register::Rdx as usize],
+            ) else {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 0,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            };
+            write_implicit_division(state, size, quotient, remainder);
             state.rip = next_rip;
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,

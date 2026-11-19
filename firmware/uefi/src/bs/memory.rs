@@ -197,7 +197,11 @@ mod tests {
         unsafe {
             let map =
                 MemoryMap::test_conventional(&mut *ptr::addr_of_mut!(MAP), 0x100000, 0x110000);
-            state::initialize(PageAllocator::new(map, &mut *ptr::addr_of_mut!(OWNERS)).unwrap());
+            state::initialize(
+                PageAllocator::new(map, &mut *ptr::addr_of_mut!(OWNERS)).unwrap(),
+                1_000_000_000,
+                || 0,
+            );
 
             let mut snapshot = [MemoryDescriptor::EMPTY; 8];
             let mut size = 0;

@@ -52134,6 +52134,13 @@ fn firmware_boot_register_arithmetic_uses_the_decoded_width_and_flags() {
             0,
             0x055,
         ),
+        (
+            &[0x49, 0x19, 0xc8][..], // SBB R8,RCX
+            Register::R8 as usize,
+            0,
+            u64::MAX - 1,
+            0x091,
+        ),
         (&[0x48, 0x39, 0xce][..], rsi, 1, 1, 0x044),
         (&[0x80, 0xfb, 2][..], rbx, 0xdead_0002, 0xdead_0002, 0x044),
         (&[0x3c, 0xff][..], rax, 0xdead_00ff, 0xdead_00ff, 0x044),
@@ -53680,6 +53687,18 @@ fn firmware_boot_test_wide_registers_updates_flags_without_writing_operands() {
             0x656,
         ),
         (
+            &[0xf7, 0xc2, 0x00, 0x02, 0x00, 0x00][..],
+            Register::Rdx,
+            0xaffe_cafe_0000_0200,
+            0x616,
+        ),
+        (
+            &[0xf7, 0xc2, 0x00, 0x02, 0x00, 0x00][..],
+            Register::Rdx,
+            0xaffe_cafe_0000_0100,
+            0x656,
+        ),
+        (
             &[0x48, 0xa9, 0x00, 0x00, 0x00, 0x80][..],
             Register::Rax,
             0x8000_0000_0000_0000,
@@ -54979,6 +54998,162 @@ fn firmware_rdtsc_does_not_sample_on_fetch_fault_or_prefix() {
 }
 
 #[test]
+fn firmware_boot_qword_imul_immediate_writes_only_the_truncated_destination() {
+    for (code, source, product, flags) in [
+        (
+            [0x4d, 0x69, 0xd9, 0x80, 0x96, 0x98, 0],
+            3,
+            30_000_000,
+            0x6d6,
+        ),
+        (
+            [0x4d, 0x69, 0xd9, 0xff, 0xff, 0xff, 0xff],
+            1 << 63,
+            1 << 63,
+            0xed7,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::R9 as usize] = source;
+        cpu.gpr[Register::R11 as usize] = u64::MAX;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::R11 as usize] = product;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_double_qword_shifts_use_the_other_register_and_mask_the_count() {
+    for (code, destination, source, input, source_value, value, flags, defined) in [
+        (
+            [0x4d, 0x0f, 0xac, 0xca, 0x17], // SHRD R10,R9,23
+            Register::R10,
+            Register::R9,
+            0x80_0001,
+            1,
+            0x0200_0000_0001,
+            0xe12,
+            DEFINED & !0x810,
+        ),
+        (
+            [0x48, 0x0f, 0xa4, 0xc2, 0x3a], // SHLD RDX,RAX,58
+            Register::Rdx,
+            Register::Rax,
+            1,
+            0x8000_0000_0000_0040,
+            0x0600_0000_0000_0001,
+            0xe12,
+            DEFINED & !0x810,
+        ),
+        (
+            [0x4d, 0x0f, 0xac, 0xca, 0x40], // SHRD R10,R9,64 (masked to zero)
+            Register::R10,
+            Register::R9,
+            0x80_0001,
+            1,
+            0x80_0001,
+            0xed7,
+            DEFINED | 0x10,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = input;
+        cpu.gpr[source as usize] = source_value;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_unsigned_div_commits_halves_only_when_the_quotient_fits() {
+    let dword = [0x41, 0xf7, 0xf1]; // DIV R9D
+    let qword = [0x49, 0xf7, 0xf1]; // DIV R9
+    let fault = od_isa::ArchitecturalFault {
+        vector: 0,
+        error_code: None,
+        linear_address: None,
+    };
+    for (code, dividend_high, dividend_low, divisor, expected_halves) in [
+        (
+            dword,
+            0x1234_0000_0001,
+            0x4321_0000_0003,
+            0x5678_0000_0005,
+            Some((858_993_459, 4)),
+        ),
+        (qword, 1, 0, 2, Some((1 << 63, 0))),
+        (qword, 0, 1, 0, None),
+        (qword, 2, 0, 2, None),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = dividend_low;
+        cpu.gpr[Register::Rdx as usize] = dividend_high;
+        cpu.gpr[Register::R9 as usize] = divisor;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if let Some((quotient, remainder)) = expected_halves {
+            expected.gpr[Register::Rax as usize] = quotient;
+            expected.gpr[Register::Rdx as usize] = remainder;
+            expected.rip += code.len() as u64;
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED & !0x8d5);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, DEFINED);
+        }
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
 fn firmware_boot_unsigned_qword_mul_updates_both_implicit_halves_and_flags() {
     let code = [0x48, 0xf7, 0xe2]; // MUL RDX
     for (lhs, rhs, low, high) in [(21, 2, 42, 0), (u64::MAX, 2, u64::MAX - 1, 1)] {
@@ -55155,8 +55330,18 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x48, 0xf7, 0xea][..], 0xf7),                   // IMUL RDX
         (&[0xf7, 0xe2][..], 0xf7),                         // MUL EDX
         (&[0x48, 0xf7, 0x22][..], 0xf7),                   // MUL qword [RDX]
+        (&[0x49, 0xf7, 0xf9][..], 0xf7),                   // IDIV R9
+        (&[0x66, 0x41, 0xf7, 0xf1][..], 0xf7),             // DIV R9W
+        (&[0x48, 0xf7, 0x32][..], 0xf7),                   // DIV qword [RDX]
+        (&[0x45, 0x69, 0xd9, 3, 0, 0, 0][..], 0x69),       // IMUL R11D,R9D,3
+        (&[0x4d, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11,R9,imm8
+        (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69),       // IMUL RDX,[RDX],3
+        (&[0x45, 0x19, 0xd8][..], 0x19),                   // SBB R8D,R11D
+        (&[0x45, 0x0f, 0xac, 0xca, 0x17][..], 0xac),       // SHRD R10D,R9D,23
+        (&[0x48, 0x0f, 0xac, 0x0a, 0x17][..], 0xac),       // SHRD qword [RDX],RCX,23
+        (&[0x4d, 0x0f, 0xad, 0xca][..], 0xad),             // SHRD R10,R9,CL
         (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),          // address override on TEST
-        (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),             // TEST EDX,imm32
+        (&[0x48, 0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST RDX,imm32
         (&[0xff, 0x03][..], 0xff),                         // INC dword [RBX]
         (&[0xfe, 0x03][..], 0xfe),                         // INC byte ptr [RBX]
         (&[0x41, 0xfe, 0xc9][..], 0xfe),                   // DEC R9B

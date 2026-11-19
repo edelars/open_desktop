@@ -30,6 +30,9 @@ type CreateEventEx = unsafe extern "efiapi" fn(
     *mut Event,
 ) -> Status;
 type EventOperation = unsafe extern "efiapi" fn(Event) -> Status;
+type SetTimer = unsafe extern "efiapi" fn(Event, u32, u64) -> Status;
+type WaitForEvent = unsafe extern "efiapi" fn(usize, *const Event, *mut usize) -> Status;
+type Stall = unsafe extern "efiapi" fn(usize) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
 type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
 type GetMemoryMap = unsafe extern "efiapi" fn(
@@ -89,8 +92,8 @@ pub struct BootServices {
     pub allocate_pool: AllocatePool,
     pub free_pool: FreePool,
     pub create_event: CreateEvent,
-    set_timer: *const c_void,
-    wait_for_event: *const c_void,
+    pub set_timer: SetTimer,
+    pub wait_for_event: WaitForEvent,
     pub signal_event: EventOperation,
     pub close_event: EventOperation,
     pub check_event: EventOperation,
@@ -109,7 +112,7 @@ pub struct BootServices {
     unload_image: *const c_void,
     exit_boot_services: *const c_void,
     get_next_monotonic_count: *const c_void,
-    stall: *const c_void,
+    pub stall: Stall,
     set_watchdog_timer: *const c_void,
     connect_controller: *const c_void,
     disconnect_controller: *const c_void,
@@ -139,8 +142,8 @@ impl BootServices {
             allocate_pool: memory::allocate_pool,
             free_pool: memory::free_pool,
             create_event: event::create_event,
-            set_timer: ptr::null(),
-            wait_for_event: ptr::null(),
+            set_timer: event::set_timer,
+            wait_for_event: event::wait_for_event,
             signal_event: event::signal_event,
             close_event: event::close_event,
             check_event: event::check_event,
@@ -159,7 +162,7 @@ impl BootServices {
             unload_image: ptr::null(),
             exit_boot_services: ptr::null(),
             get_next_monotonic_count: ptr::null(),
-            stall: ptr::null(),
+            stall: event::stall,
             set_watchdog_timer: ptr::null(),
             connect_controller: ptr::null(),
             disconnect_controller: ptr::null(),
@@ -324,6 +327,8 @@ mod tests {
         assert_eq!(offset_of!(BootServices, raise_tpl), 24);
         assert_eq!(offset_of!(BootServices, restore_tpl), 32);
         assert_eq!(offset_of!(BootServices, create_event), 80);
+        assert_eq!(offset_of!(BootServices, set_timer), 88);
+        assert_eq!(offset_of!(BootServices, wait_for_event), 96);
         assert_eq!(offset_of!(BootServices, signal_event), 104);
         assert_eq!(offset_of!(BootServices, close_event), 112);
         assert_eq!(offset_of!(BootServices, check_event), 120);
@@ -338,6 +343,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, handle_protocol), 152);
         assert_eq!(offset_of!(BootServices, reserved), 160);
         assert_eq!(offset_of!(BootServices, register_protocol_notify), 168);
+        assert_eq!(offset_of!(BootServices, stall), 248);
         assert_eq!(offset_of!(BootServices, open_protocol), 280);
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_handle), 176);
