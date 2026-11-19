@@ -23,6 +23,7 @@
 // No production caller yet: the scheduler is wired in by S6-16d/S6-17; tests exercise it now.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use crate::bus::{DescriptorGate, SplitLockGate};
 use crate::smp_scheduler::Executed;
 use crate::vcpu::LegacyCpu;
 use crate::{
@@ -31,6 +32,7 @@ use crate::{
 use od_isa::long_mode_entry::LongEntryRefusal;
 use od_isa::protected_exec::{ProtectedCpu, ProtectedEntryRefusal, ProtectedRefusal};
 use od_isa::real_mode_exec::{CR0_PE, RealModeMemory, RealModeRefusal};
+use std::cell::RefCell;
 
 /// Why an application processor in legacy mode could not go on. The processor keeps its state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +46,8 @@ pub enum ApLegacyRefusal {
     ProtectedEntry(ProtectedEntryRefusal),
     /// The 64-bit jump retired but the state is not a 64-bit one `into_long_mode` can convert.
     LongEntry(LongEntryRefusal),
+    /// The worker could not acquire exclusive RAM access before executing the instruction.
+    DescriptorGate(String),
 }
 
 /// What [`run_legacy`] did.
@@ -60,11 +64,15 @@ pub(crate) struct LegacyRun {
 /// region of kind RAM, so MMIO, ROM, the framebuffer and holes are refused.
 pub(crate) struct BoardRam<'a> {
     memory: &'a PhysicalMemory,
+    page_table_reads: Option<RefCell<Vec<u32>>>,
 }
 
 impl<'a> BoardRam<'a> {
     pub(crate) fn new(memory: &'a PhysicalMemory) -> Self {
-        Self { memory }
+        Self {
+            memory,
+            page_table_reads: None,
+        }
     }
 
     fn ram_address(&self, linear: u32) -> Option<GuestPhysicalAddress> {
@@ -97,20 +105,46 @@ impl RealModeMemory for BoardRam<'_> {
         }
     }
 
+    fn validate_protected_descriptor(
+        &self,
+        physical: &[u32; 8],
+        image: &[u8; 8],
+        accessed_write: Option<u32>,
+    ) -> bool {
+        let Some(entries) = &self.page_table_reads else {
+            return true;
+        };
+        let entries = entries.borrow();
+        // A descriptor byte must not alias an entry used by any walk of this step.
+        // Even an already-Accessed descriptor may be changed by the deferred paging A/D.
+        accessed_write.is_none_or(|address| address == physical[5])
+            && physical.iter().zip(image).all(|(&address, &byte)| {
+                !entries.iter().any(|&entry| address.wrapping_sub(entry) < 8)
+                    && self.read_u8(address) == Some(byte)
+            })
+    }
+
     /// S6-31b: one aligned 8-byte load. An entry that is not 8-aligned or leaves the RAM region
     /// has no 8-byte cell; it is read byte by byte (the default of the trait), never a host
     /// load of an unaligned cell.
     fn read_u64(&self, linear: u32) -> Option<u64> {
-        match self.entry_address(linear) {
-            Some(address) => self.memory.load_u64(address).ok(),
+        let value = match self.entry_address(linear) {
+            Some(address) => self.memory.load_u64(address).ok()?,
             None => {
                 let mut bytes = [0u8; 8];
                 for (i, slot) in bytes.iter_mut().enumerate() {
                     *slot = u32::checked_add(linear, i as u32).and_then(|a| self.read_u8(a))?;
                 }
-                Some(u64::from_le_bytes(bytes))
+                u64::from_le_bytes(bytes)
+            }
+        };
+        if let Some(entries) = &self.page_table_reads {
+            let mut entries = entries.borrow_mut();
+            if !entries.contains(&linear) {
+                entries.push(linear);
             }
         }
+        Some(value)
     }
 
     /// S6-31b: one host compare-exchange of the entry (`PhysicalMemory::compare_replace_u64`,
@@ -159,7 +193,7 @@ pub(crate) fn run_legacy(
     let mut taken = std::mem::replace(vcpu, crate::vcpu::Vcpu::new_ap(cpu));
     let result = {
         let (memory, _) = board.bus_mut().split_for_pio_step();
-        run_legacy_on(&mut taken, memory, cpu, budget, stop)
+        run_legacy_on(&mut taken, memory, cpu, budget, stop, None)
     };
     *board.vcpu_mut(cpu).expect("the vCPU was found above") = taken;
     result
@@ -173,6 +207,7 @@ pub(crate) fn run_legacy_on(
     cpu: usize,
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
+    gate: Option<&dyn SplitLockGate>,
 ) -> Result<LegacyRun, FirmwareBoardError> {
     const NO_LEGACY: FirmwareBoardError =
         FirmwareBoardError::Config("ap legacy: the vCPU is not in a legacy mode");
@@ -182,6 +217,7 @@ pub(crate) fn run_legacy_on(
     let (mut handed_over, mut refusal) = (None, None);
     {
         let mut ram = BoardRam::new(memory);
+        ram.page_table_reads = gate.map(|_| RefCell::default());
         loop {
             // The transitions cost no step.
             if let LegacyCpu::Real(real) = &model
@@ -207,6 +243,18 @@ pub(crate) fn run_legacy_on(
             }
             if stop() || retired >= budget {
                 break;
+            }
+            // Take the lease before any fetch walk. ProtectedCpu::step defers A/D through
+            // the commit (or refusal), so the lease must also cover those writes.
+            let _lease = match gate.map(DescriptorGate::acquire).transpose() {
+                Ok(lease) => lease,
+                Err(error) => {
+                    refusal = Some(ApLegacyRefusal::DescriptorGate(error));
+                    break;
+                }
+            };
+            if let Some(entries) = &mut ram.page_table_reads {
+                entries.get_mut().clear();
             }
             let stepped = match &mut model {
                 LegacyCpu::Real(real) => real
@@ -1198,6 +1246,206 @@ mod tests {
             run_legacy(&mut board, 7, 10, &mut || false).unwrap_err(),
             FirmwareBoardError::Config("ap legacy: no such vCPU")
         );
+    }
+
+    struct TestDescriptorGate<'a> {
+        allow: bool,
+        held: std::cell::Cell<bool>,
+        on_release: &'a dyn Fn(),
+    }
+
+    impl SplitLockGate for TestDescriptorGate<'_> {
+        fn acquire(&self) -> Result<(), String> {
+            if !self.allow {
+                return Err("test lease timeout".into());
+            }
+            assert!(!self.held.replace(true));
+            Ok(())
+        }
+
+        fn release(&self) {
+            assert!(self.held.get());
+            (self.on_release)();
+            self.held.set(false);
+        }
+    }
+
+    fn take_ap_after_steps(board: &mut LoadedFirmwareBoard, steps: u64) -> crate::vcpu::Vcpu {
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(
+            run_legacy(board, 1, steps, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            steps
+        );
+        std::mem::replace(board.vcpu_mut(1).unwrap(), crate::vcpu::Vcpu::new_ap(1))
+    }
+
+    #[test]
+    fn guarded_legacy_lease_refusal_keeps_real_entry_and_retry_commits_accessed() {
+        let mut board = board();
+        let mut ap = take_ap_after_steps(&mut board, 13);
+        let before = ap.legacy;
+        let (memory, _) = board.bus_mut().split_for_pio_step();
+        let access = GuestPhysicalAddress::new(GDT_AT + 8 + 5);
+        memory.store_bytes(access, &[0x9a], |_| {}).unwrap();
+        let denied = TestDescriptorGate {
+            allow: false,
+            held: false.into(),
+            on_release: &|| panic!("failed acquire has nothing to release"),
+        };
+        assert_eq!(
+            run_legacy_on(&mut ap, memory, 1, 1, &mut || false, Some(&denied)),
+            Err(FirmwareBoardError::ApLegacyRefused {
+                cpu: 1,
+                refusal: ApLegacyRefusal::DescriptorGate("test lease timeout".into()),
+            })
+        );
+        assert_eq!(ap.legacy, before);
+        assert_eq!(memory.load_u8(access).unwrap(), 0x9a);
+
+        let allowed = TestDescriptorGate {
+            allow: true,
+            held: false.into(),
+            on_release: &|| assert_eq!(memory.load_u8(access).unwrap(), 0x9b),
+        };
+        let run = run_legacy_on(&mut ap, memory, 1, 1, &mut || false, Some(&allowed)).unwrap();
+        assert_eq!(run.executed.retired, 1);
+        let Some(LegacyCpu::Protected(cpu)) = ap.legacy else {
+            panic!("expected protected mode");
+        };
+        assert_eq!(cpu.cs.access, 0x9b);
+        assert!(!allowed.held.get());
+    }
+
+    #[test]
+    fn guarded_legacy_far_jump_commits_cross_page_descriptor_and_ad_before_release() {
+        let mut board = board();
+        let mut ap = take_ap_after_steps(&mut board, LEGACY_STEPS - 2);
+        let Some(LegacyCpu::Protected(cpu)) = &mut ap.legacy else {
+            panic!("expected compatibility mode");
+        };
+        let linear = 0x9ff9;
+        cpu.gdtr.base = linear - 0x10;
+        let (memory, _) = board.bus_mut().split_for_pio_step();
+        let pt = 0x7000;
+        memory
+            .store_u64(GuestPhysicalAddress::new(PD), pt | 3, |_| {})
+            .unwrap();
+        for (page, frame) in [(8, 0x8000), (9, 0xb000), (10, 0xd000)] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(pt + page * 8), frame | 3, |_| {})
+                .unwrap();
+        }
+        let mut descriptor = CODE64;
+        descriptor[5] &= !1;
+        memory
+            .store_bytes(GuestPhysicalAddress::new(0xbff9), &descriptor[..7], |_| {})
+            .unwrap();
+        memory
+            .store_bytes(GuestPhysicalAddress::new(0xd000), &descriptor[7..], |_| {})
+            .unwrap();
+        let gate = TestDescriptorGate {
+            allow: true,
+            held: false.into(),
+            on_release: &|| {
+                assert_eq!(
+                    memory.load_u8(GuestPhysicalAddress::new(0xbffe)).unwrap(),
+                    0x9b
+                );
+                assert_eq!(
+                    memory
+                        .load_u64(GuestPhysicalAddress::new(pt + 9 * 8))
+                        .unwrap(),
+                    0xb063
+                );
+                assert_eq!(
+                    memory
+                        .load_u64(GuestPhysicalAddress::new(pt + 10 * 8))
+                        .unwrap(),
+                    0xd023
+                );
+            },
+        };
+        let run = run_legacy_on(&mut ap, memory, 1, 1, &mut || false, Some(&gate)).unwrap();
+        assert_eq!(run.executed.retired, 1);
+        let Some(LegacyCpu::Protected(cpu)) = ap.legacy else {
+            panic!("expected the 64-bit CS");
+        };
+        assert_eq!(cpu.cs.access, 0x9b);
+        assert_eq!(cpu.eip, COMPAT_AT as u32);
+        assert!(!gate.held.get());
+    }
+
+    #[test]
+    fn guarded_legacy_segment_load_refuses_paging_alias_and_preserves_deferred_ad() {
+        for accessed in [0, 1] {
+            let mut board = board();
+            let mut ap = take_ap_after_steps(&mut board, LEGACY_STEPS - 2);
+            let Some(LegacyCpu::Protected(cpu)) = &mut ap.legacy else {
+                panic!("expected compatibility mode");
+            };
+            // The last descriptor byte is the low byte of PML4[0]. Its deferred A bit
+            // would change the checked segment base even when the descriptor has A=1.
+            let descriptor_at = PML4 - 7;
+            cpu.gdtr.base = descriptor_at as u32 - 0x18;
+            cpu.gpr[2] = 0x18;
+            let eip = cpu.eip;
+            let before = ap.legacy;
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            memory
+                .store_bytes(
+                    GuestPhysicalAddress::new(u64::from(eip)),
+                    &[0x8e, 0xda],
+                    |_| {},
+                )
+                .unwrap(); // MOV DS, EDX
+            let mut descriptor = DATA_A_CLEAR;
+            descriptor[5] |= accessed;
+            memory
+                .store_bytes(
+                    GuestPhysicalAddress::new(descriptor_at),
+                    &descriptor[..7],
+                    |_| {},
+                )
+                .unwrap();
+            let gate = TestDescriptorGate {
+                allow: true,
+                held: false.into(),
+                on_release: &|| {
+                    assert_eq!(
+                        memory
+                            .load_u8(GuestPhysicalAddress::new(descriptor_at + 5))
+                            .unwrap(),
+                        descriptor[5]
+                    );
+                    assert_eq!(
+                        memory.load_u64(GuestPhysicalAddress::new(PML4)).unwrap(),
+                        PDPT | 0x23
+                    );
+                },
+            };
+            assert_eq!(
+                run_legacy_on(&mut ap, memory, 1, 1, &mut || false, Some(&gate)),
+                Err(FirmwareBoardError::ApLegacyRefused {
+                    cpu: 1,
+                    refusal: ApLegacyRefusal::Protected(
+                        ProtectedRefusal::DescriptorCommitRefused {
+                            eip,
+                            linear: descriptor_at as u32,
+                        }
+                    ),
+                })
+            );
+            assert_eq!(ap.legacy, before);
+            assert!(!gate.held.get());
+        }
     }
 
     #[test]

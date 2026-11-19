@@ -374,6 +374,18 @@ pub trait RealModeMemory {
     fn can_write(&self, linear: u32) -> bool;
     /// Writes one byte. Returns `false` (and writes nothing) when `linear` is not writable.
     fn write_u8(&mut self, linear: u32, value: u8) -> bool;
+
+    /// Checks the physical image of a protected-mode descriptor before committing its cache
+    /// and optional Accessed byte. Serial memory needs no extra check. A shared backend must
+    /// keep its exclusion scope through the commit and any deferred page-table updates.
+    fn validate_protected_descriptor(
+        &self,
+        _physical: &[u32; 8],
+        _image: &[u8; 8],
+        _accessed_write: Option<u32>,
+    ) -> bool {
+        true
+    }
     /// S6-31b: the 8-byte page-table entry at `linear` (little-endian), or `None` if one of its
     /// bytes is not readable. `linear` is the address of an entry (8-aligned); the default reads
     /// the eight bytes one by one, an implementation backed by shared memory overrides it with

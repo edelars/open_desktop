@@ -3645,22 +3645,6 @@ pub(crate) enum IrqBoundaryOutcome {
     ),
 }
 
-struct DescriptorGate<'a>(&'a dyn crate::bus::SplitLockGate);
-
-impl<'a> DescriptorGate<'a> {
-    fn acquire(gate: &'a dyn crate::bus::SplitLockGate) -> Result<Self, MemoryError> {
-        gate.acquire_for_descriptor()
-            .map_err(|error| MemoryError::Backend(format!("descriptor gate: {error}")))?;
-        Ok(Self(gate))
-    }
-}
-
-impl Drop for DescriptorGate<'_> {
-    fn drop(&mut self) {
-        self.0.release();
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct DescriptorLocation {
     physical: GuestPhysicalAddress,
@@ -3689,7 +3673,7 @@ impl DescriptorRead {
 }
 
 struct DescriptorScope<'a> {
-    _lease: DescriptorGate<'a>,
+    _lease: crate::bus::DescriptorGate<'a>,
     reads: Vec<DescriptorRead>,
     // Instructions can derive cache state from more than the descriptor they are updating.
     check_companions: bool,
@@ -3701,7 +3685,8 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         gate: &'a dyn crate::bus::SplitLockGate,
         check_companions: bool,
     ) -> Result<(), MemoryError> {
-        let lease = DescriptorGate::acquire(gate)?;
+        let lease = crate::bus::DescriptorGate::acquire(gate)
+            .map_err(|error| MemoryError::Backend(format!("descriptor gate: {error}")))?;
         // Crossing set-loop reads also take the journaled byte path. Frames are aligned and
         // crossing descriptor writes are rejected before the ordinary write preflight.
         debug_assert!(self.large_ram_profile && self.cpl0_set_cross_page_read);

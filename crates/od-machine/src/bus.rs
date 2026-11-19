@@ -774,12 +774,28 @@ impl<'a> MachineBusSetStepIo<'a> {
 pub(crate) trait SplitLockGate {
     fn acquire(&self) -> Result<(), String>;
 
-    /// A descriptor delivery needs the same quiescence as a split operand.
+    /// A descriptor transaction needs the same quiescence as a split operand.
     fn acquire_for_descriptor(&self) -> Result<(), String> {
         self.acquire()
     }
 
     fn release(&self);
+}
+
+/// Excludes other vCPUs and synchronous DMA for a descriptor transaction.
+pub(crate) struct DescriptorGate<'a>(&'a dyn SplitLockGate);
+
+impl<'a> DescriptorGate<'a> {
+    pub(crate) fn acquire(gate: &'a dyn SplitLockGate) -> Result<Self, String> {
+        gate.acquire_for_descriptor()?;
+        Ok(Self(gate))
+    }
+}
+
+impl Drop for DescriptorGate<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 /// The ECAM window: the PCI configuration device is the one MMIO device the set loop's own profile

@@ -284,6 +284,8 @@ pub enum ProtectedRefusal {
         selector: u16,
         reason: SegmentLoadReason,
     },
+    /// The shared-memory profile could not commit the checked descriptor image.
+    DescriptorCommitRefused { eip: u32, linear: u32 },
     /// `WRMSR` of EFER with a bit outside [`EFER_WRITABLE_MASK`] in `EDX:EAX` (`value`): the
     /// hardware raises `#GP(0)`.
     EferWriteReservedBits { eip: u32, value: u64 },
@@ -823,7 +825,8 @@ impl ProtectedCpu {
             }));
         }
         let mut descriptor = [0u8; 8];
-        for (i, byte) in descriptor.iter_mut().enumerate() {
+        let mut physical = [0; 8];
+        for (i, (byte, address)) in descriptor.iter_mut().zip(&mut physical).enumerate() {
             let at = u64::from(self.gdtr.base) + u64::from(index) + i as u64;
             let Ok(linear) = u32::try_from(at) else {
                 return Err(refuse(SegmentLoadReason::DescriptorUnreadable {
@@ -831,6 +834,7 @@ impl ProtectedCpu {
                 }));
             };
             let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            *address = phys;
             match mem.read_u8(phys) {
                 Some(v) => *byte = v,
                 None => {
@@ -866,9 +870,9 @@ impl ProtectedCpu {
             return Err(refuse(SegmentLoadReason::NotPresent));
         }
         // The descriptor's own address: it was readable above, so it does not wrap.
-        let access_at = self.gdtr.base.wrapping_add(index).wrapping_add(5);
+        let descriptor_at = self.gdtr.base + index;
+        let access_at = descriptor_at + 5;
         let write_at = if access & 1 == 0 {
-            let descriptor_at = access_at.wrapping_sub(5);
             let phys = self.descriptor_write_target(mem, descriptor_at, access_at, touches)?;
             if !mem.can_write(phys) {
                 return Err(refuse(SegmentLoadReason::DescriptorUnwritable {
@@ -879,6 +883,12 @@ impl ProtectedCpu {
         } else {
             None
         };
+        if !mem.validate_protected_descriptor(&physical, &descriptor, write_at) {
+            return Err(ProtectedRefusal::DescriptorCommitRefused {
+                eip: self.eip,
+                linear: descriptor_at,
+            });
+        }
         let segment = ProtectedSegment::from_descriptor(selector, descriptor);
         Ok((
             ProtectedSegment {
@@ -917,7 +927,8 @@ impl ProtectedCpu {
             }));
         }
         let mut descriptor = [0u8; 8];
-        for (i, byte) in descriptor.iter_mut().enumerate() {
+        let mut physical = [0; 8];
+        for (i, (byte, address)) in descriptor.iter_mut().zip(&mut physical).enumerate() {
             let at = u64::from(self.gdtr.base) + u64::from(index) + i as u64;
             let Ok(linear) = u32::try_from(at) else {
                 return Err(refuse(FarJumpReason::DescriptorUnreadable {
@@ -925,6 +936,7 @@ impl ProtectedCpu {
                 }));
             };
             let phys = self.physical(mem, linear, AccessKind::Read, touches)?;
+            *address = phys;
             match mem.read_u8(phys) {
                 Some(v) => *byte = v,
                 None => return Err(refuse(FarJumpReason::DescriptorUnreadable { linear })),
@@ -959,9 +971,9 @@ impl ProtectedCpu {
                 limit: segment.limit,
             });
         }
-        let access_at = self.gdtr.base.wrapping_add(index).wrapping_add(5);
+        let descriptor_at = self.gdtr.base + index;
+        let access_at = descriptor_at + 5;
         let write_at = if access & 1 == 0 {
-            let descriptor_at = access_at.wrapping_sub(5);
             let phys = self.descriptor_write_target(mem, descriptor_at, access_at, touches)?;
             if !mem.can_write(phys) {
                 return Err(refuse(FarJumpReason::DescriptorUnwritable {
@@ -972,6 +984,12 @@ impl ProtectedCpu {
         } else {
             None
         };
+        if !mem.validate_protected_descriptor(&physical, &descriptor, write_at) {
+            return Err(ProtectedRefusal::DescriptorCommitRefused {
+                eip: self.eip,
+                linear: descriptor_at,
+            });
+        }
         Ok((
             ProtectedSegment {
                 access: access | 1,

@@ -1123,7 +1123,14 @@ impl Worker<'_, '_, '_, '_> {
             let executed = quantum(vcpu, source, budget, consecutive_faults, stop)?;
             return Ok((executed, machine_stop));
         }
-        let legacy = crate::ap_legacy_exec::run_legacy_on(vcpu, self.memory(), cpu, budget, stop)?;
+        let legacy = crate::ap_legacy_exec::run_legacy_on(
+            vcpu,
+            self.memory(),
+            cpu,
+            budget,
+            stop,
+            Some(gate),
+        )?;
         let mut executed = legacy.executed;
         if executed.retired != 0 {
             *consecutive_faults = 0;
