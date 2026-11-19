@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -45,6 +46,13 @@ static void require(int condition, const char *operation)
         fail(operation, 0);
 }
 
+static int on_cpu(int expected)
+{
+    unsigned current;
+    // Check the Linux scheduler's CPU directly, including under x86 translation.
+    return syscall(SYS_getcpu, &current, NULL, NULL) == 0 && current == (unsigned)expected;
+}
+
 static void pin(int cpu)
 {
     cpu_set_t mask;
@@ -52,7 +60,7 @@ static void pin(int cpu)
     CPU_SET(cpu, &mask);
     if (sched_setaffinity(0, sizeof(mask), &mask) != 0)
         fail("sched_setaffinity", errno);
-    require(sched_getcpu() == cpu, "cpu-affinity");
+    require(on_cpu(cpu), "cpu-affinity");
 }
 
 static void rendezvous(pthread_barrier_t *barrier)
@@ -74,7 +82,7 @@ static void *run_worker(void *argument)
     struct worker *worker = argument;
     pin(worker->cpu);
     worker->run(worker->index, worker->state);
-    require(sched_getcpu() == worker->cpu, "cpu-affinity-after-work");
+    require(on_cpu(worker->cpu), "cpu-affinity-after-work");
     return NULL;
 }
 
@@ -272,7 +280,7 @@ static uint64_t processes(const int cpus[WORKERS])
             if (children[i] < 0)
                 fail("fork", errno);
             if (children[i] == 0)
-                _exit(sched_getcpu() == cpus[i] ? 0 : 1);
+                _exit(on_cpu(cpus[i]) ? 0 : 1);
         }
         for (unsigned i = 0; i < WORKERS; ++i) {
             int status;

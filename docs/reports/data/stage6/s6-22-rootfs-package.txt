@@ -1,0 +1,64 @@
+S6-22 step 2, local package verification, 2026-11-19
+
+SHA-256:
+  Stage 5 base initramfs  17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1
+  Stage 5 ext4 RAW        c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
+  Stage 6 initramfs       15dd1d941f7ae3e87b5d340a4d2573132e8f06b7599f82f6d19901bc7480b015
+  workload C source       86a87ef0b3a8c5d5850286680fe7004856a9dacdcd5a1150b6f7102c19ad175b
+  workload shell source   bb5b54ec2d6ffec2b1723d485259438ee6a90aa56aa782956b0b352e793cbb90
+
+Built two outputs with build_stage6_smp_rootfs_initramfs.py and compared with cmp.
+After gzip decompression, the Stage 5 archive was an unchanged byte prefix.
+Parsed the suffix separately as newc and checked exact entries and file modes:
+  100755 s6-smp-init
+  040755 s6-smp
+  100644 s6-smp/s6_smp_workloads.c
+  100755 s6-smp/s6_smp_workloads.sh
+Both workload files matched the repository bytes. The alternate init preserved
+the original mount and handoff prefix and contained one switch_root. Both
+scripts passed sh -n, using the base BusyBox for the alternate init and the
+Stage 5 rootfs shell for the workload. A base without the mount handoff, a
+missing source, a colliding payload path and an existing output were rejected.
+
+Container: cached rust:1.99.0-bookworm, linux/amd64 on ARM64 OrbStack,
+sha256:19059486ff9ddb4c6895cbc02a186f00274c257adcc6f79611ca29f55d36cdda.
+Used --pull never, --network none, --read-only, --memory=6g, and
+--tmpfs /var/tmp:size=4g,exec. Mounted the input RAW and the extracted archive
+payload read-only. Used debugfs -R 'rdump / /var/tmp/rootfs' /input.raw, then
+copied the two payload files to /var/tmp/rootfs/run/open-desktop-stage6 with
+the base BusyBox cp. Ran this command three times and compared the output:
+
+  taskset -c 2,5 chroot /var/tmp/rootfs /bin/sh \
+    /run/open-desktop-stage6/s6_smp_workloads.sh s6-stage5-rootfs
+
+Independent initial CPU probe before changing the workload's CPU check:
+  target=2 sched_setaffinity=0 sched_getcpu=0 getcpu_syscall=0 actual=2
+  target=5 sched_setaffinity=0 sched_getcpu=0 getcpu_syscall=0 actual=5
+Disabling glibc.pthread.rseq for the probe gave the same observation. The final
+workload uses the kernel getcpu syscall and ran with default glibc settings.
+GCC 12.2.0 in the container also built the final workload and returned the same
+five PASS lines on CPU 2 and 5. This validation did not boot a guest kernel or
+exercise switch_root as PID 1.
+
+Final chroot transcript:
+rootfs_before=c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
+gcc-15 (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+OD_S6_22_SOURCE nonce=s6-stage5-rootfs sha256=86a87ef0b3a8c5d5850286680fe7004856a9dacdcd5a1150b6f7102c19ad175b
+OD_S6_22_PASS nonce=s6-stage5-rootfs case=counter cpus=2,5 checked=20000
+OD_S6_22_PASS nonce=s6-stage5-rootfs case=condition cpus=2,5 checked=256
+OD_S6_22_PASS nonce=s6-stage5-rootfs case=exchange cpus=2,5 checked=128
+OD_S6_22_PASS nonce=s6-stage5-rootfs case=mapping cpus=2,5 checked=32
+OD_S6_22_PASS nonce=s6-stage5-rootfs case=processes cpus=2,5 checked=32
+OD_S6_22_COMPLETE nonce=s6-stage5-rootfs
+3 identical transcripts
+missing rc=64
+OD_S6_22_WRAPPER_FAIL nonce=invalid step=nonce rc=64
+invalid rc=64
+OD_S6_22_WRAPPER_FAIL nonce=invalid step=nonce rc=64
+duplicate rc=64
+OD_S6_22_WRAPPER_FAIL nonce=invalid step=nonce rc=64
+one-cpu rc=1
+OD_S6_22_SOURCE nonce=s6-negative-one-cpu sha256=86a87ef0b3a8c5d5850286680fe7004856a9dacdcd5a1150b6f7102c19ad175b
+OD_S6_22_FAIL nonce=s6-negative-one-cpu case=setup operation=requires-two-allowed-cpus
+OD_S6_22_WRAPPER_FAIL nonce=s6-negative-one-cpu step=run rc=1
+rootfs_after=c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
