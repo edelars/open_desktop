@@ -3675,7 +3675,40 @@ mod tests {
                 read_bytes(&mut scheduled_boot, REP_DST, REP_QWORDS * 8),
                 rep_pattern()
             );
+
+            let mut seeded_boot = rep_boot(&code, false);
+            // Seed 6 cuts the first turn after one step, before the REP can retire.
+            seeded_boot
+                .board
+                .enable_seeded_linux_interleaved(6)
+                .unwrap();
+            let mut seeded = run_set_facade(&mut seeded_boot, &file, budget, members);
+            seeded.quanta = direct.quanta;
+            assert_eq!(seeded, direct);
+            assert_eq!(seeded_boot.board.state(), direct_boot.board.state());
+            assert_eq!(
+                read_bytes(&mut seeded_boot, REP_DST, REP_QWORDS * 8),
+                rep_pattern()
+            );
         }
+    }
+
+    #[test]
+    fn s6_21_seed_controls_the_linux_quantum_cuts() {
+        let run = |seed| {
+            let (mut boot, file) = boot_with_entry(&[0xEB, 0xFE]); // JMP $
+            boot.board.enable_seeded_linux_interleaved(seed).unwrap();
+            run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal())
+        };
+        // The first draws are 176 for seed 0, and 1 then 154 for seed 6.
+        let one_quantum = run(0);
+        let mut two_quanta = run(6);
+        assert_eq!(one_quantum.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(one_quantum.retired, 64);
+        assert_eq!((one_quantum.quanta, two_quanta.quanta), (1, 2));
+        assert_eq!(run(6), two_quanta);
+        two_quanta.quanta = one_quantum.quanta;
+        assert_eq!(one_quantum, two_quanta);
     }
 
     #[test]
@@ -16322,6 +16355,26 @@ mod tests {
                         pic: pic(&boot),
                     };
                     assert_eq!(scheduled, direct, "budget {budget}");
+
+                    let (mut boot, _) = board(&code, &handler, true);
+                    boot.board.enable_seeded_linux_interleaved(6).unwrap();
+                    let mut report = run(&mut boot, budget);
+                    // The seed can end a turn before a device deadline. It must not
+                    // count that earlier cut as a device deadline.
+                    if budget == 20_000 {
+                        assert_eq!(report.irq.quantum_cut_by_deadline, 2);
+                        report.irq.quantum_cut_by_deadline =
+                            direct.report.irq.quantum_cut_by_deadline;
+                    }
+                    report.run.quanta = direct.report.run.quanta;
+                    let seeded = Outcome {
+                        report,
+                        state: boot.board.state().clone(),
+                        com1: boot.board.com1_transcript().to_vec(),
+                        now: boot.board.clock().now_ns(),
+                        pic: pic(&boot),
+                    };
+                    assert_eq!(seeded, direct, "seeded budget {budget}");
                 }
             }
 

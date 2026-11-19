@@ -1179,6 +1179,22 @@ cargo test --release -p od-machine --offline --locked --lib -- \
 
 Загрузка двух online vCPU ждёт S6-18a-MADT и согласованного числа LAPIC в S7-13.
 
+### S6-21 шаг 2 — seed в Rust-фасаде Linux
+
+Rust-код может вызвать `enable_seeded_linux_interleaved(seed)` на плате, которую вернул `load_linux_direct_board`, и запустить ядро штатным `run_linux_direct_board_set_user_mode`. Метод выбирает `ClockOwner` и стандартный диапазон квантов 1–256 шагов. Seed инициализирует генератор заново при каждом входе фасада в планировщик. Разбиение одного прогона на несколько вызовов поэтому начинает последовательность квантов заново. [Контракт машины](../specs/MACHINE_CONTRACT.md#s6-21-шаг-1--источник-платы-и-срок-платы-в-планировщике).
+
+Фикстура из 64 инструкций дала один квант для seed 0 и два для seed 6 с одинаковым состоянием CPU и временем. Отдельно проверены копирование с частичными возвратами REP и пробуждение от PIT через PIC. Сравнение сохранило число retired, гостевые эффекты, доставку IRQ и виртуальное время. Счётчик сроков устройств срабатывает при выборе срока как лимита кванта. Меньший лимит планировщика не увеличивает этот счётчик. [Тесты Linux](../../crates/od-machine/src/linux_direct.rs).
+
+```sh
+cargo test --release --locked --offline -p od-machine --test stage6_linux_seeded -- --ignored --nocapture
+```
+
+В release фактическое ядро S6-10 выполнило 300 000 000 инструкций с прежним `Fixed(u64::MAX)` и в двух свежих платах с seed `24301`. При фиксированном кванте получилось 2148 вызовов кванта, при seed — 2 338 532 в каждом запуске. Два seed-прогона совпали по полному `LinuxStopRecord` и состоянию CPU. COM1 на этом префиксе пуст. [Хеши и вывод теста](data/stage6/s6-21-seeded-prefix.txt).
+
+Штатный release `linux-direct stage4a --user-mode` на том же бюджете дал побайтное совпадение JSON, stdout и stderr с принятым запуском S6-10 в `Standalone`. В debug прошли 456 тестов Linux и планировщика, три длительных теста были пропущены. [Хеши CLI](data/stage6/s6-21-seeded-prefix.txt).
+
+Доступ к seed через CLI и Linux на нескольких vCPU остаются открыты. [План](../plans/STAGE_6.md#s6-21-запустить-второй-процессор-в-linux).
+
 ### S6-21 шаг 3 — наблюдение online CPU и прерываний из init
 
 Собственный PID 1 для Linux x86-64 монтирует procfs и sysfs. Он читает `od.nonce` из `/proc/cmdline`, печатает исходный cpulist `/sys/devices/system/cpu/online` и число CPU, затем выгружает `/proc/interrupts`. Блок `OD_SMP_V1` содержит nonce и заканчивается `OD_SMP_END`. Внутри заголовок и строки прерываний ограничены `OD_IRQ_BEGIN` и `OD_IRQ_END`. Ошибка открытия, чтения, усечение или неверный cpulist приводят к `OD_SMP_ERROR`. [Исходник `/init`](../../tests/fixtures/guest/stage6/smp-init/init.S).

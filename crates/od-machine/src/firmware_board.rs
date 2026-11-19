@@ -1268,7 +1268,7 @@ pub struct LoadedFirmwareBoard {
     /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
     /// installed. Never `Owned` unless that call succeeded.
     clock_driver: BoardClock,
-    linux_interleaved: bool,
+    linux_interleaved_policy: Option<QuantumPolicy>,
     /// The opt-in checkpoint recorder of the CPL0-set loop (S4-38L4i, observation only). `None`
     /// until [`Self::enable_checkpoints`]; then the loop shows it every instruction boundary.
     checkpoints: Option<CheckpointRecorder>,
@@ -2098,18 +2098,31 @@ impl LoadedFirmwareBoard {
     /// Use the interleaved scheduler for CPL0 Linux execution on a single-vCPU board.
     /// Zero-budget and non-running entry states use the ordinary CPL0 report path.
     pub fn enable_linux_interleaved(&mut self) -> Result<(), FirmwareBoardError> {
+        self.enable_linux_interleaved_with_policy(QuantumPolicy::Fixed(u64::MAX))
+    }
+
+    /// Use seeded interleaved quanta and the owned clock for Linux on a single-vCPU board.
+    /// Each run starts its scheduler from the given seed.
+    pub fn enable_seeded_linux_interleaved(&mut self, seed: u64) -> Result<(), FirmwareBoardError> {
+        self.enable_linux_interleaved_with_policy(QuantumPolicy::seeded(seed))
+    }
+
+    fn enable_linux_interleaved_with_policy(
+        &mut self,
+        policy: QuantumPolicy,
+    ) -> Result<(), FirmwareBoardError> {
         if self.vcpu_count() != 1 {
             return Err(FirmwareBoardError::Config(
                 "Linux interleaved execution requires one vCPU",
             ));
         }
         self.enable_clock_owner()?;
-        self.linux_interleaved = true;
+        self.linux_interleaved_policy = Some(policy);
         Ok(())
     }
 
     pub(crate) fn linux_interleaved(&self) -> bool {
-        self.linux_interleaved
+        self.linux_interleaved_policy.is_some()
     }
 
     /// Move the board clock of the CPL0-set loop by `ns` of device time (the PM, PIT and RDTSC
@@ -2940,9 +2953,6 @@ impl LoadedFirmwareBoard {
                 if remaining > 0 {
                     quantum_budget = owner.step_budget(remaining, deadline);
                     debug_assert!(quantum_budget >= 1 && quantum_budget <= remaining);
-                    if quantum_budget < remaining && irq_hook {
-                        irq_counters.quantum_cut_by_deadline += 1;
-                    }
                 }
             } else if irq_hook && let Some(deadline) = board.irq_source.next_deadline_ns() {
                 let limit = deadline
@@ -2950,11 +2960,15 @@ impl LoadedFirmwareBoard {
                     .max(1);
                 if limit < remaining {
                     quantum_budget = limit;
-                    irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
+            let deadline_budget = quantum_budget;
             if let Some(budget) = scheduler_budget {
                 quantum_budget = quantum_budget.min(budget);
+            }
+            // A seeded turn can end earlier than a pending device deadline.
+            if irq_hook && deadline_budget < remaining && quantum_budget == deadline_budget {
+                irq_counters.quantum_cut_by_deadline += 1;
             }
             let shortened = quantum_budget < remaining;
             // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
@@ -3280,19 +3294,18 @@ impl LoadedFirmwareBoard {
                 .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry)),
             )
         };
-        let result = if (self.linux_interleaved || schedule_standalone)
+        // Without an explicit policy, a one-vCPU run is cut by its budget and device deadlines.
+        let policy = self
+            .linux_interleaved_policy
+            .clone()
+            .or(schedule_standalone.then_some(QuantumPolicy::Fixed(u64::MAX)));
+        let result = if let Some(policy) = policy
             && instruction_budget != 0
             && self.vcpus[BOOT_VCPU_INDEX].activity() == CpuActivity::Running
         {
             let stop_request = StopRequest::new();
-            let mut scheduler = SmpScheduler::new(
-                1,
-                // With one runnable vCPU the run budget and device deadlines limit each call.
-                // Partial REP returns consume turn steps without shrinking the retirement budget.
-                QuantumPolicy::Fixed(u64::MAX),
-                stop_request.clone(),
-            )
-            .expect("one vCPU and a nonzero instruction budget");
+            let mut scheduler = SmpScheduler::new(1, policy, stop_request.clone())
+                .expect("one vCPU and a valid Linux quantum policy");
             let mut outcome = None;
             let run = |board: &mut Self, _, budget, stop: &mut dyn FnMut() -> bool| {
                 let mut executed = Executed::default();
@@ -3915,7 +3928,7 @@ impl AssembledBoard {
             uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
-            linux_interleaved: false,
+            linux_interleaved_policy: None,
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
@@ -3988,7 +4001,7 @@ impl AssembledBoard {
             uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
-            linux_interleaved: false,
+            linux_interleaved_policy: None,
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,

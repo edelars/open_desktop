@@ -1,0 +1,33 @@
+S6-21 step 2, real Linux prefix, 2026-11-19
+Apple M3 Max ARM64, macOS 26.7.1 (25G241), rustc 1.99.0 (b940084d7)
+
+Command
+  cargo test --release --locked --offline -p od-machine --test stage6_linux_seeded -- --ignored --nocapture
+
+SHA-256
+  kernel 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e
+  initrd ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588
+  ACPI blob 6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d
+  release test executable 2d610cb42adda1e488238784e3e34076845404977d5e3ba3c0f23c4e22985451
+
+ACPI manifest 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2
+One vCPU, 128 MiB, stage4a user-mode facade, Owned clock in all three runs.
+The fixed run uses the previous opt-in Fixed(u64::MAX) policy. Seeded runs use
+SplitMix64 with seed 24301 and a quantum range of 1 through 256 steps. Each run
+loads a fresh board and stops at instruction budget 300000000. The two seeded
+LinuxStopRecord values and the full CPU states are compared by the test.
+
+seed=Some(24301) retired=300000000 quanta=2338532 deadline_cuts=0 virtual_ns=300000000 rip=0x5424c3d com1_bytes=0
+seed=None retired=300000000 quanta=2148 deadline_cuts=0 virtual_ns=300000000 rip=0x5424c3d com1_bytes=0
+seed=Some(24301) retired=300000000 quanta=2338532 deadline_cuts=0 virtual_ns=300000000 rip=0x5424c3d com1_bytes=0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 157.18s
+
+Duration covers the three concurrent runs. COM1 was empty at this prefix.
+
+Default CLI regression against the accepted Standalone S6-10 recording.
+Same 300000000 budget, files, stage4a user-mode options and nonce s6-10-ctl.
+Current and accepted JSON, stdout and stderr compared byte for byte.
+
+  JSON,   9110 bytes, d8ef54b5acabf7c130c5db0a1bcdb0598a4af9ab900331ed06fa25a1858aea2f
+  stdout, 6876 bytes, 0d94ad24998dd879a334c67d4bb32d7a516f17e1c17aa79490c68cf9d42de1fa
+  stderr,    0 bytes, e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
