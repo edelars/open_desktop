@@ -1297,10 +1297,41 @@ generated-code fault helper passed without phase tracing. The
 RESULT/STOP and external SIGSEGV smokes also passed.
 [ISSUE-523](../KNOWN_ISSUES.md#issue-523)
 
+### M1 Pro checks after the launcher fix
+
+Both selectors used clean `5bc5ec6` on the Apple M1 Pro, macOS
+14.6.1 (23G93), Xcode 15.4, Swift 5.10, and Rust and Cargo 1.99.0.
+The source fingerprint at the start and end of both runs was
+`51751612572dab828ab86c7c87f967d70ec6139e9f07ce92d24f3fc9c6b04d97`.
+The common input manifest SHA-256 was
+`3957c327264db12bd7452f44172fd5a6dce5d61293b58024246986b0bd224455`.
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `vmhost-process` | `stage3-20261119-195349-0e67093787` | 46/46 | 0 |
+| `local` | `stage3-20261119-195544-278191cd8c` | 359/359 | 0 |
+
+`process_generated_fault` reported SIGSEGV and left an empty process
+group. The same signed launcher passed the five separate EOF regression
+scenarios. Its SHA-256 was
+`1650568528a8db04925cdd9fb566d54dabcf8b68d02d91c921292c54424284d4`.
+The local selector passed the signed VMHost RESULT check, both
+repeats of the 1,010 Stage 1 inputs, and both repeats of the 4,800
+memory inputs.
+
+Both final summaries passed the validator on the original run
+directories. Offline verification matched all 405 selected step logs,
+58 child logs, both input manifests, and the local Stage 1 child
+summary and manifest. The process archive also contains stdout and
+exit status from the separate launcher regression.
+
+- The local archive contains 415 files, SHA-256 `79aa524d27424073346408addef7ffd155db2f7aff3ee7256847f08e4244137b`. [Local archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/local.json.gz)
+- The process archive contains 176 files, SHA-256 `0b519b6b3c0ab1f66b0b6aeef3763b2f01578ffcb89a2dd1270c82647e9e0738`. [VMHost process archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/vmhost-process.json.gz)
+
 ### Hardware acceptance
 
-The M1 Pro passed both ARM64 selectors on `f6b5214` and the local
-selector on `8c159c8`. The launcher fix has local regression evidence.
+The M1 Pro passed both ARM64 selectors on `5bc5ec6` and passed the
+separate launcher regression on the signed process-suite binary.
 The Mac mini configuration, native execution on physical x86 and
 final S3-41 acceptance remain open.
 

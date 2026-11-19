@@ -5353,8 +5353,16 @@ VMHost process suite. Оба прогона связаны одним отпеч
 до появления статуса SIGSEGV. Launcher теперь ограниченно ожидает
 статус при оборванном кадре и сохраняет обычную очистку для живого
 потомка. Пять случаев regression smoke и подписанный generated-fault
-smoke прошли. Повтор полного процессного набора на M1 Pro остаётся
-открытым. [Проверки исправления](../reports/STAGE_3_REPORT.md#launcher-exit-reporting-after-a-truncated-frame)
+smoke прошли. [Проверки исправления](../reports/STAGE_3_REPORT.md#launcher-exit-reporting-after-a-truncated-frame)
+
+**Повтор на M1 Pro после исправления launcher и S3-40af.** На чистом
+`5bc5ec6` прошли 359 из 359 локальных шагов и 46 из 46 шагов VMHost.
+Отдельные пять сценариев закрытия канала прошли на том же подписанном
+launcher. `process_generated_fault` зарегистрировал SIGSEGV и
+подтвердил очистку группы. Сводки и журналы проверены, отпечаток исходников
+и входной манифест совпали. Физические критерии и итоговая приёмка
+S3-41 остаются открытыми.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-the-launcher-fix)
 
 ## 10. Матрица приёмки
 
