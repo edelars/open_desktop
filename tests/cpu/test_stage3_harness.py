@@ -21,9 +21,10 @@ import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
 EXPECTED_SELF_TESTS = 155
-EXPECTED_RUST_GATES = 333
+EXPECTED_RUST_GATES = 334
 EXPECTED_LOCAL_ACCEPTANCE_GATES = 315
-EXPECTED_LOCAL_STEPS = 351
+EXPECTED_LOCAL_LIFECYCLE_GATES = 19
+EXPECTED_LOCAL_STEPS = 352
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -511,6 +512,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_38e_session_clear_releases_publication",
             "s3_38e_session_rejects_second_mapping_owner",
             "s3_38e_session_invalid_entry_no_automatic_retry",
+            "s3_37f_session_cache_pressure",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -841,7 +843,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         for _, _, _, identity in expected:
             self.assertEqual(identities.count(identity), 1)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
         self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
             [gate["step"] for gate in manifest if gate["step"].startswith("s3_32a_")],
@@ -998,7 +1000,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
         self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
         self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(harness.rust_test_argv(package, identity), [
             "cargo", "test", "--offline", "-p", package, "--test", "memory_corpus",
@@ -1095,7 +1097,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
         manifest = harness.rust_test_gate_manifest()
         self.assertEqual(
             [gate for gate in manifest if gate["step"] == step],
@@ -1181,7 +1183,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
         self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
         self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
             harness.rust_test_argv(package, identity),
@@ -1752,20 +1754,21 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_38e_session_invalid_entry_no_automatic_retry", "local_lifecycle", "od-host",
                 "session::tests::invalid_entry_is_reported_without_an_automatic_retry",
             ),
+            (
+                "s3_37f_session_cache_pressure", "local_lifecycle", "od-host",
+                "session::tests::cache_pressure_preserves_state_and_releases_the_arena",
+            ),
         )
         self.assertIn(
             "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
         self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
-        self.assertEqual(
-            [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_38e_")],
-            list(expected),
-        )
-        self.assertEqual(
-            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_38e_")],
-            list(expected),
-        )
+        for gates in (harness.ADDITIONAL_TEST_GATES, harness.RUST_TEST_GATES):
+            self.assertEqual(
+                [gate for gate in gates if gate[0].startswith(("s3_38e_", "s3_37f_"))],
+                list(expected),
+            )
 
         manifest = harness.rust_test_gate_manifest()
         self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
@@ -1776,7 +1779,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-host/src/session.rs"), 1)
 
@@ -2485,7 +2488,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         command = [
             "cargo", "test", "--offline", "-p", package, "--lib", identity,
@@ -3964,7 +3967,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4084,7 +4087,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4203,7 +4206,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4322,7 +4325,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4516,6 +4519,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_38e_session_clear_releases_publication",
                 "s3_38e_session_rejects_second_mapping_owner",
                 "s3_38e_session_invalid_entry_no_automatic_retry",
+                "s3_37f_session_cache_pressure",
             )
             for missing_step in (harness.ADDITIONAL_TEST_GATES[0][0], *mandatory_steps):
                 steps = passing_rust_gate_steps(Path(temporary))
@@ -5314,7 +5318,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5435,7 +5439,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5555,7 +5559,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5675,7 +5679,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5795,7 +5799,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5915,7 +5919,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6035,7 +6039,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6155,7 +6159,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6275,7 +6279,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6395,7 +6399,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6515,7 +6519,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6633,7 +6637,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6752,7 +6756,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6871,7 +6875,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6990,7 +6994,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -7108,7 +7112,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -7226,7 +7230,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7303,7 +7307,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7383,7 +7387,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7494,7 +7498,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7605,7 +7609,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7712,7 +7716,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7789,7 +7793,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7873,7 +7877,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7969,7 +7973,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8085,7 +8089,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8200,7 +8204,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8319,7 +8323,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8438,7 +8442,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8556,7 +8560,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8674,7 +8678,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8793,7 +8797,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8912,7 +8916,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9031,7 +9035,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9168,7 +9172,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9313,7 +9317,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9458,7 +9462,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9603,7 +9607,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9749,7 +9753,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9896,7 +9900,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10046,7 +10050,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10191,7 +10195,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10336,7 +10340,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10481,7 +10485,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10626,7 +10630,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10771,7 +10775,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10916,7 +10920,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11060,7 +11064,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11159,7 +11163,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11259,7 +11263,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11359,7 +11363,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11459,7 +11463,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11558,7 +11562,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11656,7 +11660,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11754,7 +11758,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11852,7 +11856,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11950,7 +11954,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12048,7 +12052,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12146,7 +12150,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12252,7 +12256,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12361,7 +12365,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12471,7 +12475,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12580,7 +12584,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12686,7 +12690,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12792,7 +12796,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12897,7 +12901,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12999,7 +13003,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13105,7 +13109,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13210,7 +13214,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13315,7 +13319,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13419,7 +13423,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13524,7 +13528,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13631,7 +13635,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13739,7 +13743,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13846,7 +13850,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13952,7 +13956,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14062,7 +14066,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14171,7 +14175,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14275,7 +14279,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14390,7 +14394,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14499,7 +14503,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14842,7 +14846,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         source_path = "crates/od-jit/src/memory_cache.rs"
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source_path), 1)

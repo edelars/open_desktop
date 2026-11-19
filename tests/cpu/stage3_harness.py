@@ -682,6 +682,10 @@ ADDITIONAL_TEST_GATES = (
         "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
     ),
     (
+        "s3_37f_session_cache_pressure", "local_lifecycle", "od-host",
+        "session::tests::cache_pressure_preserves_state_and_releases_the_arena",
+    ),
+    (
         "s3_23_memory_pair_cache_invalidation_republishes",
         "local_acceptance",
         "od-host",

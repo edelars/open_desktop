@@ -261,6 +261,154 @@ mod tests {
     }
 
     #[test]
+    fn cache_pressure_preserves_state_and_releases_the_arena() {
+        const BLOCKS: usize = MAX_MULTI_ENTRY_CACHE_BLOCKS + 4;
+        const BLOCK_BYTES: usize = MOV_RAX_7.len() + 2;
+        const SWEEPS: u64 = 64;
+
+        let _guard = crate::tests::jit_test_lock();
+        let mut code = Vec::with_capacity(BLOCKS * BLOCK_BYTES);
+        for index in 0..BLOCKS {
+            let mut mov_rax = MOV_RAX_7;
+            mov_rax[2] = u8::try_from(index + 1).unwrap();
+            code.extend_from_slice(&mov_rax);
+            code.extend_from_slice(&[0x75, 0]); // JNZ to the following boundary.
+        }
+        let initial = LongModeState {
+            gpr: std::array::from_fn(|index| 0x1_0000_0000 + index as u64),
+            rflags: 2,
+            ..LongModeState::default()
+        };
+        let mut tail = initial.clone();
+        tail.rip = (code.len() - BLOCK_BYTES) as u64;
+        let mut expected = initial.clone();
+        expected.gpr[0] = BLOCKS as u64;
+        expected.rip = code.len() as u64;
+        let tail_dispatch = DispatchResult {
+            exit: DispatchExit::CodeEnd,
+            remaining_budget: 1,
+            retired_instructions: 2,
+            blocks_executed: 1,
+        };
+        let stop = AtomicU8::new(0);
+        let mut session = Session::new(&code).unwrap();
+
+        let mut resident_sizes = None;
+        for sweep in 1..=SWEEPS {
+            let mut state = initial.clone();
+            let pressure = session
+                .run(&mut state, 2 * BLOCKS as u64 + 1, &stop)
+                .unwrap();
+            assert_eq!(state, expected);
+            assert_eq!(
+                pressure.dispatch,
+                DispatchResult {
+                    retired_instructions: 2 * BLOCKS as u64,
+                    blocks_executed: BLOCKS as u64,
+                    ..tail_dispatch
+                }
+            );
+            let counters = pressure.cache;
+            let misses = sweep * BLOCKS as u64;
+            assert_eq!(counters.misses, misses);
+            assert_eq!(counters.successful_compiles, misses);
+            assert_eq!(counters.successful_publications, misses);
+            assert_eq!(
+                counters.evictions,
+                misses - MAX_MULTI_ENTRY_CACHE_BLOCKS as u64
+            );
+            assert_eq!(counters.hits, sweep - 1);
+            assert_eq!(session.resident_entries(), MAX_MULTI_ENTRY_CACHE_BLOCKS);
+            assert_eq!(
+                counters.resident_entries_high_water,
+                MAX_MULTI_ENTRY_CACHE_BLOCKS
+            );
+            let sizes = (
+                counters.resident_code_bytes,
+                counters.resident_logical_metadata_bytes,
+            );
+            assert!((1..=counters.resident_code_bytes_high_water).contains(&sizes.0));
+            assert!((1..=counters.resident_logical_metadata_bytes_high_water).contains(&sizes.1));
+            assert!(counters.resident_code_bytes_high_water <= MAX_MULTI_ENTRY_CACHE_CODE_BYTES);
+            assert!(
+                counters.resident_logical_metadata_bytes_high_water
+                    <= MAX_MULTI_ENTRY_CACHE_METADATA_BYTES
+            );
+            assert_eq!(*resident_sizes.get_or_insert(sizes), sizes);
+
+            let mut state = tail.clone();
+            let hit = session.run(&mut state, 3, &stop).unwrap();
+            assert_eq!(state, expected);
+            assert_eq!(hit.dispatch, tail_dispatch);
+            assert_eq!(
+                hit.cache,
+                MultiEntryCacheCounters {
+                    hits: sweep,
+                    ..counters
+                }
+            );
+        }
+
+        let before_stop = session.cache_counters();
+        stop.store(1, Ordering::Release);
+        let mut state = initial.clone();
+        let stopped = session.run(&mut state, 3, &stop).unwrap();
+        assert_eq!(state, initial);
+        assert_eq!(
+            stopped.dispatch,
+            DispatchResult {
+                exit: DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+                remaining_budget: 3,
+                retired_instructions: 0,
+                blocks_executed: 0,
+            }
+        );
+        assert_eq!(stopped.cache, before_stop);
+        assert_eq!(session.resident_entries(), MAX_MULTI_ENTRY_CACHE_BLOCKS);
+
+        session.clear();
+        assert_eq!(session.resident_entries(), 0);
+        let cleared = MultiEntryCacheCounters {
+            resident_code_bytes: 0,
+            resident_logical_metadata_bytes: 0,
+            ..before_stop
+        };
+        assert_eq!(session.cache_counters(), cleared);
+        drop(Session::new(&code).unwrap()); // The arena lease is already available.
+
+        stop.store(0, Ordering::Release);
+        state = tail.clone();
+        let republished = session.run(&mut state, 3, &stop).unwrap();
+        assert_eq!(state, expected);
+        assert_eq!(republished.dispatch, tail_dispatch);
+        assert_eq!(republished.cache.misses, cleared.misses + 1);
+        assert_eq!(
+            republished.cache.successful_compiles,
+            cleared.successful_compiles + 1
+        );
+        assert_eq!(
+            republished.cache.successful_publications,
+            cleared.successful_publications + 1
+        );
+        assert_eq!(republished.cache.evictions, cleared.evictions);
+        assert_eq!(session.resident_entries(), 1);
+
+        drop(session);
+        let mut replacement = Session::new(&code).unwrap();
+        assert_eq!(
+            replacement.cache_counters(),
+            MultiEntryCacheCounters::default()
+        );
+        let fresh = replacement.run(&mut tail, 3, &stop).unwrap();
+        assert_eq!(tail, expected);
+        assert_eq!(fresh.dispatch, tail_dispatch);
+        assert_eq!(fresh.cache.misses, 1);
+        assert_eq!(fresh.cache.successful_publications, 1);
+        assert_eq!(fresh.cache.evictions, 0);
+        assert_eq!(replacement.resident_entries(), 1);
+    }
+
+    #[test]
     fn retained_session_rejects_a_second_executable_memory_owner() {
         let _guard = crate::tests::jit_test_lock();
         let session = Session::new(&MOV_RAX_7).unwrap();
