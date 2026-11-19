@@ -20043,7 +20043,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         // the decoder's operand width and sign-extended immediate.
         operation @ (Operation::Arithmetic {
             kind:
-                ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp | ArithmeticKind::Inc,
+                ArithmeticKind::Add
+                | ArithmeticKind::Sub
+                | ArithmeticKind::Cmp
+                | ArithmeticKind::Inc
+                | ArithmeticKind::Dec,
             dst: Operand::Register(destination),
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
@@ -20060,7 +20064,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Primary
             && match operation {
                 Operation::Arithmetic {
-                    kind: ArithmeticKind::Inc,
+                    kind: ArithmeticKind::Inc | ArithmeticKind::Dec,
                     ..
                 } => {
                     instruction.opcode.byte == 0xff
@@ -20130,6 +20134,45 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 exit: PagedProbeExit::Retired,
                 instructions_executed: 1,
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: the firmware maps physical ranges with qword SHR by an immediate.
+        Operation::Shift {
+            kind: kind @ ShiftKind::Shr,
+            dst: Operand::Register(destination),
+            source: None,
+            count: Operand::Immediate(immediate),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xc1
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let raw_count = immediate as u8;
+            let count = shift_count(kind, instruction.operand_size, raw_count);
+            let (value, flags) = shift_result(
+                instruction.operand_size,
+                kind,
+                state.read(destination),
+                0,
+                count,
+                raw_count & 0x3f,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
             };
         }
         // S7-04: ordinary CMP with one memory operand reads before changing flags.

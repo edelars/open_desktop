@@ -52028,7 +52028,7 @@ fn firmware_boot_test_byte_immediate_reads_the_decoded_register_alias() {
 }
 
 #[test]
-fn firmware_boot_inc_qword_preserves_cf_and_its_definedness() {
+fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const CF: u64 = 1;
     for (code, reg, input, result, old_cf, old_cf_defined, flags) in [
@@ -52050,6 +52050,16 @@ fn firmware_boot_inc_qword_preserves_cf_and_its_definedness() {
             0,
             0x894,
         ),
+        (
+            &[0x48, 0xff, 0xc9][..],
+            Register::Rcx,
+            0x8000_0000_0000_0000,
+            0x7fff_ffff_ffff_ffff,
+            CF,
+            CF,
+            0x814,
+        ),
+        (&[0x49, 0xff, 0xc8][..], Register::R8, 1, 0, 0, 0, 0x044),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
@@ -52080,6 +52090,72 @@ fn firmware_boot_inc_qword_preserves_cf_and_its_definedness() {
     }
 }
 
+#[test]
+fn firmware_boot_shr_qword_masks_count_and_defines_only_architectural_flags() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    const SHIFT_DEFINED: u64 = 0x0c5;
+    for (code, reg, input, value, flags, initial_defined, defined) in [
+        (
+            [0x48, 0xc1, 0xe9, 0x15],
+            Register::Rcx,
+            0x0030_0000,
+            1,
+            0x001,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            [0x49, 0xc1, 0xe8, 0x41],
+            Register::R8,
+            0x8000_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            0x805,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            [0x48, 0xc1, 0xe9, 0x40],
+            Register::Rcx,
+            0x8000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+            ARITHMETIC_FLAGS,
+            0x010,
+            0x010,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let observed_flags = if code[3] == 0x40 {
+            ARITHMETIC_FLAGS
+        } else {
+            defined
+        };
+        assert_eq!(
+            cpu.rflags & (!ARITHMETIC_FLAGS | observed_flags),
+            0x602 | flags
+        );
+        expected.rflags = cpu.rflags;
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
 #[test]
 fn firmware_boot_test_wide_registers_updates_flags_without_writing_operands() {
     const AF: u64 = 1 << 4;
@@ -52966,7 +53042,11 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
         (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
         (&[0xff, 0xc3][..], 0xff),                   // INC EBX
-        (&[0x49, 0xff, 0xc9][..], 0xff),             // DEC R9
+        (&[0x48, 0xff, 0x0b][..], 0xff),             // DEC qword [RBX]
+        (&[0xff, 0xcb][..], 0xff),                   // DEC EBX
+        (&[0x48, 0xc1, 0x2b, 0x15][..], 0xc1),       // SHR qword [RBX],21
+        (&[0xc1, 0xe9, 0x15][..], 0xc1),             // SHR ECX,21
+        (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1), // address override on SHR
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
         (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
