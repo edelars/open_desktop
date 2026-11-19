@@ -451,7 +451,7 @@ impl HostParallelControl<'_, '_> {
         self.inner.resume();
     }
 
-    /// Whether vCPU `cpu` last published `Halted` (it executed `HLT` and nothing woke it).
+    /// Whether the scheduler's published activity for vCPU `cpu` is `Halted`.
     pub fn halted(&self, cpu: usize) -> bool {
         self.inner.activity(cpu) == crate::idle_arbiter::SchedActivity::Halted
     }
@@ -461,8 +461,9 @@ impl HostParallelControl<'_, '_> {
         self.inner.stopped()
     }
 
-    /// Look at (or change) the CPU state of vCPU `cpu` while the machine is stopped. `None` when
-    /// no stop is in force or the vCPU has not acknowledged it.
+    /// Access the CPU state of vCPU `cpu` while the machine is stopped. Edits are visible to the
+    /// scheduler when the callback returns. `None` when no stop is in force or the vCPU has not
+    /// acknowledged it.
     pub fn with_state<R>(&self, cpu: usize, f: impl FnOnce(&mut LongModeState) -> R) -> Option<R> {
         self.inner.with_vcpu(cpu, |vcpu| f(&mut vcpu.state))
     }

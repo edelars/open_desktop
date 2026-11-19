@@ -291,8 +291,8 @@ fn decode_activity(code: u8) -> SchedActivity {
     }
 }
 
-/// What the other threads (and the controller) may know of a vCPU between its passes: initialized
-/// from its state before spawn, then published by the owner thread at each change.
+/// What the other threads may know of a vCPU between its passes. Its state is initialized before
+/// spawn and published by the worker or, during STOP, by the controller.
 struct Cell {
     /// The thread is doing something other than sleeping or standing still. The idle arbiter
     /// concludes "nobody runs" only when no thread is busy and no kick is pending.
@@ -1464,8 +1464,8 @@ impl ParallelControl<'_, '_> {
         self.shared.stop_all.load(SEQ) && !self.is_finished()
     }
 
-    /// Look at (or change) vCPU `cpu` while the machine is stopped. `None` when no stop is in
-    /// force or the vCPU has not acknowledged it.
+    /// Access vCPU `cpu` while the machine is stopped and publish its state after the callback.
+    /// `None` when no stop is in force or the vCPU has not acknowledged it.
     pub(crate) fn with_vcpu<R>(&self, cpu: usize, f: impl FnOnce(&mut Vcpu) -> R) -> Option<R> {
         let sh = self.shared;
         if !self.stopped() || !sh.cells[cpu].safe.load(SEQ) {
@@ -1477,7 +1477,9 @@ impl ParallelControl<'_, '_> {
         if !self.stopped() {
             return None;
         }
-        Some(f(&mut guard))
+        let result = f(&mut guard);
+        sh.publish(cpu, &guard);
+        Some(result)
     }
 
     /// The activity vCPU `cpu` last published.
@@ -2994,6 +2996,56 @@ mod tests {
         )
         .unwrap();
         assert_joined(&report, VCPU_COUNT);
+        assert_eq!(report.finished, ParallelFinish::Stopped);
+        assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
+    }
+
+    #[test]
+    fn a_stopped_vcpu_edit_is_reflected_in_the_next_stop_proof() {
+        use crate::smp_scheduler::{QuantumPolicy, SmpScheduler, StopRequest};
+        use crate::vm_snapshot::{SnapshotError, VmSnapshot};
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        let mut board = board(2);
+        let bsp = board.vcpu_mut(BOOT_VCPU_INDEX).unwrap();
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags &= !u64::from(EFLAGS_IF);
+        let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(8), StopRequest::new()).unwrap();
+
+        let (report, ()) = run_threads(
+            &mut board,
+            open_config(8),
+            &|_| panic!("the board must remain stopped"),
+            |control| {
+                let before = control.stop_all(TIMEOUT).unwrap();
+                assert_eq!(
+                    before.acks[BOOT_VCPU_INDEX],
+                    StopAck::Asleep(SchedActivity::Halted)
+                );
+                control
+                    .with_vcpu(BOOT_VCPU_INDEX, |vcpu| {
+                        vcpu.state.activity = Some(CpuActivity::Running);
+                        vcpu.state.rflags |= u64::from(EFLAGS_IF);
+                        vcpu.skip_first_boundary = true;
+                    })
+                    .unwrap();
+
+                let after = control.stop_all(TIMEOUT).unwrap();
+                assert_eq!(after.now_ns, before.now_ns);
+                assert_eq!(after.acks[BOOT_VCPU_INDEX], StopAck::RepRestart);
+                assert_eq!(control.activity(BOOT_VCPU_INDEX), SchedActivity::Running);
+                assert!(control.shared.cells[BOOT_VCPU_INDEX].if_set.load(SEQ));
+                assert_eq!(
+                    VmSnapshot::take_parallel(control, &before, &scheduler),
+                    Err(SnapshotError::StaleSafePoint)
+                );
+                let snapshot = VmSnapshot::take_parallel(control, &after, &scheduler).unwrap();
+                assert!(snapshot.vcpus()[BOOT_VCPU_INDEX].skip_first_boundary);
+            },
+        )
+        .unwrap();
+        assert_joined(&report, 2);
         assert_eq!(report.finished, ParallelFinish::Stopped);
         assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
     }
