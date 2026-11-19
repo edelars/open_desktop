@@ -1913,6 +1913,7 @@ fn init_path_with_a_negative_openat_result_takes_the_js_to_the_error_exit() {
 /// and supervisor pages (a CPL3 access is a #PF with U, a write with W too).
 struct DataMemory {
     code: Vec<u8>,
+    code_base: u64,
     user: std::collections::BTreeMap<u64, u8>,
     supervisor: std::collections::BTreeMap<u64, u8>,
     /// Addresses of a page without P: any access is a #PF with the P bit clear.
@@ -1925,6 +1926,7 @@ impl DataMemory {
     fn new(code: &[u8]) -> Self {
         Self {
             code: code.to_vec(),
+            code_base: RIP,
             user: std::collections::BTreeMap::new(),
             supervisor: std::collections::BTreeMap::new(),
             absent: std::collections::BTreeSet::new(),
@@ -1967,7 +1969,7 @@ impl DataMemory {
 
 impl GuestMemory for DataMemory {
     fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        let offset = address.checked_sub(self.code_base).unwrap_or(u64::MAX) as usize;
         self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
             address,
             access: AccessKind::Fetch,
@@ -2090,6 +2092,55 @@ fn run3_data(
 }
 
 const DATA: u64 = 0x0060_1000;
+
+#[test]
+fn cpl3_addr32_direct_call_uses_full_rip_and_rsp() {
+    let code = [0x67, 0xe8, 0xeb, 0xe5, 0xfa, 0xff];
+    let rip = 0x0000_0001_004c_7c9fu64;
+    let stack = 0x0000_0002_0060_1000u64;
+    let mut initial = user_state();
+    initial.rip = rip;
+    initial.gpr[Register::Rsp as usize] = stack + 8;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    let mut state = initial.clone();
+    let mut memory = DataMemory::new(&code);
+    memory.code_base = rip;
+    for offset in 0..8 {
+        memory = memory.with_user(stack + offset, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = initial.clone();
+    expected.rip = 0x0000_0001_0047_6290;
+    expected.gpr[Register::Rsp as usize] = stack;
+    assert_eq!(state, expected);
+    let return_address = (rip + code.len() as u64).to_le_bytes();
+    assert_eq!(
+        memory.writes,
+        (stack..stack + 8).zip(return_address).collect::<Vec<_>>()
+    );
+    assert_eq!(memory.reads, 0);
+
+    let mut state = initial.clone();
+    let mut memory = DataMemory::new(&code);
+    memory.code_base = rip;
+    for offset in 0..8 {
+        memory = memory.with_supervisor(stack + offset, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7),
+            linear_address: Some(stack),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, initial);
+    assert!(memory.writes.is_empty());
+}
 
 #[test]
 fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {

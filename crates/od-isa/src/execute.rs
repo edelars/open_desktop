@@ -28722,11 +28722,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         return true;
     }
     let prefixes = instruction.prefixes;
-    if prefixes.group1.is_some()
-        || prefixes.segment.is_some()
-        || prefixes.operand_override
-        || prefixes.address_override
-    {
+    if prefixes.address_override {
+        return is_addr32_direct_call(instruction);
+    }
+    if prefixes.group1.is_some() || prefixes.segment.is_some() || prefixes.operand_override {
         return false;
     }
     match (
@@ -28950,6 +28949,21 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         _ => false,
     }
+}
+
+fn is_addr32_direct_call(instruction: &long_decode::Instruction) -> bool {
+    matches!(
+        (
+            instruction.opcode.map,
+            instruction.opcode.byte,
+            instruction.operation
+        ),
+        (OpcodeMap::Primary, 0xe8, Operation::Call { .. })
+    ) && instruction.prefixes
+        == (Prefixes {
+            address_override: true,
+            ..Prefixes::default()
+        })
 }
 
 /// S4-39f8: whether the ModRM byte of a decoded `REX 8D /r` selects a SIB byte (`mod != 11`,
@@ -45991,7 +46005,10 @@ fn step_configured(
                             == (Prefixes {
                                 operand_override: true,
                                 ..Prefixes::default()
-                            })))
+                            }))
+                    || (control_policy.is_some()
+                        && context.privilege == PrivilegeLevel::Ring3
+                        && is_addr32_direct_call(&instruction)))
                 && matches!(instruction.opcode.byte, 0xe8 | 0xc2 | 0xc3)
         }
         Operation::IndirectCall { .. } => {

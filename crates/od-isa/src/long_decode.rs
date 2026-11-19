@@ -10483,8 +10483,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Primary, 0xe8) => {
                 // S4-38L7af: a single CS/DS/ES/SS override (`26`/`2E`/`36`/`3E`) directly before
                 // `E8` is a no-op in 64-bit mode (the bases are zero and CALL rel32 has no memory
-                // operand), so `2E E8 cd` is `E8 cd`. FS/GS, REX (also a stale one before the
-                // segment byte), 66, 67, LOCK/REP and a repeated override stay refused.
+                // operand), so `2E E8 cd` is `E8 cd`.
                 let null_base_segment_only = prefix_count == 1
                     && prefixes
                         == (Prefixes {
@@ -10492,7 +10491,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             ..Prefixes::default()
                         })
                     && matches!(prefixes.segment, Some(0x26 | 0x2e | 0x36 | 0x3e));
-                if prefixes != Prefixes::default() && !null_base_segment_only {
+                // S6-38: a single address-size prefix affects no operand of a direct near CALL.
+                let address_override_only = prefix_count == 1
+                    && prefixes
+                        == (Prefixes {
+                            address_override: true,
+                            ..Prefixes::default()
+                        });
+                if prefixes != Prefixes::default()
+                    && !null_base_segment_only
+                    && !address_override_only
+                {
                     return Err(self.unsupported(opcode));
                 }
                 size = OperandSize::Qword;
@@ -21442,6 +21451,22 @@ mod tests {
     }
 
     #[test]
+    fn addr32_direct_call_decodes_a_qword_near_call_with_rel32() {
+        let decoded = Memory::new(&[0x67, 0xe8, 0xeb, 0xe5, 0xfa, 0xff])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 6);
+        assert_eq!(decoded.operand_size, OperandSize::Qword);
+        assert_eq!(decoded.address_size, OperandSize::Dword);
+        assert_eq!(
+            decoded.operation,
+            Operation::Call {
+                displacement: -0x51a15,
+            }
+        );
+    }
+
+    #[test]
     fn direct_call_and_ret_reject_prefixes_and_truncated_immediates() {
         for bytes in [
             &[0x66, 0xe8, 0, 0, 0, 0][..],
@@ -21454,7 +21479,8 @@ mod tests {
             &[0x2e, 0x48, 0xe8, 0, 0, 0, 0][..],
             &[0x48, 0x2e, 0xe8, 0, 0, 0, 0][..],
             &[0xf0, 0x2e, 0xe8, 0, 0, 0, 0][..],
-            &[0x67, 0xe8, 0, 0, 0, 0][..],
+            &[0x67, 0x67, 0xe8, 0, 0, 0, 0][..],
+            &[0x67, 0x2e, 0xe8, 0, 0, 0, 0][..],
             &[0x48, 0xe8, 0, 0, 0, 0][..],
             &[0xf3, 0xe8, 0, 0, 0, 0][..],
             &[0x48, 0xc3][..],
