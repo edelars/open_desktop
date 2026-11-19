@@ -35,12 +35,13 @@
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
 use crate::codes::{alg, cap, curve, handle, pt, spec};
+use crate::crypto::supported_rsa_exponent;
 use crate::dispatch::COMMANDS;
 use crate::marshal::{
-    Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING, TPMA_ALGORITHM_HASH,
-    TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING, TPMA_ALGORITHM_SYMMETRIC,
-    TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection, TpmsTaggedProperty, Writer,
-    limits,
+    PublicParams, Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING,
+    TPMA_ALGORITHM_HASH, TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING,
+    TPMA_ALGORITHM_SYMMETRIC, TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection,
+    TpmsTaggedProperty, Writer, limits,
 };
 use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
@@ -155,6 +156,20 @@ impl Tpm {
             (pt::LOCKOUT_INTERVAL, self.persistent.da.recovery_time),
             (pt::LOCKOUT_RECOVERY, self.persistent.da.lockout_recovery),
         ]
+    }
+
+    /// `TPM2_TestParms` (Part 3 v185 §30.3). There is no public object template or handle.
+    pub(crate) fn cmd_test_parms(p: &mut Reader<'_>) -> Result<Output, Rc> {
+        p.set_param(1);
+        let type_alg = PublicParams::unmarshal_type(p)?;
+        let params = PublicParams::unmarshal(p, type_alg)?;
+        p.finish()?;
+        if let PublicParams::Rsa { exponent, .. } = params
+            && !supported_rsa_exponent(exponent)
+        {
+            return Err(p.err(Rc::RANGE));
+        }
+        Ok(Output::default())
     }
 
     /// `TPM2_GetCapability`.

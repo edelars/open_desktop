@@ -56209,9 +56209,27 @@ fn firmware_boot_xor_compares_qword_fields_in_fs_and_tcg2_probes() {
             false,
         ),
         (
+            &[0x48, 0x33, 0x4c, 0x24, 0x70],
+            Register::Rcx,
+            Some((Register::Rsp, 0x70)),
+            false,
+        ),
+        (
             &[0x48, 0x33, 0x94, 0x24, 0xce, 0, 0, 0],
             Register::Rdx,
             Some((Register::Rsp, 0xce)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xee, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xee)),
+            true,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xee, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xee)),
             false,
         ),
         (

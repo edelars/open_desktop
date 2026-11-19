@@ -714,6 +714,57 @@ pub enum PublicParams {
     KeyedHash { scheme: Scheme },
 }
 
+impl PublicParams {
+    pub(crate) fn unmarshal_type(r: &mut Reader<'_>) -> Result<u16, Rc> {
+        let type_alg = r.u16()?;
+        match type_alg {
+            alg::RSA | alg::ECC | alg::KEYEDHASH => Ok(type_alg),
+            _ => Err(r.err(Rc::TYPE)),
+        }
+    }
+
+    /// Decodes the parameter union shared by `TPMT_PUBLIC` and `TPMT_PUBLIC_PARMS`.
+    pub(crate) fn unmarshal(r: &mut Reader<'_>, type_alg: u16) -> Result<Self, Rc> {
+        match type_alg {
+            alg::RSA => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let scheme =
+                    Scheme::unmarshal(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
+                let key_bits = r.u16()?;
+                if key_bits != 2048 {
+                    return Err(r.err(Rc::VALUE));
+                }
+                Ok(Self::Rsa {
+                    symmetric,
+                    scheme,
+                    key_bits,
+                    exponent: r.u32()?,
+                })
+            }
+            alg::ECC => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let scheme = Scheme::unmarshal(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
+                let curve = r.u16()?;
+                if curve != curve::NIST_P256 {
+                    return Err(r.err(Rc::CURVE));
+                }
+                if r.u16()? != alg::NULL {
+                    return Err(r.err(Rc::KDF));
+                }
+                Ok(Self::Ecc {
+                    symmetric,
+                    scheme,
+                    curve,
+                })
+            }
+            alg::KEYEDHASH => Ok(Self::KeyedHash {
+                scheme: Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?,
+            }),
+            _ => Err(r.err(Rc::TYPE)),
+        }
+    }
+}
+
 /// `TPMU_PUBLIC_ID` (Table 212).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Unique {
@@ -799,10 +850,7 @@ impl TpmtPublic {
     /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
     /// and `TPM_RC_MODE` as in [`SymDef::unmarshal`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
-        let type_alg = r.u16()?;
-        if !matches!(type_alg, alg::RSA | alg::ECC | alg::KEYEDHASH) {
-            return Err(r.err(Rc::TYPE));
-        }
+        let type_alg = PublicParams::unmarshal_type(r)?;
         let name_alg = r.u16()?;
         if name_alg != alg::SHA256 && name_alg != alg::NULL {
             return Err(r.err(Rc::HASH));
@@ -812,52 +860,15 @@ impl TpmtPublic {
             return Err(r.err(Rc::RESERVED_BITS));
         }
         let auth_policy = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-        let (params, unique) = match type_alg {
-            alg::RSA => {
-                let symmetric = SymDef::unmarshal(r)?;
-                let scheme =
-                    Scheme::unmarshal(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
-                let key_bits = r.u16()?;
-                if key_bits != 2048 {
-                    return Err(r.err(Rc::VALUE));
-                }
-                let exponent = r.u32()?;
-                let n = r.tpm2b(MAX_RSA_BYTES)?.to_vec();
-                (
-                    PublicParams::Rsa {
-                        symmetric,
-                        scheme,
-                        key_bits,
-                        exponent,
-                    },
-                    Unique::Rsa(n),
-                )
-            }
-            alg::ECC => {
-                let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
-                let curve_id = r.u16()?;
-                if curve_id != curve::NIST_P256 {
-                    return Err(r.err(Rc::CURVE));
-                }
-                if r.u16()? != alg::NULL {
-                    return Err(r.err(Rc::KDF));
-                }
-                let x = r.tpm2b(MAX_ECC_BYTES)?.to_vec();
-                let y = r.tpm2b(MAX_ECC_BYTES)?.to_vec();
-                (
-                    PublicParams::Ecc {
-                        symmetric,
-                        scheme,
-                        curve: curve_id,
-                    },
-                    Unique::Ecc { x, y },
-                )
-            }
-            _ => {
-                let scheme = Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?;
-                let d = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-                (PublicParams::KeyedHash { scheme }, Unique::Digest(d))
+        let params = PublicParams::unmarshal(r, type_alg)?;
+        let unique = match params {
+            PublicParams::Rsa { .. } => Unique::Rsa(r.tpm2b(MAX_RSA_BYTES)?.to_vec()),
+            PublicParams::Ecc { .. } => Unique::Ecc {
+                x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
+                y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
+            },
+            PublicParams::KeyedHash { .. } => {
+                Unique::Digest(r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec())
             }
         };
         Ok(TpmtPublic {

@@ -75,6 +75,7 @@ pub mod cc {
     pub const PCR_EXTEND: u32 = 0x0000_0182;
     pub const EVENT_SEQUENCE_COMPLETE: u32 = 0x0000_0185;
     pub const HASH_SEQUENCE_START: u32 = 0x0000_0186;
+    pub const TEST_PARMS: u32 = 0x0000_018A;
 }
 
 /// Table 23 (v184): `TPM_ST` structure tags.

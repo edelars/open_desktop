@@ -617,11 +617,12 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         // PolicyCommandCode, PolicyOR, PolicyPCR, PolicyRestart, PolicyGetDigest.
         0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
         // Slice C3: NV_Increment, NV_SetBits, NV_Extend, GetTime.
-        0x134, 0x135, 0x136, 0x14C,
+        0x134, 0x135, 0x136, 0x14C, // PTP 1.07 baseline expansion: TestParms.
+        0x18A,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 60);
+    assert_eq!(expected.len(), 61);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -639,13 +640,15 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         u32::from_be_bytes([body[0], body[1], body[2], body[3]]),
         0x186 | 1 << 28
     );
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18A, 1));
+    assert_eq!(body, 0x18Au32.to_be_bytes());
     // TPM_PT_TOTAL_COMMANDS agrees with the list.
     let (_, _, props, count) =
         cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, pt::TOTAL_COMMANDS, 1));
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(60)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(61)[..]].concat()
     );
 }
 
@@ -656,15 +659,68 @@ fn capability_commands_paging_and_more_data() {
     assert!(more && count == 5 && body.len() == 20);
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
     assert!(
-        !more && count == 8,
-        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x185, 0x186, 0x189"
+        !more && count == 9,
+        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x185, 0x186, 0x189, 0x18A"
     );
-    assert_eq!(body.len(), 32);
-    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18A, 100));
+    assert_eq!(body.len(), 36);
+    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18B, 100));
     assert!(!more && count == 0);
     // propertyCount 0: empty list, moreData YES because entries remain.
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0, 0));
     assert!(more && count == 0);
+}
+
+#[test]
+fn test_parms_accepts_supported_public_parameters_without_state_changes() {
+    let mut t = started();
+    let before = t.persistent_snapshot();
+    for encoded in [
+        "00010006008000430010080000000000", // RSA-2048 storage, AES-128-CFB, default exponent.
+        "000100100014000b080000010001",     // RSA-2048 RSASSA-SHA256, explicit exponent.
+        "000100100017000b080000000000",     // RSA-2048 OAEP-SHA256.
+        "002300100018000b00030010",         // ECDSA-SHA256, NIST P-256, null KDF.
+        "002300100019000b00030010",         // ECDH-SHA256, NIST P-256, null KDF.
+        "00080005000b",                     // KEYEDHASH HMAC-SHA256.
+        "00080010",                         // KEYEDHASH with no scheme.
+    ] {
+        let response = run(&mut t, plain(0x18A, &[], &hex(encoded)));
+        assert_eq!(response, hex("80010000000a00000000"), "{encoded}");
+    }
+    assert_eq!(t.persistent_snapshot(), before);
+    let random = plain(cc::GET_RANDOM, &[], &[0, 16]);
+    assert_eq!(run(&mut t, random.clone()), run(&mut started(), random));
+}
+
+#[test]
+fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
+    let mut t = started();
+    let before = t.persistent_snapshot();
+    for (encoded, error) in [
+        ("0025", Rc::TYPE), // SYMCIPHER is outside the implemented profile.
+        ("00010006010000430010080000000000", Rc::SYMMETRIC), // AES-256.
+        ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
+        ("000100100016000b080000000000", Rc::VALUE), // RSAPSS.
+        ("000100100014000c080000000000", Rc::HASH), // SHA-384.
+        ("000100100014000b0c0000000000", Rc::VALUE), // RSA-3072.
+        ("000100100014000b080000000003", Rc::RANGE), // Unsupported exponent.
+        ("002300100018000b00040010", Rc::CURVE), // NIST P-384.
+        ("002300100018000b00030021", Rc::KDF), // Non-null KDF.
+        ("002300100014000b00030010", Rc::SCHEME), // RSASSA in ECC union.
+        ("00080005", Rc::INSUFFICIENT), // Missing HMAC hash.
+        ("", Rc::INSUFFICIENT), // Missing type selector.
+    ] {
+        err(
+            &run(&mut t, plain(0x18A, &[], &hex(encoded))),
+            error.in_param(1),
+        );
+    }
+    let trailing = hex("0008001000");
+    err(&run(&mut t, plain(0x18A, &[], &trailing)), Rc::SIZE);
+    err(
+        &run(&mut t, with_pw(0x18A, &[], &[b""], &hex("00080010"))),
+        Rc::AUTHSIZE,
+    );
+    assert_eq!(t.persistent_snapshot(), before);
 }
 
 #[test]

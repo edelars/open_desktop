@@ -20667,13 +20667,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 (Some(0x48), AddressBase::Register(Register::Rsp)) => {
                                     (destination
                                         == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                                        && matches!(memory.displacement, 0x32 | 0x33 | 0x3a | 0x54))
+                                        && matches!(
+                                            memory.displacement,
+                                            0x32 | 0x33 | 0x3a | 0x54 | 0x70
+                                        ))
                                         || (destination
                                             == RegisterView::low(Register::Rsi, OperandSize::Qword)
                                             && memory.displacement == 0x32)
                                         || (destination
                                             == RegisterView::low(Register::Rdx, OperandSize::Qword)
-                                            && memory.displacement == 0xce)
+                                            && matches!(memory.displacement, 0xce | 0xee))
                                 }
                                 (Some(0x49), AddressBase::Register(Register::R14)) => {
                                     (destination

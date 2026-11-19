@@ -63,9 +63,9 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
-    EccPrivate, RSA_EXPONENT, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid,
-    ecc_public, ecc_scalar, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes,
-    rsa_generate, rsa_modulus, rsa_primes,
+    EccPrivate, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public, ecc_scalar,
+    hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes, rsa_generate, rsa_modulus,
+    rsa_primes, supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::marshal::{
@@ -437,10 +437,6 @@ fn check_asymmetric_attributes(
         return Err(Rc::ATTRIBUTES.in_param(2));
     }
     Ok(())
-}
-
-fn supported_rsa_exponent(encoded: u32) -> bool {
-    matches!(encoded, 0 | RSA_EXPONENT)
 }
 
 fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {

@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 60] = [
+pub(crate) static COMMANDS: [CommandSpec; 61] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -171,6 +171,7 @@ pub(crate) static COMMANDS: [CommandSpec; 60] = [
     spec(cc::EVENT_SEQUENCE_COMPLETE, 2, 2, false, true, true),
     spec(cc::HASH_SEQUENCE_START, 0, 0, true, false, false),
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
+    spec(cc::TEST_PARMS, 0, 0, false, false, false),
 ];
 
 /// What a handler needs besides the parameter reader.
@@ -625,6 +626,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::SELF_TEST => tpm.cmd_self_test(&mut p)?,
         cc::GET_TEST_RESULT => tpm.cmd_get_test_result(&mut p)?,
         cc::GET_CAPABILITY => tpm.cmd_get_capability(&mut p)?,
+        cc::TEST_PARMS => Tpm::cmd_test_parms(&mut p)?,
         cc::GET_RANDOM => tpm.cmd_get_random(&mut p)?,
         cc::STIR_RANDOM => tpm.cmd_stir_random(&mut p)?,
         cc::PCR_READ => tpm.cmd_pcr_read(&mut p)?,
@@ -912,6 +914,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 60);
+        assert_eq!(COMMANDS.len(), 61);
     }
 }

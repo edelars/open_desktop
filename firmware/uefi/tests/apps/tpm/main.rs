@@ -184,6 +184,25 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
         return Err(Status::DEVICE_ERROR);
     }
     line!("OD-UEFI TPM2_GetRandom: 16 bytes");
+
+    const TEST_PARMS: [u8; 22] = [
+        0x80, 1, 0, 0, 0, 22, 0, 0, 1, 0x8a, // TPM2_TestParms
+        0, 0x23, 0, 0x10, 0, 0x18, 0, 0x0b, 0, 3, 0, 0x10, // ECDSA-SHA256, P-256
+    ];
+    let mut parameters_reply = [0; 10];
+    check(unsafe {
+        (tpm.submit_command)(
+            tpm,
+            TEST_PARMS.len() as u32,
+            TEST_PARMS.as_ptr(),
+            parameters_reply.len() as u32,
+            parameters_reply.as_mut_ptr(),
+        )
+    })?;
+    if parameters_reply != [0x80, 1, 0, 0, 0, 10, 0, 0, 0, 0] {
+        return Err(Status::DEVICE_ERROR);
+    }
+    line!("OD-UEFI TPM2_TestParms: ECDSA-SHA256 P-256");
     unsafe { exit_and_verify_final_events(handle, system, final_events.cast_const()) }
 }
 

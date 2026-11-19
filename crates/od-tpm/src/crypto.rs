@@ -152,6 +152,10 @@ const PRIME_BYTES: usize = RSA_BYTES / 2;
 /// Public exponent of RSA keys supported by the virtual TPM.
 pub(crate) const RSA_EXPONENT: u32 = 65_537;
 
+pub(crate) fn supported_rsa_exponent(encoded: u32) -> bool {
+    matches!(encoded, 0 | RSA_EXPONENT)
+}
+
 /// Generates an RSA-2048 key (public exponent 65537) from `rng`. The result is a function of the
 /// bytes the generator yields, so a generator seeded identically gives the same key (primary
 /// objects); the prime search is that of `rsa`/`crypto-primes` at the pinned versions.

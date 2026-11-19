@@ -18,6 +18,7 @@ EXPECTED = (
     b"OD-UEFI TCG2: final events verified",
     b"OD-UEFI PCR0/1/4/5 log replay: match",
     b"OD-UEFI TPM2_GetRandom: 16 bytes",
+    b"OD-UEFI TPM2_TestParms: ECDSA-SHA256 P-256",
     b"OD-UEFI TCG2: final events retained after EBS",
 )
 
