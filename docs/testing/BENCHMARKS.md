@@ -1741,6 +1741,13 @@ candidate. Run the seven focused guard cases and the full S3-34a MOV
 checks before the unchanged S3-40z timing schedule.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40aj_2026-11-19.md)
 
+### S3-40ak. Historical interpreter RUN residual after S3-40aj
+
+Repeat S3-40ai at `d48eef9` against `d24865d`. Use the same driver,
+correctness cases, fixed call counts and six paired rounds. Keep the
+accepted timing archive and the rejected preflight as separate evidence.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ak_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

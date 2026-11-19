@@ -1624,6 +1624,13 @@ ranges include unity. Both builds passed focused guard and MOV
 correctness checks.
 [RUN timings, samples and verification](STAGE_3_S3-40aj_2026-11-19.md)
 
+S3-40ak directly compared `d48eef9` with `d24865d` on M1 Pro.
+At budget two the ratios are 1.7952 and 1.7957 for the two MOV
+sequences. The pooled gap is 109.8 ns on both sequences. At budget
+zero the gap is 5.3 ns. The accepted series used a fresh idle
+preflight on the same signed builds. ISSUE-521 remains open.
+[Matched comparison and evidence](STAGE_3_S3-40ak_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
