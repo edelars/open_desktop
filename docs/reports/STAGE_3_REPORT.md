@@ -1212,6 +1212,13 @@ historical time on these streams. The throughput benefit is bounded
 to repeated hits on the two checked-memory streams.
 [Matched cold, warm and historical measurements](STAGE_3_S3-40q_2026-11-19.md)
 
+S3-40r paired ordinary interpreter calls with a diagnostic clone
+specialized for empty execution profiles on the S3-34a corpus.
+Candidate/reference medians were 0.629 and 0.628. All 64 pairs showed
+a lower time, with state, RAM, ordered effects, STOP and budget checks.
+The measured gain includes the specialized code layout and call route.
+[Full-call diagnostic and source bindings](STAGE_3_S3-40r_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

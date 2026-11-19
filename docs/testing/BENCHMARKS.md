@@ -1530,6 +1530,14 @@ ratios are 21.738 and 21.772. Cross-revision interpreter ratios
 use medians from separate processes within each round.
 [Report and reproduction](../reports/STAGE_3_S3-40q_2026-11-19.md)
 
+### S3-40r. Full interpreter calls with statically empty execution profiles
+
+The signed release diagnostic couples ordinary `execute::run` and a clone
+with statically empty execution profiles in one binary. Both paths
+use the post-S3-40o decoder. Full-call median paired ratios on the two
+S3-34a streams are 0.629 and 0.628 across four processes.
+[Report and reproduction](../reports/STAGE_3_S3-40r_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
