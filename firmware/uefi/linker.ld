@@ -32,7 +32,11 @@ SECTIONS
 
     . = ALIGN(4096);
     __shadow_read_only_start = .;
-    .rodata : ALIGN(4096) { *(.rodata .rodata.*) } :image
+    .rodata : ALIGN(4096)
+    {
+        *(.rodata .rodata.*)
+        KEEP(*(.od_fv.archive))
+    } :image
     . = ALIGN(4096);
     __shadow_writable_start = .;
     .data : ALIGN(4096) { *(.data .data.*) } :image

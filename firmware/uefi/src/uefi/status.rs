@@ -5,6 +5,7 @@ pub struct Status(usize);
 
 impl Status {
     pub const SUCCESS: Self = Self(0);
+    pub const LOAD_ERROR: Self = Self(Self::ERROR_BIT | 1);
     pub const INVALID_PARAMETER: Self = Self(Self::ERROR_BIT | 2);
     pub const UNSUPPORTED: Self = Self(Self::ERROR_BIT | 3);
     pub const BUFFER_TOO_SMALL: Self = Self(Self::ERROR_BIT | 5);

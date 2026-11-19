@@ -1,0 +1,3 @@
+[target.x86_64-unknown-uefi]
+# Hash-based PE timestamps and no build-directory-dependent PDB identifiers.
+rustflags = ["-C", "link-arg=/Brepro", "-C", "link-arg=/debug:none"]

@@ -28,6 +28,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,10 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
+TEST_APPS = ("ebs", "hello")
+FV_MAGIC = b"ODFVARC\0"
+FV_VERSION = 1
+FV_HEADER_SIZE = 24
 PE_MACHINE_X64 = 0x8664
 PE32_PLUS_MAGIC = 0x20B
 PE_SUBSYSTEM_EFI_APPLICATION = 10
@@ -333,13 +338,40 @@ def resolve_tools(env: Mapping[str, str] | None = None) -> Tools:
 # --- Build ------------------------------------------------------------------------------------
 
 
-def build_elf(tools: Tools, target_dir: Path) -> Path:
+def pack_fv(files: Mapping[str, bytes]) -> bytes:
+    """Pack the built-in firmware volume in sorted name order."""
+    archive = bytearray(FV_HEADER_SIZE)
+    for name, data in sorted(files.items()):
+        if (
+            not 1 <= len(name) <= 63
+            or name in (".", "..")
+            or any(char not in "abcdefghijklmnopqrstuvwxyz0123456789._-" for char in name)
+        ):
+            raise BuildError(f"invalid FV name: {name!r}")
+        if not data:
+            raise BuildError(f"empty FV file: {name}")
+        if len(archive) + 8 + len(name) + len(data) > IMAGE_SIZE:
+            raise BuildError("firmware volume exceeds the ROM capacity")
+        archive.extend(struct.pack("<HHI", len(name), 0, len(data)))
+        archive.extend(name.encode("ascii"))
+        archive.extend(data)
+    struct.pack_into(
+        "<8sHHIII", archive, 0, FV_MAGIC, FV_VERSION, FV_HEADER_SIZE, len(archive), len(files), 0,
+    )
+    struct.pack_into("<I", archive, 20, crc32_ieee(archive))
+    return bytes(archive)
+
+
+def build_elf(tools: Tools, target_dir: Path, *, fv_archive: Path | None = None) -> Path:
     env = dict(tools.tool_env)
     # RUSTFLAGS would replace firmware/uefi/.cargo/config.toml (relocation-model=static).
     env.pop("RUSTFLAGS", None)
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["OD_FW_CLANG"] = str(tools.clang)
+    env.pop("OD_FW_FV_ARCHIVE", None)
+    if fv_archive is not None:
+        env["OD_FW_FV_ARCHIVE"] = str(fv_archive)
     # cwd must be inside firmware/uefi: cargo reads .cargo/config.toml relative to the cwd.
     _run(
         [str(tools.cargo), "build", "--release", "--target", TARGET, "--offline"],
@@ -352,8 +384,10 @@ def build_elf(tools: Tools, target_dir: Path) -> Path:
     return elf
 
 
-def build_image(tools: Tools, target_dir: Path, out: Path) -> tuple[bytes, dict[str, int]]:
-    elf_path = build_elf(tools, target_dir)
+def build_image(
+    tools: Tools, target_dir: Path, out: Path, *, fv_archive: Path | None = None,
+) -> tuple[bytes, dict[str, int]]:
+    elf_path = build_elf(tools, target_dir, fv_archive=fv_archive)
     elf = elf_path.read_bytes()
     entry, offset, filesz = inspect_elf(elf)
     raw_path = elf_path.with_suffix(".raw")
@@ -434,6 +468,38 @@ def build_probe(tools: ProbeTools, target_dir: Path, out: Path) -> tuple[bytes, 
     return pe, fields
 
 
+def build_test_apps(tools: ProbeTools, target_dir: Path) -> bytes:
+    env = dict(tools.tool_env)
+    env.pop("RUSTFLAGS", None)
+    env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    _run(
+        [str(tools.cargo), "build", "--release", "--target", PROBE_TARGET, "--locked", "--offline"],
+        env=env,
+        cwd=FIRMWARE_DIR / "tests/apps",
+    )
+    files = {}
+    for name in TEST_APPS:
+        artifact = target_dir / PROBE_TARGET / "release" / f"{name}.efi"
+        if not artifact.is_file():
+            raise BuildError(f"cargo did not produce {artifact}")
+        files[name] = artifact.read_bytes()
+    return pack_fv(files)
+
+
+def write_test_app_archive(target_dir: Path, archive: bytes) -> Path:
+    archive_dir = target_dir / "fv" / hashlib.sha256(archive).hexdigest()
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    path = archive_dir / "archive.bin"
+    if path.is_file() and path.read_bytes() == archive:
+        return path
+    with tempfile.TemporaryDirectory(dir=archive_dir) as directory:
+        temporary = Path(directory) / path.name
+        temporary.write_bytes(archive)
+        temporary.replace(path)
+    return path
+
+
 def tool_versions(tools: Tools) -> list[str]:
     lines = [
         _run([str(tools.rustc), "--version"], env=tools.tool_env),
@@ -474,7 +540,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_TARGET_DIR,
         help=f"cargo target directory (default: {DEFAULT_TARGET_DIR.relative_to(ROOT)})",
     )
+    parser.add_argument(
+        "--with-test-apps",
+        action="store_true",
+        help="build the hello and ebs EFI applications and embed them in the firmware volume",
+    )
     args = parser.parse_args(argv)
+    if args.with_test_apps and (args.smoke or args.efi_probe is not None):
+        parser.error("--with-test-apps requires a ROM build")
     if args.out is None:
         args.out = DEFAULT_SMOKE_OUT if args.smoke else DEFAULT_OUT
     return args
@@ -536,7 +609,13 @@ def main(argv: list[str] | None = None) -> int:
         return main_efi_probe(args)
     try:
         tools = resolve_tools()
-        image, fields = build_image(tools, args.target_dir.absolute(), args.out.absolute())
+        target_dir = args.target_dir.absolute()
+        fv_archive = None
+        if args.with_test_apps:
+            archive = build_test_apps(resolve_probe_tools(), target_dir / "test-apps")
+            fv_archive = write_test_app_archive(target_dir, archive)
+            target_dir = fv_archive.parent
+        image, fields = build_image(tools, target_dir, args.out.absolute(), fv_archive=fv_archive)
         versions = tool_versions(tools)
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)

@@ -4,15 +4,16 @@
 //! the object file and the own linker script to the linker. For any other target (host
 //! `cargo test`) it does nothing, so the host test run needs neither `clang` nor a linker script.
 
-use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{env, fs};
 
 fn main() {
     println!("cargo:rerun-if-changed=src/start.S");
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=acpi_blob.ld");
     println!("cargo:rerun-if-env-changed=OD_FW_CLANG");
+    println!("cargo:rerun-if-env-changed=OD_FW_FV_ARCHIVE");
 
     let target = env::var("TARGET").unwrap_or_default();
     if target != "x86_64-unknown-none" {
@@ -21,6 +22,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    write_firmware_volume(&out_dir);
     let clang = env::var("OD_FW_CLANG").unwrap_or_else(|_| "clang".to_string());
     let object = out_dir.join("start.o");
 
@@ -56,4 +58,20 @@ fn main() {
     );
     println!("cargo:rustc-link-arg-bin=od-acpi-blob=-zmax-page-size=4096");
     println!("cargo:rustc-link-arg-bin=od-acpi-blob=--build-id=none");
+}
+
+fn write_firmware_volume(out_dir: &Path) {
+    let destination = out_dir.join("od-fv.bin");
+    if let Some(source) = env::var_os("OD_FW_FV_ARCHIVE") {
+        let path = PathBuf::from(source);
+        println!("cargo:rerun-if-changed={}", path.display());
+        fs::copy(&path, destination).unwrap_or_else(|error| {
+            panic!("could not copy firmware volume {}: {error}", path.display())
+        });
+    } else {
+        // Canonical version 1 empty archive with its CRC-32 at offset 20.
+        const EMPTY: &[u8] =
+            b"ODFVARC\0\x01\x00\x18\x00\x18\x00\x00\x00\x00\x00\x00\x00\x2b\x6f\xe4\x49";
+        fs::write(destination, EMPTY).expect("could not write the empty firmware volume");
+    }
 }

@@ -1,0 +1,39 @@
+[package]
+name = "od-firmware-test-apps"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+od-firmware = { path = "../.." }
+
+[lib]
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "hello"
+path = "hello/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "ebs"
+path = "ebs/main.rs"
+test = false
+bench = false
+doc = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

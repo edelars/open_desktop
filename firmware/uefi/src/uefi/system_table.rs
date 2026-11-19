@@ -311,6 +311,10 @@ pub struct SystemTable {
 }
 
 impl SystemTable {
+    pub fn console_out(&self) -> *mut c_void {
+        self.con_out
+    }
+
     pub const fn diagnostic(
         firmware_vendor: *const Char16,
         runtime_services: *mut RuntimeServices,

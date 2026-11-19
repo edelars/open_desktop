@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 
@@ -132,6 +133,35 @@ class CrossValidatorTest(unittest.TestCase):
         self.assertEqual(BUILDER.image_crc(image), SAMPLE_IMAGE_CRC32)
         self.assertEqual(struct.unpack_from("<I", image, 0x30)[0], SAMPLE_IMAGE_CRC32)
         self.assertEqual(BUILDER.validate_image(image)["image_crc32"], SAMPLE_IMAGE_CRC32)
+
+
+class FirmwareVolumeTest(unittest.TestCase):
+    def test_archive_matches_wire_bytes_and_ignores_input_order(self) -> None:
+        ordered = BUILDER.pack_fv({"a": b"!", "b.efi": b"\x00\xff"})
+        self.assertEqual(ordered, BUILDER.pack_fv({"b.efi": b"\x00\xff", "a": b"!"}))
+        records = b"\x01\x00\x00\x00\x01\x00\x00\x00a!\x05\x00\x00\x00\x02\x00\x00\x00b.efi\x00\xff"
+        header = b"ODFVARC\0\x01\x00\x18\x00\x31\x00\x00\x00\x02\x00\x00\x00"
+        checksum = zlib.crc32(header + bytes(4) + records)
+        self.assertEqual(ordered, header + checksum.to_bytes(4, "little") + records)
+
+    def test_invalid_name_empty_file_and_oversize_fail(self) -> None:
+        for name in ("", ".", "..", "A", "app/path", "app\0", "ё", "a" * 64):
+            with self.subTest(name=name), self.assertRaisesRegex(BuildError, "invalid FV name"):
+                BUILDER.pack_fv({name: b"x"})
+        with self.assertRaisesRegex(BuildError, "empty FV file"):
+            BUILDER.pack_fv({"hello": b""})
+        with self.assertRaisesRegex(BuildError, "ROM capacity"):
+            BUILDER.pack_fv({"hello": bytes(BUILDER.IMAGE_SIZE)})
+
+    def test_with_test_apps_is_available_only_for_a_rom_build(self) -> None:
+        self.assertTrue(BUILDER.parse_args(["--with-test-apps"]).with_test_apps)
+        for other in (["--smoke"], ["--efi-probe", "probe.efi"]):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--with-test-apps", *other],
+                capture_output=True, text=True, cwd=ROOT, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requires a ROM build", result.stderr)
 
 
 class SmokeImageTest(unittest.TestCase):
@@ -338,6 +368,7 @@ class FullBuildTest(unittest.TestCase):
             self.assertIn("size: 0x400000", result.stdout)
             # the entry stub starts with `cld` (0xFC), see firmware/uefi/src/start.S
             self.assertEqual(image[fields["entry_offset"]], 0xFC)
+            self.assertIn(BUILDER.pack_fv({}), image)
 
 
 def probe_toolchain_available() -> bool:
@@ -366,6 +397,35 @@ class EfiProbeBuildTest(unittest.TestCase):
             self.assertEqual(fields["subsystem"], 10)
             self.assertIn(f"sha256: {hashlib.sha256(pe).hexdigest()}", result.stdout)
             self.assertIn("Subsystem=10", result.stdout)
+
+
+@unittest.skipUnless(toolchain_available() and probe_toolchain_available(), "requires both firmware targets")
+class FirmwareVolumeBuildTest(unittest.TestCase):
+    def test_optional_test_apps_are_reproducible_pe_images_linked_into_the_rom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target_dir = Path(directory) / "target"
+            out = Path(directory) / "firmware-with-apps.bin"
+            for build_dir in (target_dir, target_dir.with_name("second-target")):
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--with-test-apps", "--target-dir", str(build_dir), "--out", str(out)],
+                    capture_output=True, text=True, cwd=ROOT, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if build_dir == target_dir:
+                    first_sha256 = hashlib.sha256(out.read_bytes()).hexdigest()
+                else:
+                    self.assertEqual(hashlib.sha256(out.read_bytes()).hexdigest(), first_sha256)
+            app_dir = target_dir / "test-apps" / BUILDER.PROBE_TARGET / "release"
+            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in ("ebs", "hello")}
+            for name, pe in files.items():
+                with self.subTest(name=name):
+                    self.assertEqual(BUILDER.inspect_pe(pe)["subsystem"], 10)
+            archive = BUILDER.pack_fv(files)
+            actual = target_dir / "fv" / hashlib.sha256(archive).hexdigest() / "archive.bin"
+            self.assertEqual(actual.read_bytes(), archive)
+            image = out.read_bytes()
+            BUILDER.validate_image(image)
+            self.assertEqual(image.count(archive), 1)
 
 
 if __name__ == "__main__":
