@@ -144,6 +144,14 @@ impl GuestMemory for Memory {
         Ok(())
     }
 
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+    ) -> Result<u64, MemoryError> {
+        self.read_integer(address, context, size)
+    }
     fn atomic_exchange_integer(
         &mut self,
         _: u64,
@@ -52091,6 +52099,58 @@ fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
 }
 
 #[test]
+fn firmware_boot_qword_add_to_memory_commits_only_after_write() {
+    let code = [0x48, 0x01, 0x44, 0x24, 0x30];
+    let address = DATA + 0x30;
+    let position = DATA_PHYSICAL + 0x30;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(address),
+    };
+    for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[position - 1..position + 9].fill(0xff);
+        if fail_read {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        if fail_write {
+            memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rax as usize] = 1;
+        cpu.rflags = 0x602;
+        let mut expected = cpu.clone();
+        let mut expected_memory = [0xff; 10];
+        let faulted = fail_read || fail_write;
+        let (expected_exit, expected_defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0x657;
+            expected_memory[1..9].fill(0);
+            (PagedProbeExit::Retired, DEFINED | 0x10)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, expected_defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, usize::from(!fail_read));
+        assert_eq!(memory.bytes[position - 1..position + 9], expected_memory);
+    }
+}
+
+#[test]
 fn firmware_boot_qword_cmov_reads_the_condition_and_preserves_flags() {
     for (code, dst, src, flags, taken) in [
         (
@@ -53151,6 +53211,10 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x66, 0x81, 0xd3, 5, 0][..], 0x81),    // ADC BX,imm16
         (&[0x46, 0x33, 0x24, 0x85, 0xe0, 0x27, 0x20, 0][..], 0x33), // R8 index
         (&[0x46, 0x33, 0x0c, 0x75, 0xe0, 0x27, 0x20, 0][..], 0x33), // scale two
+        // LOCK ADD, address-size override, and a dword destination.
+        (&[0xf0, 0x48, 0x01, 0x03][..], 0x01),
+        (&[0x67, 0x48, 0x01, 0x03][..], 0x01),
+        (&[0x01, 0x03][..], 0x01),
     ] {
         let mut memory = Memory::new(bytes);
         let mut cpu = state();

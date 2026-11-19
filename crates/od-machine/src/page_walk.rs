@@ -679,6 +679,10 @@ pub enum RamAccessOperation {
     Read {
         width: AccessWidth,
     },
+    /// An unlocked RMW destination read, translated as a write without setting D.
+    ReadForWrite {
+        width: AccessWidth,
+    },
     /// One bounded 10-byte LIDT/LGDT pseudo-descriptor read from RAM.
     ReadPseudoDescriptor,
     Write {
@@ -702,16 +706,19 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => AccessKind::Fetch,
             Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
-            Self::Write { .. } | Self::AtomicTarget { .. } => AccessKind::Write,
+            Self::Write { .. } | Self::ReadForWrite { .. } | Self::AtomicTarget { .. } => {
+                AccessKind::Write
+            }
         }
     }
 
     const fn width(self) -> u8 {
         match self {
             Self::Fetch => 1,
-            Self::Read { width } | Self::Write { width, .. } | Self::AtomicTarget { width } => {
-                width.bytes()
-            }
+            Self::Read { width }
+            | Self::ReadForWrite { width }
+            | Self::Write { width, .. }
+            | Self::AtomicTarget { width } => width.bytes(),
             Self::ReadPseudoDescriptor => 10,
         }
     }
@@ -1792,7 +1799,11 @@ fn access_long64_4k_internal_windowed(
                     <= u128::from(base) + u128::from(size)
         })
     });
-    if is_mmio && (mmio.is_none() || !served) {
+    if is_mmio
+        && (mmio.is_none()
+            || !served
+            || matches!(request.operation, RamAccessOperation::ReadForWrite { .. }))
+    {
         let error = if access == AccessKind::Write {
             TrackedAccessError::DeviceUnavailable { address: physical }
         } else {
@@ -3147,6 +3158,58 @@ mod tracked_access_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn write_intent_read_checks_write_permission_before_accessing_the_operand() {
+        const PHYSICAL: u64 = 0x4abc;
+        const ACCESSED: u64 = 1 << 5;
+        const DIRTY: u64 = 1 << 6;
+        let paging = paging_config(true, true);
+        let width = AccessWidth::Qword;
+        let operand = GuestPhysicalAddress::new(PHYSICAL);
+        let read = request(RamAccessOperation::ReadForWrite { width });
+        for (entry, error_code) in [(0x4006, Some(2)), (0x4005, Some(3)), (0x4007, None)] {
+            let (memory, _) = setup(entry, 0x6000);
+            memory.store_u64(operand, 41, |_| {}).unwrap();
+
+            let mut callbacks = Vec::new();
+            let report =
+                access_long64_4k_ram(&memory, &paging, read, |range| callbacks.push(range));
+            assert!(callbacks.iter().all(|range| range.start() != operand));
+            assert_eq!(memory.load_u64(operand).unwrap(), 41);
+            assert_eq!(entries(&memory)[3] & DIRTY, 0);
+            if let Some(error_code) = error_code {
+                let Err(TrackedAccessError::PageFault { record, .. }) = report.outcome else {
+                    panic!("expected a write-intent page fault");
+                };
+                assert_eq!(
+                    record,
+                    PageFaultRecord::new(RIP, AccessKind::Write, read.context, error_code, LINEAR)
+                );
+            } else {
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Read(41)));
+                assert_eq!(entries(&memory)[3] & ACCESSED, ACCESSED);
+                let write = request(RamAccessOperation::Write { width, value: 42 });
+                let report = access_long64_4k_ram(&memory, &paging, write, |_| {});
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+                assert_eq!(memory.load_u64(operand).unwrap(), 42);
+                assert_eq!(entries(&memory)[3] & DIRTY, DIRTY);
+            }
+        }
+
+        let (memory, _) = setup(0x4007, 0x6000);
+        let before = entries(&memory);
+        let address = GuestLinearAddress::new((LINEAR & !0xfff) + 0xffc);
+        let cross_page = TrackedAccessRequest { address, ..read };
+        let report = access_long64_4k_ram(&memory, &paging, cross_page, |_| {
+            panic!("cross-page preflight must not commit A/D");
+        });
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::CrossesPage { address, width: 8 })
+        );
+        assert_eq!(entries(&memory), before);
     }
 
     #[test]

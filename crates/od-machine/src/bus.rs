@@ -880,6 +880,9 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             RamAccessOperation::ReadPseudoDescriptor => {
                 Err(Backend("pseudo-descriptor reads are RAM-only".to_owned()))
             }
+            RamAccessOperation::ReadForWrite { .. } => {
+                Err(Backend("write-intent reads are RAM-only".to_owned()))
+            }
             // S6-31: a locked operand is never served by a device; the walker refuses an MMIO
             // operand before it reaches this dispatch.
             RamAccessOperation::AtomicTarget { .. } => {
@@ -1146,6 +1149,11 @@ impl MachineBus {
                     RamAccessOperation::ReadPseudoDescriptor => {
                         Err(crate::page_walk::MmioDispatchError::Backend(
                             "pseudo-descriptor reads are RAM-only".to_owned(),
+                        ))
+                    }
+                    RamAccessOperation::ReadForWrite { .. } => {
+                        Err(crate::page_walk::MmioDispatchError::Backend(
+                            "write-intent reads are RAM-only".to_owned(),
                         ))
                     }
                     // S6-31: refused by the walker before the dispatch.

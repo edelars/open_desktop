@@ -1046,6 +1046,25 @@ impl GuestMemory for PagedProbeMemory<'_> {
         }
     }
 
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+    ) -> Result<u64, MemoryError> {
+        let width = match size {
+            od_isa::OperandSize::Byte => crate::AccessWidth::Byte,
+            od_isa::OperandSize::Word => crate::AccessWidth::Word,
+            od_isa::OperandSize::Dword => crate::AccessWidth::Dword,
+            od_isa::OperandSize::Qword => crate::AccessWidth::Qword,
+        };
+        match self.access(address, context, RamAccessOperation::ReadForWrite { width })? {
+            TrackedAccessOutcome::Read(value) => Ok(value),
+            _ => Err(MemoryError::Backend(
+                "paged probe write-intent read returned a non-read result".into(),
+            )),
+        }
+    }
     fn atomic_exchange_integer(
         &mut self,
         _: u64,

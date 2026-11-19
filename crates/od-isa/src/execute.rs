@@ -18764,6 +18764,14 @@ impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     fn write(&mut self, a: u64, c: AccessContext, s: &[u8]) -> Result<(), MemoryError> {
         self.inner.write(a, c, s)
     }
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+    ) -> Result<u64, MemoryError> {
+        self.inner.read_for_write_integer(address, context, size)
+    }
     fn atomic_exchange_integer(
         &mut self,
         a: u64,
@@ -20173,6 +20181,46 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction
                     .flag_effects_for_count(raw_count)
                     .apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: qword ADD to memory has write intent even on a fault before the read.
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x01
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let arithmetic = (|| {
+                let address = destination.access_address_48(state, next_rip)?;
+                let size = destination.size;
+                let lhs = memory.read_for_write_integer(address, context, size)?;
+                let rhs = state.read(source);
+                let (value, flags) =
+                    arithmetic_result(size, ArithmeticKind::Add, lhs, rhs, state.rflags);
+                memory.write_integer(address, context, size, value)?;
+                Ok::<_, MemoryError>(flags)
+            })();
+            state.rflags = match arithmetic {
+                Ok(flags) => flags,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
         // S7-04: ordinary CMP with one memory operand reads before changing flags.

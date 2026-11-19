@@ -4433,7 +4433,9 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 RamAccessOperation::Read { .. } | RamAccessOperation::ReadPseudoDescriptor => {
                     walks.note_read()
                 }
-                RamAccessOperation::Write { .. } => walks.note_write(),
+                RamAccessOperation::Write { .. } | RamAccessOperation::ReadForWrite { .. } => {
+                    walks.note_write()
+                }
                 // S6-31: the two walks of the serial read-then-write pair, counted as before.
                 RamAccessOperation::AtomicTarget { .. } => {
                     walks.note_read();

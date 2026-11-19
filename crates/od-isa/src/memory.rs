@@ -399,6 +399,19 @@ pub trait GuestMemory {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    /// Reads the destination of an unlocked read-modify-write using write permissions.
+    /// A paging fault carries write intent. This step does not write the operand or set its
+    /// page's dirty bit. Backends must opt in to this access.
+    fn read_for_write_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: crate::OperandSize,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend(
+            "write-intent integer read is unsupported".into(),
+        ))
+    }
     fn write_integer(
         &mut self,
         address: u64,
