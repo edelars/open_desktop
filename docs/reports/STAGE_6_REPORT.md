@@ -35,7 +35,7 @@
 | S6-19 | принято после ревью (2026-11-17) | Драйвер, перебор, эталон; флаг/CLI — S6-19b; после S6-20 все 15 fixture и счётчик LOCK-INC — `equal`. Ограничения: THREE-INSN N=4,K=4 в seed покрыто 9 из 15; LOOP развёрнут; формулы N,K ≤ 4. |
 | S6-19b | принято после ревью (2026-11-17) | Публичный загрузчик и раннер litmus: `od-machine` (`litmus.rs`), `od-runner --stage6-litmus`; условие ревью — checked arithmetic в загрузчике — выполнено; тесты CLI 14 passed. |
 | S6-20 | принято после ревью (2026-11-17) | Единый вызов `atomic_rmw_integer`; формы корпуса в голом `run`; проверки `WaitForSipi`/`Shutdown` в точках входа; литмусы `equal`. Замер темпа выполнен (3+3 запуска, бюджет 300 млн шагов; без изменения). |
-| S6-21 | Шаг 1 для BSP и `stage4a --user-mode` на одном vCPU | Доставка источника платы принята. `SmpScheduler` подключён к обычному запуску `Standalone` и к явно включённому пути с `ClockOwner`. Загрузка двух vCPU ждёт S6-18a-MADT и S7-13. [Проверки](#s6-21-шаг-1--обычный-linux-с-часами-standalone). |
+| S6-21 | Шаг 1 для BSP и обычного одно-vCPU Linux, шаг 3 с гостевой проверкой | `SmpScheduler` подключён к обычному запуску `Standalone` и к явно включённому пути с `ClockOwner`. Собственный `/init` проверен на одном CPU. Загрузка двух vCPU ждёт S6-18a-MADT и S7-13. [Планировщик](#s6-21-шаг-1--обычный-linux-с-часами-standalone), [Гостевое наблюдение](#s6-21-шаг-3--наблюдение-online-cpu-и-прерываний-из-init). |
 | S6-22 | `blocked` | S5-06 и S5-07 приняты. Нагрузки на двух online vCPU ждут S6-21. |
 | S6-23 | принято (2026-11-17) | G1 принят; G2 принят с ограничениями; G3 принят с ограничениями после приёмки S6-19, S6-19b, S6-20 (2026-11-17). См. [раздел S6-23](#s6-23--приёмка-gates-g1g3-ревью-2026-11-17). |
 | S6-24 | принято | Остановка с подтверждением каждого vCPU, снимок vCPU/LAPIC/планировщика и восстановление в ту же машину в режиме чередования. Снимок RAM и устройств остаётся у этапа 9. |
@@ -1178,6 +1178,37 @@ cargo test --release -p od-machine --offline --locked --lib -- \
 Медиана времени CPU через планировщик выше на 2,0%, wall выше на 4,6%. Направление разницы менялось между парами, диапазоны перекрываются. Три короткие пары позволяют оценить разброс на этом сценарии, а для вывода об устойчивой разнице нужны дополнительные замеры.
 
 Загрузка двух online vCPU ждёт S6-18a-MADT и согласованного числа LAPIC в S7-13.
+
+### S6-21 шаг 3 — наблюдение online CPU и прерываний из init
+
+Собственный PID 1 для Linux x86-64 монтирует procfs и sysfs. Он читает `od.nonce` из `/proc/cmdline`, печатает исходный cpulist `/sys/devices/system/cpu/online` и число CPU, затем выгружает `/proc/interrupts`. Блок `OD_SMP_V1` содержит nonce и заканчивается `OD_SMP_END`. Внутри заголовок и строки прерываний ограничены `OD_IRQ_BEGIN` и `OD_IRQ_END`. Ошибка открытия, чтения, усечение или неверный cpulist приводят к `OD_SMP_ERROR`. [Исходник `/init`](../../tests/fixtures/guest/stage6/smp-init/init.S).
+
+Сборщик переиспользует компоновку ELF, проверку статического ABI, разрешённые syscalls и упаковку newc из S4-36. Пилот на C дошёл до `Run /init` и остановился в CPL3 на первой инструкции `AND RSP, imm8` с opcode `0x83`. Фикстура на ассемблере использует формы уже поддержанного профиля CPL3 `stage4a`. В дизассемблированном ELF проверены кодировки всех 430 инструкций. Две независимые сборки Apple clang 21.0.0 (`clang-2100.3.34.2`) и LLD 23.1.1 дают одинаковый архив с одним исполняемым `/init`. SHA-256 ELF `1ede5a3c4c6ac001344f74cbfa5035dc2ef72e3cf059716e40694dec2e3dfd8e`.
+
+Проверка отчёта читает `stop.com1_text`, сверяет nonce, cpulist, число CPU и заголовок таблицы. Она сохраняет исходные строки и выделяет присутствующие ряды `RES`, `CAL`, `TLB`. Четыре теста покрывают сборку, формат, случай одного CPU и ошибочные отчёты. Вместе с тестами S4-36 прошли 27 проверок Python. Отдельно точный ELF выполнился в десяти диагностических прогонах CPL3-интерпретатора с подставными ответами syscalls. Проверены короткие чтения и записи, `EINTR`, диапазоны CPU, повторный nonce и заполнение входного буфера. [Сборщик и проверка](../../tools/build/build_stage6_smp_initramfs.py).
+
+```sh
+python3 tools/build/build_stage6_smp_initramfs.py
+python3 -m unittest discover -s tools/build -p 'test_build_stage6_smp_initramfs.py'
+target/release/od-runner linux-direct --run --set-cpl0 --cpuid-profile stage4a --user-mode \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage6/smp-init/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-initramfs-sha256 5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --nonce SMPUpObservation20261119 --ram-mib 128 --budget 2500000000 \
+  --out work/stage6/smp-init/asm-final-report.json
+python3 tools/build/build_stage6_smp_initramfs.py \
+  --verify-report work/stage6/smp-init/asm-final-report.json \
+  --nonce SMPUpObservation20261119 --expect-online 1
+```
+
+`--verify-report` проверяет согласованность гостевого наблюдения, включая случаи с пустыми или нулевыми рядами IPI. Хеши образов сверяет сам `linux-direct`. Для зачёта шага 3а требуются подтверждение старта двух online CPU по логу ядра, гостевому cpulist и ненулевым IPI на обоих CPU после воспроизводимой нагрузки. Этот запуск ждёт S6-18a-MADT и S7-13.
+
+Финальный release-запуск завершился как `budget_exhausted` с 2 499 968 257 выполненными инструкциями, включая 6 392 в CPL3. Лог ядра содержит `Run /init as init process`. Гость вернул nonce `SMPUpObservation20261119`, `online=0`, число 1 и 25 строк из `/proc/interrupts`. `RES`, `CAL` и `TLB` дали по нулю. Проверка с `--expect-online 1` прошла, тот же отчёт при `--expect-online 2` отвергнут. [Гостевые данные и контрольные суммы](data/stage6/s6-21-up-observation.json).
+
+`check_layout.py` в рабочей копии сообщил о локальном корневом каталоге `.claude`, который отсутствует в Git. Исходники фикстуры и команды проверки размещены в существующих областях `tests/fixtures/guest/stage6/` и `tools/build/`.
 
 ### S6-21 шаг 6а — CPUID BSP и AP в long mode
 

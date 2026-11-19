@@ -1,0 +1,69 @@
+{
+  "task": "S6-21 step 3",
+  "machine_commit": "6a20ea9",
+  "mode": "one-vCPU Linux direct boot",
+  "cpuid_profile": "X8664V1Stage4A",
+  "user_mode": true,
+  "ram_mib": 128,
+  "instruction_budget": 2500000000,
+  "report_sha256": "c7fad592d64fa030cdb8ee6d4813ef9aefa073e9535a232b5b99e1a3ff488449",
+  "input_sha256": {
+    "acpi_blob": "6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d",
+    "initramfs": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+    "vmlinuz": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+  "init_message": "[    2.270951] Run /init as init process",
+  "stop": {
+    "exit_kind": "budget_exhausted",
+    "retired": 2499968257,
+    "cpl3_retired": 6392,
+    "halt_wakes": 31743,
+    "virtual_ns": 719539334072
+  },
+  "observation": {
+    "nonce": "SMPUpObservation20261119",
+    "online": "0",
+    "cpus": [
+      0
+    ],
+    "interrupts": [
+      "           CPU0       ",
+      "  0:        825   XT-PIC      timer",
+      "  2:          0   XT-PIC      cascade",
+      "  4:          1   XT-PIC      ttyS0",
+      "  9:          0   XT-PIC      acpi",
+      "NMI:          0   Non-maskable interrupts",
+      "LOC:          0   Local timer interrupts",
+      "SPU:          0   Spurious interrupts",
+      "PMI:          0   Performance monitoring interrupts",
+      "IWI:          0   IRQ work interrupts",
+      "RTR:          0   APIC ICR read retries",
+      "RES:          0   Rescheduling interrupts",
+      "CAL:          0   Function call interrupts",
+      "TLB:          0   TLB shootdowns",
+      "TRM:          0   Thermal event interrupts",
+      "THR:          0   Threshold APIC interrupts",
+      "DFR:          0   Deferred Error APIC interrupts",
+      "MCE:          0   Machine check exceptions",
+      "MCP:          0   Machine check polls",
+      "ERR:          0",
+      "MIS:          0",
+      "PIN:          0   Posted-interrupt notification event",
+      "NPI:          0   Nested posted-interrupt event",
+      "PIW:          0   Posted-interrupt wakeup event",
+      "VPMI:          0  Perf Guest Mediated PMI"
+    ],
+    "ipi_counts": {
+      "RES": [
+        0
+      ],
+      "CAL": [
+        0
+      ],
+      "TLB": [
+        0
+      ]
+    }
+  }
+}
