@@ -595,7 +595,20 @@ impl SharedState<'_> {
             if owner != NO_OWNER {
                 self.kicks.unpark(owner);
             }
-            while !self.finish.load(SEQ) && (self.stop_all.load(SEQ) || self.other_split(cpu)) {
+            loop {
+                if self.finish.load(SEQ) {
+                    return true;
+                }
+                let stopping_now = self.stop_all.load(SEQ);
+                // STOP can arrive while this worker is parked solely for an exclusive owner.
+                // The worker is already at a boundary, so acknowledge without lowering quiet.
+                if stopping_now && !cell.safe.load(SEQ) {
+                    cell.safe.store(true, SEQ);
+                    self.wake_controller();
+                }
+                if !stopping_now && !self.other_split(cpu) {
+                    break;
+                }
                 thread::park();
             }
         }
@@ -1228,6 +1241,12 @@ impl ParallelControl<'_, '_> {
         sh.stop_all.store(true, SEQ);
         if sh.source_free {
             sh.kicks.kick_all();
+        } else {
+            // Interpreted workers poll STOP in their loop. An exclusive-gate waiter is already
+            // parked, so wake it without publishing a guest event or waking a sleeping guest.
+            for cpu in 0..sh.count {
+                sh.kicks.unpark(cpu);
+            }
         }
         let deadline = Instant::now() + timeout;
         loop {
@@ -1536,6 +1555,116 @@ mod tests {
                 call.consecutive_faults,
             )
         })
+    }
+
+    #[test]
+    fn stop_acknowledges_a_worker_already_waiting_for_an_exclusive_owner() {
+        let mut board = board(2);
+        for (cpu, rip, stack) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+            install(
+                &mut board,
+                cpu,
+                long_state(rip, stack, TABLES_0, false),
+                0xd01,
+            );
+        }
+        let acquired = AtomicBool::new(false);
+        let (report, ()) = run_threads(
+            &mut board,
+            config(16, 64),
+            &|call| {
+                if call.cpu == 0 && !acquired.load(SEQ) {
+                    call.gate.acquire_for_descriptor().unwrap();
+                    acquired.store(true, SEQ);
+                    let deadline = Instant::now() + Duration::from_secs(60);
+                    while !(call.stop)() && Instant::now() < deadline {
+                        thread::yield_now();
+                    }
+                    let saw_stop = (call.stop)();
+                    call.gate.release();
+                    assert!(saw_stop, "the owner must observe STOP");
+                }
+                Ok(Executed::default())
+            },
+            |control| {
+                assert!(control.wait_until(Duration::from_secs(60), || {
+                    let peer = &control.shared.cells[1];
+                    acquired.load(SEQ) && peer.quiet.load(SEQ) && !peer.safe.load(SEQ)
+                }));
+                control
+                    .stop_all(Duration::from_secs(10))
+                    .expect("both workers acknowledge");
+                assert!(control.shared.cells.iter().all(|cpu| cpu.safe.load(SEQ)));
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, ParallelFinish::Stopped);
+        assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
+    }
+
+    #[test]
+    fn two_workers_loading_one_available_tss_cannot_both_commit_tr() {
+        const TSS: u64 = 0x18;
+        const AVAILABLE: u64 = 0x0000_8900_0000_0067;
+        const BASE_HIGH: u64 = 0x1234;
+        let mut board = board(2);
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        system(&mut board, false);
+        patch(&mut board, GDT_AT + TSS, &AVAILABLE.to_le_bytes());
+        patch(&mut board, GDT_AT + TSS + 8, &BASE_HIGH.to_le_bytes());
+        for (cpu, rip, stack) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+            patch(&mut board, rip, &[0x0f, 0x00, 0xd8, 0xf4]); // LTR AX; HLT
+            let mut guest = long_state(rip, stack + 0x800, cr3, true);
+            guest.gpr[Register::Rax as usize] = TSS;
+            guest.gdtr.as_mut().unwrap().limit = (TSS + 15) as u16;
+            install(&mut board, cpu, guest, 0xd01);
+        }
+
+        let entered = AtomicUsize::new(0);
+        let (report, ()) = run_threads(
+            &mut board,
+            config(16, 64),
+            &|call| {
+                let deadline = Instant::now() + Duration::from_secs(60);
+                entered.fetch_or(1 << call.cpu, SEQ);
+                while entered.load(SEQ) != 3 {
+                    assert!(Instant::now() < deadline, "both workers must reach LTR");
+                    thread::yield_now();
+                }
+                fixture_quantum(call)
+            },
+            |control| assert!(control.wait_finished(Duration::from_secs(60))),
+        )
+        .unwrap();
+
+        let ParallelFinish::Error {
+            cpu: loser,
+            error: FirmwareBoardError::VcpuQuantum { detail, .. },
+        } = &report.finished
+        else {
+            panic!("the second LTR must fault: {report:?}");
+        };
+        assert!(
+            detail.contains("vector: 13") && detail.contains("error_code: Some(24)"),
+            "{detail}"
+        );
+        let winner = 1 - *loser;
+        let tr = board.vcpu(winner).unwrap().state.tr.as_ref().unwrap();
+        assert_eq!(tr.selector, TSS as u16);
+        assert_eq!(tr.base, BASE_HIGH << 32);
+        assert_eq!(tr.access, 0x8b);
+        assert!(board.vcpu(*loser).unwrap().state.tr.is_none());
+        assert_eq!(report.cpus[*loser].retired, 0);
+        assert!(report.cpus.iter().all(|cpu| cpu.split_locks == 0));
+        let image = read(&mut board, GDT_AT + TSS, 16);
+        assert_eq!(
+            u64::from_le_bytes(image[..8].try_into().unwrap()),
+            AVAILABLE | (1 << 41)
+        );
+        assert_eq!(
+            u64::from_le_bytes(image[8..].try_into().unwrap()),
+            BASE_HIGH
+        );
     }
 
     #[test]

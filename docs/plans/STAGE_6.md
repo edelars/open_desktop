@@ -733,7 +733,7 @@
 - **Не делать:** не менять набор инструкций, не объявлять descriptor updates SMP-safe до реализации общей RAM transaction.
 - Текущее состояние (2026-11-13): контракт восьми descriptor-writing paths добавлен в `MEMORY_MODEL.md` и связан с `CPU_CONTRACT.md`; коммит `422d0a3`, независимое архитектурное ревью `gpt-6.1-sol/high` завершено без оставшихся замечаний. Результат и оставшийся SMP implementation gate внесены в [отчёт S6-26](../reports/STAGE_6_REPORT.md#s6-26--контракт-побочных-записей-дескрипторов-accepted). Checkbox не менялся.
 - Проверка реализации G5 (2026-11-18): доступные в CPL0 пути обновления Accessed/Busy всё ещё допускают коммит старого образа дескриптора. Доработка обязательна для G5. [ISSUE-520](../KNOWN_ISSUES.md#issue-520-s6-26-parallel-descriptor-commit).
-- Реализация S6-26 защищает Accessed при доставке внешнего IRQ, NMI, `#PF` и `#GP(0)` на потоках vCPU. Обновления из инструкций CPL0/CPL3, включая потоковый `LTR`, и legacy AP остаются в ISSUE-520. [Проверки IRQ/NMI](../reports/STAGE_6_REPORT.md#s6-26--дескрипторы-при-доставке-irq-и-nmi) · [Проверки исключений](../reports/STAGE_6_REPORT.md#s6-26--дескрипторы-при-доставке-pf-и-gp0)
+- Реализация S6-26 защищает Accessed при доставке внешнего IRQ, NMI, `#PF` и `#GP(0)` и записи Accessed/Busy из long-mode инструкций на потоках vCPU. Legacy AP остаётся в ISSUE-520. [Проверки IRQ/NMI](../reports/STAGE_6_REPORT.md#s6-26--дескрипторы-при-доставке-irq-и-nmi) · [Проверки исключений](../reports/STAGE_6_REPORT.md#s6-26--дескрипторы-при-доставке-pf-и-gp0) · [Проверки инструкций](../reports/STAGE_6_REPORT.md#s6-26--дескрипторы-в-потоковых-long-mode-инструкциях)
 
 ### S6-30. Реализовать разделяемую гостевую RAM
 

@@ -819,6 +819,7 @@ pub struct HostSetStepReport {
 /// delivery of a guest `#PF` or `#GP(0)` through the guest IDT when one is loaded, exactly as the
 /// loop does. `state.cr3` must be empty (the root is `step.cr3`) unless the set owns CR3. `Err`: an
 /// exit the board does not know how to resume from (an integration error of the set).
+/// Calls with no worker gate require exclusive guest RAM access for descriptor updates.
 pub fn run_host_set_step(
     state: &mut LongModeState,
     bus: &MachineBus,
