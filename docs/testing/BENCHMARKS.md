@@ -1788,6 +1788,15 @@ without the memo payload store, and a repeated launch of the same
 stock file. Require the 30 ms floor and exact child priority.
 [Report and reproduction](../reports/STAGE_3_S3-31j_2026-11-19.md)
 
+### S3-31k. Warm resolved-hit arguments on M1 Pro
+
+Bind the linked hit caller and FIFO branch to each signed executable.
+Compare the candidate with stock and a repeat of the same stock file
+across all seven S3-31i profiles. Use the same fixed counts, exact
+ordinary-user priority and 30 ms floor. Assess raw warm JIT times
+against the same-file control before interpreting normalized ratios.
+[Report and reproduction](../reports/STAGE_3_S3-31k_2026-11-19.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

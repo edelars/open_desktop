@@ -1669,6 +1669,13 @@ JIT medians of 1.0001 and 1.0002 times stock, with ranges overlapping
 the same-file A/A control. The stock dispatcher is retained.
 [Results and linked code](STAGE_3_S3-31j_2026-11-19.md)
 
+S3-31k passed the memo address to the resolved-hit path directly.
+The M1 Pro signed caller uses four instructions instead of ten.
+The warm paired JIT medians fell by 1.99–2.49% on the two long
+same-RIP profiles and by 2.62–3.25% on two alternating-RIP profiles.
+All four ranges lie below their same-file A/A ranges.
+[Warm JIT results, source and disassembly](STAGE_3_S3-31k_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

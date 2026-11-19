@@ -376,6 +376,12 @@ release-on-return executor contracts сохраняют прежнее пове�
 и условия остановки. Первый вход и переход на другой RIP, для которого
 индекс не сохранён, проходят обычное построение блока и поиск ключа.
 
+S3-31k передаёт кеш, индекс и адрес memo напрямую при попадании по
+сохранённому индексу. В проверенных прогретых профилях на M1 Pro
+время JIT сократилось на 1,99–2,49% для длинных циклов с одним RIP
+и на 2,62–3,25% для циклов с двумя чередующимися RIP.
+[Замеры и проверки](../../docs/reports/STAGE_3_S3-31k_2026-11-19.md)
+
 `od-bench dispatch-cache` имеет implementation-only native mode для uncached
 publication, single-entry arena, FIFO(16) и opt-in LRU(16). Он требует exact
 frozen S3-17 fixture list/trace и проводит admission/oracle checks до timing.

@@ -2019,10 +2019,10 @@ where
             build_dispatch_block(code, state.rip, admission).map(BlockSelection::Built)
         })
         .map_err(DispatchError::Compile)?;
-        let mut record_hit = |cache: &mut C, index| {
+        let record_hit = |cache: &mut C, index, previous_entry: &mut Option<(u64, usize)>| {
             let touched = cache.record_hit(index)?;
             if touched != index
-                && let Some((_, previous_index)) = &mut previous_entry
+                && let Some((_, previous_index)) = previous_entry
             {
                 if *previous_index == index {
                     *previous_index = touched;
@@ -2034,10 +2034,11 @@ where
         };
         let cached_index = match selection {
             BlockSelection::PreviousEntry(index) => {
-                measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-                    record_hit(cache, index)
-                })
-                .map_err(DispatchError::Cache)?
+                let phase = DispatchPhase::KeySnapshotAndLookup;
+                let mark = observer.begin(phase);
+                let touched = record_hit(cache, index, &mut previous_entry);
+                observer.end(phase, mark);
+                touched.map_err(DispatchError::Cache)?
             }
             BlockSelection::Built(built) => {
                 let guest_block = match &built {
@@ -2065,7 +2066,10 @@ where
                         validate_cached_snapshot(&key, code, dependencies)?;
 
                         let hit_index = if let Some(index) = cache.find(&key) {
-                            Some(record_hit(cache, index).map_err(DispatchError::Cache)?)
+                            Some(
+                                record_hit(cache, index, &mut previous_entry)
+                                    .map_err(DispatchError::Cache)?,
+                            )
                         } else {
                             cache.record_miss().map_err(DispatchError::Cache)?;
                             None
