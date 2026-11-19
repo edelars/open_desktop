@@ -1110,6 +1110,15 @@ cold used signed matched builds with full-state parity and identical
 cache accounting.
 [S3-36j report and raw evidence](STAGE_3_S3-36j_2026-11-19.md)
 
+S3-35h and S3-36k compare cold and resident calls to the same
+`MemoryPairCache::run` on both frozen S3-34a sequences. The current
+build had a median cold call around 7.89 µs and a median resident
+call around 0.30 µs. The interpreter took about 0.50 µs. The older
+build replay still favoured the interpreter in every warm pair.
+The estimated crossover for the current build is 34–44 calls
+under unchanged residency.
+[Matched report and replay](STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

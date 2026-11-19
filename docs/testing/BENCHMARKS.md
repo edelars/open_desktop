@@ -1471,6 +1471,16 @@ work and cache footprints, both raw and interpreter-normalized
 comparisons, and separate LRU correctness smoke results.
 [Report and reproduction](../reports/STAGE_3_S3-36j_2026-11-19.md)
 
+### S3-35h / S3-36k. Matched checked-memory cache calls
+
+The experiment times the same complete capacity-one cache call
+on an empty cache and on a resident entry. Every cold call compiles
+and publishes once. Warm samples record hits only. The interpreter
+runs the same frozen S3-34a inputs. Each signed revision contributes
+18 matched triples per sequence and verifies full state, RAM,
+ordered callbacks and exact cache counters.
+[Report and reproduction](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
