@@ -444,7 +444,7 @@ struct SharedState<'a> {
     /// deadline and its wake test, and by the idle arbiter only when every thread is idle.
     irq: Mutex<&'a mut dyn BoardIrqSource>,
     pit_ioapic_source: Option<crate::pit_ioapic_irq_source::PitIoapicIrqSource>,
-    /// Retired instructions left in the shared budget.
+    /// Retirements available to reserve for a new call. The per-vCPU counters hold spent credits.
     remaining: AtomicU64,
     idle_ns: AtomicU64,
     idle_jumps: AtomicU64,
@@ -532,7 +532,26 @@ impl SharedState<'_> {
         self.finish_with(ParallelFinish::Error { cpu, error });
     }
 
+    fn reserve_budget(&self) -> u64 {
+        let quantum = self.config.quantum;
+        self.remaining
+            .try_update(SEQ, SEQ, |remaining| {
+                (remaining != 0).then(|| remaining.saturating_sub(quantum))
+            })
+            .map_or(0, |remaining| remaining.min(quantum))
+    }
+
     fn finish_budget<const SERVICE_NVME: bool>(&self) -> bool {
+        // Zero available credits can mean another call reserved them. Only the monotonic
+        // retirement counters can show that every credit has actually been spent.
+        let retired = self
+            .cells
+            .iter()
+            .map(|cell| cell.retired.load(SEQ))
+            .sum::<u64>();
+        if retired != self.config.budget {
+            return false;
+        }
         if SERVICE_NVME && self.cells.iter().any(|cell| cell.nvme_work.load(SEQ)) {
             return false;
         }
@@ -946,7 +965,7 @@ impl Worker<'_, '_, '_, '_> {
             if SERVICE_NVME && !nvme_pending && sh.remaining.load(SEQ) == 0 {
                 if !sh.finish_budget::<SERVICE_NVME>() {
                     // Stay busy for the idle arbiter, but hold no vCPU or device lock while
-                    // waiting for a peer to finish its drain.
+                    // waiting for a peer to return credits or finish its device work.
                     thread::park_timeout(Duration::from_micros(200));
                 }
                 continue;
@@ -1016,19 +1035,25 @@ impl Worker<'_, '_, '_, '_> {
 
             match SchedActivity::from(vcpu.activity()) {
                 SchedActivity::Running => {
-                    if let Err(error) = self.call::<SERVICE_NVME>(
+                    let called = match self.call::<SERVICE_NVME>(
                         vcpu,
                         &apic,
                         &mut consecutive_faults,
                         &mut nvme_pending,
                     ) {
-                        sh.publish(cpu, vcpu);
-                        drop(slot);
-                        sh.fail(cpu, error);
-                        break;
-                    }
+                        Ok(called) => called,
+                        Err(error) => {
+                            sh.publish(cpu, vcpu);
+                            drop(slot);
+                            sh.fail(cpu, error);
+                            break;
+                        }
+                    };
                     sh.publish(cpu, vcpu);
                     drop(slot);
+                    if !called && !sh.finish.load(SEQ) {
+                        thread::park_timeout(Duration::from_micros(200));
+                    }
                 }
                 SchedActivity::Halted => {
                     let wake = vcpu.interrupts_enabled()
@@ -1075,31 +1100,29 @@ impl Worker<'_, '_, '_, '_> {
         wake.is_some_and(|wake| wake <= now)
     }
 
-    /// One call of the interpreter loop of the running vCPU and its charge to the clock.
+    /// Run the quantum and charge the clock. Return false if there was no credit to admit it.
     fn call<const SERVICE_NVME: bool>(
         &self,
         vcpu: &mut Vcpu,
         apic: &LocalApicHandle,
         consecutive_faults: &mut u64,
         nvme_pending: &mut bool,
-    ) -> Result<(), FirmwareBoardError> {
+    ) -> Result<bool, FirmwareBoardError> {
         let sh = self.shared;
         let cpu = self.cpu;
         let cell = &sh.cells[cpu];
         let device_only = SERVICE_NVME && *nvme_pending;
-        let mut left = sh.config.quantum.max(1).min(sh.remaining.load(SEQ));
-        if SERVICE_NVME && (left != 0 || device_only) {
+        if SERVICE_NVME {
+            // Publish possible device work before admitting the guest call.
             cell.nvme_work.store(true, SEQ);
-            // A peer that sees zero may finish only after all admitted calls have drained.
-            // Recheck after publication so a late caller cannot submit work after that decision.
-            left = left.min(sh.remaining.load(SEQ));
         }
+        let left = if device_only { 0 } else { sh.reserve_budget() };
         if left == 0 && !device_only {
             if SERVICE_NVME {
                 cell.nvme_work.store(false, SEQ);
             }
             sh.finish_budget::<SERVICE_NVME>();
-            return Ok(());
+            return Ok(false);
         }
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
@@ -1180,11 +1203,19 @@ impl Worker<'_, '_, '_, '_> {
             Err(failure) => {
                 let (executed, error) = failure.into_parts();
                 if executed == Executed::default() {
+                    if left != 0 {
+                        sh.remaining.fetch_add(left, SEQ);
+                    }
                     return Err(error);
                 }
                 (executed, None, Some(error))
             }
         };
+        if executed.retired > left {
+            return Err(FirmwareBoardError::Config(
+                "parallel: a quantum exceeded its reserved retirement budget",
+            ));
+        }
         // The charge: the clock owner is the only mover of time (D7).
         {
             let mut owner = lock(&sh.owner);
@@ -1207,10 +1238,10 @@ impl Worker<'_, '_, '_, '_> {
         }
         cell.calls.fetch_add(1, SEQ);
         cell.retired.fetch_add(executed.retired, SEQ);
-        let left_after = sh
-            .remaining
-            .try_update(SEQ, SEQ, |left| Some(left.saturating_sub(executed.retired)))
-            .map_or(0, |before| before.saturating_sub(executed.retired));
+        let unused = left - executed.retired;
+        if unused != 0 {
+            sh.remaining.fetch_add(unused, SEQ);
+        }
         if let Some(error) = failure {
             return Err(error);
         }
@@ -1225,10 +1256,10 @@ impl Worker<'_, '_, '_, '_> {
         }
         if let Some(reason) = machine_stop {
             sh.finish_with(ParallelFinish::GuestStop(reason));
-        } else if left_after == 0 {
+        } else if sh.remaining.load(SEQ) == 0 {
             sh.finish_budget::<SERVICE_NVME>();
         }
-        Ok(())
+        Ok(true)
     }
 
     /// The host call for a vCPU in a legacy model or in long mode (what `BoardSmpHost::run` does):
@@ -1874,40 +1905,24 @@ mod tests {
                 let active_peer = budget == 3;
                 if active_peer {
                     patch(&mut board, CODE_1, &[0xF4]);
-                    install(
-                        &mut board,
-                        1,
-                        long_state(CODE_1, STACK_1, cr3, false),
-                        0xD01,
-                    );
+                    let mut state = long_state(CODE_1, STACK_1, cr3, false);
+                    state.activity = Some(CpuActivity::Halted);
+                    state.rflags &= !u64::from(od_isa::real_mode_exec::EFLAGS_IF);
+                    install(&mut board, 1, state, 0xD01);
                 }
                 let (notified, doorbell_written) = std::sync::mpsc::sync_channel(1);
                 let (drain_announced, drain_started) = std::sync::mpsc::sync_channel(1);
                 let observed = AtomicBool::new(false);
-                let peer_entered = AtomicBool::new(false);
                 let allow_drain = AtomicBool::new(false);
                 let quantum = |call: QuantumCall<'_, '_>| {
-                    let deadline = Instant::now() + WAIT;
-                    if call.cpu == 1 {
-                        assert!(active_peer && !peer_entered.swap(true, SEQ));
-                        while !(call.stop)() {
+                    assert_eq!(call.cpu, BOOT_VCPU_INDEX);
+                    if active_peer && call.nvme_pending.as_deref().copied() == Some(true) {
+                        assert_eq!(call.budget, 0);
+                        drain_announced.send(()).unwrap();
+                        let deadline = Instant::now() + WAIT;
+                        while !allow_drain.load(SEQ) && !(call.stop)() {
                             assert!(Instant::now() < deadline);
                             thread::yield_now();
-                        }
-                        return Ok(Executed::default());
-                    }
-                    if active_peer {
-                        while !peer_entered.load(SEQ) {
-                            assert!(Instant::now() < deadline);
-                            thread::yield_now();
-                        }
-                        if call.nvme_pending.as_deref().copied() == Some(true) {
-                            assert_eq!(call.budget, 0);
-                            drain_announced.send(()).unwrap();
-                            while !allow_drain.load(SEQ) && !(call.stop)() {
-                                assert!(Instant::now() < deadline);
-                                thread::yield_now();
-                            }
                         }
                     }
                     let stop = call.stop;
@@ -1948,6 +1963,11 @@ mod tests {
                     assert_eq!(control.retired()[0], 3);
                     assert_eq!(cell(control, NVME_IDENTIFY_BUFFER + 4), 0);
                     assert!(nvme.doorbell_pending());
+                    if active_peer {
+                        control
+                            .with_vcpu(1, |vcpu| vcpu.state.activity = Some(CpuActivity::Running))
+                            .unwrap();
+                    }
                     control.resume();
                     if active_peer {
                         drain_started.recv_timeout(WAIT).unwrap();
@@ -2925,6 +2945,89 @@ mod tests {
         controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
     ) -> (ParallelReport, R) {
         run_threads(board, config, &fixture_quantum, controller).expect("the board splits")
+    }
+
+    #[test]
+    fn two_running_vcpus_cannot_both_retire_the_last_budgeted_instruction() {
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        let mut board = board(2);
+        for (cpu, (code, stack, root)) in [(CODE_0, STACK_0, TABLES_0), (CODE_1, STACK_1, TABLES_1)]
+            .into_iter()
+            .enumerate()
+        {
+            let cr3 = tables(&mut board, root, 0x80_0000, 0);
+            patch(&mut board, code, &mov_eax(1));
+            install(&mut board, cpu, long_state(code, stack, cr3, false), 0xD01);
+        }
+        let admitted = AtomicUsize::new(0);
+        let release = AtomicBool::new(false);
+        let (report, ()) = run_threads(
+            &mut board,
+            config(1, 1),
+            &|call| {
+                assert_eq!(call.budget, 1);
+                let executed = fixture_quantum(call)?;
+                assert_eq!(executed.retired, 1);
+                // Keep the real retirement uncharged until the competing worker has tried
+                // to enter the scheduler with the same remaining budget.
+                admitted.fetch_add(1, SEQ);
+                while !release.load(SEQ) {
+                    thread::yield_now();
+                }
+                Ok(executed)
+            },
+            |control| {
+                let ready = control.wait_until(TIMEOUT, || {
+                    let count = admitted.load(SEQ);
+                    count == 2 || (count == 1 && control.shared.remaining.load(SEQ) == 0)
+                });
+                let finished_before_retirement = control.is_finished();
+                release.store(true, SEQ);
+                assert!(ready, "workers did not reach the instruction boundary");
+                assert!(!finished_before_retirement);
+                assert!(control.wait_finished(TIMEOUT));
+            },
+        )
+        .unwrap();
+        assert_joined(&report, 2);
+        assert_eq!(report.finished, ParallelFinish::BudgetExhausted);
+        assert_eq!(report.cpus.iter().map(|cpu| cpu.retired).sum::<u64>(), 1);
+        assert_eq!(admitted.load(SEQ), 1);
+        assert_eq!(board.clock().now_ns(), 1);
+    }
+
+    #[test]
+    fn a_short_quantum_returns_its_unused_retirement_credits() {
+        let mut board = board(1);
+        let cr3 = tables(&mut board, TABLES_0, 0x80_0000, 0);
+        patch(&mut board, CODE_0, &[mov_eax(1), mov_eax(2)].concat());
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xD01,
+        );
+
+        let calls = AtomicUsize::new(0);
+        let (report, ()) = run_threads(
+            &mut board,
+            config(8, 2),
+            &|call| {
+                let index = calls.fetch_add(1, SEQ);
+                assert_eq!(call.budget, [2, 2, 1][index]);
+                if index == 0 {
+                    return Ok(Executed::default());
+                }
+                fixture_quantum(QuantumCall { budget: 1, ..call })
+            },
+            |control| assert!(control.wait_finished(Duration::from_secs(10))),
+        )
+        .unwrap();
+        assert_joined(&report, 1);
+        assert_eq!(report.finished, ParallelFinish::BudgetExhausted);
+        assert_eq!(report.cpus[0].retired, 2);
+        assert_eq!(report.cpus[0].calls, 3);
+        assert_eq!(board.clock().now_ns(), 2);
     }
 
     #[test]
