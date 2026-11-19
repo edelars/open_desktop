@@ -904,7 +904,7 @@ impl Worker<'_, '_, '_, '_> {
         let cell = &sh.cells[cpu];
         let apic = sh.lapics[cpu].clone();
         let mut consecutive_faults = 0;
-        let mut nvme_pending = false;
+        let mut nvme_pending = SERVICE_NVME && cell.nvme_work.load(SEQ);
         loop {
             cell.busy.store(true, SEQ);
             if sh.barrier(cpu) {
@@ -1197,6 +1197,7 @@ impl Worker<'_, '_, '_, '_> {
     ) -> Result<(Executed, Option<MachineStopReason>), RunFailure<FirmwareBoardError>> {
         let cpu = self.cpu;
         let mut machine_stop = None;
+        let device_only = nvme_pending.as_deref().copied() == Some(true);
         let mut quantum = |vcpu: &mut Vcpu,
                            source: &mut dyn BoardIrqSource,
                            budget: u64,
@@ -1217,7 +1218,7 @@ impl Worker<'_, '_, '_, '_> {
                 nvme_pending: nvme_pending.as_deref_mut(),
             })
         };
-        if vcpu.legacy.is_none() {
+        if device_only || vcpu.legacy.is_none() {
             let executed = quantum(vcpu, source, budget, consecutive_faults, stop)?;
             return Ok((executed, machine_stop));
         }
@@ -1590,6 +1591,16 @@ fn run_threads_inner<R>(
         lapics: lapics.clone(),
         vcpus: vcpus.iter_mut().map(Mutex::new).collect(),
     };
+    // Doorbells carried into a new run belong to the BSP worker. Reserve that work before any
+    // peer can finish an idle or zero-budget run. The worker services it at a normal safe point.
+    if source_free
+        && env
+            .nvme
+            .as_ref()
+            .is_some_and(crate::NvmeHandle::doorbell_pending_or_contended)
+    {
+        shared.cells[BOOT_VCPU_INDEX].nvme_work.store(true, SEQ);
+    }
     {
         let sink_kicks = Arc::clone(&kicks);
         lapics[0].set_wake_sink(Some(Arc::new(move |cpu| sink_kicks.kick(cpu))));
@@ -1701,70 +1712,78 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_guest_nvme_doorbell_completes_dma_before_the_next_instruction_or_budget_stop() {
+    const NVME_IDENTIFY_CQ: u64 = 0x30_1000;
+    const NVME_IDENTIFY_BUFFER: u64 = 0x30_2000;
+    const NVME_IDENTIFY_CID: u32 = 0x51;
+
+    fn nvme_identify_board() -> (LoadedFirmwareBoard, u64, u64) {
         use crate::{AccessWidth, NvmeConfig, PCI_ECAM_DESCRIPTOR, host_parallel_board_with_nvme};
 
         const ASQ: u64 = 0x30_0000;
-        const ACQ: u64 = 0x30_1000;
-        const IDENTIFY: u64 = 0x30_2000;
         const PT_NVME: u64 = TABLES_0 + 0x5000;
         const PCI_FUNCTION: u64 = PCI_ECAM_DESCRIPTOR.base + (4 << 15);
-        const CID: u32 = 0x51;
 
+        let mut board = host_parallel_board_with_nvme(2, NvmeConfig::default()).unwrap();
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        // The first bank is identity mapped. Map the second 2 MiB for the DMA buffer.
+        patch(&mut board, cr3 + 0x2000 + 8, &0x20_0083u64.to_le_bytes());
+        let bus = board.bus_mut();
+        let bar_low = bus
+            .read_physical(
+                GuestPhysicalAddress::new(PCI_FUNCTION + 0x10),
+                AccessWidth::Dword,
+            )
+            .unwrap();
+        let bar_high = bus
+            .read_physical(
+                GuestPhysicalAddress::new(PCI_FUNCTION + 0x14),
+                AccessWidth::Dword,
+            )
+            .unwrap();
+        let bar = (bar_high << 32) | (bar_low & !0xF);
+        for (address, width, value) in [
+            (PCI_FUNCTION + 4, AccessWidth::Word, 6),
+            (bar + 0x24, AccessWidth::Dword, 0x000F_000F),
+            (bar + 0x28, AccessWidth::Qword, ASQ),
+            (bar + 0x30, AccessWidth::Qword, NVME_IDENTIFY_CQ),
+            (bar + 0x14, AccessWidth::Dword, 0x0046_0001),
+        ] {
+            bus.write_physical(GuestPhysicalAddress::new(address), width, value, |_| {})
+                .unwrap();
+        }
+        let nvme = board.nvme().unwrap();
+        assert!(nvme.is_ready());
+        let doorbell = bar + 0x1000;
+        patch(
+            &mut board,
+            TABLES_0 + 0x3000 + ((doorbell >> 21) & 0x1ff) * 8,
+            &(PT_NVME | 0x63).to_le_bytes(),
+        );
+        patch(
+            &mut board,
+            PT_NVME + ((doorbell >> 12) & 0x1ff) * 8,
+            &(doorbell | 0x73).to_le_bytes(),
+        );
+        let mut identify = [0; 64];
+        identify[..4].copy_from_slice(&((NVME_IDENTIFY_CID << 16) | 0x06).to_le_bytes());
+        identify[24..32].copy_from_slice(&NVME_IDENTIFY_BUFFER.to_le_bytes());
+        identify[40..44].copy_from_slice(&1u32.to_le_bytes());
+        patch(&mut board, ASQ, &identify);
+
+        (board, doorbell, cr3)
+    }
+
+    #[test]
+    fn a_guest_nvme_doorbell_completes_dma_before_the_next_instruction_or_budget_stop() {
         for (budget, stop_before_dma) in [(3, false), (64, false), (64, true), (3, true)] {
-            let mut board = host_parallel_board_with_nvme(2, NvmeConfig::default()).unwrap();
-            let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
-            // The first bank is identity mapped. Map the second 2 MiB for the DMA buffer.
-            patch(&mut board, cr3 + 0x2000 + 8, &0x20_0083u64.to_le_bytes());
-            let bus = board.bus_mut();
-            let bar_low = bus
-                .read_physical(
-                    GuestPhysicalAddress::new(PCI_FUNCTION + 0x10),
-                    AccessWidth::Dword,
-                )
-                .unwrap();
-            let bar_high = bus
-                .read_physical(
-                    GuestPhysicalAddress::new(PCI_FUNCTION + 0x14),
-                    AccessWidth::Dword,
-                )
-                .unwrap();
-            let bar = (bar_high << 32) | (bar_low & !0xF);
-            for (address, width, value) in [
-                (PCI_FUNCTION + 4, AccessWidth::Word, 6),
-                (bar + 0x24, AccessWidth::Dword, 0x000F_000F),
-                (bar + 0x28, AccessWidth::Qword, ASQ),
-                (bar + 0x30, AccessWidth::Qword, ACQ),
-                (bar + 0x14, AccessWidth::Dword, 0x0046_0001),
-            ] {
-                bus.write_physical(GuestPhysicalAddress::new(address), width, value, |_| {})
-                    .unwrap();
-            }
+            let (mut board, doorbell, cr3) = nvme_identify_board();
             let nvme = board.nvme().unwrap();
-            assert!(nvme.is_ready());
-            let doorbell = bar + 0x1000;
-            patch(
-                &mut board,
-                TABLES_0 + 0x3000 + ((doorbell >> 21) & 0x1ff) * 8,
-                &(PT_NVME | 0x63).to_le_bytes(),
-            );
-            patch(
-                &mut board,
-                PT_NVME + ((doorbell >> 12) & 0x1ff) * 8,
-                &(doorbell | 0x73).to_le_bytes(),
-            );
-            let mut identify = [0; 64];
-            identify[..4].copy_from_slice(&((CID << 16) | 0x06).to_le_bytes());
-            identify[24..32].copy_from_slice(&IDENTIFY.to_le_bytes());
-            identify[40..44].copy_from_slice(&1u32.to_le_bytes());
-            patch(&mut board, ASQ, &identify);
 
             let code = [
                 mov_eax(1),
                 mov_ebx(u32::try_from(doorbell).unwrap()),
                 vec![0x89, 0x03], // mov [rbx], eax
-                mov_ebx((IDENTIFY + 4) as u32),
+                mov_ebx((NVME_IDENTIFY_BUFFER + 4) as u32),
                 vec![0x8B, 0x03, 0xF4], // mov eax, [rbx]; hlt
             ]
             .concat();
@@ -1775,7 +1794,7 @@ mod tests {
                 long_state(CODE_0, STACK_0, cr3, false),
                 0xD01,
             );
-            let page = GuestPhysicalAddress::new(IDENTIFY);
+            let page = GuestPhysicalAddress::new(NVME_IDENTIFY_BUFFER);
             let generation = board
                 .bus_mut()
                 .physical_memory()
@@ -1859,7 +1878,7 @@ mod tests {
                     let proof = control.stop_all(WAIT).unwrap();
                     assert_eq!(proof.now_ns, start_ns + 3);
                     assert_eq!(control.retired()[0], 3);
-                    assert_eq!(cell(control, IDENTIFY + 4), 0);
+                    assert_eq!(cell(control, NVME_IDENTIFY_BUFFER + 4), 0);
                     assert!(nvme.doorbell_pending());
                     control.resume();
                     if active_peer {
@@ -1880,11 +1899,14 @@ mod tests {
             assert_joined(&report, 2);
             assert_eq!(report.cpus[1].retired, 0);
             assert_eq!(
-                read(&mut board, IDENTIFY + 4, 8),
+                read(&mut board, NVME_IDENTIFY_BUFFER + 4, 8),
                 b"OD-NVME-",
                 "budget {budget}: {report:?}"
             );
-            assert_eq!(dword(&mut board, ACQ + 12), CID | (1 << 16));
+            assert_eq!(
+                dword(&mut board, NVME_IDENTIFY_CQ + 12),
+                NVME_IDENTIFY_CID | (1 << 16)
+            );
             assert!(!nvme.doorbell_pending());
             assert_ne!(
                 board
@@ -1908,6 +1930,151 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_pending_nvme_doorbell_is_serviced_when_the_board_starts_idle() {
+        use crate::AccessWidth;
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        for (budget, legacy, finish) in [
+            (64, false, ParallelFinish::AllIdle),
+            (0, true, ParallelFinish::BudgetExhausted),
+        ] {
+            let (mut board, doorbell, _) = nvme_identify_board();
+            let bsp = board.vcpu_mut(0).unwrap();
+            bsp.state.activity = Some(CpuActivity::Halted);
+            bsp.state.rflags &= !u64::from(EFLAGS_IF);
+            if legacy {
+                bsp.legacy = Vcpu::new_ap(1).legacy;
+            }
+            let initial_state = bsp.state.clone();
+            let initial_legacy = bsp.legacy;
+            let start_ns = board.clock().now_ns();
+            let frame = GuestPhysicalAddress::new(NVME_IDENTIFY_BUFFER);
+            let generation = board
+                .bus_mut()
+                .physical_memory()
+                .code_page_generation(frame)
+                .unwrap();
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(doorbell),
+                    AccessWidth::Dword,
+                    1,
+                    |_| {},
+                )
+                .unwrap();
+            let nvme = board.nvme().unwrap();
+            assert!(nvme.doorbell_pending());
+
+            let (report, ()) = run(&mut board, config(64, budget), |control| {
+                assert!(control.wait_finished(WAIT));
+            });
+            assert_eq!(report.finished, finish);
+            assert_joined(&report, 2);
+            assert_eq!(
+                read(&mut board, NVME_IDENTIFY_BUFFER + 4, 8),
+                b"OD-NVME-",
+                "budget {budget}: {report:?}",
+            );
+            assert_eq!(
+                dword(&mut board, NVME_IDENTIFY_CQ + 12),
+                NVME_IDENTIFY_CID | (1 << 16),
+            );
+            assert!(!nvme.doorbell_pending());
+            assert_eq!(report.cpus[0].calls, 1);
+            assert_eq!(report.cpus[1].calls, 0);
+            assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
+            assert_eq!(board.clock().now_ns(), start_ns);
+            let bsp = board.vcpu(0).unwrap();
+            assert_eq!(bsp.state, initial_state);
+            assert_eq!(bsp.legacy, initial_legacy);
+            let completed = board
+                .bus_mut()
+                .physical_memory()
+                .code_page_generation(frame)
+                .unwrap();
+            assert_ne!(completed, generation);
+
+            let (reopened, ()) = run(&mut board, config(64, budget), |control| {
+                assert!(control.wait_finished(WAIT));
+            });
+            assert_eq!(reopened.finished, finish);
+            assert!(reopened.cpus.iter().all(|cpu| cpu.calls == 0));
+            assert_eq!(
+                board
+                    .bus_mut()
+                    .physical_memory()
+                    .code_page_generation(frame)
+                    .unwrap(),
+                completed,
+            );
+            assert_eq!(board.clock().now_ns(), start_ns);
+        }
+    }
+
+    #[test]
+    fn a_startup_nvme_completion_interrupt_wakes_the_halted_bsp() {
+        use crate::apic_pair::{NVME_PIN, SCI_LEVEL_LOW};
+        use crate::{AccessWidth, IO_APIC_MMIO_BASE};
+
+        let (mut board, doorbell, cr3) = nvme_identify_board();
+        assert!(board.enable_pit_ioapic_irq());
+        assert!(board.enable_uart_ioapic_irq4());
+        system(&mut board, false);
+        let mut handler = [
+            mov_ebx((doorbell + 4).try_into().unwrap()),
+            mov_eax(1),
+            vec![0x89, 0x03], // mov [rbx], eax: acknowledge the completion queue
+            count_and_eoi(COUNTER_0),
+        ]
+        .concat();
+        handler.extend([0x48, 0xCF]); // iretq
+        patch(&mut board, HANDLER_0, &handler);
+        patch(&mut board, CODE_0, &[0xF4]);
+        let mut bsp = long_state(CODE_0, STACK_0, cr3, true);
+        bsp.activity = Some(CpuActivity::Halted);
+        install(&mut board, 0, bsp, 0xD01);
+
+        let bus = board.bus_mut();
+        for (address, value) in [
+            (LOCAL_APIC_MMIO_BASE + 0xf0, 0x1ff),
+            (IO_APIC_MMIO_BASE, (0x10 + 2 * NVME_PIN) as u64),
+            (
+                IO_APIC_MMIO_BASE + 0x10,
+                u64::from(SCI_LEVEL_LOW | u32::from(TO_BSP)),
+            ),
+            (doorbell, 1),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Dword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let nvme = board.nvme().unwrap();
+        assert!(nvme.doorbell_pending());
+        let start_ns = board.clock().now_ns();
+
+        let (report, ()) = run(&mut board, config(64, 64), |control| {
+            assert!(control.wait_finished(WAIT));
+        });
+        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        assert_joined(&report, 2);
+        assert_eq!(report.cpus[0].wakes, 1);
+        assert_eq!(dword(&mut board, COUNTER_0), 1);
+        assert_eq!(report.cpus[1].retired, 0);
+        assert_eq!(board.clock().now_ns() - start_ns, report.cpus[0].retired);
+        assert_eq!(
+            board.local_apic_of(0).unwrap().vector_state(TO_BSP),
+            (false, false)
+        );
+        assert!(!nvme.pci_interrupt_line());
+        assert!(!nvme.doorbell_pending());
     }
 
     #[test]
