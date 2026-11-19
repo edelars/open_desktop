@@ -20174,27 +20174,46 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: execute the compiler's ordinary loads, stores and
-        // effective address calculations through the shared transfers.
+        // S7-04: route firmware data transfers through the shared executor.
         operation @ (Operation::Mov {
             dst: Operand::Memory(_),
             src: Operand::Register(_),
         }
         | Operation::Mov {
             dst: Operand::Register(_),
-            src: Operand::Memory(_),
+            src: Operand::Memory(_) | Operand::Register(_),
+        }
+        | Operation::Extend {
+            src: Operand::Memory(_) | Operand::Register(_),
+            signed: false,
+            ..
         }
         | Operation::Lea { .. })
             if firmware_boot_profile
-                && instruction.opcode.map == OpcodeMap::Primary
-                && matches!(
-                    (instruction.opcode.byte, instruction.operand_size),
+                && match (instruction.opcode.map, operation) {
                     (
-                        0x89,
-                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
-                    ) | (0x8b, OperandSize::Dword | OperandSize::Qword)
-                        | (0x8d, OperandSize::Dword | OperandSize::Qword)
-                )
+                        OpcodeMap::Primary,
+                        Operation::Mov {
+                            dst: Operand::Register(_),
+                            src: Operand::Register(_),
+                        },
+                    ) => matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x89 | 0x8b, OperandSize::Qword)
+                    ),
+                    (OpcodeMap::Primary, _) => matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (
+                            0x89,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        ) | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
+                    ),
+                    (OpcodeMap::Escape0f, Operation::Extend { .. }) => {
+                        instruction.opcode.byte == 0xb6
+                            && instruction.operand_size == OperandSize::Dword
+                    }
+                    _ => false,
+                }
                 && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes
                     == (Prefixes {
