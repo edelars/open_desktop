@@ -8,13 +8,16 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 use od_firmware::HANDOFF_GPA;
-use od_firmware::handoff::{HANDOFF_WINDOW_SIZE, Handoff};
+use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::mem::map::{
     DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
+    MemoryType,
 };
-use od_firmware::paging::{BootPaging, PagingError, ShadowSections};
+use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError};
+use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
-    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGING, fixed_hex, format_stop_line,
+    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR, STOP_PAGING, fixed_hex,
+    format_stop_line,
 };
 
 unsafe extern "C" {
@@ -32,6 +35,8 @@ const HANDOFF_MINOR_MAX: u16 = 4;
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
 const PAGING_ACTIVE_LINE: &[u8] = b"OD-FW S7-04 page tables active\r\n";
+// Three live allocations can each introduce two additional descriptors.
+const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
 
 /// # Safety
 /// Port I/O: the caller must be at CPL0 (or have I/O permission) and `port` must be a real device
@@ -141,7 +146,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         Ok(paging) => paging,
         Err(error) => stop(STOP_PAGING, error.stop_detail()),
     };
-    let mut descriptors = [MemoryDescriptor::EMPTY; MAX_INITIAL_DESCRIPTORS];
+    let mut descriptors = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
     let map = match MemoryMap::from_active_paging(
         &paging,
         active_cr3,
@@ -157,7 +162,71 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         Err(MemoryMapError::Paging(error)) => stop(STOP_PAGING, error.stop_detail()),
     };
     com1_write_memory_map(&map);
+    let key = verify_boot_page_allocator(map, active_cr3);
+    com1_write(b"OD-FW S7-04 page allocator verified key=0x");
+    com1_write(&fixed_hex(key));
+    com1_write(b"\r\n");
     halt_forever()
+}
+
+fn require_pages<T>(result: Result<T, PageError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => stop(STOP_PAGE_ALLOCATOR, error.stop_detail()),
+    }
+}
+
+#[inline(never)]
+fn verify_boot_page_allocator(map: MemoryMap<'_>, active_cr3: u64) -> u64 {
+    let mut ownership = [false; BOOT_DESCRIPTOR_CAPACITY];
+    let mut allocator = require_pages(PageAllocator::new(map, &mut ownership));
+    let exact = require_pages(allocator.allocate_pages(
+        AllocateAt::Address(BOOT_PAGE_TABLES_GPA),
+        MemoryType::BootServicesData,
+        3,
+    ));
+    let bounded = require_pages(allocator.allocate_pages(
+        AllocateAt::MaxAddress(BOOT_PAGE_TABLES_GPA + 4 * PAGE_BYTES - 1),
+        MemoryType::LoaderData,
+        1,
+    ));
+    let high =
+        require_pages(allocator.allocate_pages(AllocateAt::Any, MemoryType::BootServicesData, 1));
+    if exact != BOOT_PAGE_TABLES_GPA || bounded != exact + 3 * PAGE_BYTES {
+        stop(STOP_PAGE_ALLOCATOR, 7);
+    }
+    let allocated_key = allocator.map().key();
+    if allocator.free_pages(active_cr3, 1) != Err(PageError::NotFound)
+        || allocator.map().key() != allocated_key
+    {
+        stop(STOP_PAGE_ALLOCATOR, 7);
+    }
+
+    // SAFETY: both addresses are aligned, live allocations in conventional
+    // identity-mapped RAM. The validated map excludes the active tables,
+    // firmware shadow and stack. The old root is no longer in use.
+    unsafe {
+        let old_root = exact as *mut u64;
+        let high_page = high as *mut u64;
+        const ROOT_PATTERN: u64 = 0x0123_4567_89ab_cdef;
+        const PAGE_PATTERN: u64 = 0x1020_3040_5060_7080;
+        old_root.write_volatile(ROOT_PATTERN);
+        high_page.write_volatile(PAGE_PATTERN);
+        if old_root.read_volatile() != ROOT_PATTERN || high_page.read_volatile() != PAGE_PATTERN {
+            stop(STOP_PAGE_ALLOCATOR, 7);
+        }
+    }
+
+    require_pages(allocator.free_pages(exact + 2 * PAGE_BYTES, 2));
+    let partial_key = allocator.map().key();
+    if allocator.free_pages(bounded, 1) != Err(PageError::NotFound)
+        || allocator.map().key() != partial_key
+    {
+        stop(STOP_PAGE_ALLOCATOR, 7);
+    }
+    require_pages(allocator.free_pages(exact, 2));
+    require_pages(allocator.free_pages(high, 1));
+    allocator.map().key()
 }
 
 fn boot_handoff_bytes() -> &'static [u8] {

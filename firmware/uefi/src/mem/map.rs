@@ -8,15 +8,19 @@ pub const MAX_INITIAL_DESCRIPTORS: usize = MAX_HANDOFF_REGIONS + 6;
 pub const DESCRIPTOR_VERSION: u32 = 1;
 
 const UC: u64 = 1;
-const WB: u64 = 1 << 3;
-const RUNTIME: u64 = 1 << 63;
+pub(super) const WB: u64 = 1 << 3;
+pub(super) const RUNTIME: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum MemoryType {
     Reserved = 0,
+    LoaderCode = 1,
+    LoaderData = 2,
     BootServicesCode = 3,
     BootServicesData = 4,
+    RuntimeServicesCode = 5,
+    RuntimeServicesData = 6,
     Conventional = 7,
     AcpiReclaim = 9,
     AcpiNvs = 10,
@@ -44,6 +48,29 @@ impl MemoryDescriptor {
         number_of_pages: 0,
         attribute: 0,
     };
+
+    pub(super) fn for_range(memory_type: MemoryType, start: u64, end: u64, attribute: u64) -> Self {
+        Self {
+            memory_type: memory_type as u32,
+            padding: 0,
+            physical_start: start,
+            virtual_start: 0,
+            number_of_pages: (end - start) / PAGE_BYTES,
+            attribute,
+        }
+    }
+
+    pub(super) fn end(self) -> u64 {
+        self.physical_start + self.number_of_pages * PAGE_BYTES
+    }
+
+    pub(super) fn clipped(self, start: u64, end: u64) -> Self {
+        Self {
+            physical_start: start,
+            number_of_pages: (end - start) / PAGE_BYTES,
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,7 +82,9 @@ pub enum MemoryMapError {
 }
 
 pub struct MemoryMap<'a> {
-    descriptors: &'a [MemoryDescriptor],
+    pub(super) storage: &'a mut [MemoryDescriptor],
+    pub(super) used: usize,
+    pub(super) map_key: u64,
 }
 
 impl<'a> MemoryMap<'a> {
@@ -84,16 +113,18 @@ impl<'a> MemoryMap<'a> {
             next += 1;
         })?;
         Ok(Self {
-            descriptors: &buffer[..required],
+            storage: buffer,
+            used: required,
+            map_key: 1,
         })
     }
 
     pub fn descriptors(&self) -> &[MemoryDescriptor] {
-        self.descriptors
+        &self.storage[..self.used]
     }
 
     pub const fn key(&self) -> u64 {
-        1
+        self.map_key
     }
 }
 
@@ -104,14 +135,12 @@ fn describe(
 ) -> Result<(), MemoryMapError> {
     let mut range = |start, end, memory_type: MemoryType, attribute| {
         if start < end {
-            emit(MemoryDescriptor {
-                memory_type: memory_type as u32,
-                padding: 0,
-                physical_start: start,
-                virtual_start: 0,
-                number_of_pages: (end - start) / PAGE_BYTES,
+            emit(MemoryDescriptor::for_range(
+                memory_type,
+                start,
+                end,
                 attribute,
-            });
+            ));
         }
     };
     let root = paging.root();

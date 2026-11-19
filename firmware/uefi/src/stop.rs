@@ -32,6 +32,8 @@ pub const STOP_INTERNAL: u8 = 0x30;
 pub const STOP_PAGING: u8 = 0x31;
 /// The initial EFI memory map could not be produced.
 pub const STOP_MEMORY_MAP: u8 = 0x32;
+/// The bootstrap page allocator failed.
+pub const STOP_PAGE_ALLOCATOR: u8 = 0x33;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";

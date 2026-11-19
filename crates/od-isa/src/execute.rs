@@ -20107,6 +20107,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             kind:
                 ArithmeticKind::Add
                 | ArithmeticKind::Adc
+                | ArithmeticKind::Sbb
                 | ArithmeticKind::Sub
                 | ArithmeticKind::Cmp
                 | ArithmeticKind::Inc
@@ -20157,6 +20158,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     )
                 }
                 Operation::Arithmetic {
+                    kind: ArithmeticKind::Sbb,
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size, source),
+                    (
+                        0x83,
+                        OperandSize::Dword | OperandSize::Qword,
+                        Operand::Immediate(_)
+                    )
+                ),
+                Operation::Arithmetic {
                     kind: ArithmeticKind::Neg,
                     ..
                 } => {
@@ -20174,7 +20186,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (
                             0x21 | 0x23 | 0x81 | 0x83,
                             OperandSize::Dword | OperandSize::Qword
-                        )
+                        ) | (0x20 | 0x22, OperandSize::Byte)
                     )
                 }
                 Operation::Logic {
@@ -20207,10 +20219,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             )
                     )
                 }
-                Operation::Arithmetic { .. } => matches!(
-                    instruction.operand_size,
-                    OperandSize::Word | OperandSize::Dword | OperandSize::Qword
-                ),
+                Operation::Arithmetic { .. } => {
+                    matches!(
+                        instruction.operand_size,
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                    ) || matches!(
+                        (operation, instruction.opcode.byte, instruction.operand_size),
+                        (
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Cmp,
+                                ..
+                            },
+                            0x3c | 0x80,
+                            OperandSize::Byte
+                        )
+                    )
+                }
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     ..
@@ -20298,7 +20322,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: firmware immediate shifts extract the indexes of its page tables.
+        // S7-04: firmware immediate shifts extract page table indexes and search the map.
         Operation::Shift {
             kind: kind @ (ShiftKind::Shl | ShiftKind::Shr),
             dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
@@ -20307,13 +20331,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             ..
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xc1
             && matches!(
                 instruction.operand_size,
                 OperandSize::Dword | OperandSize::Qword
             )
             && (matches!(destination, Operand::Register(_))
-                || (kind == ShiftKind::Shr
+                && matches!(instruction.opcode.byte, 0xc1 | 0xd1)
+                || (instruction.opcode.byte == 0xc1
+                    && kind == ShiftKind::Shr
                     && instruction.operand_size == OperandSize::Qword
                     && instruction.address_size == OperandSize::Qword))
             && instruction.prefixes
@@ -21325,16 +21350,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rflags &= !(1 << 9);
             state.rip = next_rip;
         }
-        // S7-04: only the exact bare CLD form is admitted by the base probe profile.
-        // It clears DF and makes that flag defined; STD and prefixed forms stay unsupported.
-        Operation::ClearDirectionFlag
+        // S7-04: firmware memmove uses STD for overlapping backward copies.
+        Operation::ClearDirectionFlag | Operation::SetDirectionFlag
             if base_profile
                 && instruction.length == 1
                 && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xfc
+                && (instruction.opcode.byte == 0xfc || firmware_boot_profile)
                 && instruction.prefixes == Prefixes::default() =>
         {
-            state.rflags &= !crate::DF;
+            if instruction.operation == Operation::SetDirectionFlag {
+                state.rflags |= crate::DF;
+            } else {
+                state.rflags &= !crate::DF;
+            }
             state.rip = next_rip;
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,
@@ -25176,16 +25204,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: keep the bounded REP STOSB path and admit firmware's page clearing
-        // with REP STOSQ. Larger counts are refused before any state mutation.
-        Operation::RepStos { size }
+        // S7-04: the firmware clears pages and moves overlapping allocator metadata
+        // with bounded REP strings. Each successful element commits its indexes.
+        Operation::RepStos { size } | Operation::RepMovs { size }
             if base_profile
-                && (size == OperandSize::Byte || firmware_boot_profile)
                 && instruction.opcode.map == OpcodeMap::Primary
-                && matches!(
-                    (instruction.opcode.byte, size, instruction.length),
-                    (0xaa, OperandSize::Byte, 2) | (0xab, OperandSize::Qword, 3)
-                )
+                && match (instruction.opcode.byte, size, instruction.length) {
+                    (0xaa, OperandSize::Byte, 2) => true,
+                    (0xab | 0xa5, OperandSize::Qword, 3) | (0xa4, OperandSize::Byte, 2) => {
+                        firmware_boot_profile
+                    }
+                    _ => false,
+                }
                 && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes
                     == (Prefixes {
@@ -25198,31 +25228,47 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             if count > REP_ITERATION_WORK_LIMIT {
                 return unsupported();
             }
-            let value = state.gpr[Register::Rax as usize] & size.mask();
+            let moving = matches!(instruction.operation, Operation::RepMovs { .. });
             let stride = size.bytes() as i64;
             let step = if state.rflags & crate::DF == 0 {
                 stride
             } else {
                 -stride
             };
-            while state.gpr[Register::Rcx as usize] != 0 {
-                let destination = Operand::Memory(MemoryOperand {
-                    base: AddressBase::Register(Register::Rdi),
+            let operand = |register| {
+                Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(register),
                     index: None,
                     scale: 1,
                     displacement: 0,
                     address_size: OperandSize::Qword,
                     size,
-                });
+                })
+            };
+            let source = operand(Register::Rsi);
+            let destination = operand(Register::Rdi);
+            let store_value = state.gpr[Register::Rax as usize] & size.mask();
+            let memory_failure = |error| match error {
+                MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                error => result(PagedProbeExit::Backend(error), 0),
+            };
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let value = if moving {
+                    match read_operand(state, memory, context, next_rip, source) {
+                        Ok(value) => value,
+                        Err(error) => return memory_failure(error),
+                    }
+                } else {
+                    store_value
+                };
                 if let Err(error) =
                     write_operand(state, memory, context, next_rip, destination, value)
                 {
-                    return match error {
-                        MemoryError::Architectural(fault) => {
-                            result(PagedProbeExit::Fault(fault), 0)
-                        }
-                        error => result(PagedProbeExit::Backend(error), 0),
-                    };
+                    return memory_failure(error);
+                }
+                if moving {
+                    state.gpr[Register::Rsi as usize] =
+                        state.gpr[Register::Rsi as usize].wrapping_add_signed(step);
                 }
                 state.gpr[Register::Rdi as usize] =
                     state.gpr[Register::Rdi as usize].wrapping_add_signed(step);

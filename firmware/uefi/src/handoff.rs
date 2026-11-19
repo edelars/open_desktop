@@ -6,6 +6,7 @@
 
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
+pub const BOOT_PAGE_TABLES_GPA: u64 = 0x0060_0000;
 const MAGIC: &[u8; 8] = b"ODHANDOF";
 const HEADER_SIZE: usize = 0xA0;
 const CRC_OFFSET: usize = 0x14;
@@ -694,7 +695,7 @@ impl<'a> Handoff<'a> {
                 + mapped_block_count(self.bytes, self.region_table_offset, self.region_count, 39)
                 + 1;
         let expected_bytes = expected_pages * 0x1000;
-        if page_tables.base != 0x0060_0000
+        if page_tables.base != BOOT_PAGE_TABLES_GPA
             || page_tables.length != expected_bytes
             || page_tables.owner != NO_OWNER
         {
