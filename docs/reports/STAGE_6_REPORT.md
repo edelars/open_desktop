@@ -1228,6 +1228,19 @@ python3 tools/build/build_stage6_smp_initramfs.py \
 
 `check_layout.py` в рабочей копии сообщил о локальном корневом каталоге `.claude`, который отсутствует в Git. Исходники фикстуры и команды проверки размещены в существующих областях `tests/fixtures/guest/stage6/` и `tools/build/`.
 
+### S6-21 шаг 3 — загрузка до init с seed
+
+Два release-процесса загрузили отдельные платы с ядром S6-10, initramfs наблюдения S6-21, одним vCPU, 128 МиБ RAM и `ClockOwner`. Оба использовали seed `24301`, кванты 1–256 шагов и бюджет 2 500 000 000 инструкций. Тест включает `msr_tdx_keyid_partitioning_read`, `fp_state` и `int3` из принятого `stage4a --user-mode`. Первый опыт с неполным набором остановился на `RDMSR` в `native_read_msr_safe+2` до вывода `/init`. Для повторного опыта конфигурацию теста привели к набору CLI. [Тест](../../crates/od-machine/tests/stage6_linux_seeded.rs) · [Контракт чтения MSR 0x87](../specs/CPU_CONTRACT.md#rdmsr-0x87-на-linux-плате-s4-38l9c).
+
+```sh
+cargo test --release --locked --offline -p od-machine --test stage6_linux_seeded \
+  seeded_interleaved_reaches_guest_init -- --exact --ignored --nocapture
+```
+
+Оба процесса завершились `budget_exhausted` после 2 499 968 232 выполненных инструкций, включая 6 397 в CPL3. Сравнение 22 939 байт COM1 от строки версии ядра до конца гостевого вывода и сводок остановки дало побайтное совпадение. На строке ядра `Run /init as init process` время было 2,271111 с. Блок с nonce `SMPUpObservation20261119` содержит `online=0`, число 1 и 25 строк `/proc/interrupts`. `RES`, `CAL` и `TLB` равны нулю. Проверка `--expect-online 1` приняла оба повтора, строгий SMP-режим отклонил одно-vCPU наблюдения. [Журнальные строки и хеши](data/stage6/s6-21-seeded-boot.json).
+
+Для шага 3а требуются два online vCPU и гостевые IPI на обоих. Этот запуск ждёт согласованного MADT и `cpu_count`. [План](../plans/STAGE_6.md#s6-21-запустить-второй-процессор-в-linux).
+
 ### S6-21 шаг 6а — CPUID BSP и AP в long mode
 
 CPL0-набор использует общий выбранный профиль и получает APIC ID и число vCPU от платы. Топология передаётся в прямом цикле BSP и в кванте платы. Legacy-профиль AP применяется до перехода в long mode. Профиль без CPUID сохраняет прежний допуск инструкций.
