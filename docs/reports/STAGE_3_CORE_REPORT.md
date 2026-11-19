@@ -393,6 +393,13 @@ ARM64 результата результатом строгого native тес
 и input manifest SHA-256
 `0e6540c704d2f01ae572543defa776ed63466d5c85f6ee3376a62f4446959c3d`.
 
+Те же два прямолинейных потока и два цикла CLD/STD измерены на cold и
+warm смешанном пути. Этот замер отдельно подтверждает 2/3 и 3/2
+native/interpreter instructions на коротких потоках и по два native
+retirements и interpreter steps на итерацию цикла. Интерпретатор быстрее
+на всех четырёх выбранных профилях.
+[Замеры S3-35g/S3-36i](STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
 ## 9. S3-56 — измерения generic пути
 
 **Статус (2026-11-11): частично; независимое Sol-ревью выполненного объёма пройдено, коммит `795be59`.** Расширены существующие `cold-first-run` и `warm-first-run` флагом `--generic-register`; default поведение сохранено. Измерены interpreter, generic cold и generic warm на одном resident native-only корпусе. S3-56 не принят: для сравнения cold на исходном корпусе S3-35a отсутствуют замороженные inputs, а исторические S3-35a и S3-36b использовали разные корпуса ([ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)). Это измерение выполнено до реализации ограниченного mixed fallback S3-55.

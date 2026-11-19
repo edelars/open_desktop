@@ -1051,6 +1051,15 @@ one-RIP profile and the two-RIP controls. The other three ranges crossed
 parity. Both two-RIP profiles remained slower than the interpreter.
 [S3-35f report and raw evidence](STAGE_3_S3-35f_2026-11-19.md)
 
+S3-35g and S3-36i measured four mixed register profiles containing
+actual CLD/STD handoffs. The cold and warm runs used the same signed
+release executable and four balanced rounds. All 512 timed sides
+matched interpreter-visible state and retirement. The interpreter
+was faster in every pair. Warm JIT/interpreter medians on the two
+mixed loops were 2.102 and 2.101. Native retirement, helper steps and
+cache activity were checked separately.
+[S3-35g/S3-36i report and raw evidence](STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

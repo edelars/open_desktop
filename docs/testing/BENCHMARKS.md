@@ -1448,6 +1448,16 @@ architectural state and retirement. The archive contains the build
 scripts, fixed schedule, raw data and offline audit.
 [Report and reproduction](../reports/STAGE_3_S3-35f_2026-11-19.md)
 
+### S3-35g / S3-36i. Cold and warm mixed register dispatch
+
+One signed release build compares the interpreter with the S3-55 mixed
+cache route on two straight-line streams and two loops with CLD/STD
+steps. Cold includes admission and fresh cache/arena construction.
+Warm times a retained FIFO with hits and zero publication. Four rounds
+share fixed counts across the two modes and check guest state and
+native/interpreter retirement for every call.
+[Report and reproduction](../reports/STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
