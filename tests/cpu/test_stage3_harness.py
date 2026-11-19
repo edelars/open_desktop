@@ -20,11 +20,11 @@ from pathlib import Path
 import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
-EXPECTED_SELF_TESTS = 155
-EXPECTED_RUST_GATES = 334
-EXPECTED_LOCAL_ACCEPTANCE_GATES = 315
+EXPECTED_SELF_TESTS = 156
+EXPECTED_RUST_GATES = 340
+EXPECTED_LOCAL_ACCEPTANCE_GATES = 321
 EXPECTED_LOCAL_LIFECYCLE_GATES = 19
-EXPECTED_LOCAL_STEPS = 352
+EXPECTED_LOCAL_STEPS = 358
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -1735,6 +1735,73 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ])
         self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         self.assertEqual(len(manifest_by_name), EXPECTED_RUST_GATES)
+
+    def test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed(self):
+        expected = (
+            (
+                "s3_55_mixed_witness_exact", "od-jit",
+                "block::s3_52_admission_equivalence_tests::s3_55_mixed_witness_preserves_strict_admission_and_exact_helper_forms",
+            ),
+            (
+                "s3_55_helper_control_and_native_progress", "od-jit",
+                "dispatch::tests::s3_55_helper_only_budget_stop_event_and_zero_progress",
+            ),
+            (
+                "s3_55_post_helper_snapshot_guards", "od-jit",
+                "dispatch::tests::s3_55_post_helper_validation_rejects_changed_source_and_invalid_dependencies",
+            ),
+            (
+                "s3_55_interpreter_zero_progress", "od-jit",
+                "dispatch::tests::s3_55_interpreter_zero_progress_is_typed_and_not_retired",
+            ),
+            (
+                "s3_55_interpreter_error_retirement", "od-jit",
+                "dispatch::tests::s3_55_interpreter_failure_does_not_retire",
+            ),
+            (
+                "s3_55_mixed_native_full_state", "od-host",
+                "tests::s3_54_native_multi_cache_reuses_published_handle",
+            ),
+        )
+        suite = "local_acceptance"
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(
+            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_55_")],
+            [(step, suite, package, identity) for step, package, identity in expected],
+        )
+        self.assertEqual(
+            [entry for entry in harness.rust_test_gate_manifest() if entry["step"].startswith("s3_55_")],
+            [{"step": step, "suite": suite, "package": package, "identity": identity}
+             for step, package, identity in expected],
+        )
+        for source in ("crates/od-jit/src/block.rs", "crates/od-jit/src/dispatch.rs", "crates/od-host/src/lib.rs"):
+            self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+        for step, package, identity in expected:
+            self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+            self.assertEqual(harness.rust_test_argv(package, identity), [
+                "cargo", "test", "--offline", "-p", package, "--lib", identity,
+                "--", "--exact", "--test-threads=1",
+            ])
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            valid_steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(valid_steps, run_root)
+            for step, _, _ in expected:
+                missing_steps = valid_steps.copy()
+                del missing_steps[step]
+                with self.subTest(missing=step), self.assertRaisesRegex(harness.HarnessError, step):
+                    harness.validate_required_rust_test_evidence(missing_steps, run_root)
+
+            host_step = expected[-1][0]
+            replace_step_log_output(
+                valid_steps[host_step],
+                "test tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity ... ok\n",
+            )
+            with self.assertRaisesRegex(harness.HarnessError, host_step):
+                harness.validate_required_rust_test_evidence(valid_steps, run_root)
 
     def test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed(self):
         expected = (

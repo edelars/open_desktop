@@ -369,6 +369,30 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 Контракт описывает ограниченный маршрут, не общий Stage 2 fallback и не production owner/MMU integration. ARM64 host-сравнение полностью проверяет состояние и retirement для ADD → NOP → CLD → STD → ADD и ADD → CLD → ADD → STD → ADD на FIFO/LRU, eager/demand и cold/warm. Второй поток проверяет native terminal непосредственно перед обоими helper. Тесты проверяют strict reject и точность mixed witness, отсутствие компиляции helper entry, budget в том числе ноль, STOP/event, типизированный нулевой прогресс native и interpreter, injected отказ interpreter и memory error, пост-helper отказ при изменении source, invalid dependencies, CR3 и устаревшем context generation. `cargo test -p od-jit --lib --offline`: 455 passed, 2 ignored; `cargo test -p od-host --lib --offline`: 362 passed; `cargo fmt --all -- --check`, `cargo check -p od-jit -p od-host --all-targets --offline` и `git diff --check` прошли. `python3 tools/check_layout.py` возвращает 45 существующих ошибок ссылок на локальные отсутствующие артефакты, как baseline S3-50. Независимое Sol-ревью кода, тестов и документации одобрено; подтверждённых дефектов и незакрытых замечаний нет.
 
+**Локальная приёмка S3-55.** Штатный harness этапа 3 требует пять точных
+Rust-тестов `od-jit` и ARM64-тест `od-host`
+`s3_54_native_multi_cache_reuses_published_handle`. Они покрывают точность
+допуска, stop address/event/budget, ошибки продвижения, проверку после
+helper и полное состояние гостя на cold/warm смешанных потоках.
+Самопроверка harness отвергает отсутствие обязательного шага и подмену
+ARM64 результата результатом строгого native теста.
+[Команда и границы проверки](../testing/JIT.md#s3-55-mixed-register-and-interpreter-handoff)
+
+Прогон `stage3-20261119-045327-ab2fe4c10f` завершился с `local_only`.
+Прошли все 358 локальных шагов, включая 340 точных Rust gates и 156
+самопроверок harness. Все шесть новых S3-55 gates дали по одному
+проходящему тесту. Ещё 46 шагов VMHost process остались `not_run`.
+Физические x86 и Mac mini проверки отложены. В первом прогоне harness
+отклонил результат Cargo без выбранных тестов из-за неверного имени
+вложенного Rust-модуля. Повтор выполнен с исправленным именем.
+
+Начальный и конечный отпечатки дерева с изменениями к `5d0ae60` совпали
+(`2e07a4fa8d11a7cc75fe3018ce5cc389d3d96ced255ea26fc300b9bfc94eaff6`).
+В `work/stage3-harness/` под ID прогона сохранены summary SHA-256
+`50eb360745063bff610347680f0e4582f219d8684b8399020248abfb236446f5`
+и input manifest SHA-256
+`0e6540c704d2f01ae572543defa776ed63466d5c85f6ee3376a62f4446959c3d`.
+
 ## 9. S3-56 — измерения generic пути
 
 **Статус (2026-11-11): частично; независимое Sol-ревью выполненного объёма пройдено, коммит `795be59`.** Расширены существующие `cold-first-run` и `warm-first-run` флагом `--generic-register`; default поведение сохранено. Измерены interpreter, generic cold и generic warm на одном resident native-only корпусе. S3-56 не принят: для сравнения cold на исходном корпусе S3-35a отсутствуют замороженные inputs, а исторические S3-35a и S3-36b использовали разные корпуса ([ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)). Это измерение выполнено до реализации ограниченного mixed fallback S3-55.

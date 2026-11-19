@@ -3001,3 +3001,9 @@ ADD → NOP → CLD → STD → ADD and ADD → CLD → ADD → STD → ADD with
 full-state interpreter comparison, eager and demand flags, FIFO and LRU, cold
 and warm cache. The latter exercises the native terminal at both CLD and STD. The test is part of
 `cargo test -p od-host --lib --offline`.
+
+`python3 tests/cpu/stage3_harness.py --suite local` requires these six
+S3-55 tests under separate exact Cargo identities. The harness records
+each invocation and passing log. Its self-check rejects missing
+evidence or a passing log from the strict native host test substituted
+for the mixed host test.

@@ -179,6 +179,7 @@ SELF_TEST_NAMES = (
     "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34dr_load_load_profile_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
+    "test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed",
     "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -289,6 +290,30 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_38c_native_register_v1_candidate_cold_hit_parity", "local_acceptance", "od-host",
         "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity",
+    ),
+    (
+        "s3_55_mixed_witness_exact", "local_acceptance", "od-jit",
+        "block::s3_52_admission_equivalence_tests::s3_55_mixed_witness_preserves_strict_admission_and_exact_helper_forms",
+    ),
+    (
+        "s3_55_helper_control_and_native_progress", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_helper_only_budget_stop_event_and_zero_progress",
+    ),
+    (
+        "s3_55_post_helper_snapshot_guards", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_post_helper_validation_rejects_changed_source_and_invalid_dependencies",
+    ),
+    (
+        "s3_55_interpreter_zero_progress", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_interpreter_zero_progress_is_typed_and_not_retired",
+    ),
+    (
+        "s3_55_interpreter_error_retirement", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_interpreter_failure_does_not_retire",
+    ),
+    (
+        "s3_55_mixed_native_full_state", "local_acceptance", "od-host",
+        "tests::s3_54_native_multi_cache_reuses_published_handle",
     ),
     (
         "s3_38e_session_same_code_reuses_publication", "local_lifecycle", "od-host",
