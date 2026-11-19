@@ -60,6 +60,7 @@ SELF_TEST_NAMES = (
     "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
     "test_s3_37e_memory_cache_gate_is_pinned_once_and_fail_closed",
     "test_s3_23_memory_pair_invalidation_gate_is_pinned_once_and_fail_closed",
+    "test_s3_23_source_permission_gates_are_pinned_and_fail_closed",
     "test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
@@ -685,6 +686,14 @@ ADDITIONAL_TEST_GATES = (
         "local_acceptance",
         "od-host",
         "tests::memory_pair_cache_invalidation_drops_mapping_before_republish",
+    ),
+    (
+        "s3_23_tracked_v2_source_permission", "local_acceptance", "od-host",
+        "tests::s3_23_tracked_v2_rejects_revoked_source_permission",
+    ),
+    (
+        "s3_23_tracked_v3_source_permission", "local_acceptance", "od-host",
+        "tests::s3_23_tracked_v3_rejects_revoked_source_permission",
     ),
     (
         "s3_34y_ir_dword_alias_store_admission_provenance", "local_acceptance", "od-jit",

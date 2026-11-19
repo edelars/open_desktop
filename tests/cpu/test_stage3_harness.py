@@ -20,10 +20,10 @@ from pathlib import Path
 import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
-EXPECTED_SELF_TESTS = 154
-EXPECTED_RUST_GATES = 331
-EXPECTED_LOCAL_ACCEPTANCE_GATES = 313
-EXPECTED_LOCAL_STEPS = 349
+EXPECTED_SELF_TESTS = 155
+EXPECTED_RUST_GATES = 333
+EXPECTED_LOCAL_ACCEPTANCE_GATES = 315
+EXPECTED_LOCAL_STEPS = 351
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -1129,6 +1129,37 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             del missing[step]
             with self.assertRaisesRegex(harness.HarnessError, step):
                 harness.validate_required_rust_test_evidence(missing, run_root)
+
+    def test_s3_23_source_permission_gates_are_pinned_and_fail_closed(self):
+        manifest = harness.rust_test_gate_manifest()
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary) / "run"
+            log_dir = run_root / "logs"
+            log_dir.mkdir(parents=True)
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            for version in ("v2", "v3"):
+                step = f"s3_23_tracked_{version}_source_permission"
+                identity = f"tests::s3_23_tracked_{version}_rejects_revoked_source_permission"
+                with self.subTest(step=step):
+                    self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+                    self.assertEqual(
+                        [gate for gate in manifest if gate["step"] == step],
+                        [{"step": step, "suite": "local_acceptance", "package": "od-host", "identity": identity}],
+                    )
+                    self.assertEqual(harness.rust_test_argv("od-host", identity), [
+                        "cargo", "test", "--offline", "-p", "od-host", "--lib", identity,
+                        "--", "--exact", "--test-threads=1",
+                    ])
+                    missing = steps.copy()
+                    del missing[step]
+                    with self.assertRaisesRegex(harness.HarnessError, step):
+                        harness.validate_required_rust_test_evidence(missing, run_root)
+                    ignored = passing_rust_gate_steps(log_dir)
+                    replace_step_log_output(ignored[step], f"test {identity} ... ignored\n")
+                    with self.assertRaisesRegex(harness.HarnessError, f"lacks exact passing output: {step}"):
+                        harness.validate_required_rust_test_evidence(ignored, run_root)
+                    replace_step_log_output(steps[step], f"test {identity} ... ok\n")
 
     def test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed(self):
         expected = (

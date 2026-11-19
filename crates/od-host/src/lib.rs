@@ -4716,6 +4716,8 @@ impl TrackedInvalidationBatch {
 /// complete range/permissions/version and active-source overlap in preflight,
 /// implement all-or-nothing writes without panic/re-entry, and return a
 /// versioned notification only after a generated write committed.
+/// The instruction source and any complete tracked code region must retain
+/// execute permission on every mapping they cover.
 ///
 /// # Safety
 /// The write method must be synchronous, all-or-nothing, non-unwinding, and
@@ -4746,8 +4748,9 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
         bool,
     );
 
-    /// Validate the complete immutable source lease before the first guest
-    /// instruction executes. This check must not stage a write or mutate RAM.
+    /// Validate the complete immutable and executable source lease before the
+    /// first guest instruction executes. This check must not stage a write or
+    /// mutate RAM.
     fn validate_active_code_source_v3(
         &mut self,
         complete_region: TrackedCodeRegionV2<'_>,
@@ -7263,6 +7266,24 @@ pub(crate) mod tests {
                 .map(|range| (range.backing, range.offset))
         }
 
+        fn executable_source_at(
+            &self,
+            address: u64,
+            length: usize,
+        ) -> Result<(usize, usize), TrackedCodeStorePreflightError> {
+            let range = self
+                .resolve_mapping_range(address, length)
+                .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+            if !self.mappings[range.first_mapping].executable
+                || range
+                    .second_mapping
+                    .is_some_and(|index| !self.mappings[index].executable)
+            {
+                return Err(TrackedCodeStorePreflightError::NotExecutable);
+            }
+            Ok((range.backing, range.offset))
+        }
+
         /// Resolve a write over at most two adjacent mappings. Unlike code
         /// views, the segments may refer to distinct backing allocations.
         fn resolve_guest_write_range(
@@ -7792,9 +7813,8 @@ pub(crate) mod tests {
                 if site.guest_rip() != self.active_source_rip || source_bytes.len() != active_len {
                     return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
                 }
-                let (source_backing, source_offset) = self
-                    .mapping_at(self.active_source_rip, source_bytes.len())
-                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                let (source_backing, source_offset) =
+                    self.executable_source_at(self.active_source_rip, source_bytes.len())?;
                 if (source_backing, source_offset) != (active_backing, active_start)
                     || self.backings[source_backing].bytes
                         [source_offset..source_offset + source_bytes.len()]
@@ -7813,9 +7833,10 @@ pub(crate) mod tests {
                     {
                         return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
                     }
-                    let (prefix_backing, prefix_offset) = self
-                        .mapping_at(tracked_region.guest_rip, tracked_region.source_bytes.len())
-                        .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                    let (prefix_backing, prefix_offset) = self.executable_source_at(
+                        tracked_region.guest_rip,
+                        tracked_region.source_bytes.len(),
+                    )?;
                     let site_offset = usize::try_from(site.guest_rip() - tracked_region.guest_rip)
                         .map_err(|_| TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
                     let site_end = site_offset
@@ -7891,12 +7912,10 @@ pub(crate) mod tests {
             &mut self,
             complete_region: TrackedCodeRegionV2<'_>,
         ) -> Result<(), TrackedCodeStorePreflightError> {
-            let (backing, offset) = self
-                .mapping_at(
-                    complete_region.guest_rip,
-                    complete_region.source_bytes.len(),
-                )
-                .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+            let (backing, offset) = self.executable_source_at(
+                complete_region.guest_rip,
+                complete_region.source_bytes.len(),
+            )?;
             if self.backings[backing]
                 .bytes
                 .get(offset..offset + complete_region.source_bytes.len())
@@ -7916,12 +7935,10 @@ pub(crate) mod tests {
                 if executed_prefix_length > complete_region.source_bytes.len() {
                     return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
                 }
-                let (backing, region_offset) = self
-                    .mapping_at(
-                        complete_region.guest_rip,
-                        complete_region.source_bytes.len(),
-                    )
-                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                let (backing, region_offset) = self.executable_source_at(
+                    complete_region.guest_rip,
+                    complete_region.source_bytes.len(),
+                )?;
                 if self.backings[backing]
                     .bytes
                     .get(region_offset..region_offset + complete_region.source_bytes.len())
@@ -8005,18 +8022,16 @@ pub(crate) mod tests {
 
     impl od_isa::memory::GuestMemory for TrackedCodeFixture {
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-            let (backing, offset) = self.mapping_at(address, 1).ok_or(MemoryError::Unmapped {
-                address,
-                access: od_isa::memory::AccessKind::Fetch,
-            })?;
-            self.backings[backing]
-                .bytes
-                .get(offset)
-                .copied()
-                .ok_or(MemoryError::Unmapped {
-                    address,
-                    access: od_isa::memory::AccessKind::Fetch,
-                })
+            let access = od_isa::memory::AccessKind::Fetch;
+            let (backing, offset) =
+                self.executable_source_at(address, 1)
+                    .map_err(|error| match error {
+                        TrackedCodeStorePreflightError::NotExecutable => {
+                            MemoryError::PermissionDenied { address, access }
+                        }
+                        _ => MemoryError::Unmapped { address, access },
+                    })?;
+            Ok(self.backings[backing].bytes[offset])
         }
 
         fn read(
@@ -75730,6 +75745,93 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn s3_23_tracked_v3_rejects_revoked_source_permission() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000;
+        let mut program = vec![0x48, 0xBA];
+        program.extend_from_slice(&17_u64.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0xB9]);
+        program.extend_from_slice(&29_u64.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut arena = PublishedArenaBackend::new(1).unwrap();
+        let published = arena.publish_active_code_block_v3(&compiled).unwrap();
+
+        let mut owner = TrackedCodeFixture::new(&program, &[], &[]);
+        owner.active_source_rip = entry + 10;
+        owner.active_source = (0, 10, 3);
+        let first = owner.mappings[0];
+        owner.mappings[0].len = 13;
+        let tail_index = owner.mappings.len();
+        owner.mappings.push(TrackedMappingFixture {
+            start: entry + 13,
+            len: first.len - 13,
+            backing_offset: first.backing_offset + 13,
+            mapping: od_jit::translation::MappingId::new(TrackedCodeFixture::nz(20)),
+            ..first
+        });
+
+        let mut initial = od_isa::LongModeState {
+            cr3: None,
+            rip: entry,
+            rflags: 0xA55,
+            ..Default::default()
+        };
+        initial.gpr[0] = 42;
+        initial.gpr[3] = 0x2000;
+        let initial_backings = owner.backings.clone();
+        let stop = AtomicU8::new(0);
+        let mut notifications = Vec::new();
+        for (mapping, budget) in [(0, 3), (tail_index, 1), (tail_index, 3)] {
+            let mut state = initial.clone();
+            owner.mappings[mapping].executable = false;
+            let result = published.execute_tracked_v3(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                budget,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            );
+            assert_eq!(
+                result,
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::NotExecutable
+                )),
+                "source mapping {mapping}, budget {budget}"
+            );
+            assert_eq!(state, initial);
+            assert_eq!(owner.backings, initial_backings);
+            assert_eq!(owner.preflight_calls, 0);
+            assert_eq!(owner.write_count, 0);
+            assert!(notifications.is_empty());
+            owner.mappings[mapping].executable = true;
+        }
+
+        let mut state = initial;
+        let result = published
+            .execute_tracked_v3(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            )
+            .unwrap();
+        assert_eq!(result.exit, ActiveCodeExecutionExitV3::Complete);
+        assert_eq!(result.retired_instructions, 3);
+        assert_eq!(state.rip, entry + 23);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(notifications.len(), 1);
+    }
+
+    #[test]
     fn active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse() {
         let _guard = jit_test_lock();
         let entry = 0x1000_u64;
@@ -76736,6 +76838,82 @@ pub(crate) mod tests {
             }),
             "optional architectural payload fields may be absent"
         );
+    }
+
+    #[test]
+    fn s3_23_tracked_v2_rejects_revoked_source_permission() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000;
+        let source = [0x48, 0x89, 0x03];
+        let compiled = od_jit::memory_load_v2::compile_memory_store_block_v2(
+            CodeView::new(entry, &source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut arena = PublishedArenaBackend::new(1).unwrap();
+        let published = arena.publish_memory_store_v2(&compiled).unwrap();
+        let mut owner = TrackedCodeFixture::new(&source, &[], &[]);
+        let mut state = od_isa::LongModeState {
+            cr3: None,
+            rip: entry,
+            rflags: 0xA55,
+            ..Default::default()
+        };
+        state.gpr[0] = 42;
+        state.gpr[3] = 0x2000;
+        let before = state.clone();
+        let before_backings = owner.backings.clone();
+        owner.mappings[0].executable = false;
+        let mut notifications = Vec::new();
+        let stop = AtomicU8::new(0);
+        assert_eq!(
+            published.execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::NotExecutable
+            )),
+        );
+        assert_eq!(state, before);
+        assert_eq!(owner.backings, before_backings);
+        assert_eq!(owner.write_count, 0);
+        assert!(notifications.is_empty());
+        assert_eq!(
+            od_isa::memory::GuestMemory::fetch(&mut owner, entry, AccessContext::default()),
+            Err(MemoryError::PermissionDenied {
+                address: entry,
+                access: od_isa::memory::AccessKind::Fetch,
+            })
+        );
+        assert_eq!(
+            od_isa::memory::GuestMemory::fetch(&mut owner, 0x5000, AccessContext::default()),
+            Ok(source[0]),
+            "the other executable alias keeps its own permission"
+        );
+
+        owner.mappings[0].executable = true;
+        let result = published
+            .execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            )
+            .unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(state.rip, entry + 3);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(notifications.len(), 1);
     }
 
     #[test]

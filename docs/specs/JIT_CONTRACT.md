@@ -3697,8 +3697,12 @@ not enter the V1 cached-block executor. A fixture-only tracked code owner
 after the entry stop-RIP → STOP → budget guards preflights the full qword
 destination, executable and write permissions, nonwrapping backing-version
 increment, and binds the artifact RIP/source bytes to the owner-held active
-source lease before the helper can write. It also checks overlap against that
-source backing, including guest aliases. It owns fixed
+source lease before the helper can write. Every mapping of the instruction
+source and any supplied tracked code region must retain execute permission.
+A revoked source returns `Preflight(NotExecutable)` without a guest commit.
+The fixture's interpreter fetch checks the same mapping permission and
+reports `PermissionDenied` on the revoked mapping. The owner also checks
+overlap against the source backing, including guest aliases. It owns fixed
 ordinary host RAM; guest-executable backing is never the host MAP_JIT arena.
 
 The verified generated helper performs one all-or-nothing write. After the
@@ -3847,7 +3851,9 @@ dirty exit, and tail. Only the lower-level checked-store helper call primitive
 is shared. Load/store V2 entries and the V1 runtime/tag 6 remain isolated.
 
 After stop-RIP, STOP, and initial-budget entry guards, the host validates the
-complete 23-byte source lease before executing any generated instruction. A
+complete 23-byte source lease before executing any generated instruction. It
+requires execute permission on each mapping, including a separate mapping for
+the tail even when the current budget would stop in the prefix. A
 stale source returns a boundary error without changing CPU state or RAM,
 including when budget would later stop before the store. The store owner then
 preflights the full qword destination, active source, tail, permissions, and
