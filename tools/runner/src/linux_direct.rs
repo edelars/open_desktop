@@ -705,10 +705,12 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                                         "index": cpu.index,
                                         "retired": cpu.retired,
                                         "activity": format!("{:?}", cpu.activity),
+                                    "mode": format!("{:?}", cpu.mode),
                                         "rip": cpu.rip,
                                         "rflags": cpu.rflags,
                                         "gpr": cpu.gpr,
                                         "cr3": cpu.cr3,
+                                    "guest_efer": cpu.guest_efer,
                                     })
                                 })
                                 .collect(),

@@ -2469,6 +2469,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         execution_observations,
         ExceptionDeliveryMode::Quantum,
         false,
+        None,
     )
 }
 
@@ -2548,6 +2549,7 @@ pub(crate) fn run_cpl0_set_loop(
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     exception_delivery: ExceptionDeliveryMode<'_>,
     stop_after_mmio: bool,
+    on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2577,6 +2579,7 @@ pub(crate) fn run_cpl0_set_loop(
             execution_observations,
             exception_delivery,
             stop_after_mmio,
+            on_syscall,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false>(
             state,
@@ -2599,6 +2602,7 @@ pub(crate) fn run_cpl0_set_loop(
             execution_observations,
             exception_delivery,
             stop_after_mmio,
+            on_syscall,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true>(
             state,
@@ -2621,6 +2625,7 @@ pub(crate) fn run_cpl0_set_loop(
             execution_observations,
             exception_delivery,
             stop_after_mmio,
+            on_syscall,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false>(
             state,
@@ -2643,6 +2648,7 @@ pub(crate) fn run_cpl0_set_loop(
             execution_observations,
             exception_delivery,
             stop_after_mmio,
+            on_syscall,
         ),
     }
 }
@@ -2669,6 +2675,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     mut execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     exception_delivery: ExceptionDeliveryMode<'_>,
     stop_after_mmio: bool,
+    mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -3266,10 +3273,16 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 None
             };
             if let Some(event) = event {
-                if syscall_events.len() == SYSCALL_EVENTS_PER_CALL {
-                    syscall_events.pop_front();
+                if let Some(publish) = on_syscall.as_mut() {
+                    // A task can migrate as soon as a later kernel instruction publishes it.
+                    // Publish this observation before the vCPU runs that instruction.
+                    publish(event);
+                } else {
+                    if syscall_events.len() == SYSCALL_EVENTS_PER_CALL {
+                        syscall_events.pop_front();
+                    }
+                    syscall_events.push_back(event);
                 }
-                syscall_events.push_back(event);
             }
         }
         if ELF_COPY_ENABLED

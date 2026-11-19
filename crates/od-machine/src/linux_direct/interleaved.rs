@@ -1,9 +1,8 @@
 //! LinuxDirect on the interleaved board scheduler.
-use super::observed::{ObservedRun, RunEnd, finish_stop, run_error};
+use super::observed::{ObservedRun, RunEnd, RunTermination, finish_stop, run_error};
 use super::*;
 use crate::fetch_translation_cache::{FetchCacheInvalidation, FetchTranslationCache};
 use crate::smp_scheduler::{BoardSmpHost, Finished, QuantumPolicy, SmpScheduler, StopRequest};
-use od_isa::CpuActivity;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct LinuxInterleavedRunReport {
@@ -13,16 +12,7 @@ pub struct LinuxInterleavedRunReport {
     pub terminal_vcpu: Option<usize>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct LinuxInterleavedVcpu {
-    pub index: usize,
-    pub retired: u64,
-    pub activity: CpuActivity,
-    pub rip: u64,
-    pub rflags: u64,
-    pub gpr: [u64; 16],
-    pub cr3: Option<u64>,
-}
+pub type LinuxInterleavedVcpu = LinuxVcpuRunState;
 
 /// Run a diskless APIC LinuxDirect board with seeded quanta and one shared instruction budget.
 /// INIT/SIPI and the AP trampoline run inside the same scheduler as long-mode Linux.
@@ -64,7 +54,7 @@ pub fn run_linux_direct_board_set_user_mode_interleaved(
     );
     let pit_before = boot.board.pit_read_counts();
     let pm_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
-    let mut observed = ObservedRun::interleaved();
+    let mut observed = ObservedRun::multiprocessor();
     let mut quanta = 0;
     let mut faults = vec![0; count];
     let fetch_caches = members.fetch_cache.then(|| {
@@ -116,30 +106,26 @@ pub fn run_linux_direct_board_set_user_mode_interleaved(
     let retired = scheduler.retired_total();
     let views = boot.board.sync_linux_boot_views();
     let terminal_vcpu = observed.terminal_vcpu();
-    let exit = match schedule.map_err(|error| run_error(error, retired))? {
-        Finished::Stopped if terminal_vcpu.is_some() => None,
-        Finished::Stopped if stop_reason.is_some() => Some(PagedProbeExit::Stopped),
-        Finished::BudgetExhausted => Some(PagedProbeExit::BudgetExhausted),
-        Finished::AllIdle => Some(PagedProbeExit::Halted),
-        reason => return Err(run_error(reason, retired)),
+    let termination = match (
+        schedule.map_err(|error| run_error(error, retired))?,
+        terminal_vcpu,
+    ) {
+        (Finished::Stopped, Some(cpu)) => RunTermination::Guest(cpu),
+        (Finished::Stopped, None) if stop_reason.is_some() => {
+            RunTermination::Scheduler(PagedProbeExit::Stopped, stop_reason)
+        }
+        (Finished::BudgetExhausted, _) => {
+            RunTermination::Scheduler(PagedProbeExit::BudgetExhausted, None)
+        }
+        (Finished::AllIdle, _) => RunTermination::Scheduler(PagedProbeExit::Halted, None),
+        (reason, _) => return Err(run_error(reason, retired)),
     };
     views.map_err(|error| run_error(error, retired))?;
     let counters = scheduler.counters();
     let vcpus = counters
         .iter()
         .enumerate()
-        .map(|(index, counter)| {
-            let vcpu = boot.board.vcpu(index).expect("scheduled vCPU");
-            LinuxInterleavedVcpu {
-                index,
-                retired: counter.retired,
-                activity: vcpu.activity(),
-                rip: vcpu.state.rip,
-                rflags: vcpu.state.rflags,
-                gpr: vcpu.state.gpr,
-                cr3: vcpu.state.cr3,
-            }
-        })
+        .map(|(index, counter)| LinuxVcpuRunState::capture(&boot.board, index, counter.retired))
         .collect();
     let stop = finish_stop(
         boot,
@@ -152,8 +138,7 @@ pub fn run_linux_direct_board_set_user_mode_interleaved(
             quanta,
             wakes: counters.iter().map(|cpu| cpu.wakes).sum(),
             idle_ns: scheduler.idle().0,
-            exit,
-            stop_reason,
+            termination,
             pm_before,
             pit_before,
         },

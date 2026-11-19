@@ -955,6 +955,7 @@ pub fn run_host_set_step(
         None,
         ExceptionDeliveryMode::HostStep(step.consecutive_faults),
         false,
+        None,
     );
     let partial_rep = matches!(
         report.exit,

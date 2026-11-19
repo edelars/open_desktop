@@ -465,7 +465,7 @@ cmp "$proof_dir/seed-first.json" "$proof_dir/seed-second.json"
   --acpi-blob tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin --nonce smpBoot20261119A
 ```
 
-В двухпроцессорном отчёте `interleaved_scheduler.cpu_stats` содержит retired, RIP, RFLAGS, GPR и CR3 каждого vCPU. Поле `stop.retired` содержит суммарное число выполненных инструкций. При остановке на инструкции `interleaved_scheduler.terminal_vcpu` указывает процессор, которому принадлежат регистры и байты в `stop`.
+В двухпроцессорном отчёте `interleaved_scheduler.cpu_stats` содержит retired, режим исполнения, RIP, RFLAGS, GPR, CR3 и EFER каждого vCPU. Поле `stop.retired` содержит суммарное число выполненных инструкций. При остановке на инструкции `interleaved_scheduler.terminal_vcpu` указывает процессор, которому принадлежат регистры и байты в `stop`.
 
 Для зачётной проверки передайте raw JSON `linux-direct` и nonce, с которым стартовал гость.
 

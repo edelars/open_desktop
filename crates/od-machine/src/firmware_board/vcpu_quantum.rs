@@ -41,7 +41,7 @@ use crate::bus::SplitLockGate;
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook};
 use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::{
-    ExceptionDeliveryMode, LoopBus, PagedCpl0SetReport, run_cpl0_set_loop,
+    ExceptionDeliveryMode, LoopBus, PagedCpl0SetReport, SyscallEvent, run_cpl0_set_loop,
 };
 use crate::smp_scheduler::{Executed, RunFailure};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
@@ -156,6 +156,7 @@ fn quantum_loop(
     set: &Cpl0ProfileSet<'_>,
     exception_delivery: ExceptionDeliveryMode<'_>,
     fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
+    on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
 ) -> (PagedCpl0SetReport, u64, IrqCounters) {
     let QuantumEnv {
         lapic,
@@ -231,6 +232,7 @@ fn quantum_loop(
         None,
         exception_delivery,
         stop_after_mmio,
+        on_syscall,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -385,6 +387,7 @@ impl LoadedFirmwareBoard {
                 ExceptionDeliveryMode::Persistent,
             ),
             fetch_cache,
+            None,
         );
 
         self.pump_uart_transmit(report.instructions_executed);
@@ -541,6 +544,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
         machine_stop,
         nvme_pending,
         None,
+        None,
         |report, vcpu| quantum_result(report.cpu, cpu, vcpu, report.device_ns),
     )
 }
@@ -566,6 +570,7 @@ pub(crate) fn run_shared_set_quantum(
     machine_stop: &mut Option<MachineStopReason>,
     mut nvme_pending: Option<&mut bool>,
     fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
+    on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     report_result: impl FnOnce(
         SetQuantumReport,
         &Vcpu,
@@ -616,6 +621,7 @@ pub(crate) fn run_shared_set_quantum(
         &set,
         ExceptionDeliveryMode::Persistent(consecutive_faults),
         fetch_cache,
+        on_syscall,
     );
 
     env.pump_uart_transmit();
@@ -678,6 +684,7 @@ pub(crate) fn run_litmus_ram_quantum(
         None,
         ExceptionDeliveryMode::Quantum,
         false,
+        None,
     );
     quantum_result(report, cpu, vcpu, 0)
 }

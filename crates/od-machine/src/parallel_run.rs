@@ -1240,7 +1240,7 @@ impl Worker<'_, '_, '_, '_> {
             ));
         }
         // The charge: the clock owner is the only mover of time (D7).
-        {
+        let charge = (|| {
             let mut owner = lock(&sh.owner);
             if executed.retired != 0 {
                 owner.account_retired(executed.retired).map_err(|_| {
@@ -1252,15 +1252,20 @@ impl Worker<'_, '_, '_, '_> {
                     FirmwareBoardError::Config("parallel: the clock refused the device charge")
                 })?;
             }
+            Ok(())
+        })();
+        if charge.is_ok() {
+            if let Some(pit) = &sh.pit_ioapic_source {
+                pit.next_deadline_ns(); // catch up at the charged time
+            }
+            if cpu != BOOT_VCPU_INDEX {
+                sh.kick_boot_if_board_wakes();
+            }
         }
-        if let Some(pit) = &sh.pit_ioapic_source {
-            pit.next_deadline_ns(); // catch up and signal the selected LAPIC at the charged time
-        }
-        if cpu != BOOT_VCPU_INDEX {
-            sh.kick_boot_if_board_wakes();
-        }
+        // These instructions already changed guest state even if clock accounting failed.
         cell.calls.fetch_add(1, SEQ);
         cell.retired.fetch_add(executed.retired, SEQ);
+        charge?;
         let unused = left - executed.retired;
         if unused != 0 {
             sh.remaining.fetch_add(unused, SEQ);
@@ -3019,6 +3024,42 @@ mod tests {
         controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
     ) -> (ParallelReport, R) {
         run_threads(board, config, &fixture_quantum, controller).expect("the board splits")
+    }
+
+    #[test]
+    fn device_clock_failure_preserves_the_retired_guest_prefix() {
+        let mut board = board(2);
+        let cr3 = tables(&mut board, TABLES_0, 0x80_0000, 0);
+        let code = mov_eax(1);
+        patch(&mut board, CODE_0, &code);
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xD01,
+        );
+
+        let (result, ()) = run_threads(
+            &mut board,
+            config(1, 1),
+            &|call| {
+                let mut completed = fixture_quantum(call)?;
+                completed.device_ns = u64::MAX;
+                Ok(completed)
+            },
+            |control| assert!(control.wait_finished(Duration::from_secs(5))),
+        )
+        .unwrap();
+        assert_eq!(
+            result.finished,
+            ParallelFinish::Error {
+                cpu: 0,
+                error: FirmwareBoardError::Config("parallel: the clock refused the device charge"),
+            }
+        );
+        assert_eq!(result.cpus[0].retired, 1);
+        assert_eq!(board.state().rip, CODE_0 + code.len() as u64);
+        assert_eq!(board.state().gpr[Register::Rax as usize], 1);
     }
 
     #[test]

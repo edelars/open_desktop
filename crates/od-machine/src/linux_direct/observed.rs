@@ -6,7 +6,7 @@ use crate::firmware_board::vcpu_quantum::{
 };
 use crate::paged_memory_adapter::{PagedCpl0SetExit, SyscallEvent, SyscallUserContext};
 use crate::smp_scheduler::{Executed, RunFailure};
-use crate::vcpu::Vcpu;
+use crate::vcpu::{MAX_VCPUS, Vcpu};
 use od_isa::PrivilegeLevel;
 
 #[derive(Default)]
@@ -14,13 +14,14 @@ pub(super) struct ObservedRun {
     irq: IrqCounters,
     rdtsc: [u64; 4],
     changes: Vec<TranslationContextChange>,
+    per_cpu_changes: Option<[Vec<TranslationContextChange>; MAX_VCPUS]>,
     cpl3_retired: u64,
     journal: SyscallJournal,
     syscall_callers: Option<[Option<SyscallUserContext>; SYSCALL_JOURNAL_CAPACITY]>,
     exceptions: u64,
     page_faults: u64,
     protection_faults: u64,
-    terminal: Option<Terminal>,
+    terminals: [Option<Terminal>; MAX_VCPUS],
 }
 
 struct Terminal {
@@ -33,14 +34,21 @@ struct Terminal {
 }
 
 impl ObservedRun {
-    pub(super) fn interleaved() -> Self {
+    pub(super) fn multiprocessor() -> Self {
         Self {
             syscall_callers: Some([None; SYSCALL_JOURNAL_CAPACITY]),
             ..Self::default()
         }
     }
 
-    fn record_syscall(&mut self, event: SyscallEvent) {
+    pub(super) fn parallel() -> Self {
+        Self {
+            per_cpu_changes: Some(Default::default()),
+            ..Self::multiprocessor()
+        }
+    }
+
+    pub(super) fn record_syscall(&mut self, event: SyscallEvent) {
         let Some(callers) = &mut self.syscall_callers else {
             self.journal.record(event);
             return;
@@ -77,7 +85,11 @@ impl ObservedRun {
         if let Some(cpl) = report.rdtsc_cpl {
             self.rdtsc[cpl] += 1;
         }
-        self.changes.extend(cpu.translation_context_changes);
+        let changes = match &mut self.per_cpu_changes {
+            Some(per_cpu) => &mut per_cpu[vcpu.index],
+            None => &mut self.changes,
+        };
+        changes.extend(cpu.translation_context_changes);
         self.cpl3_retired += cpu.cpl3_retired;
         for event in cpu.syscall_events {
             self.record_syscall(event);
@@ -111,7 +123,7 @@ impl ObservedRun {
                     ));
                 }
             }
-            self.terminal = Some(Terminal {
+            self.terminals[vcpu.index] = Some(Terminal {
                 cpu: vcpu.index,
                 exit,
                 detail,
@@ -132,8 +144,17 @@ pub(super) fn run_error(detail: impl std::fmt::Debug, retired: u64) -> LinuxDire
 
 impl ObservedRun {
     pub(super) fn terminal_vcpu(&self) -> Option<usize> {
-        self.terminal.as_ref().map(|terminal| terminal.cpu)
+        self.terminals.iter().position(Option::is_some)
     }
+
+    pub(super) fn has_terminal(&self, cpu: usize) -> bool {
+        self.terminals[cpu].is_some()
+    }
+}
+
+pub(super) enum RunTermination {
+    Guest(usize),
+    Scheduler(PagedProbeExit, Option<MachineStopReason>),
 }
 
 /// Device observations and the scheduler outcome for a completed LinuxDirect run.
@@ -144,8 +165,7 @@ pub(super) struct RunEnd {
     pub(super) quanta: u64,
     pub(super) wakes: u64,
     pub(super) idle_ns: u64,
-    pub(super) exit: Option<PagedProbeExit>,
-    pub(super) stop_reason: Option<crate::MachineStopReason>,
+    pub(super) termination: RunTermination,
     pub(super) pm_before: Option<u64>,
     pub(super) pit_before: Option<[u64; 2]>,
 }
@@ -157,19 +177,24 @@ pub(super) fn finish_stop(
     end: RunEnd,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let retired = end.retired;
-    let terminal = match end.exit {
-        Some(exit) => Terminal {
-            cpu: BOOT_VCPU_INDEX,
-            detail: format!("{exit:?}"),
-            exit,
-            page_fault: None,
-            memory_error: None,
-            user_entry: None,
-        },
-        None => observed
-            .terminal
-            .take()
-            .ok_or_else(|| run_error("missing guest exit report", retired))?,
+    let (terminal, stop_reason) = match end.termination {
+        RunTermination::Guest(cpu) => (
+            observed.terminals[cpu]
+                .take()
+                .ok_or_else(|| run_error("missing guest exit report", retired))?,
+            None,
+        ),
+        RunTermination::Scheduler(exit, stop_reason) => (
+            Terminal {
+                cpu: BOOT_VCPU_INDEX,
+                detail: format!("{exit:?}"),
+                exit,
+                page_fault: None,
+                memory_error: None,
+                user_entry: None,
+            },
+            stop_reason,
+        ),
     };
     observed.irq.irq0_edges = boot.board.irq0_edges();
     observed.irq.halt_wakes = end.wakes;
@@ -192,7 +217,7 @@ pub(super) fn finish_stop(
         rdtsc_reads_by_cpl: Some(observed.rdtsc),
         pit_port_b_reads: pit_reads.map(|read| read[0]),
         pit_counter_port_reads: pit_reads.map(|read| read[1]),
-        stop_reason: end.stop_reason,
+        stop_reason,
     };
     let vcpu = boot
         .board
@@ -219,7 +244,10 @@ pub(super) fn finish_stop(
             path: end.path,
             members: end.names,
             exit_detail: Some(terminal.detail),
-            changes: &observed.changes,
+            changes: observed
+                .per_cpu_changes
+                .as_ref()
+                .map_or(&observed.changes, |per_cpu| &per_cpu[terminal.cpu]),
             cpuid_divergence_leaf: None,
             user_entry: terminal.user_entry,
             user_mode: true,
@@ -244,7 +272,7 @@ mod tests {
 
     #[test]
     fn interleaved_syscalls_match_the_restored_user_context() {
-        let mut run = ObservedRun::interleaved();
+        let mut run = ObservedRun::multiprocessor();
         let first = SyscallUserContext {
             cr3: 0x1000,
             rip: 0x2000,

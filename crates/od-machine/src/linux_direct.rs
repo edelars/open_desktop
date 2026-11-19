@@ -64,8 +64,79 @@ pub use interleaved::{
     run_linux_direct_board_set_user_mode_interleaved,
 };
 pub use threaded::{
-    LinuxThreadedOptions, LinuxThreadedRunReport, run_linux_direct_board_set_user_mode_threaded,
+    LinuxParallelRunReport, LinuxThreadedOptions, LinuxThreadedRunReport,
+    run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinuxVcpuRunMode {
+    Real,
+    Protected,
+    Long64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct LinuxVcpuRunState {
+    pub index: usize,
+    pub retired: u64,
+    pub activity: od_isa::CpuActivity,
+    pub mode: LinuxVcpuRunMode,
+    pub rip: u64,
+    pub rflags: u64,
+    pub gpr: [u64; 16],
+    pub cr3: Option<u64>,
+    pub guest_efer: u64,
+}
+
+impl LinuxVcpuRunState {
+    fn capture(board: &LoadedFirmwareBoard, index: usize, retired: u64) -> Self {
+        use crate::vcpu::LegacyCpu;
+        let vcpu = board.vcpu(index).expect("scheduled vCPU");
+        let state = &vcpu.state;
+        let legacy_gpr = |low: [u32; 8]| {
+            let mut gpr = [0; 16];
+            gpr[..8].copy_from_slice(&low.map(u64::from));
+            gpr
+        };
+        let (mode, rip, rflags, gpr, cr3, guest_efer) = match &vcpu.legacy {
+            Some(LegacyCpu::Real(cpu)) => (
+                LinuxVcpuRunMode::Real,
+                u64::from(cpu.mode.eip),
+                u64::from(cpu.mode.eflags),
+                legacy_gpr(cpu.gpr),
+                None,
+                0,
+            ),
+            Some(LegacyCpu::Protected(cpu)) => (
+                LinuxVcpuRunMode::Protected,
+                u64::from(cpu.rip_high) << 32 | u64::from(cpu.eip),
+                u64::from(cpu.eflags),
+                legacy_gpr(cpu.gpr),
+                Some(u64::from(cpu.cr3)),
+                cpu.efer,
+            ),
+            None => (
+                LinuxVcpuRunMode::Long64,
+                state.rip,
+                state.rflags,
+                state.gpr,
+                state.cr3,
+                vcpu.guest_efer,
+            ),
+        };
+        Self {
+            index,
+            retired,
+            activity: vcpu.activity(),
+            mode,
+            rip,
+            rflags,
+            gpr,
+            cr3,
+            guest_efer,
+        }
+    }
+}
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -1840,6 +1911,8 @@ mod tests {
         include_bytes!("../../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin");
     const SMP_BLOB: &[u8] =
         include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin");
+    const FOUR_CPU_BLOB: &[u8] =
+        include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-4-vcpus.bin");
     /// `tables_config_with_ecam().acpi_manifest_hash()`, the hash of the fixture blob (S4-31d/g).
     const FIXTURE_HASH: &str = "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2";
     const MIB: u64 = 1 << 20;
@@ -2083,15 +2156,7 @@ mod tests {
         ]);
         let input = input(&file, &[], SMP_BLOB, board_hash());
         let mut boot = load_linux_direct_board_with_vcpus(&input, 2).unwrap();
-        let mut state = boot.board.state().clone();
-        state.cr3 = Some(boot.board.cr3());
-        state.activity = Some(od_isa::CpuActivity::Running);
-        let efer = boot.board.guest_efer();
-        let ap = boot.board.vcpu_mut(1).unwrap();
-        ap.state = state;
-        ap.guest_efer = efer;
-        ap.legacy = None;
-        boot.board.state_mut().activity = Some(od_isa::CpuActivity::Halted);
+        start_test_ap(&mut boot);
         let members = LinuxCpl0SetMembers {
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
             ..LinuxCpl0SetMembers::linux_default()
@@ -2116,6 +2181,59 @@ mod tests {
         );
         assert_eq!(stopped.stop.rip, report.vcpus[1].rip);
         assert_eq!(stopped.stop.rip_bytes.first(), Some(&0x06));
+    }
+
+    // Prepare just the long-mode leg. The independent SMP-probe suite runs the real trampoline.
+    fn start_test_ap(boot: &mut LinuxDirectBoot) {
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(boot.board.cr3());
+        state.activity = Some(od_isa::CpuActivity::Running);
+        let efer = boot.board.guest_efer();
+        let ap = boot.board.vcpu_mut(1).unwrap();
+        ap.state = state;
+        ap.guest_efer = efer;
+        ap.legacy = None;
+        boot.board.state_mut().activity = Some(od_isa::CpuActivity::Halted);
+    }
+
+    #[test]
+    fn parallel_linux_joins_all_workers_and_reports_the_actual_ap_terminal_cpu() {
+        let file = bzimage_with_entry(&[0xfc, 0x06]); // CLD; legacy PUSH ES
+        for (vcpus, blob) in [(2, SMP_BLOB), (4, FOUR_CPU_BLOB)] {
+            let input = input(&file, &[], blob, board_hash());
+            let mut boot = load_linux_direct_board_with_vcpus(&input, vcpus).unwrap();
+            start_test_ap(&mut boot);
+            let report = run_linux_direct_board_set_user_mode_parallel(
+                &mut boot,
+                &input,
+                8,
+                LinuxCpl0SetMembers {
+                    cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+                LinuxThreadedOptions {
+                    quantum: 8,
+                    timeout: std::time::Duration::from_secs(5),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                (report.threads_started, report.threads_exited),
+                (vcpus, vcpus)
+            );
+            assert_eq!(report.terminal_vcpu, Some(1));
+            assert_eq!(report.stop.retired, 1);
+            assert_eq!(report.stop.rip_bytes.first(), Some(&0x06));
+            assert_eq!(report.stop.rip, report.vcpus[1].rip);
+            assert_eq!(report.vcpus[0].retired, 0);
+            assert_eq!(report.vcpus[1].retired, 1);
+            for cpu in &report.vcpus[2..] {
+                assert_eq!(cpu.mode, LinuxVcpuRunMode::Real);
+                assert_eq!(cpu.activity, od_isa::CpuActivity::WaitForSipi);
+                assert_eq!(cpu.rip, u64::from(crate::vcpu::init_cpu(0).mode.eip));
+                assert_eq!(cpu.cr3, None);
+            }
+        }
     }
 
     fn run_entry(code: &[u8], budget: u64) -> LinuxStopRecord {
@@ -11942,17 +12060,27 @@ mod tests {
     ) -> (LinuxDirectBoot, Vec<u8>) {
         let entry: Vec<u8> = prefix.iter().copied().chain([0x48, 0xCF]).collect();
         let (mut boot, file) = boot_with_entry(&entry);
+        configure_user_mode_entry(&mut boot, user_code, user_page, user_rflags);
+        (boot, file)
+    }
+
+    fn configure_user_mode_entry(
+        boot: &mut LinuxDirectBoot,
+        user_code: &[u8],
+        user_page: bool,
+        user_rflags: u64,
+    ) {
         write_phys(
-            &mut boot,
+            boot,
             USER_GDT + 0x10,
             &0x00af_fb00_0000_ffff_u64.to_le_bytes(),
         );
         write_phys(
-            &mut boot,
+            boot,
             USER_GDT + 0x18,
             &0x00cf_f300_0000_ffff_u64.to_le_bytes(),
         );
-        write_phys(&mut boot, USER_CODE_AT, user_code);
+        write_phys(boot, USER_CODE_AT, user_code);
         let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
         for (offset, value) in [
             (0u64, USER_CODE_AT),
@@ -11961,7 +12089,7 @@ mod tests {
             (24, ENTRY + 0x800),
             (32, 0x1b),
         ] {
-            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+            write_phys(boot, rsp + offset, &value.to_le_bytes());
         }
         let state = boot.board.state_mut();
         state.gpr[Register::Rsp as usize] = rsp;
@@ -11979,10 +12107,9 @@ mod tests {
                 let mut raw = [0u8; 8];
                 read(&mut boot.board, entry, &mut raw).expect("read entry");
                 let value = u64::from_le_bytes(raw) | 4;
-                write_phys(&mut boot, entry, &value.to_le_bytes());
+                write_phys(boot, entry, &value.to_le_bytes());
             }
         }
-        (boot, file)
     }
 
     fn run_user_facade(boot: &mut LinuxDirectBoot, file: &[u8], budget: u64) -> LinuxStopRecord {
@@ -12170,6 +12297,42 @@ mod tests {
             (stop.syscall_journal.entered, stop.syscall_journal.returned),
             (2, 2)
         );
+    }
+
+    #[test]
+    fn parallel_linux_observes_syscalls_once_and_correlates_the_return() {
+        let file = bzimage_with_entry(&[0x48, 0xcf]); // IRETQ into the guest task
+        let input = input(&file, &[], SMP_BLOB, board_hash());
+        let mut boot = load_linux_direct_board_with_vcpus(&input, 2).unwrap();
+        let user = [0xb8, 0x53, 0, 0, 0, 0x0f, 0x05, 0xf1];
+        configure_user_mode_entry(&mut boot, &user, true, 0x202);
+        write_phys(
+            &mut boot,
+            SYSCALL_KERNEL_AT,
+            &[0xb8, 0x2a, 0, 0, 0, 0x48, 0x0f, 0x07],
+        );
+        boot.board.set_guest_efer(0xd01);
+        boot.board.set_guest_star(0x0023_0010_0000_0000);
+        boot.board.set_guest_lstar(SYSCALL_KERNEL_AT);
+        boot.board.set_guest_syscall_mask(0x25_7fd5);
+        let report = run_linux_direct_board_set_user_mode_parallel(
+            &mut boot,
+            &input,
+            32,
+            LinuxCpl0SetMembers {
+                cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+                ..syscall_members()
+            },
+            LinuxThreadedOptions {
+                quantum: 16,
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.terminal_vcpu, Some(0));
+        let journal = report.stop.syscall_journal;
+        assert_eq!((journal.entered, journal.returned), (1, 1));
+        assert_eq!(journal.entries[0].rax_return, Some(0x2a));
     }
 
     #[test]
