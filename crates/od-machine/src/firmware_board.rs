@@ -1512,14 +1512,11 @@ impl LoadedFirmwareBoard {
     }
 
     /// The state of vCPU `index`, `None` when the board has no such vCPU.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn vcpu(&self, index: usize) -> Option<&Vcpu> {
         self.vcpus.get(index)
     }
 
-    /// The state of vCPU `index` for the scheduler of S6-15 (it sets a woken vCPU `Running`),
-    /// `None` when the board has no such vCPU.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Mutable state of vCPU `index`, `None` when the board has no such vCPU.
     pub(crate) fn vcpu_mut(&mut self, index: usize) -> Option<&mut Vcpu> {
         self.vcpus.get_mut(index)
     }
@@ -2350,6 +2347,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the guest-visible EFER a CPL0-set run left (S4-38L7f).
+    #[cfg(test)]
     pub(crate) fn set_guest_efer(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_efer = value;
     }
@@ -2371,6 +2369,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the STAR a CPL0-set run left (S4-38L7ao).
+    #[cfg(test)]
     pub(crate) fn set_guest_star(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_star = value;
     }
@@ -2382,6 +2381,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the LSTAR a CPL0-set run left (S4-38L7ap).
+    #[cfg(test)]
     pub(crate) fn set_guest_lstar(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_lstar = value;
     }
@@ -2393,6 +2393,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the CSTAR a CPL0-set run left (S4-38L7aq).
+    #[cfg(test)]
     pub(crate) fn set_guest_cstar(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_cstar = value;
     }
@@ -2404,6 +2405,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the SYSENTER_CS a CPL0-set run left (S4-38L7ar).
+    #[cfg(test)]
     pub(crate) fn set_guest_sysenter_cs(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_cs = value;
     }
@@ -2415,6 +2417,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the SYSENTER_ESP a CPL0-set run left (S4-38L7as).
+    #[cfg(test)]
     pub(crate) fn set_guest_sysenter_esp(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_esp = value;
     }
@@ -2426,6 +2429,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
+    #[cfg(test)]
     pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_sysenter_eip = value;
     }
@@ -2437,6 +2441,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the SYSCALL_MASK a CPL0-set run left (S4-38L7at).
+    #[cfg(test)]
     pub(crate) fn set_guest_syscall_mask(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_syscall_mask = value;
     }
@@ -2448,6 +2453,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the KERNEL_GS_BASE a CPL0-set run left (S4-38L7au).
+    #[cfg(test)]
     pub(crate) fn set_guest_kernel_gs_base(&mut self, value: u64) {
         self.vcpus[BOOT_VCPU_INDEX].guest_kernel_gs_base = value;
     }
@@ -2459,6 +2465,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// Stores the FP state a CPL0-set run left (S4-38L9d).
+    #[cfg(test)]
     pub(crate) fn set_guest_fp(&mut self, value: GuestFpState) {
         self.vcpus[BOOT_VCPU_INDEX].guest_fp = value;
     }

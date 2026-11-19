@@ -47,14 +47,15 @@ use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
+use crate::vcpu::BOOT_VCPU_INDEX;
 use crate::{GuestPhysicalAddress, LinuxExecutionObservations, MachineStopReason, NvmeConfig};
 use od_isa::cpuid::CpuidProfile;
-use od_isa::execute::{
-    ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
-};
-use od_isa::msr::MsrProfile;
-use od_isa::{CliProfile, HaltProfile, IretqUserEntry, Register, StiProfile};
-use std::cell::{Cell, RefCell};
+use od_isa::execute::TranslationContextChange;
+use od_isa::{IretqUserEntry, Register};
+use profile::{LinuxCpl0Profile, LinuxVcpuCells};
+use std::cell::Cell;
+
+mod profile;
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -1476,140 +1477,23 @@ fn run_linux_direct_board_set_with_post_iret_index(
         members.halt = true;
         members.irq = true;
     }
-    let cli = CliProfile::NonPviLong64V1;
     let cpuid = members.cpuid_profile;
-    // The profile only names the member and seeds nothing under the cell, so it carries the
-    // constant board EFER: `set_members` keeps `msr:EferReadOnlyV1(3328)` on every run.
-    let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
-    // S4-38L7f: the guest-visible EFER; the set writes it, the board keeps it between runs.
-    let efer_cell = Cell::new(boot.board.guest_efer());
-    // S4-38L7w: the guest CONFIG_ADDRESS, kept by the board between runs like the EFER.
+    let profile = LinuxCpl0Profile::new(members, user_mode, boot.board.efer());
+    let cpu_cells = LinuxVcpuCells::from_vcpu(
+        boot.board
+            .vcpu(BOOT_VCPU_INDEX)
+            .expect("LinuxDirect board has a boot vCPU"),
+    );
     let pci_cell = Cell::new(boot.board.pci_config_address());
-    // S4-38L7ao: the guest IA32_STAR, kept by the board between runs.
-    let star_cell = Cell::new(boot.board.guest_star());
-    // S4-38L7ap: the guest IA32_LSTAR, kept by the board between runs.
-    let lstar_cell = Cell::new(boot.board.guest_lstar());
-    // S4-38L7aq: the guest IA32_CSTAR, kept by the board between runs.
-    let cstar_cell = Cell::new(boot.board.guest_cstar());
-    // S4-38L7ar: the guest IA32_SYSENTER_CS, kept by the board between runs.
-    let sysenter_cs_cell = Cell::new(boot.board.guest_sysenter_cs());
-    // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP, kept by the board between runs.
-    let sysenter_esp_cell = Cell::new(boot.board.guest_sysenter_esp());
-    let sysenter_eip_cell = Cell::new(boot.board.guest_sysenter_eip());
-    // S4-38L7at: the guest IA32_SYSCALL_MASK, kept by the board between runs.
-    let syscall_mask_cell = Cell::new(boot.board.guest_syscall_mask());
-    // S4-38L7au: the guest IA32_KERNEL_GS_BASE, kept by the board between runs.
-    let kernel_gs_base_cell = Cell::new(boot.board.guest_kernel_gs_base());
-    // S4-38L9d: the guest FP state, kept by the board between runs.
-    let fp_cell = RefCell::new(boot.board.guest_fp().clone());
-    let halt = HaltProfile::Long64V1;
-    let mut names = vec!["cli".to_string()];
-    let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
-    if members.cpu_owned_cr3 {
-        set = set.with_cpu_owned_cr3(MovCr3Long64V1);
-        names.push("cpu_owned_cr3".into());
-    }
-    if members.cpuid {
-        set = set.with_cpuid(&cpuid);
-        names.push(format!("cpuid:{cpuid:?}"));
-    }
-    if members.rdtsc {
-        set = set.with_rdtsc();
-        names.push("rdtsc".into());
-    }
-    if members.msr {
-        set = set.with_msr(&msr).with_msr_efer_write(&efer_cell);
-        names.push(format!("msr:{msr:?}"));
-    }
-    if members.msr_fs_gs_base {
-        set = set.with_msr_fs_gs_base();
-        names.push("msr:fs_gs_base".into());
-    }
-    if members.msr_star {
-        set = set.with_msr_star_write(&star_cell);
-        names.push("msr:star_write".into());
-    }
-    if members.msr_lstar {
-        set = set.with_msr_lstar_write(&lstar_cell);
-        names.push("msr:lstar_write".into());
-    }
-    if members.msr_cstar {
-        set = set.with_msr_cstar_write(&cstar_cell);
-        names.push("msr:cstar_write".into());
-    }
-    if members.msr_sysenter_cs {
-        set = set.with_msr_sysenter_cs_write(&sysenter_cs_cell);
-        names.push("msr:sysenter_cs_write".into());
-    }
-    if members.msr_sysenter_stack {
-        set = set.with_msr_sysenter_stack_write(&sysenter_esp_cell, &sysenter_eip_cell);
-        names.push("msr:sysenter_stack_write".into());
-    }
-    if members.msr_syscall_mask {
-        set = set.with_msr_syscall_mask_write(&syscall_mask_cell);
-        names.push("msr:syscall_mask_write".into());
-    }
-    if members.msr_kernel_gs_base {
-        set = set.with_msr_kernel_gs_base_write(&kernel_gs_base_cell);
-        names.push("msr:kernel_gs_base_write".into());
-    }
-    if members.msr_tdx_keyid_partitioning_read {
-        set = set.with_msr_tdx_keyid_partitioning_read();
-        names.push("msr:tdx_keyid_partitioning_read".into());
-    }
-    if members.msr_apic_base {
-        set = set.with_msr_apic_base();
-        names.push("msr:apic_base".into());
-    }
-    if members.fp_state {
-        set = set.with_fp_state(&fp_cell);
-        names.push("fp_state".into());
-    }
-    if members.int3 {
-        set = set.with_int3();
-        names.push("int3".into());
-    }
-    if members.halt {
-        set = set.with_halt(&halt);
-        names.push("halt".into());
-    }
-    if members.pio_u8 {
-        set = set.with_pio_u8();
-        names.push("pio_u8".into());
-    }
-    let sti = StiProfile::NonPviLong64V1;
-    if members.sti {
-        set = set.with_sti(&sti);
-        names.push("sti".into());
-    }
-    if members.popf_cpl0 {
-        set = set.with_popf_cpl0();
-        names.push("popf_cpl0".into());
-    }
-    if members.pci_config {
-        set = set.with_pci_config(&pci_cell);
-        names.push("pci_config".into());
-    }
-    if members.irq {
-        names.push("irq".into());
-    }
+    let mut names = Vec::new();
+    let set = profile.bind(&cpu_cells, &pci_cell, |member| {
+        names.push(member.to_string())
+    });
     if members.clock_owner {
         // S4-23j: before the first instruction, so a refusal leaves the guest untouched.
         boot.board
             .enable_clock_owner()
             .map_err(|error| LinuxDirectError::new("run_failed", "run", error))?;
-        names.push("clock_owner".into());
-    }
-    if user_mode {
-        set = set.with_user_mode();
-        names.push("user_mode".into());
-        // S4-39e: `SYSCALL` from CPL3 consumes the EFER, STAR, LSTAR and SYSCALL_MASK cells; the
-        // member joins only a user-mode set that carries all four (the stage4a members do).
-        // Without one of them `SYSCALL` keeps stopping the run as `user_mode_unsupported`.
-        if members.msr && members.msr_star && members.msr_lstar && members.msr_syscall_mask {
-            set = set.with_syscall();
-            names.push("syscall".into());
-        }
     }
     // S4-38L4i: after every refusal that leaves the guest untouched, before the first
     // instruction; the recorder only observes.
@@ -1686,19 +1570,12 @@ fn run_linux_direct_board_set_with_post_iret_index(
             members.irq,
         )
     };
-    // The EFER the guest left stays whatever way the run ended.
-    boot.board.set_guest_efer(efer_cell.get());
+    cpu_cells.commit(
+        boot.board
+            .vcpu_mut(BOOT_VCPU_INDEX)
+            .expect("LinuxDirect board has a boot vCPU"),
+    );
     boot.board.set_pci_config_address(pci_cell.get());
-    boot.board.set_guest_star(star_cell.get());
-    boot.board.set_guest_lstar(lstar_cell.get());
-    boot.board.set_guest_cstar(cstar_cell.get());
-    boot.board.set_guest_sysenter_cs(sysenter_cs_cell.get());
-    boot.board.set_guest_sysenter_esp(sysenter_esp_cell.get());
-    boot.board.set_guest_sysenter_eip(sysenter_eip_cell.get());
-    boot.board.set_guest_syscall_mask(syscall_mask_cell.get());
-    boot.board
-        .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
-    boot.board.set_guest_fp(fp_cell.into_inner());
     let checkpoints = boot.board.take_checkpoints();
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
@@ -2392,7 +2269,8 @@ mod tests {
         ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, RunExit, TranslationContextChange,
     };
     use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
-    use od_isa::{CliProfile, CpuActivity, HaltProfile, INTEGER_FLAGS, LongModeState};
+    use od_isa::msr::MsrProfile;
+    use od_isa::{CliProfile, CpuActivity, HaltProfile, INTEGER_FLAGS, LongModeState, StiProfile};
 
     const ENTRY: u64 = 0x0100_0200;
     /// `cld; cli; xor eax,eax; mov ds,ax; mov es,ax; mov ss,ax`: the first bytes of `startup_64`
