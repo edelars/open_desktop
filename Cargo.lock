@@ -334,6 +334,7 @@ dependencies = [
 name = "od-host"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "od-isa",
  "od-jit",
  "od-machine",

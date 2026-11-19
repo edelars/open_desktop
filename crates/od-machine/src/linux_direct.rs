@@ -2217,6 +2217,52 @@ mod tests {
     }
 
     #[test]
+    fn com1_observer_receives_guest_bytes_in_order_at_the_budget_boundary() {
+        use std::sync::{Arc, Mutex};
+
+        // MOV EDX,3f8h; MOV AL,'A'; OUT DX,AL; MOV AL,'B'; OUT DX,AL.
+        let file = bzimage_with_entry(&[0xba, 0xf8, 3, 0, 0, 0xb0, b'A', 0xee, 0xb0, b'B', 0xee]);
+        let input = input(&file, &[], SMP_BLOB, board_hash());
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        for parallel in [false, true] {
+            let mut boot = load_linux_direct_board_with_vcpus(&input, 2).unwrap();
+            start_test_ap(&mut boot);
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let capture = Arc::clone(&observed);
+            boot.board.set_com1_observer(move |byte| {
+                capture.lock().unwrap().push(byte);
+            });
+            let stop = if parallel {
+                run_linux_direct_board_set_user_mode_parallel(
+                    &mut boot,
+                    &input,
+                    5,
+                    members,
+                    LinuxThreadedOptions {
+                        quantum: 16,
+                        timeout: std::time::Duration::from_secs(5),
+                    },
+                )
+                .unwrap()
+                .stop
+            } else {
+                run_linux_direct_board_set_user_mode_interleaved(
+                    &mut boot, &input, 5, members, 24301,
+                )
+                .unwrap()
+                .stop
+            };
+            assert_eq!(stop.exit, PagedProbeExit::BudgetExhausted);
+            assert_eq!(stop.retired, 5);
+            assert_eq!(stop.com1, b"AB");
+            assert_eq!(observed.lock().unwrap().as_slice(), b"AB");
+        }
+    }
+
+    #[test]
     fn disk_backed_linux_direct_checks_nvme_manifest_and_madt_then_runs_both_schedulers() {
         let file = bzimage_with_entry(&[0xf4]); // HLT
         let hash = FirmwareBoardConfig {

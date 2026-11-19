@@ -88,6 +88,7 @@ use std::time::{Duration, Instant};
 use od_machine::{load_linux_direct_board, run_linux_direct_board_set};
 
 mod checkpoints;
+mod compute_timing;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
@@ -95,7 +96,7 @@ const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blo
  [--vcpus 1|2] [--seed <u64> (stage4a or stage4a-apic user mode)] \
  [--parallel --vcpus 2|4 [--quantum <steps>] [--timeout-s <seconds>]] \
  [--rootfs-raw <working-copy.raw> (--vcpus 2|4, stage4a-apic user mode, new report path)] \
- [--s6-compute <workers,blocks,checksum> (needs RAW; also supports --vcpus 1)] \
+ [--s6-compute <workers,blocks,checksum> [--s6-timing] (needs RAW; also supports --vcpus 1)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -119,6 +120,7 @@ struct Options {
     acpi_blob: String,
     rootfs_raw: Option<String>,
     s6_compute: Option<String>,
+    s6_timing: bool,
     nonce: String,
     /// Carry the nonce in the initrd bootconfig instead of the early command line.
     nonce_bootconfig: bool,
@@ -800,6 +802,16 @@ fn evaluate_with_rootfs(
                     int3: options.cpuid_profile.is_stage4a_family(),
                     ..LinuxCpl0SetMembers::linux_default()
                 };
+                let timing = options.s6_timing.then(|| {
+                    compute_timing::Capture::install(
+                        &mut boot.board,
+                        &options.nonce,
+                        options
+                            .s6_compute
+                            .as_deref()
+                            .expect("validated compute parameters"),
+                    )
+                });
                 let run_started = Instant::now();
                 let result = if let Some(parallel) = &options.parallel {
                     let scheduler = &mut evidence["parallel_scheduler"];
@@ -886,6 +898,9 @@ fn evaluate_with_rootfs(
                     run_linux_direct_board(&mut boot, &machine_input, budget)
                 };
                 let run_wall_seconds = run_started.elapsed().as_secs_f64();
+                if let Some(timing) = timing {
+                    evidence["compute_timing"] = timing.report();
+                }
                 if let Some(path) = &fetch_stats_path {
                     let sweep_report = boot.board.take_fetch_cache_sweep();
                     let final_ram_sha256 = boot.board.ram_sha256();
@@ -1510,6 +1525,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut acpi_blob = None;
     let mut rootfs_raw = None;
     let mut s6_compute = None;
+    let mut s6_timing = false;
     let mut nonce = None;
     let mut nonce_bootconfig = false;
     let mut expected_vmlinuz = None;
@@ -1563,6 +1579,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--parallel" {
             if std::mem::replace(&mut parallel, true) {
                 return Err("duplicate option --parallel".into());
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--s6-timing" {
+            if std::mem::replace(&mut s6_timing, true) {
+                return Err("duplicate option --s6-timing".into());
             }
             index += 1;
             continue;
@@ -1818,6 +1841,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         validate_compute(compute, vcpu_count)?;
     }
+    if s6_timing && s6_compute.is_none() {
+        return Err("--s6-timing requires --s6-compute".into());
+    }
     if rootfs_raw.is_some()
         && !(run
             && (vcpu_count > 1 || s6_compute.is_some())
@@ -2067,6 +2093,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         acpi_blob: required(acpi_blob, "--acpi-blob")?,
         rootfs_raw,
         s6_compute,
+        s6_timing,
         nonce,
         nonce_bootconfig,
         expected_vmlinuz_sha256: parse_sha256(&required(
@@ -3500,6 +3527,7 @@ mod tests {
                 interleaved_seed: None,
                 rootfs_raw: None,
                 s6_compute: None,
+                s6_timing: false,
                 parallel: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
@@ -5112,7 +5140,14 @@ mod tests {
                 options.s6_compute.as_deref(),
                 Some("1,4097,ec4675d8578a4e14")
             );
+            assert!(!options.s6_timing);
+            assert!(
+                parse_base(&[&args[..], schedule, &["--s6-timing"]].concat())
+                    .unwrap()
+                    .s6_timing
+            );
         }
+        assert!(parse_base(&["--s6-timing"]).is_err());
         for value in [
             "2,4097,ec4675d8578a4e14",
             "1,0,ec4675d8578a4e14",
@@ -5152,7 +5187,15 @@ mod tests {
 
     #[test]
     fn raw_compute_runs_one_vcpu_through_both_schedulers() {
-        let img = bzimage_with_entry(&[0xf4]);
+        let markers =
+            b"OD_S6_38_BEGIN nonce=N0nce-1 workers=1 blocks=4097\nOD_S6_38_END nonce=N0nce-1\n";
+        // MOV EDX, COM1; then MOV AL, byte; OUT DX, AL for each marker byte.
+        let mut code = vec![0xba, 0xf8, 3, 0, 0];
+        for &byte in markers {
+            code.extend([0xb0, byte, 0xee]);
+        }
+        let budget = 1 + 2 * markers.len() as u64;
+        let img = bzimage_with_entry(&code);
         let blob =
             include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-1-vcpu.bin");
         let mut case = Case::new("compute-up", &img, &[], blob);
@@ -5161,10 +5204,11 @@ mod tests {
             parse_hash("a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af").unwrap();
         options.rootfs_raw = Some("working.raw".into());
         options.s6_compute = Some("1,4097,ec4675d8578a4e14".into());
+        options.s6_timing = true;
         options.cpuid_profile = CpuidProfile::X8664V1Stage4AApic;
         options.set_cpl0 = true;
         options.user_mode = true;
-        options.budget = Some(1);
+        options.budget = Some(budget);
         for parallel in [false, true] {
             options.interleaved_seed = (!parallel).then_some(24301);
             options.parallel = parallel.then_some(ParallelOptions {
@@ -5175,7 +5219,19 @@ mod tests {
             let (report, code) =
                 evaluate_with_rootfs(options, &DiagnosticEnv::default(), Some(backend));
             assert_eq!(code, 0, "{report:#}");
-            assert_eq!(report["retired"], 1);
+            assert_eq!(report["retired"], budget);
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                assert_eq!(report["compute_timing"]["status"], "sampled");
+                assert!(
+                    report["compute_timing"]["host_elapsed_ns"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+                assert!(report["compute_timing"]["host_process_cpu_ns"].is_u64());
+            } else {
+                assert_eq!(report["compute_timing"]["status"], "invalid");
+            }
             assert_eq!(report["inputs"]["rootfs_raw"]["namespace_sectors"], 16);
             assert!(
                 report["cmdline_in_memory"]
@@ -7344,6 +7400,7 @@ mod tests {
             interleaved_seed: None,
             rootfs_raw: None,
             s6_compute: None,
+            s6_timing: false,
             parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -7407,6 +7464,7 @@ mod tests {
             interleaved_seed: None,
             rootfs_raw: None,
             s6_compute: None,
+            s6_timing: false,
             parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -7474,6 +7532,7 @@ mod tests {
             interleaved_seed: None,
             rootfs_raw: None,
             s6_compute: None,
+            s6_timing: false,
             parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
@@ -7562,6 +7621,7 @@ mod tests {
             interleaved_seed: None,
             rootfs_raw: None,
             s6_compute: None,
+            s6_timing: false,
             parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,

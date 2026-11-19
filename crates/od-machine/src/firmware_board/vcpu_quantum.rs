@@ -445,7 +445,7 @@ pub(crate) struct ThreadQuantumEnv<'a> {
     pub(crate) rdtsc_clock: Option<&'a VirtualClockHandle>,
     /// The COM1 log. The lock is taken for the whole pump (it is above the UART lock: the pump
     /// takes the UART's lock under it, nothing takes this one under the UART's).
-    pub(crate) com1: &'a Mutex<&'a mut Vec<u8>>,
+    pub(crate) com1: &'a Mutex<&'a mut super::Com1Log>,
 }
 
 impl ThreadQuantumEnv<'_> {
@@ -1503,9 +1503,9 @@ mod tests {
             0xD01,
         );
         assert_eq!(quantum(&mut board, 1, 100).unwrap().retired, 3);
-        assert_eq!(board.com1_log, b"A");
+        assert_eq!(board.com1_transcript(), b"A");
         assert_eq!(quantum(&mut board, 1, 100).unwrap().retired, 2);
-        assert_eq!(board.com1_log, b"AB");
+        assert_eq!(board.com1_transcript(), b"AB");
         assert_eq!(quantum(&mut board, 1, 100).unwrap().retired, 1);
         assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Halted);
     }

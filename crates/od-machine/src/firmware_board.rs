@@ -1210,6 +1210,21 @@ enum BoardClock {
     Owned(ClockOwner),
 }
 
+#[derive(Default)]
+pub(crate) struct Com1Log {
+    bytes: Vec<u8>,
+    observer: Option<Box<dyn FnMut(u8) + Send>>,
+}
+
+impl Com1Log {
+    fn push(&mut self, byte: u8) {
+        self.bytes.push(byte);
+        if let Some(observer) = &mut self.observer {
+            observer(byte);
+        }
+    }
+}
+
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
 pub struct LoadedFirmwareBoard {
     bus: MachineBus,
@@ -1237,7 +1252,7 @@ pub struct LoadedFirmwareBoard {
     /// The ordinary CPL0 set changed its address cell since the last transfer to the shared bus.
     pci_config_pending: bool,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
-    com1_log: Vec<u8>,
+    com1_log: Com1Log,
     /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
     console_context_parser: Option<ConsoleLineTrigger>,
     console_context_snapshots: Vec<ConsoleOutputContextSnapshot>,
@@ -1412,7 +1427,7 @@ pub(crate) struct ThreadParts<'a> {
     pub(crate) owner: &'a mut ClockOwner,
     pub(crate) clock: &'a VirtualClockHandle,
     pub(crate) rdtsc_clock: Option<&'a VirtualClockHandle>,
-    pub(crate) com1: &'a mut Vec<u8>,
+    pub(crate) com1: &'a mut Com1Log,
     /// The board's page-table root (the walk root of a vCPU that has no CR3 of its own).
     pub(crate) page_table_root: u64,
 }
@@ -1692,7 +1707,15 @@ impl LoadedFirmwareBoard {
     /// COM1 bytes recorded by the latest `run_boot`, including those of a run
     /// that returned an error (so the runner never loses transcript bytes).
     pub fn com1_transcript(&self) -> &[u8] {
-        &self.com1_log
+        &self.com1_log.bytes
+    }
+
+    /// Observe each new COM1 byte after it is appended to the transcript.
+    /// Calls follow transcript order, including when workers share COM1. The observer
+    /// can run on a vCPU worker under the transcript lock and must not re-enter the
+    /// machine or block. Installing another observer replaces the previous one.
+    pub fn set_com1_observer(&mut self, observer: impl FnMut(u8) + Send + 'static) {
+        self.com1_log.observer = Some(Box::new(observer));
     }
 
     /// Enables bounded diagnostic sampling at selected completed console-output lines.
@@ -2268,7 +2291,11 @@ impl LoadedFirmwareBoard {
                     self.sample_console_output_context(byte);
                 }
                 if self.uart_output_context.is_some() {
-                    self.sample_uart_output_context(byte, self.com1_log.len() as u64 - 1, retired);
+                    self.sample_uart_output_context(
+                        byte,
+                        self.com1_log.bytes.len() as u64 - 1,
+                        retired,
+                    );
                 }
             }
         }
@@ -2883,7 +2910,7 @@ impl LoadedFirmwareBoard {
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
-        self.com1_log.clear();
+        self.com1_log.bytes.clear();
         self.console_context_snapshots.clear();
         if self.console_context_parser.is_some() {
             self.console_context_parser = Some(ConsoleLineTrigger::default());
@@ -3377,7 +3404,7 @@ impl LoadedFirmwareBoard {
                     memory_error: report.memory_error,
                     retired,
                     quanta,
-                    com1: board.com1_log.clone(),
+                    com1: board.com1_log.bytes.clone(),
                     virtual_ns: board.clock().now_ns(),
                     tsc_hz: board.clock().tsc_hz(),
                     rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
@@ -3518,7 +3545,7 @@ impl LoadedFirmwareBoard {
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
-        self.com1_log.clear();
+        self.com1_log.bytes.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
@@ -3620,7 +3647,7 @@ impl LoadedFirmwareBoard {
                 memory_error: report.memory_error,
                 retired,
                 quanta,
-                com1: self.com1_log.clone(),
+                com1: self.com1_log.bytes.clone(),
                 virtual_ns: self.clock().now_ns(),
                 tsc_hz: self.clock().tsc_hz(),
                 rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
@@ -4016,7 +4043,7 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             pci_config_pending: false,
-            com1_log: Vec::new(),
+            com1_log: Com1Log::default(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),
             uart_output_context: None,
@@ -4090,7 +4117,7 @@ impl AssembledBoard {
             page_table_root,
             pci_config_address: 0,
             pci_config_pending: false,
-            com1_log: Vec::new(),
+            com1_log: Com1Log::default(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),
             uart_output_context: None,

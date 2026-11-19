@@ -20,6 +20,8 @@ pub mod litmus_jit;
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod process_clock;
 #[cfg(all(unix, test))]
 mod raw_file_tests;
 pub mod session;
