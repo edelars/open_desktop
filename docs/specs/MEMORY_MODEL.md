@@ -292,6 +292,14 @@ instruction-specific validation, fault order, staged CPU-state commit или
 - `CLFLUSH` не является memory barrier. Инструкция остаётся unsupported, если явно не включена профилем CPU; её нельзя эмулировать как fence.
 - Split-lock detection `#AC` не моделируется; применяется проектная atomicity policy и до S6-34 — counted error, как указано выше.
 
+## Аппаратные особенности Apple Silicon (S6-50)
+
+Open Desktop обеспечивает порядок доступов к RAM на обычном ARM64 с помощью операций acquire/release и барьеров, описанных выше. Аппаратный TSO для потоков хоста macOS не используется.
+
+На 2026-11-18 источник, документирующий публичный способ включить TSO для потока обычного macOS-процесса, не найден. Описание Rosetta охватывает `prctl` для потока в гостевом Linux с патчем его ядра. Документация Hypervisor описывает изменение системного регистра виртуального CPU. Проверка публичных заголовков macOS SDK 27.0 по именам `TSOEN`, `PR_SET_MEM_MODEL` и `PR_SET_MEM_MODEL_TSO` совпадений не дала. [Rosetta](https://developer.apple.com/documentation/virtualization/accelerating-the-performance-of-rosetta), [Hypervisor](https://developer.apple.com/documentation/hypervisor/hv_vcpu_set_sys_reg%28_%3A_%3A_%3A%29).
+
+Долю времени программных барьеров в измеряемой многопоточной гостевой нагрузке предстоит определить по [S6-38](../plans/STAGE_6.md#s6-38-измерить-масштабирование-и-выбрать-поддержанное-число-vcpu). Этот замер входит в приёмку S6-50.
+
 ## Связанные документы
 
 - [CPU contract](CPU_CONTRACT.md) фиксирует связь CPU access semantics с этим профилем.
