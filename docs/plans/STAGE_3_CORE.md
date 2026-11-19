@@ -255,8 +255,11 @@ Compiled instructions, helper calls и interpreter steps считаются ра
 обычного FIFO dispatch. Сравнение использует эту команду и
 `warm-branch-helper` для FIFO, а для generic включает
 `--generic-register` у `cold-first-run` и `warm-first-run`.
-Историческая сверка с S3-35a ждёт исходных входов S3-17.
+Историческая трасса S3-17 и содержимое всех 1 010 входов восстановлены
+и связаны с исходным SHA-256 трассы. Исходный список путей отсутствует.
+Cold-сравнение на полном корпусе S3-17 ещё открыто.
 [Отчёт и сырые данные](../reports/STAGE_3_S3-56_MATCHED_2026-11-19.md)
+[Восстановленные входы S3-17](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
 
 ### S3-57. Независимое ревью линии и согласование статусов
 
