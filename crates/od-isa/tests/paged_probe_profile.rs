@@ -52091,6 +52091,71 @@ fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
 }
 
 #[test]
+fn firmware_boot_qword_cmov_reads_the_condition_and_preserves_flags() {
+    for (code, dst, src, flags, taken) in [
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            0,
+            true,
+        ),
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            1,
+            false,
+        ),
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            0x40,
+            false,
+        ),
+        (
+            [0x4d, 0x0f, 0x4c, 0xc7],
+            Register::R8,
+            Register::R15,
+            0x800,
+            true,
+        ),
+        (
+            [0x4d, 0x0f, 0x4c, 0xc7],
+            Register::R8,
+            Register::R15,
+            0x880,
+            false,
+        ),
+    ] {
+        let mut cpu = state();
+        cpu.gpr[dst as usize] = 0x3210_abcd_ffff_ffff;
+        cpu.gpr[src as usize] = 0xfedc_ba98_1234_5678;
+        cpu.rflags = 0x602 | flags;
+        let mut expected = cpu.clone();
+        expected.rip += code.len() as u64;
+        if taken {
+            expected.gpr[dst as usize] = expected.gpr[src as usize];
+        }
+        let mut memory = Memory::new(&code);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}, flags {flags:#x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_shr_qword_masks_count_and_defines_only_architectural_flags() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const SHIFT_DEFINED: u64 = 0x0c5;
@@ -53015,6 +53080,9 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 #[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
+        (&[0x48, 0x0f, 0x47, 0x03][..], 0x47),       // CMOVA RAX,[RBX]
+        (&[0x41, 0x0f, 0x47, 0xc6][..], 0x47),       // CMOVA EAX,R14D
+        (&[0x67, 0x49, 0x0f, 0x47, 0xc6][..], 0x47), // address override on CMOVA
         (&[0x48, 0x29, 0x6c, 0x24, 0x20][..], 0x29), // SUB memory,register
         (&[0x67, 0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39), // address32 CMP
         (&[0x66, 0x58][..], 0x58),                   // POP AX

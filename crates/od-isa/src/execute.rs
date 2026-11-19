@@ -21048,27 +21048,32 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: the Rust helper conditionally copies R10D to R14D/R15D with
-        // only `45 0F 44 F2` and `45 0F 44 FA`. Exact ModRM tuples select the
-        // destination; the dword write zero-extends it and leaves flags alone.
+        // S7-04: register qword CMOVcc in firmware, or the existing exact dword forms.
         Operation::ConditionalMove {
             condition,
             dst: destination,
             src: Operand::Register(source),
-        } if base_profile
-            && condition == ConditionCode::Equal
-            && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0x44
-            && instruction.length == 4
-            && instruction.operand_size == OperandSize::Dword
+        } if (firmware_boot_profile
+            && instruction.operand_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
-                    rex: Some(0x45),
+                    rex: instruction.prefixes.rex,
                     ..Prefixes::default()
-                })
-            && (destination == RegisterView::low(Register::R14, OperandSize::Dword)
-                || destination == RegisterView::low(Register::R15, OperandSize::Dword))
-            && source == RegisterView::low(Register::R10, OperandSize::Dword) =>
+                }))
+            || (base_profile
+                && condition == ConditionCode::Equal
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x44
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x45),
+                        ..Prefixes::default()
+                    })
+                && (destination == RegisterView::low(Register::R14, OperandSize::Dword)
+                    || destination == RegisterView::low(Register::R15, OperandSize::Dword))
+                && source == RegisterView::low(Register::R10, OperandSize::Dword)) =>
         {
             let value = if condition.evaluate(state.rflags) {
                 state.read(source)
