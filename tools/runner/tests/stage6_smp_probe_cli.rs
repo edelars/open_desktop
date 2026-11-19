@@ -211,12 +211,29 @@ fn the_parallel_mode_runs_the_probe_on_threads_and_gives_the_manifest_result_eve
             );
             assert_eq!(numbers(&x["calls"]).len(), 2);
             assert!(numbers(&x["calls"]).iter().all(|&n| n > 0));
+            #[cfg(feature = "lock-wait-metrics")]
+            {
+                let measurements = &x["lock_wait_metrics"];
+                assert_eq!(measurements["clock"], "host_monotonic");
+                for lock in ["device_table", "apic_pair"] {
+                    let measured = &measurements[lock];
+                    let count = measured["acquisition_count"].as_u64().unwrap();
+                    let total = measured["acquisition_wall_ns"].as_u64().unwrap();
+                    let max = measured["max_acquisition_wall_ns"].as_u64().unwrap();
+                    assert!(count > 0, "no acquisitions for {lock}");
+                    assert!(max <= total, "invalid acquisition timings for {lock}");
+                }
+            }
+            #[cfg(not(feature = "lock-wait-metrics"))]
+            assert!(x.get("lock_wait_metrics").is_none());
             check_cells(&built, &x);
         }
     }
     // The default mode of the CLI is still the scheduler: no `mode` in its JSON.
     let out = run(&built.image, &["--quantum", "1024"]);
-    assert!(json(&out).get("mode").is_none());
+    let x = json(&out);
+    assert!(x.get("mode").is_none());
+    assert!(x.get("lock_wait_metrics").is_none());
     // The options of the scheduler that mean nothing to threads are refused.
     let refused: [&[&str]; 4] = [
         &["--parallel", "--seed", "1"],

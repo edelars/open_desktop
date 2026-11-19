@@ -11,6 +11,9 @@ od-jit = { path = "../od-jit" }
 serde_json = "=1.0.151"
 
 [features]
+# S6-38 diagnostic builds only. Time acquisitions of the two shared device locks.
+lock-wait-metrics = []
+
 experimental-translation-probe-cache = []
 # S6-36, sensitivity part 1 (SMP.md 5.1): the host memory order of the parallel mode is weakened
 # (ordinary RAM accesses Relaxed, host fences removed). FOR TESTS AND MEASUREMENTS ONLY; never in

@@ -1,3 +1,4 @@
+use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig,
     MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory,
@@ -10,7 +11,7 @@ use od_isa::{
 };
 use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{MutexGuard, PoisonError};
 
 // Must match the bounded 36-bit physical-address format accepted by
 // page_walk.rs. Higher PTE bits can contain software metadata or NX.
@@ -258,7 +259,7 @@ pub struct MachineBus {
     /// RAM is not behind it: `memory` is a separate field, reached through a shared reference
     /// without the lock. Code that owns the bus exclusively (every interleaved path) reaches the
     /// table with [`exclusive_devices`], which takes no lock.
-    devices: Mutex<Vec<Box<dyn BusDevice>>>,
+    devices: MeasuredMutex<Vec<Box<dyn BusDevice>>>,
     mmio: Vec<MmioBinding>,
     /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
     /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
@@ -699,7 +700,7 @@ pub(crate) struct MachineBusSetStepIo<'a> {
 /// `HLT` or a wait).
 enum DeviceTable<'a> {
     Exclusive(RefCell<&'a mut [Box<dyn BusDevice>]>),
-    Shared(&'a Mutex<Vec<Box<dyn BusDevice>>>),
+    Shared(&'a MeasuredMutex<Vec<Box<dyn BusDevice>>>),
 }
 
 impl DeviceTable<'_> {
@@ -1466,7 +1467,7 @@ impl MachineBus {
         let memory = PhysicalMemory::new(&map, ram_limits).map_err(BusBuildError::Memory)?;
         Ok(Self {
             memory,
-            devices: Mutex::new(devices),
+            devices: MeasuredMutex::new(devices),
             mmio,
             mmio_lens,
             set_step_windows: &SET_STEP_WINDOWS,
@@ -1515,6 +1516,16 @@ impl MachineBus {
     /// for good: the table is used as the panicking thread left it, as for every device lock.
     pub(crate) fn lock_devices(&self) -> MutexGuard<'_, Vec<Box<dyn BusDevice>>> {
         self.devices.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(feature = "lock-wait-metrics")]
+    pub(crate) fn device_lock_metrics(&self) -> crate::MutexAcquisitionMetrics {
+        self.devices.metrics()
+    }
+
+    #[cfg(feature = "lock-wait-metrics")]
+    pub(crate) fn reset_device_lock_metrics(&mut self) {
+        self.devices.reset_metrics();
     }
 
     /// Port read by a thread that holds only `&MachineBus` (takes the device lock).
@@ -1820,7 +1831,9 @@ impl PortIo for MachineBusPortIo<'_> {
 
 /// The device table of a bus owned exclusively: `&mut` proves no other thread holds the lock, so
 /// no lock is taken (the interleaved paths pay nothing for the device lock of S6-33).
-fn exclusive_devices(devices: &mut Mutex<Vec<Box<dyn BusDevice>>>) -> &mut Vec<Box<dyn BusDevice>> {
+fn exclusive_devices(
+    devices: &mut MeasuredMutex<Vec<Box<dyn BusDevice>>>,
+) -> &mut Vec<Box<dyn BusDevice>> {
     devices.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 

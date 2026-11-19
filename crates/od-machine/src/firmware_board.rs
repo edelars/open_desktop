@@ -1414,6 +1414,22 @@ pub(crate) struct ThreadParts<'a> {
 }
 
 impl LoadedFirmwareBoard {
+    /// Reset host lock measurements just before a diagnostic run on a quiescent board.
+    #[cfg(feature = "lock-wait-metrics")]
+    pub(crate) fn reset_lock_wait_metrics(&mut self) {
+        self.bus.reset_device_lock_metrics();
+        self.lapic.0.reset_metrics();
+    }
+
+    /// Read a coherent diagnostic sample after all vCPUs have joined.
+    #[cfg(feature = "lock-wait-metrics")]
+    pub(crate) fn lock_wait_metrics(&self) -> crate::BoardLockWaitMetrics {
+        crate::BoardLockWaitMetrics {
+            device_table: self.bus.device_lock_metrics(),
+            apic_pair: self.lapic.0.metrics(),
+        }
+    }
+
     /// S6-32: the one execution-mode switch of the machine (see [`crate::ExecutionMode`]); it is
     /// stored in the board's physical memory and the interpreter does not know it. The default is
     /// [`crate::ExecutionMode::Interleaved`], which is what every run uses today; the parallel

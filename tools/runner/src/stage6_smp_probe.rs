@@ -537,6 +537,24 @@ fn run_parallel(
         "lapic_vectors": lapic_vectors,
         "error": error,
     });
+    #[cfg(feature = "lock-wait-metrics")]
+    let result = {
+        let mut result = result;
+        let metrics = report.lock_wait_metrics;
+        let acquisition = |m: od_machine::MutexAcquisitionMetrics| {
+            json!({
+                "acquisition_count": m.acquisition_count,
+                "acquisition_wall_ns": m.acquisition_wall_ns,
+                "max_acquisition_wall_ns": m.max_acquisition_wall_ns,
+            })
+        };
+        result["lock_wait_metrics"] = json!({
+            "clock": "host_monotonic",
+            "device_table": acquisition(metrics.device_table),
+            "apic_pair": acquisition(metrics.apic_pair),
+        });
+        result
+    };
     if status == "guest_idle" || status == "guest_stop" {
         Ok((result, 0))
     } else {

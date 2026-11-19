@@ -1,8 +1,9 @@
 use crate::apic_pair::{
     LEVEL, MASK, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN,
 };
+use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub const IO_APIC_MMIO_BASE: u64 = 0xfec0_0000;
 pub const IO_APIC_MMIO_SIZE: u64 = 0x1000;
@@ -14,9 +15,9 @@ const IO_APIC_VERSION: u32 = 0x0017_0020;
 /// IOAPIC register window; INTIN4 (edge/level), INTIN2 (edge only) and the SCI on INTIN9 (level,
 /// active low, S4-38L8e) route to the vCPU whose
 /// APIC ID the entry's destination field holds (physical mode; APIC ID 0 at reset).
-pub struct IoApic(Arc<Mutex<PairState>>);
+pub struct IoApic(Arc<MeasuredMutex<PairState>>);
 #[derive(Clone)]
-pub struct IoApicHandle(Arc<Mutex<PairState>>);
+pub struct IoApicHandle(Arc<MeasuredMutex<PairState>>);
 
 impl IoApic {
     pub fn new(destination: LocalApicHandle) -> Self {

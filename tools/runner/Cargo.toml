@@ -22,3 +22,6 @@ od-host = { path = "../../crates/od-host" }
 
 [lints]
 workspace = true
+
+[features]
+lock-wait-metrics = ["od-machine/lock-wait-metrics"]

@@ -1,0 +1,534 @@
+{
+  "task": "S6-38 lock acquisition instrumentation perturbation",
+  "platform": "MacBook Pro Mac15,11, Apple M3 Max (14 CPU cores), 36 GB, macOS 26.7.1 (25G241)",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "configuration": "release, locked, offline; lock-wait-metrics only in the metrics binary",
+  "od_runner_sha256": {
+    "default": "67a6557df55538e9e0c924bc8258b2d3e1b31042e116124b3e3b4ec6444af1a6",
+    "metrics": "95b8bfdc468ea7d020ae1b1e4e2bdf9213dd69cfeb2db455c468f1f86bb680bd"
+  },
+  "fixture": {
+    "sha256": "228fb2511b3adc21427aad3763dad5e67a4585caec088b42f5d5cc021761ecc8",
+    "scenario": "shootdown",
+    "rounds": 100,
+    "vcpus": 2,
+    "quantum": 100,
+    "nonce": "s6-38-lock-wait"
+  },
+  "timing": "one untimed warm-up per build, then 16 alternating AB/BA pairs; wall_ns is time.perf_counter_ns around subprocess.run; CPU is RUSAGE_CHILDREN user + system from before/after each call",
+  "checks": "Each run matched the manifest COM1 transcript and four shootdown cells; both vCPUs halted with no pending LAPIC vectors and AP 1 started once.",
+  "runs": [
+    {
+      "mode": "default",
+      "wall_ns": 19158666,
+      "user_ns": 12568000,
+      "system_ns": 8000000,
+      "retired": [
+        6746,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21819208,
+      "user_ns": 14123000,
+      "system_ns": 10471000,
+      "retired": [
+        6881,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25731,
+          "acquisition_wall_ns": 3057105,
+          "max_acquisition_wall_ns": 13417
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 12827,
+          "max_acquisition_wall_ns": 208
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21639375,
+      "user_ns": 14127000,
+      "system_ns": 10478000,
+      "retired": [
+        6911,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25792,
+          "acquisition_wall_ns": 3193971,
+          "max_acquisition_wall_ns": 12500
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 13550,
+          "max_acquisition_wall_ns": 209
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19100583,
+      "user_ns": 12369000,
+      "system_ns": 8190000,
+      "retired": [
+        6841,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19342792,
+      "user_ns": 12383000,
+      "system_ns": 8451000,
+      "retired": [
+        6816,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 22264417,
+      "user_ns": 14196000,
+      "system_ns": 10466000,
+      "retired": [
+        6826,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25620,
+          "acquisition_wall_ns": 2735507,
+          "max_acquisition_wall_ns": 12209
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 9807,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21968291,
+      "user_ns": 14173000,
+      "system_ns": 10628000,
+      "retired": [
+        6846,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25647,
+          "acquisition_wall_ns": 3234383,
+          "max_acquisition_wall_ns": 9125
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 14510,
+          "max_acquisition_wall_ns": 125
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19076042,
+      "user_ns": 12400000,
+      "system_ns": 8105000,
+      "retired": [
+        6751,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18895709,
+      "user_ns": 12080000,
+      "system_ns": 8296000,
+      "retired": [
+        6751,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21472041,
+      "user_ns": 14156000,
+      "system_ns": 10146000,
+      "retired": [
+        6911,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25778,
+          "acquisition_wall_ns": 2968827,
+          "max_acquisition_wall_ns": 7833
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 13560,
+          "max_acquisition_wall_ns": 208
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21893208,
+      "user_ns": 13975000,
+      "system_ns": 10712000,
+      "retired": [
+        6776,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25508,
+          "acquisition_wall_ns": 3043756,
+          "max_acquisition_wall_ns": 8750
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 11299,
+          "max_acquisition_wall_ns": 209
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18823667,
+      "user_ns": 12224000,
+      "system_ns": 8200000,
+      "retired": [
+        6816,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18474500,
+      "user_ns": 11933000,
+      "system_ns": 8008000,
+      "retired": [
+        6691,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21473250,
+      "user_ns": 13987000,
+      "system_ns": 10283000,
+      "retired": [
+        7096,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 26154,
+          "acquisition_wall_ns": 3080417,
+          "max_acquisition_wall_ns": 12250
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 10867,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21940750,
+      "user_ns": 14062000,
+      "system_ns": 10511000,
+      "retired": [
+        7026,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 26014,
+          "acquisition_wall_ns": 2952969,
+          "max_acquisition_wall_ns": 9584
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 12336,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18970500,
+      "user_ns": 12073000,
+      "system_ns": 8262000,
+      "retired": [
+        6651,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18542000,
+      "user_ns": 11991000,
+      "system_ns": 8100000,
+      "retired": [
+        6631,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 20819583,
+      "user_ns": 13645000,
+      "system_ns": 9673000,
+      "retired": [
+        6901,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25771,
+          "acquisition_wall_ns": 2431032,
+          "max_acquisition_wall_ns": 12792
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 11902,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 20993500,
+      "user_ns": 13822000,
+      "system_ns": 9805000,
+      "retired": [
+        6906,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25773,
+          "acquisition_wall_ns": 2535615,
+          "max_acquisition_wall_ns": 9250
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 10160,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18517792,
+      "user_ns": 12120000,
+      "system_ns": 7814000,
+      "retired": [
+        6606,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18328334,
+      "user_ns": 11906000,
+      "system_ns": 7949000,
+      "retired": [
+        6641,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21652292,
+      "user_ns": 14150000,
+      "system_ns": 10416000,
+      "retired": [
+        6961,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25883,
+          "acquisition_wall_ns": 3375503,
+          "max_acquisition_wall_ns": 10084
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 11967,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21132792,
+      "user_ns": 13948000,
+      "system_ns": 10101000,
+      "retired": [
+        6971,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25911,
+          "acquisition_wall_ns": 3120728,
+          "max_acquisition_wall_ns": 10542
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 13174,
+          "max_acquisition_wall_ns": 208
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19419625,
+      "user_ns": 12216000,
+      "system_ns": 8305000,
+      "retired": [
+        6671,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19327583,
+      "user_ns": 12082000,
+      "system_ns": 8087000,
+      "retired": [
+        6566,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21874750,
+      "user_ns": 14067000,
+      "system_ns": 10616000,
+      "retired": [
+        6986,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25940,
+          "acquisition_wall_ns": 3327091,
+          "max_acquisition_wall_ns": 12459
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 12795,
+          "max_acquisition_wall_ns": 167
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21862416,
+      "user_ns": 14251000,
+      "system_ns": 10523000,
+      "retired": [
+        6846,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25660,
+          "acquisition_wall_ns": 3139759,
+          "max_acquisition_wall_ns": 12417
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 13383,
+          "max_acquisition_wall_ns": 208
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 19427875,
+      "user_ns": 12469000,
+      "system_ns": 8217000,
+      "retired": [
+        6741,
+        3984
+      ]
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18806541,
+      "user_ns": 12243000,
+      "system_ns": 7908000,
+      "retired": [
+        6601,
+        3984
+      ]
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 20964042,
+      "user_ns": 14097000,
+      "system_ns": 9670000,
+      "retired": [
+        6931,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25832,
+          "acquisition_wall_ns": 2987134,
+          "max_acquisition_wall_ns": 9750
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 13041,
+          "max_acquisition_wall_ns": 166
+        }
+      }
+    },
+    {
+      "mode": "metrics",
+      "wall_ns": 21335709,
+      "user_ns": 14122000,
+      "system_ns": 10146000,
+      "retired": [
+        6946,
+        3984
+      ],
+      "locks": {
+        "apic_pair": {
+          "acquisition_count": 25847,
+          "acquisition_wall_ns": 3281899,
+          "max_acquisition_wall_ns": 9834
+        },
+        "device_table": {
+          "acquisition_count": 402,
+          "acquisition_wall_ns": 12004,
+          "max_acquisition_wall_ns": 208
+        }
+      }
+    },
+    {
+      "mode": "default",
+      "wall_ns": 18386250,
+      "user_ns": 12030000,
+      "system_ns": 7875000,
+      "retired": [
+        6676,
+        3984
+      ]
+    }
+  ]
+}

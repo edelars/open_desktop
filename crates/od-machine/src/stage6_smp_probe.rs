@@ -240,6 +240,8 @@ pub struct Stage6SmpProbeParallelReport {
     pub cpus: Vec<Stage6SmpProbeParallelCpu>,
     pub idle_ns: u64,
     pub idle_jumps: u64,
+    #[cfg(feature = "lock-wait-metrics")]
+    pub lock_wait_metrics: crate::BoardLockWaitMetrics,
 }
 
 fn long_boot_state() -> LongModeState {
@@ -481,6 +483,8 @@ impl Stage6SmpProbe {
         budget: u64,
         timeout: std::time::Duration,
     ) -> Result<Stage6SmpProbeParallelReport, Stage6SmpProbeRunError> {
+        #[cfg(feature = "lock-wait-metrics")]
+        self.board.reset_lock_wait_metrics();
         let config = ParallelConfig {
             quantum,
             budget,
@@ -623,6 +627,8 @@ impl Stage6SmpProbe {
             cpus,
             idle_ns: report.idle_ns,
             idle_jumps: report.idle_jumps,
+            #[cfg(feature = "lock-wait-metrics")]
+            lock_wait_metrics: self.board.lock_wait_metrics(),
         }
     }
 

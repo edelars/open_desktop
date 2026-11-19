@@ -12,9 +12,10 @@
 //! changes nothing.
 //! Optional ESR reporting for an invalid vector written to a masked LVT is not modelled.
 use crate::apic_pair::{CpuApic, MASK, PERIODIC, PairState, PendingStartup, Timer};
+use crate::lock_wait_metrics::MeasuredMutex;
 use crate::vcpu::{BOOT_VCPU_INDEX, MAX_VCPUS};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub const LOCAL_APIC_MMIO_BASE: u64 = 0xfee0_0000;
 pub const LOCAL_APIC_MMIO_SIZE: u64 = 0x1000;
@@ -24,12 +25,12 @@ pub const LOCAL_APIC_MMIO_SIZE: u64 = 0x1000;
 /// to [`BusDevice::read_from_cpu`]/[`BusDevice::write_from_cpu`]; [`BusDevice::read`] and
 /// [`BusDevice::write`] are the accesses of the boot processor.
 #[derive(Clone, Debug)]
-pub struct LocalApic(Arc<Mutex<PairState>>);
+pub struct LocalApic(Arc<MeasuredMutex<PairState>>);
 
 /// Control operations address the same state as the device on the bus, for the LAPIC of one
 /// vCPU (the second field). [`LocalApic::handle`] is the boot processor's.
 #[derive(Clone, Debug)]
-pub struct LocalApicHandle(pub(crate) Arc<Mutex<PairState>>, pub(crate) usize);
+pub struct LocalApicHandle(pub(crate) Arc<MeasuredMutex<PairState>>, pub(crate) usize);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct State {
@@ -146,13 +147,13 @@ pub enum InterruptAcknowledge {
 
 impl LocalApic {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(PairState::default())))
+        Self(Arc::new(MeasuredMutex::new(PairState::default())))
     }
     /// `count` Local APICs without timers, APIC IDs `0..count`; `count` is `1..=MAX_VCPUS`.
     pub fn with_cpus(count: usize) -> Result<Self, DeviceError> {
         Self::checked_count(count)?;
         let cpus = vec![CpuApic::default(); count];
-        Ok(Self(Arc::new(Mutex::new(PairState::new(cpus)))))
+        Ok(Self(Arc::new(MeasuredMutex::new(PairState::new(cpus)))))
     }
     /// Create an opt-in one-shot/periodic timer with its own caller-driven
     /// clock. This does not connect a vCPU clock, NMI, MOV-SS, a Linux profile,
@@ -162,7 +163,9 @@ impl LocalApic {
             timer: Some(Timer::new(clock, timer_hz)?),
             ..CpuApic::default()
         };
-        Ok(Self(Arc::new(Mutex::new(PairState::new(vec![cpu])))))
+        Ok(Self(Arc::new(MeasuredMutex::new(PairState::new(vec![
+            cpu,
+        ])))))
     }
     /// Create an opt-in one-shot/periodic timer observing a vCPU-owned clock.
     /// The APIC cannot advance this clock; its vCPU session remains the owner.
@@ -188,7 +191,7 @@ impl LocalApic {
                 })
             })
             .collect::<Result<Vec<_>, DeviceError>>()?;
-        Ok(Self(Arc::new(Mutex::new(PairState::new(cpus)))))
+        Ok(Self(Arc::new(MeasuredMutex::new(PairState::new(cpus)))))
     }
     fn checked_count(count: usize) -> Result<(), DeviceError> {
         if (1..=MAX_VCPUS).contains(&count) {

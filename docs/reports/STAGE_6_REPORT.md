@@ -1759,6 +1759,35 @@ mkdir -p "$trace_dir"
   --output "$trace_dir/pilot-syscall.xml"
 ```
 
+### S6-38 шаг 1 — время захвата блокировок
+
+Сборка `od-runner` с feature `lock-wait-metrics` добавляет объект `lock_wait_metrics` в JSON параллельного `--stage6-smp-probe`. Счётчики принадлежат плате. Отдельно измеряются мьютекс таблицы устройств шины и общий мьютекс `PairState`, который используют LAPIC и IOAPIC. В каждом классе сохраняются число захватов, сумма и максимум их длительностей по монотонным часам хоста. Счётчики сбрасываются перед запуском пробника и считываются после join потоков, до диагностического чтения регистров LAPIC. Эксклюзивный доступ к таблице устройств обходится без захвата мьютекса. В обычной сборке тип мьютекса — `std::sync::Mutex`. [Измеритель](../../crates/od-machine/src/lock_wait_metrics.rs).
+
+Длительность отсчитывается непосредственно вокруг `Mutex::lock` и включает накладные расходы вызова, ожидание при конкуренции и возможное вытеснение потока. В выборку попадают захваты при запуске и завершении потоков. Интервалы разных vCPU и мьютексов могут перекрываться, поэтому суммы приводятся по каждому мьютексу отдельно. Учёт каждого захвата влияет на профиль диагностической сборки.
+
+На Apple M3 Max проверены две release-сборки с одинаковым образом и 100 раундами TLB shootdown на двух vCPU. После одного прогрева каждой сборки выполнено 16 пар запусков с чередованием AB/BA. Длительность процесса измерена через `time.perf_counter_ns`, CPU-время — разностью user и system `getrusage(RUSAGE_CHILDREN)` до и после каждого запуска. Все прогоны совпали с манифестом по COM1 и четырём ячейкам shootdown. AP запустился один раз, оба vCPU завершили работу без ожидающих векторов. [Сырые значения, окружение и SHA-256](data/stage6/s6-38-acquisition-timings.json).
+
+| Сборка | Длительность процесса, мин. / медиана / макс., мс | CPU-время, мин. / медиана / макс., мс |
+|---|---:|---:|
+| Обычная | 18,33 / 18,93 / 19,43 | 19,86 / 20,36 / 20,83 |
+| С измерителем | 20,82 / 21,65 / 22,26 | 23,32 / 24,57 / 24,80 |
+
+Измеритель зарегистрировал ровно 402 захвата таблицы устройств в каждом запуске, с медианной суммой 12,57 мкс на запуск. Общий APIC-мьютекс захватывался от 25 508 до 26 154 раз, медианная сумма — 3,07 мс. Диагностическая сборка добавила 14,3% к медианной длительности этого пробника и 20,7% к медианному CPU-времени. Для выбора числа vCPU и оценки блокировок в Linux SMP нужны сквозные прогоны S6-37/S6-38.
+
+```sh
+perf_dir="$PWD/work/stage6/s6-38-lock-wait/acquisition-metrics"
+python3 tools/build/build_stage6_smp_probe.py --output-dir "$perf_dir/shootdown" \
+  --scenario shootdown --rounds 100
+cargo build --release --locked --offline -p od-runner
+cp target/release/od-runner "$perf_dir/od-runner-default"
+cargo build --release --locked --offline -p od-runner --features lock-wait-metrics
+cp target/release/od-runner "$perf_dir/od-runner-metrics"
+for runner in od-runner-default od-runner-metrics; do
+  "$perf_dir/$runner" --stage6-smp-probe "$perf_dir/shootdown/probe.bin" \
+    --scenario shootdown --nonce s6-38-lock-wait --parallel --vcpus 2 --quantum 100
+done
+```
+
 ### S6-38 шаг 2 — стеки обычного доступа к общей RAM
 
 Независимое ревью проверило `MachineBus::access_tracked_ram`, tracked 4 KiB walker, `PhysicalMemory` и `RamStorage` на `8a86c0e`. Обычный RAM-операнд проходит без захвата `Mutex` или `RwLock`. В пути записи данные публикуются до Release-обновления поколения страницы. Блокировки устройств и шлюз обновления дескрипторов относятся к отдельным путям. Ревью сохранило оговорку S6-30a о пересекающихся атомарных доступах разной ширины на ARM64. [Контракт RAM](../specs/MEMORY_MODEL.md), [путь на шине](../../crates/od-machine/src/bus.rs#L1192), [хранилище RAM](../../crates/od-machine/src/ram_storage.rs#L112).
