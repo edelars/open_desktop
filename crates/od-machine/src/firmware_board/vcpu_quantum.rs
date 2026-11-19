@@ -124,6 +124,7 @@ struct QuantumEnv<'a> {
     rdtsc_clock: Option<&'a VirtualClockHandle>,
     check_acpi_stop: bool,
     stop_after_mmio: bool,
+    stop_on_pit_write: bool,
 }
 
 /// What a vCPU has to have before a quantum can run (checked before anything changes).
@@ -165,6 +166,7 @@ fn quantum_loop(
         rdtsc_clock,
         check_acpi_stop,
         stop_after_mmio,
+        stop_on_pit_write,
     } = env;
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
@@ -172,7 +174,7 @@ fn quantum_loop(
     let set = set.with_cpuid_topology(vcpu.cpuid.apic_id, vcpu.cpuid.cpu_count);
 
     let timer_writes = lapic.timer_register_writes();
-    let mut own = LapicIrqSource::new(lapic.clone());
+    let mut own = LapicIrqSource::new(lapic.clone()).with_pit_write_boundary(stop_on_pit_write);
     let mut boot_source;
     let source: &mut dyn BoardIrqSource = if cpu == BOOT_VCPU_INDEX {
         boot_source = BootProcessorSource::new(board_source, own.clone());
@@ -344,6 +346,7 @@ impl LoadedFirmwareBoard {
                 rdtsc_clock: None,
                 check_acpi_stop: false,
                 stop_after_mmio: false,
+                stop_on_pit_write: false,
             },
             inputs,
             budget,
@@ -372,6 +375,7 @@ pub(crate) struct ThreadQuantumEnv<'a> {
     pub(crate) uart: Uart16550Handle,
     pub(crate) acpi_pm: Option<AcpiPmHandle>,
     pub(crate) pit: Option<Pit8254Handle>,
+    pub(crate) stop_on_pit_write: bool,
     pub(crate) nvme: Option<crate::NvmeHandle>,
     pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
@@ -521,6 +525,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
             rdtsc_clock: env.rdtsc_clock,
             check_acpi_stop: true,
             stop_after_mmio: nvme_pending.is_some(),
+            stop_on_pit_write: env.stop_on_pit_write,
         },
         inputs,
         budget,

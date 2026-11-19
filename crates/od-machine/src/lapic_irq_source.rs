@@ -27,27 +27,42 @@ use crate::irq_source::BoardIrqSource;
 
 /// The source of the vectors of one vCPU's Local APIC.
 #[derive(Clone)]
-pub(crate) struct LapicIrqSource(LocalApicHandle);
+pub(crate) struct LapicIrqSource {
+    lapic: LocalApicHandle,
+    stop_on_pit_write: bool,
+}
 
 impl LapicIrqSource {
     /// The source of the LAPIC `lapic` addresses (the handle carries the vCPU index).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(lapic: LocalApicHandle) -> Self {
-        Self(lapic)
+        Self {
+            lapic,
+            stop_on_pit_write: false,
+        }
+    }
+
+    pub(crate) fn with_pit_write_boundary(mut self, enabled: bool) -> Self {
+        self.stop_on_pit_write = enabled;
+        self
     }
 }
 
 impl BoardIrqSource for LapicIrqSource {
     fn pending_vector(&self) -> Option<u8> {
-        self.0.eligible()
+        self.lapic.eligible()
     }
 
     fn acknowledge(&mut self, vector: u8) {
-        self.0.acknowledge_delivered_vector(vector);
+        self.lapic.acknowledge_delivered_vector(vector);
     }
 
     fn next_deadline_ns(&self) -> Option<u64> {
         None
+    }
+
+    fn pit_write_ends_quantum(&self) -> bool {
+        self.stop_on_pit_write
     }
 }
 

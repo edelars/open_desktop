@@ -441,6 +441,7 @@ struct SharedState<'a> {
     /// The interrupt source of the board, used by the boot processor's thread for its quantum, its
     /// deadline and its wake test, and by the idle arbiter only when every thread is idle.
     irq: Mutex<&'a mut dyn BoardIrqSource>,
+    pit_ioapic_source: Option<crate::pit_ioapic_irq_source::PitIoapicIrqSource>,
     /// Retired instructions left in the shared budget.
     remaining: AtomicU64,
     idle_ns: AtomicU64,
@@ -780,33 +781,36 @@ impl SharedState<'_> {
             let now = owner.now_ns();
             let boot_halted = views[BOOT_VCPU_INDEX].activity == SchedActivity::Halted
                 && views[BOOT_VCPU_INDEX].if_set;
-            let deadlines: Vec<u64> = match self.irq.try_lock() {
-                Ok(source) => {
-                    if boot_halted {
-                        match source.wake_ns() {
-                            // The line is deliverable now and the boot processor sleeps in HLT
-                            // with IF = 1: the wake-up was lost (the look of the thread that moved
-                            // the clock found the source busy). Wake it; do not decide AllIdle.
-                            Some(wake) if wake <= now => {
-                                drop(source);
-                                self.kicks.kick(BOOT_VCPU_INDEX);
-                                return;
-                            }
-                            wake => wake.into_iter().collect(),
-                        }
-                    } else {
-                        Vec::new()
-                    }
-                }
+            let source = match self.irq.try_lock() {
+                Ok(source) => source,
                 // A thread has the source: it is not idle.
                 Err(std::sync::TryLockError::WouldBlock) => return,
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
-                    .into_inner()
-                    .wake_ns()
-                    .filter(|wake| *wake > now)
-                    .into_iter()
-                    .collect(),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             };
+            let bsp_deadline = if boot_halted { source.wake_ns() } else { None };
+            drop(source);
+            if bsp_deadline.is_some_and(|wake| wake <= now) {
+                self.kicks.kick(BOOT_VCPU_INDEX);
+                return;
+            }
+            let mut deadlines: Vec<u64> = bsp_deadline.into_iter().collect();
+            if let Some(pit) = &self.pit_ioapic_source {
+                for (cpu, view) in views.iter().enumerate().skip(1) {
+                    if view.activity == SchedActivity::Halted
+                        && view.if_set
+                        && let Some(wake) = pit.wake_ns_for(cpu)
+                    {
+                        if wake <= now {
+                            self.kicks.kick(cpu);
+                            return;
+                        }
+                        deadlines.push(wake);
+                    }
+                }
+            }
+            if !self.quiescent_for_idle() {
+                return;
+            }
             let step = match owner.idle_step(false, &views, &deadlines) {
                 Ok(step) => step,
                 Err(error) => {
@@ -828,9 +832,15 @@ impl SharedState<'_> {
             self.idle_ns.fetch_add(step.idle_ns, SEQ);
             self.idle_jumps.fetch_add(u64::from(step.idle_ns > 0), SEQ);
             if step.idle_ns > 0 {
-                // The board's source (the PIT line of the boot processor) is not in a Local APIC:
-                // nothing kicks the boot processor for it, so a jump does.
-                self.kicks.kick(BOOT_VCPU_INDEX);
+                if let Some(pit) = &self.pit_ioapic_source {
+                    pit.next_deadline_ns(); // publish due IOAPIC edges before another idle decision
+                }
+                if bsp_deadline.is_some_and(|wake| wake <= owner.now_ns()) {
+                    self.kicks.kick(BOOT_VCPU_INDEX);
+                }
+                if !self.quiescent_for_idle() {
+                    return;
+                }
             }
             match step.outcome {
                 IdleOutcome::Stopped | IdleOutcome::Runnable(_) => return,
@@ -848,8 +858,7 @@ impl SharedState<'_> {
                 }
                 IdleOutcome::NoProgress => {
                     if step.idle_ns > 0 && !deadlines.is_empty() {
-                        self.kicks.kick(BOOT_VCPU_INDEX);
-                        return;
+                        continue; // re-read the board sources after consuming the deadline
                     }
                     drop(owner);
                     self.fail(
@@ -1052,13 +1061,16 @@ impl Worker<'_, '_, '_, '_> {
 
     /// Whether the board's source has a vector for the halted boot processor now.
     fn board_wakes(&self) -> bool {
-        if self.cpu != BOOT_VCPU_INDEX {
-            return false;
-        }
         let now = lock(&self.shared.owner).now_ns();
-        lock(&self.shared.irq)
-            .wake_ns()
-            .is_some_and(|wake| wake <= now)
+        let wake = if self.cpu == BOOT_VCPU_INDEX {
+            lock(&self.shared.irq).wake_ns()
+        } else {
+            self.shared
+                .pit_ioapic_source
+                .as_ref()
+                .and_then(|pit| pit.wake_ns_for(self.cpu))
+        };
+        wake.is_some_and(|wake| wake <= now)
     }
 
     /// One call of the interpreter loop of the running vCPU and its charge to the clock.
@@ -1142,7 +1154,14 @@ impl Worker<'_, '_, '_, '_> {
                 pending,
             )
         } else {
-            let budget = lock(&sh.owner).step_budget(left, None);
+            let deadline = sh
+                .pit_ioapic_source
+                .as_ref()
+                .and_then(BoardIrqSource::next_deadline_ns);
+            let budget = {
+                let owner = lock(&sh.owner);
+                owner.step_budget(left, deadline.filter(|deadline| *deadline > owner.now_ns()))
+            };
             self.dispatch(
                 vcpu,
                 apic,
@@ -1177,6 +1196,9 @@ impl Worker<'_, '_, '_, '_> {
                     FirmwareBoardError::Config("parallel: the clock refused the device charge")
                 })?;
             }
+        }
+        if let Some(pit) = &sh.pit_ioapic_source {
+            pit.next_deadline_ns(); // catch up and signal the selected LAPIC at the charged time
         }
         if cpu != BOOT_VCPU_INDEX {
             sh.kick_boot_if_board_wakes();
@@ -1561,6 +1583,7 @@ fn run_threads_inner<R>(
         uart,
         acpi_pm,
         pit,
+        pit_ioapic_source,
         nvme,
         uart_irq_source,
         uart_ioapic_source,
@@ -1585,6 +1608,7 @@ fn run_threads_inner<R>(
         uart,
         acpi_pm,
         pit,
+        stop_on_pit_write: pit_ioapic_source.is_some(),
         nvme,
         uart_irq_source,
         uart_ioapic_source,
@@ -1611,6 +1635,7 @@ fn run_threads_inner<R>(
         controller: OnceLock::new(),
         owner: Mutex::new(owner),
         irq: Mutex::new(irq_source),
+        pit_ioapic_source,
         remaining: AtomicU64::new(config.budget),
         idle_ns: AtomicU64::new(0),
         idle_jumps: AtomicU64::new(0),
@@ -2208,6 +2233,136 @@ mod tests {
                 .code_page_generation(address)
                 .unwrap(),
             generation,
+        );
+    }
+
+    #[test]
+    fn an_ioapic_pit_edge_reaches_the_ap_with_the_bsp_masked() {
+        use crate::{AccessWidth, IO_APIC_MMIO_BASE, PortAddress};
+
+        for ap_starts_halted in [true, false] {
+            let mut board = board(2);
+            assert!(board.enable_pit_ioapic_irq());
+            system(&mut board, false);
+            if ap_starts_halted {
+                patch(&mut board, CODE_1, &[0xFA, 0xF4]); // cli; hlt
+            } else {
+                let code = [
+                    mov_ebx(COUNTER_1 as u32),
+                    vec![
+                        0x8B, 0x03, // mov eax, [rbx]
+                        0x85, 0xC0, // test eax, eax
+                        0x74, 0xFA, // jz back to mov
+                        0xFA, 0xF4, // cli; hlt
+                    ],
+                ]
+                .concat();
+                patch(&mut board, CODE_1, &code);
+            }
+            let cr3 = tables(&mut board, TABLES_1, 0x60_0000, 0);
+            let mut ap = long_state(CODE_1, STACK_1, cr3, true);
+            if ap_starts_halted {
+                ap.activity = Some(CpuActivity::Halted);
+            }
+            install(&mut board, 1, ap, 0xD01);
+            let bsp = board.vcpu_mut(0).unwrap();
+            bsp.state.activity = Some(CpuActivity::Halted);
+            bsp.state.rflags = 2;
+
+            let bus = board.bus_mut();
+            bus.write_mmio_shared(
+                1,
+                GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
+                AccessWidth::Dword,
+                0x1ff,
+            )
+            .unwrap();
+            for (offset, value) in [
+                (0, 0x15),
+                (0x10, 1 << 24), // INTIN2 destination APIC ID 1
+                (0, 0x14),
+                (0x10, u64::from(TO_AP)), // unmask and route as an edge
+            ] {
+                bus.write_mmio_shared(
+                    0,
+                    GuestPhysicalAddress::new(IO_APIC_MMIO_BASE + offset),
+                    AccessWidth::Dword,
+                    value,
+                )
+                .unwrap();
+            }
+            for (port, value) in [(0x43, 0x34), (0x40, 10), (0x40, 0)] {
+                bus.write_port(PortAddress::new(port), AccessWidth::Byte, value)
+                    .unwrap();
+            }
+
+            let (report, ()) = run(&mut board, config(10_000, 9_000), |control| {
+                assert!(control.wait_finished(WAIT));
+            });
+            assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+            assert_joined(&report, 2);
+            assert_eq!(
+                (report.cpus[0].wakes, report.cpus[1].wakes),
+                (0, u64::from(ap_starts_halted)),
+                "{report:?}",
+            );
+            assert_eq!(dword(&mut board, COUNTER_1), 1);
+            assert_eq!(report.cpus[0].retired, 0);
+            assert_eq!(
+                board.local_apic_of(1).unwrap().vector_state(TO_AP),
+                (false, false),
+            );
+            assert_eq!(report.idle_jumps, u64::from(ap_starts_halted));
+            assert!(
+                (8_381..8_421).contains(&board.clock().now_ns()),
+                "{report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ap_pit_programming_ends_each_parallel_quantum_at_the_port_write() {
+        let mut board = board(2);
+        assert!(board.enable_pit_ioapic_irq());
+        let bsp = board.vcpu_mut(0).unwrap();
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags = 2;
+
+        let cr3 = tables(&mut board, TABLES_1, 0x60_0000, 0);
+        let code = [
+            imm(&[0xBA], 0x43), // mov edx, control port
+            mov_eax(0x34),
+            vec![0xEE],         // out dx, al
+            imm(&[0xBA], 0x40), // mov edx, channel 0
+            mov_eax(10),
+            vec![0xEE],
+            mov_eax(0),
+            vec![0xEE],
+            mov_eax(0x1234),
+            vec![0xF4], // hlt
+        ]
+        .concat();
+        patch(&mut board, CODE_1, &code);
+        let mut ap = long_state(CODE_1, STACK_1, cr3, false);
+        ap.rflags = 2;
+        install(&mut board, 1, ap, 0xD01);
+        let calls = Mutex::new(Vec::new());
+        let quantum = |call: QuantumCall<'_, '_>| {
+            assert_eq!(call.cpu, 1);
+            let result = fixture_quantum(call)?;
+            lock(&calls).push(result.retired);
+            Ok(result)
+        };
+        let (report, ()) = run_threads(&mut board, config(64, 64), &quantum, |control| {
+            assert!(control.wait_finished(WAIT));
+        })
+        .unwrap();
+        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        assert_joined(&report, 2);
+        assert_eq!(*lock(&calls), [3, 3, 2, 2]);
+        assert_eq!(
+            board.vcpu(1).unwrap().state.gpr[Register::Rax as usize],
+            0x1234
         );
     }
 

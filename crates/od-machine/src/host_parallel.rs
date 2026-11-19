@@ -566,6 +566,7 @@ fn run_host_threads_inner<R>(
             board_irq: HostBoardIrqSource {
                 source: (call.cpu == BOOT_VCPU_INDEX).then_some(call.source),
                 gate: Some(call.gate),
+                stop_on_pit_write: call.env.stop_on_pit_write,
             },
             devices: HostDeviceServices(Some(call.env)),
             nvme_only,
@@ -757,6 +758,7 @@ pub fn host_deliver_pending_irq(
 pub struct HostBoardIrqSource<'a> {
     source: Option<&'a mut dyn BoardIrqSource>,
     gate: Option<&'a dyn SplitLockGate>,
+    stop_on_pit_write: bool,
 }
 
 impl HostBoardIrqSource<'_> {
@@ -766,6 +768,7 @@ impl HostBoardIrqSource<'_> {
         Self {
             source: None,
             gate: None,
+            stop_on_pit_write: false,
         }
     }
 
@@ -777,14 +780,17 @@ impl HostBoardIrqSource<'_> {
                 None => None,
             },
             gate: self.gate,
+            stop_on_pit_write: self.stop_on_pit_write,
         }
     }
 
     /// Whether a successful guest write to the PIT ports calls for a new scheduler deadline.
     pub fn pit_write_ends_quantum(&self) -> bool {
-        self.source
-            .as_deref()
-            .is_some_and(BoardIrqSource::pit_write_ends_quantum)
+        self.stop_on_pit_write
+            || self
+                .source
+                .as_deref()
+                .is_some_and(BoardIrqSource::pit_write_ends_quantum)
     }
 
     /// Deliver an eligible board or Local APIC vector through the guest IDT.
