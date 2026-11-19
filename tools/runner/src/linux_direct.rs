@@ -70,8 +70,9 @@
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
-    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, load_linux_direct_board,
-    run_linux_direct_board, run_linux_direct_board_set_observed,
+    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason,
+    load_linux_direct_board_with_vcpus, run_linux_direct_board,
+    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
@@ -81,14 +82,14 @@ use std::io::Read;
 use std::process::ExitCode;
 
 #[cfg(test)]
-use od_machine::run_linux_direct_board_set;
+use od_machine::{load_linux_direct_board, run_linux_direct_board_set};
 
 mod checkpoints;
 pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
- [--vcpus 1] [--seed <u64> (stage4a or stage4a-apic user mode)] \
+ [--vcpus 1|2] [--seed <u64> (stage4a or stage4a-apic user mode)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -120,6 +121,7 @@ struct Options {
     out: String,
     /// `--run --budget N`: run the guest for at most N instructions after loading.
     budget: Option<u64>,
+    vcpu_count: usize,
     /// `--seed N`: use the seeded interleaved scheduler for a Stage 6 run.
     interleaved_seed: Option<u64>,
     /// `--set-cpl0`: run through the CPL0 profile set instead of the base probe profile.
@@ -258,6 +260,23 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
         "nonce": options.nonce,
         "ram_mib": options.ram_mib,
     });
+    if options.budget.is_some()
+        && options.vcpu_count > 1
+        && env
+            .fetch_cache_stats
+            .as_ref()
+            .is_some_and(|path| !path.is_empty())
+    {
+        return (
+            refusal(
+                "invalid_input",
+                "arguments",
+                "fetch cache statistics require --vcpus 1".into(),
+                evidence,
+            ),
+            3,
+        );
+    }
     mark_acceptance(
         &mut evidence,
         options.diagnostic_past_c7,
@@ -416,7 +435,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
         expected_acpi_manifest_hash: options.expected_acpi_manifest_hash,
         ram_bytes,
     };
-    match load_linux_direct_board(&machine_input) {
+    match load_linux_direct_board_with_vcpus(&machine_input, options.vcpu_count) {
         Ok(mut boot) => {
             describe(
                 &mut evidence,
@@ -426,7 +445,9 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 &loaded_initrd_sha256,
             );
             if let Some(seed) = options.interleaved_seed {
-                if let Err(error) = boot.board.enable_seeded_linux_interleaved(seed) {
+                if options.vcpu_count == 1
+                    && let Err(error) = boot.board.enable_seeded_linux_interleaved(seed)
+                {
                     return (
                         refusal(
                             "run_failed",
@@ -664,7 +685,37 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                     ..LinuxCpl0SetMembers::linux_default()
                 };
                 let run_started = std::time::Instant::now();
-                let result = if options.execution_observations_out.is_some() {
+                let result = if options.vcpu_count > 1 {
+                    run_linux_direct_board_set_user_mode_interleaved(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        members,
+                        options.interleaved_seed.expect("validated SMP seed"),
+                    )
+                    .map(|report| {
+                        evidence["interleaved_scheduler"]["terminal_vcpu"] =
+                            json!(report.terminal_vcpu);
+                        evidence["interleaved_scheduler"]["cpu_stats"] = Value::Array(
+                            report
+                                .vcpus
+                                .iter()
+                                .map(|cpu| {
+                                    json!({
+                                        "index": cpu.index,
+                                        "retired": cpu.retired,
+                                        "activity": format!("{:?}", cpu.activity),
+                                        "rip": cpu.rip,
+                                        "rflags": cpu.rflags,
+                                        "gpr": cpu.gpr,
+                                        "cr3": cpu.cr3,
+                                    })
+                                })
+                                .collect(),
+                        );
+                        report.stop
+                    })
+                } else if options.execution_observations_out.is_some() {
                     run_linux_direct_board_set_user_mode_with_delay_tsc_summary(
                         &mut boot,
                         &machine_input,
@@ -1578,13 +1629,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
             .filter(|_| !text.starts_with('+'))
             .ok_or_else(|| format!("invalid {flag} '{text}': expected an unsigned decimal integer"))
     };
-    if let Some(text) = vcpus {
-        let count = decimal("--vcpus", text)?;
-        if count != 1 {
-            return Err(format!(
-                "unsupported --vcpus {count}: linux-direct currently requires one vCPU"
-            ));
-        }
+    let vcpu_count = match vcpus.map(|text| decimal("--vcpus", text)).transpose()? {
+        None | Some(1) => 1,
+        Some(2) => 2,
+        Some(count) => return Err(format!("unsupported --vcpus {count}: expected 1 or 2")),
+    };
+    if run
+        && vcpu_count > 1
+        && !(seed.is_some()
+            && set_cpl0
+            && cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+            && user_mode)
+    {
+        return Err(
+            "--vcpus 2 needs --seed, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
+                .into(),
+        );
+    }
+    if vcpu_count > 1
+        && (checkpoint_table.is_some()
+            || stack_context_out.is_some()
+            || execution_observations_out.is_some())
+    {
+        return Err("checkpoint and observation sidecars require --vcpus 1".into());
+    }
+    if vcpu_count > 1 && diagnostic_past_c7 {
+        return Err("--diagnostic-past-c7 requires --vcpus 1".into());
     }
     let interleaved_seed = seed.map(|text| decimal("--seed", text)).transpose()?;
     if interleaved_seed.is_some()
@@ -1782,6 +1852,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         ram_mib,
         out: required(out, "--out")?,
         budget,
+        vcpu_count,
         interleaved_seed,
         set_cpl0,
         diagnostic_past_c7,
@@ -3168,6 +3239,7 @@ mod tests {
                 ram_mib: 128,
                 out: dir.join("out.json").to_string_lossy().into_owned(),
                 budget: None,
+                vcpu_count: 1,
                 interleaved_seed: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
@@ -4795,6 +4867,12 @@ mod tests {
         let apic_options = parse_base(&[&apic_profile[..], &["--seed", "1"]].concat()).unwrap();
         assert_eq!(apic_options.cpuid_profile, CpuidProfile::X8664V1Stage4AApic);
         assert_eq!(apic_options.interleaved_seed, Some(1));
+        let smp = [&apic_profile[..], &["--vcpus", "2", "--seed", "24301"]].concat();
+        let smp_options = parse_base(&smp).unwrap();
+        assert_eq!(smp_options.vcpu_count, 2);
+        assert_eq!(smp_options.interleaved_seed, Some(24301));
+        assert!(parse_base(&["--vcpus", "2"]).is_ok());
+        assert!(parse_base(&[&smp[..], &["--stack-context-out", "trace.json"]].concat()).is_err());
         let mut wrong_profile = profile;
         wrong_profile[5] = "diagnostic";
         assert!(parse_base(&[&wrong_profile[..], &["--seed", "1"]].concat()).is_err());
@@ -6734,6 +6812,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: None,
+            vcpu_count: 1,
             interleaved_seed: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -6793,6 +6872,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(1000),
+            vcpu_count: 1,
             interleaved_seed: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -6856,6 +6936,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(2_600_000_000),
+            vcpu_count: 1,
             interleaved_seed: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
@@ -6940,6 +7021,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(30_000_000),
+            vcpu_count: 1,
             interleaved_seed: None,
             set_cpl0: true,
             diagnostic_past_c7: false,

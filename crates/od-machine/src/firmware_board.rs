@@ -2370,7 +2370,7 @@ impl LoadedFirmwareBoard {
         self.pci_config_address = value;
     }
 
-    pub(crate) fn import_threaded_linux_pci_address(&mut self) -> Result<(), FirmwareBoardError> {
+    pub(crate) fn import_linux_pci_address(&mut self) -> Result<(), FirmwareBoardError> {
         if self.pci_config_pending {
             self.bus
                 .write_port_shared(
@@ -2634,16 +2634,31 @@ impl LoadedFirmwareBoard {
         privilege: PrivilegeLevel,
         efer: u64,
     ) -> (Option<u64>, Vec<u8>, Option<String>) {
+        self.fetch_vcpu_view_2m(BOOT_VCPU_INDEX, rip, len, privilege, efer)
+    }
+
+    pub(crate) fn fetch_vcpu_view_2m(
+        &mut self,
+        cpu: usize,
+        rip: u64,
+        len: usize,
+        privilege: PrivilegeLevel,
+        efer: u64,
+    ) -> (Option<u64>, Vec<u8>, Option<String>) {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege,
             origin: AccessOrigin::Explicit,
         };
-        let paging = match Long64ProbeConfig::from_cpu_state(
-            &self.vcpus[BOOT_VCPU_INDEX].state,
-            self.page_table_root,
-            efer,
-        ) {
+        let state = &self.vcpus[cpu].state;
+        let cr3 = if cpu == BOOT_VCPU_INDEX {
+            self.page_table_root
+        } else if let Some(cr3) = state.cr3 {
+            cr3
+        } else {
+            return (None, Vec::new(), Some(format!("vCPU {cpu} has no CR3")));
+        };
+        let paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
             Ok(paging) => paging,
             Err(error) => return (None, Vec::new(), Some(format!("{error:?}"))),
         };
@@ -2674,12 +2689,12 @@ impl LoadedFirmwareBoard {
         (first, bytes, None)
     }
 
-    pub(crate) fn sync_threaded_linux_boot_views(&mut self) -> Result<(), FirmwareBoardError> {
+    pub(crate) fn sync_linux_boot_views(&mut self) -> Result<(), FirmwareBoardError> {
         let cr3 = self.vcpus[BOOT_VCPU_INDEX]
             .state
             .cr3
             .ok_or(FirmwareBoardError::Config(
-                "threaded LinuxDirect: the BSP has no CR3",
+                "LinuxDirect: the BSP has no CR3",
             ))?;
         self.page_table_root = cr3;
         let cf8 = self

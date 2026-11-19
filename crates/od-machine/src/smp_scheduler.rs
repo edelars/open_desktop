@@ -901,7 +901,6 @@ impl SmpScheduler {
                 now_before,
                 "SmpHost::run must not move the clock"
             );
-            clock.account(executed).map_err(SmpError::Clock)?;
             let done = executed.retired + u64::from(executed.partial_rep);
             let counters = &mut self.counters[cpu];
             counters.steps += done;
@@ -910,6 +909,8 @@ impl SmpScheduler {
             retired += executed.retired;
             quantum_left = quantum_left.saturating_sub(done);
             *remaining = remaining.saturating_sub(executed.retired);
+            // The guest has already retired this prefix even if advancing virtual time fails.
+            clock.account(executed).map_err(SmpError::Clock)?;
             if let Some(error) = failure {
                 if let Some(turns) = self.turns.as_mut() {
                     turns.push(TurnRecord {

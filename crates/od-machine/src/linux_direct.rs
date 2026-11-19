@@ -55,8 +55,14 @@ use od_isa::{IretqUserEntry, Register};
 use profile::{LinuxCpl0Profile, LinuxVcpuCells};
 use std::cell::Cell;
 
+mod interleaved;
+mod observed;
 mod profile;
 mod threaded;
+pub use interleaved::{
+    LinuxInterleavedRunReport, LinuxInterleavedVcpu,
+    run_linux_direct_board_set_user_mode_interleaved,
+};
 pub use threaded::{
     LinuxThreadedOptions, LinuxThreadedRunReport, run_linux_direct_board_set_user_mode_threaded,
 };
@@ -665,26 +671,35 @@ pub struct SyscallJournal {
 
 impl SyscallJournal {
     pub(crate) fn record(&mut self, event: crate::paged_memory_adapter::SyscallEvent) {
+        self.record_matching(event, |_| true);
+    }
+
+    fn record_matching(
+        &mut self,
+        event: crate::paged_memory_adapter::SyscallEvent,
+        mut matches: impl FnMut(usize) -> bool,
+    ) {
         use crate::paged_memory_adapter::SyscallEvent;
         match event {
-            SyscallEvent::Enter { nr, rip } => {
+            SyscallEvent::Enter { nr, caller } => {
                 if self.entries.len() == SYSCALL_JOURNAL_CAPACITY {
                     self.entries.pop_front();
                 }
                 self.entries.push_back(SyscallJournalEntry {
                     nr,
-                    rip,
+                    rip: caller.rip,
                     rax_return: None,
                 });
                 self.entered += 1;
             }
-            SyscallEvent::Exit { rax } => {
+            SyscallEvent::Exit { rax, .. } => {
                 // The return belongs to the latest call that has not returned yet.
-                if let Some(entry) = self
+                if let Some((_, entry)) = self
                     .entries
                     .iter_mut()
+                    .enumerate()
                     .rev()
-                    .find(|entry| entry.rax_return.is_none())
+                    .find(|(index, entry)| entry.rax_return.is_none() && matches(*index))
                 {
                     entry.rax_return = Some(rax);
                 }
@@ -722,6 +737,7 @@ pub fn run_linux_direct_board(
     input: &LinuxDirectInput<'_>,
     instruction_budget: u64,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_single_vcpu(boot)?;
     check_nvme_interrupt_profile(boot, false)?;
     let pm_timer_reads_before = boot.board.acpi_pm().map(|pm| pm.timer_reads());
     let report = boot
@@ -775,6 +791,15 @@ fn check_nvme_interrupt_profile(
         );
         error.retired = Some(0);
         return Err(error);
+    }
+    Ok(())
+}
+
+fn check_single_vcpu(boot: &LinuxDirectBoot) -> Result<(), LinuxDirectError> {
+    if boot.board.vcpu_count() != 1 {
+        return Err(linux_irq_setup_error(
+            "multiple vCPUs require interleaved LinuxDirect",
+        ));
     }
     Ok(())
 }
@@ -846,7 +871,15 @@ fn stop_record(
     let view = boot
         .board
         .fetch_view_2m(boot.board.state().rip, LINUX_STOP_RIP_BYTES);
-    stop_record_with_view(boot, input, report, pm_timer_reads_before, extras, view)
+    stop_record_with_view(
+        boot,
+        input,
+        report,
+        pm_timer_reads_before,
+        extras,
+        view,
+        BOOT_VCPU_INDEX,
+    )
 }
 
 fn stop_record_with_view(
@@ -856,8 +889,10 @@ fn stop_record_with_view(
     pm_timer_reads_before: Option<u64>,
     extras: SetExtras<'_>,
     (rip_gpa, rip_bytes, rip_bytes_error): (Option<u64>, Vec<u8>, Option<String>),
+    cpu: usize,
 ) -> LinuxStopRecord {
-    let state = boot.board.state();
+    let vcpu = boot.board.vcpu(cpu).expect("reporting vCPU exists");
+    let state = &vcpu.state;
     let unsupported_opcode = match report.exit {
         PagedProbeExit::Unsupported { opcode } => Some(opcode),
         _ => None,
@@ -891,19 +926,23 @@ fn stop_record_with_view(
         mode: "long64",
         cpl: state.cs_selector.map_or(0, |cs| (cs & 3) as u8),
         cr0: state.cr0,
-        cr3: boot.board.cr3(),
+        cr3: if cpu == BOOT_VCPU_INDEX {
+            boot.board.cr3()
+        } else {
+            state.cr3.unwrap_or(0)
+        },
         cr4: state.cr4,
         efer: boot.board.efer(),
-        guest_efer: boot.board.guest_efer(),
+        guest_efer: vcpu.guest_efer,
         pci_config_address: boot.board.pci_config_address(),
-        guest_star: boot.board.guest_star(),
-        guest_lstar: boot.board.guest_lstar(),
-        guest_cstar: boot.board.guest_cstar(),
-        guest_sysenter_cs: boot.board.guest_sysenter_cs(),
-        guest_sysenter_esp: boot.board.guest_sysenter_esp(),
-        guest_sysenter_eip: boot.board.guest_sysenter_eip(),
-        guest_syscall_mask: boot.board.guest_syscall_mask(),
-        guest_kernel_gs_base: boot.board.guest_kernel_gs_base(),
+        guest_star: vcpu.guest_star,
+        guest_lstar: vcpu.guest_lstar,
+        guest_cstar: vcpu.guest_cstar,
+        guest_sysenter_cs: vcpu.guest_sysenter_cs,
+        guest_sysenter_esp: vcpu.guest_sysenter_esp,
+        guest_sysenter_eip: vcpu.guest_sysenter_eip,
+        guest_syscall_mask: vcpu.guest_syscall_mask,
+        guest_kernel_gs_base: vcpu.guest_kernel_gs_base,
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -1496,6 +1535,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     selected_elf_stack_copy: bool,
     selected_delay_tsc_call_summary: bool,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    check_single_vcpu(boot)?;
     check_nvme_interrupt_profile(
         boot,
         members.cpuid_profile == CpuidProfile::X8664V1Stage4AApic,
@@ -1798,6 +1838,8 @@ mod tests {
 
     const BLOB: &[u8] =
         include_bytes!("../../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin");
+    const SMP_BLOB: &[u8] =
+        include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin");
     /// `tables_config_with_ecam().acpi_manifest_hash()`, the hash of the fixture blob (S4-31d/g).
     const FIXTURE_HASH: &str = "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2";
     const MIB: u64 = 1 << 20;
@@ -1885,12 +1927,7 @@ mod tests {
     fn linux_direct_loads_the_board_topology_only_with_matching_madt() {
         let file = bzimage();
         let up = input(&file, &[], BLOB, board_hash());
-        let smp = input(
-            &file,
-            &[],
-            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin"),
-            board_hash(),
-        );
+        let smp = input(&file, &[], SMP_BLOB, board_hash());
         let boot = load_linux_direct_board_with_vcpus(&smp, 2).expect("loads two vCPUs");
         assert_eq!(boot.board.vcpu_count(), 2);
         assert_eq!(boot.retired, 0);
@@ -2035,6 +2072,50 @@ mod tests {
         let file = bzimage_with_entry(code);
         let boot = load_linux_direct_board(&input(&file, &[], BLOB, board_hash())).expect("loads");
         (boot, file)
+    }
+
+    #[test]
+    fn interleaved_linux_uses_the_ap_profile_and_counts_an_ap_budget_stop() {
+        // CPUID.1, RDMSR/WRMSR of IA32_APIC_BASE, CLD, then legacy PUSH ES.
+        // Isolate the long-mode leg after INIT/SIPI.
+        let file = bzimage_with_entry(&[
+            0xb8, 1, 0, 0, 0, 0x0f, 0xa2, 0xb9, 0x1b, 0, 0, 0, 0x0f, 0x32, 0x0f, 0x30, 0xfc, 0x06,
+        ]);
+        let input = input(&file, &[], SMP_BLOB, board_hash());
+        let mut boot = load_linux_direct_board_with_vcpus(&input, 2).unwrap();
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(boot.board.cr3());
+        state.activity = Some(od_isa::CpuActivity::Running);
+        let efer = boot.board.guest_efer();
+        let ap = boot.board.vcpu_mut(1).unwrap();
+        ap.state = state;
+        ap.guest_efer = efer;
+        ap.legacy = None;
+        boot.board.state_mut().activity = Some(od_isa::CpuActivity::Halted);
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let report =
+            run_linux_direct_board_set_user_mode_interleaved(&mut boot, &input, 6, members, 24301)
+                .unwrap();
+        assert_eq!(report.stop.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(report.stop.retired, 6);
+        assert_eq!(report.terminal_vcpu, None);
+        assert_eq!(report.vcpus[0].retired, 0);
+        assert_eq!(report.vcpus[1].retired, 6);
+        assert_eq!(report.vcpus[1].gpr[Register::Rbx as usize] >> 16, 0x0102);
+        assert_eq!(report.vcpus[1].gpr[Register::Rax as usize], 0xfee0_0800);
+        let stopped =
+            run_linux_direct_board_set_user_mode_interleaved(&mut boot, &input, 1, members, 24301)
+                .unwrap();
+        assert_eq!(stopped.terminal_vcpu, Some(1));
+        assert_eq!(
+            stopped.stop.exit,
+            PagedProbeExit::Unsupported { opcode: 0x06 }
+        );
+        assert_eq!(stopped.stop.rip, report.vcpus[1].rip);
+        assert_eq!(stopped.stop.rip_bytes.first(), Some(&0x06));
     }
 
     fn run_entry(code: &[u8], budget: u64) -> LinuxStopRecord {
@@ -12192,8 +12273,16 @@ mod tests {
     fn syscall_journal_is_a_ring_and_an_iretq_return_is_not_a_system_call() {
         let mut journal = SyscallJournal::default();
         for nr in 0..(SYSCALL_JOURNAL_CAPACITY as u64 + 3) {
-            journal.record(crate::paged_memory_adapter::SyscallEvent::Enter { nr, rip: nr + 1 });
-            journal.record(crate::paged_memory_adapter::SyscallEvent::Exit { rax: nr + 2 });
+            let caller = crate::paged_memory_adapter::SyscallUserContext {
+                rip: nr + 1,
+                rsp: 0,
+                cr3: 0,
+            };
+            journal.record(crate::paged_memory_adapter::SyscallEvent::Enter { nr, caller });
+            journal.record(crate::paged_memory_adapter::SyscallEvent::Exit {
+                rax: nr + 2,
+                caller,
+            });
         }
         assert_eq!(journal.entries.len(), SYSCALL_JOURNAL_CAPACITY);
         assert_eq!(journal.entered, SYSCALL_JOURNAL_CAPACITY as u64 + 3);

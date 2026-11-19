@@ -2088,8 +2088,21 @@ fn sysretq_at(
 /// is the number, RCX the return address) and the `SYSRETQ` that returned (RAX the result).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SyscallEvent {
-    Enter { nr: u64, rip: u64 },
-    Exit { rax: u64 },
+    Enter {
+        nr: u64,
+        caller: SyscallUserContext,
+    },
+    Exit {
+        rax: u64,
+        caller: SyscallUserContext,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SyscallUserContext {
+    pub(crate) rip: u64,
+    pub(crate) rsp: u64,
+    pub(crate) cr3: u64,
 }
 
 /// The events one call of the set loop keeps at most (the oldest are dropped; the board journal
@@ -2501,8 +2514,8 @@ impl LoopBus<'_> {
 pub(crate) enum ExceptionDeliveryMode<'a> {
     /// The caller owns the machine and uses a fresh limit for this quantum.
     Quantum,
-    /// The vCPU thread keeps the streak across scheduler boundaries.
-    Thread(&'a mut u64),
+    /// The vCPU keeps the streak across scheduler boundaries.
+    Persistent(&'a mut u64),
     /// One step in a host loop that accounts for the streak and observes handler entry.
     HostStep(u64),
 }
@@ -2733,7 +2746,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         _ => (0, false),
     };
     let deliveries_without_retirement = match exception_delivery {
-        ExceptionDeliveryMode::Thread(faults) => faults,
+        ExceptionDeliveryMode::Persistent(faults) => faults,
         _ => &mut local_faults,
     };
     let mut last_instruction_rip = None;
@@ -3230,15 +3243,24 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 state
                     .cs_selector
                     .is_some_and(|selector| selector & 3 != 3)
-                    .then_some(SyscallEvent::Enter {
+                    .then(|| SyscallEvent::Enter {
                         nr: rax_before,
-                        rip: state.gpr[od_isa::Register::Rcx as usize],
+                        caller: SyscallUserContext {
+                            rip: state.gpr[od_isa::Register::Rcx as usize],
+                            rsp: state.gpr[od_isa::Register::Rsp as usize],
+                            cr3: paging.cr3(),
+                        },
                     })
             } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
                 && sysretq_at(instruction_rip, bus.ram(), &paging, context, cache)
             {
                 Some(SyscallEvent::Exit {
                     rax: state.gpr[od_isa::Register::Rax as usize],
+                    caller: SyscallUserContext {
+                        rip: state.rip,
+                        rsp: state.gpr[od_isa::Register::Rsp as usize],
+                        cr3: paging.cr3(),
+                    },
                 })
             } else {
                 None

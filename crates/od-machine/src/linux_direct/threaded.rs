@@ -1,18 +1,11 @@
 //! LinuxDirect on the Stage 6 vCPU worker scheduler.
 
+use super::observed::{ObservedRun, RunEnd, finish_stop, run_error};
 use super::*;
-use crate::FirmwareBoardError;
-use crate::firmware_board::set_exit_to_probe_exit;
-use crate::firmware_board::vcpu_quantum::{
-    SharedSetReport, is_quantum_boundary, quantum_progress, run_shared_set_quantum,
-};
-use crate::paged_memory_adapter::PagedCpl0SetExit;
+use crate::firmware_board::vcpu_quantum::run_shared_set_quantum;
 use crate::parallel_run::{
     NmiPaging, ParallelConfig, ParallelFinish, QuantumCall, ThreadRunOptions, run_threads_rooted,
 };
-use crate::smp_scheduler::{Executed, RunFailure};
-use crate::vcpu::Vcpu;
-use od_isa::PrivilegeLevel;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -29,95 +22,6 @@ pub struct LinuxThreadedRunReport {
     pub stop: LinuxStopRecord,
     pub threads_started: usize,
     pub threads_exited: usize,
-}
-
-#[derive(Default)]
-struct ObservedRun {
-    irq: IrqCounters,
-    rdtsc: [u64; 4],
-    changes: Vec<TranslationContextChange>,
-    cpl3_retired: u64,
-    journal: SyscallJournal,
-    exceptions: u64,
-    page_faults: u64,
-    protection_faults: u64,
-    terminal: Option<Terminal>,
-}
-
-struct Terminal {
-    exit: PagedProbeExit,
-    detail: String,
-    page_fault: Option<od_isa::memory::PageFaultRecord>,
-    memory_error: Option<crate::TrackedAccessError>,
-    user_entry: Option<IretqUserEntry>,
-}
-
-impl ObservedRun {
-    fn record(
-        &mut self,
-        report: SharedSetReport,
-        vcpu: &Vcpu,
-        deadline_cut: bool,
-    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
-        let cpu = report.cpu;
-        let progress = quantum_progress(&cpu, report.device_ns);
-        self.irq.irqs_delivered += report.irq.irqs_delivered;
-        self.irq.irq_refused_masked += report.irq.irq_refused_masked;
-        self.irq.irq_refused_shadow += report.irq.irq_refused_shadow;
-        self.irq.quantum_cut_by_deadline += u64::from(deadline_cut);
-        if let Some(cpl) = report.rdtsc_cpl {
-            self.rdtsc[cpl] += 1;
-        }
-        self.changes.extend(cpu.translation_context_changes);
-        self.cpl3_retired += cpu.cpl3_retired;
-        for event in cpu.syscall_events {
-            self.journal.record(event);
-        }
-        self.exceptions += cpu.delivered_exceptions;
-        self.page_faults += cpu.delivered_page_faults;
-        self.protection_faults += cpu.delivered_general_protection_faults;
-
-        if !is_quantum_boundary(&cpu.exit) {
-            let user_entry = match &cpu.exit {
-                PagedCpl0SetExit::UserEntry(entry) => Some(entry.clone()),
-                _ => None,
-            };
-            let (exit, detail) = set_exit_to_probe_exit(cpu.exit).map_err(|error| {
-                RunFailure::after(progress, error.into_board_error(&vcpu.state))
-            })?;
-            match exit {
-                PagedProbeExit::Fault(_)
-                | PagedProbeExit::Unsupported { .. }
-                | PagedProbeExit::Stopped => {}
-                PagedProbeExit::PortIo(error) => {
-                    return Err(RunFailure::after(progress, FirmwareBoardError::Bus(error)));
-                }
-                _ => {
-                    return Err(RunFailure::after(
-                        progress,
-                        FirmwareBoardError::VcpuQuantum {
-                            cpu: vcpu.index,
-                            detail,
-                        },
-                    ));
-                }
-            }
-            self.terminal = Some(Terminal {
-                exit,
-                detail,
-                page_fault: cpu.page_fault,
-                memory_error: cpu.memory_error,
-                user_entry,
-            });
-        }
-        Ok(progress)
-    }
-}
-
-fn run_error(detail: impl std::fmt::Debug, retired: u64) -> LinuxDirectError {
-    let mut error = LinuxDirectError::new("run_failed", "run", detail);
-    error.retired = Some(retired);
-    error
 }
 
 /// Run a Stage4A or Stage4AApic LinuxDirect guest in user mode on one dedicated vCPU thread. The
@@ -179,7 +83,7 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
         install_linux_ioapic_sources(&mut boot.board)?;
     }
     boot.board
-        .import_threaded_linux_pci_address()
+        .import_linux_pci_address()
         .map_err(|error| run_error(error, 0))?;
 
     let root = boot.board.cr3();
@@ -220,7 +124,7 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
             |report, cpu| {
                 let mut observed = observed.lock().expect("BSP report accumulator");
                 let progress = observed.record(report, cpu, call.deadline_cut)?;
-                *call.guest_exit = observed.terminal.is_some();
+                *call.guest_exit = observed.terminal_vcpu().is_some();
                 Ok(progress)
             },
         );
@@ -249,7 +153,7 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
     let bsp = &parallel.cpus[BOOT_VCPU_INDEX];
     let retired = bsp.retired;
     // Keep both views usable for diagnosis or another call, even after a late worker error.
-    let views = boot.board.sync_threaded_linux_boot_views();
+    let views = boot.board.sync_linux_boot_views();
     let (exit, stop_reason) = match parallel.finished {
         ParallelFinish::GuestExit { .. } => (None, None),
         ParallelFinish::GuestStop(reason) => (Some(PagedProbeExit::Stopped), Some(reason)),
@@ -265,80 +169,26 @@ pub fn run_linux_direct_board_set_user_mode_threaded(
     };
     views.map_err(|error| run_error(error, retired))?;
 
-    let mut observed = observed
+    let observed = observed
         .into_inner()
         .expect("joined BSP report accumulator");
-    let terminal = match exit {
-        Some(exit) => Terminal {
-            detail: format!("{exit:?}"),
-            exit,
-            page_fault: None,
-            memory_error: None,
-            user_entry: None,
-        },
-        None => observed
-            .terminal
-            .take()
-            .ok_or_else(|| run_error("missing guest exit report", retired))?,
-    };
-    observed.irq.irq0_edges = boot.board.irq0_edges();
-    observed.irq.halt_wakes = bsp.wakes;
-    observed.irq.halt_idle_ns = parallel.idle_ns;
-    let pit_reads = pit_before
-        .zip(boot.board.pit_read_counts())
-        .map(|(before, after)| [after[0] - before[0], after[1] - before[1]]);
-    let clock = boot.board.clock();
-    let run = FirmwareRunReport {
-        exit: terminal.exit,
-        page_fault: terminal.page_fault,
-        memory_error: terminal.memory_error,
-        retired,
-        quanta: bsp.calls,
-        com1: boot.board.com1_transcript().to_vec(),
-        virtual_ns: clock.now_ns(),
-        tsc_hz: clock.tsc_hz(),
-        rdtsc_reads: Some(observed.rdtsc.iter().sum()),
-        rdtsc_reads_by_cpl: Some(observed.rdtsc),
-        pit_port_b_reads: pit_reads.map(|read| read[0]),
-        pit_counter_port_reads: pit_reads.map(|read| read[1]),
-        stop_reason,
-    };
-    let privilege = if boot.board.state().cs_selector.is_some_and(|cs| cs & 3 == 3) {
-        PrivilegeLevel::Ring3
-    } else {
-        PrivilegeLevel::Ring0
-    };
-    let view = boot.board.fetch_view_2m_with_privilege(
-        boot.board.state().rip,
-        LINUX_STOP_RIP_BYTES,
-        privilege,
-        boot.board.guest_efer(),
-    );
-    let stop = stop_record_with_view(
+    let stop = finish_stop(
         boot,
         input,
-        run,
-        pm_before,
-        SetExtras {
+        observed,
+        RunEnd {
             path: "cpl0_set_threaded",
-            members: names,
-            exit_detail: Some(terminal.detail),
-            changes: &observed.changes,
-            cpuid_divergence_leaf: None,
-            user_entry: terminal.user_entry,
-            user_mode: true,
-            cpl3_retired: observed.cpl3_retired,
-            syscall_journal: observed.journal,
-            exceptions_delivered: observed.exceptions,
-            page_faults_delivered: observed.page_faults,
-            general_protection_faults_delivered: observed.protection_faults,
-            execution_observations: None,
-            irq: observed.irq,
-            diagnostic_past_c7: false,
-            checkpoints: None,
+            names,
+            retired,
+            quanta: bsp.calls,
+            wakes: bsp.wakes,
+            idle_ns: parallel.idle_ns,
+            exit,
+            stop_reason,
+            pm_before,
+            pit_before,
         },
-        view,
-    );
+    )?;
     Ok(LinuxThreadedRunReport {
         stop,
         threads_started: parallel.threads_started,

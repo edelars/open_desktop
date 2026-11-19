@@ -458,12 +458,21 @@ cmp "$proof_dir/seed-first.json" "$proof_dir/seed-second.json"
 
 Для проверки с IOAPIC установите `profile=stage4a-apic` в этом рецепте. После проверки nonce и CPU0 строка таймера в гостевом `/proc/interrupts` должна содержать `IO-APIC` и `2-edge`. [Результаты с IOAPIC](../reports/STAGE_6_REPORT.md#s6-21-шаг-2--seed-с-ioapic).
 
-Для зачётного прогона на двух vCPU передайте один raw JSON `linux-direct` и nonce, с которым стартовал гость.
+Для прогона на двух vCPU используйте те же ядро, initramfs и хеш устройств. Фикстура S6-21 содержит две записи LAPIC. Замените в команде выше профиль, blob, число vCPU и nonce следующими значениями.
+
+```sh
+--cpuid-profile stage4a-apic --vcpus 2 --seed 24301 \
+  --acpi-blob tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin --nonce smpBoot20261119A
+```
+
+В двухпроцессорном отчёте `interleaved_scheduler.cpu_stats` содержит retired, RIP, RFLAGS, GPR и CR3 каждого vCPU. Поле `stop.retired` содержит суммарное число выполненных инструкций. При остановке на инструкции `interleaved_scheduler.terminal_vcpu` указывает процессор, которому принадлежат регистры и байты в `stop`.
+
+Для зачётной проверки передайте raw JSON `linux-direct` и nonce, с которым стартовал гость.
 
 ```sh
 python3 tools/build/build_stage6_smp_initramfs.py \
   --verify-report work/stage6/s6-21/boot.json \
-  --nonce smpBoot20261119 --expect-online 2 --require-smp-evidence
+  --nonce smpBoot20261119A --expect-online 2 --require-smp-evidence
 ```
 
 Проверка требует один полный блок `/init`, online CPU `0–1`, согласованный заголовок `/proc/interrupts` и предшествующую строку ядра `smp: Brought up …, 2 CPUs`. На каждом online CPU хотя бы один из рядов `RES`, `CAL` или `TLB` должен иметь ненулевое значение. Формат строки ядра зафиксирован в S6-02. Предупреждения ядра и детерминизм повторных запусков входят в общую проверку S6-21. Для одно-vCPU наблюдения используйте только `--expect-online 1`. [План S6-21](../plans/STAGE_6.md#s6-21-запустить-второй-процессор-в-linux) · [Инвентарь S6-02](../reports/data/stage6/ap-start-inventory.json).

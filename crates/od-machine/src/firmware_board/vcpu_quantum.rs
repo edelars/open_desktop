@@ -315,6 +315,21 @@ impl LoadedFirmwareBoard {
         stop: &mut dyn FnMut() -> bool,
         set: &Cpl0ProfileSet<'_>,
     ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+        let report = self.run_exclusive_set_quantum(cpu, budget, stop, set, None, None)?;
+        quantum_result(report.cpu, cpu, &self.vcpus[cpu], report.device_ns)
+    }
+
+    /// Run one long-mode quantum on the exclusive bus. Linux carries the delivered-fault
+    /// streak across turns and lets the scheduler account for every RDTSC and device boundary.
+    pub(crate) fn run_exclusive_set_quantum(
+        &mut self,
+        cpu: usize,
+        budget: u64,
+        stop: &mut dyn FnMut() -> bool,
+        set: &Cpl0ProfileSet<'_>,
+        linux_faults: Option<&mut u64>,
+        fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
+    ) -> Result<SetQuantumReport, FirmwareBoardError> {
         let lapic = self
             .lapic
             .for_cpu(cpu)
@@ -339,7 +354,13 @@ impl LoadedFirmwareBoard {
         }
         self.pump_uart_transmit(0);
 
-        let (report, rdtsc_ns, _) = quantum_loop(
+        let linux = linux_faults.is_some();
+        let set = if linux {
+            set.route_pci_config_through_port_io()
+        } else {
+            *set
+        };
+        let (report, rdtsc_ns, irq) = quantum_loop(
             &mut self.vcpus[cpu],
             cpu,
             LoopBus::Exclusive(&mut self.bus),
@@ -350,17 +371,20 @@ impl LoadedFirmwareBoard {
                 pit,
                 board_source: &mut *self.irq_source,
                 gate: None,
-                rdtsc_clock: None,
-                check_acpi_stop: false,
+                rdtsc_clock: linux.then_some(&self.clock),
+                check_acpi_stop: linux,
                 stop_after_mmio: false,
-                stop_on_pit_write: false,
+                stop_on_pit_write: linux,
             },
             inputs,
             budget,
             stop,
-            set,
-            ExceptionDeliveryMode::Quantum,
-            None,
+            &set,
+            linux_faults.map_or(
+                ExceptionDeliveryMode::Quantum,
+                ExceptionDeliveryMode::Persistent,
+            ),
+            fetch_cache,
         );
 
         self.pump_uart_transmit(report.instructions_executed);
@@ -371,7 +395,13 @@ impl LoadedFirmwareBoard {
         if let Some(pit) = &self.pit {
             device_ns += pit.take_port_tick_ns();
         }
-        quantum_result(report, cpu, &self.vcpus[cpu], device_ns)
+        Ok(SetQuantumReport {
+            rdtsc_cpl: (rdtsc_ns != 0)
+                .then(|| usize::from(self.vcpus[cpu].state.cs_selector.unwrap_or(0) & 3)),
+            cpu: report,
+            irq,
+            device_ns,
+        })
     }
 }
 
@@ -515,7 +545,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     )
 }
 
-pub(crate) struct SharedSetReport {
+pub(crate) struct SetQuantumReport {
     pub(crate) cpu: PagedCpl0SetReport,
     pub(crate) irq: IrqCounters,
     pub(crate) device_ns: u64,
@@ -537,7 +567,7 @@ pub(crate) fn run_shared_set_quantum(
     mut nvme_pending: Option<&mut bool>,
     fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
     report_result: impl FnOnce(
-        SharedSetReport,
+        SetQuantumReport,
         &Vcpu,
     ) -> Result<Executed, RunFailure<FirmwareBoardError>>,
 ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
@@ -584,7 +614,7 @@ pub(crate) fn run_shared_set_quantum(
         budget,
         stop,
         &set,
-        ExceptionDeliveryMode::Thread(consecutive_faults),
+        ExceptionDeliveryMode::Persistent(consecutive_faults),
         fetch_cache,
     );
 
@@ -595,7 +625,7 @@ pub(crate) fn run_shared_set_quantum(
     let mmio_written = report.mmio_written;
     let rdtsc_cpl = (rdtsc_ns != 0).then(|| usize::from(vcpu.state.cs_selector.unwrap_or(0) & 3));
     let executed = report_result(
-        SharedSetReport {
+        SetQuantumReport {
             cpu: report,
             irq,
             device_ns,
