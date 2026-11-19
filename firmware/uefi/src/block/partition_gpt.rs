@@ -69,6 +69,10 @@ pub(crate) fn protective_mbr(block: &[u8; BLOCK_BYTES], last_lba: u64) -> bool {
 }
 
 impl Header {
+    #[cfg(target_os = "none")]
+    pub(crate) fn entry_bytes(&self) -> usize {
+        self.entry_bytes
+    }
     pub(crate) fn parse(block: &[u8; BLOCK_BYTES], lba: u64, last_lba: u64) -> Option<Self> {
         if last_lba <= PRIMARY_LBA || (lba != PRIMARY_LBA && lba != last_lba) {
             return None;

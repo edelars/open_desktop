@@ -2,9 +2,8 @@
 //!
 //! Supported capabilities: `TPM_CAP_ALGS`, `TPM_CAP_HANDLES`, `TPM_CAP_COMMANDS`,
 //! `TPM_CAP_PP_COMMANDS`, `TPM_CAP_AUDIT_COMMANDS` (both empty: no command needs physical
-//! presence or is audited), `TPM_CAP_PCRS`, `TPM_CAP_TPM_PROPERTIES`. Every other capability
-//! is `TPM_RC_VALUE` (parameter 1); in particular `TPM_CAP_PCR_PROPERTIES` is not implemented
-//! (PTP 1.07, clause 4.7.1 item 4 asks for it; recorded as a deviation in `docs/specs/VTPM.md`).
+//! presence or is audited), `TPM_CAP_PCRS`, `TPM_CAP_PCR_PROPERTIES` and
+//! `TPM_CAP_TPM_PROPERTIES`. An unknown capability returns `TPM_RC_VALUE` (parameter 1).
 //!
 //! `TPM_CAP_COMMANDS` lists exactly the commands of the dispatch table.
 //!
@@ -45,6 +44,7 @@ use crate::marshal::{
 };
 use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
+use crate::pcr::{PcrAttr, pcr_attr};
 use crate::response::{Output, Rc};
 use crate::session::MAX_SESSIONS;
 use crate::state::Tpm;
@@ -58,6 +58,17 @@ const VENDOR_ID: u32 = 0x4F44_5450;
 /// Entries (already marshaled) for one capability, in ascending order, from `property` on.
 struct Entries {
     items: Vec<Vec<u8>>,
+}
+
+// TPM Library v185 Part 2 §6.14 and Table 29. Locality 0 is the only
+// supported locality. This profile exposes no D-RTM, PCR policy or PCR auth.
+fn tagged_pcr_properties() -> [(u32, fn(PcrAttr) -> bool); 4] {
+    [
+        (0x00, |attr| attr.save),
+        (0x02, |attr| attr.reset_l0),
+        (0x11, |attr| attr.no_increment),
+        (0x12, |_| false),
+    ]
 }
 
 impl Entries {
@@ -281,6 +292,26 @@ impl Tpm {
                     handles: Vec::new(),
                     params: w.finish(),
                 });
+            }
+            cap::PCR_PROPERTIES => {
+                // TPMS_TAGGED_PCR_SELECT, Part 2 v185 §10.6: tag, size and bitmap.
+                entry_size = 4 + 1 + limits::PCR_SELECT_SIZE;
+                for (tag, applies) in tagged_pcr_properties() {
+                    if tag < property {
+                        continue;
+                    }
+                    let mut mask = [0; limits::PCR_SELECT_SIZE];
+                    for index in 0..limits::PCR_COUNT {
+                        if applies(pcr_attr(index)) {
+                            mask[index / 8] |= 1 << (index % 8);
+                        }
+                    }
+                    entries.push(|w| {
+                        w.u32(tag);
+                        w.u8(limits::PCR_SELECT_SIZE as u8);
+                        w.bytes(&mask);
+                    });
+                }
             }
             cap::TPM_PROPERTIES => {
                 entry_size = 8;

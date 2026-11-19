@@ -65,6 +65,45 @@ fn table<'a>(blob: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
 }
 
 #[test]
+fn tpm2_table_and_aml_are_conditional_on_the_same_validated_crb() {
+    let absent = build(&STAGE4_DEVICES, 0xff);
+    assert!(!table(&absent, b"DSDT").windows(8).any(|w| w == b"MSFT0101"));
+    assert!((0..le32(&absent, 0x48) as usize).all(|i| dir_entry(&absent, i).0 != *b"TPM2"));
+
+    let mut devices = STAGE4_DEVICES;
+    devices[5].flags = FLAG_PRESENT;
+    devices[5].base = 0xfed4_0000;
+    devices[5].length = 0x5000;
+    let blob = build(&devices, 0xff);
+    let tpm = table(&blob, b"TPM2");
+    assert_eq!((tpm.len(), tpm[8], byte_sum(tpm)), (52, 6, 0));
+    assert_eq!(le32(tpm, 36), 0);
+    assert_eq!(le64(tpm, 40), 0xfed4_0040);
+    assert_eq!(le32(tpm, 48), 7);
+    let index = (0..le32(&blob, 0x48) as usize)
+        .find(|&i| dir_entry(&blob, i).0 == *b"TPM2")
+        .unwrap();
+    let addr = ACPI_REGION_BASE + dir_entry(&blob, index).1 as u64;
+    assert!(
+        table(&blob, b"XSDT")[36..]
+            .chunks_exact(8)
+            .any(|entry| le64(entry, 0) == addr)
+    );
+    let dsdt = table(&blob, b"DSDT");
+    assert!(dsdt.windows(8).any(|w| w == b"MSFT0101"));
+    assert!(
+        dsdt.windows(12)
+            .any(|w| w == [0x86, 9, 0, 1, 0, 0, 0xd4, 0xfe, 0, 0x50, 0, 0])
+    );
+
+    devices[5].base += 0x1000;
+    assert_eq!(
+        build_blob(&devices, &mut [0; STAGE4_BLOB_CAPACITY]),
+        Err(BlobError::Manifest(ManifestError::BadTpmCrb)),
+    );
+}
+
+#[test]
 fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
     let blob = build(&LINUX_NVME_DEVICES, 0);
     assert_eq!(blob, linux_nvme_blob_bytes::<LINUX_NVME_BLOB_LEN>());

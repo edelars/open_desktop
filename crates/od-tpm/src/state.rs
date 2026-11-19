@@ -247,9 +247,15 @@ impl Tpm {
     /// by the owner (non-decreasing; a smaller value is ignored). Returns the complete response.
     /// Every error of the guest command is a response with a `TPM_RC`, never a host error.
     pub fn execute(&mut self, locality: u8, command: &[u8], now_ms: u64) -> Vec<u8> {
+        self.advance_power_time(now_ms);
+        dispatch::execute(self, locality, command)
+    }
+
+    /// Updates the absolute time on this power cycle, including powered idle
+    /// time before the owning host takes a persistent snapshot.
+    pub fn advance_power_time(&mut self, now_ms: u64) {
         self.power_ms = self.power_ms.max(now_ms);
         self.da_tick();
-        dispatch::execute(self, locality, command)
     }
 
     /// Bytes of the persistent state (format `ODTPMSTA` v3). **Sensitive data**: they contain the

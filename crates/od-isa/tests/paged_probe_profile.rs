@@ -54707,6 +54707,40 @@ fn firmware_boot_rep_stosq_preserves_progress_on_fault_and_honors_bound() {
 }
 
 #[test]
+fn firmware_boot_tcg2_byte_shift_uses_cl_mask_and_preserves_upper_rax() {
+    let code = [0xd2, 0xe0];
+    for (count, value, defined, architectural_flags) in [
+        (32, 0x81, DEFINED, 0x8c5),
+        (1, 0x02, DEFINED & !0x10, 0x801),
+        (3, 0x08, DEFINED & !0x810, 0),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0xfeed_beef_dead_ba81;
+        cpu.gpr[Register::Rcx as usize] = count;
+        cpu.rflags = 0x8d7;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(
+            cpu.gpr[Register::Rax as usize],
+            0xfeed_beef_dead_ba00 | value
+        );
+        assert_eq!(cpu.gpr[Register::Rcx as usize], count);
+        assert_eq!(cpu.rflags & defined & 0x8d5, architectural_flags);
+        assert_eq!(cpu.rip, RIP + 2);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_shifts_mask_count_and_define_only_architectural_flags() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const SHIFT_DEFINED: u64 = 0x0c5;
@@ -56129,26 +56163,76 @@ fn firmware_boot_and_byte_source_fault_leaves_register_and_flags_unchanged() {
 }
 
 #[test]
-fn firmware_boot_xor_compares_qword_label_chunks() {
+fn firmware_boot_xor_compares_qword_fields_in_fs_and_tcg2_probes() {
     let stack_xor = &[0x48, 0x33, 0x4c, 0x24, 0x54][..];
     let accumulator_xor = &[0x48, 0x35, 0xff, 0xff, 0xff, 0xff][..];
-    let address = DATA + 0x54;
-    let fault = od_isa::ArchitecturalFault {
-        vector: 14,
-        error_code: Some(0),
-        linear_address: Some(address),
-    };
-    for (code, register, stack, fail) in [
-        (stack_xor, Register::Rcx, true, false),
-        (stack_xor, Register::Rcx, true, true),
-        (accumulator_xor, Register::Rax, false, false),
+    for (code, register, source, fail) in [
+        (stack_xor, Register::Rcx, Some((Register::Rsp, 0x54)), false),
+        (stack_xor, Register::Rcx, Some((Register::Rsp, 0x54)), true),
+        (accumulator_xor, Register::Rax, None, false),
+        (
+            &[0x48, 0x33, 0x74, 0x24, 0x32],
+            Register::Rsi,
+            Some((Register::Rsp, 0x32)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x32],
+            Register::Rcx,
+            Some((Register::Rsp, 0x32)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x33],
+            Register::Rcx,
+            Some((Register::Rsp, 0x33)),
+            true,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x3a],
+            Register::Rcx,
+            Some((Register::Rsp, 0x3a)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xce, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xce)),
+            false,
+        ),
+        (
+            &[0x49, 0x33, 0x46, 0x28],
+            Register::Rax,
+            Some((Register::R14, 0x28)),
+            false,
+        ),
+        (
+            &[0x49, 0x33, 0x4e, 0x20],
+            Register::Rcx,
+            Some((Register::R14, 0x20)),
+            true,
+        ),
+        (
+            &[0x49, 0x33, 0x46, 0x34],
+            Register::Rax,
+            Some((Register::R14, 0x34)),
+            false,
+        ),
     ] {
         let mut memory = Memory::new(code);
-        memory.bytes[DATA_PHYSICAL + 0x54..DATA_PHYSICAL + 0x5c].fill(0xff);
-        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
         let mut cpu = state();
         cpu.gpr[register as usize] = 0x0102_0304_0506_0708;
-        cpu.gpr[Register::Rsp as usize] = DATA;
+        let address = source.map(|(base, offset)| {
+            cpu.gpr[base as usize] = DATA;
+            memory.bytes[DATA_PHYSICAL + offset..DATA_PHYSICAL + offset + 8].fill(0xff);
+            DATA + offset as u64
+        });
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: address,
+        };
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
         cpu.rflags = 0xed7;
         let mut expected = cpu.clone();
         let result = execute::step_paged_firmware_probe(
@@ -56176,11 +56260,88 @@ fn firmware_boot_xor_compares_qword_label_chunks() {
             expected.rflags = 0x692;
         }
         assert_eq!(cpu, expected);
-        assert_eq!(memory.read_addresses.len(), usize::from(stack));
-        if stack {
+        assert_eq!(memory.read_addresses.len(), usize::from(address.is_some()));
+        if let Some(address) = address {
             assert_eq!(memory.read_addresses, [(address, 8)]);
         }
         assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_tcg2_checks_reserved_flags_with_sign_extended_test_mask() {
+    let code = [0x48, 0xf7, 0xc2, 0xee, 0xff, 0xff, 0xff];
+    for (requested, zero) in [(0x11, true), (0x13, false), (1 << 63, false)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = requested;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu.gpr, before.gpr);
+        assert_eq!(cpu.rip, RIP + code.len() as u64);
+        assert_eq!(cpu.rflags & 0x40 != 0, zero);
+        assert_eq!(cpu.rflags & 0x801, 0);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_tcg2_setcc_stores_exactly_one_byte_or_leaves_state_on_fault() {
+    for (code, offset, set_when_zero) in [
+        (&[0x0f, 0x94, 0x04, 0x24][..], 0, true),
+        (&[0x0f, 0x94, 0x44, 0x24, 0x20][..], 0x20, true),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x20][..], 0x20, false),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x68][..], 0x68, false),
+    ] {
+        for fail in [false, true] {
+            let mut memory = Memory::new(code);
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA + 8;
+            cpu.rflags |= 1 << 6;
+            let address = DATA + 8 + offset as u64;
+            let index = DATA_PHYSICAL + 8 + offset;
+            memory.bytes[index - 1..index + 2].fill(0xff);
+            let fault = od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(address),
+            };
+            memory.fail_write = fail.then(|| MemoryError::Architectural(fault.clone()));
+            let mut expected = cpu.clone();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            let value = if fail {
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                assert_eq!(result.instructions_executed, 0);
+                0xff
+            } else {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(result.instructions_executed, 1);
+                expected.rip += code.len() as u64;
+                u8::from(set_when_zero)
+            };
+            assert_eq!(cpu, expected);
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(memory.bytes[index - 1..index + 2], [0xff, value, 0xff]);
+            assert_eq!(memory.write_addresses, [address]);
+            assert_eq!(memory.reads, 0);
+        }
     }
 }
 
@@ -56524,6 +56685,34 @@ fn firmware_boot_dword_imul_scales_nvme_ready_timeout() {
     assert_eq!(cpu.rflags, 0x6d6);
     assert!(memory.read_addresses.is_empty());
     assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_dword_imul_counts_tcg2_memory_descriptors() {
+    for (modrm, destination) in [(0xc9, Register::Rcx), (0xc1, Register::Rax)] {
+        let code = [0x69, modrm, 0xcd, 0xcc, 0, 0];
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0028;
+        cpu.gpr[Register::Rax as usize] = 0xfedc_ba98_7654_3210;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = 0x28 * 0xcccd;
+        expected.rip += code.len() as u64;
+        expected.rflags &= !0x801;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined & 0x8d5, 0x801);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]

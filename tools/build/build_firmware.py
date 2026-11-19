@@ -47,7 +47,7 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
-TEST_APPS = ("acpi", "blk", "ebs", "echo", "fs", "gop", "hello", "rt", "vars")
+TEST_APPS = ("acpi", "blk", "ebs", "echo", "fs", "gop", "hello", "rt", "tpm", "vars")
 FV_MAGIC = b"ODFVARC\0"
 FV_VERSION = 1
 FV_HEADER_SIZE = 24
@@ -63,7 +63,7 @@ HEADER_SIZE = 0x40
 IMAGE_SIZE = 0x0040_0000
 LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
-HANDOFF_MINOR_MAX = 12
+HANDOFF_MINOR_MAX = 13
 CRC_OFFSET = 0x30
 
 # --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt

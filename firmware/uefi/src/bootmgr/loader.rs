@@ -2,11 +2,12 @@
 
 use super::{
     char16,
-    policy::{DEFAULT_NODE, set_variable},
+    policy::{DEFAULT_NODE, boot_name, set_variable},
 };
-use crate::bs::{event::signal_ready_to_boot, image::load_boot_option, memory::BootPool};
+use crate::bs::{image::load_boot_option, memory::BootPool};
 use crate::device_path::{END_PATH_BYTES, path_bytes};
 use crate::mem::map::MemoryType;
+use crate::tpm::measure;
 use crate::uefi::{
     loaded_image::{LOADED_IMAGE_PROTOCOL_GUID, LoadedImageProtocol},
     status::Status,
@@ -37,14 +38,21 @@ pub(super) unsafe fn launch(
     if write != Status::SUCCESS {
         return None;
     }
-    let entered = unsafe { load_and_start(boot, path, options) };
+    let entered = unsafe { load_and_start(boot, number, path, options) };
     unsafe { set_variable(runtime, &BOOT_CURRENT, 0, &[]) };
     entered
 }
 
-unsafe fn load_and_start(boot: &BootServices, path: &[u8], options: &[u8]) -> Option<Started> {
-    let ready = unsafe { signal_ready_to_boot() };
-    if ready != Status::SUCCESS {
+unsafe fn load_and_start(
+    boot: &BootServices,
+    number: u16,
+    path: &[u8],
+    options: &[u8],
+) -> Option<Started> {
+    if measure::action(4, b"Calling EFI Application from Boot Option").is_err()
+        || measure::booting_to(&boot_name(number)).is_err()
+        || unsafe { measure::ready_to_boot() }.is_err()
+    {
         return None;
     }
     let mut image = ptr::null_mut();
@@ -101,6 +109,7 @@ unsafe fn start_application(boot: &BootServices, image: Handle, options: &[u8]) 
         Started::Other
     };
     unsafe { (boot.start_image)(image, ptr::null_mut(), ptr::null_mut()) };
+    let _ = measure::action(4, b"Returning from EFI Application from Boot Option");
     if options_buffer.is_some() {
         let mut live = ptr::null_mut();
         let lookup =

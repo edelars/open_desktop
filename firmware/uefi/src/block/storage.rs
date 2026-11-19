@@ -230,7 +230,10 @@ unsafe fn discover_partitions(
         }?;
         let array = unsafe { slice::from_raw_parts(table_pool.0.cast(), header.table_bytes) };
         if let Some(table) = header.table(array) {
-            return collect_partitions(unsafe { &*storage }, &table).map(Some);
+            let partitions = collect_partitions(unsafe { &*storage }, &table)?;
+            #[cfg(target_os = "none")]
+            crate::tpm::measure::gpt(&block, array, header.entry_bytes())?;
+            return Ok(Some(partitions));
         }
         Ok(None)
     })

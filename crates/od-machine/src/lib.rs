@@ -84,6 +84,7 @@ mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
 mod stage6_smp_probe;
+mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -127,6 +128,7 @@ pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
     RtcCmosError,
 };
+pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig};
 
 pub use console_output_context::{
     ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,

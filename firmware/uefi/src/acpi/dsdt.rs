@@ -140,6 +140,9 @@ const fn build_dsdt_inner(
         if let Some(rtc) = manifest.rtc() {
             tri!(emit_rtc(&mut builder, rtc), DsdtError::Aml);
         }
+        if let Some(tpm) = manifest.tpm_crb() {
+            tri!(emit_tpm(&mut builder, tpm), DsdtError::Aml);
+        }
         tri!(builder.end(scope), DsdtError::Aml);
         if let Some(typ) = s5 {
             tri!(emit_s5(&mut builder, typ), DsdtError::Aml);
@@ -170,6 +173,16 @@ const fn emit_rtc(builder: &mut AmlBuilder<'_>, rtc: &DeviceEntry) -> Result<(),
     let resources = tri!(template.finish());
     let device = tri!(builder.begin_device("RTC0"));
     tri!(builder.name_eisa_id("_HID", "PNP0B00"));
+    tri!(builder.name_resource_template("_CRS", &resources));
+    builder.end(device)
+}
+
+const fn emit_tpm(builder: &mut AmlBuilder<'_>, tpm: &DeviceEntry) -> Result<(), AmlError> {
+    let mut template = ResourceTemplate::new();
+    tri!(template.memory32_fixed(true, tpm.base as u32, tpm.length as u32));
+    let resources = tri!(template.finish());
+    let device = tri!(builder.begin_device("TPM0"));
+    tri!(builder.name_string("_HID", "MSFT0101"));
     tri!(builder.name_resource_template("_CRS", &resources));
     builder.end(device)
 }

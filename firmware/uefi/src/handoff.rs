@@ -4,7 +4,9 @@
 //! firmware services exist. Region/device record structure is checked; device-specific parameter
 //! values and consistency with the complete board memory map are validated by later steps.
 
-use crate::acpi::manifest::{ABSENT_ENTRY, AcpiPmEntry, DeviceEntry, ManifestError, device_type};
+use crate::acpi::manifest::{
+    ABSENT_ENTRY, AcpiPmEntry, DeviceEntry, ManifestError, TPM_CRB_BASE, TPM_CRB_LEN, device_type,
+};
 
 pub const HANDOFF_WINDOW_SIZE: usize = 0x1_0000;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
@@ -25,7 +27,8 @@ const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
 const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
 const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
 const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_FS;
+const HANDOFF_MINOR_TPM: u16 = 13;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_TPM;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
@@ -43,6 +46,7 @@ pub enum FirmwareFvApp {
     Gop = 6,
     Blk = 7,
     Fs = 8,
+    Tpm = 9,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +413,7 @@ const fn validate_devices(
         }
         let required_minor = match kind {
             DEVICE_NVRAM if present => HANDOFF_MINOR_NVRAM,
+            device_type::TPM_CRB if present => HANDOFF_MINOR_TPM,
             8 => 1,
             9 => 2,
             DEVICE_RTC_CMOS => HANDOFF_MINOR_RTC,
@@ -440,6 +445,7 @@ const fn validate_devices(
             return Err(HandoffError::InvalidDeviceFlags { index, flags });
         }
         if (kind >= 8
+            || (kind == device_type::TPM_CRB && version_minor == HANDOFF_MINOR_TPM)
             || (kind == device_type::DISPLAY && version_minor == HANDOFF_MINOR_FV_APP_GOP)
             || (kind == DEVICE_NVRAM
                 && version_minor >= HANDOFF_MINOR_NVRAM
@@ -483,6 +489,17 @@ const fn validate_devices(
         {
             return Err(HandoffError::InvalidDeviceRange { index });
         }
+        if kind == device_type::TPM_CRB && present {
+            if base != TPM_CRB_BASE
+                || length != TPM_CRB_LEN
+                || u32_at(bytes, at + 0x18) != NO_OWNER
+                || irq_flags != 0
+                || u64_at(bytes, at + 0x20) != 0
+                || u64_at(bytes, at + 0x28) != 0
+            {
+                return Err(HandoffError::InvalidDeviceRange { index });
+            }
+        }
         index += 1;
     }
     let mut kind = 1;
@@ -513,7 +530,7 @@ const fn validate_devices(
     }
     if matches!(
         version_minor,
-        HANDOFF_MINOR_FV_APP_RT | HANDOFF_MINOR_FV_APP_ACPI
+        HANDOFF_MINOR_FV_APP_RT | HANDOFF_MINOR_FV_APP_ACPI | HANDOFF_MINOR_TPM
     ) && !seen[9]
     {
         return Err(HandoffError::MissingDeviceType { kind: 9 });
@@ -666,7 +683,7 @@ impl<'a> Handoff<'a> {
             | HANDOFF_MINOR_FV_APP_RT
             | HANDOFF_MINOR_FV_APP_ACPI
             | HANDOFF_MINOR_FV_APP_GOP => device_count >= 7 && device_count <= 10,
-            HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS => {
+            HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS | HANDOFF_MINOR_TPM => {
                 device_count >= 8 && device_count <= 10
             }
             _ => false,
@@ -755,6 +772,7 @@ impl<'a> Handoff<'a> {
                 6 if minor >= HANDOFF_MINOR_FV_APP_GOP => Some(FirmwareFvApp::Gop),
                 7 if minor >= HANDOFF_MINOR_FV_APP_BLK => Some(FirmwareFvApp::Blk),
                 8 if minor >= HANDOFF_MINOR_FV_APP_FS => Some(FirmwareFvApp::Fs),
+                9 if minor >= HANDOFF_MINOR_TPM => Some(FirmwareFvApp::Tpm),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
@@ -788,6 +806,9 @@ impl<'a> Handoff<'a> {
         if minor >= HANDOFF_MINOR_NVRAM {
             handoff.validate_nvram_region()?;
         }
+        if minor >= HANDOFF_MINOR_TPM {
+            handoff.validate_tpm_region()?;
+        }
         Ok(handoff)
     }
 
@@ -816,12 +837,38 @@ impl<'a> Handoff<'a> {
     }
 
     fn nvram_owner(&self) -> Option<u32> {
+        self.present_device_owner(DEVICE_NVRAM)
+    }
+
+    fn present_device_owner(&self, kind: u32) -> Option<u32> {
         (0..self.device_count)
             .find(|&index| {
                 let at = self.device_table_offset + index * self.device_entry_size;
-                u32_at(self.bytes, at) == DEVICE_NVRAM && u32_at(self.bytes, at + 4) & 1 != 0
+                u32_at(self.bytes, at) == kind && u32_at(self.bytes, at + 4) & 1 != 0
             })
             .map(|index| index as u32)
+    }
+
+    pub fn tpm_crb_base(&self) -> Option<u64> {
+        self.present_device_owner(device_type::TPM_CRB)
+            .map(|_| TPM_CRB_BASE)
+    }
+
+    fn validate_tpm_region(&self) -> Result<(), HandoffError> {
+        if let Some(owner) = self.present_device_owner(device_type::TPM_CRB)
+            && self.regions().any(|region| {
+                region.kind == region_kind::MMIO
+                    && region.attrs == 0
+                    && region.owner == owner
+                    && region.base == TPM_CRB_BASE
+                    && region.length == TPM_CRB_LEN
+            })
+        {
+            return Ok(());
+        }
+        Err(HandoffError::InvalidBootReservation {
+            kind: region_kind::MMIO,
+        })
     }
 
     fn validate_nvram_region(&self) -> Result<(), HandoffError> {

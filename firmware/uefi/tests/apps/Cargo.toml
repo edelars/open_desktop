@@ -50,6 +50,13 @@ bench = false
 doc = false
 
 [[bin]]
+name = "tpm"
+path = "tpm/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "esp-boot-probe"
 path = "esp-boot-probe/main.rs"
 test = false

@@ -616,6 +616,10 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 `MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
 реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
 
+## Trusted Computing
+
+На плате с MMIO CRB прошивка публикует TPM2 в XSDT и устройство `MSFT0101` в DSDT. Она инициализирует TPM через locality 0 и предоставляет `EFI_TCG2_PROTOCOL` с единственным активным банком SHA-256. GetEventLog выдаёт формат TCG_2, а события после первого чтения доступны в retained final events table. Измеряются ROM, конфигурация, переменные загрузки, проверенная GPT, исполняемые PE и переход ExitBootServices. PE измеряется по Authenticode до выполнения. Полный набор форматов, PCR и ограничений описан в [VTPM.md](VTPM.md#measured-boot).
+
 ## Переменные
 
 S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их до `ExitBootServices`, а `rt` обслуживает проверку физического и виртуального режимов после выхода. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. В runtime видимы записи с `EFI_VARIABLE_RUNTIME_ACCESS`.

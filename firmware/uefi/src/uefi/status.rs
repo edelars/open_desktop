@@ -17,6 +17,7 @@ impl Status {
     pub const WRITE_PROTECTED: Self = Self(Self::ERROR_BIT | 8);
     pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
     pub const VOLUME_CORRUPTED: Self = Self(Self::ERROR_BIT | 10);
+    pub const VOLUME_FULL: Self = Self(Self::ERROR_BIT | 11);
     pub const NO_MEDIA: Self = Self(Self::ERROR_BIT | 12);
     pub const MEDIA_CHANGED: Self = Self(Self::ERROR_BIT | 13);
     pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);

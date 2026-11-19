@@ -324,6 +324,22 @@ unsafe fn load(
                 }
                 None => (ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
             };
+            #[cfg(target_os = "none")]
+            let embedded = matches!(
+                file_source.as_ref(),
+                Some((path::PathSource::FirmwareVolume(_), _))
+            );
+            #[cfg(not(target_os = "none"))]
+            let embedded = false;
+            if let Err(status) = crate::tpm::measure::image(
+                &pe,
+                mapped.base,
+                u64::from(mapped.size),
+                location.map_or(&[], |path| path.full),
+                embedded,
+            ) {
+                return status;
+            }
             let protocol = IMAGE_PROTOCOLS.0[index].get().cast::<LoadedImageProtocol>();
             protocol.write(LoadedImageProtocol {
                 revision: LOADED_IMAGE_PROTOCOL_REVISION,

@@ -555,6 +555,37 @@ fn cap_list(resp: &[u8]) -> (bool, u32, Vec<u8>, u32) {
     (more, capability, p[9..].to_vec(), count)
 }
 
+#[test]
+fn get_capability_reports_the_locality_zero_pcr_properties_and_paginates() {
+    let mut t = started();
+    let capability = cap::PCR_PROPERTIES;
+    let response = get_cap(&mut t, capability, 0, 2);
+    ok(&response);
+    assert_eq!(
+        cap_list(&response),
+        (
+            true,
+            capability,
+            vec![0, 0, 0, 0, 3, 0xff, 0xff, 0, 0, 0, 0, 2, 3, 0, 0, 0x81],
+            2
+        )
+    );
+    let response = get_cap(&mut t, capability, 3, 10);
+    ok(&response);
+    assert_eq!(
+        cap_list(&response),
+        (
+            false,
+            capability,
+            vec![0, 0, 0, 0x11, 3, 0, 0, 0xe1, 0, 0, 0, 0x12, 3, 0, 0, 0],
+            2
+        )
+    );
+    let response = get_cap(&mut t, capability, 0x13, 10);
+    ok(&response);
+    assert_eq!(cap_list(&response), (false, capability, Vec::new(), 0));
+}
+
 fn listed_commands(t: &mut Tpm) -> Vec<u32> {
     let (more, c, body, count) = cap_list(&get_cap(t, cap::COMMANDS, 0, 1000));
     assert!(!more && c == cap::COMMANDS);
@@ -783,7 +814,7 @@ fn capability_empty_lists_and_errors() {
         assert!(!more && cc_ == c && count == 0);
     }
     // Capabilities that are not implemented: TPM_RC_VALUE, parameter 1.
-    for c in [0x7, 0x9, 0xA, 0xB, 0x100, 0xFFFF_FFFF] {
+    for c in [0x9, 0xA, 0xB, 0x100, 0xFFFF_FFFF] {
         err(&get_cap(&mut t, c, 0, 1), Rc(0x1C4));
     }
     err(

@@ -103,6 +103,7 @@ pub mod cap {
     pub const AUDIT_COMMANDS: u32 = 0x0000_0004;
     pub const PCRS: u32 = 0x0000_0005;
     pub const TPM_PROPERTIES: u32 = 0x0000_0006;
+    pub const PCR_PROPERTIES: u32 = 0x0000_0007;
     pub const ECC_CURVES: u32 = 0x0000_0008;
 }
 

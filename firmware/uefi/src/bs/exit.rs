@@ -104,6 +104,12 @@ pub unsafe fn set_boot_image_handle(image: Handle) -> Status {
 /// Call on the BSP from the active image. Registered notification handlers
 /// may execute before return. A successful call ends Boot Services.
 pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) -> Status {
+    use crate::tpm::measure::action;
+    if crate::tpm::active() && !unsafe { super::boot_services_active() } {
+        return Status::INVALID_PARAMETER;
+    }
+    // A full log or unavailable TPM does not change the ExitBootServices ABI.
+    let _ = action(5, b"Exit Boot Services Invocation");
     let notify_before = unsafe {
         state::try_with(|state| {
             if state.system_table.is_none() {
@@ -119,8 +125,14 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
     match notify_before {
         Some(Ok(true)) => unsafe { event::dispatch_pending() },
         Some(Ok(false)) => {}
-        Some(Err(status)) => return status,
-        None => return Status::INVALID_PARAMETER,
+        Some(Err(status)) => {
+            let _ = action(5, b"Exit Boot Services Returned with Failure");
+            return status;
+        }
+        None => {
+            let _ = action(5, b"Exit Boot Services Returned with Failure");
+            return Status::INVALID_PARAMETER;
+        }
     }
 
     let status = unsafe {
@@ -141,6 +153,7 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
         })
     };
     if status != Status::SUCCESS {
+        let _ = action(5, b"Exit Boot Services Returned with Failure");
         return status;
     }
     unsafe {
@@ -149,6 +162,8 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
             let Some(mut system) = state.system_table else {
                 return Status::INVALID_PARAMETER;
             };
+            // Once exit callbacks have run, complete the irreversible transition.
+            let _ = action(5, b"Exit Boot Services Returned with Success");
             system.as_mut().clear_boot_services();
             if let Some(runtime) = state.runtime_services
                 && let Some(variables) = core::ptr::addr_of!((*runtime.as_ptr()).variables)

@@ -285,6 +285,14 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::acpi::install::install(&handoff, system_pointer) } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 79);
     }
+    if let Some(base) = handoff.tpm_crb_base()
+        && let Err(status) = unsafe {
+            od_firmware::tpm::install(base)
+                .and_then(|()| od_firmware::tpm::measure::platform(&handoff))
+        }
+    {
+        stop(STOP_BOOT_SERVICES, status.raw() as u64);
+    }
     let processor_id = processor_id();
     if unsafe { od_firmware::smbios::install(&handoff, processor_id, system_pointer) }
         != Status::SUCCESS
@@ -1415,6 +1423,7 @@ fn boot_fv_image(
         Some(FirmwareFvApp::Gop) => "gop",
         Some(FirmwareFvApp::Blk) => "blk",
         Some(FirmwareFvApp::Fs) => "fs",
+        Some(FirmwareFvApp::Tpm) => "tpm",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1458,6 +1467,16 @@ fn boot_fv_image(
             return install_runtime;
         }
         let mut image = ptr::null_mut();
+        if od_firmware::tpm::active() {
+            if let Err(status) =
+                od_firmware::tpm::measure::action(4, b"Calling EFI Application from Boot Option")
+            {
+                fail(status.raw() as u64);
+            }
+            if let Err(status) = od_firmware::tpm::measure::ready_to_boot() {
+                fail(status.raw() as u64);
+            }
+        }
         match load(0, parent, path.as_ptr().cast(), ptr::null(), 0, &mut image) {
             Status::SUCCESS => {
                 let status = start(image, ptr::null_mut(), ptr::null_mut());
@@ -1467,12 +1486,19 @@ fn boot_fv_image(
                 if status != Status::SUCCESS {
                     fail(72);
                 }
+                if let Err(status) = od_firmware::tpm::measure::action(
+                    4,
+                    b"Returning from EFI Application from Boot Option",
+                ) {
+                    fail(status.raw() as u64);
+                }
                 com1_write(match requested {
                     Some(FirmwareFvApp::Vars) => b"OD-FW image vars: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Acpi) => b"OD-FW image acpi: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Gop) => b"OD-FW image gop: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Blk) => b"OD-FW image blk: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Fs) => b"OD-FW image fs: EFI_SUCCESS\r\n",
+                    Some(FirmwareFvApp::Tpm) => b"OD-FW image tpm: EFI_SUCCESS\r\n",
                     _ => b"OD-FW image hello: EFI_SUCCESS\r\n",
                 });
             }

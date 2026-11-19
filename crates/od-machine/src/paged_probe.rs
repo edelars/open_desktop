@@ -7,6 +7,7 @@ use crate::display_device::{DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, Dis
 use crate::nvme::{NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeDevice};
 use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
 use crate::page_walk::MmioDispatchError;
+use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmCrbHandle};
 use crate::{
     DeviceAccess, DeviceError, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
     IoSpace, Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError,
@@ -190,6 +191,7 @@ pub(crate) struct FirmwareMmio<'a> {
     pub(crate) nvram: Option<&'a NvramHandle>,
     pub(crate) display: Option<&'a DisplayDevice>,
     pub(crate) nvme: Option<&'a NvmeDevice>,
+    pub(crate) tpm: Option<&'a TpmCrbHandle>,
 }
 
 impl FirmwareMmio<'_> {
@@ -197,26 +199,37 @@ impl FirmwareMmio<'_> {
         const DISPLAY: (u64, u64) = (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES);
         const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
         const NVME: (u64, u64) = (NVME_MMIO_BASE, NVME_MMIO_BYTES);
-        match (
-            self.display.is_some(),
-            self.nvram.is_some(),
-            self.nvme.is_some(),
-        ) {
-            (true, true, true) => &[DISPLAY, NVRAM, NVME],
-            (true, true, false) => &[DISPLAY, NVRAM],
-            (true, false, true) => &[DISPLAY, NVME],
-            (true, false, false) => &[DISPLAY],
-            (false, true, true) => &[NVRAM, NVME],
-            (false, true, false) => &[NVRAM],
-            (false, false, true) => &[NVME],
-            (false, false, false) => &[],
-        }
+        const TPM: (u64, u64) = (TPM_CRB_BASE, TPM_CRB_LEN);
+        const WINDOWS: [&[(u64, u64)]; 16] = [
+            &[],
+            &[DISPLAY],
+            &[NVRAM],
+            &[DISPLAY, NVRAM],
+            &[NVME],
+            &[DISPLAY, NVME],
+            &[NVRAM, NVME],
+            &[DISPLAY, NVRAM, NVME],
+            &[TPM],
+            &[DISPLAY, TPM],
+            &[NVRAM, TPM],
+            &[DISPLAY, NVRAM, TPM],
+            &[NVME, TPM],
+            &[DISPLAY, NVME, TPM],
+            &[NVRAM, NVME, TPM],
+            &[DISPLAY, NVRAM, NVME, TPM],
+        ];
+        let index = usize::from(self.display.is_some())
+            | (usize::from(self.nvram.is_some()) << 1)
+            | (usize::from(self.nvme.is_some()) << 2)
+            | (usize::from(self.tpm.is_some()) << 3);
+        WINDOWS[index]
     }
 
     fn access(
         self,
         address: GuestPhysicalAddress,
         operation: RamAccessOperation,
+        sample_time: &dyn Fn() -> Result<u64, crate::DeviceError>,
     ) -> Result<u64, MmioDispatchError> {
         if let Some(display) = self.display
             && (DISPLAY_REGISTERS_BASE..DISPLAY_REGISTERS_BASE + DISPLAY_REGISTERS_BYTES)
@@ -250,6 +263,17 @@ impl FirmwareMmio<'_> {
                 operation,
                 |access| nvme.read_mmio(access),
                 |access, value| nvme.write_mmio(access, value),
+            );
+        }
+        if let Some(tpm) = self.tpm
+            && (TPM_CRB_BASE..TPM_CRB_BASE + TPM_CRB_LEN).contains(&address.get())
+        {
+            return access_device_registers(
+                "TPM CRB",
+                address.get() - TPM_CRB_BASE,
+                operation,
+                |access| tpm.read(access),
+                |access, value| tpm.write(access, value, sample_time),
             );
         }
         Err(MmioDispatchError::Backend(
@@ -993,6 +1017,8 @@ impl ProbeStep {
             large_ram_profile: self.large_ram_profile,
             firmware_boot_profile: self.firmware_boot_profile,
             mmio,
+            mmio_clock: None,
+            retired_before: self.retired_before,
             committed_write,
             page_fault: None,
             memory_error: None,
@@ -1055,6 +1081,7 @@ impl ProbeStep {
             let Some(ProbeInputs::Firmware { clock, fp, .. }) = inputs else {
                 unreachable!("firmware execution uses its vCPU context");
             };
+            memory.mmio_clock = clock.as_ref().map(VirtualClock::now_ns);
             let mut sample = clock.as_ref().map(|snapshot| {
                 move || {
                     let mut clock = *snapshot;
@@ -1127,6 +1154,8 @@ struct PagedProbeMemory<'a> {
     large_ram_profile: bool,
     firmware_boot_profile: bool,
     mmio: FirmwareMmio<'a>,
+    mmio_clock: Option<u64>,
+    retired_before: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -1200,7 +1229,14 @@ impl PagedProbeMemory<'_> {
                 request,
                 &mut *self.committed_write,
                 Some(windows),
-                |address, _, operation| self.mmio.access(address, operation),
+                |address, _, operation| {
+                    self.mmio.access(address, operation, &|| {
+                        self.mmio_clock
+                            .unwrap_or(0)
+                            .checked_add(self.retired_before)
+                            .ok_or(crate::DeviceError::ClockOverflow)
+                    })
+                },
             )
         } else {
             crate::access_long64_4k_ram(
@@ -1223,6 +1259,28 @@ impl PagedProbeMemory<'_> {
         request: TrackedAccessRequest,
         error: TrackedAccessError,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        // Measured firmware reads its immutable ROM, which is never a target
+        // of fetches or writes. Only reuse an already translated whole operand.
+        if self.firmware_boot_profile
+            && self.mmio.tpm.is_some()
+            && !self.large_ram_profile
+            && request.context.origin == AccessOrigin::Explicit
+            && let RamAccessOperation::Read { width } = request.operation
+            && (request.address.get() & 0xfff) + u64::from(width.bytes()) <= 4096
+            && let TrackedAccessError::OperandPhysical {
+                address,
+                source: crate::MemoryAccessError::UnreadableRegion(crate::MemoryRegionKind::Rom),
+            } = &error
+        {
+            let mut bytes = [0; 8];
+            if self
+                .memory
+                .load_bytes(*address, &mut bytes[..usize::from(width.bytes())])
+                .is_ok()
+            {
+                return Ok(TrackedAccessOutcome::Read(u64::from_le_bytes(bytes)));
+            }
+        }
         let error = if matches!(error, TrackedAccessError::CrossesPage { .. })
             && self.firmware_boot_profile
             && !self.large_ram_profile

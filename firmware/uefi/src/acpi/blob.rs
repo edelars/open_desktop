@@ -54,6 +54,8 @@ use super::manifest::{
 use super::mcfg::{McfgError, build_mcfg};
 use super::rsdp::{RsdpError, build_rsdp, build_xsdt};
 use super::sha256::sha256;
+use super::table::TableError;
+use super::tpm2::{self, build_tpm2};
 
 pub const BLOB_MAGIC: [u8; 8] = *b"ODACPIB1";
 pub const BLOB_VERSION: u32 = 2;
@@ -88,6 +90,7 @@ pub enum BlobError {
     Fadt(FadtError),
     Facs(FacsError),
     Madt(MadtError),
+    Tpm2(TableError),
     /// RSDP or XSDT.
     Rsdp(RsdpError),
     /// The device table has no ACPI fixed hardware entry (type 9).
@@ -239,7 +242,8 @@ pub(super) const fn build_segments<const PACKAGE: bool>(
         Some(ecam) => ecam.is_present(),
         None => false,
     };
-    let table_count = if with_mcfg { 5 } else { 4 };
+    let tpm = manifest.tpm_crb();
+    let table_count = 4 + with_mcfg as usize + tpm.is_some() as usize;
     let payload_offset = align_up(HEADER_LEN + table_count * DIR_ENTRY_LEN, TABLE_ALIGN);
     tri!(room(out, payload_offset + RSDP_SLOT_LEN));
     // Header, directory and the RSDP slot start as zero; the gaps between tables are filled
@@ -316,16 +320,30 @@ pub(super) const fn build_segments<const PACKAGE: bool>(
         cursor = tri!(close_table(out, payload_offset, cursor, mcfg_len));
     }
 
-    // XSDT: FADT, MADT and MCFG, in this order, by their addresses in the payload.
-    let mut entries = [0u64; 3];
+    // XSDT lists FADT, MADT and the optional MCFG and TPM2 in payload order.
+    let mut entries = [0u64; 4];
     entries[0] = ACPI_REGION_BASE + fadt_at as u64;
     entries[1] = ACPI_REGION_BASE + madt_at as u64;
-    let entry_count = if with_mcfg {
+    let mut entry_count = if with_mcfg {
         entries[2] = ACPI_REGION_BASE + mcfg_at as u64;
         3
     } else {
         2
     };
+    if let Some(tpm) = tpm {
+        tri!(room(out, payload_offset + cursor));
+        let tpm_len = tri!(
+            build_tpm2(tpm, tail_mut(out, payload_offset + cursor)),
+            BlobError::Tpm2
+        );
+        signatures[index] = tpm2::SIGNATURE;
+        offsets[index] = cursor as u32;
+        lengths[index] = tpm_len as u32;
+        index += 1;
+        entries[entry_count] = ACPI_REGION_BASE + cursor as u64;
+        entry_count += 1;
+        cursor = tri!(close_table(out, payload_offset, cursor, tpm_len));
+    }
     tri!(room(out, payload_offset + cursor));
     let xsdt_at = cursor;
     let xsdt_len = tri!(

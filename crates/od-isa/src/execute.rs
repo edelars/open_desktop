@@ -20553,6 +20553,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ) || (instruction.opcode.byte == 0x85
                         && instruction.operand_size == OperandSize::Word
                         && source == Operand::Register(destination))
+                        || (instruction.opcode.byte == 0xf7
+                            && instruction.length == 7
+                            && instruction.prefixes.rex == Some(0x48)
+                            && destination == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                            && source == Operand::Immediate(!0x11))
                 }
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20653,14 +20658,32 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => match (instruction.opcode.byte, instruction.operand_size) {
                     (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword) => true,
                     (0x33, OperandSize::Qword) => {
-                        // The fs EFI probe compares part of the volume label on the stack.
-                        instruction.prefixes.rex == Some(0x48)
-                            && destination == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                            && memory.address_size == OperandSize::Qword
-                            && memory.base == AddressBase::Register(Register::Rsp)
+                        // The FS and TCG2 probes compare fixed-size fields in their buffers.
+                        memory.address_size == OperandSize::Qword
                             && memory.index.is_none()
                             && memory.scale == 1
-                            && memory.displacement == 0x54
+                            && match (instruction.prefixes.rex, memory.base) {
+                                (Some(0x48), AddressBase::Register(Register::Rsp)) => {
+                                    (destination
+                                        == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                                        && matches!(memory.displacement, 0x32 | 0x33 | 0x3a | 0x54))
+                                        || (destination
+                                            == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                                            && memory.displacement == 0x32)
+                                        || (destination
+                                            == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                                            && memory.displacement == 0xce)
+                                }
+                                (Some(0x49), AddressBase::Register(Register::R14)) => {
+                                    (destination
+                                        == RegisterView::low(Register::Rax, OperandSize::Qword)
+                                        && matches!(memory.displacement, 0x28 | 0x34))
+                                        || (destination
+                                            == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                                            && memory.displacement == 0x20)
+                                }
+                                _ => false,
+                            }
                     }
                     _ => false,
                 },
@@ -20734,7 +20757,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // Firmware expands memset bytes, computes framebuffer sizes, and scales NVMe CAP.TO.
+        // Firmware also uses fixed multiplies for counts of memory descriptors.
         operation @ (Operation::Imul {
             dst: destination,
             src: source @ (Operand::Register(_) | Operand::Memory(_)),
@@ -20755,7 +20778,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             )
             && (instruction.operand_size == OperandSize::Qword
                 || (instruction.operand_size == OperandSize::Dword
-                    && matches!(
+                    && (matches!(
                         operation,
                         Operation::Imul {
                             src: Operand::Register(_),
@@ -20764,7 +20787,24 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29 | 0xc350,
                             ..
                         }
-                    )))
+                    ) || (matches!(
+                        operation,
+                        Operation::ImulImmediate {
+                            immediate: 0xcccd,
+                            ..
+                        }
+                    ) && instruction.opcode.byte == 0x69
+                        && instruction.length == 6
+                        && instruction.prefixes.rex.is_none()
+                        && source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Dword,
+                            ))
+                        && (destination
+                            == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                            || destination
+                                == RegisterView::low(Register::Rax, OperandSize::Dword))))))
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20854,6 +20894,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     instruction.operand_size,
                     OperandSize::Dword | OperandSize::Qword
                 ),
+                (Operand::Register(register), ShiftKind::Shl, 0xd2) => {
+                    // TPM log replay marks a PCR using SHL AL,CL.
+                    instruction.length == 2
+                        && instruction.prefixes == Prefixes::default()
+                        && register == RegisterView::low(Register::Rax, OperandSize::Byte)
+                        && count_source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Byte,
+                            ))
+                }
                 (Operand::Register(register), ShiftKind::Shr, 0xd0) => {
                     instruction.operand_size == OperandSize::Byte
                         && count_source == Operand::Immediate(1)
@@ -22508,23 +22559,34 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
-        // S7-04: the helper stores SETNE's result to exactly byte
-        // `[RSP+7]` with `0F 95 44 24 07`. Pin the raw ModRM and decoded SIB
-        // tuple; perform the byte write through GuestMemory and commit RIP only
-        // after the write succeeds. SETNE leaves flags and definedness intact.
+        // S7-04 stores SETNE to [RSP+7]. S7-22 additionally uses SETE [RSP]
+        // and SETNE [RSP+0x20]. Commit RIP only after the exact byte store.
         Operation::SetCondition {
             condition,
             dst: Operand::Memory(destination),
             raw_modrm,
-        } if base_profile
+        } if ((base_profile
             && condition == ConditionCode::NotEqual
-            && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0x95
             && instruction.length == 5
+            && raw_modrm == 0x44
+            && destination.displacement == 7)
+            || (firmware_boot_profile
+                && matches!(
+                    (
+                        condition,
+                        instruction.opcode.byte,
+                        instruction.length,
+                        raw_modrm,
+                        destination.displacement
+                    ),
+                    (ConditionCode::Equal, 0x94, 4, 0x04, 0)
+                        | (ConditionCode::Equal, 0x94, 5, 0x44, 0x20)
+                        | (ConditionCode::NotEqual, 0x95, 5, 0x44, 0x20 | 0x68)
+                )))
+            && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.operand_size == OperandSize::Byte
             && instruction.prefixes == Prefixes::default()
-            && raw_modrm == 0x44
-            && destination.displacement == 7
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1

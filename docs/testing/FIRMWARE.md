@@ -37,6 +37,19 @@ python3 tests/system/firmware_nvram_smoke.py
 
 Runner загружает `vars` с пустым устройством, получает снимок между квантами после `HLT` и создаёт новую плату с тем же ROM и `NvramDevice::with_contents`. Второй `vars` читает через `GetVariable` ранее записанные байты `od-s7-10`. Скрипт сверяет два транскрипта COM1, коды `0x21`, хеши ROM, handoff и снимка, пределы инструкций и квантов. Снимок передаётся внутри одного процесса runner. [Host API NVRAM](../specs/NVRAM_DEVICE.md#host-api).
 
+## Измеренная загрузка S7-22
+
+```sh
+cargo build --release -p od-runner --offline
+python3 tools/build/build_firmware.py --with-test-apps \
+  --target-dir work/stage7/tpm-target --out work/stage7/tpm-rom.bin
+python3 tests/system/firmware_tpm_smoke.py --runner target/release/od-runner \
+  --rom work/stage7/tpm-rom.bin \
+  --app work/stage7/tpm-target/test-apps/x86_64-unknown-uefi/release/tpm.efi
+```
+
+Проба проверяет TPM2 в XSDT и активный SHA-256 bank через TCG2. Она повторяет цепочку digest → extend для PCR0/1/4/5, сравнивает с TPM2_PCR_Read и выводит только длину ответа GetRandom. В прогоне с ESP дополнительно проверяет BootOrder, Boot0000, действие выбора и GPT_EVENT2. После GetEventLog проверяет отдельную запись EV_NO_ACTION, а затем вызывает EBS с устаревшим и актуальным MapKey и читает retained final events из физической памяти. Для сохранения артефактов диагностики передать `--work`. [Контракт TPM](../specs/VTPM.md#event-log).
+
 ## Уровни доказательств
 
 | Уровень | Что проверяет | Команда | Состояние |

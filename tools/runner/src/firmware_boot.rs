@@ -8,7 +8,7 @@
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    PagedProbeExit, firmware_handoff_block, load_firmware_image,
+    PagedProbeExit, TpmConfig, firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -18,11 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
 const DUMP_USAGE: &str =
-    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs]";
+    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm]";
 
 struct Options {
     image: String,
@@ -35,15 +35,31 @@ struct Options {
     acpi_out: Option<String>,
     framebuffer_out: Option<String>,
     nvme_image: Option<String>,
+    tpm: bool,
 }
 
-fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardConfig {
+fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
+    let mut config = TpmConfig {
+        entropy: vec![0; 48],
+        snapshot,
+    };
+    File::open("/dev/urandom")?.read_exact(&mut config.entropy)?;
+    Ok(config)
+}
+
+fn board_config(
+    fv_app: Option<FirmwareFvApp>,
+    reboot: bool,
+    tpm: Option<TpmConfig>,
+) -> FirmwareBoardConfig {
     let rt = fv_app == Some(FirmwareFvApp::Rt);
     let acpi = fv_app == Some(FirmwareFvApp::Acpi);
+    let acpi_present = rt || acpi || tpm.is_some();
     FirmwareBoardConfig {
         fv_app,
-        acpi_pm: rt || acpi,
-        acpi_tables: rt || acpi,
+        acpi_pm: acpi_present,
+        acpi_tables: acpi_present,
+        tpm,
         rtc_base_unix_seconds: (rt || acpi).then_some(1_704_067_200),
         pci_ecam: acpi,
         // Stable fixture identity for the diagnostic firmware-volume application.
@@ -73,8 +89,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "gop" => Ok(FirmwareFvApp::Gop),
         "blk" => Ok(FirmwareFvApp::Blk),
         "fs" => Ok(FirmwareFvApp::Fs),
+        "tpm" => Ok(FirmwareFvApp::Tpm),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk or fs"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk, fs or tpm"
         )),
     }
 }
@@ -93,7 +110,12 @@ pub fn dump_handoff(args: &[String]) -> ExitCode {
             }
         }
         let path = out.ok_or_else(|| format!("usage: {DUMP_USAGE}"))?;
-        let block = firmware_handoff_block(&board_config(app, false))
+        // Only the descriptor is serialized. No TPM is created by this command.
+        let tpm = (app == Some(FirmwareFvApp::Tpm)).then(|| TpmConfig {
+            entropy: Vec::new(),
+            snapshot: None,
+        });
+        let block = firmware_handoff_block(&board_config(app, false, tpm))
             .map_err(|error| format!("{error:?}"))?;
         fs::write(path, block).map_err(|error| format!("{path}: {error}"))
     };
@@ -142,7 +164,17 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some());
+    let tpm = if options.tpm || options.fv_app == Some(FirmwareFvApp::Tpm) {
+        match tpm_config(None) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                return emit(failure("loader_error", "tpm_entropy", error.to_string()), 4);
+            }
+        }
+    } else {
+        None
+    };
+    let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some(), tpm);
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
     }
@@ -284,15 +316,28 @@ pub fn run(args: &[String]) -> ExitCode {
         board,
         ..
     } = first;
-    drop(board);
     // The first output now exists. Check aliases again on case-insensitive filesystems.
     if let Err(error) = validate_reboot_paths(&options.image, &options.com1_out, &reboot_out) {
         let mut value = failure("invalid_input", "paths", error);
         value["initial_boot"] = first_report;
         return emit(value, 3);
     }
+    let tpm = match board
+        .tpm_state_snapshot()
+        .map(|snapshot| tpm_config(Some(snapshot)))
+        .transpose()
+    {
+        Ok(tpm) => tpm,
+        Err(error) => {
+            let mut value = failure("loader_error", "tpm_entropy", error.to_string());
+            value["initial_boot"] = first_report;
+            return emit(value, 4);
+        }
+    };
+    drop(board);
     let restored = FirmwareBoardConfig {
         nvram: Some(NvramConfig::Snapshot(snapshot)),
+        tpm,
         ..config
     };
     let second = match boot(&image, &restored, options.budget, &reboot_out, nvme_image) {
@@ -616,9 +661,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut acpi_out = None;
     let mut framebuffer_out = None;
     let mut nvme_image = None;
+    let mut tpm = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
+        if name == "--tpm" && !tpm {
+            tpm = true;
+            index += 1;
+            continue;
+        }
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("missing value for {name}; usage: {USAGE}"))?;
@@ -690,6 +741,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         acpi_out,
         framebuffer_out,
         nvme_image,
+        tpm,
     })
 }
 

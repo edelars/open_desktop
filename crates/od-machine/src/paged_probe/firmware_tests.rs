@@ -207,6 +207,8 @@ fn nvram_dispatch_leaves_unserved_mmio_unwritten_and_clean() {
                 nvram: handle,
                 ..FirmwareMmio::default()
             },
+            mmio_clock: None,
+            retired_before: 0,
             committed_write: &mut |_| {},
             page_fault: None,
             memory_error: None,

@@ -41,6 +41,9 @@ pub mod device_type {
     pub const MAX_RTC_UNIX_SECONDS: u64 = 253_402_300_799;
 }
 
+pub const TPM_CRB_BASE: u64 = 0xfed4_0000;
+pub const TPM_CRB_LEN: u64 = 0x5000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManifestError {
     /// A type code outside 1..=7.
@@ -57,6 +60,7 @@ pub enum ManifestError {
     BadAcpiPm(&'static str),
     /// A handoff RTC entry (code 10) that does not match its fixed PIO/time contract.
     BadRtc(&'static str),
+    BadTpmCrb,
     BadPciNvme,
 }
 
@@ -189,6 +193,18 @@ impl BoardManifest {
             if entry.irq_flags & !(IRQ_LEVEL | IRQ_ACTIVE_LOW) != 0 {
                 return Err(ManifestError::ReservedIrqFlags(entry.irq_flags));
             }
+            if entry.device_type == device_type::TPM_CRB
+                && entry.is_present()
+                && (entry.flags != FLAG_PRESENT
+                    || entry.base != TPM_CRB_BASE
+                    || entry.length != TPM_CRB_LEN
+                    || entry.gsi != GSI_NONE
+                    || entry.irq_flags != 0
+                    || entry.param0 != 0
+                    || entry.param1 != 0)
+            {
+                return Err(ManifestError::BadTpmCrb);
+            }
             seen[index] = true;
             slots[index] = entry;
         }
@@ -198,6 +214,13 @@ impl BoardManifest {
             pci_nvme: None,
             rtc: None,
         })
+    }
+
+    pub const fn tpm_crb(&self) -> Option<&DeviceEntry> {
+        match self.device(device_type::TPM_CRB) {
+            Some(entry) if entry.is_present() => Some(entry),
+            _ => None,
+        }
     }
 
     pub(super) const fn with_nvme(mut self, entry: &DeviceEntry) -> Result<Self, ManifestError> {

@@ -67,6 +67,21 @@ pub unsafe fn run(system: *mut SystemTable) -> Result<(), Status> {
         .ok_or(Status::BAD_BUFFER_SIZE)?;
 
     let next = unsafe { take_boot_next(runtime) };
+    if crate::tpm::active() {
+        match unsafe { read_variable(runtime, &BOOT_ORDER, &mut scratch) } {
+            Ok(bytes) => crate::tpm::measure::boot_variable(&BOOT_ORDER, bytes)?,
+            Err(Status::NOT_FOUND) => (),
+            Err(status) => return Err(status),
+        }
+        for number in next.into_iter().chain(order.numbers()) {
+            let name = boot_name(number);
+            match unsafe { read_variable(runtime, &name, &mut scratch) } {
+                Ok(bytes) => crate::tpm::measure::boot_variable(&name, bytes)?,
+                Err(Status::NOT_FOUND) => (),
+                Err(status) => return Err(status),
+            }
+        }
+    }
     for number in next.into_iter().chain(order.numbers()) {
         let Some(option) = (unsafe { read_option(runtime, number, &mut scratch) }) else {
             continue;
@@ -117,6 +132,8 @@ pub unsafe fn run(system: *mut SystemTable) -> Result<(), Status> {
             }
             continue;
         }
+        crate::tpm::measure::boot_variable(&name, &output[..size])?;
+        crate::tpm::measure::boot_variable(&BOOT_ORDER, order.bytes())?;
         unsafe { loader::launch(boot, runtime, number, path, &[]) };
     }
     Ok(())
@@ -185,7 +202,7 @@ unsafe fn launch_expanded(
     unsafe { loader::launch(boot, runtime, number, bytes, options) }
 }
 
-fn boot_name(number: u16) -> [u16; 9] {
+pub(super) fn boot_name(number: u16) -> [u16; 9] {
     let mut name = char16(b"Boot0000\0");
     let hex = b"0123456789ABCDEF";
     for (offset, unit) in name[4..8].iter_mut().enumerate() {
@@ -316,9 +333,12 @@ impl Order {
         Ok(())
     }
 
+    fn bytes(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.data.as_ptr(), self.used) }
+    }
+
     fn numbers(&self) -> impl Iterator<Item = u16> + '_ {
-        let bytes = unsafe { slice::from_raw_parts(self.data.as_ptr(), self.used) };
-        bytes
+        self.bytes()
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
     }

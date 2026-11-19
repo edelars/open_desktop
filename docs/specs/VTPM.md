@@ -274,6 +274,41 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 **Тесты среза C3** (`src/tests_c3.rs` и unit-тесты `paramenc.rs`; `cargo test -p od-tpm --offline`): NV — счётчик (рост, запрет `Write`/`Extend`/`SetBits`, чтение, частичное чтение, Name следует `WRITTEN`), счётчик не идёт назад после удаления, повторного определения и `TPM2_Clear`, ошибки `Increment`/`Extend`/`SetBits` (handle, авторизация, роль, `WRITELOCKED`, параметры), HMAC-авторизованный `Increment`, `Extend` (векторы `hashlib`: `SHA-256(0^32 ‖ "abc")`, затем `‖ "def"`, затем пустой буфер; предельный буфер), `SetBits` (OR, 64 бита, `WRITTEN` без изменения битов), размеры и типы в `DefineSpace`, platform-счётчик переживает `Clear`; snapshot — round-trip всех типов и максимума, идентичность байтов, отказ при повреждении (тип, размер, reserved и неподдержанные атрибуты, данные без `WRITTEN`, счётчик выше максимума, нет максимума, версия 2, усечение, бит под digest); переполнение счётчика (`TPM_RC_NV_RANGE`) на восстановленном snapshot; `GetTime` (структура, подпись, внешняя проверка Python, обфускация внешних копий, RSA-ключ, все ошибки, HMAC-сессия); `signHandle` NULL у `GetTime`, `Quote`, `Certify` (структура, NULL-подпись, схемы, пароль, HMAC-сессия); шифрование — векторы XOR и AES-128-CFB (Python `hmac` + `openssl enc -aes-128-cfb`), decrypt `NV_Write` и encrypt `NV_Read` с клиентом из формул Part 1, привязанная сессия, cpHash по шифртексту, открытый текст с флагом `decrypt` расшифровывается в мусор, отказы по атрибутам, symmetric сессии в `ContextSave/Load`; `GetCapability` (60 команд, `TPMA_CC`, 13 алгоритмов); «обрезанные» команды не вызывают panic.
 
+## CRB
+
+Плата с `FirmwareBoardConfig::tpm` требует ACPI и handoff v1.13. Она публикует устройство 6 и одно принадлежащее ему окно MMIO `[0xFED4_0000, 0xFED4_5000)`. В DSDT устройство `\_SB.TPM0` имеет `_HID = MSFT0101` и `_CRS` на всё окно. В XSDT появляется TPM2 ревизии 6, класс PC Client 0, `Control Area = 0xFED4_0040`, `StartMethod = 7`. Параметры StartMethod и поля ACPI LAML/LASA не нужны этому профилю. Журнал предоставляется через EFI. [TCG ACPI 1.50, §3.2.4 и §3.4](https://trustedcomputinggroup.org/wp-content/uploads/TCG-ACPI-General-Specification_v1.50_pub.pdf).
+
+Регистр `INTF_ID = 0x0002_4821` сообщает MMIO CRB, версию интерфейса 2, 32- и 64-битный обмен и единственную locality 0. RID/DID/VID нулевые. Селектор CRB фиксирован, `IntfSelLock` остаётся сброшенным при одном интерфейсе. PTP 1.07 Table 24 упоминает версию 3, а нормативное требование к интерфейсу MMIO CRB в §6.4.2.2 указывает 2. Версия 3 связана с chunking, которого нет в этом профиле. В `0x1C` и `0x38..0x3F` чтение возвращает 0, запись игнорируется. При отключённой контрольной сумме `0x10` и `0x14` возвращают FF в доступных байтах. Регистры прерываний возвращают 0, запись игнорируется. [PTP 1.07, §§6.4.2.2, 6.5.3, 6.8](https://trustedcomputinggroup.org/wp-content/uploads/PC-Client-Specific-Platform-TPM-Profile-for-TPM-2p0-v1p07_Pub.pdf), [Errata 1.1, §2.5](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
+
+| Область | Поведение |
+|---|---|
+| `LOC_STATE` | На каждой странице 0x81 без назначения, 0x83 при назначенной locality 0. |
+| `LOC_CTRL`, `LOC_STS` | `requestAccess` назначает locality 0, `relinquish` освобождает её и очищает CRB. `LOC_STS.Granted` виден только на странице 0. Запросы, seize и управление D-RTM на страницах 1–4 игнорируются. |
+| CTRL, адреса/размеры, данные | Без назначенной locality и на неактивных страницах возвращают 0 и игнорируют запись. На странице 0 адрес и ёмкость команды и ответа неизменяемы: `0xFED4_0080` и 3968 байт. Буфер принадлежит устройству, окна DMA и указателей гостевой RAM нет. |
+| Переходы | Idle → cmdReady → Ready → последовательная запись от начала → START → Completion → goIdle → Idle. Повторный cmdReady при приёме отменяет незавершённую команду. START работает синхронно и сбрасывается после помещения ответа; `STS.idle` устанавливается при goIdle. Отмена выполняющейся команды не наблюдается между двумя операциями шины. |
+| Целостность доступа | Регистры MMIO little-endian, кадры TPM big-endian. Принимаются выровненные обращения в пределах регистра и байты/слова/двойные слова/четверные слова внутри буфера. Пересечение регистра и неверное выравнивание дают ошибку до эффекта. Некорректная команда получает TPM_RC. |
+
+PTP требует вместить поддерживаемый максимальный кадр. Используются 3968 байт, включая конец страницы locality 0. Это явный выбор окна ADR из-за расхождения диапазона и размера в Table 36. Загрузка команды не принимает пропуски и допускает начало новой команды с базового адреса; §6.5.3.11.2 разрешает такой режим. Внутри firmware-кванта время берётся на START по позиции инструкции. Обычная шина использует текущее время платы. Часы TPM получают миллисекунды от включения.
+
+Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v3, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
+
+## Measured boot
+
+`Startup(CLEAR)`, `SelfTest` и `GetCapability` проходят через гостевой MMIO, прежде чем публикуется `EFI_TCG2_PROTOCOL`. Возможности подтверждают единственный банк SHA-256 и 24 PCR. `TPM_CAP_PCR_PROPERTIES` выдаёт свойства SAVE, RESET_L0, NO_INCREMENT и нулевую карту DRTM_RESET с пагинацией. Теги отсутствующих локальностей и неподдержанных PCR policy/auth отсутствуют. [TPM Library Part 2 v185, §6.14, Table 29](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
+
+| PCR | События |
+|---|---|
+| 0 | `EV_S_CRTM_VERSION` со строкой версии, `EV_EFI_PLATFORM_FIRMWARE_BLOB2` с SHA-256 неизменяемого ROM и описанием физического диапазона. |
+| 1 | `EV_EFI_HANDOFF_TABLES2` с дайджестом ODHANDOF и записью указателя с GUID Open Desktop, `EV_EFI_VARIABLE_BOOT2` с хешем полного `UEFI_VARIABLE_DATA` для BootOrder и Boot####. |
+| 4 | События попытки загрузки и `EV_EFI_BOOT_SERVICES_APPLICATION` с Authenticode SHA-256 исходного PE и параметрами загрузки, включая полный путь, когда он известен. |
+| 5 | `EV_EFI_GPT_EVENT2` выбранной проверенной копии GPT, с нулевыми DiskGUID и UniquePartitionGUID, и события вызова и результата ExitBootServices. |
+
+Перед первым ReadyToBoot прошивка записывает separator в PCR0–7. Для locality 0 этот профиль не публикует StartupLocality. Встроенные до загрузки драйверы покрывает измерение ROM в PCR0. Внешние pre-boot драйверы измеряются в PCR2. Образы, загруженные через LoadImage в рамках попытки загрузки после первого separator, измеряются в PCR4. Изменения BootOrder после начала попыток остаются для измерения на следующем запуске. События политики Secure Boot для PCR7 добавит S7-24. [PC Client PFP 1.06 r52, §§3.3.4, 8.2.4, 10.2, 10.4](https://medias.cdn.trustedcomputinggroup.org/production/TCG_PC_Client_Platform_Firmware_Profile_Version_1_06_Revision_52_pub_3_1184065dfc.pdf).
+
+## Event log
+
+Журнал TCG_2 начинается с legacy `TCG_PCR_EVENT` Spec ID Event03 и содержит далее `TCG_PCR_EVENT2`. Буфер 32 KiB имеет тип BootServicesData. После первого успешного GetEventLog все последующие события также попадают в отдельный `EFI_TCG2_FINAL_EVENTS_TABLE` версии 1, выделенный в RuntimeServicesData. Повторный вызов сохраняет уже записанный хвост. EV_NO_ACTION имеет нулевой digest и не меняет PCR. При исчерпании журнала расширение продолжается, незавершённая запись не публикуется, а HashLogExtendEvent сохраняет статус EFI_VOLUME_FULL. Флаг ExtendOnly по-прежнему исключает запись. SubmitCommand сообщает статус транспорта EFI отдельно от TPM_RC в ответе. SetActivePcrBanks возвращает EFI_UNSUPPORTED; GetResultOfSetActivePcrBanks сообщает успешное чтение с признаком отсутствия запрошенной операции. [TCG EFI Protocol r13, §§6.4–7](https://medias.cdn.trustedcomputinggroup.org/production/EFI_Protocol_Specification_rev13_160330final_791550543b.pdf).
+
 ## Состояние
 
 Фаза A держала только каркас persistent state; срез C1 S7-23 довёл его до snapshot v2, срез C3 — до v3 (ADR-0009, решение 5): всё, что Part 3 и Part 1 относят к постоянному (seeds, auth `owner`/`endorsement`/`lockout`, NV, persistent-объекты, DA), сохраняется; остальное volatile.
@@ -395,7 +430,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 - SHA-384 (PTP: `M`, банк PCR) и SHA-512 (`M`) не реализованы; план S7-21 считает SHA-384 опциональным, SHA-1 для PCR запрещён PTP 1.07 (Table 3, `N`), что снимает вопрос банка SHA-1 «по S7-30». Нужен ли банк SHA-384 для Windows и для TCG2 event log — решение S7-22/S7-30.
 - `TPM2_PCR_Allocate` (PTP: `M`) не поддержана (отказ `TPM_RC_COMMAND_CODE`).
-- `TPM_CAP_PCR_PROPERTIES` не реализована (PTP 4.7.1, п. 4: TPM должен возвращать `TPM_PT_PCR_RESET_Lx`): `GetCapability` отвечает `TPM_RC_VALUE` с параметром 1 (`capability.rs`). Назначено S7-22: она обязана реализовать `TPM_CAP_PCR_PROPERTIES` или оставить этот ответ, записав в отчёт S7-22.
+- В S7-22 `TPM_CAP_PCR_PROPERTIES` добавлена для locality 0; поддержанные теги и границы перечислены в [Measured boot](#measured-boot).
 - `TPM_CAP_TPM_PROPERTIES` перечисляет только свойства реализованных возможностей (PTP 4.2, п. 2 требует все определённые); свойства сессий, NV, контекстов, DA, audit, persistent-объектов и атрибутов иерархий появятся с фазой B. `TPM_PT_HR_TRANSIENT_MIN` = 3 — это число sequence-слотов.
 - `TPM_PT_MAX_COMMAND_SIZE` = `TPM_PT_MAX_RESPONSE_SIZE` = 3968 (предел буфера CRB, ADR-0009, решение 4), `TPM_PT_INPUT_BUFFER` = 1024, `TPM_PT_MAX_DIGEST` = 32, `TPM_PT_MAX_CAP_BUFFER` = 1024.
 - Минимальные значения PTP Table 2 для сессий, persistent-объектов, NV (`TPM_PT_HR_*_MIN`, `TPM_PT_NV_*`) в фазе A не заявляются: этих возможностей нет.

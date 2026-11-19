@@ -31,6 +31,7 @@ pub mod pe;
 pub mod rt;
 pub mod smbios;
 pub mod stop;
+pub mod tpm;
 pub mod uefi;
 pub mod var;
 
