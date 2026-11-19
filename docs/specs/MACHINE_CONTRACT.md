@@ -4550,6 +4550,8 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 ## S6-35 — состояние на остановленной параллельной машине
 
+`StopProof` привязан к подтверждённой паузе конкретного параллельного прогона. Повторный `stop_all` без `resume` выдаёт подтверждение для той же паузы. После `resume` подтверждение недействительно и при следующей остановке даёт `StaleSafePoint`, даже если совпали время и состояния vCPU. Снимок проверяет принадлежность подтверждения текущей паузе до чтения vCPU и перед возвратом.
+
 `ParallelControl::stop_all` проверяет, что прогон продолжается, после сбора флагов `safe` и построения подтверждения. Выходящий поток также выставляет `safe`, поэтому завершившийся прогон возвращает `ParallelStopError::Finished`. Доступ к vCPU и `VmSnapshot::take_parallel` требуют действующей остановки живого прогона. Снимок повторяет эту проверку после чтения CPU, LAPIC и состояния планировщика. [Проверки](../reports/STAGE_6_REPORT.md#s6-35--завершение-прогона-во-время-stop).
 
 Дата: 2026-11-18. Чекбокс S6-35 в `STAGE_6.md` не отмечен: шаги 1–3 плана выполнены без формата файла, сквозная проверка с форматом снимка blocked до `S9-24`, `S9-25`. База — `86f5e9f`. Реализация: `vm_snapshot.rs` (`VmSnapshot::take_parallel`), `stage6_smp_probe.rs` (`Stage6SmpProbe::run_parallel_to_a_stop`, `Stage6SmpProbeParallelStop`, `Stage6SmpProbeSnapshot::{same_processor_state, pending_vectors}`); тесты — `parallel_snapshot_tests.rs` и `tests/stage6_smp_probe.rs`. Барьер и протокол остановки в `parallel_run.rs`, шина и RAM не менялись; добавлен только читающий метод `ParallelControl::vcpu_count` (число потоков прогона, для сверки с `proof`).

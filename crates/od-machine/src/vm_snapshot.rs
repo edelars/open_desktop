@@ -58,8 +58,7 @@ pub(crate) enum SnapshotError {
     /// The scheduler is not stopped: [`SmpScheduler::stop_all`] has not been called, or
     /// [`SmpScheduler::resume`] has since, or the parallel run has finished.
     NotStopped,
-    /// The safe point is not the machine's: another number of vCPUs, a clock that moved since,
-    /// or a vCPU whose activity is not the one it acknowledged.
+    /// The proof is from a different stop, or its vCPU count, time or acknowledged state differs.
     StaleSafePoint,
     /// The proof and the stop are the machine's, but the acknowledgement flag of a vCPU stayed
     /// down for longer than the bounded wait of [`VmSnapshot::take_parallel`] (the thread of the
@@ -135,8 +134,8 @@ impl VmSnapshot {
     /// with the [`StopProof`] that `stop_all` returned. The controller provides both the vCPUs and
     /// the Local APIC set of the stopped run. Nothing is changed in the
     /// machine. Refused ([`SnapshotError::NotStopped`]) when no stop is in force, and
-    /// ([`SnapshotError::StaleSafePoint`]) when the proof disagrees with the current stop's virtual
-    /// time, vCPU count, or vCPU state. A flag that stays down past the bounded wait is
+    /// ([`SnapshotError::StaleSafePoint`]) when the proof is from a different stop or disagrees
+    /// with the current stop's virtual time, vCPU count, or vCPU state. A flag that stays down is
     /// [`SnapshotError::SafeFlagTimeout`] (S6-36 review, M-1). Every vCPU has
     /// acknowledged, so no instruction is half done, nothing writes to a Local APIC but the
     /// controller itself, and what is read here is the state at one safe point, ordered after the
@@ -171,7 +170,8 @@ impl VmSnapshot {
         // The proof must have one acknowledgement for every thread of the run (review of S6-35,
         // m-1): one more would index past the vCPUs, one less would be a partial snapshot.
         let count = control.vcpu_count();
-        if proof.acks.len() != count
+        if !control.accepts_stop_proof(proof)
+            || proof.acks.len() != count
             || control.now_ns() != proof.now_ns
             || scheduler.vcpu_count() != count
         {
@@ -215,6 +215,9 @@ impl VmSnapshot {
         };
         if !control.stopped() {
             return Err(SnapshotError::NotStopped);
+        }
+        if !control.accepts_stop_proof(proof) {
+            return Err(SnapshotError::StaleSafePoint);
         }
         Ok(snapshot)
     }

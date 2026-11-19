@@ -14,6 +14,7 @@
 //! no pending request may be lost. This is the state of the processors in one machine, not a
 //! snapshot of the machine (`S9-24`/`S9-25`).
 
+use crate::LoadedFirmwareBoard;
 use crate::firmware_board::vcpu_quantum::fixture::*;
 use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
 use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
@@ -22,7 +23,6 @@ use crate::smp_scheduler::{
 };
 use crate::vm_snapshot::{SnapshotError, VmSnapshot};
 use crate::{AccessWidth, FirmwareBoardError, GuestPhysicalAddress, LOCAL_APIC_MMIO_BASE};
-use crate::{LoadedFirmwareBoard, parallel_run::StopProof};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -207,16 +207,6 @@ fn round(seed: u64) -> Round {
             assert!(
                 control.wait_until(WAIT, || control.now_ns() >= stop_at),
                 "seed {seed}: the machine does not run"
-            );
-            // No stop in force: nothing is read, whatever proof is shown.
-            let unproven = StopProof {
-                acks: vec![StopAck::Boundary; 2],
-                now_ns: control.now_ns(),
-            };
-            assert_eq!(
-                VmSnapshot::take_parallel(control, &unproven, &scheduler),
-                Err(SnapshotError::NotStopped),
-                "seed {seed}"
             );
             // A proof of a stop that was resumed is not a proof: nothing is read with it either.
             let first = control.stop_all(Duration::from_secs(10)).expect("stop");
@@ -660,6 +650,51 @@ fn a_thread_between_its_two_stores_in_the_barrier_is_waited_for_and_not_refused(
     assert_eq!(snapshot.vcpus().len(), 2);
 }
 
+#[test]
+fn an_earlier_stop_proof_is_stale_even_when_the_clock_and_acknowledgements_match() {
+    let mut board = board_without_timers();
+    let mut bsp = bsp_state();
+    bsp.activity = Some(od_isa::CpuActivity::Halted);
+    install(&mut board, 0, bsp, BSP_EFER);
+    let scheduler = SmpScheduler::new(2, QuantumPolicy::Fixed(16), StopRequest::new()).unwrap();
+    let config = ParallelConfig {
+        end_when_idle: false,
+        ..ParallelConfig::default()
+    };
+    let (_, previous_run) = run_threads(&mut board, config, &parallel_quantum, |control| {
+        assert!(control.wait_until(WAIT, || control.activity(1)
+            == crate::idle_arbiter::SchedActivity::Halted));
+        let first = control.stop_all(Duration::from_secs(10)).expect("stop");
+        let repeated = control.stop_all(Duration::from_secs(10)).expect("stop");
+        VmSnapshot::take_parallel(control, &first, &scheduler).expect("the same stop is in force");
+        VmSnapshot::take_parallel(control, &repeated, &scheduler).expect("repeated stop proof");
+        control.resume();
+        let second = control
+            .stop_all(Duration::from_secs(10))
+            .expect("stop again");
+        assert_eq!(first.now_ns, second.now_ns);
+        assert_eq!(first.acks, second.acks);
+        assert!(matches!(
+            VmSnapshot::take_parallel(control, &first, &scheduler),
+            Err(SnapshotError::StaleSafePoint)
+        ));
+        VmSnapshot::take_parallel(control, &second, &scheduler).expect("current stop proof");
+        second
+    })
+    .expect("parallel run");
+    run_threads(&mut board, config, &parallel_quantum, |control| {
+        let proof = control.stop_all(Duration::from_secs(10)).expect("stop");
+        assert_eq!(proof.now_ns, previous_run.now_ns);
+        assert_eq!(proof.acks, previous_run.acks);
+        assert!(matches!(
+            VmSnapshot::take_parallel(control, &previous_run, &scheduler),
+            Err(SnapshotError::StaleSafePoint)
+        ));
+        VmSnapshot::take_parallel(control, &proof, &scheduler).expect("current run proof");
+    })
+    .expect("second parallel run");
+}
+
 /// A proof with another number of acknowledgements than the run has threads is refused as a stale
 /// safe point, before any vCPU is looked at: one more must not index past the vCPUs (review of
 /// S6-35, m-1), one less is not a whole snapshot. Nothing changes in the machine, and the true
@@ -683,19 +718,12 @@ fn a_proof_with_another_number_of_acknowledgements_is_stale_and_changes_nothing(
         let proof = control.stop_all(Duration::from_secs(10)).expect("stop");
         assert_eq!(control.vcpu_count(), 2);
         let (retired, counter_1) = (control.retired(), cell(control, COUNTER_1));
-        let mut more = StopProof {
-            acks: proof.acks.clone(),
-            now_ns: proof.now_ns,
-        };
+        let mut more = proof.clone();
         more.acks.push(StopAck::Boundary);
-        let fewer = StopProof {
-            acks: proof.acks[..1].to_vec(),
-            now_ns: proof.now_ns,
-        };
-        let none = StopProof {
-            acks: Vec::new(),
-            now_ns: proof.now_ns,
-        };
+        let mut fewer = proof.clone();
+        fewer.acks.truncate(1);
+        let mut none = proof.clone();
+        none.acks.clear();
         for refused in [&more, &fewer, &none] {
             assert_eq!(
                 VmSnapshot::take_parallel(control, refused, &scheduler),

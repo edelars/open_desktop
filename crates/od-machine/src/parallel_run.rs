@@ -202,11 +202,12 @@ pub(crate) struct ParallelReport {
 }
 
 /// The proof of a stop of every vCPU (SMP_CONTRACT.md 9).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct StopProof {
     pub(crate) acks: Vec<StopAck>,
     /// The virtual time at which the machine stood still.
     pub(crate) now_ns: u64,
+    stop_id: Arc<()>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1340,6 +1341,7 @@ pub(crate) struct ParallelControl<'s, 'a> {
     shared: &'s SharedState<'a>,
     bus: &'s crate::MachineBus,
     clock: &'s VirtualClockHandle,
+    active_stop: Mutex<Option<Arc<()>>>,
 }
 
 impl ParallelControl<'_, '_> {
@@ -1461,25 +1463,35 @@ impl ParallelControl<'_, '_> {
             let unacked: Vec<usize> = (0..sh.count)
                 .filter(|&cpu| !sh.cells[cpu].safe.load(SEQ))
                 .collect();
-            let proof = if unacked.is_empty() {
+            let acknowledged = if unacked.is_empty() {
                 // The idle jump that may have been in progress finishes under the owner's lock
                 // and takes no further step while the request stands: read the time under it.
                 let now_ns = lock(&sh.owner).now_ns();
                 let acks = (0..sh.count).map(|cpu| sh.ack_of(cpu)).collect();
-                Some(StopProof { acks, now_ns })
+                Some((acks, now_ns))
             } else {
                 None
             };
             // Exiting workers also publish safe, after publishing finish. Only a live run
             // can acknowledge STOP, so check finish after reading the flags and proof state.
             if sh.finish.load(SEQ) {
+                *lock(&self.active_stop) = None;
                 sh.stop_all.store(false, SEQ);
                 return Err(ParallelStopError::Finished);
             }
-            if let Some(proof) = proof {
-                return Ok(proof);
+            if let Some((acks, now_ns)) = acknowledged {
+                // Repeated requests while stopped refer to the same uninterrupted stop.
+                let stop_id = lock(&self.active_stop)
+                    .get_or_insert_with(|| Arc::new(()))
+                    .clone();
+                return Ok(StopProof {
+                    acks,
+                    now_ns,
+                    stop_id,
+                });
             }
             if Instant::now() >= deadline {
+                *lock(&self.active_stop) = None;
                 sh.stop_all.store(false, SEQ);
                 sh.kicks.kick_all();
                 return Err(ParallelStopError::Timeout { unacked });
@@ -1494,6 +1506,7 @@ impl ParallelControl<'_, '_> {
     /// The explicit command that lets the guest run again after [`Self::stop_all`].
     pub(crate) fn resume(&self) {
         let sh = self.shared;
+        *lock(&self.active_stop) = None;
         sh.stop_all.store(false, Ordering::Release);
         sh.kicks.kick_all();
         // If every vCPU was asleep at the stop, nobody runs the idle arbiter: do it here.
@@ -1503,6 +1516,13 @@ impl ParallelControl<'_, '_> {
     /// Whether a stop is in force on a live run.
     pub(crate) fn stopped(&self) -> bool {
         self.shared.stop_all.load(SEQ) && !self.is_finished()
+    }
+
+    /// Compare the proof with this controller's acknowledged STOP. The caller checks `stopped`.
+    pub(crate) fn accepts_stop_proof(&self, proof: &StopProof) -> bool {
+        lock(&self.active_stop)
+            .as_ref()
+            .is_some_and(|stop_id| Arc::ptr_eq(stop_id, &proof.stop_id))
     }
 
     /// Access vCPU `cpu` while the machine is stopped and publish its state after the callback.
@@ -1763,6 +1783,7 @@ fn run_threads_inner<R>(
             shared: &shared,
             bus,
             clock,
+            active_stop: Mutex::new(None),
         };
         let value = catch_unwind(AssertUnwindSafe(|| controller(&control)));
         // The run ends when the controller is done (the first reason stays if there is one).
@@ -3655,10 +3676,10 @@ mod tests {
             assert!(control.shared.cells.iter().all(|cell| cell.safe.load(SEQ)));
             let stopped = control.stopped();
             let access = control.with_vcpu(1, |_| ());
-            assert_eq!(
+            assert!(matches!(
                 control.wait_for_stop(WAIT),
                 Err(ParallelStopError::Finished)
-            );
+            ));
             assert!(!stopped);
             assert!(access.is_none());
             assert!(!control.shared.stop_all.load(SEQ));
