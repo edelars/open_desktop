@@ -2517,6 +2517,7 @@ tracked V2 store и у двухчастного исходного диапаз�
 исполнить. Оба точных теста обязательны в локальном селекторе. Их можно
 запустить через `cargo test --offline -p od-host --lib
 rejects_revoked_source_permission`. Общая S3-23 остаётся открытой.
+Обе регрессии прошли в [локальном прогоне из 351 шага](../reports/STAGE_3_REPORT.md#local-tracked-source-and-reducer-run-2026-11-19-utc).
 
 ### S3-24. Обработать self-modifying code текущего блока
 

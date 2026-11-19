@@ -934,6 +934,27 @@ The summary SHA-256 is
 Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
 remains open.
 
+### Local tracked source and reducer run, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only`. All 351 selected steps passed and 40 unselected steps retained
+`not_run`. The run includes 155 harness self-tests, 333 exact Rust gates
+and all 14 local VMHost RESULT steps. Both S3-23 tracked source revocation
+gates and the S3-34do controlled mismatch replay and reduction gate passed
+under their exact test identities. The preceding `od-host` library run
+passed 486 tests and reported one ignored test.
+
+The saved run is `stage3-20261119-002751-6155f78b83` under
+`work/stage3-harness/`, at source revision
+`c0b1fdd2a6e5ade30bfade318663be20386ee1f7`. The source fingerprint was
+`17d2246f9fad84d3c17ef2c41b5aab4d99a52767a4d2f814d232836c8d625b66`
+at start and finish. The input manifest SHA-256 is
+`64a2cc24096b2111ef65802db791746c8f6bf1ec858e5c86b0a77878fb81cbca`.
+The summary SHA-256 is
+`ddfdd63108894f040b060077dd2ac872e01b28594f8a4bb1d9bccedb6e6ce223`.
+Physical x86 and Mac mini checks remain deferred. S3-41 acceptance remains
+open.
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced
