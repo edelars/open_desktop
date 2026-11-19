@@ -71,7 +71,9 @@ use crate::idle_arbiter::{SchedActivity, WakeView};
 use crate::irq_source::{BoardIrqSource, NoIrqSource};
 use crate::smp_scheduler::{Executed, RunFailure, StopAck};
 use crate::vcpu::{BOOT_VCPU_INDEX, NmiBoundary, Vcpu};
-use crate::{ExecutionMode, LocalApicHandle, MachineStopReason, PhysicalMemory};
+use crate::{
+    ExecutionMode, LocalApicHandle, MachineStopReason, PhysicalMemory, VirtualClockHandle,
+};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -1296,6 +1298,7 @@ impl Worker<'_, '_, '_, '_> {
 pub(crate) struct ParallelControl<'s, 'a> {
     shared: &'s SharedState<'a>,
     bus: &'s crate::MachineBus,
+    clock: &'s VirtualClockHandle,
 }
 
 impl ParallelControl<'_, '_> {
@@ -1336,6 +1339,11 @@ impl ParallelControl<'_, '_> {
     /// The virtual time (ns).
     pub(crate) fn now_ns(&self) -> u64 {
         lock(&self.shared.owner).now_ns()
+    }
+
+    /// The board's virtual clock identity, including on boards without LAPIC timers.
+    pub(crate) fn clock_handle(&self) -> &VirtualClockHandle {
+        self.clock
     }
 
     /// End the run: every thread ends at its next boundary.
@@ -1589,6 +1597,7 @@ fn run_threads_inner<R>(
         uart_ioapic_source,
         irq_source,
         owner,
+        clock,
         rdtsc_clock,
         com1,
         page_table_root,
@@ -1709,6 +1718,7 @@ fn run_threads_inner<R>(
         let control = ParallelControl {
             shared: &shared,
             bus,
+            clock,
         };
         let value = catch_unwind(AssertUnwindSafe(|| controller(&control)));
         // The run ends when the controller is done (the first reason stays if there is one).

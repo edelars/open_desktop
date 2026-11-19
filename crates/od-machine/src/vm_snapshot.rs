@@ -28,11 +28,11 @@
 //! consistent processor complex over a different memory. The restore is into the same machine,
 //! not into a new one.
 
-use crate::LoadedFirmwareBoard;
 use crate::apic_pair::PairState;
 use crate::parallel_run::{ParallelControl, StopProof};
 use crate::smp_scheduler::{SafePoint, SchedulerState, SmpScheduler, StopAck};
 use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
+use crate::{LoadedFirmwareBoard, VirtualClockHandle};
 use std::time::{Duration, Instant};
 
 /// How long [`VmSnapshot::take_parallel`] waits for the acknowledgement flag of one vCPU that is
@@ -47,6 +47,8 @@ const READ_WAIT: Duration = Duration::from_secs(2);
 pub(crate) struct VmSnapshot {
     vcpus: Vec<Vcpu>,
     apic: PairState,
+    /// Board identity for an in-process restore, independent of virtual time.
+    clock: VirtualClockHandle,
     now_ns: u64,
     scheduler: SchedulerState,
 }
@@ -66,6 +68,8 @@ pub(crate) enum SnapshotError {
     SafeFlagTimeout { cpu: usize },
     /// The snapshot is of a machine with another number of vCPUs.
     VcpuCount { snapshot: usize, machine: usize },
+    /// The snapshot was taken from a different board.
+    DifferentMachine,
     /// The clock of the machine is not where it stood at the snapshot.
     ClockMoved { snapshot_ns: u64, now_ns: u64 },
     /// The Local APICs are not those of the snapshot (the number, the timers or their clock).
@@ -102,6 +106,7 @@ impl VmSnapshot {
         Ok(Self {
             vcpus,
             apic: board.local_apic().snapshot_pair(),
+            clock: board.clock_handle().clone(),
             now_ns,
             scheduler: scheduler.state(),
         })
@@ -204,6 +209,7 @@ impl VmSnapshot {
                 .lapic(BOOT_VCPU_INDEX)
                 .ok_or(SnapshotError::Apic)?
                 .snapshot_pair(),
+            clock: control.clock_handle().clone(),
             now_ns: proof.now_ns,
             scheduler: scheduler.state(),
         };
@@ -257,6 +263,9 @@ impl VmSnapshot {
         }
         if scheduler.vcpu_count() != count {
             return Err(SnapshotError::Scheduler);
+        }
+        if &self.clock != board.clock_handle() {
+            return Err(SnapshotError::DifferentMachine);
         }
         let now_ns = board.clock().now_ns();
         if now_ns != self.now_ns {
@@ -621,6 +630,80 @@ mod tests {
             Err(SnapshotError::NotStopped)
         );
         assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::WaitForSipi);
+    }
+
+    #[test]
+    fn a_timerless_machine_refuses_another_boards_snapshot_before_restoring_any_state() {
+        use crate::idle_arbiter::SchedActivity;
+        use crate::parallel_run::{ParallelConfig, ParallelFinish, run_threads};
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        let mut source = board(2);
+        let mut destination = board(2);
+        power_on(&mut source);
+        power_on(&mut destination);
+        let bsp = source.vcpu_mut(0).unwrap();
+        bsp.state.gpr[0] = 0x1234;
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags &= !u64::from(EFLAGS_IF);
+        source.local_apic().request_fixed_edge(0x40).unwrap();
+        let mut source_scheduler =
+            SmpScheduler::new(2, QuantumPolicy::seeded(17), StopRequest::new()).unwrap();
+        let config = ParallelConfig {
+            end_when_idle: false,
+            ..ParallelConfig::default()
+        };
+        let (report, parallel_snapshot) = run_threads(
+            &mut source,
+            config,
+            &|_| panic!("the fixture's vCPUs are asleep"),
+            |control| {
+                let timeout = Duration::from_secs(10);
+                assert!(control.wait_until(timeout, || {
+                    control.activity(0) == SchedActivity::Halted
+                        && control.activity(1) == SchedActivity::WaitForSipi
+                }));
+                let proof = control.stop_all(timeout).unwrap();
+                VmSnapshot::take_parallel(control, &proof, &source_scheduler).unwrap()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.finished, ParallelFinish::Stopped);
+
+        let mut destination_scheduler = scheduler(2);
+        let source_point = stop(&mut source, &mut source_scheduler).unwrap();
+        let destination_point = stop(&mut destination, &mut destination_scheduler).unwrap();
+        let interleaved_snapshot =
+            VmSnapshot::take(&source, &source_scheduler, &source_point).unwrap();
+        let destination_before =
+            VmSnapshot::take(&destination, &destination_scheduler, &destination_point).unwrap();
+
+        for snapshot in [interleaved_snapshot, parallel_snapshot] {
+            assert_eq!(snapshot.now_ns(), destination_before.now_ns());
+            assert!(
+                snapshot
+                    .apic()
+                    .cpus
+                    .iter()
+                    .chain(&destination_before.apic().cpus)
+                    .all(|cpu| cpu.timer.is_none())
+            );
+            assert_ne!(snapshot.vcpus(), destination_before.vcpus());
+            assert_ne!(snapshot.apic(), destination_before.apic());
+            assert_ne!(snapshot.scheduler, destination_before.scheduler);
+            assert_eq!(
+                snapshot.restore(
+                    &mut destination,
+                    &mut destination_scheduler,
+                    &destination_point,
+                ),
+                Err(SnapshotError::DifferentMachine)
+            );
+            assert_eq!(
+                VmSnapshot::take(&destination, &destination_scheduler, &destination_point).unwrap(),
+                destination_before
+            );
+        }
     }
 
     // ---- the event queue of a LAPIC timer ----
