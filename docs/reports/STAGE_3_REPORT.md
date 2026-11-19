@@ -1264,6 +1264,14 @@ The one-cold/repeated-warm model found no crossover in 47 of 48
 current observations. S3-40q remains specific to its earlier build.
 [Post-specialization performance measurements](STAGE_3_S3-40u_2026-11-19.md)
 
+S3-40v reuses the validated capacity-one cache key on an exact match.
+Across six matched rounds, median candidate/baseline warm ratios were
+0.714 and 0.713. The candidate beat the interpreter in 35/36 store-load
+and 36/36 load-store warm pairs, with medians of 0.799 and 0.802.
+Cold/interpreter stayed near 27. Evidence covers the two local ARM64
+fixtures and one retained key.
+[Exact-key measurements and reproduction](STAGE_3_S3-40v_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

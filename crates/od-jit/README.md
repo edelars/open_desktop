@@ -60,6 +60,11 @@ between completed calls; the caller supplies the updated dependency snapshot
 to the next lookup. This remains a fixture contract and does not add owner or
 MMU integration.
 
+S3-40v reuses the validated key on an exact match of the context,
+code view and ordered dependency slice. Other inputs use the usual
+key validation and dependency normalization.
+[Checked-memory measurements](../../docs/reports/STAGE_3_S3-40v_2026-11-19.md)
+
 S3-05 добавил `lowering::lower`, который строит и verifier-checks typed IR из
 decoder records для принятых S0-09 MOV imm64, ADD/SUB/CMP reg64 и JZ/JNZ.
 Lowering сохраняет RIP boundaries, читает оба арифметических источника до

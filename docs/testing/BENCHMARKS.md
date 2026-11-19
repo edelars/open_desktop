@@ -1566,6 +1566,16 @@ Cold ratios are 28.160 and 28.019. Forty-seven current triples
 have no modeled crossover.
 [Report and reproduction](../reports/STAGE_3_S3-40u_2026-11-19.md)
 
+### S3-40v. Exact resident key in checked-memory warm dispatch
+
+Two signed builds run the S3-40u driver with shared sweep counts and
+six alternating process rounds. Every measuring process verifies
+`nice -5`, its non-root UID, and QoS before timing. The audit checks
+432 individual intervals, cache accounting and interpreter controls.
+The evidence includes the load trace, all scored samples and an
+offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-40v_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

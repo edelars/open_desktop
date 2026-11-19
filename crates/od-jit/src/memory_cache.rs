@@ -581,10 +581,25 @@ impl<H> MemoryPairCache<H> {
         }
         self.bind_context(profile, context_generation)
             .map_err(MemoryPairCacheRunError::Cache)?;
-        let key = MemoryPairCacheKey::new(profile, context_generation, code, dependencies)
-            .map_err(MemoryCacheError::Key)
-            .map_err(MemoryPairCacheRunError::Cache)?;
-        self.ensure_entry(key, code, backend)?;
+        // An exact match to the validated resident key needs no normalization.
+        let exact_hit = self.entry.as_ref().is_some_and(|entry| {
+            let key = &entry.key;
+            key.profile == profile
+                && key.context_generation == context_generation
+                && key.code_base == code.base_rip()
+                && key.code_end == code_end
+                && key.entry_rip == state.rip
+                && key.source.as_slice() == code.bytes()
+                && key.dependencies.as_slice() == dependencies
+        });
+        if exact_hit {
+            Self::add_counter(&mut self.counters.hits).map_err(MemoryPairCacheRunError::Cache)?;
+        } else {
+            let key = MemoryPairCacheKey::new(profile, context_generation, code, dependencies)
+                .map_err(MemoryCacheError::Key)
+                .map_err(MemoryPairCacheRunError::Cache)?;
+            self.ensure_entry(key, code, backend)?;
+        }
         let entry = self.entry.as_ref().expect("entry installed");
         // Re-sample invocation-local guards immediately before entry. The
         // backend repeats this check after publication on a cache miss.
@@ -1217,6 +1232,99 @@ mod tests {
     }
 
     #[test]
+    fn run_reuses_validated_dependencies_and_checks_changed_versions() {
+        let profile = MemoryPairProfile::StoreThenLoad;
+        let bytes = profile.source_bytes();
+        let code = CodeView::new(BASE, &bytes).unwrap();
+        let code_end = code.code_end();
+        let ordered = [
+            CodeDependencySpan {
+                start_rip: BASE,
+                end_rip: BASE + 3,
+                identity: identity(1, 1),
+            },
+            CodeDependencySpan {
+                start_rip: BASE + 3,
+                end_rip: code_end,
+                identity: identity(2, 1),
+            },
+        ];
+        let reversed = [ordered[1], ordered[0]];
+        let run = |cache: &mut MemoryPairCache<MockPublished>,
+                   backend: &mut MockBackend,
+                   dependencies: &[CodeDependencySpan]| {
+            let mut state = LongModeState {
+                cr3: None,
+                rip: BASE,
+                ..Default::default()
+            };
+            backend.execution = Some((
+                code_end,
+                MemoryBlockReport {
+                    exit: MemoryBlockExit::Complete,
+                    remaining_budget: 0,
+                    retired_instructions: 2,
+                },
+            ));
+            // SAFETY: the mock only changes RIP and does not access memory.
+            unsafe {
+                cache.run(
+                    profile,
+                    context(1),
+                    code,
+                    dependencies,
+                    &mut state,
+                    &mut UnusedMemory,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    backend,
+                )
+            }
+        };
+
+        let mut cache = MemoryPairCache::new();
+        let mut backend = MockBackend::default();
+        let completed = memory_result(
+            BoundedMemoryExit::BoundaryReached { rip: code_end },
+            0,
+            2,
+            1,
+        );
+        for dependencies in [&ordered, &ordered, &reversed] {
+            assert_eq!(
+                run(&mut cache, &mut backend, dependencies).unwrap(),
+                completed
+            );
+        }
+        let warm = cache.counters();
+        assert_eq!(warm.hits, 2);
+        assert_eq!(warm.misses, 1);
+
+        let mut changed = ordered;
+        changed[1].identity = identity(2, 2);
+        assert_eq!(
+            run(&mut cache, &mut backend, &changed),
+            Err(MemoryPairCacheRunError::Cache(MemoryCacheError::Key(
+                MemoryCacheKeyError::InconsistentBackingVersion { index: 1 }
+            )))
+        );
+        assert_eq!(cache.counters(), warm);
+        assert_eq!(backend.publishes, 1);
+        assert_eq!(backend.executes, 3);
+
+        changed[0].identity = identity(1, 2);
+        assert_eq!(run(&mut cache, &mut backend, &changed).unwrap(), completed);
+        assert_eq!(cache.counters().hits, 2);
+        assert_eq!(cache.counters().misses, 2);
+        assert_eq!(cache.counters().replacements, 1);
+        assert_eq!(backend.publishes, 2);
+        assert_eq!(backend.executes, 4);
+    }
+
+    #[test]
     fn dependency_and_context_changes_do_not_reuse_an_entry() {
         let (first, code) = key(MemoryPairProfile::StoreThenLoad, 1, BASE, 1, 1);
         let (dependency_changed, _) = key(MemoryPairProfile::StoreThenLoad, 1, BASE, 2, 1);
@@ -1527,6 +1635,81 @@ mod tests {
         assert_eq!(pending.exit, BoundedMemoryExit::EventPending);
         assert_eq!(backend.publishes, 1);
         assert_eq!(backend.executes, 0);
+        assert_eq!(backend.live.get(), 1);
+    }
+
+    #[test]
+    fn run_guards_precede_hit_counter_overflow() {
+        let profile = MemoryPairProfile::StoreThenLoad;
+        let (key, code) = key(profile, 1, BASE, 1, 1);
+        let code_end = code.code_end();
+        let mut backend = MockBackend {
+            execution: Some((
+                code_end,
+                MemoryBlockReport {
+                    exit: MemoryBlockExit::Complete,
+                    remaining_budget: 0,
+                    retired_instructions: 2,
+                },
+            )),
+            ..MockBackend::default()
+        };
+        let mut run =
+            |cache: &mut MemoryPairCache<MockPublished>, budget, stop_rip, stop, event| {
+                let mut state = LongModeState {
+                    cr3: None,
+                    rip: BASE,
+                    ..Default::default()
+                };
+                // SAFETY: the mock only changes RIP and does not access memory.
+                unsafe {
+                    cache.run(
+                        profile,
+                        context(1),
+                        code,
+                        &key.dependencies,
+                        &mut state,
+                        &mut UnusedMemory,
+                        AccessContext::default(),
+                        budget,
+                        stop_rip,
+                        &AtomicU8::new(stop),
+                        Some(&AtomicBool::new(event)),
+                        &mut backend,
+                    )
+                }
+            };
+
+        let mut cache = MemoryPairCache::new();
+        assert_eq!(
+            run(&mut cache, 2, None, 0, false).unwrap().exit,
+            BoundedMemoryExit::BoundaryReached { rip: code_end }
+        );
+        cache.counters.hits = u64::MAX;
+        let before = cache.counters();
+
+        for (budget, stop_rip, stop, event, exit) in [
+            (2, Some(BASE), 0, false, BoundedMemoryExit::StopAddress),
+            (2, None, 1, false, BoundedMemoryExit::StopRequested),
+            (0, None, 0, false, BoundedMemoryExit::BudgetExhausted),
+            (2, None, 0, true, BoundedMemoryExit::EventPending),
+        ] {
+            assert_eq!(
+                run(&mut cache, budget, stop_rip, stop, event).unwrap(),
+                memory_result(exit, budget, 0, 0)
+            );
+            assert_eq!(cache.counters(), before);
+        }
+        assert_eq!(
+            run(&mut cache, 2, None, 0, false),
+            Err(MemoryPairCacheRunError::Cache(
+                MemoryCacheError::CounterOverflow
+            ))
+        );
+        assert_eq!(cache.counters(), before);
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(backend.publishes, 1);
+        assert_eq!(backend.executes, 1);
         assert_eq!(backend.live.get(), 1);
     }
 

@@ -5091,6 +5091,16 @@ S3-31g повторил два холодных и два прогретых д�
 потокам польза checked-memory JIT на текущей сборке пока не доказана.
 [Отчёт, замеры и исходники](../reports/STAGE_3_S3-40u_2026-11-19.md)
 
+#### S3-40v. Переиспользование точного ключа checked-memory
+
+`MemoryPairCache::run` переиспользует ранее проверенный ключ при полном
+совпадении входных данных. На двух потоках S3-34a медианы прогретого
+candidate/baseline составили 0.714 и 0.713 по шести раундам. Парные
+warm/interpreter у кандидата составили 0.799 и 0.802. Cold/interpreter
+остались около 27. Результат ограничен кешем ёмкостью 1, двумя
+проверенными профилями и локальным ARM64.
+[Отчёт, замеры и воспроизведение](../reports/STAGE_3_S3-40v_2026-11-19.md)
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
