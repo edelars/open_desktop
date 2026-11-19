@@ -1512,6 +1512,13 @@ six rounds improved at both nonzero budgets. The zero-budget ranges
 included 1.0. The bounded MOV and x87 correctness checks passed.
 [RUN comparison and profiles](STAGE_3_S3-40ae_2026-11-19.md)
 
+S3-40af grouped four adjacent x87 checks with the same admission
+helper. The signed STEP went from 93 to 90 static `Operation::eq`
+call sites. On M1 Pro ordinary RUN took 2.58–3.28% less time at
+budgets 1 and 2 on the two MOV sequences. All six rounds improved.
+The MOV checks and focused x87 cases passed.
+[RUN comparison and evidence](STAGE_3_S3-40af_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

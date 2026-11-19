@@ -1700,6 +1700,14 @@ the full MOV prefixes at budgets 0, 1 and 2. Six matched rounds
 at nice −5 record whole RUN calls for both sequences.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ae_2026-11-19.md)
 
+### S3-40af. Adjacent x87 comparisons in interpreter RUN on M1 Pro
+
+Compare the same public RUN driver and S3-40z fixed counts with
+stock `8c159c8` and the grouped x87 check. Confirm removal of the
+three selected calls in the linked STEP. Timings cover whole RUN
+calls at budgets 0, 1 and 2 on the same 2,400 inputs.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40af_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

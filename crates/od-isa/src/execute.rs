@@ -44540,23 +44540,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             opcode: instruction.opcode.byte,
         });
     }
-    if instruction.operation == Operation::Fcompp && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if instruction.operation == Operation::Fucompp && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if instruction.operation == Operation::Fucom && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if matches!(instruction.operation, Operation::Fucomp)
-        && bounded_x87_fcom_result(state, 1).is_none()
+    if matches!(
+        instruction.operation,
+        Operation::Fcompp | Operation::Fucompp | Operation::Fucom | Operation::Fucomp
+    ) && bounded_x87_fcom_result(state, 1).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
