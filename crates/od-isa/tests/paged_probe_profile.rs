@@ -54627,18 +54627,100 @@ fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
 }
 
 #[test]
+fn firmware_boot_sub_qword_memory_source_commits_only_after_read() {
+    let code = [0x48, 0x2b, 0x44, 0x24, 0x10]; // SUB RAX,[RSP+0x10]
+    let address = DATA + 0x10;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x10..DATA_PHYSICAL + 0x18]
+            .copy_from_slice(&8u64.to_le_bytes());
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 8;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 2;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8d5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::Rax as usize] = 0;
+            expected.rflags = 0x46;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_movsx_byte_sign_extends_into_qword() {
+    let code = [0x48, 0x0f, 0xbe, 0xc0]; // MOVSX RAX,AL
+    for (byte, extended) in [(0x7fu64, 0x7f), (0x80, 0xffff_ffff_ffff_ff80)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x9876_5432_abcd_ef00 | byte;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode: 0xbe }
+        );
+        assert_eq!(cpu, before);
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        let mut expected = before;
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rax as usize] = extended;
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
         (&[0x48, 0x0f, 0x47, 0x03][..], 0x47),       // CMOVA RAX,[RBX]
         (&[0x66, 0x41, 0x0f, 0x47, 0xc6][..], 0x47), // CMOVA AX,R14W
         (&[0x67, 0x49, 0x0f, 0x47, 0xc6][..], 0x47), // address override on CMOVA
         (&[0x48, 0x29, 0x6c, 0x24, 0x20][..], 0x29), // SUB memory,register
+        (&[0x2b, 0x44, 0x24, 0x10][..], 0x2b),       // SUB EAX,[RSP+0x10]
+        (&[0x67, 0x48, 0x2b, 0x44, 0x24, 0x10][..], 0x2b), // address32 SUB
         (&[0x67, 0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39), // address32 CMP
         (&[0x66, 0x58][..], 0x58),                   // POP AX
         (&[0x66, 0x56][..], 0x56),                   // PUSH SI
         (&[0x67, 0x41, 0xff, 0xd6][..], 0xff),       // address override on CALL R14
         (&[0x8f, 0x00][..], 0x8f),                   // POP [RAX]
         (&[0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // MOVZX word source
+        (&[0x48, 0x0f, 0xbe, 0x03][..], 0xbe),       // MOVSX RAX,byte ptr [RBX]
+        (&[0x0f, 0xbe, 0xc0][..], 0xbe),             // MOVSX EAX,AL
         (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6), // address32 MOVZX
         (&[0x48, 0x09, 0x07][..], 0x09),             // OR qword [RDI],RAX
         (&[0x66, 0x09, 0xf8][..], 0x09),             // OR AX,DI

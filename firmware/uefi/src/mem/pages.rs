@@ -72,8 +72,8 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         memory_type: MemoryType,
         count: u64,
     ) -> Result<u64, PageError> {
-        let bytes = byte_count(count)?;
         let attribute = allocation_attributes(memory_type)?;
+        let bytes = byte_count(count)?;
         let (covered, span) = self.plan_allocation(placement, bytes)?;
         self.replace(
             covered,
@@ -105,14 +105,16 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
             }
         };
         let span = address_range(address, bytes)?;
-        let covered = self.covered_by(span.clone(), |_, desc| is_free(desc))?;
+        let covered = self.covered_by(span.clone(), |index, desc| {
+            is_free(desc, self.owners[index])
+        })?;
         Ok((covered, span))
     }
 
     fn release(&mut self, covered: Range<usize>, span: Range<u64>) -> Result<(), PageError> {
         self.replace(
             covered,
-            MemoryDescriptor::for_range(MemoryType::Conventional, span.start, span.end, WB),
+            MemoryDescriptor::for_range(MemoryType::CONVENTIONAL, span.start, span.end, WB),
             PageOwner::Initial,
         )
     }
@@ -121,8 +123,8 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         let mut best = None;
         let mut run_start = None;
         let mut run_end = 0;
-        for &descriptor in self.map.descriptors() {
-            if !is_free(descriptor) {
+        for (index, &descriptor) in self.map.descriptors().iter().enumerate() {
+            if !is_free(descriptor, self.owners[index]) {
                 run_start = None;
                 continue;
             }
@@ -272,16 +274,21 @@ impl Entry {
 
 fn allocation_attributes(memory_type: MemoryType) -> Result<u64, PageError> {
     match memory_type {
-        MemoryType::RuntimeServicesCode | MemoryType::RuntimeServicesData => Ok(WB | RUNTIME),
-        MemoryType::Conventional | MemoryType::MemoryMappedIo => Err(PageError::InvalidType),
+        MemoryType::RUNTIME_SERVICES_CODE | MemoryType::RUNTIME_SERVICES_DATA => Ok(WB | RUNTIME),
+        MemoryType::MEMORY_MAPPED_IO | MemoryType::PERSISTENT | MemoryType::UNACCEPTED => {
+            Err(PageError::InvalidType)
+        }
+        _ if (MemoryType::MAX_STANDARD..MemoryType::OEM_MIN).contains(&memory_type.raw()) => {
+            Err(PageError::InvalidType)
+        }
         _ => Ok(WB),
     }
 }
 
-fn is_free(descriptor: MemoryDescriptor) -> bool {
-    // The current board describes conventional RAM with a single WB
-    // capability, including RAM returned by FreePages.
-    descriptor.memory_type == MemoryType::Conventional as u32
+fn is_free(descriptor: MemoryDescriptor, owner: PageOwner) -> bool {
+    // Firmware may allocate a descriptor with the same type as free RAM.
+    // The ownership tag keeps it out of the next allocation search.
+    owner == PageOwner::Initial && descriptor.memory_type == MemoryType::CONVENTIONAL.raw()
 }
 
 fn byte_count(count: u64) -> Result<u64, PageError> {
@@ -340,22 +347,22 @@ mod tests {
         let map = initial_map(
             &mut records,
             &[
-                memory(MemoryType::Conventional, 0x1000, 0x3000),
-                memory(MemoryType::Conventional, 0x3000, 0x5000),
-                memory(MemoryType::MemoryMappedIo, 0x5000, 0x6000),
-                memory(MemoryType::Conventional, 0x7000, 0xd000),
+                memory(MemoryType::CONVENTIONAL, 0x1000, 0x3000),
+                memory(MemoryType::CONVENTIONAL, 0x3000, 0x5000),
+                memory(MemoryType::MEMORY_MAPPED_IO, 0x5000, 0x6000),
+                memory(MemoryType::CONVENTIONAL, 0x7000, 0xd000),
             ],
         );
         let mut allocator = PageAllocator::new(map, &mut tags).unwrap();
         assert_eq!(
-            allocator.allocate_pages(AllocateAt::Any, MemoryType::LoaderData, 1),
+            allocator.allocate_pages(AllocateAt::Any, MemoryType::LOADER_DATA, 1),
             Ok(0xc000)
         );
         assert_eq!(allocator.map().key(), 2);
         assert_eq!(
             allocator.allocate_pages(
                 AllocateAt::MaxAddress(0x4ffe),
-                MemoryType::RuntimeServicesData,
+                MemoryType::RUNTIME_SERVICES_DATA,
                 3,
             ),
             Ok(0x1000)
@@ -363,21 +370,25 @@ mod tests {
         assert_eq!(
             allocator.map().descriptors()[0],
             MemoryDescriptor::for_range(
-                MemoryType::RuntimeServicesData,
+                MemoryType::RUNTIME_SERVICES_DATA,
                 0x1000,
                 0x4000,
                 WB | RUNTIME,
             )
         );
         assert_eq!(
-            allocator.allocate_pages(AllocateAt::Address(0x8000), MemoryType::BootServicesData, 2),
+            allocator.allocate_pages(
+                AllocateAt::Address(0x8000),
+                MemoryType::BOOT_SERVICES_DATA,
+                2
+            ),
             Ok(0x8000)
         );
         assert_eq!(allocator.map().key(), 4);
         allocator.free_pages(0x1000, 3).unwrap();
         assert_eq!(
             allocator.map().descriptors()[0],
-            memory(MemoryType::Conventional, 0x1000, 0x5000),
+            memory(MemoryType::CONVENTIONAL, 0x1000, 0x5000),
         );
         assert_eq!(allocator.map().key(), 5);
     }
@@ -387,16 +398,20 @@ mod tests {
         let mut records = [MemoryDescriptor::EMPTY; 10];
         let mut tags = [PageOwner::Pages; 10];
         let initial = [
-            memory(MemoryType::BootServicesData, 0x1000, 0x2000),
-            memory(MemoryType::Conventional, 0x2000, 0xa000),
+            memory(MemoryType::BOOT_SERVICES_DATA, 0x1000, 0x2000),
+            memory(MemoryType::CONVENTIONAL, 0x2000, 0xa000),
         ];
         let map = initial_map(&mut records, &initial);
         let mut allocator = PageAllocator::new(map, &mut tags).unwrap();
         allocator
-            .allocate_pages(AllocateAt::Address(0x2000), MemoryType::BootServicesData, 3)
+            .allocate_pages(
+                AllocateAt::Address(0x2000),
+                MemoryType::BOOT_SERVICES_DATA,
+                3,
+            )
             .unwrap();
         allocator
-            .allocate_pages(AllocateAt::Address(0x5000), MemoryType::LoaderData, 4)
+            .allocate_pages(AllocateAt::Address(0x5000), MemoryType::LOADER_DATA, 4)
             .unwrap();
         assert_eq!(allocator.map().descriptors()[0], initial[0]);
 
@@ -407,9 +422,9 @@ mod tests {
         assert_eq!(
             allocator.map().descriptors()[1..4],
             [
-                memory(MemoryType::BootServicesData, 0x2000, 0x4000),
-                memory(MemoryType::Conventional, 0x4000, 0x7000),
-                memory(MemoryType::LoaderData, 0x7000, 0x9000),
+                memory(MemoryType::BOOT_SERVICES_DATA, 0x2000, 0x4000),
+                memory(MemoryType::CONVENTIONAL, 0x4000, 0x7000),
+                memory(MemoryType::LOADER_DATA, 0x7000, 0x9000),
             ]
         );
         let before = snapshot(&allocator);
@@ -427,7 +442,7 @@ mod tests {
         let mut too_few_tags = [PageOwner::Pages; 1];
         let map = initial_map(
             &mut records,
-            &[memory(MemoryType::Conventional, 0x1000, 0x5000)],
+            &[memory(MemoryType::CONVENTIONAL, 0x1000, 0x5000)],
         );
         assert!(matches!(
             PageAllocator::new(map, &mut too_few_tags),
@@ -438,18 +453,18 @@ mod tests {
         let mut tags = [PageOwner::Pages; 2];
         let map = initial_map(
             &mut records,
-            &[memory(MemoryType::Conventional, 0x1000, 0x5000)],
+            &[memory(MemoryType::CONVENTIONAL, 0x1000, 0x5000)],
         );
         let mut allocator = PageAllocator::new(map, &mut tags).unwrap();
         let before = snapshot(&allocator);
         assert_eq!(
-            allocator.allocate_pages(AllocateAt::Address(0x2000), MemoryType::LoaderData, 1),
+            allocator.allocate_pages(AllocateAt::Address(0x2000), MemoryType::LOADER_DATA, 1),
             Err(PageError::OutOfDescriptors),
         );
         assert_eq!(snapshot(&allocator), before);
 
         allocator
-            .allocate_pages(AllocateAt::Any, MemoryType::LoaderData, 4)
+            .allocate_pages(AllocateAt::Any, MemoryType::LOADER_DATA, 4)
             .unwrap();
         let before = snapshot(&allocator);
         assert_eq!(
@@ -474,10 +489,10 @@ mod tests {
         let map = initial_map(
             &mut records,
             &[
-                memory(MemoryType::Conventional, 0x1000, 0x3000),
-                memory(MemoryType::Conventional, 0x4000, 0x6000),
+                memory(MemoryType::CONVENTIONAL, 0x1000, 0x3000),
+                memory(MemoryType::CONVENTIONAL, 0x4000, 0x6000),
                 memory(
-                    MemoryType::Conventional,
+                    MemoryType::CONVENTIONAL,
                     PHYSICAL_END - PAGE_BYTES * 2,
                     PHYSICAL_END,
                 ),
@@ -488,49 +503,49 @@ mod tests {
         for (mode, memory_type, count, expected) in [
             (
                 AllocateAt::Any,
-                MemoryType::Reserved,
+                MemoryType::RESERVED,
                 0,
                 PageError::InvalidPageCount,
             ),
             (
                 AllocateAt::Any,
-                MemoryType::Reserved,
+                MemoryType::RESERVED,
                 u64::MAX,
                 PageError::InvalidPageCount,
             ),
             (
                 AllocateAt::Address(u64::MAX),
-                MemoryType::Reserved,
+                MemoryType::RESERVED,
                 1,
                 PageError::InvalidAddress,
             ),
             (
                 AllocateAt::Address(PHYSICAL_END),
-                MemoryType::Reserved,
+                MemoryType::RESERVED,
                 1,
                 PageError::InvalidAddress,
             ),
             (
                 AllocateAt::Address(0x1001),
-                MemoryType::Reserved,
+                MemoryType::RESERVED,
                 1,
                 PageError::InvalidAddress,
             ),
             (
                 AllocateAt::Address(0x2000),
-                MemoryType::LoaderData,
+                MemoryType::LOADER_DATA,
                 3,
                 PageError::NotFound,
             ),
             (
                 AllocateAt::MaxAddress(0x1ffe),
-                MemoryType::LoaderData,
+                MemoryType::LOADER_DATA,
                 1,
                 PageError::NotFound,
             ),
             (
                 AllocateAt::Any,
-                MemoryType::Conventional,
+                MemoryType::PERSISTENT,
                 1,
                 PageError::InvalidType,
             ),
@@ -542,7 +557,7 @@ mod tests {
             assert_eq!(snapshot(&allocator), before);
         }
         assert_eq!(
-            allocator.allocate_pages(AllocateAt::MaxAddress(u64::MAX), MemoryType::LoaderData, 1),
+            allocator.allocate_pages(AllocateAt::MaxAddress(u64::MAX), MemoryType::LOADER_DATA, 1),
             Ok(PHYSICAL_END - PAGE_BYTES)
         );
     }

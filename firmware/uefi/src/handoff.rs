@@ -1511,26 +1511,26 @@ mod tests {
                 .unwrap()
         };
         for (address, expected_kind, attribute) in [
-            (0, MemoryType::Conventional, 8),
-            (0xE0000, MemoryType::AcpiReclaim, 8),
-            (0xEF000, MemoryType::AcpiNvs, 8),
-            (0x10_0000, MemoryType::Reserved, 8),
-            (0x11_0000, MemoryType::BootServicesData, 8),
-            (root, MemoryType::BootServicesData, 8),
-            (paging.guard_page(), MemoryType::Reserved, 0),
+            (0, MemoryType::CONVENTIONAL, 8),
+            (0xE0000, MemoryType::ACPI_RECLAIM, 8),
+            (0xEF000, MemoryType::ACPI_NVS, 8),
+            (0x10_0000, MemoryType::RESERVED, 8),
+            (0x11_0000, MemoryType::BOOT_SERVICES_DATA, 8),
+            (root, MemoryType::BOOT_SERVICES_DATA, 8),
+            (paging.guard_page(), MemoryType::RESERVED, 0),
             (
                 paging.guard_page() + PAGE_BYTES,
-                MemoryType::BootServicesData,
+                MemoryType::BOOT_SERVICES_DATA,
                 8,
             ),
-            (paging.stack_top(), MemoryType::Conventional, 8),
-            (0x20_0000, MemoryType::BootServicesCode, 8),
-            (shadow.read_only_start, MemoryType::BootServicesData, 8),
-            (shadow.writable_start, MemoryType::BootServicesData, 8),
-            (0x60_0000, MemoryType::Conventional, 8),
+            (paging.stack_top(), MemoryType::CONVENTIONAL, 8),
+            (0x20_0000, MemoryType::BOOT_SERVICES_CODE, 8),
+            (shadow.read_only_start, MemoryType::BOOT_SERVICES_DATA, 8),
+            (shadow.writable_start, MemoryType::BOOT_SERVICES_DATA, 8),
+            (0x60_0000, MemoryType::CONVENTIONAL, 8),
         ] {
             let desc = find(address);
-            assert_eq!(desc.memory_type, expected_kind as u32, "{address:#x}");
+            assert_eq!(desc.memory_type, expected_kind.raw(), "{address:#x}");
             assert_eq!(desc.attribute, attribute, "{address:#x}");
         }
         assert_eq!(find(paging.guard_page()).number_of_pages, 1);
@@ -1604,15 +1604,15 @@ mod tests {
                 .find(|d| d.physical_start == address)
         };
         for (base, ty, attributes) in [
-            (0xF400_0000, MemoryType::MemoryMappedIo, 1),
-            (0xF800_0000, MemoryType::MemoryMappedIo, 1 | (1 << 63)),
-            (0xFC00_0000, MemoryType::MemoryMappedIo, 1),
-            (0xFC00_3000, MemoryType::Reserved, 0),
-            (0xFFC0_0000, MemoryType::Reserved, 1),
-            (0x1_0000_0000, MemoryType::Conventional, 8),
+            (0xF400_0000, MemoryType::MEMORY_MAPPED_IO, 1),
+            (0xF800_0000, MemoryType::MEMORY_MAPPED_IO, 1 | (1 << 63)),
+            (0xFC00_0000, MemoryType::MEMORY_MAPPED_IO, 1),
+            (0xFC00_3000, MemoryType::RESERVED, 0),
+            (0xFFC0_0000, MemoryType::RESERVED, 1),
+            (0x1_0000_0000, MemoryType::CONVENTIONAL, 8),
         ] {
             let desc = find(base).unwrap();
-            assert_eq!(desc.memory_type, ty as u32, "{base:#x}");
+            assert_eq!(desc.memory_type, ty.raw(), "{base:#x}");
             assert_eq!(desc.attribute, attributes, "{base:#x}");
         }
         assert!(map.descriptors().iter().all(|d| {

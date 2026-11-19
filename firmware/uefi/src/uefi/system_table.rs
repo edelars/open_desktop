@@ -4,8 +4,9 @@
 use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
-use crate::bs::misc;
+use crate::bs::{memory, misc};
 use crate::crc32::with_zeroed_word;
+use crate::mem::map::{MemoryDescriptor, MemoryType};
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::{ptr, slice};
@@ -14,6 +15,17 @@ pub const SYSTEM_TABLE_SIGNATURE: u64 = 0x5453_5953_2049_4249;
 pub const BOOT_SERVICES_SIGNATURE: u64 = 0x5652_4553_544f_4f42;
 pub const RUNTIME_SERVICES_SIGNATURE: u64 = 0x5652_4553_544e_5552;
 
+type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
+type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
+type GetMemoryMap = unsafe extern "efiapi" fn(
+    *mut usize,
+    *mut MemoryDescriptor,
+    *mut usize,
+    *mut usize,
+    *mut u32,
+) -> Status;
+type AllocatePool = unsafe extern "efiapi" fn(MemoryType, usize, *mut *mut c_void) -> Status;
+type FreePool = unsafe extern "efiapi" fn(*mut c_void) -> Status;
 type CalculateCrc32 = unsafe extern "efiapi" fn(*const c_void, usize, *mut u32) -> Status;
 type CopyMem = unsafe extern "efiapi" fn(*mut c_void, *const c_void, usize);
 type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
@@ -23,11 +35,11 @@ pub struct BootServices {
     pub header: TableHeader,
     raise_tpl: *const c_void,
     restore_tpl: *const c_void,
-    allocate_pages: *const c_void,
-    free_pages: *const c_void,
-    get_memory_map: *const c_void,
-    allocate_pool: *const c_void,
-    free_pool: *const c_void,
+    pub allocate_pages: AllocatePages,
+    pub free_pages: FreePages,
+    pub get_memory_map: GetMemoryMap,
+    pub allocate_pool: AllocatePool,
+    pub free_pool: FreePool,
     create_event: *const c_void,
     set_timer: *const c_void,
     wait_for_event: *const c_void,
@@ -73,11 +85,11 @@ impl BootServices {
             header: TableHeader::new(BOOT_SERVICES_SIGNATURE, size_of::<Self>()),
             raise_tpl: ptr::null(),
             restore_tpl: ptr::null(),
-            allocate_pages: ptr::null(),
-            free_pages: ptr::null(),
-            get_memory_map: ptr::null(),
-            allocate_pool: ptr::null(),
-            free_pool: ptr::null(),
+            allocate_pages: memory::allocate_pages,
+            free_pages: memory::free_pages,
+            get_memory_map: memory::get_memory_map,
+            allocate_pool: memory::allocate_pool,
+            free_pool: memory::free_pool,
             create_event: ptr::null(),
             set_timer: ptr::null(),
             wait_for_event: ptr::null(),
@@ -261,6 +273,11 @@ mod tests {
         assert_eq!(offset_of!(SystemTable, runtime_services), 88);
         assert_eq!(offset_of!(SystemTable, boot_services), 96);
         assert_eq!(offset_of!(SystemTable, configuration_table), 112);
+        assert_eq!(offset_of!(BootServices, allocate_pages), 40);
+        assert_eq!(offset_of!(BootServices, free_pages), 48);
+        assert_eq!(offset_of!(BootServices, get_memory_map), 56);
+        assert_eq!(offset_of!(BootServices, allocate_pool), 64);
+        assert_eq!(offset_of!(BootServices, free_pool), 72);
         assert_eq!(offset_of!(BootServices, reserved), 160);
         assert_eq!(offset_of!(BootServices, calculate_crc32), 344);
         assert_eq!(offset_of!(BootServices, copy_mem), 352);

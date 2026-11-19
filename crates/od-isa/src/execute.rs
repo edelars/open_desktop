@@ -20237,6 +20237,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             dst: Operand::Register(destination),
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
+        | Operation::Arithmetic {
+            kind: ArithmeticKind::Sub,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Memory(_),
+        }
         | Operation::Logic {
             kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
             dst: Operand::Register(destination),
@@ -20347,6 +20352,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 OperandSize::Dword | OperandSize::Qword
                             )
                     )
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Sub,
+                    src: Operand::Memory(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x2b
+                        && instruction.operand_size == OperandSize::Qword
                 }
                 Operation::Arithmetic { .. } => {
                     matches!(
@@ -20730,6 +20743,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             signed: false,
             ..
         }
+        | Operation::Extend {
+            src: Operand::Register(_),
+            signed: true,
+            ..
+        }
         | Operation::Lea { .. })
             if firmware_boot_profile
                 && match (instruction.opcode.map, operation) {
@@ -20774,7 +20792,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             )
                             | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
                     ),
-                    (OpcodeMap::Escape0f, Operation::Extend { src, .. }) => {
+                    (OpcodeMap::Escape0f, Operation::Extend { signed: true, .. }) => {
+                        instruction.opcode.byte == 0xbe
+                            && instruction.operand_size == OperandSize::Qword
+                    }
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            src, signed: false, ..
+                        },
+                    ) => {
                         instruction.operand_size == OperandSize::Dword
                             && matches!(
                                 (instruction.opcode.byte, src),

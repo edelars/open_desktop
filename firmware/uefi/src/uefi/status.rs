@@ -6,6 +6,10 @@ pub struct Status(usize);
 impl Status {
     pub const SUCCESS: Self = Self(0);
     pub const INVALID_PARAMETER: Self = Self(Self::ERROR_BIT | 2);
+    pub const BUFFER_TOO_SMALL: Self = Self(Self::ERROR_BIT | 5);
+    pub const NOT_READY: Self = Self(Self::ERROR_BIT | 6);
+    pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
+    pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);
 

@@ -11,20 +11,38 @@ const UC: u64 = 1;
 pub(super) const WB: u64 = 1 << 3;
 pub(super) const RUNTIME: u64 = 1 << 63;
 
+/// The UEFI 2.11 §7.2.1 32-bit memory type, including OEM and OS loader values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum MemoryType {
-    Reserved = 0,
-    LoaderCode = 1,
-    LoaderData = 2,
-    BootServicesCode = 3,
-    BootServicesData = 4,
-    RuntimeServicesCode = 5,
-    RuntimeServicesData = 6,
-    Conventional = 7,
-    AcpiReclaim = 9,
-    AcpiNvs = 10,
-    MemoryMappedIo = 11,
+#[repr(transparent)]
+pub struct MemoryType(u32);
+
+impl MemoryType {
+    pub const RESERVED: Self = Self(0);
+    pub const LOADER_CODE: Self = Self(1);
+    pub const LOADER_DATA: Self = Self(2);
+    pub const BOOT_SERVICES_CODE: Self = Self(3);
+    pub const BOOT_SERVICES_DATA: Self = Self(4);
+    pub const RUNTIME_SERVICES_CODE: Self = Self(5);
+    pub const RUNTIME_SERVICES_DATA: Self = Self(6);
+    pub const CONVENTIONAL: Self = Self(7);
+    pub const UNUSABLE: Self = Self(8);
+    pub const ACPI_RECLAIM: Self = Self(9);
+    pub const ACPI_NVS: Self = Self(10);
+    pub const MEMORY_MAPPED_IO: Self = Self(11);
+    pub const MEMORY_MAPPED_IO_PORT_SPACE: Self = Self(12);
+    pub const PAL_CODE: Self = Self(13);
+    pub const PERSISTENT: Self = Self(14);
+    pub const UNACCEPTED: Self = Self(15);
+    pub const MAX_STANDARD: u32 = 16;
+    pub const OEM_MIN: u32 = 0x7000_0000;
+
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
 }
 
 /// UEFI 2.11 (section 7.2.3) x64 EFI_MEMORY_DESCRIPTOR, version 1.
@@ -51,7 +69,7 @@ impl MemoryDescriptor {
 
     pub(super) fn for_range(memory_type: MemoryType, start: u64, end: u64, attribute: u64) -> Self {
         Self {
-            memory_type: memory_type as u32,
+            memory_type: memory_type.raw(),
             padding: 0,
             physical_start: start,
             virtual_start: 0,
@@ -126,6 +144,20 @@ impl<'a> MemoryMap<'a> {
     pub const fn key(&self) -> u64 {
         self.map_key
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_conventional(
+        storage: &'a mut [MemoryDescriptor],
+        start: u64,
+        end: u64,
+    ) -> Self {
+        storage[0] = MemoryDescriptor::for_range(MemoryType::CONVENTIONAL, start, end, WB);
+        Self {
+            storage,
+            used: 1,
+            map_key: 1,
+        }
+    }
 }
 
 fn describe(
@@ -152,16 +184,16 @@ fn describe(
         let end = start + region.length;
         let (kind, attr) = match region.kind {
             RAM if start <= root && stack_top <= end => {
-                range(start, root, MemoryType::Conventional, WB);
-                range(root, guard, MemoryType::BootServicesData, WB);
-                range(guard, guard + PAGE_BYTES, MemoryType::Reserved, 0);
+                range(start, root, MemoryType::CONVENTIONAL, WB);
+                range(root, guard, MemoryType::BOOT_SERVICES_DATA, WB);
+                range(guard, guard + PAGE_BYTES, MemoryType::RESERVED, 0);
                 range(
                     guard + PAGE_BYTES,
                     stack_top,
-                    MemoryType::BootServicesData,
+                    MemoryType::BOOT_SERVICES_DATA,
                     WB,
                 );
-                range(stack_top, end, MemoryType::Conventional, WB);
+                range(stack_top, end, MemoryType::CONVENTIONAL, WB);
                 placed = true;
                 continue;
             }
@@ -169,27 +201,32 @@ fn describe(
                 range(
                     start,
                     shadow.read_only_start,
-                    MemoryType::BootServicesCode,
+                    MemoryType::BOOT_SERVICES_CODE,
                     WB,
                 );
                 range(
                     shadow.read_only_start,
                     shadow.writable_start,
-                    MemoryType::BootServicesData,
+                    MemoryType::BOOT_SERVICES_DATA,
                     WB,
                 );
-                range(shadow.writable_start, end, MemoryType::BootServicesData, WB);
+                range(
+                    shadow.writable_start,
+                    end,
+                    MemoryType::BOOT_SERVICES_DATA,
+                    WB,
+                );
                 continue;
             }
-            RAM | BOOT_PAGE_TABLES => (MemoryType::Conventional, WB),
-            BOOT_STACK => (MemoryType::BootServicesData, WB),
-            HANDOFF => (MemoryType::Reserved, WB),
-            ROM => (MemoryType::Reserved, UC),
-            RESERVED => (MemoryType::Reserved, 0),
-            MMIO | FRAMEBUFFER => (MemoryType::MemoryMappedIo, UC),
-            NVRAM => (MemoryType::MemoryMappedIo, UC | RUNTIME),
-            ACPI_TABLES => (MemoryType::AcpiReclaim, WB),
-            ACPI_NVS => (MemoryType::AcpiNvs, WB),
+            RAM | BOOT_PAGE_TABLES => (MemoryType::CONVENTIONAL, WB),
+            BOOT_STACK => (MemoryType::BOOT_SERVICES_DATA, WB),
+            HANDOFF => (MemoryType::RESERVED, WB),
+            ROM => (MemoryType::RESERVED, UC),
+            RESERVED => (MemoryType::RESERVED, 0),
+            MMIO | FRAMEBUFFER => (MemoryType::MEMORY_MAPPED_IO, UC),
+            NVRAM => (MemoryType::MEMORY_MAPPED_IO, UC | RUNTIME),
+            ACPI_TABLES => (MemoryType::ACPI_RECLAIM, WB),
+            ACPI_NVS => (MemoryType::ACPI_NVS, WB),
             kind => {
                 return Err(MemoryMapError::Paging(PagingError::UnknownRegionKind(kind)));
             }

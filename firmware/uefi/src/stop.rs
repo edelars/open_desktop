@@ -38,7 +38,7 @@ pub const STOP_MEMORY_MAP: u8 = 0x32;
 pub const STOP_PAGE_ALLOCATOR: u8 = 0x33;
 /// The firmware pool allocator failed its boot verification.
 pub const STOP_POOL_ALLOCATOR: u8 = 0x34;
-/// A private UEFI Boot Services utility failed the guest smoke check.
+/// A private UEFI Boot Services call failed the guest smoke check.
 pub const STOP_BOOT_SERVICES: u8 = 0x35;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";

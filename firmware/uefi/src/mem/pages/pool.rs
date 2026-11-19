@@ -59,7 +59,7 @@ impl PageAllocator<'_, '_> {
         memory_type: MemoryType,
         size: u64,
     ) -> Result<u64, PoolError> {
-        if memory_type == MemoryType::Reserved {
+        if memory_type == MemoryType::RESERVED {
             return Err(PageError::InvalidType.into());
         }
         let attribute = allocation_attributes(memory_type)?;
@@ -163,7 +163,7 @@ mod tests {
     }
 
     fn map(storage: &mut [MemoryDescriptor]) -> MemoryMap<'_> {
-        storage[0] = MemoryDescriptor::for_range(MemoryType::Conventional, BASE, END, WB);
+        storage[0] = MemoryDescriptor::for_range(MemoryType::CONVENTIONAL, BASE, END, WB);
         MemoryMap {
             storage,
             used: 1,
@@ -187,7 +187,7 @@ mod tests {
             let mut arena = Arena::new();
 
             let payload = allocator
-                .allocate_pool(&mut arena, MemoryType::RuntimeServicesData, size)
+                .allocate_pool(&mut arena, MemoryType::RUNTIME_SERVICES_DATA, size)
                 .unwrap();
             let base = END - expected_pages * PAGE_BYTES;
             assert_eq!(payload, base + PAYLOAD_OFFSET);
@@ -203,7 +203,7 @@ mod tests {
             assert_eq!(
                 allocator.map().descriptors(),
                 [MemoryDescriptor::for_range(
-                    MemoryType::Conventional,
+                    MemoryType::CONVENTIONAL,
                     BASE,
                     END,
                     WB
@@ -220,13 +220,13 @@ mod tests {
         let mut arena = Arena::new();
 
         let first = allocator
-            .allocate_pool(&mut arena, MemoryType::LoaderData, 7)
+            .allocate_pool(&mut arena, MemoryType::LOADER_DATA, 7)
             .unwrap();
         let second = allocator
-            .allocate_pool(&mut arena, MemoryType::LoaderData, 8)
+            .allocate_pool(&mut arena, MemoryType::LOADER_DATA, 8)
             .unwrap();
         let page = allocator
-            .allocate_pages(AllocateAt::Any, MemoryType::LoaderData, 1)
+            .allocate_pages(AllocateAt::Any, MemoryType::LOADER_DATA, 1)
             .unwrap();
         assert_eq!(second + PAGE_BYTES, first);
         assert_eq!(allocator.map().descriptors().len(), 4);
@@ -262,16 +262,16 @@ mod tests {
         let mut owners = [PageOwner::Initial; 2];
         let mut allocator = PageAllocator::new(map(&mut records), &mut owners).unwrap();
         let mut arena = Arena::new();
-        let pool_type = MemoryType::BootServicesData;
+        let pool_type = MemoryType::BOOT_SERVICES_DATA;
 
         assert_eq!(
             allocator.allocate_pool(&mut arena, pool_type, u64::MAX),
             Err(PoolError::SizeOverflow)
         );
         for ty in [
-            MemoryType::Reserved,
-            MemoryType::Conventional,
-            MemoryType::MemoryMappedIo,
+            MemoryType::RESERVED,
+            MemoryType::PERSISTENT,
+            MemoryType::MEMORY_MAPPED_IO,
         ] {
             assert_eq!(
                 allocator.allocate_pool(&mut arena, ty, 8),

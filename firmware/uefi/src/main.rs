@@ -12,15 +12,14 @@ use core::panic::PanicInfo;
 use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
+use od_firmware::bs::memory::{self, IdentityPoolMemory};
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
     DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
     MemoryType,
 };
-use od_firmware::mem::pages::{
-    AllocateAt, PageAllocator, PageError, PageOwner, PoolError, PoolHeader, PoolMemory,
-};
+use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError, PageOwner, PoolError};
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
@@ -47,6 +46,10 @@ const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
 static FIRMWARE_VENDOR: [u16; 13] = [
     0x4f, 0x70, 0x65, 0x6e, 0x20, 0x44, 0x65, 0x73, 0x6b, 0x74, 0x6f, 0x70, 0,
 ];
+static mut BOOT_DESCRIPTORS: [MemoryDescriptor; BOOT_DESCRIPTOR_CAPACITY] =
+    [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
+static mut BOOT_PAGE_OWNERS: [PageOwner; BOOT_DESCRIPTOR_CAPACITY] =
+    [PageOwner::Initial; BOOT_DESCRIPTOR_CAPACITY];
 
 fn halt_forever() -> ! {
     loop {
@@ -123,24 +126,22 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         Ok(paging) => paging,
         Err(error) => stop(STOP_PAGING, error.stop_detail()),
     };
-    let mut descriptors = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
-    let map = match MemoryMap::from_active_paging(
-        &paging,
-        active_cr3,
-        shadow_sections(),
-        &mut descriptors,
-    ) {
-        Ok(map) => map,
-        Err(MemoryMapError::TablesNotActive) => stop(STOP_MEMORY_MAP, 1),
-        Err(MemoryMapError::InvalidPlacement) => stop(STOP_MEMORY_MAP, 2),
-        Err(MemoryMapError::BufferTooSmall { required }) => {
-            stop(STOP_MEMORY_MAP, 3 | ((required as u64) << 32))
-        }
-        Err(MemoryMapError::Paging(error)) => stop(STOP_PAGING, error.stop_detail()),
-    };
+    // SAFETY: initialization runs once on the BSP. From this point the allocator
+    // owns both buffers, and Boot Services access them only through that allocator.
+    let descriptors = unsafe { &mut *ptr::addr_of_mut!(BOOT_DESCRIPTORS) };
+    let map =
+        match MemoryMap::from_active_paging(&paging, active_cr3, shadow_sections(), descriptors) {
+            Ok(map) => map,
+            Err(MemoryMapError::TablesNotActive) => stop(STOP_MEMORY_MAP, 1),
+            Err(MemoryMapError::InvalidPlacement) => stop(STOP_MEMORY_MAP, 2),
+            Err(MemoryMapError::BufferTooSmall { required }) => {
+                stop(STOP_MEMORY_MAP, 3 | ((required as u64) << 32))
+            }
+            Err(MemoryMapError::Paging(error)) => stop(STOP_PAGING, error.stop_detail()),
+        };
     com1_write_memory_map(&map);
-    let mut ownership = [PageOwner::Initial; BOOT_DESCRIPTOR_CAPACITY];
-    let mut allocator = require_pages(PageAllocator::new(map, &mut ownership));
+    let ownership = unsafe { &mut *ptr::addr_of_mut!(BOOT_PAGE_OWNERS) };
+    let mut allocator = require_pages(PageAllocator::new(map, ownership));
     let key = verify_boot_page_allocator(&mut allocator, active_cr3);
     com1_write(b"OD-FW S7-04 page allocator verified key=0x");
     com1_write(&fixed_hex(key));
@@ -154,6 +155,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         com1_write(&fixed_hex(u64::from(byte)));
         com1_write(b"\r\n");
     }
+    // SAFETY: this is the one BSP initialization; the diagnostic has finished
+    // borrowing the allocator. All ensuing accesses go through Boot Services.
+    unsafe { memory::initialize(allocator) };
     let mut boot = BootServices::diagnostic();
     let mut runtime = RuntimeServices::diagnostic();
     boot.update_crc32();
@@ -165,6 +169,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     );
     system.update_crc32();
     verify_boot_services(&system);
+    verify_memory_services(&system, key as usize);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -208,6 +213,104 @@ fn verify_boot_services(system: &SystemTable) {
     }
     com1_write(b"OD-FW S7-05 Boot Services utilities verified ST=0x");
     com1_write(&fixed_hex(ptr::from_ref(system).addr() as u64));
+    com1_write(b"\r\n");
+}
+
+#[inline(never)]
+fn verify_memory_services(system: &SystemTable, initial_key: usize) {
+    let mut snapshot = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
+    let mut size = 0;
+    let mut key = usize::MAX;
+    let mut descriptor_size = 0;
+    let mut version = 0;
+    // SAFETY: the BSP owns the initialized allocator and the private System Table.
+    // Each ABI call receives live, disjoint output buffers of the stated sizes.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let get_map = ptr::addr_of!((*boot).get_memory_map).read_volatile();
+        let allocate_pages = ptr::addr_of!((*boot).allocate_pages).read_volatile();
+        let free_pages = ptr::addr_of!((*boot).free_pages).read_volatile();
+        let allocate_pool = ptr::addr_of!((*boot).allocate_pool).read_volatile();
+        let free_pool = ptr::addr_of!((*boot).free_pool).read_volatile();
+        if get_map(
+            &mut size,
+            ptr::null_mut(),
+            &mut key,
+            &mut descriptor_size,
+            &mut version,
+        ) != Status::BUFFER_TOO_SMALL
+            || size == 0
+            || key != usize::MAX
+            || descriptor_size != size_of::<MemoryDescriptor>()
+            || version != DESCRIPTOR_VERSION
+        {
+            stop(STOP_BOOT_SERVICES, 3);
+        }
+        if get_map(
+            &mut size,
+            snapshot.as_mut_ptr(),
+            &mut key,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ) != Status::SUCCESS
+            || key != initial_key
+        {
+            stop(STOP_BOOT_SERVICES, 4);
+        }
+
+        let mut page = 0;
+        if allocate_pages(0, MemoryType::CONVENTIONAL, 2, &mut page) != Status::SUCCESS
+            || page & (PAGE_BYTES - 1) != 0
+        {
+            stop(STOP_BOOT_SERVICES, 5);
+        }
+        let mut already_owned = page;
+        if allocate_pages(2, MemoryType::LOADER_DATA, 2, &mut already_owned) != Status::NOT_FOUND
+            || already_owned != page
+        {
+            stop(STOP_BOOT_SERVICES, 6);
+        }
+        let mut pool = ptr::null_mut();
+        if allocate_pool(MemoryType::CONVENTIONAL, 32, &mut pool) != Status::SUCCESS
+            || pool.is_null()
+            || pool.addr() & 7 != 0
+            || pool.addr() + 32 > page as usize
+        {
+            stop(STOP_BOOT_SERVICES, 7);
+        }
+        size = size_of_val(&snapshot);
+        if get_map(
+            &mut size,
+            snapshot.as_mut_ptr(),
+            &mut key,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ) != Status::SUCCESS
+            || key != initial_key + 2
+        {
+            stop(STOP_BOOT_SERVICES, 8);
+        }
+        if free_pool(pool) != Status::SUCCESS
+            || free_pool(pool) != Status::INVALID_PARAMETER
+            || free_pages(page, 2) != Status::SUCCESS
+            || free_pages(page, 2) != Status::NOT_FOUND
+        {
+            stop(STOP_BOOT_SERVICES, 9);
+        }
+        if get_map(
+            &mut size,
+            snapshot.as_mut_ptr(),
+            &mut key,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ) != Status::SUCCESS
+            || key != initial_key + 4
+        {
+            stop(STOP_BOOT_SERVICES, 10);
+        }
+    }
+    com1_write(b"OD-FW S7-05 Boot Services memory verified key=0x");
+    com1_write(&fixed_hex(key as u64));
     com1_write(b"\r\n");
 }
 
@@ -258,16 +361,16 @@ fn require_pages<T>(result: Result<T, PageError>) -> T {
 fn verify_boot_page_allocator(allocator: &mut PageAllocator<'_, '_>, active_cr3: u64) -> u64 {
     let exact = require_pages(allocator.allocate_pages(
         AllocateAt::Address(BOOT_PAGE_TABLES_GPA),
-        MemoryType::BootServicesData,
+        MemoryType::BOOT_SERVICES_DATA,
         3,
     ));
     let bounded = require_pages(allocator.allocate_pages(
         AllocateAt::MaxAddress(BOOT_PAGE_TABLES_GPA + 4 * PAGE_BYTES - 1),
-        MemoryType::LoaderData,
+        MemoryType::LOADER_DATA,
         1,
     ));
     let high =
-        require_pages(allocator.allocate_pages(AllocateAt::Any, MemoryType::BootServicesData, 1));
+        require_pages(allocator.allocate_pages(AllocateAt::Any, MemoryType::BOOT_SERVICES_DATA, 1));
     if exact != BOOT_PAGE_TABLES_GPA || bounded != exact + 3 * PAGE_BYTES {
         stop(STOP_PAGE_ALLOCATOR, 7);
     }
@@ -312,23 +415,13 @@ fn require_pool<T>(result: Result<T, PoolError>) -> T {
     }
 }
 
-struct IdentityPoolMemory;
-
-impl PoolMemory for IdentityPoolMemory {
-    unsafe fn header_at(&mut self, address: u64) -> Option<&mut PoolHeader> {
-        // SAFETY: the caller supplies an exclusive, aligned header position.
-        // The active page tables identity-map this RAM and allow writes.
-        Some(unsafe { &mut *(address as *mut PoolHeader) })
-    }
-}
-
 #[inline(never)]
 fn verify_boot_pool_allocator(allocator: &mut PageAllocator<'_, '_>) -> u64 {
     let mut memory = IdentityPoolMemory;
     let initial_key = allocator.map().key();
-    let first = require_pool(allocator.allocate_pool(&mut memory, MemoryType::LoaderData, 16));
+    let first = require_pool(allocator.allocate_pool(&mut memory, MemoryType::LOADER_DATA, 16));
     let second =
-        require_pool(allocator.allocate_pool(&mut memory, MemoryType::LoaderData, PAGE_BYTES));
+        require_pool(allocator.allocate_pool(&mut memory, MemoryType::LOADER_DATA, PAGE_BYTES));
     let first_page = first & !(PAGE_BYTES - 1);
     let allocated_key = allocator.map().key();
     if (first | second) & 7 != 0
