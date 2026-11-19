@@ -6472,3 +6472,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 Воспроизведение на `484fc9c`: в фикстуре из тестов `linux_direct::profile` установить BSP и AP в CPL0/long mode, обоим задать гостевые байты `b9 1b 00 00 00 0f 32 f4`, выключить IF и запустить через `run_threads` с `X8664V1Stage4AApic`, `msr_apic_base: true`, `halt: true` и `pci_config: false`. После трёх retired на каждом прочитать EDX:EAX. Ожидается `0xFEE00900` на BSP и `0xFEE00800` на AP. Диагностика получила `0xFEE00900` на обоих. [Результат S6-21](reports/STAGE_6_REPORT.md#s6-21--бит-bsp-в-ia32_apic_base-на-ap).
 
 Следующий шаг S6-21 — согласовать изменение набора CPL0 с линией S4-38, привязать значение MSR к выбранному vCPU и сохранить прежний результат однопроцессорного профиля. Затем проверить BSP и AP через тот же интерпретатор и подтвердить поведение на реальной загрузке Linux SMP после S6-18a.
+
+### ISSUE-538 — общий PCI CONFIG_ADDRESS для поточного LinuxDirect
+
+Открытая зависимость S6-37, подтверждённая 2026-11-19 на `484fc9c`. Набор CPL0 обслуживает dword-доступы к CF8 через `Cell<u32>`, а чтения word/dword из CFC–CFF возвращают значение со всеми установленными битами. Эти формы обходят общий `PortIo` и защёлку `PciEcam`. Копия ячейки на каждом vCPU разделила бы один регистр платы на независимые состояния. [Набор CPL0](../crates/od-isa/src/execute.rs) · [Привязка LinuxDirect](../crates/od-machine/src/linux_direct/profile.rs).
+
+Проверка через `cargo test --locked --offline -p od-isa --test cpl0_profile_set pci_dword_out_to_config_address_is_stored_and_read_back_by_in` подтверждает запись и чтение CF8 через ячейку при пустом журнале вызовов `PortIo`. Поточный LinuxDirect ещё не подключён. [Результаты S6-37](reports/STAGE_6_REPORT.md#s6-37--состояние-профиля-linux-на-vcpu).
+
+Следующий шаг — согласовать с линией S4-38 передачу PCI-доступов через существующий `PortIo` к общему устройству платы. Проверить, что запись CF8 одним vCPU видна при чтении другим, а CFC обращается к выбранной функции PCI. Сверить прежний результат однопроцессорного LinuxDirect.
