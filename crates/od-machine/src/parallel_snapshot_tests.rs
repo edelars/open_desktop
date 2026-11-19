@@ -18,7 +18,7 @@ use crate::firmware_board::vcpu_quantum::fixture::*;
 use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
 use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
 use crate::smp_scheduler::{
-    BoardSmpHost, Executed, QuantumPolicy, SmpScheduler, StopAck, StopRequest,
+    BoardSmpHost, Executed, QuantumPolicy, RunFailure, SmpScheduler, StopAck, StopRequest,
 };
 use crate::vm_snapshot::{SnapshotError, VmSnapshot};
 use crate::{AccessWidth, FirmwareBoardError, GuestPhysicalAddress, LOCAL_APIC_MMIO_BASE};
@@ -34,7 +34,7 @@ const PERIODIC_LVT: u64 = (1 << 17) | TO_BSP as u64;
 const WAIT: Duration = Duration::from_secs(60);
 const BSP_EFER: u64 = 0xD01;
 
-fn parallel_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+fn parallel_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     with_set(|set| {
         run_vcpu_set_quantum_shared(
             call.env,

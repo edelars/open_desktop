@@ -52,7 +52,7 @@ use crate::parallel_run::{
     HostNmiPaging, NmiPaging, ParallelConfig, ParallelControl, ParallelFinish, ParallelReport,
     ParallelStopError, QuantumCall, run_threads_rooted,
 };
-use crate::smp_scheduler::Executed;
+use crate::smp_scheduler::{Executed, RunFailure};
 use crate::vcpu::BOOT_VCPU_INDEX;
 use crate::{
     FirmwareBoardConfig, GuestPhysicalRange, LoadedFirmwareBoard, LocalApicHandle,
@@ -537,7 +537,7 @@ fn run_host_threads_inner<R>(
         end_when_idle: config.end_when_idle,
         ..ParallelConfig::default()
     };
-    let quantum = move |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+    let quantum = move |call: QuantumCall<'_, '_>| {
         let mut nvme_pending = call.nvme_pending;
         let nvme_only = nvme_pending.as_deref_mut().is_some_and(std::mem::take);
         let result = run(HostQuantumCall {
@@ -558,6 +558,11 @@ fn run_host_threads_inner<R>(
             gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
+        let executed = Executed {
+            retired: result.retired,
+            partial_rep: false,
+            device_ns: result.device_ns,
+        };
         match result.exit {
             HostQuantumExit::Running => {}
             HostQuantumExit::Halted => call.vcpu.state.activity = Some(CpuActivity::Halted),
@@ -565,18 +570,19 @@ fn run_host_threads_inner<R>(
                 if halted {
                     call.vcpu.state.activity = Some(CpuActivity::Halted);
                 }
-                *nvme_pending.ok_or(FirmwareBoardError::Config(
-                    "host NVMe continuation requested without a controller",
-                ))? = true;
+                *nvme_pending.ok_or_else(|| {
+                    RunFailure::after(
+                        executed,
+                        FirmwareBoardError::Config(
+                            "host NVMe continuation requested without a controller",
+                        ),
+                    )
+                })? = true;
             }
             HostQuantumExit::Shutdown => call.vcpu.state.activity = Some(CpuActivity::Shutdown),
             HostQuantumExit::MachineStop(reason) => *call.machine_stop = Some(reason),
         }
-        Ok(Executed {
-            retired: result.retired,
-            partial_rep: false,
-            device_ns: result.device_ns,
-        })
+        Ok(executed)
     };
     let (report, value) = run_threads_rooted(
         board,
@@ -1127,5 +1133,43 @@ mod tests {
             !message.contains("no page-table root"),
             "a named root is walked: {message}"
         );
+    }
+
+    #[test]
+    fn an_invalid_nvme_continuation_keeps_its_progress_and_wins_over_the_budget() {
+        for retired in [0, 4] {
+            let mut board = board_with_program();
+            assert!(host_install_vcpu(&mut board, 0, state()));
+            let start_ns = board.clock().now_ns();
+            let (report, ()) = run_host_threads(
+                &mut board,
+                HostParallelConfig {
+                    quantum: 4,
+                    budget: 4,
+                    end_when_idle: true,
+                },
+                &[Some(0x1000)],
+                &|_| {
+                    Ok(HostQuantumResult {
+                        retired,
+                        exit: HostQuantumExit::NvmePending { halted: false },
+                        device_ns: 1000,
+                    })
+                },
+                &|_| {},
+                |control| assert!(control.wait_finished(Duration::from_secs(10))),
+            )
+            .unwrap();
+            assert!(matches!(
+                report.finished,
+                HostParallelFinish::Error { cpu: 0, message }
+                    if message.contains("NVMe continuation requested without a controller")
+            ));
+            assert_eq!(report.retired, [retired]);
+            assert_eq!(
+                board.clock().now_ns() - start_ns,
+                1000 + retired * crate::clock_owner::NS_PER_RETIRED
+            );
+        }
     }
 }

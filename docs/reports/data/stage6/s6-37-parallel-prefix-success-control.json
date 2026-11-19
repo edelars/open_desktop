@@ -1,0 +1,97 @@
+{
+  "task": "ISSUE-526 parallel successful-path sanity check",
+  "platform": "Apple M3 Max ARM64, macOS 26.7.1 (25G241)",
+  "build": "cargo build --release --locked --offline -p od-runner",
+  "binary_sha256": {
+    "before": "c229c373a90a694c2914749eafc1f754a20d3c1117b38eb5cbf1c3d49abb07d6",
+    "after": "5a4d0be1e1808ca4119e81af2b3dd637272bdb849a65227909d2b927da868021"
+  },
+  "fixture": "tests/fixtures/guest/stage6/litmus/iriw.json",
+  "fixture_sha256": "45c203f5a63bd69ece03b4c2f2d1f3b0519db614a353056c07d5bf61fb39ebe4",
+  "vcpus": 4,
+  "rounds": 30000,
+  "verdict": "allowed_only",
+  "timing": "One warm-up per build. Eight alternating AB/BA pairs. Host elapsed time around the child process.",
+  "pairs": [
+    [
+      {
+        "binary": "before",
+        "elapsed_ns": 574998292
+      },
+      {
+        "binary": "after",
+        "elapsed_ns": 479309833
+      }
+    ],
+    [
+      {
+        "binary": "after",
+        "elapsed_ns": 479075709
+      },
+      {
+        "binary": "before",
+        "elapsed_ns": 473257458
+      }
+    ],
+    [
+      {
+        "binary": "before",
+        "elapsed_ns": 573390292
+      },
+      {
+        "binary": "after",
+        "elapsed_ns": 587316416
+      }
+    ],
+    [
+      {
+        "binary": "after",
+        "elapsed_ns": 505545875
+      },
+      {
+        "binary": "before",
+        "elapsed_ns": 490351375
+      }
+    ],
+    [
+      {
+        "binary": "before",
+        "elapsed_ns": 590903375
+      },
+      {
+        "binary": "after",
+        "elapsed_ns": 590304667
+      }
+    ],
+    [
+      {
+        "binary": "after",
+        "elapsed_ns": 589731834
+      },
+      {
+        "binary": "before",
+        "elapsed_ns": 487885500
+      }
+    ],
+    [
+      {
+        "binary": "before",
+        "elapsed_ns": 480732583
+      },
+      {
+        "binary": "after",
+        "elapsed_ns": 490699458
+      }
+    ],
+    [
+      {
+        "binary": "after",
+        "elapsed_ns": 515037458
+      },
+      {
+        "binary": "before",
+        "elapsed_ns": 464872750
+      }
+    ]
+  ]
+}

@@ -139,6 +139,16 @@ pub(crate) struct Executed {
     pub(crate) device_ns: u64,
 }
 
+impl Executed {
+    pub(crate) fn followed_by(self, next: Self) -> Self {
+        Self {
+            retired: self.retired + next.retired,
+            partial_rep: next.partial_rep,
+            device_ns: self.device_ns.saturating_add(next.device_ns),
+        }
+    }
+}
+
 /// Effects known to have completed before a quantum failed. The scheduler owns their charge.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct RunFailure<E>(Box<(Executed, E)>);

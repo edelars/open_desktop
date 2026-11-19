@@ -44,7 +44,7 @@ use crate::lapic_irq_source::LapicIrqSource;
 use crate::paged_memory_adapter::{
     ExceptionDeliveryMode, LoopBus, PagedCpl0SetReport, run_cpl0_set_loop,
 };
-use crate::smp_scheduler::Executed;
+use crate::smp_scheduler::{Executed, RunFailure};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
@@ -228,7 +228,7 @@ fn quantum_result(
     cpu: usize,
     vcpu: &Vcpu,
     device_ns: u64,
-) -> Result<Executed, FirmwareBoardError> {
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     let partial_rep = matches!(
         report.exit,
         PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
@@ -242,23 +242,25 @@ fn quantum_result(
                 | RunExit::RepIterationBudgetExhausted
         )
     );
+    let executed = Executed {
+        retired: report.instructions_executed,
+        partial_rep,
+        device_ns,
+    };
     if !benign {
         let (page_fault, memory_error) = (report.page_fault, report.memory_error);
-        return match set_exit_to_probe_exit(report.exit) {
-            Err(error) => Err(error.into_board_error(&vcpu.state)),
-            Ok((_, text)) => Err(FirmwareBoardError::VcpuQuantum {
+        let error = match set_exit_to_probe_exit(report.exit) {
+            Err(error) => error.into_board_error(&vcpu.state),
+            Ok((_, text)) => FirmwareBoardError::VcpuQuantum {
                 cpu,
                 detail: format!(
                     "{text}; page_fault: {page_fault:?}; memory_error: {memory_error:?}"
                 ),
-            }),
+            },
         };
+        return Err(RunFailure::after(executed, error));
     }
-    Ok(Executed {
-        retired: report.instructions_executed,
-        partial_rep,
-        device_ns,
-    })
+    Ok(executed)
 }
 
 impl LoadedFirmwareBoard {
@@ -335,6 +337,7 @@ impl LoadedFirmwareBoard {
             device_ns += pit.take_port_tick_ns();
         }
         quantum_result(report, cpu, &self.vcpus[cpu], device_ns)
+            .map_err(|failure| failure.into_parts().1)
     }
 }
 
@@ -410,7 +413,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
     consecutive_faults: &mut u64,
-) -> Result<Executed, FirmwareBoardError> {
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     let inputs = quantum_inputs(vcpu)?;
     env.pump_uart_transmit();
 
@@ -448,7 +451,7 @@ pub(crate) fn run_litmus_ram_quantum(
     budget: u64,
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
-) -> Result<Executed, FirmwareBoardError> {
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     let (cr3, efer, _) = quantum_inputs(vcpu)?;
     let report = run_cpl0_set_loop(
         &mut vcpu.state,

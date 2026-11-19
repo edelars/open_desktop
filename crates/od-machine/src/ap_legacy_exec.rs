@@ -1226,6 +1226,74 @@ mod tests {
         check_legacy_failure_accounting(true);
     }
 
+    #[test]
+    fn a_parallel_error_after_handover_charges_both_prefixes() {
+        use crate::firmware_board::vcpu_quantum::run_vcpu_set_quantum_shared;
+        use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads};
+        use std::time::Duration;
+
+        let mut board = board();
+        // MOV EAX, 0x12345678 followed by an instruction outside the profile.
+        fixture::patch(&mut board, LONG_AT, &[0xb8, 0x78, 0x56, 0x34, 0x12, 0xf1]);
+        let bsp = board.vcpu_mut(0).unwrap();
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags &= !(1 << 9);
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        let start_ns = board.clock().now_ns();
+        let quantum = |call: QuantumCall<'_, '_>| {
+            fixture::with_set(|set| {
+                run_vcpu_set_quantum_shared(
+                    call.env,
+                    call.vcpu,
+                    call.cpu,
+                    call.lapic,
+                    call.source,
+                    Some(call.gate),
+                    call.budget,
+                    call.stop,
+                    set,
+                    call.consecutive_faults,
+                )
+            })
+        };
+        let (report, ()) = run_threads(
+            &mut board,
+            ParallelConfig {
+                quantum: 1024,
+                ..ParallelConfig::default()
+            },
+            &quantum,
+            |control| assert!(control.wait_finished(Duration::from_secs(10))),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                report.finished,
+                ParallelFinish::Error {
+                    cpu: 1,
+                    error: FirmwareBoardError::VcpuQuantum { .. }
+                }
+            ),
+            "{:?}",
+            report.finished
+        );
+        assert_eq!(report.cpus[0].retired, 0);
+        assert_eq!(report.cpus[1].calls, 1);
+        assert_eq!(report.cpus[1].retired, LEGACY_STEPS + 1);
+        assert_eq!(
+            board.clock().now_ns() - start_ns,
+            (LEGACY_STEPS + 1) * crate::clock_owner::NS_PER_RETIRED,
+        );
+        let ap = board.vcpu(1).unwrap();
+        assert!(ap.legacy.is_none());
+        assert_eq!(ap.state.rip, LONG_AT + 5);
+        assert_eq!(ap.state.gpr[od_isa::Register::Rax as usize], 0x1234_5678);
+    }
+
     fn check_legacy_failure_accounting(handover: bool) {
         use crate::parallel_run::{ParallelConfig, ParallelFinish, run_threads};
         use std::time::Duration;
@@ -1280,7 +1348,7 @@ mod tests {
                         &|call| {
                             assert_eq!(call.cpu, 1);
                             assert!(handover);
-                            Err(LONG_MODE_ERROR)
+                            Err(LONG_MODE_ERROR.into())
                         },
                         |control| assert!(control.wait_finished(Duration::from_secs(10))),
                     )

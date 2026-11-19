@@ -36,7 +36,7 @@ use crate::firmware_board::{FIRMWARE_CR0, FIRMWARE_CR4, assemble_board};
 use crate::litmus::{LitmusCase, LitmusError};
 use crate::litmus_interleaving::{Case, Field, Outcome};
 use crate::parallel_run::{ParallelConfig, ParallelFinish, QuantumCall, run_threads_with};
-use crate::smp_scheduler::Executed;
+use crate::smp_scheduler::{Executed, RunFailure};
 use crate::{
     FirmwareBoardConfig, FirmwareBoardError, GuestPhysicalAddress, LoadedFirmwareBoard, PciEcam,
 };
@@ -317,7 +317,7 @@ impl Driver<'_> {
     }
 
     /// The call of the quantum of one vCPU thread: one round.
-    fn round(&self, call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+    fn round(&self, call: QuantumCall<'_, '_>) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let QuantumCall {
             env,
             vcpu,
@@ -339,8 +339,10 @@ impl Driver<'_> {
         }
         let placement = &self.placements[(round % self.placements.len() as u64) as usize];
         let memory = env.bus.physical_memory();
-        let mut retired = 0u64;
+        let mut progress = Executed::default();
         let mut retired_by_hook = 0u64;
+        let fail_after =
+            |progress, message| RunFailure::after(progress, FirmwareBoardError::Config(message));
         match placement[cpu] {
             Some(thread) => {
                 let spec = &self.case.threads[thread];
@@ -389,7 +391,7 @@ impl Driver<'_> {
                     }
                     stop()
                 };
-                while retired < total {
+                while progress.retired < total {
                     if let Some(hook) = self.hook {
                         // S6-41e: the hook runs an instruction without the interpreter's stop
                         // test, so the start barrier and the stop poll are taken here, before the
@@ -397,11 +399,11 @@ impl Driver<'_> {
                         if poll() {
                             break;
                         }
-                        let step_budget = budget.max(1).min(total - retired);
+                        let step_budget = budget.max(1).min(total - progress.retired);
                         let step = LitmusStep {
                             cpu,
                             thread,
-                            index: retired as usize,
+                            index: progress.retired as usize,
                             budget: step_budget,
                             state: &mut vcpu.state,
                             bus: env.bus,
@@ -416,12 +418,13 @@ impl Driver<'_> {
                                     "cpu{cpu} thread {thread} round {round}: hook retired {done} \
                                      over a budget of {step_budget}"
                                 ));
-                                return Err(FirmwareBoardError::Config(
+                                return Err(fail_after(
+                                    progress,
                                     "litmus parallel: the step hook exceeded its budget",
                                 ));
                             }
                             Ok(LitmusStepOutcome::Executed { retired: done }) if done > 0 => {
-                                retired += done;
+                                progress.retired += done;
                                 retired_by_hook += done;
                                 continue;
                             }
@@ -430,7 +433,8 @@ impl Driver<'_> {
                                 self.fail(format!(
                                     "cpu{cpu} thread {thread} round {round}: hook: {detail}"
                                 ));
-                                return Err(FirmwareBoardError::Config(
+                                return Err(fail_after(
+                                    progress,
                                     "litmus parallel: the step hook failed",
                                 ));
                             }
@@ -441,7 +445,7 @@ impl Driver<'_> {
                     let interpreter_budget = if self.hook.is_some() {
                         1
                     } else {
-                        budget.max(1).min(total - retired)
+                        budget.max(1).min(total - progress.retired)
                     };
                     let executed = if self.ram_probe {
                         run_litmus_ram_quantum(
@@ -469,32 +473,34 @@ impl Driver<'_> {
                     };
                     let executed = match executed {
                         Ok(executed) => executed,
-                        Err(error) => {
+                        Err(failure) => {
+                            let (executed, error) = failure.into_parts();
                             self.fail(format!("cpu{cpu} thread {thread} round {round}: {error:?}"));
-                            return Err(error);
+                            return Err(RunFailure::after(progress.followed_by(executed), error));
                         }
                     };
-                    retired += executed.retired;
+                    progress = progress.followed_by(executed);
                     if executed.retired == 0 {
                         break;
                     }
                 }
                 if barrier_failed {
-                    return Err(FirmwareBoardError::Config("litmus parallel: aborted"));
+                    return Err(fail_after(progress, "litmus parallel: aborted"));
                 }
                 if !crossed {
                     // The instructions ran before the barrier: the round is sequential. Counted.
                     self.late_barrier_rounds.fetch_add(1, SEQ);
                     if !self.start.cross(&self.abort) {
-                        return Err(FirmwareBoardError::Config("litmus parallel: aborted"));
+                        return Err(fail_after(progress, "litmus parallel: aborted"));
                     }
                 }
-                if retired != total || vcpu.state.rip != end_rip {
+                if progress.retired != total || vcpu.state.rip != end_rip {
                     self.fail(format!(
-                        "cpu{cpu} thread {thread} round {round}: retired {retired} of {total}, rip {:#x}, end {end_rip:#x}",
-                        vcpu.state.rip
+                        "cpu{cpu} thread {thread} round {round}: retired {} of {total}, rip {:#x}, end {end_rip:#x}",
+                        progress.retired, vcpu.state.rip
                     ));
-                    return Err(FirmwareBoardError::Config(
+                    return Err(fail_after(
+                        progress,
                         "litmus parallel: a thread did not run to its end",
                     ));
                 }
@@ -512,7 +518,7 @@ impl Driver<'_> {
             }
             None => {
                 if !self.start.cross(&self.abort) {
-                    return Err(FirmwareBoardError::Config("litmus parallel: aborted"));
+                    return Err(fail_after(progress, "litmus parallel: aborted"));
                 }
             }
         }
@@ -524,7 +530,7 @@ impl Driver<'_> {
             }
             Arrival::Early(generation) => {
                 if !self.end.wait(generation, &self.abort) {
-                    return Err(FirmwareBoardError::Config("litmus parallel: aborted"));
+                    return Err(fail_after(progress, "litmus parallel: aborted"));
                 }
             }
         }
@@ -532,16 +538,12 @@ impl Driver<'_> {
         if retired_by_hook != 0 {
             self.hooked_retired.fetch_add(retired_by_hook, SEQ);
         }
-        let retired_by_interpreter = retired - retired_by_hook;
+        let retired_by_interpreter = progress.retired - retired_by_hook;
         if retired_by_interpreter != 0 {
             self.interpreted_retired
                 .fetch_add(retired_by_interpreter, SEQ);
         }
-        Ok(Executed {
-            retired,
-            partial_rep: false,
-            device_ns: 0,
-        })
+        Ok(progress)
     }
 
     /// The outcome of round `round` into the histogram; the cells back to their initial values.

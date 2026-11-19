@@ -376,7 +376,7 @@ pub(crate) struct QuantumCall<'a, 'b> {
 /// [`run_vcpu_set_quantum_shared`] with the parts of the call (the set borrows local profile
 /// values, so it cannot be built outside the call).
 pub(crate) type QuantumFn<'f> =
-    dyn Fn(QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> + Sync + 'f;
+    dyn Fn(QuantumCall<'_, '_>) -> Result<Executed, RunFailure<FirmwareBoardError>> + Sync + 'f;
 
 /// What a vCPU thread runs on its own thread after its last quantum, before it is counted as
 /// exited (the argument is the vCPU index): per-thread state that must be released by its owner
@@ -1192,11 +1192,12 @@ impl Worker<'_, '_, '_, '_> {
         }
         let left = budget.saturating_sub(executed.retired);
         if legacy.entered_long_mode && left > 0 {
-            let rest = quantum(vcpu, source, left, consecutive_faults, stop)
-                .map_err(|error| RunFailure::after(executed, error))?;
-            executed.retired += rest.retired;
-            executed.partial_rep = rest.partial_rep;
-            executed.device_ns += rest.device_ns;
+            let rest =
+                quantum(vcpu, source, left, consecutive_faults, stop).map_err(|failure| {
+                    let (rest, error) = failure.into_parts();
+                    RunFailure::after(executed.followed_by(rest), error)
+                })?;
+            executed = executed.followed_by(rest);
         }
         Ok((executed, machine_stop))
     }
@@ -1624,7 +1625,9 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     /// The quantum of the fixture guests on a vCPU thread: the CPL0 set of the S6-16d tests.
-    fn fixture_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+    fn fixture_quantum(
+        call: QuantumCall<'_, '_>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         with_set(|set| {
             run_vcpu_set_quantum_shared(
                 call.env,
@@ -1712,6 +1715,49 @@ mod tests {
         assert_eq!(
             board.clock().now_ns() - start_ns,
             2 * NS_PER_RETIRED + device_ns
+        );
+    }
+
+    #[test]
+    fn a_long_mode_error_charges_the_retired_prefix_before_finishing() {
+        let mut board = board(1);
+        let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+        patch(&mut board, CODE_0, &[0xb8, 0x78, 0x56, 0x34, 0x12, 0xf1]);
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xd01,
+        );
+        let start_ns = board.clock().now_ns();
+        let (report, at_finish) =
+            run_threads(&mut board, config(16, 64), &fixture_quantum, |control| {
+                assert!(control.wait_finished(WAIT));
+                (control.retired()[0], control.now_ns() - start_ns)
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                &report.finished,
+                ParallelFinish::Error {
+                    cpu: 0,
+                    error: FirmwareBoardError::VcpuQuantum { .. }
+                }
+            ),
+            "{:?}",
+            report.finished
+        );
+        assert_joined(&report, 1);
+        assert_eq!(
+            board.vcpu(0).unwrap().state.gpr[Register::Rax as usize],
+            0x1234_5678
+        );
+        assert_eq!(board.vcpu(0).unwrap().state.rip, CODE_0 + 5);
+        assert_eq!(report.cpus[0].retired, 1);
+        assert_eq!(at_finish, (1, crate::clock_owner::NS_PER_RETIRED));
+        assert_eq!(
+            board.clock().now_ns() - start_ns,
+            crate::clock_owner::NS_PER_RETIRED
         );
     }
 
@@ -2347,7 +2393,7 @@ mod tests {
                     );
                     thread::yield_now();
                 }
-                return Err(FirmwareBoardError::Config("error during STOP"));
+                return Err(FirmwareBoardError::Config("error during STOP").into());
             }
             fixture_quantum(call)
         };
@@ -2657,7 +2703,7 @@ mod tests {
                         device_ns: 0,
                     })
                 } else {
-                    Err(FirmwareBoardError::Config("expected host error"))
+                    Err(FirmwareBoardError::Config("expected host error").into())
                 }
             };
             let (report, ()) = run_threads(&mut board, config(64, u64::MAX), &quantum, |control| {
@@ -3012,7 +3058,7 @@ mod tests {
             );
             let inside = AtomicBool::new(false);
             let release = AtomicBool::new(false);
-            let quantum = |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+            let quantum = |call: QuantumCall<'_, '_>| {
                 assert!(call.source.pit_write_ends_quantum(), "real PIT source");
                 inside.store(true, SEQ);
                 while !release.load(SEQ) && !(call.stop)() {

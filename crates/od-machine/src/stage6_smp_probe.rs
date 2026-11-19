@@ -28,8 +28,8 @@ use crate::parallel_run::{
     QuantumCall, run_threads,
 };
 use crate::smp_scheduler::{
-    BoardSmpHost, Executed, Finished, QuantumPolicy, SafePoint, SmpError, SmpScheduler, StopError,
-    StopRequest,
+    BoardSmpHost, Executed, Finished, QuantumPolicy, RunFailure, SafePoint, SmpError, SmpScheduler,
+    StopError, StopRequest,
 };
 use crate::vm_snapshot::VmSnapshot;
 use crate::{
@@ -445,7 +445,9 @@ impl Stage6SmpProbe {
 
     /// One quantum of one vCPU of the probe on a vCPU thread of the parallel mode: the same CPL0
     /// set as [`Self::probe_quantum`], on the shared machine (S6-34).
-    fn probe_quantum_shared(call: QuantumCall<'_, '_>) -> Result<Executed, FirmwareBoardError> {
+    fn probe_quantum_shared(
+        call: QuantumCall<'_, '_>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
         let (cli, sti, halt) = (
             CliProfile::NonPviLong64V1,
             StiProfile::NonPviLong64V1,
