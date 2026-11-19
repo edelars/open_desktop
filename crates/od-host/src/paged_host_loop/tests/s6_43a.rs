@@ -279,6 +279,7 @@ impl Stepper for Quantum<'_, '_> {
                 lapic: self.call.lapic,
                 board_irq: self.call.board_irq.reborrow(),
                 devices: self.call.devices,
+                nvme_only: false,
                 gate: self.call.gate,
             })
             .map_err(str::to_owned)?;

@@ -367,6 +367,9 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) native_stop: Option<&'a AtomicU8>,
     /// A guest machine stop requested by the host quantum, published after its charge.
     pub(crate) machine_stop: &'a mut Option<MachineStopReason>,
+    /// Pending host service for an NVMe-equipped host run. The host quantum takes the
+    /// previous request and sets the flag again only if more device work remains.
+    pub(crate) nvme_pending: Option<&'a mut bool>,
 }
 
 /// One quantum of a vCPU: the caller builds its CPL0 set and calls
@@ -877,11 +880,20 @@ impl Worker<'_, '_, '_, '_> {
 
     /// The loop of the thread of one vCPU.
     fn run(&self) {
+        if self.shared.source_free && self.env.nvme.is_some() {
+            self.run_loop::<true>();
+        } else {
+            self.run_loop::<false>();
+        }
+    }
+
+    fn run_loop<const SERVICE_NVME: bool>(&self) {
         let sh = self.shared;
         let cpu = self.cpu;
         let cell = &sh.cells[cpu];
         let apic = sh.lapics[cpu].clone();
         let mut consecutive_faults = 0;
+        let mut nvme_pending = false;
         loop {
             cell.busy.store(true, SEQ);
             if sh.barrier(cpu) {
@@ -891,6 +903,24 @@ impl Worker<'_, '_, '_, '_> {
             sh.kicks.cells[cpu].flag.store(false, SEQ);
             let mut slot = lock(&sh.vcpus[cpu]);
             let vcpu: &mut Vcpu = &mut slot;
+
+            // A stopped NVMe drain belongs to this worker even if the guest retired HLT.
+            // Finish it before another guest boundary or an idle transition.
+            if SERVICE_NVME && nvme_pending {
+                let result = self.call::<SERVICE_NVME>(
+                    vcpu,
+                    &apic,
+                    &mut consecutive_faults,
+                    &mut nvme_pending,
+                );
+                sh.publish(cpu, vcpu);
+                drop(slot);
+                if let Err(error) = result {
+                    sh.fail(cpu, error);
+                    break;
+                }
+                continue;
+            }
 
             // The boundary: INIT and SIPI, then NMI (SMP_CONTRACT.md 3, 5; the order of
             // `BoardSmpHost::boundary`).
@@ -936,7 +966,12 @@ impl Worker<'_, '_, '_, '_> {
 
             match SchedActivity::from(vcpu.activity()) {
                 SchedActivity::Running => {
-                    if let Err(error) = self.call(vcpu, &apic, &mut consecutive_faults) {
+                    if let Err(error) = self.call::<SERVICE_NVME>(
+                        vcpu,
+                        &apic,
+                        &mut consecutive_faults,
+                        &mut nvme_pending,
+                    ) {
                         sh.publish(cpu, vcpu);
                         drop(slot);
                         sh.fail(cpu, error);
@@ -988,11 +1023,12 @@ impl Worker<'_, '_, '_, '_> {
     }
 
     /// One call of the interpreter loop of the running vCPU and its charge to the clock.
-    fn call(
+    fn call<const SERVICE_NVME: bool>(
         &self,
         vcpu: &mut Vcpu,
         apic: &LocalApicHandle,
         consecutive_faults: &mut u64,
+        nvme_pending: &mut bool,
     ) -> Result<(), FirmwareBoardError> {
         let sh = self.shared;
         let cpu = self.cpu;
@@ -1005,6 +1041,7 @@ impl Worker<'_, '_, '_, '_> {
         let gate = WorkerGate { shared: sh, cpu };
         let mut stop = || sh.call_must_end(cpu);
         let mut inert = NoIrqSource;
+        let nvme_pending = SERVICE_NVME.then_some(nvme_pending);
         let (executed, machine_stop) = if cpu == BOOT_VCPU_INDEX && sh.source_free {
             // The lock of the board's source and the clock owner's lock are held for the budget
             // only: the call itself runs under none of them.
@@ -1024,6 +1061,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
+                nvme_pending,
             )?
         } else if cpu == BOOT_VCPU_INDEX {
             let mut source = lock(&sh.irq);
@@ -1041,6 +1079,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
+                nvme_pending,
             )?
         } else {
             let budget = lock(&sh.owner).step_budget(left, None);
@@ -1052,6 +1091,7 @@ impl Worker<'_, '_, '_, '_> {
                 budget,
                 consecutive_faults,
                 &mut stop,
+                nvme_pending,
             )?
         };
         // The charge: the clock owner is the only mover of time (D7).
@@ -1097,6 +1137,7 @@ impl Worker<'_, '_, '_, '_> {
         budget: u64,
         consecutive_faults: &mut u64,
         stop: &mut dyn FnMut() -> bool,
+        mut nvme_pending: Option<&mut bool>,
     ) -> Result<(Executed, Option<MachineStopReason>), FirmwareBoardError> {
         let cpu = self.cpu;
         let mut machine_stop = None;
@@ -1117,6 +1158,7 @@ impl Worker<'_, '_, '_, '_> {
                 stop,
                 native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
                 machine_stop: &mut machine_stop,
+                nvme_pending: nvme_pending.as_deref_mut(),
             })
         };
         if vcpu.legacy.is_none() {

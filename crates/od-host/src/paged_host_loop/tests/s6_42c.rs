@@ -701,12 +701,19 @@ const NVME_ACQ: u64 = 0x8_1000;
 const NVME_IDENTIFY: u64 = 0x8_2000;
 const NVME_CID: u16 = 0x42;
 
-fn nvme_host_fixture() -> (LoadedFirmwareBoard, u64) {
+fn nvme_host_fixture(
+    vcpus: usize,
+    backend: Option<Box<dyn od_machine::NvmeBackend + Send>>,
+) -> (LoadedFirmwareBoard, u64) {
     const PT_NVME: u64 = 0x1_C000;
     const PCI_FUNCTION: u64 = od_machine::PCI_ECAM_DESCRIPTOR.base + (4 << 15);
     let mut board = with_paged_fixture(
-        od_machine::host_parallel_board_with_nvme(1, od_machine::NvmeConfig::default()).unwrap(),
+        od_machine::host_parallel_board_with_nvme(vcpus, od_machine::NvmeConfig::default())
+            .unwrap(),
     );
+    if let Some(backend) = backend {
+        board.nvme().unwrap().attach_backend(backend).unwrap();
+    }
     let bus = board.bus_mut();
     let read_bar = |bus: &mut od_machine::MachineBus, register| {
         bus.read_physical(
@@ -748,11 +755,315 @@ fn nvme_host_fixture() -> (LoadedFirmwareBoard, u64) {
 }
 
 #[test]
+fn s6_42d_nvme_stop_waits_for_in_flight_dma_and_resumes_pending_commands() {
+    run_nvme_stop_case(
+        NvmeStopCase::Running,
+        od_machine::InMemoryBackend::new(16).unwrap(),
+    );
+}
+
+#[test]
+fn s6_42d_nvme_stop_resumes_device_work_after_hlt_with_if_clear() {
+    run_nvme_stop_case(
+        NvmeStopCase::Halted,
+        od_machine::InMemoryBackend::new(16).unwrap(),
+    );
+}
+
+#[test]
+fn s6_42d_nvme_stop_acknowledges_a_worker_contending_for_the_controller() {
+    run_nvme_stop_case(
+        NvmeStopCase::Contended,
+        od_machine::InMemoryBackend::new(16).unwrap(),
+    );
+}
+
+#[test]
+fn s6_42d_nvme_stop_resumes_pending_commands_on_persistent_raw() {
+    struct ScratchFile(std::path::PathBuf);
+    impl Drop for ScratchFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("od-nvme-stop-{}-{unique}.raw", std::process::id()));
+    let file = std::fs::File::create_new(&path).unwrap();
+    let scratch = ScratchFile(path);
+    file.set_len(16 * 512).unwrap();
+    drop(file);
+    let disk = crate::persistent_nvme::PersistentNvmeBackend::open(&scratch.0).unwrap();
+    run_nvme_stop_case(NvmeStopCase::Running, disk);
+}
+
+enum NvmeStopCase {
+    Running,
+    Halted,
+    Contended,
+}
+
+fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend + Send + 'static) {
+    use od_machine::{BackendError, HostStopError, NvmeBackend};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::time::{Duration, Instant};
+
+    struct GatedRead<B> {
+        disk: B,
+        first: Option<(Sender<()>, Receiver<()>)>,
+    }
+
+    impl<B: NvmeBackend> NvmeBackend for GatedRead<B> {
+        fn sector_count(&self) -> u64 {
+            self.disk.sector_count()
+        }
+
+        fn read_sectors(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), BackendError> {
+            if let Some((entered, release)) = self.first.take() {
+                entered.send(()).map_err(|_| BackendError::Io)?;
+                release.recv_timeout(WAIT).map_err(|_| BackendError::Io)?;
+            }
+            self.disk.read_sectors(lba, buffer)
+        }
+
+        fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), BackendError> {
+            self.disk.write_sectors(lba, data)
+        }
+
+        fn flush(&mut self) -> Result<(), BackendError> {
+            self.disk.flush()
+        }
+    }
+
+    const IO_SQ: u64 = 0x8_3000;
+    const IO_CQ: u64 = 0x8_4000;
+    const READ_BUFFER: u64 = 0x8_5000;
+    const DEPTH: u32 = 16;
+    let halted = matches!(case, NvmeStopCase::Halted);
+    let contended = matches!(case, NvmeStopCase::Contended);
+    let vcpus = if contended { 2 } else { 1 };
+    let _guard = jit_guard();
+    let start_contender = AtomicBool::new(false);
+    let contender_polls = AtomicU32::new(0);
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    for lba in 0..DEPTH - 1 {
+        disk.write_sectors(u64::from(lba), &[0xa0 + lba as u8; 512])
+            .unwrap();
+    }
+    let (mut board, doorbell) = nvme_host_fixture(
+        vcpus,
+        Some(Box::new(GatedRead {
+            disk,
+            first: Some((entered_tx, release_rx)),
+        })),
+    );
+    let nvme = board.nvme().unwrap();
+    for (slot, (opcode, ring, cdw11)) in [(0x05, IO_CQ, 1u32), (0x01, IO_SQ, 0x1_0001)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut sqe = [0u8; 64];
+        sqe[0] = opcode;
+        sqe[24..32].copy_from_slice(&ring.to_le_bytes());
+        sqe[40..44].copy_from_slice(&(((DEPTH - 1) << 16) | 1).to_le_bytes());
+        sqe[44..48].copy_from_slice(&cdw11.to_le_bytes());
+        put(&mut board, NVME_ASQ + slot as u64 * 64, &sqe);
+    }
+    board
+        .bus_mut()
+        .write_physical(
+            GuestPhysicalAddress::new(doorbell),
+            AccessWidth::Dword,
+            2,
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(nvme.service(board.bus_mut(), |_| {}).completions, 2);
+    for slot in 0..DEPTH - 1 {
+        let mut sqe = [0u8; 64];
+        let cid = u32::from(NVME_CID) + slot;
+        sqe[0..4].copy_from_slice(&(cid << 16 | 2).to_le_bytes());
+        sqe[4..8].copy_from_slice(&1u32.to_le_bytes());
+        sqe[24..32].copy_from_slice(&(READ_BUFFER + u64::from(slot) * 512).to_le_bytes());
+        sqe[40..44].copy_from_slice(&slot.to_le_bytes());
+        put(&mut board, IO_SQ + u64::from(slot) * 64, &sqe);
+    }
+    let program = if halted {
+        vec![0xfa, 0xf4] // CLI; HLT
+    } else {
+        [
+            mov_eax(DEPTH - 1),
+            mov_ebx(u32::try_from(doorbell + 8).unwrap()),
+            store_eax(0),
+            vec![0xf4],
+        ]
+        .concat()
+    };
+    install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
+    if contended {
+        install(&mut board, 1, &[0xf4], CODE_1, STACK_TOP_1);
+    }
+    let region = SharedJitRegion::new(vcpus, 4).unwrap();
+    let quantum = quantum_of(&region, vcpus).with_write_log();
+    let (report, stopped) = run_host_threads_with_nmi_paging(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|mut call| {
+            if call.cpu == 1 && contender_polls.load(Ordering::Acquire) == 0 {
+                let start = Instant::now();
+                while !start_contender.load(Ordering::Acquire) && start.elapsed() < WAIT {
+                    std::thread::yield_now();
+                }
+                assert!(start_contender.load(Ordering::Acquire));
+                let mut counted_stop = || {
+                    contender_polls.fetch_add(1, Ordering::Release);
+                    (call.stop)()
+                };
+                return quantum.run(HostQuantumCall {
+                    nvme_only: true,
+                    stop: &mut counted_stop,
+                    board_irq: call.board_irq.reborrow(),
+                    ..call
+                });
+            }
+            if !halted || call.nvme_only {
+                return quantum.run(call);
+            }
+            let stopped = quantum.run(HostQuantumCall {
+                state: &mut *call.state,
+                consecutive_faults: &mut *call.consecutive_faults,
+                stop: &mut *call.stop,
+                board_irq: call.board_irq.reborrow(),
+                ..call
+            })?;
+            assert_eq!(stopped.exit, HostQuantumExit::Halted);
+            assert_eq!(call.state.rflags & (1 << 9), 0);
+            // Model work arriving at the just-retired HLT boundary. The continuation
+            // is opt-in and refers to host work, independent of the guest's IF bit.
+            call.bus
+                .write_mmio_shared(
+                    0,
+                    GuestPhysicalAddress::new(doorbell + 8),
+                    AccessWidth::Dword,
+                    u64::from(DEPTH - 1),
+                )
+                .unwrap();
+            let continuation = quantum.run(HostQuantumCall {
+                nvme_only: true,
+                ..call
+            })?;
+            assert_eq!(continuation.retired, 0);
+            assert_eq!(
+                continuation.exit,
+                HostQuantumExit::NvmePending { halted: false }
+            );
+            Ok(od_machine::HostQuantumResult {
+                exit: HostQuantumExit::NvmePending { halted: true },
+                device_ns: stopped.device_ns + continuation.device_ns,
+                ..stopped
+            })
+        },
+        &|_| quantum.thread_exit(),
+        |control| {
+            entered_rx
+                .recv_timeout(WAIT)
+                .expect("the first read enters the backend");
+            if contended {
+                start_contender.store(true, Ordering::Release);
+                assert!(control.wait_until(WAIT, || contender_polls.load(Ordering::Acquire) >= 2));
+            }
+            assert!(matches!(
+                control.stop_all(Duration::from_millis(20)),
+                Err(HostStopError::Timeout { unacked }) if unacked == [0]
+            ));
+            let (request_seen, proof, after_release) = std::thread::scope(|scope| {
+                let waiter = scope.spawn(|| control.stop_all(WAIT));
+                let start = Instant::now();
+                while !control.stopped() && start.elapsed() < WAIT {
+                    std::thread::yield_now();
+                }
+                let request_seen = control.stopped();
+                let release_at = Instant::now();
+                release_tx.send(()).unwrap();
+                let proof = waiter.join().unwrap();
+                (request_seen, proof, release_at.elapsed())
+            });
+            eprintln!("NVMe STOP after backend release: {after_release:?}");
+            let stopped = proof.map(|ack| {
+                let writes = quantum.committed_writes(0);
+                (
+                    request_seen,
+                    ack.acknowledged,
+                    nvme.doorbell_pending(),
+                    cell(control, READ_BUFFER),
+                    cell(control, READ_BUFFER + 512),
+                    cell(control, IO_CQ + 8),
+                    cell(control, IO_CQ + 24),
+                    control.halted(0),
+                    writes.contains(&(READ_BUFFER, 512)),
+                    writes.contains(&(READ_BUFFER + 512, 512)),
+                )
+            });
+            control.resume();
+            assert!(control.wait_finished(WAIT));
+            stopped
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        stopped.unwrap(),
+        (
+            true,
+            vcpus,
+            true,
+            u64::from_le_bytes([0xa0; 8]),
+            0,
+            (1 << 48) | (u64::from(NVME_CID) << 32) | (1 << 16) | 1,
+            0,
+            halted,
+            true,
+            false,
+        ),
+        "STOP observes only the completed first I/O"
+    );
+    assert_eq!(report.finished, HostParallelFinish::AllIdle);
+    let expected_retired = match case {
+        NvmeStopCase::Running => vec![4],
+        NvmeStopCase::Halted => vec![2],
+        NvmeStopCase::Contended => vec![4, 1],
+    };
+    assert_eq!(report.retired, expected_retired);
+    assert!(!nvme.doorbell_pending());
+    let ram = board.bus_mut().atomic_inline_memory();
+    for slot in 0..DEPTH - 1 {
+        assert_eq!(
+            ram.load_u64(GuestPhysicalAddress::new(
+                READ_BUFFER + u64::from(slot) * 512
+            ))
+            .unwrap(),
+            u64::from_le_bytes([0xa0 + slot as u8; 8])
+        );
+        assert_eq!(
+            ram.load_u32(GuestPhysicalAddress::new(IO_CQ + u64::from(slot) * 16 + 12))
+                .unwrap(),
+            (1 << 16) | (u32::from(NVME_CID) + slot)
+        );
+    }
+}
+
+#[test]
 fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
     let _guard = jit_guard();
 
     for (budget, stop_at_doorbell) in [(3, false), (u64::MAX, false), (u64::MAX, true)] {
-        let (mut board, doorbell) = nvme_host_fixture();
+        let (mut board, doorbell) = nvme_host_fixture(1, None);
         let nvme = board.nvme().unwrap();
         let generation = board
             .bus_mut()
@@ -869,7 +1180,7 @@ fn s6_42d_nvme_intx_reaches_a_guest_handler_and_clears_after_cq_head_and_eoi() {
     const VECTOR: u8 = 0x51;
     const NVME_PIN: u64 = 16;
     const ACTIVE_LOW_LEVEL: u64 = (1 << 13) | (1 << 15);
-    let (mut board, doorbell) = nvme_host_fixture();
+    let (mut board, doorbell) = nvme_host_fixture(1, None);
     assert!(board.enable_pit_ioapic_irq());
     assert!(board.enable_uart_ioapic_irq4());
     let bus = board.bus_mut();

@@ -163,6 +163,8 @@ pub struct HostQuantumCall<'a> {
     pub board_irq: HostBoardIrqSource<'a>,
     /// Board device work available at a quantum boundary.
     pub devices: HostDeviceServices<'a>,
+    /// Complete a previously interrupted NVMe drain without executing guest instructions.
+    pub nvme_only: bool,
     /// The gate of the split `LOCK` of this vCPU's thread (S6-42c).
     pub gate: HostSplitGate<'a>,
 }
@@ -174,6 +176,9 @@ pub enum HostQuantumExit {
     Running,
     /// The vCPU executed `HLT`: it is put in `Halted`.
     Halted,
+    /// Service was interrupted between commands. The worker schedules device-only continuation.
+    /// A newly retired HLT is published before the worker acknowledges STOP.
+    NvmePending { halted: bool },
     /// The vCPU shut down: it is put in `Shutdown`.
     Shutdown,
     /// The guest issued a board-wide stop through ACPI PM.
@@ -194,7 +199,11 @@ trait HostDeviceWork {
     fn service(&self) -> u64;
     fn stop_request(&self) -> Option<MachineStopReason>;
     fn nvme_pending(&self) -> bool;
-    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange));
+    fn service_nvme_until(
+        &self,
+        stop: &mut dyn FnMut() -> bool,
+        committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    ) -> bool;
 }
 
 impl HostDeviceWork for ThreadQuantumEnv<'_> {
@@ -227,18 +236,40 @@ impl HostDeviceWork for ThreadQuantumEnv<'_> {
             .is_some_and(crate::NvmeHandle::doorbell_pending)
     }
 
-    fn service_nvme(&self, committed_write: &mut dyn FnMut(GuestPhysicalRange)) {
-        let Some(nvme) = self.nvme.as_ref().filter(|nvme| nvme.doorbell_pending()) else {
-            return;
+    fn service_nvme_until(
+        &self,
+        stop: &mut dyn FnMut() -> bool,
+        committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    ) -> bool {
+        let Some(nvme) = &self.nvme else {
+            return false;
         };
-        if self.stop_request().is_some() {
-            return;
-        }
         let mut written = Vec::new();
-        nvme.service_ram(self.bus.physical_memory(), |range| written.push(range));
-        // The physical stores already published generations. Observers run outside the device lock.
-        for range in written {
-            committed_write(range);
+        loop {
+            // The caller may observe a device while polling STOP. Poll only between batches,
+            // after releasing the device lock and publishing the previous batch's observations.
+            if stop() {
+                return true;
+            }
+            if self.stop_request().is_some() {
+                return false;
+            }
+            let Some(report) = nvme
+                .try_service_one_pending_ram(self.bus.physical_memory(), |range| {
+                    written.push(range)
+                })
+            else {
+                // Another worker can be inside a synchronous provider. Do not queue a new
+                // command behind its lock without first polling STOP again.
+                std::thread::park_timeout(std::time::Duration::from_micros(200));
+                continue;
+            };
+            for range in written.drain(..) {
+                committed_write(range);
+            }
+            if report.commands == 0 && report.completions == 0 {
+                return false;
+            }
         }
     }
 }
@@ -273,10 +304,19 @@ impl HostDeviceServices<'_> {
     }
 
     /// Service a pending doorbell and publish committed DMA ranges.
-    pub fn service_nvme(&self, mut committed_write: impl FnMut(GuestPhysicalRange)) {
-        if let Some(work) = self.0 {
-            work.service_nvme(&mut committed_write);
-        }
+    pub fn service_nvme(&self, committed_write: impl FnMut(GuestPhysicalRange)) {
+        self.service_nvme_until(|| false, committed_write);
+    }
+
+    /// Service top-level commands, polling between unlocked batches. A true result asks
+    /// the caller to check for remaining work on resume, even if the guest is halted.
+    pub fn service_nvme_until(
+        &self,
+        mut stop: impl FnMut() -> bool,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> bool {
+        self.0
+            .is_some_and(|work| work.service_nvme_until(&mut stop, &mut committed_write))
     }
 }
 
@@ -498,6 +538,8 @@ fn run_host_threads_inner<R>(
         ..ParallelConfig::default()
     };
     let quantum = move |call: QuantumCall<'_, '_>| -> Result<Executed, FirmwareBoardError> {
+        let mut nvme_pending = call.nvme_pending;
+        let nvme_only = nvme_pending.as_deref_mut().is_some_and(std::mem::take);
         let result = run(HostQuantumCall {
             cpu: call.cpu,
             state: &mut call.vcpu.state,
@@ -512,12 +554,21 @@ fn run_host_threads_inner<R>(
                 gate: Some(call.gate),
             },
             devices: HostDeviceServices(Some(call.env)),
+            nvme_only,
             gate: HostSplitGate(Some(call.gate)),
         })
         .map_err(FirmwareBoardError::Config)?;
         match result.exit {
             HostQuantumExit::Running => {}
             HostQuantumExit::Halted => call.vcpu.state.activity = Some(CpuActivity::Halted),
+            HostQuantumExit::NvmePending { halted } => {
+                if halted {
+                    call.vcpu.state.activity = Some(CpuActivity::Halted);
+                }
+                *nvme_pending.ok_or(FirmwareBoardError::Config(
+                    "host NVMe continuation requested without a controller",
+                ))? = true;
+            }
             HostQuantumExit::Shutdown => call.vcpu.state.activity = Some(CpuActivity::Shutdown),
             HostQuantumExit::MachineStop(reason) => *call.machine_stop = Some(reason),
         }

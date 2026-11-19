@@ -611,7 +611,7 @@ impl NvmeState {
         progressed
     }
 
-    fn service(&mut self, dma: &mut dyn GuestDma) -> NvmeServiceReport {
+    fn service(&mut self, dma: &mut dyn GuestDma, one_item: bool) -> NvmeServiceReport {
         let mut report = NvmeServiceReport::default();
         self.pending = false;
         if !self.ready() {
@@ -619,8 +619,16 @@ impl NvmeState {
         }
         loop {
             let mut progressed = self.flush_events(dma, &mut report);
+            if one_item && progressed {
+                self.pending = true;
+                return report;
+            }
             for slot in 0..QUEUE_SLOTS {
                 while self.ready() && self.run_one(slot, dma, &mut report) {
+                    if one_item {
+                        self.pending = true;
+                        return report;
+                    }
                     progressed = true;
                 }
             }
@@ -755,25 +763,43 @@ impl NvmeHandle {
         bus: &mut MachineBus,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> NvmeServiceReport {
-        self.service_ram(bus.physical_memory(), committed_write)
+        Self::service_ram(
+            &mut lock(&self.state),
+            bus.physical_memory(),
+            committed_write,
+            false,
+        )
     }
 
     /// Service through RAM without taking the device table lock. The RAM stores publish their code
     /// page generations as they commit, including writes made by a parallel host worker.
-    pub(crate) fn service_ram(
+    pub(crate) fn try_service_one_pending_ram(
         &self,
         memory: &crate::PhysicalMemory,
         committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Option<NvmeServiceReport> {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(Self::service_ram(&mut state, memory, committed_write, true))
+    }
+
+    fn service_ram(
+        state: &mut NvmeState,
+        memory: &crate::PhysicalMemory,
+        committed_write: impl FnMut(GuestPhysicalRange),
+        one_pending_item: bool,
     ) -> NvmeServiceReport {
-        let mut state = lock(&self.state);
-        if !state.dma_enabled() {
+        if !state.dma_enabled() || (one_pending_item && !state.pending) {
             return NvmeServiceReport::default();
         }
         let mut dma = BusDma {
             memory,
             committed: committed_write,
         };
-        state.service(&mut dma)
+        state.service(&mut dma, one_pending_item)
     }
 }
 

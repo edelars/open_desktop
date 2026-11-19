@@ -286,6 +286,36 @@ impl JitHostQuantum {
                     logged.push((range.start().get(), range.len()));
                 }
             };
+            let save_log = |logged| {
+                if let Some(log) = &self.write_log {
+                    log[cpu]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(logged);
+                }
+            };
+            if call.nvme_only {
+                let pending = call
+                    .devices
+                    .service_nvme_until(&mut *call.stop, &mut record);
+                let exit = if let Some(reason) = call.devices.stop_request() {
+                    HostQuantumExit::MachineStop(reason)
+                } else if pending {
+                    HostQuantumExit::NvmePending { halted: false }
+                } else {
+                    HostQuantumExit::Running
+                };
+                save_log(logged);
+                self.stats[cpu]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .calls += 1;
+                return Ok(HostQuantumResult {
+                    retired: 0,
+                    exit,
+                    device_ns: call.devices.service(),
+                });
+            }
             let (cli, sti, halt) = (
                 CliProfile::NonPviLong64V1,
                 StiProfile::NonPviLong64V1,
@@ -389,7 +419,7 @@ impl JitHostQuantum {
                     | PagedHostLoopExit::BudgetExhausted
                     | PagedHostLoopExit::Interpreter(PagedProbeExit::Halted)
             );
-            let exit = match report.exit {
+            let mut exit = match report.exit {
                 PagedHostLoopExit::BudgetExhausted
                 | PagedHostLoopExit::StopRequested
                 | PagedHostLoopExit::FinishRequested
@@ -427,19 +457,20 @@ impl JitHostQuantum {
                 }
             };
             let device_ns = if self.cpl0_set && exit.is_ok() {
-                if service_nvme && !(call.stop)() {
-                    call.devices.service_nvme(&mut record);
+                if service_nvme
+                    && call
+                        .devices
+                        .service_nvme_until(&mut *call.stop, &mut record)
+                {
+                    exit = Ok(HostQuantumExit::NvmePending {
+                        halted: exit == Ok(HostQuantumExit::Halted),
+                    });
                 }
                 call.devices.service()
             } else {
                 0
             };
-            if let Some(log) = &self.write_log {
-                log[cpu]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend(logged);
-            }
+            save_log(logged);
             Ok(HostQuantumResult {
                 retired,
                 exit: exit?,
