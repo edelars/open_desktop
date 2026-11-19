@@ -7,6 +7,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod authenticated;
+mod provision;
 
 pub const NVRAM_MMIO_BASE: u64 = 0xff00_0000;
 pub const NVRAM_STORE_BYTES: usize = IMAGE_CAPACITY;
@@ -42,6 +43,15 @@ pub enum NvramContentsError {
     AmbiguousGeneration,
     InvalidProtectedStore,
     ProtectionRequiresFirmware,
+    InvalidPlatformKey,
+    ReusedPlatformKey,
+}
+
+/// Policy applied by the host while creating or resetting a protected variable store.
+#[derive(Clone, Copy, Debug)]
+pub enum SecureBootKeys<'a> {
+    Defaults { public_platform_key: &'a [u8] },
+    SetupMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +109,23 @@ impl NvramDevice {
             image,
             SnapshotFormat::Protected,
         )))
+    }
+
+    /// Creates a protected store from the applicable host provisioning policy.
+    pub fn with_secure_boot_keys(keys: SecureBootKeys<'_>) -> Result<Self, NvramContentsError> {
+        Self::with_protected_store(&provision::new_image(keys, None)?)
+    }
+
+    /// Applies a cold host reset to the supplied protected snapshot. Ordinary variables persist.
+    pub fn reset_secure_boot_keys(
+        bytes: &[u8],
+        keys: SecureBootKeys<'_>,
+    ) -> Result<Self, NvramContentsError> {
+        let banks = Banks::with_contents(bytes)?;
+        if banks.format != SnapshotFormat::Protected {
+            return Err(NvramContentsError::InvalidProtectedStore);
+        }
+        Self::with_protected_store(&provision::new_image(keys, Some(banks.current().data()))?)
     }
 
     /// Reopen a snapshot, recovering the highest valid generation.
@@ -997,6 +1024,126 @@ mod tests {
         let snapshot = legacy.nvram_snapshot();
         submit_auth(&mut legacy, &update, Status::InvalidCommand);
         assert!(legacy.nvram_snapshot() == snapshot);
+    }
+
+    #[test]
+    fn cold_secure_boot_provisioning_and_reset_preserve_ordinary_variables() {
+        use od_uefi_security::{protected::PolicyVariable, siglist::signature_lists};
+
+        let first_pk =
+            include_bytes!("../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der");
+        let next_pk =
+            include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-uefi-ca-2023.der");
+        let keys = SecureBootKeys::Defaults {
+            public_platform_key: first_pk,
+        };
+        let mut device = NvramDevice::with_secure_boot_keys(keys).unwrap();
+        let initial = read_active(&mut device);
+        let image = Image::new(&initial).unwrap();
+        let records: Vec<_> = image
+            .records()
+            .map(Result::unwrap)
+            .map(|(record, _)| record)
+            .collect();
+        assert_eq!(image.flags, DEFAULT_FLAGS);
+        assert_eq!(records.len(), 4);
+        assert!(records.iter().all(|record| record.watermark.is_none()));
+        let expected = [
+            (PolicyVariable::Pk, 1),
+            (PolicyVariable::Kek, 2),
+            (PolicyVariable::Db, 4),
+            (PolicyVariable::Dbx, 445),
+        ];
+        for (record, (kind, count)) in records.iter().zip(expected) {
+            assert_eq!(record.policy_variable(), Some(kind));
+            assert_eq!(
+                signature_lists(record.value)
+                    .map(Result::unwrap)
+                    .flat_map(|list| list.signatures())
+                    .count(),
+                count
+            );
+        }
+        assert_eq!(
+            signature_lists(records[0].value)
+                .next()
+                .unwrap()
+                .unwrap()
+                .signatures()
+                .next()
+                .unwrap()
+                .data(),
+            first_pk
+        );
+        assert_eq!(
+            records[3].value,
+            include_bytes!("../../../tests/fixtures/firmware/certs/dbx-x64-v1.7.2.bin")
+        );
+
+        let ordinary = Record {
+            guid: GLOBAL_VARIABLE,
+            name: Name::new(b"T\0i\0m\0e\0o\0u\0t\0").unwrap(),
+            attributes: 7,
+            value: &[12, 0],
+            watermark: None,
+        };
+        let mut entries = records;
+        entries.push(ordinary);
+        replace(&mut device, &protected_image(DEFAULT_FLAGS, &entries));
+        let snapshot = device.nvram_snapshot();
+        assert_eq!(
+            NvramDevice::reset_secure_boot_keys(&snapshot, keys).err(),
+            Some(NvramContentsError::ReusedPlatformKey)
+        );
+        let new_keys = SecureBootKeys::Defaults {
+            public_platform_key: next_pk,
+        };
+        let mut replaced = NvramDevice::reset_secure_boot_keys(&snapshot, new_keys).unwrap();
+        let replacement = read_active(&mut replaced);
+        let new_image = Image::new(&replacement).unwrap();
+        let mut records = new_image
+            .records()
+            .map(Result::unwrap)
+            .map(|(record, _)| record);
+        assert_eq!(records.next().unwrap().value, ordinary.value);
+        let new_platform_key = records.next().unwrap();
+        assert_eq!(new_platform_key.policy_variable(), Some(PolicyVariable::Pk));
+        assert_eq!(
+            signature_lists(new_platform_key.value)
+                .next()
+                .unwrap()
+                .unwrap()
+                .signatures()
+                .next()
+                .unwrap()
+                .data(),
+            next_pk
+        );
+
+        let mut setup =
+            NvramDevice::reset_secure_boot_keys(&snapshot, SecureBootKeys::SetupMode).unwrap();
+        let setup_image = read_active(&mut setup);
+        let image = Image::new(&setup_image).unwrap();
+        assert_eq!(image.policy_bytes().unwrap().iter().flatten().count(), 0);
+        assert_eq!(
+            image.records().next().unwrap().unwrap().0.value,
+            ordinary.value
+        );
+        assert_eq!(image.flags, DEFAULT_FLAGS);
+        assert!(device.nvram_snapshot() == snapshot);
+
+        let legacy = NvramDevice::new().nvram_snapshot();
+        assert_eq!(
+            NvramDevice::reset_secure_boot_keys(&legacy, new_keys).err(),
+            Some(NvramContentsError::InvalidProtectedStore)
+        );
+        let invalid = SecureBootKeys::Defaults {
+            public_platform_key: b"not a DER certificate",
+        };
+        assert_eq!(
+            NvramDevice::with_secure_boot_keys(invalid).err(),
+            Some(NvramContentsError::InvalidPlatformKey)
+        );
     }
 
     #[test]

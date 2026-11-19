@@ -122,7 +122,7 @@ pub use bus::{
 };
 pub use nvram_device::{
     NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_SNAPSHOT_BYTES, NVRAM_STORE_BYTES, NvramConfig,
-    NvramContentsError, NvramDevice,
+    NvramContentsError, NvramDevice, SecureBootKeys,
 };
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,

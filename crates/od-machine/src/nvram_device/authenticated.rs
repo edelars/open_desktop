@@ -214,7 +214,7 @@ fn authorize(request: &Request<'_>, records: &[(Record<'_>, &[u8])]) -> Result<b
     Ok(false)
 }
 
-fn validate_payload(policy: PolicyVariable, value: &[u8]) -> Result<(), Error> {
+pub(super) fn validate_payload(policy: PolicyVariable, value: &[u8]) -> Result<(), Error> {
     if value.is_empty() {
         return Ok(());
     }

@@ -40,6 +40,18 @@ pub fn validate_certificate(der: &[u8]) -> Result<(), Error> {
         .map_err(|_| Error::InvalidCertificate)
 }
 
+pub fn same_rsa_public_key(left: &[u8], right: &[u8]) -> Result<bool, Error> {
+    let left = Certificate::from_der(left).map_err(|_| Error::InvalidCertificate)?;
+    let right = Certificate::from_der(right).map_err(|_| Error::InvalidCertificate)?;
+    let left = public_key(&left)?;
+    let right = public_key(&right)?;
+    Ok(same_key(&left, &right))
+}
+
+fn same_key(left: &PublicKey, right: &PublicKey) -> bool {
+    left.n() == right.n() && left.e() == right.e()
+}
+
 pub fn validate_anchor(anchor: TrustAnchor<'_>) -> Result<(), Error> {
     let allowed = match anchor {
         TrustAnchor::PlatformKey(bytes) => Candidate::parse(bytes)?.digital_signature,
@@ -196,7 +208,7 @@ pub fn detached(
             let certificate =
                 Certificate::from_der(bytes).map_err(|_| Error::InvalidCertificate)?;
             let key = public_key(&certificate)?;
-            if leaf.key.n() == key.n() && leaf.key.e() == key.e() {
+            if same_key(&leaf.key, &key) {
                 return Ok(());
             }
         }
