@@ -20084,7 +20084,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0xf6, OperandSize::Byte) | (0x85, OperandSize::Dword | OperandSize::Qword)
+                        (0xa8 | 0xf6, OperandSize::Byte)
+                            | (0x85, OperandSize::Dword | OperandSize::Qword)
                     )
                 }
                 Operation::Logic {
@@ -20101,10 +20102,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     instruction.operand_size,
                     OperandSize::Word | OperandSize::Dword | OperandSize::Qword
                 ),
-                _ => matches!(
-                    instruction.operand_size,
-                    OperandSize::Dword | OperandSize::Qword
-                ),
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    ..
+                } => {
+                    matches!(
+                        instruction.operand_size,
+                        OperandSize::Dword | OperandSize::Qword
+                    ) || matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x30 | 0x32, OperandSize::Byte)
+                    )
+                }
+                _ => false,
             }
             && instruction.prefixes
                 == (Prefixes {

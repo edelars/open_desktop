@@ -52010,6 +52010,12 @@ fn firmware_boot_test_byte_immediate_reads_the_decoded_register_alias() {
             0x0000_0000_0000_807f,
             0x656,
         ),
+        (
+            &[0xa8, 0x01][..],
+            Register::Rax,
+            0x0000_0000_0000_8001,
+            0x612,
+        ),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
@@ -52483,7 +52489,7 @@ fn firmware_boot_register_xor_clears_the_definedness_of_af() {
 }
 
 #[test]
-fn firmware_boot_or_uses_the_decoded_width_and_register_aliases() {
+fn firmware_boot_or_and_xor_use_the_decoded_width_and_register_aliases() {
     const AF: u64 = 1 << 4;
     for (code, destination, input, expected_value, flags) in [
         (
@@ -52514,9 +52520,24 @@ fn firmware_boot_or_uses_the_decoded_width_and_register_aliases() {
             0x0110_0103,
             0x616,
         ),
+        (
+            &[0x30, 0xc8][..],
+            Register::Rax,
+            0xfedc_ba98_7654_3204,
+            0xfedc_ba98_7654_3205,
+            0x616,
+        ),
+        (
+            &[0x32, 0xc4][..],
+            Register::Rax,
+            0xfedc_ba98_7654_8001,
+            0xfedc_ba98_7654_8081,
+            0x696,
+        ),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 1;
         cpu.gpr[destination as usize] = input;
         cpu.gpr[Register::R10 as usize] = 0xface_1122_3344_5501;
         cpu.gpr[Register::R15 as usize] = 0x8000_0000_0000_0201;
