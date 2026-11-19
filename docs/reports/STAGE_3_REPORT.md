@@ -1566,6 +1566,13 @@ and 6.70% of the original JIT time. The dispatcher is retained and
 the one-RIP regression remains open in ISSUE-520.
 [M1 Pro warm results and evidence](STAGE_3_S3-31i_2026-11-19.md)
 
+S3-31j measured a candidate that skips rewriting the previous RIP and
+index on the same-RIP branch. The signed assembly confirmed the
+skipped payload store. The two long one-RIP profiles yielded raw
+JIT medians of 1.0001 and 1.0002 times stock, with ranges overlapping
+the same-file A/A control. The stock dispatcher is retained.
+[Results and linked code](STAGE_3_S3-31j_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

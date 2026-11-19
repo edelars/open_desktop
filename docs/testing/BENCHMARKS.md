@@ -1747,6 +1747,14 @@ The primary result uses full warm JIT times. The recorded controls
 include CPU idle samples, effective nice −5 and the 30 ms interval floor.
 [Report and reproduction](../reports/STAGE_3_S3-31i_2026-11-19.md)
 
+### S3-31j. Same-RIP continuation memo on M1 Pro
+
+Use one pinned revision and the same fixed work counts as S3-31i.
+Check the linked same-RIP branch and compare stock, the candidate
+without the memo payload store, and a repeated launch of the same
+stock file. Require the 30 ms floor and exact child priority.
+[Report and reproduction](../reports/STAGE_3_S3-31j_2026-11-19.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
