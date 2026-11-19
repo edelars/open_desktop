@@ -28746,7 +28746,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
-        (OpcodeMap::Primary, 0x58..=0x5f, Operation::StackRegister { push: false, .. }) => {
+        (OpcodeMap::Primary, 0x50..=0x5f, Operation::StackRegister { .. }) => {
             instruction.operand_size == OperandSize::Qword
         }
         (

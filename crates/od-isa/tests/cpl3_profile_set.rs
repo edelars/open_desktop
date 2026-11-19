@@ -2134,6 +2134,59 @@ fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
 }
 
 #[test]
+fn cpl3_push_register_stores_one_qword_before_committing_rsp() {
+    let mut initial = user_state();
+    initial.gpr[Register::Rax as usize] = 0x0000_7fff_a1b2_c3d4;
+    initial.gpr[Register::R14 as usize] = 0xfedc_ba98_7654_3210;
+    initial.gpr[Register::Rsp as usize] = DATA + 8;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    for (code, register) in [
+        (&[0x50][..], Register::Rax),
+        (&[0x41, 0x56][..], Register::R14),
+        (&[0x54][..], Register::Rsp),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_user(DATA + offset, 0);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = initial.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rsp as usize] = DATA;
+        let expected_bytes = initial.gpr[register as usize].to_le_bytes();
+        let expected_writes: Vec<_> = (DATA..DATA + 8).zip(expected_bytes).collect();
+        assert_eq!(state, expected);
+        assert_eq!(memory.writes, expected_writes);
+        assert_eq!(memory.reads, 0);
+    }
+
+    let next_page = DATA + 4096;
+    let mut before_fault = initial.clone();
+    before_fault.gpr[Register::Rsp as usize] = next_page + 1;
+    let mut state = before_fault.clone();
+    let mut memory = DataMemory::new(&[0x50]).with_supervisor(next_page, 0);
+    for address in next_page - 7..next_page {
+        memory = memory.with_user(address, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7),
+            linear_address: Some(next_page),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before_fault);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
 fn cpl3_pop_register_reads_one_qword_and_commits_the_stack_pointer() {
     const VALUE: u64 = 0x0000_7fff_a1b2_c3d4;
     let mut initial = user_state();
@@ -2185,7 +2238,7 @@ fn cpl3_pop_register_reads_one_qword_and_commits_the_stack_pointer() {
 
     for (code, opcode) in [
         (&[0x66, 0x5e][..], 0x5e),
-        (&[0x56][..], 0x56),
+        (&[0x66, 0x56][..], 0x56),
         (&[0x8f, 0x06][..], 0x8f),
     ] {
         let mut state = initial.clone();
