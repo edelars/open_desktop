@@ -194,6 +194,24 @@ pub struct HostQuantumResult {
     pub device_ns: u64,
 }
 
+/// A terminal host quantum error with the work already committed in that call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostQuantumFailure {
+    pub retired: u64,
+    pub device_ns: u64,
+    pub message: &'static str,
+}
+
+impl From<&'static str> for HostQuantumFailure {
+    fn from(message: &'static str) -> Self {
+        Self {
+            retired: 0,
+            device_ns: 0,
+            message,
+        }
+    }
+}
+
 trait HostDeviceWork {
     fn pending(&self) -> bool;
     fn service(&self) -> u64;
@@ -322,8 +340,13 @@ impl HostDeviceServices<'_> {
 
 /// The quantum of every vCPU thread of a host run. Called by every thread (so `Sync`); state that
 /// belongs to one vCPU lives on its thread (a `thread_local!`), as the JIT session does.
+/// Its error contains only a message. See [`AccountedHostQuantumFn`] for committed progress.
 pub type HostQuantumFn<'f> =
     dyn Fn(HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> + Sync + 'f;
+
+/// A host quantum callback that returns already committed progress on failure.
+pub type AccountedHostQuantumFn<'f> =
+    dyn Fn(HostQuantumCall<'_>) -> Result<HostQuantumResult, HostQuantumFailure> + Sync + 'f;
 
 /// What every vCPU thread runs on its own thread after its last quantum (the argument is the vCPU
 /// index): the owner of per-thread state releases it here (a `thread_local!` destructor may run
@@ -496,7 +519,7 @@ pub fn run_host_threads<R>(
         board,
         config,
         NmiPaging::Roots(nmi_roots),
-        run,
+        &|call| run(call).map_err(HostQuantumFailure::from),
         on_thread_exit,
         controller,
     )
@@ -510,6 +533,26 @@ pub fn run_host_threads_with_nmi_paging<R>(
     config: HostParallelConfig,
     nmi_paging: &[Option<HostNmiPaging>],
     run: &HostQuantumFn<'_>,
+    on_thread_exit: &HostThreadExitFn<'_>,
+    controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
+) -> Result<(HostParallelReport, R), FirmwareBoardError> {
+    run_accounted_host_threads(
+        board,
+        config,
+        nmi_paging,
+        &|call| run(call).map_err(HostQuantumFailure::from),
+        on_thread_exit,
+        controller,
+    )
+}
+
+/// Run host threads with explicit NMI paging and charge any work reported by a failed quantum.
+/// The first terminal error is published after the scheduler accounts for its known progress.
+pub fn run_accounted_host_threads<R>(
+    board: &mut LoadedFirmwareBoard,
+    config: HostParallelConfig,
+    nmi_paging: &[Option<HostNmiPaging>],
+    run: &AccountedHostQuantumFn<'_>,
     on_thread_exit: &HostThreadExitFn<'_>,
     controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
 ) -> Result<(HostParallelReport, R), FirmwareBoardError> {
@@ -527,7 +570,7 @@ fn run_host_threads_inner<R>(
     board: &mut LoadedFirmwareBoard,
     config: HostParallelConfig,
     nmi_paging: NmiPaging<'_>,
-    run: &HostQuantumFn<'_>,
+    run: &AccountedHostQuantumFn<'_>,
     on_thread_exit: &HostThreadExitFn<'_>,
     controller: impl FnOnce(&HostParallelControl<'_, '_>) -> R,
 ) -> Result<(HostParallelReport, R), FirmwareBoardError> {
@@ -557,7 +600,16 @@ fn run_host_threads_inner<R>(
             nvme_only,
             gate: HostSplitGate(Some(call.gate)),
         })
-        .map_err(FirmwareBoardError::Config)?;
+        .map_err(|failure| {
+            RunFailure::after(
+                Executed {
+                    retired: failure.retired,
+                    partial_rep: false,
+                    device_ns: failure.device_ns,
+                },
+                FirmwareBoardError::Config(failure.message),
+            )
+        })?;
         let executed = Executed {
             retired: result.retired,
             partial_rep: false,
@@ -587,10 +639,13 @@ fn run_host_threads_inner<R>(
     let (report, value) = run_threads_rooted(
         board,
         config,
-        true,
         &quantum,
         Some(on_thread_exit),
-        nmi_paging,
+        crate::parallel_run::ThreadRunOptions {
+            source_free: true,
+            nmi_paging,
+            discard_startup_port_ticks: false,
+        },
         |control| controller(&HostParallelControl { inner: control }),
     )?;
     Ok((host_report(report), value))
@@ -1171,5 +1226,42 @@ mod tests {
                 1000 + retired * crate::clock_owner::NS_PER_RETIRED
             );
         }
+    }
+
+    #[test]
+    fn an_accounted_host_error_preserves_device_time_with_zero_retirement() {
+        let mut board = board_with_program();
+        assert!(host_install_vcpu(&mut board, 0, state()));
+        let start_ns = board.clock().now_ns();
+        let message = "test: terminal host error with pending device time";
+        let (report, ()) = run_accounted_host_threads(
+            &mut board,
+            HostParallelConfig {
+                quantum: 4,
+                budget: 4,
+                end_when_idle: true,
+            },
+            &[],
+            &|_| {
+                Err(HostQuantumFailure {
+                    retired: 0,
+                    device_ns: 1000,
+                    message,
+                })
+            },
+            &|_| {},
+            |control| assert!(control.wait_finished(Duration::from_secs(10))),
+        )
+        .unwrap();
+        assert_eq!(
+            report.finished,
+            HostParallelFinish::Error {
+                cpu: 0,
+                message: format!("Config({message:?})")
+            }
+        );
+        assert_eq!(report.retired, [0]);
+        assert_eq!(report.calls, [1]);
+        assert_eq!(board.clock().now_ns() - start_ns, 1000);
     }
 }

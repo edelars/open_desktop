@@ -9,7 +9,7 @@
 //! * the CPL0 interpreter of od-isa (`run_host_set_step`, the oracle) on one thread: the expected values
 //!   and the final state;
 //! * the interleaved mode: one thread, one JIT session per vCPU, a fixed schedule;
-//! * the parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, no lock of the bus.
+//! * the parallel mode: `run_accounted_host_threads`, one thread per vCPU, no lock of the bus.
 //!
 //! The host drives the cycle and wait loops. Every step executes real guest bytes at the selected
 //! RIP. CPUID uses the selected CPL0 interpreter and the next native step performs a fresh lookup.
@@ -22,9 +22,9 @@ use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
 use od_machine::{
     ExecutionMode, HostBoardIrqSource, HostCpl0Step, HostDeviceServices, HostParallelConfig,
-    HostParallelFinish, HostQuantumCall, HostQuantumExit, HostQuantumResult, HostSplitGate,
-    LocalApic, LocalApicHandle, host_install_vcpu, host_parallel_board, run_host_set_step,
-    run_host_threads_with_nmi_paging,
+    HostParallelFinish, HostQuantumCall, HostQuantumExit, HostQuantumFailure, HostQuantumResult,
+    HostSplitGate, LocalApic, LocalApicHandle, host_install_vcpu, host_parallel_board,
+    run_accounted_host_threads, run_host_set_step,
 };
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -259,6 +259,8 @@ impl Stepper for Interp<'_> {
 struct Quantum<'q, 'c> {
     quantum: &'q JitHostQuantum,
     call: HostQuantumCall<'c>,
+    retired: u64,
+    device_ns: u64,
 }
 
 impl Stepper for Quantum<'_, '_> {
@@ -266,23 +268,27 @@ impl Stepper for Quantum<'_, '_> {
         let cpu = self.call.cpu;
         load_registers(self.call.state, rip, rax, rbx);
         let before = self.quantum.stats(cpu);
-        let result = self
-            .quantum
-            .run(HostQuantumCall {
-                cpu,
-                state: &mut *self.call.state,
-                bus: self.call.bus,
-                budget: 1,
-                consecutive_faults: &mut *self.call.consecutive_faults,
-                stop: &mut *self.call.stop,
-                native_stop: self.call.native_stop,
-                lapic: self.call.lapic,
-                board_irq: self.call.board_irq.reborrow(),
-                devices: self.call.devices,
-                nvme_only: false,
-                gate: self.call.gate,
-            })
-            .map_err(str::to_owned)?;
+        let result = self.quantum.run_accounted(HostQuantumCall {
+            cpu,
+            state: &mut *self.call.state,
+            bus: self.call.bus,
+            budget: 1,
+            consecutive_faults: &mut *self.call.consecutive_faults,
+            stop: &mut *self.call.stop,
+            native_stop: self.call.native_stop,
+            lapic: self.call.lapic,
+            board_irq: self.call.board_irq.reborrow(),
+            devices: self.call.devices,
+            nvme_only: false,
+            gate: self.call.gate,
+        });
+        let (retired, device_ns) = match &result {
+            Ok(result) => (result.retired, result.device_ns),
+            Err(failure) => (failure.retired, failure.device_ns),
+        };
+        self.retired += retired;
+        self.device_ns = self.device_ns.saturating_add(device_ns);
+        let result = result.map_err(|failure| failure.message.to_owned())?;
         if result.retired != 1 || result.exit != HostQuantumExit::Running {
             return Err(format!("vCPU {cpu} at {rip:#x}: {result:?}"));
         }
@@ -834,7 +840,7 @@ fn drive(
     shared: &Shared,
     quantum: &JitHostQuantum,
     call: HostQuantumCall<'_>,
-) -> Result<HostQuantumResult, &'static str> {
+) -> Result<HostQuantumResult, HostQuantumFailure> {
     let cpu = call.cpu;
     let k = shared.next[cpu].load(Ordering::Relaxed) + 1;
     if k > shared.cycles {
@@ -853,8 +859,12 @@ fn drive(
         require_native_writes: true,
         abort: &shared.abort,
     };
-    let mut vcpu = Quantum { quantum, call };
-    let retired_before = quantum.stats(cpu);
+    let mut vcpu = Quantum {
+        quantum,
+        call,
+        retired: 0,
+        device_ns: 0,
+    };
     let outcome = if cpu == CPU_A {
         spin_until(&shared.abort, "B's run of the old code", || {
             shared.old_done.load(Ordering::Acquire) >= k
@@ -891,12 +901,13 @@ fn drive(
         outcome
     };
     if let Err(message) = outcome {
-        return Err(shared.fail(format!("vCPU {cpu}, cycle {k}: {message}")));
+        return Err(HostQuantumFailure {
+            retired: vcpu.retired,
+            device_ns: vcpu.device_ns,
+            message: shared.fail(format!("vCPU {cpu}, cycle {k}: {message}")),
+        });
     }
     shared.next[cpu].store(k, Ordering::Relaxed);
-    let retired_after = quantum.stats(cpu);
-    let retired = (retired_after.retired_jit + retired_after.retired_interpreter)
-        - (retired_before.retired_jit + retired_before.retired_interpreter);
     let mut exit = HostQuantumExit::Running;
     if k == shared.cycles {
         shared
@@ -907,13 +918,13 @@ fn drive(
         exit = HostQuantumExit::Halted;
     }
     Ok(HostQuantumResult {
-        retired,
+        retired: vcpu.retired,
         exit,
-        device_ns: 0,
+        device_ns: vcpu.device_ns,
     })
 }
 
-/// The parallel mode: `run_host_threads_with_nmi_paging`, one thread per vCPU, the bus by shared reference.
+/// The parallel mode: `run_accounted_host_threads`, one thread per vCPU, the bus by shared reference.
 fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
     let region = SharedJitRegion::new(2, 4).unwrap();
     let parts = vec![
@@ -941,7 +952,7 @@ fn run_parallel(protocol: Protocol, cycles: u64) -> JitRun {
         error: Mutex::new(None),
     };
     let started = Instant::now();
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         HostParallelConfig {
             quantum: 4096,
@@ -1117,7 +1128,7 @@ fn s6_43a_interleaved_b_runs_only_the_new_bytes_after_the_signal_and_equals_the_
     }
 }
 
-/// Parallel mode (`run_host_threads_with_nmi_paging`, no lock of the bus): the same, with A and B on their own
+/// Parallel mode (`run_accounted_host_threads`, no lock of the bus): the same, with A and B on their own
 /// threads; B waits for the signal in a loop, A waits for B's run of the old code and for B's
 /// cycle.
 #[test]

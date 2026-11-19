@@ -1417,10 +1417,13 @@ pub(crate) fn run_threads_with<R>(
     run_threads_rooted(
         board,
         config,
-        source_free,
         run,
         on_thread_exit,
-        NmiPaging::Board,
+        ThreadRunOptions {
+            source_free,
+            nmi_paging: NmiPaging::Board,
+            discard_startup_port_ticks: true,
+        },
         controller,
     )
 }
@@ -1431,6 +1434,12 @@ pub(crate) enum NmiPaging<'a> {
     Board,
     Roots(&'a [Option<u64>]),
     Host(&'a [Option<HostNmiPaging>]),
+}
+
+pub(crate) struct ThreadRunOptions<'a> {
+    pub(crate) source_free: bool,
+    pub(crate) nmi_paging: NmiPaging<'a>,
+    pub(crate) discard_startup_port_ticks: bool,
 }
 
 /// Paging inputs shared by a host quantum and NMI delivery on its vCPU.
@@ -1444,10 +1453,9 @@ pub struct HostNmiPaging {
 pub(crate) fn run_threads_rooted<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
-    source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_paging: NmiPaging<'_>,
+    options: ThreadRunOptions<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
     if config.quantum == 0 {
@@ -1455,15 +1463,7 @@ pub(crate) fn run_threads_rooted<R>(
     }
     let previous_mode = board.execution_mode();
     board.set_execution_mode(ExecutionMode::Parallel);
-    let outcome = run_threads_inner(
-        board,
-        config,
-        source_free,
-        run,
-        on_thread_exit,
-        nmi_paging,
-        controller,
-    );
+    let outcome = run_threads_inner(board, config, run, on_thread_exit, options, controller);
     board.set_execution_mode(previous_mode);
     outcome
 }
@@ -1471,12 +1471,16 @@ pub(crate) fn run_threads_rooted<R>(
 fn run_threads_inner<R>(
     board: &mut LoadedFirmwareBoard,
     config: ParallelConfig,
-    source_free: bool,
     run: &QuantumFn<'_>,
     on_thread_exit: Option<&ThreadExitFn<'_>>,
-    nmi_paging: NmiPaging<'_>,
+    options: ThreadRunOptions<'_>,
     controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
 ) -> Result<(ParallelReport, R), FirmwareBoardError> {
+    let ThreadRunOptions {
+        source_free,
+        nmi_paging,
+        discard_startup_port_ticks,
+    } = options;
     let parts = board.thread_parts()?;
     let ThreadParts {
         bus,
@@ -1513,9 +1517,11 @@ fn run_threads_inner<R>(
         uart_ioapic_source,
         com1: &com1,
     };
-    // Discard port-read requests from before the run while the board is quiescent.
-    // Once workers are active a pending tick may belong to any vCPU.
-    env.take_device_ticks();
+    if discard_startup_port_ticks {
+        // The interpreter ignores prior port reads. Once workers are active a
+        // pending tick may belong to any vCPU and must be accounted for.
+        env.take_device_ticks();
+    }
     let shared = SharedState {
         count,
         config,

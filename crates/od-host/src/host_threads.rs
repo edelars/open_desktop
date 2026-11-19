@@ -20,7 +20,7 @@
 //! delivered through the guest IDT, and the split `LOCK` goes through the gate of the run. The
 //! default quantum is the base profile as before (a guest fault or a refusal of the interpreter is
 //! an error of the run). [`JitHostQuantum::nmi_paging`] gives the paging inputs for NMI delivery
-//! through `od_machine::run_host_threads_with_nmi_paging`.
+//! through `od_machine::run_accounted_host_threads`.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -30,7 +30,8 @@ use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet};
 use od_isa::{CliProfile, HaltProfile, MovCr3Long64V1, StiProfile};
 use od_machine::{
-    HostNmiPaging, HostQuantumCall, HostQuantumExit, HostQuantumResult, PagedProbeExit,
+    HostNmiPaging, HostQuantumCall, HostQuantumExit, HostQuantumFailure, HostQuantumResult,
+    PagedProbeExit,
 };
 
 use crate::PagedFetchedLoadSession;
@@ -246,9 +247,25 @@ impl JitHostQuantum {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// One call of the quantum on the vCPU thread: pass this as `run` of
-    /// `od_machine::run_host_threads` (`&|call| quantum.run(call)`).
-    pub fn run(&self, mut call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
+    /// Compatibility entry for callers that consume only the terminal error message.
+    pub fn run(&self, call: HostQuantumCall<'_>) -> Result<HostQuantumResult, &'static str> {
+        self.run_inner(call, false)
+            .map_err(|failure| failure.message)
+    }
+
+    /// One quantum for `od_machine::run_accounted_host_threads`.
+    pub fn run_accounted(
+        &self,
+        call: HostQuantumCall<'_>,
+    ) -> Result<HostQuantumResult, HostQuantumFailure> {
+        self.run_inner(call, true)
+    }
+
+    fn run_inner(
+        &self,
+        mut call: HostQuantumCall<'_>,
+        account_failure: bool,
+    ) -> Result<HostQuantumResult, HostQuantumFailure> {
         let cpu = call.cpu;
         let config = *self
             .configs
@@ -456,8 +473,9 @@ impl JitHostQuantum {
                     Err("host JIT quantum: invalid definedness mask")
                 }
             };
-            let device_ns = if self.cpl0_set && exit.is_ok() {
+            let device_ns = if self.cpl0_set && (account_failure || exit.is_ok()) {
                 if service_nvme
+                    && exit.is_ok()
                     && call
                         .devices
                         .service_nvme_until(&mut *call.stop, &mut record)
@@ -471,11 +489,18 @@ impl JitHostQuantum {
                 0
             };
             save_log(logged);
-            Ok(HostQuantumResult {
-                retired,
-                exit: exit?,
-                device_ns,
-            })
+            match exit {
+                Ok(exit) => Ok(HostQuantumResult {
+                    retired,
+                    exit,
+                    device_ns,
+                }),
+                Err(message) => Err(HostQuantumFailure {
+                    retired,
+                    device_ns,
+                    message,
+                }),
+            }
         })
     }
 }

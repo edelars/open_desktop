@@ -18,7 +18,7 @@ use od_isa::{CodeSegmentDescriptorCache, CpuActivity, StackSegmentDescriptorCach
 use od_machine::{
     HostBoardIrqSource, HostParallelConfig, HostParallelFinish, HostQuantumCall, HostQuantumExit,
     HostQuantumResult, HostSplitGate, LoadedFirmwareBoard, host_install_vcpu, host_parallel_board,
-    run_host_threads_with_nmi_paging,
+    run_accounted_host_threads,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -320,11 +320,11 @@ fn s6_42c_a_fixed_vector_is_delivered_to_a_guest_that_runs_native_steps() {
         CODE_0,
         STACK_TOP_0,
     );
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| {
             let lapic = control.lapic(0).unwrap();
@@ -517,14 +517,14 @@ fn s6_42d_the_pit_pic_source_wakes_the_bsp_and_cuts_guest_pit_writes_short() {
     assert!(host_install_vcpu(&mut board, 1, ap));
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         HostParallelConfig {
             budget: BUDGET,
             ..host_config(true)
         },
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -573,11 +573,11 @@ fn s6_42d_cpl0_host_services_com1_and_charges_pit_and_pm_port_ticks() {
     install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
     let region = SharedJitRegion::new(1, 4).unwrap();
     let quantum = quantum_of(&region, 1);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(true),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -603,11 +603,11 @@ fn s6_42d_port_ticks_from_two_host_workers_are_charged_once() {
     install(&mut board, 1, &program, CODE_1, STACK_TOP_1);
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(true),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -669,14 +669,14 @@ fn s6_42d_acpi_stop_retires_the_out_and_preserves_the_board_stop_reason() {
         for first_run in [true, false] {
             let region = SharedJitRegion::new(2, 4).unwrap();
             let quantum = quantum_of(&region, 2);
-            let (report, ()) = run_host_threads_with_nmi_paging(
+            let (report, ()) = run_accounted_host_threads(
                 &mut board,
                 HostParallelConfig {
                     budget,
                     ..host_config(true)
                 },
                 &quantum.nmi_paging(),
-                &|call| quantum.run(call),
+                &|call| quantum.run_accounted(call),
                 &|_| quantum.thread_exit(),
                 |control| assert!(control.wait_finished(WAIT)),
             )
@@ -911,7 +911,7 @@ fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend
     }
     let region = SharedJitRegion::new(vcpus, 4).unwrap();
     let quantum = quantum_of(&region, vcpus).with_write_log();
-    let (report, stopped) = run_host_threads_with_nmi_paging(
+    let (report, stopped) = run_accounted_host_threads(
         &mut board,
         host_config(true),
         &quantum.nmi_paging(),
@@ -926,7 +926,7 @@ fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend
                     contender_polls.fetch_add(1, Ordering::Release);
                     (call.stop)()
                 };
-                return quantum.run(HostQuantumCall {
+                return quantum.run_accounted(HostQuantumCall {
                     nvme_only: true,
                     stop: &mut counted_stop,
                     board_irq: call.board_irq.reborrow(),
@@ -934,9 +934,9 @@ fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend
                 });
             }
             if !halted || call.nvme_only {
-                return quantum.run(call);
+                return quantum.run_accounted(call);
             }
-            let stopped = quantum.run(HostQuantumCall {
+            let stopped = quantum.run_accounted(HostQuantumCall {
                 state: &mut *call.state,
                 consecutive_faults: &mut *call.consecutive_faults,
                 stop: &mut *call.stop,
@@ -955,10 +955,16 @@ fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend
                     u64::from(DEPTH - 1),
                 )
                 .unwrap();
-            let continuation = quantum.run(HostQuantumCall {
-                nvme_only: true,
-                ..call
-            })?;
+            let continuation = quantum
+                .run_accounted(HostQuantumCall {
+                    nvme_only: true,
+                    ..call
+                })
+                .map_err(|mut failure| {
+                    failure.retired += stopped.retired;
+                    failure.device_ns = failure.device_ns.saturating_add(stopped.device_ns);
+                    failure
+                })?;
             assert_eq!(continuation.retired, 0);
             assert_eq!(
                 continuation.exit,
@@ -1083,7 +1089,7 @@ fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
         install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
         let region = SharedJitRegion::new(1, 4).unwrap();
         let quantum = quantum_of(&region, 1).with_write_log();
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             HostParallelConfig {
                 budget,
@@ -1092,7 +1098,7 @@ fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
             &quantum.nmi_paging(),
             &|mut call| {
                 if !stop_at_doorbell {
-                    return quantum.run(call);
+                    return quantum.run_accounted(call);
                 }
                 let bus = call.bus;
                 let poll = &mut *call.stop;
@@ -1108,7 +1114,7 @@ fn s6_42d_the_host_services_real_nvme_dma_before_the_next_guest_step() {
                     }
                     stopped
                 };
-                quantum.run(HostQuantumCall {
+                quantum.run_accounted(HostQuantumCall {
                     stop: &mut poll_with_reset,
                     board_irq: call.board_irq.reborrow(),
                     ..call
@@ -1227,14 +1233,14 @@ fn s6_42d_nvme_intx_reaches_a_guest_handler_and_clears_after_cq_head_and_eoi() {
     install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
     let region = SharedJitRegion::new(1, 4).unwrap();
     let quantum = quantum_of(&region, 1);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         HostParallelConfig {
             budget: 100,
             ..host_config(true)
         },
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -1296,11 +1302,11 @@ fn s6_42c_a_one_shot_timer_is_delivered_once() {
     ]
     .concat();
     install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| {
             assert!(
@@ -1354,11 +1360,11 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
         let quantum = quantum_of(&region, 1);
         let mut board = board(1);
         install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             host_config(false),
             &quantum.nmi_paging(),
-            &|call| quantum.run(call),
+            &|call| quantum.run_accounted(call),
             &|_| quantum.thread_exit(),
             |control| {
                 assert!(
@@ -1414,11 +1420,11 @@ fn s6_42c_a_guest_page_fault_is_delivered_through_the_guest_idt() {
         base_state.gpr[Register::Rbx as usize] = UNMAPPED;
         put(&mut board, CODE_0, &[0x48, 0x8B, 0x03]);
         assert!(host_install_vcpu(&mut board, 0, base_state));
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             host_config(false),
             &quantum.nmi_paging(),
-            &|call| quantum.run(call),
+            &|call| quantum.run_accounted(call),
             &|_| quantum.thread_exit(),
             |control| {
                 assert!(
@@ -1483,6 +1489,54 @@ fn atomic_host_step(
 }
 
 #[test]
+fn a_native_atomic_prefix_is_charged_when_the_following_instruction_is_refused() {
+    let _guard = jit_guard();
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xf0, 0xff, 0x03, 0xf1]); // LOCK INC dword [RBX]; unsupported
+    put_u64(&mut board, DATA, MARKER);
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rbx as usize] = DATA;
+    assert!(host_install_vcpu(&mut board, 0, state));
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let start_ns = board.clock().now_ns();
+    let (report, ()) = run_accounted_host_threads(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| quantum.run_accounted(call),
+        &|_| quantum.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            &report.finished,
+            HostParallelFinish::Error { cpu: 0, message }
+                if message.contains("the interpreter refused the instruction")
+        ),
+        "{report:?}; {:?}",
+        quantum.last_failure()
+    );
+    let stats = quantum.stats(0);
+    assert_eq!(stats.atomic_jit_steps, 1, "{stats:?}");
+    assert_eq!(stats.retired_jit, 1);
+    assert_eq!(stats.retired_interpreter, 0);
+    assert_eq!(board.state().rip, CODE_0 + 3);
+    assert_eq!(
+        board
+            .bus_mut()
+            .atomic_inline_memory()
+            .load_u64(GuestPhysicalAddress::new(DATA))
+            .unwrap(),
+        MARKER + 1
+    );
+    assert_eq!(report.retired, [1]);
+    assert_eq!(report.calls, [1]);
+    assert_eq!(board.clock().now_ns() - start_ns, 1);
+}
+
+#[test]
 fn s6_42d_parallel_host_quantum_without_a_part_executes_in_the_interpreter() {
     let _guard = jit_guard();
     let mut board = board(1);
@@ -1496,7 +1550,7 @@ fn s6_42d_parallel_host_quantum_without_a_part_executes_in_the_interpreter() {
     state.gpr[Register::Rbx as usize] = DATA;
     assert!(host_install_vcpu(&mut board, 0, state));
     let quantum = JitHostQuantum::new(vec![None], vec![config()], RFLAGS_DEFINED).with_cpl0_set();
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = od_machine::run_host_threads_with_nmi_paging(
         &mut board,
         host_config(true),
         &quantum.nmi_paging(),
@@ -1671,14 +1725,14 @@ fn s6_42d_lock_retires_in_sti_shadow_before_a_pending_irq() {
     lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
     assert_eq!(lapic.vector_state(VECTOR_IRQ), (true, false));
 
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         HostParallelConfig {
             budget: 16,
             ..host_config(true)
         },
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -1754,14 +1808,14 @@ fn s6_42d_page_fault_ends_sti_shadow_without_losing_the_pending_irq() {
         let lapic = board.local_apic_of(0).unwrap();
         lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
 
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             HostParallelConfig {
                 budget: 64,
                 ..host_config(true)
             },
             &quantum.nmi_paging(),
-            &|call| quantum.run(call),
+            &|call| quantum.run_accounted(call),
             &|_| quantum.thread_exit(),
             |control| assert!(control.wait_finished(WAIT)),
         )
@@ -1806,14 +1860,14 @@ fn s6_42d_repeated_faults_share_one_limit_across_interpreter_and_jit() {
     guest.gpr[Register::Rbx as usize] = UNMAPPED;
     assert!(host_install_vcpu(&mut board, 0, guest));
 
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         HostParallelConfig {
             budget: 16,
             ..host_config(true)
         },
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -1888,11 +1942,11 @@ fn s6_42d_native_atomic_fault_reaches_the_guest_idt_and_restarts_once() {
         let mut cpu = state(CODE_0, STACK_TOP_0);
         cpu.gpr[Register::Rbx as usize] = address;
         assert!(host_install_vcpu(&mut board, 0, cpu));
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             host_config(true),
             &quantum.nmi_paging(),
-            &|call| quantum.run(call),
+            &|call| quantum.run_accounted(call),
             &|_| quantum.thread_exit(),
             |control| {
                 assert!(control.wait_finished(WAIT));
@@ -1933,14 +1987,14 @@ fn s6_42d_fault_delivery_keeps_the_original_fault_when_its_frame_changes_the_des
             before.gpr[Register::Rbx as usize] = address;
             assert!(host_install_vcpu(&mut board, 0, before.clone()));
 
-            let (report, ()) = run_host_threads_with_nmi_paging(
+            let (report, ()) = run_accounted_host_threads(
                 &mut board,
                 HostParallelConfig {
                     budget: 16,
                     ..host_config(true)
                 },
                 &quantum.nmi_paging(),
-                &|call| quantum.run(call),
+                &|call| quantum.run_accounted(call),
                 &|_| quantum.thread_exit(),
                 |control| assert!(control.wait_finished(WAIT)),
             )
@@ -2032,11 +2086,11 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
         for (cpu, top) in [(0, STACK_TOP_0), (1, STACK_TOP_1)] {
             assert!(host_install_vcpu(&mut board, cpu, state(CODE_0, top)));
         }
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             host_config(true),
             &quantum.nmi_paging(),
-            &|call| quantum.run(call),
+            &|call| quantum.run_accounted(call),
             &|_| quantum.thread_exit(),
             |control| {
                 assert!(control.wait_finished(WAIT), "the counters do not finish");
@@ -2076,12 +2130,12 @@ fn s6_42c_a_guest_split_lock_passes_the_gate_of_the_host_quantum() {
         for (cpu, top) in [(0, STACK_TOP_0), (1, STACK_TOP_1)] {
             assert!(host_install_vcpu(&mut board, cpu, state(CODE_0, top)));
         }
-        let (report, ()) = run_host_threads_with_nmi_paging(
+        let (report, ()) = run_accounted_host_threads(
             &mut board,
             host_config(true),
             &quantum.nmi_paging(),
             &|call| {
-                quantum.run(HostQuantumCall {
+                quantum.run_accounted(HostQuantumCall {
                     gate: HostSplitGate::none(),
                     ..call
                 })
@@ -2206,11 +2260,11 @@ fn s6_42d_mov_cr3_changes_native_code_data_and_the_worker_nmi_root() {
     assert!(host_install_vcpu(&mut board, 0, bsp));
     let region = SharedJitRegion::new(2, 4).unwrap();
     let quantum = quantum_of(&region, 2);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| {
             assert!(
@@ -2295,7 +2349,7 @@ fn s6_42d_irq_resolves_its_descriptor_after_the_other_worker_drains() {
     let lapic = board.local_apic_of(0).unwrap();
     lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
     let peer_entered = AtomicBool::new(false);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(true),
         &quantum.nmi_paging(),
@@ -2329,7 +2383,7 @@ fn s6_42d_irq_resolves_its_descriptor_after_the_other_worker_drains() {
                 );
                 std::thread::yield_now();
             }
-            quantum.run(call)
+            quantum.run_accounted(call)
         },
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
@@ -2375,11 +2429,11 @@ fn s6_42d_irq_does_not_overwrite_a_descriptor_changed_by_its_frame() {
     let lapic = board.local_apic_of(0).unwrap();
     lapic.request_fixed_edge(VECTOR_IRQ).unwrap();
 
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| assert!(control.wait_finished(WAIT)),
     )
@@ -2416,11 +2470,11 @@ fn s6_42c_an_nmi_is_delivered_through_the_root_named_for_the_vcpu() {
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
     put_u64(&mut board, GDT_AT + 8, 0x00AF_9A00_0000_FFFF);
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| {
             assert!(
@@ -2469,7 +2523,7 @@ fn s6_42d_a_native_stop_for_an_nmi_returns_to_the_worker_boundary() {
     assert!(host_install_vcpu(&mut board, 0, bsp));
     let at_poll = AtomicBool::new(false);
 
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
@@ -2520,11 +2574,11 @@ fn s6_42d_an_nmi_uses_the_host_quantums_efer_for_the_idt_walk() {
     )
     .with_cpl0_set();
     let mut board = nmi_board();
-    let (report, handler_ran) = run_host_threads_with_nmi_paging(
+    let (report, handler_ran) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &quantum.nmi_paging(),
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| control.wait_until(WAIT, || cell(control, COUNTER_NMI) != 0),
     )
@@ -2560,11 +2614,11 @@ fn s6_42c_an_nmi_without_a_root_fails_the_run_explicitly() {
     let quantum = quantum_of(&region, 2);
     let mut board = nmi_board();
     queue_nmi_from_ap(board.bus_mut());
-    let (report, ()) = run_host_threads_with_nmi_paging(
+    let (report, ()) = run_accounted_host_threads(
         &mut board,
         host_config(false),
         &[None, None],
-        &|call| quantum.run(call),
+        &|call| quantum.run_accounted(call),
         &|_| quantum.thread_exit(),
         |control| {
             assert!(

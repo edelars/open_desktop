@@ -273,11 +273,12 @@ pub use page_walk::{
 };
 
 pub use host_parallel::{
-    HostBoardIrqSource, HostCpl0Step, HostDeviceServices, HostIrqBoundary, HostParallelConfig,
-    HostParallelControl, HostParallelFinish, HostParallelReport, HostQuantumCall, HostQuantumExit,
-    HostQuantumFn, HostQuantumResult, HostSetStepReport, HostSplitGate, HostStopError,
-    HostStopProof, HostThreadExitFn, host_deliver_pending_irq, host_install_vcpu,
-    host_parallel_board, host_parallel_board_with_nvme, run_host_set_step, run_host_threads,
+    AccountedHostQuantumFn, HostBoardIrqSource, HostCpl0Step, HostDeviceServices, HostIrqBoundary,
+    HostParallelConfig, HostParallelControl, HostParallelFinish, HostParallelReport,
+    HostQuantumCall, HostQuantumExit, HostQuantumFailure, HostQuantumFn, HostQuantumResult,
+    HostSetStepReport, HostSplitGate, HostStopError, HostStopProof, HostThreadExitFn,
+    host_deliver_pending_irq, host_install_vcpu, host_parallel_board,
+    host_parallel_board_with_nvme, run_accounted_host_threads, run_host_set_step, run_host_threads,
     run_host_threads_with_nmi_paging,
 };
 #[cfg(feature = "lock-wait-metrics")]

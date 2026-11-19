@@ -2250,7 +2250,7 @@ mod tests {
         mut call: od_machine::HostQuantumCall<'_>,
         at_poll: &AtomicBool,
         timeout: std::time::Duration,
-    ) -> Result<od_machine::HostQuantumResult, &'static str> {
+    ) -> Result<od_machine::HostQuantumResult, od_machine::HostQuantumFailure> {
         let byte = call
             .native_stop
             .expect("the worker supplies a native STOP byte");
@@ -2269,7 +2269,7 @@ mod tests {
             }
             requested
         };
-        quantum.run(od_machine::HostQuantumCall {
+        quantum.run_accounted(od_machine::HostQuantumCall {
             stop: &mut delay_first_poll,
             board_irq: call.board_irq.reborrow(),
             ..call
