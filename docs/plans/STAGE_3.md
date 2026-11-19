@@ -2616,6 +2616,7 @@ guest_fault_requires_pending` проверяет допустимые отчёт
 границ. Самопроверка стенда требует каждую запись и отклоняет результат
 `ignored` даже при успешном коде выхода Cargo. См.
 [протокол тестирования](../testing/JIT.md#s3-27-local-fault-boundary-regressions).
+Все три проверки и S3-29e прошли в [локальном прогоне из 348 шагов](../reports/STAGE_3_REPORT.md#local-fault-boundary-regression-run-2026-11-18).
 
 #### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
 

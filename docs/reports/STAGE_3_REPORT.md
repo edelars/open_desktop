@@ -910,6 +910,30 @@ The full VMHost process selector, physical x86, Mac mini, performance,
 owner-backed and Stage 2 suites have status `not_run` in this summary.
 Final S3-41 acceptance remains open.
 
+### Local fault boundary regression run, 2026-11-18
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only` on macOS 26.7.1 ARM64. All 348 selected steps passed, and 40
+unselected steps retained `not_run`. This includes 154 harness self-tests,
+330 exact Rust gates and all 14 local VMHost RESULT steps. The three S3-27
+fault-boundary gates and the S3-29e coordinator regression each ran once
+and passed. The harness self-test step took 115.067 seconds against its
+600-second timeout. A prior full local run took 124.931 seconds in the same
+step, beyond the former 120-second limit. Both runs preserved their source
+fingerprints. [ISSUE-050](../KNOWN_ISSUES.md#issue-050) is closed.
+
+The saved run is `stage3-20261118-235652-df63ad5f87` under
+`work/stage3-harness/`, at source revision
+`899e1decc80a7ff7902669ef5e30436bb7c2a293`.
+The tree fingerprint at start and finish was
+`fc9a37057387ad37eecf6d07d661d9e8a5f3264aa24e7d6b485f6c10ef6485b6`.
+The input manifest SHA-256 is
+`c6566f8daf0c569ecd517345f41530b77020b1e32e2e28aaa42fc80da42aafde`.
+The summary SHA-256 is
+`1a07d43f085b3cee67c24de4df716777cd34e0a614efddeb2f151dbc120c9685`.
+Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
+remains open.
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced

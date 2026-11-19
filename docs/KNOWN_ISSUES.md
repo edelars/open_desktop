@@ -2139,14 +2139,14 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 <a id="issue-050"></a>
 
-### ISSUE-050 — Stage 3 local harness self-tests exceed their bounded timeout
+### ISSUE-050 (закрыто) — Stage 3 local harness self-tests exceed their bounded timeout
 
 - **Дата обнаружения:** 2026-11-03.
 - **Компонент:** `tests/cpu/stage3_harness.py`, mandatory `harness_self_tests` step and `tests/cpu/test_stage3_harness.py` temporary fixtures.
-- **Статус:** в работе; timeout raised to 600 seconds, test fixtures moved below ignored `work/stage3-harness/`, and primary failure preservation now has a focused regression test. Full local-suite rerun remains unverified.
+- **Статус:** закрыта. Повторные полные локальные прогоны подтвердили, что самопроверки завершаются в пределах 600 секунд и не меняют отпечаток исходников.
 - **Суть и последствия:** `python3 tests/cpu/stage3_harness.py --suite local` stopped before the selected local suites because its required self-test step had a 120-second timeout. The 2026-11-03 summary (`stage3-20261103-123052-8fa49da8df`) records `returncode: null`, 138.722 seconds including cleanup/fingerprint work, and output ending during the 60th self-test. Termination left a temporary `run/logs` tree at repository root, so the final source fingerprint also changed and masked the timeout as the reported failure.
 - **Основание и результат:** deleting only that generated temporary tree restored the exact starting source fingerprint. A standalone self-test invocation exceeded the context tool's 300-second RPC limit without a summary. The follow-up raises the harness step timeout to 600 seconds, routes temporary test roots under ignored `work/`, and preserves the original timeout if fingerprint comparison itself fails. The focused timeout/fingerprint test, Python compilation, and diff whitespace check passed; independent Sol/high review found no remaining issue. A post-fix full-local rerun attempt exceeded a 240-second context RPC window without a final summary; its result is unconfirmed.
-- **Следующий шаг:** rerun the bounded local suite in an execution session that can observe the full self-test step and final summary; confirm the new timeout and stable source fingerprint before updating S3-41 acceptance. Mini and physical-x86 acceptance remain separate.
+- **Повторная проверка:** в `stage3-20261118-231721-cf43a57691` прошли 153 самопроверки, шаг занял 124.931 секунды, итог `local_only` с 345 успешными шагами. В `stage3-20261118-235652-df63ad5f87` прошли 154 самопроверки за 115.067 секунды по таймеру стенда, итог `local_only` с 348 успешными шагами. Начальный и конечный отпечатки совпали в обоих прогонах. См. [отчёт этапа](reports/STAGE_3_REPORT.md#local-fault-boundary-regression-run-2026-11-18).
 
 <a id="issue-051"></a>
 
