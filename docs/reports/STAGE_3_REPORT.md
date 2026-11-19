@@ -1119,6 +1119,14 @@ The estimated crossover for the current build is 34–44 calls
 under unchanged residency.
 [Matched report and replay](STAGE_3_S3-35h_S3-36k_2026-11-19.md)
 
+S3-40m measured two ordinary interpreter steps and two decodes
+on the same S3-34a inputs used for the whole-call slowdown. The
+current/historical ratio stayed above four for each control.
+A current-build probe bound to empty execution profiles reduced
+the paired run time by about 26%. The decoder and remaining
+execution cost still require localization.
+[Interpreter controls and ISSUE-521 evidence](STAGE_3_S3-40m_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

@@ -1481,6 +1481,16 @@ runs the same frozen S3-34a inputs. Each signed revision contributes
 ordered callbacks and exact cache counters.
 [Report and reproduction](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md)
 
+### S3-40m. Interpreter timing controls for the S3-34a corpus
+
+Matched release builds run the same complete interpreter call,
+two `step` calls and two decoder calls over the same 2,400 inputs.
+The current build adds an empty-profile probe. Four rounds share
+fixed counts, alternate revision order and rotate timing sides.
+The artifact preserves profile construction, architectural parity
+checks and the raw intervals.
+[Report and reproduction](../reports/STAGE_3_S3-40m_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
