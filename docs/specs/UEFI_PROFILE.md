@@ -286,6 +286,16 @@ NULL GUID завершает список. Пустой пакет устано�
 `EFI_INVALID_PARAMETER` при проверке пакета.
 [UEFI 2.11, §7.3.8](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-locatedevicepath), [UEFI 2.11, §10.3.1](https://uefi.org/sites/default/files/resources/UEFI_Spec_Final_2.11.pdf).
 
+Прошивка публикует `EFI_DEVICE_PATH_UTILITIES_PROTOCOL` на отдельном
+handle. Доступны все восемь функций §10.5. Пути на входе и в результате
+ограничены 64 КиБ. Копии и новые узлы выделяются в `BootServicesData`
+и освобождаются вызывающим через `FreePool`. `GetNextDevicePathInstance`
+возвращает отдельный экземпляр с `End Entire`, сохраняет входные байты
+и продвигает указатель только после выделения. Пустой экземпляр
+представлен четырёхбайтным `End Entire`. `CreateDeviceNode` обнуляет
+полезные байты и записывает заголовок.
+[UEFI 2.11, §10.5](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html#device-path-utilities-protocol).
+
 ### События и TPL
 
 Диагностическая Boot Services поддерживает до 64 событий, включая

@@ -2,6 +2,8 @@
 
 use crate::uefi::guid::Guid;
 
+pub mod utilities;
+
 pub const DEVICE_PATH_PROTOCOL_GUID: Guid = Guid {
     data1: 0x0957_6e91,
     data2: 0x6d3f,

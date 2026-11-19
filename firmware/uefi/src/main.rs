@@ -230,6 +230,10 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_configuration_services(system_pointer);
     verify_watchdog_services(&system, fixed_hardware.is_some());
     verify_service_boundaries(&system);
+    // SAFETY: the BSP owns the initialized Boot Services registry.
+    if unsafe { od_firmware::device_path::utilities::install() } != Status::SUCCESS {
+        stop(STOP_BOOT_SERVICES, 67);
+    }
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
