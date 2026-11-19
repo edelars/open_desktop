@@ -28926,6 +28926,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0x63,
+            Operation::Extend {
+                dst,
+                src: Operand::Register(src),
+                signed: true,
+            },
+        ) => dst.size() == OperandSize::Qword && src.size() == OperandSize::Dword,
         // S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8) with a memory source only, no REX.W; the
         // register form decodes to a register source and stays refused with `0xb6`, as do
         // `REX.W 0F B6` (MOVZX r64, r/m8), `0F B7` (word source) and `0F BE`/`BF` (MOVSX).

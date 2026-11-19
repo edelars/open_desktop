@@ -2143,6 +2143,41 @@ fn cpl3_addr32_direct_call_uses_full_rip_and_rsp() {
 }
 
 #[test]
+fn cpl3_movsxd_extends_only_the_source_dword_to_a_qword_register() {
+    let mut initial = user_state();
+    initial.gpr[Register::Rsi as usize] = 0xdead_beef_8000_0001;
+    initial.gpr[Register::R14 as usize] = 0xdead_beef_7fff_ffff;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    for (code, destination, value) in [
+        ([0x48, 0x63, 0xc6], Register::Rax, 0xffff_ffff_8000_0001),
+        ([0x4d, 0x63, 0xc6], Register::R8, 0x7fff_ffff),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(&code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        let mut expected = initial.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[destination as usize] = value;
+        assert_eq!(state, expected);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+    for code in [&[0x63, 0xc6][..], &[0x66, 0x63, 0xc6], &[0x48, 0x63, 0x06]] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x63 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
 fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
     let mut initial = user_state();
     initial.gpr[Register::Rsp as usize] = 0x0000_7fff_abcd_123f;
