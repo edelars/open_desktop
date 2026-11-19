@@ -168,13 +168,17 @@ impl EventRegistry {
 
     fn signal_at(&mut self, index: usize) {
         if let Some(group) = self.entries[index].and_then(|entry| entry.group) {
-            for index in 0..MAX_EVENTS {
-                if self.entries[index].is_some_and(|entry| entry.group == Some(group)) {
-                    self.signal_one(index);
-                }
-            }
+            self.signal_group(group);
         } else {
             self.signal_one(index);
+        }
+    }
+
+    pub(super) fn signal_group(&mut self, group: Guid) {
+        for index in 0..MAX_EVENTS {
+            if self.entries[index].is_some_and(|entry| entry.group == Some(group)) {
+                self.signal_one(index);
+            }
         }
     }
 

@@ -186,12 +186,16 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         ptr::addr_of_mut!(boot),
     );
     system.update_crc32();
+    let system_pointer = ptr::addr_of_mut!(system);
+    // SAFETY: the table stays on the live boot stack through every service call.
+    unsafe { od_firmware::bs::attach_system_table(system_pointer) };
     verify_boot_services(&system);
     verify_memory_services(&system, key as usize);
     verify_protocol_services(&system);
     verify_event_services(&system);
     verify_protocol_notify(&system);
     verify_timer_services(&system, handoff.tsc_hz());
+    verify_configuration_services(system_pointer);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -1207,6 +1211,162 @@ fn verify_timer_services(system: &SystemTable, tsc_hz: u64) {
         }
     }
     com1_write(b"OD-FW S7-05 boot timers and waits verified\r\n");
+}
+
+const DIAGNOSTIC_CONFIGURATION: Guid = Guid {
+    data1: DIAGNOSTIC_PROTOCOL.data1 + 5,
+    ..DIAGNOSTIC_PROTOCOL
+};
+const DIAGNOSTIC_CONFIGURATION_SECOND: Guid = Guid {
+    data1: DIAGNOSTIC_PROTOCOL.data1 + 6,
+    ..DIAGNOSTIC_PROTOCOL
+};
+static DIAGNOSTIC_CONFIGURATION_PAYLOAD: u64 = 0x4f44_5f43_4f4e_4647;
+
+struct ConfigurationProbe {
+    system: *mut SystemTable,
+    expected_table: *mut c_void,
+    expected_count: usize,
+    calls: usize,
+}
+
+unsafe extern "efiapi" fn notify_configuration_change(_: Event, context: *mut c_void) {
+    let probe = context.cast::<ConfigurationProbe>();
+    unsafe {
+        let system = ptr::addr_of!((*probe).system).read();
+        let expected = ptr::addr_of!((*probe).expected_table).read();
+        let expected_count = ptr::addr_of!((*probe).expected_count).read();
+        let (entries, count) = (&*system).configuration_tables();
+        if entries.is_null() || count != expected_count {
+            stop(STOP_BOOT_SERVICES, 50);
+        }
+        let first = entries.read();
+        if expected.is_null() {
+            if first.vendor_guid != DIAGNOSTIC_CONFIGURATION_SECOND {
+                stop(STOP_BOOT_SERVICES, 50);
+            }
+        } else if first.vendor_guid != DIAGNOSTIC_CONFIGURATION || first.vendor_table != expected {
+            stop(STOP_BOOT_SERVICES, 50);
+        }
+        let calls = ptr::addr_of!((*probe).calls).read();
+        ptr::addr_of_mut!((*probe).calls).write(calls + 1);
+    }
+}
+
+#[inline(never)]
+fn verify_configuration_services(system: *mut SystemTable) {
+    // SAFETY: the table lives on the boot stack. Short borrows end before
+    // calling services that mutate it. The probe stays live through CloseEvent.
+    unsafe {
+        let boot = ptr::addr_of!((*system).boot_services).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event_ex).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+        let install = ptr::addr_of!((*boot).install_configuration_table).read_volatile();
+        let get_map = ptr::addr_of!((*boot).get_memory_map).read_volatile();
+        let current_crc = || ptr::addr_of!((*system).header.crc32).read();
+        let published = || (&*system).configuration_tables();
+        let mut snapshot = [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
+        let mut read_map = || {
+            let mut bytes = size_of_val(&snapshot);
+            let mut key = 0;
+            if get_map(
+                &mut bytes,
+                snapshot.as_mut_ptr(),
+                &mut key,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ) != Status::SUCCESS
+            {
+                stop(STOP_BOOT_SERVICES, 49);
+            }
+            (key, bytes / size_of::<MemoryDescriptor>())
+        };
+        let (initial_key, _) = read_map();
+        let initial_crc = current_crc();
+        let mut first_value = 17_u64;
+        let mut new_value = 42_u64;
+        let first = ptr::addr_of_mut!(first_value).cast();
+        let replacement = ptr::addr_of_mut!(new_value).cast();
+        let persistent = ptr::addr_of!(DIAGNOSTIC_CONFIGURATION_PAYLOAD)
+            .cast_mut()
+            .cast();
+        let mut event = ptr::null_mut();
+        let mut probe = ConfigurationProbe {
+            system,
+            expected_table: first,
+            expected_count: 1,
+            calls: 0,
+        };
+        if install(ptr::null(), first) != Status::INVALID_PARAMETER
+            || install(&DIAGNOSTIC_CONFIGURATION, ptr::null_mut()) != Status::NOT_FOUND
+            || create(
+                EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_configuration_change),
+                ptr::addr_of_mut!(probe).cast(),
+                &DIAGNOSTIC_CONFIGURATION,
+                &mut event,
+            ) != Status::SUCCESS
+            || install(&DIAGNOSTIC_CONFIGURATION, first) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 1
+        {
+            stop(STOP_BOOT_SERVICES, 49);
+        }
+        let (storage, count) = published();
+        let (runtime_key, _) = read_map();
+        if count != 1
+            || storage.is_null()
+            || initial_key.checked_add(1) != Some(runtime_key)
+            || install(&DIAGNOSTIC_CONFIGURATION_SECOND, persistent) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 1
+        {
+            stop(STOP_BOOT_SERVICES, 50);
+        }
+        let two_crc = current_crc();
+        ptr::addr_of_mut!(probe.expected_count).write(2);
+        ptr::addr_of_mut!(probe.expected_table).write(replacement);
+        if install(&DIAGNOSTIC_CONFIGURATION, replacement) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 2
+            || published() != (storage, 2)
+            || current_crc() != two_crc
+        {
+            stop(STOP_BOOT_SERVICES, 50);
+        }
+
+        ptr::addr_of_mut!(probe.expected_count).write(1);
+        ptr::addr_of_mut!(probe.expected_table).write(ptr::null_mut());
+        if install(&DIAGNOSTIC_CONFIGURATION, ptr::null_mut()) != Status::SUCCESS
+            || ptr::addr_of!(probe.calls).read() != 3
+            || install(&DIAGNOSTIC_CONFIGURATION_SECOND, ptr::null_mut()) != Status::SUCCESS
+            || published() != (ptr::null_mut(), 0)
+            || current_crc() != initial_crc
+            || install(&DIAGNOSTIC_CONFIGURATION, ptr::null_mut()) != Status::NOT_FOUND
+            || ptr::addr_of!(probe.calls).read() != 3
+            || close(event) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 51);
+        }
+        if install(&DIAGNOSTIC_CONFIGURATION_SECOND, persistent) != Status::SUCCESS
+            || published() != (storage, 1)
+            || storage.read().vendor_table != persistent
+        {
+            stop(STOP_BOOT_SERVICES, 52);
+        }
+
+        let (final_key, descriptors) = read_map();
+        let address = storage.addr() as u64;
+        if final_key != runtime_key
+            || !snapshot[..descriptors].iter().any(|descriptor| {
+                descriptor.memory_type == MemoryType::RUNTIME_SERVICES_DATA.raw()
+                    && descriptor.attribute & (1 << 63) != 0
+                    && descriptor.physical_start <= address
+                    && address < descriptor.physical_start + descriptor.number_of_pages * PAGE_BYTES
+            })
+        {
+            stop(STOP_BOOT_SERVICES, 52);
+        }
+    }
+    com1_write(b"OD-FW S7-05 configuration tables verified\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

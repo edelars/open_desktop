@@ -20496,7 +20496,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             };
         }
         // The firmware expands memset bytes and scales wide timer counts.
-        (operation @ (Operation::Imul {
+        operation @ (Operation::Imul {
             dst: destination,
             src: Operand::Register(source),
         }
@@ -20504,7 +20504,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             dst: destination,
             src: Operand::Register(source),
             ..
-        })) if firmware_boot_profile
+        }) if firmware_boot_profile
             && matches!(
                 (instruction.opcode.map, instruction.opcode.byte, operation),
                 (OpcodeMap::Escape0f, 0xaf, Operation::Imul { .. })

@@ -22,6 +22,24 @@
 контрактам соответствующих сервисов.
 [UEFI 2.11, §7.5](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#miscellaneous-boot-services).
 
+### Конфигурационные таблицы
+
+`InstallConfigurationTable` добавляет или заменяет запись GUID,
+а с NULL-указателем удаляет её. NULL GUID даёт `EFI_INVALID_PARAMETER`,
+удаление отсутствующей записи даёт `EFI_NOT_FOUND`. В массиве помещаются
+32 записи. При исчерпании памяти или мест для новой записи возвращается
+`EFI_OUT_OF_RESOURCES`. Адрес и жизненный цикл содержимого отдельной
+таблицы определяет вызывающий.
+
+Массив пар GUID и указателей создаётся при первой вставке в pool
+`EfiRuntimeServicesData`. Блок переиспользуется после удаления всех
+записей. Его выделение обновляет `MapKey`, последующие правки массива
+сохраняют его. При пустом массиве System Table содержит нулевой счётчик
+и NULL-указатель. При успешном изменении Boot Services публикует
+указатель, счётчик и CRC System Table. Затем она доставляет
+уведомления из группы с GUID таблицы по правилам TPL.
+[UEFI 2.11, §7.5.6](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-installconfigurationtable).
+
 ### Сервисы памяти
 
 В диагностической Boot Services подключены ещё пять функций. BSP передаёт

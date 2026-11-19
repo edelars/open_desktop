@@ -5,7 +5,7 @@ use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
 use crate::bs::event::{self, Event, EventNotify, Tpl};
-use crate::bs::{memory, misc, protocol};
+use crate::bs::{config_table, memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::device_path::DevicePathNode;
 use crate::mem::map::{MemoryDescriptor, MemoryType};
@@ -33,6 +33,7 @@ type EventOperation = unsafe extern "efiapi" fn(Event) -> Status;
 type SetTimer = unsafe extern "efiapi" fn(Event, u32, u64) -> Status;
 type WaitForEvent = unsafe extern "efiapi" fn(usize, *const Event, *mut usize) -> Status;
 type Stall = unsafe extern "efiapi" fn(usize) -> Status;
+type InstallConfigurationTable = unsafe extern "efiapi" fn(*const Guid, *mut c_void) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
 type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
 type GetMemoryMap = unsafe extern "efiapi" fn(
@@ -105,7 +106,7 @@ pub struct BootServices {
     pub register_protocol_notify: RegisterProtocolNotify,
     pub locate_handle: LocateHandle,
     pub locate_device_path: LocateDevicePath,
-    install_configuration_table: *const c_void,
+    pub install_configuration_table: InstallConfigurationTable,
     load_image: *const c_void,
     start_image: *const c_void,
     exit: *const c_void,
@@ -155,7 +156,7 @@ impl BootServices {
             register_protocol_notify: protocol::register_protocol_notify,
             locate_handle: protocol::locate_handle,
             locate_device_path: protocol::locate_device_path,
-            install_configuration_table: ptr::null(),
+            install_configuration_table: config_table::install_configuration_table,
             load_image: ptr::null(),
             start_image: ptr::null(),
             exit: ptr::null(),
@@ -235,6 +236,7 @@ impl RuntimeServices {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ConfigurationTable {
     pub vendor_guid: Guid,
     pub vendor_table: *mut c_void,
@@ -280,6 +282,16 @@ impl SystemTable {
             number_of_table_entries: 0,
             configuration_table: ptr::null_mut(),
         }
+    }
+
+    pub(crate) fn publish_configuration(&mut self, address: *mut ConfigurationTable, count: usize) {
+        self.configuration_table = address;
+        self.number_of_table_entries = count;
+        self.update_crc32();
+    }
+
+    pub const fn configuration_tables(&self) -> (*mut ConfigurationTable, usize) {
+        (self.configuration_table, self.number_of_table_entries)
     }
 
     pub fn update_crc32(&mut self) {
@@ -348,6 +360,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_handle), 176);
         assert_eq!(offset_of!(BootServices, locate_device_path), 184);
+        assert_eq!(offset_of!(BootServices, install_configuration_table), 192);
         assert_eq!(offset_of!(BootServices, open_protocol_information), 296);
         assert_eq!(offset_of!(BootServices, protocols_per_handle), 304);
         assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);
