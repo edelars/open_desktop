@@ -385,6 +385,7 @@ fn verify_protocol_services(system: &SystemTable) {
             stop(STOP_BOOT_SERVICES, 16);
         }
         verify_device_path(boot);
+        verify_protocol_batches(boot);
     }
     com1_write(b"OD-FW S7-05 Boot Services protocol registry verified\r\n");
 }
@@ -657,6 +658,94 @@ unsafe fn verify_device_path(boot: *const BootServices) {
             || uninstall(parent, &DEVICE_PATH_PROTOCOL_GUID, parent_path.cast()) != Status::SUCCESS
         {
             stop(STOP_BOOT_SERVICES, 30);
+        }
+    }
+}
+
+/// The BSP owns the live diagnostic table.
+#[inline(never)]
+unsafe fn verify_protocol_batches(boot: *const BootServices) {
+    static FIRST_PATH: [u8; 20] = [
+        1, 1, 6, 0, 0, 1, 0x7f, 1, 4, 0, 1, 1, 6, 0, 0, 2, 0x7f, 0xff, 4, 0,
+    ];
+    static OTHER_PATH: [u8; 20] = [
+        1, 1, 6, 0, 0, 1, 0x7f, 1, 4, 0, 1, 1, 6, 0, 0, 3, 0x7f, 0xff, 4, 0,
+    ];
+    let duplicate_path = FIRST_PATH;
+    let proposed = Guid {
+        data1: DIAGNOSTIC_PROTOCOL.data1 + 2,
+        ..DIAGNOSTIC_PROTOCOL
+    };
+    let first_guid = ptr::from_ref(&DIAGNOSTIC_PROTOCOL);
+    let proposed_guid = ptr::from_ref(&proposed);
+    let path_guid = ptr::from_ref(&DEVICE_PATH_PROTOCOL_GUID);
+    let first_path = FIRST_PATH.as_ptr().cast::<c_void>();
+    let other_path = OTHER_PATH.as_ptr().cast::<c_void>();
+    let marker = ptr::null::<c_void>();
+    let end = ptr::null::<Guid>();
+    unsafe {
+        let Some(install) =
+            ptr::addr_of!((*boot).install_multiple_protocol_interfaces).read_volatile()
+        else {
+            stop(STOP_BOOT_SERVICES, 32);
+        };
+        let Some(uninstall) =
+            ptr::addr_of!((*boot).uninstall_multiple_protocol_interfaces).read_volatile()
+        else {
+            stop(STOP_BOOT_SERVICES, 32);
+        };
+        let handle_protocol = ptr::addr_of!((*boot).handle_protocol).read_volatile();
+        let mut handle = ptr::null_mut();
+        if install(&mut handle, end) != Status::SUCCESS || !handle.is_null() {
+            stop(STOP_BOOT_SERVICES, 32);
+        }
+        if install(&mut handle, first_guid, marker, path_guid, first_path, end) != Status::SUCCESS
+            || handle.is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 33);
+        }
+        let mut found = ptr::null_mut();
+        if handle_protocol(handle, first_guid, &mut found) != Status::SUCCESS
+            || !found.is_null()
+            || handle_protocol(handle, path_guid, &mut found) != Status::SUCCESS
+            || found.cast_const() != first_path
+        {
+            stop(STOP_BOOT_SERVICES, 33);
+        }
+
+        let installed = handle;
+        if install(&mut handle, proposed_guid, marker, first_guid, marker, end)
+            != Status::INVALID_PARAMETER
+            || handle != installed
+            || handle_protocol(handle, proposed_guid, &mut found) != Status::UNSUPPORTED
+        {
+            stop(STOP_BOOT_SERVICES, 34);
+        }
+
+        let mut other = ptr::null_mut();
+        if install(
+            &mut other,
+            proposed_guid,
+            marker,
+            path_guid,
+            duplicate_path.as_ptr().cast::<c_void>(),
+            end,
+        ) != Status::ALREADY_STARTED
+            || !other.is_null()
+            || install(&mut other, path_guid, other_path, end) != Status::SUCCESS
+            || other.is_null()
+            || other == handle
+        {
+            stop(STOP_BOOT_SERVICES, 35);
+        }
+        if uninstall(handle, first_guid, marker, proposed_guid, marker, end)
+            != Status::INVALID_PARAMETER
+            || handle_protocol(handle, first_guid, &mut found) != Status::SUCCESS
+            || uninstall(handle, first_guid, marker, path_guid, first_path, end) != Status::SUCCESS
+            || handle_protocol(handle, first_guid, &mut found) != Status::INVALID_PARAMETER
+            || uninstall(other, path_guid, other_path, end) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 36);
         }
     }
 }

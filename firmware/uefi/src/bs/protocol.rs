@@ -4,7 +4,10 @@ use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::ffi::c_void;
 use core::ptr;
 
+mod multiple;
 mod query;
+
+pub use multiple::{INSTALL_MULTIPLE, InstallMultiple, UNINSTALL_MULTIPLE, UninstallMultiple};
 
 pub use query::{
     LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OpenProtocolInformationEntry, locate_device_path,
@@ -74,33 +77,13 @@ impl ProtocolRegistry {
         protocol: Guid,
         interface: *mut c_void,
     ) -> Result<Handle, Status> {
-        if !requested.is_null()
-            && (!self.known_handle(requested) || self.binding_index(requested, protocol).is_some())
-        {
-            return Err(Status::INVALID_PARAMETER);
-        }
-        let slot = self
-            .bindings
-            .iter_mut()
-            .find(|binding| binding.is_none())
-            .ok_or(Status::OUT_OF_RESOURCES)?;
-        let handle = if requested.is_null() {
-            let id = self
-                .last_handle
-                .checked_add(1)
-                .ok_or(Status::OUT_OF_RESOURCES)?;
-            self.last_handle = id;
-            // EFI handles are opaque. This token is never dereferenced or reissued.
-            ptr::without_provenance_mut(id)
-        } else {
-            requested
-        };
-        *slot = Some(Binding {
-            handle,
-            protocol,
-            interface,
-        });
-        Ok(handle)
+        self.install_bindings(
+            requested,
+            &[multiple::ProtocolPair {
+                protocol,
+                interface,
+            }],
+        )
     }
 
     fn existing_interface(

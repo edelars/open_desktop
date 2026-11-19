@@ -15,6 +15,12 @@ const END_INSTANCE: u8 = 0x01;
 const END_ENTIRE: u8 = 0xff;
 const MAX_PATH_BYTES: usize = 64 * 1024;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum EndAt {
+    FirstInstance,
+    EntirePath,
+}
+
 /// The packed header at the beginning of every device path node.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -30,10 +36,23 @@ pub struct DevicePathNode {
 /// A non-null path must provide readable, stable backing for the nodes it
 /// describes through the first End node, subject to the profile's scan cap.
 pub(crate) unsafe fn first_instance_extent(path: *const DevicePathNode) -> Option<usize> {
+    unsafe { raw_extent(path, EndAt::FirstInstance) }
+}
+
+/// Returns the complete length, including the final End Entire node.
+///
+/// # Safety
+/// A non-null path must provide readable, stable backing through End Entire,
+/// subject to the profile's scan cap.
+pub(crate) unsafe fn complete_extent(path: *const DevicePathNode) -> Option<usize> {
+    unsafe { raw_extent(path, EndAt::EntirePath) }.map(|offset| offset + HEADER_SIZE)
+}
+
+unsafe fn raw_extent(path: *const DevicePathNode, end_at: EndAt) -> Option<usize> {
     if path.is_null() {
         return None;
     }
-    extent(MAX_PATH_BYTES, |offset| {
+    extent(MAX_PATH_BYTES, end_at, |offset| {
         path.addr().checked_add(offset + HEADER_SIZE - 1)?;
         // SAFETY: the caller supplies a readable header at every node we visit.
         Some(unsafe { path.byte_add(offset).read() })
@@ -42,6 +61,7 @@ pub(crate) unsafe fn first_instance_extent(path: *const DevicePathNode) -> Optio
 
 fn extent(
     limit: usize,
+    end_at: EndAt,
     mut read_header: impl FnMut(usize) -> Option<DevicePathNode>,
 ) -> Option<usize> {
     let mut offset = 0;
@@ -56,8 +76,12 @@ fn extent(
             return None;
         }
         if node.node_type == END_TYPE {
-            return (length == HEADER_SIZE && matches!(node.subtype, END_INSTANCE | END_ENTIRE))
-                .then_some(offset);
+            if length != HEADER_SIZE || !matches!(node.subtype, END_INSTANCE | END_ENTIRE) {
+                return None;
+            }
+            if node.subtype == END_ENTIRE || end_at == EndAt::FirstInstance {
+                return Some(offset);
+            }
         }
         offset += length;
     }
@@ -68,14 +92,18 @@ mod tests {
     use super::*;
 
     fn parse(bytes: &[u8]) -> Option<usize> {
-        extent(bytes.len().min(MAX_PATH_BYTES), |offset| {
-            let header = bytes.get(offset..offset + HEADER_SIZE)?;
-            Some(DevicePathNode {
-                node_type: header[0],
-                subtype: header[1],
-                length: [header[2], header[3]],
-            })
-        })
+        extent(
+            bytes.len().min(MAX_PATH_BYTES),
+            EndAt::FirstInstance,
+            |offset| {
+                let header = bytes.get(offset..offset + HEADER_SIZE)?;
+                Some(DevicePathNode {
+                    node_type: header[0],
+                    subtype: header[1],
+                    length: [header[2], header[3]],
+                })
+            },
+        )
     }
 
     #[test]

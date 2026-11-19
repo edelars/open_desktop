@@ -103,8 +103,8 @@ pub struct BootServices {
     pub protocols_per_handle: ProtocolsPerHandle,
     pub locate_handle_buffer: LocateHandleBuffer,
     pub locate_protocol: LocateProtocol,
-    install_multiple_protocol_interfaces: *const c_void,
-    uninstall_multiple_protocol_interfaces: *const c_void,
+    pub install_multiple_protocol_interfaces: Option<protocol::InstallMultiple>,
+    pub uninstall_multiple_protocol_interfaces: Option<protocol::UninstallMultiple>,
     pub calculate_crc32: CalculateCrc32,
     pub copy_mem: CopyMem,
     pub set_mem: SetMem,
@@ -153,8 +153,8 @@ impl BootServices {
             protocols_per_handle: protocol::protocols_per_handle,
             locate_handle_buffer: protocol::locate_handle_buffer,
             locate_protocol: protocol::locate_protocol,
-            install_multiple_protocol_interfaces: ptr::null(),
-            uninstall_multiple_protocol_interfaces: ptr::null(),
+            install_multiple_protocol_interfaces: protocol::INSTALL_MULTIPLE,
+            uninstall_multiple_protocol_interfaces: protocol::UNINSTALL_MULTIPLE,
             calculate_crc32: misc::calculate_crc32,
             copy_mem: misc::copy_mem,
             set_mem: misc::set_mem,
@@ -324,6 +324,14 @@ mod tests {
         assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);
         assert_eq!(size_of::<protocol::OpenProtocolInformationEntry>(), 24);
         assert_eq!(offset_of!(BootServices, locate_protocol), 320);
+        assert_eq!(
+            offset_of!(BootServices, install_multiple_protocol_interfaces),
+            328
+        );
+        assert_eq!(
+            offset_of!(BootServices, uninstall_multiple_protocol_interfaces),
+            336
+        );
         assert_eq!(offset_of!(BootServices, calculate_crc32), 344);
         assert_eq!(offset_of!(BootServices, copy_mem), 352);
         assert_eq!(offset_of!(BootServices, set_mem), 360);
