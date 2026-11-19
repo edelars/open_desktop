@@ -37,11 +37,11 @@ def frame(kind, request_id, payload=b""):
     return MAGIC + struct.pack("<HHII", VERSION, kind, request_id, len(payload)) + payload
 
 
-def run_payload():
-    prefix = struct.pack("<IQ6Q", len(CODE), 2, 0x11, 0x22, 0x33, 0x44, 0, 0x202)
+def run_payload(code=CODE, *, budget=2, rip=0):
+    prefix = struct.pack("<IQ6Q", len(code), budget, 0x11, 0x22, 0x33, 0x44, rip, 0x202)
     if len(prefix) != 60:
         raise AssertionError("RUN prefix must be exactly 60 bytes")
-    return prefix + CODE
+    return prefix + code
 
 
 def read_exact(channel, length):
@@ -120,10 +120,18 @@ def fragmented_hello_and_run(vmhost):
         send_fragmented(channel, (hello[:5], hello[5:]))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "fragmented HELLO READY")
 
-        request = frame(RUN, 1, run_payload())
-        send_fragmented(channel, (request[:7], request[7:24], request[24:53], request[53:]))
+        # The last JNZ branches to itself. Its final displacement byte must
+        # reach the decoder before admission and determines the returned RIP.
+        code = bytes.fromhex("75 00") * 2047 + bytes.fromhex("75 fe")
+        entry_rip = 4094
+        request = frame(RUN, 1, run_payload(code, budget=1, rip=entry_rip))
+        send_fragmented(channel, (request[:7], request[7:24], request[24:53], request[53:-1]))
+        if select.select([channel], [], [], FRAGMENT_GAP_SECONDS)[0]:
+            raise RuntimeError("VMHost responded before receiving the final maximum RUN byte")
+        channel.sendall(request[-1:])
         expect_frame(channel, (RUN_ACK, 1, struct.pack("<I", 0)), "fragmented RUN ACK")
-        expect_frame(channel, (RESULT, 1, RUN_RESULT), "fragmented RUN RESULT")
+        expected = struct.pack("<6QIIQ", 0x11, 0x22, 0x33, 0x44, entry_rip, 0x202, 1, 0, 1)
+        expect_frame(channel, (RESULT, 1, expected), "fragmented maximum RUN RESULT")
 
         channel.close()
         channel = None
@@ -305,7 +313,7 @@ def main():
     stop_acks_survive_output_backpressure(args.vmhost)
     print(
         "VMHost control V1 smoke passed: fragmented/coalesced frames, "
-        "bounded EOF teardown, oversized length, backpressure"
+        "maximum RUN length, bounded EOF teardown, oversized length, backpressure"
     )
 
 

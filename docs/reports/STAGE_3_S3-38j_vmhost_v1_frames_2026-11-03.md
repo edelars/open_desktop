@@ -58,7 +58,9 @@ manifest self-test passed 1/1 with the updated marker.
 The traced build passed 20 consecutive runs. A signed test-only build that
 dropped one queued byte on each `EAGAIN` failed the recovery check after
 sending all 131072 request bytes and receiving 163799 of the expected
-163840 ACK bytes.
+163840 ACK bytes. A second signed test-only build kept the output limit but
+disabled read throttling. The same scenario failed with a broken pipe while
+writing to VMHost.
 
 `python3 tests/cpu/stage3_harness.py --suite vmhost-process` completed as
 `vmhost_process_only` with all 40 selected steps passed, including
@@ -76,3 +78,18 @@ Deterministic INVALID_STATE batch closure and an internal staging-memory
 bound still require separate evidence. The pressure phase starts in idle
 state. Completion of an active RUN while the socket is full needs separate
 process evidence. Physical x86 and Mac mini checks remain deferred.
+
+## Maximum-length fragmented RUN, 2026-11-19 UTC
+
+The focused process smoke now sends a 4156-byte RUN payload with 4096 code
+bytes across header and body fragments. The client withholds the final byte
+and checks for premature output. Once that byte arrives, the RUN executes the
+last `JNZ -2` from RIP 4094. The result must report RIP 4094, budget exhaustion
+and one retired instruction. The probe covers the largest legal RUN and
+crosses the 4096-byte socket read chunk. Internal staging size remains open.
+
+The updated smoke passed ten consecutive runs against the signed VMHost from
+`stage3-20261119-022002-cf975ae02b`. A scratch client fixture that sent `00`
+instead of the final `FE` failed the exact RESULT comparison. The process
+manifest self-test passed with the updated success marker. The previous
+40/40 process run predates this fixture change.
