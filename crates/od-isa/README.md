@@ -30,6 +30,11 @@ REX.W. Общий разбор операндов сохраняет поряд�
 приоритет ошибок fetch.
 [Проверки и замеры](../../docs/reports/STAGE_3_S3-40o_2026-11-19.md)
 
+S3-40t использует статически пустую конфигурацию в обычном
+`execute::run`. Настроенные пути передают свои значения в общие
+тела цикла и шага.
+[Проверки поведения, замеры и размер бинарников](../../docs/reports/STAGE_3_S3-40t_2026-11-19.md)
+
 S2-37a/b add two separate local-only scalar approximation instructions:
 register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
 `Binary32` references and update only the destination low dword; the rest of

@@ -1547,6 +1547,16 @@ Each of the two archives preserves 128 intervals and the measured
 step prologues.
 [Report and reproduction](../reports/STAGE_3_S3-40s_2026-11-19.md)
 
+### S3-40t. Empty-profile route and machine-code size
+
+Two standalone signed builds run the checked-memory, register,
+neighboring and configured XORPD controls. Four alternating process
+pairs share sweeps for each group. The archive retains digests of the
+complete outcomes and ordered effects, raw timings and section sizes
+for the benchmark and signed VMHost. The configured XORPD time range
+crosses parity.
+[Report and reproduction](../reports/STAGE_3_S3-40t_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

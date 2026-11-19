@@ -1226,6 +1226,14 @@ specialized step. An associated constant gave 0.700 and 0.699.
 Both choices retained state, RAM, STOP and budget parity on S3-34a.
 [Prototype evidence and reproduction](STAGE_3_S3-40s_2026-11-19.md)
 
+S3-40t adopted the statically empty profile route for ordinary
+`execute::run`. The standalone builds agreed across four groups of
+2,400 inputs. Ordinary-run groups improved in all matched process
+rounds. The configured XORPD range straddled parity. The benchmark
+`__text` grew by 150,528 bytes and signed VMHost `__text` shrank
+by 45,760 bytes. Current JIT and historical comparisons remain to be measured.
+[Control measurements and binary sizes](STAGE_3_S3-40t_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
