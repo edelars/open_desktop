@@ -52174,6 +52174,106 @@ fn firmware_boot_inc_dec_preserve_cf_and_its_definedness() {
 }
 
 #[test]
+fn firmware_boot_accepts_compiler_nop_padding_without_address_access() {
+    let code = [0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+    let mut expected = cpu.clone();
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_memory_indirect_call_checks_target_before_push() {
+    let next_rip = RIP + 6;
+    let disp = (DATA - next_rip) as u32;
+    let mut code = [0x00; 6];
+    code[..2].copy_from_slice(&[0xff, 0x15]);
+    code[2..].copy_from_slice(&disp.to_le_bytes());
+    const STACK_OFFSET: u64 = 0x100;
+    const TARGET: u64 = 0xffff_8000_0000_1234;
+    let stack_address = DATA + STACK_OFFSET - 8;
+    let stack_offset = stack_address as usize - DATA as usize + DATA_PHYSICAL;
+    let read_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    let write_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(stack_address),
+    };
+    let gp = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (target, read_error, write_error, exit) in [
+        (TARGET, None, None, PagedProbeExit::Retired),
+        (
+            TARGET,
+            Some(read_fault.clone()),
+            None,
+            PagedProbeExit::Fault(read_fault),
+        ),
+        (0x0000_8000_0000_1234, None, None, PagedProbeExit::Fault(gp)),
+        (
+            TARGET,
+            None,
+            Some(write_fault.clone()),
+            PagedProbeExit::Fault(write_fault),
+        ),
+    ] {
+        let can_write = read_error.is_none() && target == TARGET;
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8].copy_from_slice(&target.to_le_bytes());
+        memory.fail_read = read_error.map(MemoryError::Architectural);
+        memory.fail_write = write_error.map(MemoryError::Architectural);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + STACK_OFFSET;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        if retired {
+            expected.rip = TARGET;
+            expected.gpr[Register::Rsp as usize] = stack_address;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA, 8)]);
+        assert_eq!(memory.writes, usize::from(can_write));
+        let expected_value = if retired { next_rip } else { 0 };
+        assert_eq!(
+            memory.bytes[stack_offset..stack_offset + 8],
+            expected_value.to_le_bytes()
+        );
+    }
+}
+
+#[test]
 fn firmware_boot_cli_clears_only_if_and_keeps_base_and_sti_unsupported() {
     const IF: u64 = 1 << 9;
     for (code, firmware, exit) in [
@@ -53408,7 +53508,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
         (&[0x8a, 0x3c, 0x24][..], 0x8a),             // byte load
         (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
-        (&[0x66, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // prefixed NOP
+        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // FS override on NOP
         (&[0x0f, 0x18, 0x00][..], 0x18),             // PREFETCHNTA
         (&[0xc7, 0x54, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // reserved C7 /2
         (&[0x64, 0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // segment override on dword immediate store

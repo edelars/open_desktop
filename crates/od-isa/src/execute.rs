@@ -20397,13 +20397,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: compiler alignment pads use bare `0F 1F /0`. The decoder
-        // consumes the address bytes, and execution never reads the operand.
+        // S7-04: compiler alignment pads use `0F 1F /0`, optionally
+        // padded with operand-size and CS prefixes. No data access occurs.
         Operation::NopModrm
             if firmware_boot_profile
                 && instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0x1f
-                && instruction.prefixes == Prefixes::default() =>
+                && matches!(instruction.prefixes.segment, None | Some(0x2e))
+                && instruction.prefixes
+                    == (Prefixes {
+                        operand_override: instruction.prefixes.operand_override,
+                        segment: instruction.prefixes.segment,
+                        ..Prefixes::default()
+                    }) =>
         {
             state.rip = next_rip;
         }
@@ -22906,34 +22912,61 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: firmware and its helper use exact rel32 CALL encodings in
-        // this profile. Reuse CALL's canonical-target and push semantics.
-        Operation::Call { displacement }
-            if base_profile
-                && (firmware_boot_profile
-                    || matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad))
-                && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xe8
-                && instruction.length == 5
+        // S7-04: firmware also calls linked routines through qword pointers.
+        // The base profile keeps its exact rel32 forms.
+        operation @ (Operation::Call { .. } | Operation::IndirectCall { .. })
+            if instruction.opcode.map == OpcodeMap::Primary
                 && instruction.operand_size == OperandSize::Qword
-                && instruction.prefixes == Prefixes::default() =>
+                && match operation {
+                    Operation::Call { displacement } => {
+                        base_profile
+                            && (firmware_boot_profile
+                                || matches!(
+                                    displacement,
+                                    0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad
+                                ))
+                            && instruction.opcode.byte == 0xe8
+                            && instruction.length == 5
+                            && instruction.prefixes == Prefixes::default()
+                    }
+                    Operation::IndirectCall {
+                        operand: Operand::Memory(_),
+                    } => {
+                        firmware_boot_profile
+                            && instruction.opcode.byte == 0xff
+                            && instruction.address_size == OperandSize::Qword
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: instruction.prefixes.rex,
+                                    ..Prefixes::default()
+                                })
+                    }
+                    _ => false,
+                } =>
         {
-            let target = next_rip.wrapping_add_signed(i64::from(displacement));
-            if !canonical(target) {
-                let MemoryError::Architectural(fault) = general_protection() else {
-                    unreachable!()
+            let branch = (|| {
+                let target = match operation {
+                    Operation::Call { displacement } => {
+                        next_rip.wrapping_add_signed(i64::from(displacement))
+                    }
+                    Operation::IndirectCall { operand } => {
+                        read_operand(state, memory, context, next_rip, operand)?
+                    }
+                    _ => unreachable!("direct or indirect CALL"),
                 };
-                return result(PagedProbeExit::Fault(fault), 0);
-            }
-            if let Err(error) =
-                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)
-            {
-                return match error {
-                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
-                    error => result(PagedProbeExit::Backend(error), 0),
-                };
-            }
-            state.rip = target;
+                if !canonical(target) {
+                    return Err(general_protection());
+                }
+                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)?;
+                Ok(target)
+            })();
+            state.rip = match branch {
+                Ok(target) => target,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             return result(PagedProbeExit::Retired, 1);
         }
         // S7-04: exact `01 C0` doubles EAX using dword ADD semantics. The
