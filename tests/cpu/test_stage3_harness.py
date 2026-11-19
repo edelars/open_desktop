@@ -4881,7 +4881,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     "process_control_v1_frames",
                     "tests/system/vmhost_control_v1_frames_smoke.py",
                     "control_v1_frames",
-                    "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length",
+                    "VMHost control V1 smoke passed: fragmented/coalesced frames, "
+                    "bounded EOF teardown, oversized length, backpressure",
                 ),
                 (
                     "process_control_v1_stop_eof",

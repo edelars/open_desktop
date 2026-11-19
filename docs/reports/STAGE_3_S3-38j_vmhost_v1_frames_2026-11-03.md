@@ -38,11 +38,41 @@ Graphify refresh after the fixture edit timed out after 120 seconds and remains
 unconfirmed. SSH to the documented Mini endpoint timed out before remote
 commands or tests; M1 remains deferred by the user.
 
-## Remaining acceptance
+## Signed VMHost socket backpressure, 2026-11-19 UTC
 
-The focused process gate is confirmed on the current macOS ARM host. Full
-39-step VMHost process acceptance remains open. INVALID_STATE batch-closure
-evidence, completion races, backpressure, descriptor/lease cleanup, and
-unchanged V0 regressions remain open. Performance acceptance and owner/MMU
-acceptance also remain open. This result does not establish an internal
-staging-memory bound, Mini/physical-x86 acceptance, or full Stage 3 completion.
+On the local macOS ARM host, a traced build entered `send(MSG_DONTWAIT)` on
+a blocking AF_UNIX socket before the client resumed reading and returned only
+after reads resumed. V1 now enables `O_NONBLOCK` after sending READY, before
+entering the reactor. The traced build with the fix returned `EAGAIN` while
+the client withheld reads, leaving the reactor free to poll completion.
+
+The process gate checks the VMHost end's descriptor flags after the first RUN
+has completed. It then withholds reads while sending 8192 STOP frames and
+requires blocked client writes with ACKs pending. After resuming reads, it
+compares the entire stream of `NO_ACTIVE_RUN` ACKs, completes a second RUN and
+checks clean EOF teardown. The new gate rejected the signed baseline binary at
+`1204eb52305285a55ba233e81a5358c68c262408` because its V1 descriptor remained
+blocking. It passed on the signed traced build with the fix. The process
+manifest self-test passed 1/1 with the updated marker.
+
+The traced build passed 20 consecutive runs. A signed test-only build that
+dropped one queued byte on each `EAGAIN` failed the recovery check after
+sending all 131072 request bytes and receiving 163799 of the expected
+163840 ACK bytes.
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` completed as
+`vmhost_process_only` with all 40 selected steps passed, including
+`process_control_v1_frames` and `process_generated_fault`. The 351 unselected
+steps retained `not_run`. Run `stage3-20261119-022002-cf975ae02b` used
+base revision `1204eb52305285a55ba233e81a5358c68c262408` with the S3-38j
+changes and identical initial and final source fingerprints
+`35dfffa4959ea8b4150fe7d08ef3cc5f03071ccb7b353cae8d2c70dbc8e8820e`.
+The input manifest SHA-256 is
+`b894238551f874351b27aa3886886388a2bd42b0fcc559ca881eff337dd1053e`.
+The summary SHA-256 is
+`b0f9882b60550c9b0ed58741eaf654325a5f73e4ac6a84509c6940b5c0c4fb1b`.
+
+Deterministic INVALID_STATE batch closure and an internal staging-memory
+bound still require separate evidence. The pressure phase starts in idle
+state. Completion of an active RUN while the socket is full needs separate
+process evidence. Physical x86 and Mac mini checks remain deferred.

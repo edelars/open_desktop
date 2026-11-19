@@ -1713,7 +1713,8 @@ PROCESS_SUCCESS_MARKERS = {
         "preserves binding and RUN ID high-watermark"
     ),
     "control_v1_frames": (
-        "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length"
+        "VMHost control V1 smoke passed: fragmented/coalesced frames, "
+        "bounded EOF teardown, oversized length, backpressure"
     ),
     "control_v1_stop_eof": (
         "VMHost control V1 smoke passed: STOP isolation and bounded active-run EOF teardown"

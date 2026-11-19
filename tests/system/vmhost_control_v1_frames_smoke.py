@@ -2,6 +2,9 @@
 """Exercise bounded control V1 framing and admission in one VMHost process."""
 
 import argparse
+import fcntl
+import os
+import select
 import socket
 import struct
 import subprocess
@@ -12,11 +15,16 @@ import time
 
 MAGIC = b"ODCP"
 VERSION = 1
-HELLO, READY, RUN, RUN_ACK, ERROR, RESULT = 1, 2, 3, 4, 255, 7
+HELLO, READY, RUN, RUN_ACK, STOP, STOP_ACK, RESULT, ERROR = 1, 2, 3, 4, 5, 6, 7, 255
+NO_ACTIVE_RUN = 9
 MAX_PAYLOAD = 8192
 PROCESS_TIMEOUT_SECONDS = 5
 IO_TIMEOUT_SECONDS = 2
 FRAGMENT_GAP_SECONDS = 0.05
+BACKPRESSURE_WINDOW_SECONDS = 0.2
+BACKPRESSURE_REQUESTS = 8192
+BACKPRESSURE_INPUT_BUFFER_BYTES = 32768
+BACKPRESSURE_OUTPUT_BUFFER_BYTES = 4096
 CODE = bytes.fromhex("4803c3 4803c3")
 RUN_RESULT = struct.pack(
     "<6QIIQ", 0x99, 0x22, 0x33, 0x44, 6, 0x206, 0, 0, 2
@@ -60,9 +68,16 @@ def expect_frame(channel, expected, label):
         raise RuntimeError(f"{label}: expected {expected!r}, received {actual!r}")
 
 
-def launch_vmhost(path):
+def launch_vmhost(path, *, backpressure=False):
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer = None
     try:
+        if backpressure:
+            parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, BACKPRESSURE_INPUT_BUFFER_BYTES)
+            child.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BACKPRESSURE_INPUT_BUFFER_BYTES)
+            child.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, BACKPRESSURE_OUTPUT_BUFFER_BYTES)
+            parent.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BACKPRESSURE_OUTPUT_BUFFER_BYTES)
+            peer = child.dup()
         process = subprocess.Popen(
             [path, "--socket-fd", str(child.fileno())],
             pass_fds=(child.fileno(),),
@@ -72,10 +87,12 @@ def launch_vmhost(path):
     except Exception:
         parent.close()
         child.close()
+        if peer is not None:
+            peer.close()
         raise
     child.close()
     parent.settimeout(IO_TIMEOUT_SECONDS)
-    return process, parent
+    return process, parent, peer
 
 
 def finish_process(process, expected_status, label):
@@ -97,7 +114,7 @@ def send_fragmented(channel, chunks):
 
 
 def fragmented_hello_and_run(vmhost):
-    process, channel = launch_vmhost(vmhost)
+    process, channel, _ = launch_vmhost(vmhost)
     try:
         hello = frame(HELLO, 0)
         send_fragmented(channel, (hello[:5], hello[5:]))
@@ -120,7 +137,7 @@ def fragmented_hello_and_run(vmhost):
 
 
 def coalesced_runs_are_decoded_and_admitted_in_order(vmhost):
-    process, channel = launch_vmhost(vmhost)
+    process, channel, _ = launch_vmhost(vmhost)
     try:
         channel.sendall(frame(HELLO, 0))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "coalesced RUN READY")
@@ -148,7 +165,7 @@ def coalesced_runs_are_decoded_and_admitted_in_order(vmhost):
 
 
 def expect_truncated_frame_eof(vmhost, partial_frame, label):
-    process, channel = launch_vmhost(vmhost)
+    process, channel, _ = launch_vmhost(vmhost)
     try:
         channel.sendall(frame(HELLO, 0))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), f"{label} READY")
@@ -174,7 +191,7 @@ def partial_frame_eof_tears_down(vmhost):
 
 
 def oversized_length_closes_without_body(vmhost):
-    process, channel = launch_vmhost(vmhost)
+    process, channel, _ = launch_vmhost(vmhost)
     try:
         channel.sendall(frame(HELLO, 0))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "oversized length READY")
@@ -196,6 +213,84 @@ def oversized_length_closes_without_body(vmhost):
             process.wait()
 
 
+def stop_acks_survive_output_backpressure(vmhost):
+    process, channel, peer = launch_vmhost(vmhost, backpressure=True)
+    try:
+        # The duplicate shares the open file description used by VMHost.
+        with peer:
+            channel.sendall(frame(HELLO, 0))
+            expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "backpressure READY")
+            channel.sendall(frame(RUN, 1, run_payload()))
+            expect_frame(channel, (RUN_ACK, 1, struct.pack("<I", 0)), "initial RUN ACK")
+            expect_frame(channel, (RESULT, 1, RUN_RESULT), "initial RUN RESULT")
+            if not (fcntl.fcntl(peer.fileno(), fcntl.F_GETFL) & os.O_NONBLOCK):
+                raise RuntimeError("VMHost V1 peer remains blocking after READY")
+
+        request_ids = range(100, 100 + BACKPRESSURE_REQUESTS)
+        requests = memoryview(b"".join(frame(STOP, request_id) for request_id in request_ids))
+        expected = b"".join(
+            frame(STOP_ACK, request_id, struct.pack("<I", NO_ACTIVE_RUN))
+            for request_id in request_ids
+        )
+        channel.setblocking(False)
+        sent = 0
+        deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+        while sent < len(requests):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("could not observe backpressure with ACKs pending")
+            try:
+                sent += channel.send(requests[sent:])
+            except BlockingIOError:
+                _, writable, _ = select.select(
+                    [], [channel], [], min(remaining, BACKPRESSURE_WINDOW_SECONDS)
+                )
+                if not writable and select.select([channel], [], [], 0)[0]:
+                    break
+        else:
+            raise RuntimeError("all STOP requests fit without observing backpressure")
+
+        # Drain ACKs while finishing the interrupted write. Keep both directions
+        # moving so a full buffer cannot deadlock the test client.
+        received = bytearray()
+        deadline = time.monotonic() + IO_TIMEOUT_SECONDS
+        while sent < len(requests) or len(received) < len(expected):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"pressure recovery stalled: {sent} bytes sent, {len(received)} received"
+                )
+            readable, writable, _ = select.select(
+                [channel] if len(received) < len(expected) else [],
+                [channel] if sent < len(requests) else [],
+                [],
+                remaining,
+            )
+            if readable:
+                chunk = channel.recv(min(8192, len(expected) - len(received)))
+                if not chunk:
+                    raise EOFError("VMHost closed during pressure recovery")
+                received.extend(chunk)
+            if writable:
+                sent += channel.send(requests[sent:])
+        if received != expected:
+            raise RuntimeError("backpressure recovery lost, duplicated, reordered or changed a STOP ACK")
+
+        channel.settimeout(IO_TIMEOUT_SECONDS)
+        channel.sendall(frame(RUN, 2, run_payload()))
+        expect_frame(channel, (RUN_ACK, 2, struct.pack("<I", 0)), "recovered RUN ACK")
+        expect_frame(channel, (RESULT, 2, RUN_RESULT), "recovered RUN RESULT")
+        channel.close()
+        channel = None
+        finish_process(process, 0, "idle EOF after backpressure")
+    finally:
+        if channel is not None:
+            channel.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -207,7 +302,11 @@ def main():
     coalesced_runs_are_decoded_and_admitted_in_order(args.vmhost)
     partial_frame_eof_tears_down(args.vmhost)
     oversized_length_closes_without_body(args.vmhost)
-    print("VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length")
+    stop_acks_survive_output_backpressure(args.vmhost)
+    print(
+        "VMHost control V1 smoke passed: fragmented/coalesced frames, "
+        "bounded EOF teardown, oversized length, backpressure"
+    )
 
 
 if __name__ == "__main__":
