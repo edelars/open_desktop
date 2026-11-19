@@ -1601,6 +1601,13 @@ ranges included unity. Both builds passed the MOV state and
 access checks and all 6,007 `od-isa` tests.
 [Profiles, RUN timings and verification](STAGE_3_S3-40ah_2026-11-19.md)
 
+S3-40ai directly compared `de1f446` with `d24865d` on M1 Pro after
+the system instruction guard change. The budget-two ratios were
+1.8436 and 1.8499 on the two MOV sequences. The pooled gaps were
+117.6 and 118.0 ns at budget two and 4.7 ns at budget zero.
+ISSUE-521 remains open for the historical interpreter gap.
+[Matched comparison and evidence](STAGE_3_S3-40ai_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

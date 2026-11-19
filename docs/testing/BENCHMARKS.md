@@ -1725,6 +1725,14 @@ S3-40z RUN workload at budgets 0, 1 and 2 on M1 Pro at nice −5.
 Keep attribution samples and paired RUN timings in separate archives.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ah_2026-11-19.md)
 
+### S3-40ai. Historical interpreter RUN residual after S3-40ah
+
+Compare `d24865d` and `de1f446` with the S3-40ag driver, counts,
+correctness checks and six paired rounds. The archive includes full
+RUN intervals at budgets 0, 1 and 2 and the verifier for signed-build
+provenance, sample validity and exact replay.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ai_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
