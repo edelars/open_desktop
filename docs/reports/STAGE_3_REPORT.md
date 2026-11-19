@@ -1219,6 +1219,13 @@ a lower time, with state, RAM, ordered effects, STOP and budget checks.
 The measured gain includes the specialized code layout and call route.
 [Full-call diagnostic and source bindings](STAGE_3_S3-40r_2026-11-19.md)
 
+S3-40s compared two shared-source interpreter prototypes with the
+original call route in each signed binary. Derived `Default` gave
+paired ratios of 1.063 and 1.060, and its call remained in the
+specialized step. An associated constant gave 0.700 and 0.699.
+Both choices retained state, RAM, STOP and budget parity on S3-34a.
+[Prototype evidence and reproduction](STAGE_3_S3-40s_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

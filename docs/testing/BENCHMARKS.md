@@ -1538,6 +1538,15 @@ use the post-S3-40o decoder. Full-call median paired ratios on the two
 S3-34a streams are 0.629 and 0.628 across four processes.
 [Report and reproduction](../reports/STAGE_3_S3-40r_2026-11-19.md)
 
+### S3-40s. Empty-profile configuration prototypes
+
+Separate signed diagnostics pair each prototype with the ordinary
+call route. The derived-default ratios are 1.063 and 1.060.
+The associated-constant ratios are 0.700 and 0.699.
+Each of the two archives preserves 128 intervals and the measured
+step prologues.
+[Report and reproduction](../reports/STAGE_3_S3-40s_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
