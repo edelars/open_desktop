@@ -138,3 +138,28 @@ hashes, and the three local Rust lifecycle results.
 
 Archive SHA-256 `a7e142844bf84c23b6aebdf03215d3e5392f2e066120fefe2de688931b3a9b53`.
 [Native session ABI evidence](data/stage3/s3-41-m1pro-de1f446-20261119/native-session-abi.json.gz)
+
+### Concurrent wait on one active RUN
+
+The signed C fixture starts two pthreads on the same live request. The guest
+loops until the main thread sends STOP. A condition variable lets the main
+thread observe the first waiter return before STOP. That waiter returns
+`BUSY` with its result buffer intact. Another `begin` also returns `BUSY`
+with its token buffer intact and consumes the supplied request ID.
+
+After STOP, the other waiter receives the sole result with the expected
+guest state. The client reads one completion byte and EOF, and a repeat wait
+returns `NO_ACTIVE_RUN`. It checks rejection of the consumed request ID and
+acceptance of a greater ID. Both waiters are joined before destroy.
+
+On local arm64 macOS 26.7.1 with Xcode 27.1 and Rust 1.99.0, the extended
+fixture linked to the exact `963a0f6` `od-host` release library. The executable
+verified with Hardened Runtime and `allow-jit` at deployment target 14.0.
+Ten consecutive runs passed, including the existing `EMFILE` and lost-reader
+cases. The native build and execution commands above reproduce this fixture.
+[Local receipt and source hashes](data/stage3/s3-38f-native-waiters-20261119/local.json)
+
+A controlled build with the existing-waiter `BUSY` branch removed reached
+the parent's five-second watchdog. The same fixture passed against the
+pinned library.
+[Controlled regression receipt](data/stage3/s3-38f-native-waiters-20261119/negative.json)

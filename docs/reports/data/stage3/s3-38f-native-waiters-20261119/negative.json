@@ -1,0 +1,12 @@
+{
+  "mutation": "Life::Running(invocation) if invocation.waiter => return BUSY,",
+  "pinned_source_sha256": "4ab224921abe79894824ab77e5b468a4357cfa16489865b4393eee7348f9df6d",
+  "mutant_source_sha256": "5e357cf0df167f2c36de141278e8103ac86a199b1bf827d80ea0735f5452e2a6",
+  "fixture_sha256": "079c8bb3380a1a192d8dce7d2cd05a9cc52d374be7b17dde8d12dfd4781500a6",
+  "mutant_staticlib_sha256": "544a15152d6e2b5530359dd3242acd6b62213fe6f54e9fc59562fab3cb713da3",
+  "mutant_native_smoke_sha256": "0f64c2fcc1d4f6c28be5643004d0d20b6440e423d78f17210d5615a9841c6990",
+  "mutant_watchdog_seconds": 5,
+  "mutant_stdout": "",
+  "mutant_stderr": "",
+  "pinned_same_fixture_exit": 0
+}

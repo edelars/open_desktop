@@ -4604,7 +4604,10 @@ normal notification and a deliberately lost notification reader. The owner
 returns `INVALID_STATE` and the client can destroy the failed session and
 acquire a fresh one. Descriptor exhaustion verifies `ALLOCATION_FAILED`
 during pipe creation and recovery at a greater request ID. Both native
-scenarios were repeated on M1 Pro. The Mac mini, physical x86 and full
+scenarios were repeated on M1 Pro. The signed local C smoke also sends
+two waiters into the same active invocation. One receives `BUSY` before
+STOP and the other consumes the single result with one notification.
+The Mac mini, physical x86 and full
 S3-38 acceptance remain open. See the
 [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
 

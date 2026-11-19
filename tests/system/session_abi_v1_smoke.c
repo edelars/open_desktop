@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -171,6 +172,90 @@ static void require_pipe_creation_failure(od_session_handle_v1 handle, uint32_t 
            begin_status);
 }
 
+struct wait_race {
+    od_session_handle_v1 handle;
+    uint32_t id;
+    pthread_mutex_t mutex;
+    pthread_cond_t changed;
+    struct waiter *first;
+};
+
+struct waiter {
+    struct wait_race *race;
+    uint32_t status;
+    od_session_run_result_v1 result;
+};
+
+static void *wait_once(void *argument) {
+    struct waiter *waiter = argument;
+    struct wait_race *race = waiter->race;
+    waiter->status = od_session_wait_run_v1(race->handle, race->id, &waiter->result, sizeof(waiter->result));
+    assert(pthread_mutex_lock(&race->mutex) == 0);
+    if (race->first == NULL) {
+        race->first = waiter;
+        assert(pthread_cond_signal(&race->changed) == 0);
+    }
+    assert(pthread_mutex_unlock(&race->mutex) == 0);
+    return NULL;
+}
+
+static void require_single_waiter(od_session_handle_v1 handle, uint32_t id) {
+    od_session_run_request_v1 request = make_request(id, UINT64_MAX, 2);
+    int fd = begin(handle, &request);
+    struct wait_race race = {.handle = handle, .id = id};
+    assert(pthread_mutex_init(&race.mutex, NULL) == 0);
+    assert(pthread_cond_init(&race.changed, NULL) == 0);
+    struct waiter waiters[] = {{.race = &race}, {.race = &race}};
+    pthread_t threads[2];
+    for (size_t i = 0; i < 2; ++i) {
+        memset(&waiters[i].result, 0xA5, sizeof(waiters[i].result));
+        assert(pthread_create(&threads[i], NULL, wait_once, &waiters[i]) == 0);
+    }
+
+    /* The guest loops until main issues STOP. The first return must be BUSY. */
+    assert(pthread_mutex_lock(&race.mutex) == 0);
+    while (race.first == NULL) {
+        assert(pthread_cond_wait(&race.changed, &race.mutex) == 0);
+    }
+    struct waiter *rejected = race.first;
+    assert(rejected->status == OD_SESSION_STATUS_BUSY_V1);
+    assert_sentinel(&rejected->result, sizeof(rejected->result));
+    assert(pthread_mutex_unlock(&race.mutex) == 0);
+
+    od_session_run_request_v1 next = make_request(id + 1, 8, 0x42);
+    od_session_run_token_v1 token;
+    memset(&token, 0xA5, sizeof(token));
+    assert(od_session_begin_run_v1(handle, &next, sizeof(next), &token, sizeof(token)) == OD_SESSION_STATUS_BUSY_V1);
+    assert_sentinel(&token, sizeof(token));
+    assert(od_session_request_stop_v1(handle, id) == OD_SESSION_STATUS_OK_V1);
+    for (size_t i = 0; i < 2; ++i) {
+        assert(pthread_join(threads[i], NULL) == 0);
+    }
+
+    const struct waiter *winner = rejected == &waiters[0] ? &waiters[1] : &waiters[0];
+    assert(winner->status == OD_SESSION_STATUS_OK_V1);
+    const od_session_run_result_v1 *result = &winner->result;
+    assert(result->struct_size == OD_SESSION_RUN_RESULT_SIZE_V1);
+    assert(result->request_id == id && result->reason == OD_SESSION_EXIT_STOP_REQUESTED_V1 && result->reserved == 0);
+    assert(result->state.rip == request.initial_state.rip && result->state.rflags == request.initial_state.rflags);
+    assert(memcmp(result->state.gpr, request.initial_state.gpr, sizeof(result->state.gpr)) == 0);
+    uint8_t notification[2];
+    assert(read(fd, notification, sizeof(notification)) == 1 && notification[0] == OD_SESSION_COMPLETION_BYTE_V1);
+    assert(read(fd, notification, sizeof(notification)) == 0);
+    assert(close(fd) == 0);
+    assert(pthread_cond_destroy(&race.changed) == 0);
+    assert(pthread_mutex_destroy(&race.mutex) == 0);
+
+    assert(od_session_wait_run_v1(handle, id, &rejected->result, sizeof(rejected->result)) ==
+           OD_SESSION_STATUS_NO_ACTIVE_RUN_V1);
+    assert_sentinel(&rejected->result, sizeof(rejected->result));
+    assert(od_session_begin_run_v1(handle, &next, sizeof(next), &token, sizeof(token)) ==
+           OD_SESSION_STATUS_INVALID_REQUEST_ID_V1);
+    assert_sentinel(&token, sizeof(token));
+    require_normal_notification(handle, id + 2);
+    puts("concurrent wait: one BUSY, one STOP result, one notification, later greater ID completed");
+}
+
 static void require_notification_failure(od_session_handle_v1 handle, uint32_t id) {
     /* ZF clear and effectively unlimited budget, so STOP drives completion. */
     od_session_run_request_v1 request = make_request(id, UINT64_MAX, 2);
@@ -211,7 +296,8 @@ int main(void) {
     require_normal_notification(handle, 1);
     puts("normal notification: one byte, EOF, then valid result");
     require_pipe_creation_failure(handle, 2);
-    require_notification_failure(handle, 4);
+    require_single_waiter(handle, 4);
+    require_notification_failure(handle, 7);
     assert(od_session_destroy_v1(handle) == OD_SESSION_STATUS_OK_V1);
 
     handle = create_session();

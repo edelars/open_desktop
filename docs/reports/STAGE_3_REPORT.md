@@ -1339,6 +1339,13 @@ with a greater ID. Failure injection at pipe `fcntl` setup remains open.
 The signed cases reproduced on both local macOS 26.7.1 and the M1 Pro
 with macOS 14.6.1.
 [Native C smoke and reproduction](STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
+
+The signed local V1 C client also exercised two waiters on one
+active invocation. The first returned `BUSY` before STOP and left
+its output intact. The second consumed the sole result and the
+client read one completion byte followed by EOF.
+[Concurrent wait and follow-up RUN](STAGE_3_S3-38f_session_proxy_2026-11-03.md#concurrent-wait-on-one-active-run)
+
 ### M1 Pro checks after S3-40ah
 
 Both selectors used clean `de1f446` on the Apple M1 Pro with macOS
