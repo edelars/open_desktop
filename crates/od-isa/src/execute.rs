@@ -20079,8 +20079,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Or,
                     ..
                 } => {
-                    instruction.operand_size == OperandSize::Byte
-                        && matches!(instruction.opcode.byte, 0x08 | 0x0a)
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x08 | 0x0a, OperandSize::Byte)
+                            | (0x09 | 0x0b, OperandSize::Dword | OperandSize::Qword)
+                    )
                 }
                 _ => matches!(
                     instruction.operand_size,
@@ -22632,17 +22635,22 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             }
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: the firmware uses exact short and near JMP encodings.
-        // Validate the signed next-RIP target before committing RIP.
+        // S7-04: the firmware uses short and near JMP. The base probe keeps
+        // its exact encodings. Validate the target before committing RIP.
         Operation::Jump { displacement }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.prefixes == Prefixes::default()
-                && matches!(
-                    (instruction.opcode.byte, instruction.length, displacement),
-                    (0xeb, 2, 0x31) | (0xe9, 5, -0x162 | -0x9a | 0x165)
-                ) =>
+                && ((firmware_boot_profile
+                    && matches!(
+                        (instruction.opcode.byte, instruction.length),
+                        (0xeb, 2) | (0xe9, 5)
+                    ))
+                    || matches!(
+                        (instruction.opcode.byte, instruction.length, displacement),
+                        (0xeb, 2, 0x31) | (0xe9, 5, -0x162 | -0x9a | 0x165)
+                    )) =>
         {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));
             if !canonical(target) {
