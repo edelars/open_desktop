@@ -1,0 +1,71 @@
+{
+  "base_commit": "8c2045d1a1ddaa0a3a406f59c3f4acfe4e82b784",
+  "patch_sha256": {
+    "addr32-call": "3315f65eb5f924dc3032c181d9009395ad2ed6db71581f3849b4ee5c47dfd987",
+    "lock-sub-dword-reg": "eb2c46153582fce95148edd2d43f28c67cf31ae475953aeb197097a04b211609",
+    "movsxd": "1c9a18836089a152cfc110b52c9279743f3e797636ae640b078af36f1ce12f52",
+    "prologue": "58d1b805147bbf07f41a8efd08132b041c2d2658a6fd911f673a32e324cc8f55"
+  },
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "raw_namespace_sectors": 4194304,
+  "ram_mib": 128,
+  "seed": 24301,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "vcpus": 2,
+  "guest_kernel_markers": [
+    "[    1.745883] smpboot: Total of 2 processors activated (4002.55 BogoMIPS)",
+    "[    2.535573] Run /s6-smp-init as init process"
+  ],
+  "before": {
+    "runner_sha256": "240b23383f10f7e29d12c7aaa0662d470583e1c26ccf5c975927c21804cc5151",
+    "report_sha256": "b06ee04bf02bc148c30fd8ad5763803a28b20ab1c8fb42db26abc36d308248f2",
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "terminal_vcpu": 0,
+    "retired": 2400040320,
+    "retired_by_vcpu": [
+      1998522620,
+      401517700
+    ],
+    "cpl": 3,
+    "cpl3_retired": 23,
+    "rip": "0x4762aa",
+    "rip_gpa": "0x79642aa",
+    "rip_bytes": "48 83 ec 18 48 89 7d c0 48 8d 7c c2 08 48 8b 45",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 131 }",
+    "busybox_elf_file_offset": "0x762aa"
+  },
+  "after": {
+    "runner_sha256": "3dc90db9cb3c9000b279d22f059326161baf5bb6cd933516662a5d66f918d1fd",
+    "report_sha256": "612540965f76d6e4a591fabc5a1ab4e6dac5be81a3294646a6e9a0e9dd3a4fc8",
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "terminal_vcpu": 0,
+    "retired": 2400051075,
+    "retired_by_vcpu": [
+      1998533375,
+      401517700
+    ],
+    "cpl": 3,
+    "cpl3_retired": 40,
+    "rip": "0x4762db",
+    "rip_gpa": "0x79642db",
+    "rip_bytes": "e8 e0 ca 01 00 48 8b 3d 29 5c 1a 00 e8 74 bc 01",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 232 }",
+    "busybox_elf_file_offset": "0x762db"
+  },
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "diagnostic_prologue": {
+    "production_patch_sha256": "58d1b805147bbf07f41a8efd08132b041c2d2658a6fd911f673a32e324cc8f55",
+    "probe_log_sha256": "c54228220d56ef36e81294acf5db33cb6d9b9a688ba51830ae4a42d11a3c2531",
+    "retired": 19,
+    "next_rip": "0x4762d9",
+    "scope": "Recorded BusyBox code and GPRs with reconstructed writable stack and a synthetic environment pointer for the first CMP."
+  }
+}

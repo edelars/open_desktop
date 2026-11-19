@@ -556,14 +556,10 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x45, 0x89, 0xc4],
             0x89,
         ),
+        ("mov [rbx], eax (89 /r, memory)", &[0x89, 0x03], 0x89),
         (
-            "mov [rbx], rax (REX.W 89 /r, memory)",
-            &[0x48, 0x89, 0x03],
-            0x89,
-        ),
-        (
-            "mov [rip+0], rax (REX.W 89 /r, RIP-relative)",
-            &[0x48, 0x89, 0x05, 0, 0, 0, 0],
+            "addr32 mov [eip+0], rax (67 REX.W 89 /r)",
+            &[0x67, 0x48, 0x89, 0x05, 0, 0, 0, 0],
             0x89,
         ),
         (
@@ -1529,12 +1525,12 @@ fn test_r64_register_form_sets_flags_and_writes_no_result() {
 #[test]
 fn test_r64_allowed_then_forbidden_form_keeps_the_retired_state() {
     // `testq %rax, %rax` retires, the taken `js rel32` (S4-39f5: allowed) skips one byte and lands
-    // on `mov [rbx], rax` (memory form, still outside), which stops the run.
+    // on `mov [rbx], eax` (dword memory form), which stops the run.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_fff2;
     let mut memory = Memory::code(&[
-        0x48, 0x85, 0xc0, 0x0f, 0x88, 0x01, 0x00, 0x00, 0x00, 0x90, 0x48, 0x89, 0x03,
+        0x48, 0x85, 0xc0, 0x0f, 0x88, 0x01, 0x00, 0x00, 0x00, 0x90, 0x89, 0x03,
     ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x89 });
@@ -2178,6 +2174,90 @@ fn cpl3_movsxd_extends_only_the_source_dword_to_a_qword_register() {
 }
 
 #[test]
+fn cpl3_qword_mov_uses_user_memory_and_nop_does_not_read_its_operand() {
+    let code = [0x48, 0x8b, 0x07, 0x48, 0x89, 0x06, 0x0f, 0x1f, 0x00];
+    let value = 0xfedc_ba98_7654_3210u64;
+    let output = DATA + 32;
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.gpr[Register::Rsi as usize] = output;
+    state.rflags |= od_isa::INTEGER_FLAGS;
+    let mut expected = state.clone();
+    expected.gpr[Register::Rax as usize] = value;
+    expected.rip += code.len() as u64;
+
+    let mut memory = DataMemory::new(&code);
+    let bytes = value.to_le_bytes();
+    for (offset, byte) in bytes.into_iter().enumerate() {
+        memory = memory
+            .with_user(DATA + offset as u64, byte)
+            .with_user(output + offset as u64, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(
+        memory.writes,
+        (output..output + 8).zip(bytes).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cpl3_qword_imm8_prologue_sign_extends_register_and_memory_operands() {
+    let code = [
+        0x48, 0x83, 0xe8, 0xf8, // sub rax, -8
+        0x48, 0x83, 0xc0, 0xe8, // add rax, -24
+        0x48, 0x83, 0x3f, 0xfe, // cmp qword ptr [rdi], -2
+    ];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0x2_0000_0000;
+    state.gpr[Register::Rdi as usize] = DATA;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in (-2i64).to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + offset as u64, byte);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1_ffff_fff0);
+    assert_eq!(state.rflags & od_isa::INTEGER_FLAGS, (1 << 6) | (1 << 2) | 2);
+    assert_eq!(memory.reads, 1);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_qword_prologue_operands_cannot_access_supervisor_pages() {
+    for (code, error_code) in [
+        (&[0x48, 0x8b, 0x07][..], 5),
+        (&[0x48, 0x89, 0x07][..], 7),
+        (&[0x48, 0x83, 0x3f, 0x00][..], 5),
+    ] {
+        let mut initial = user_state();
+        initial.gpr[Register::Rdi as usize] = DATA;
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_supervisor(DATA + offset, offset as u8);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(error_code),
+                linear_address: Some(DATA),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
 fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
     let mut initial = user_state();
     initial.gpr[Register::Rsp as usize] = 0x0000_7fff_abcd_123f;
@@ -2568,7 +2648,7 @@ fn movb_refusals_stop_as_unsupported_c6_without_change() {
 }
 
 #[test]
-fn mov_r64_with_a_hint_or_segment_prefix_or_a_memory_operand_is_refused() {
+fn mov_r64_with_a_hint_or_segment_prefix_is_refused() {
     // S4-39f5 review item 6: `2e`/`3e` (branch hints, CS/DS override) before the memory form and
     // before the register form of `89` never reach the CPL0 `Operation::Mov`.
     let forms: &[(&str, &[u8])] = &[
@@ -2578,7 +2658,6 @@ fn mov_r64_with_a_hint_or_segment_prefix_or_a_memory_operand_is_refused() {
         ("3e 48 89 03", &[0x3e, 0x48, 0x89, 0x03]),
         ("2e 48 89 c3", &[0x2e, 0x48, 0x89, 0xc3]),
         ("3e 48 89 c3", &[0x3e, 0x48, 0x89, 0xc3]),
-        ("48 89 03 memory form", &[0x48, 0x89, 0x03]),
     ];
     for (name, bytes) in forms {
         let mut state = mov_byte_state();
@@ -6495,8 +6574,8 @@ fn sub_r64_outside_the_register_form_stays_refused() {
             0x2d,
         ),
         (
-            "48 83 ea 01 subq $1, %rdx (83 /5)",
-            &[0x48, 0x83, 0xea, 0x01],
+            "48 83 2a 01 subq $1, (%rdx) (83 /5)",
+            &[0x48, 0x83, 0x2a, 0x01],
             0x83,
         ),
         (

@@ -28758,6 +28758,31 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
+            0x89,
+            Operation::Mov {
+                dst: Operand::Memory(dst),
+                src: Operand::Register(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && dst.size == OperandSize::Qword
+                && dst.address_size == OperandSize::Qword
+        }
+        (
+            OpcodeMap::Primary,
+            0x8b,
+            Operation::Mov {
+                dst: Operand::Register(_),
+                src: Operand::Memory(src),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && src.size == OperandSize::Qword
+                && src.address_size == OperandSize::Qword
+        }
+        (OpcodeMap::Escape0f, 0x1f, Operation::NopModrm) => true,
+        (
+            OpcodeMap::Primary,
             0xc7,
             Operation::MovImmediate {
                 dst: Operand::Register(_),
@@ -28785,6 +28810,28 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add | ArithmeticKind::Sub,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && dst.size == OperandSize::Qword
+                && dst.address_size == OperandSize::Qword
+        }
         (
             OpcodeMap::Primary,
             0x31,
@@ -28854,7 +28901,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         // S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32) in the register form only. The decoder
         // names it `Arithmetic { Cmp, dst: Register, src: Immediate }` at qword size with the
         // imm32 sign-extended to 64 bits; the memory form decodes to a memory destination, the
-        // dword form (no REX.W) to `Dword`, and `81 /0..6`, `83 /7` and `3D` to other operations
+        // dword form (no REX.W) to `Dword`, and `81 /0..6` and `3D` to other operations
         // or opcode bytes: all of them stay refused.
         (
             OpcodeMap::Primary,
