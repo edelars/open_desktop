@@ -11,6 +11,12 @@ pub const LOADED_IMAGE_PROTOCOL_GUID: Guid = Guid {
     data4: [0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 pub const LOADED_IMAGE_PROTOCOL_REVISION: u32 = 0x1000;
+pub const LOADED_IMAGE_DEVICE_PATH_PROTOCOL_GUID: Guid = Guid {
+    data1: 0xbc62_157e,
+    data2: 0x3e33,
+    data3: 0x4fec,
+    data4: [0x99, 0x20, 0x2d, 0x3b, 0x36, 0xd7, 0x50, 0xdf],
+};
 
 #[repr(C)]
 pub struct LoadedImageProtocol {

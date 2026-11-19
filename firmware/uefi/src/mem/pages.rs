@@ -3,9 +3,11 @@
 
 use super::map::{MemoryDescriptor, MemoryMap, MemoryType, RUNTIME, WB};
 use crate::paging::PAGE_BYTES;
-use core::ops::Range;
+use core::{convert::identity, ops::Range};
 
+mod image;
 mod pool;
+pub(crate) use image::ImageMemoryRange;
 pub use pool::{PoolError, PoolHeader, PoolMemory};
 
 const PHYSICAL_END: u64 = 1 << 36;
@@ -45,6 +47,7 @@ pub enum PageOwner {
     Initial,
     Pages,
     Pool,
+    Image,
 }
 
 /// Takes ownership of the map and caller-provided tags for its entire buffer.
@@ -98,10 +101,10 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
     ) -> Result<(Range<usize>, Range<u64>), PageError> {
         let address = match placement {
             AllocateAt::Address(address) => address,
-            AllocateAt::Any => self.find_highest_fit(bytes, PHYSICAL_END)?,
+            AllocateAt::Any => self.find_highest_fit(bytes, PHYSICAL_END, identity)?,
             AllocateAt::MaxAddress(max) => {
                 let end = max.saturating_add(1).min(PHYSICAL_END) & !(PAGE_BYTES - 1);
-                self.find_highest_fit(bytes, end)?
+                self.find_highest_fit(bytes, end, identity)?
             }
         };
         let span = address_range(address, bytes)?;
@@ -119,7 +122,12 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         )
     }
 
-    fn find_highest_fit(&self, bytes: u64, limit: u64) -> Result<u64, PageError> {
+    fn find_highest_fit(
+        &self,
+        bytes: u64,
+        limit: u64,
+        align_candidate: impl Fn(u64) -> u64,
+    ) -> Result<u64, PageError> {
         let mut best = None;
         let mut run_start = None;
         let mut run_end = 0;
@@ -133,7 +141,7 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
                 .unwrap_or(descriptor.physical_start);
             run_end = descriptor.end();
             run_start = Some(start);
-            if let Some(address) = limit.min(run_end).checked_sub(bytes)
+            if let Some(address) = limit.min(run_end).checked_sub(bytes).map(&align_candidate)
                 && address >= start
             {
                 best = Some(address);
@@ -220,19 +228,34 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
             .map_key
             .checked_add(1)
             .ok_or(PageError::MapKeyExhausted)?;
+        let destination = self.move_tail(covered, count, used, key);
+        for (index, entry) in destination.zip(entries) {
+            self.write_entry(index, entry);
+        }
+        Ok(())
+    }
+
+    fn move_tail(
+        &mut self,
+        covered: Range<usize>,
+        count: usize,
+        used: usize,
+        key: u64,
+    ) -> Range<usize> {
         let destination = covered.start + count;
         self.map
             .storage
             .copy_within(covered.end..self.map.used, destination);
         self.owners
             .copy_within(covered.end..self.map.used, destination);
-        for (index, entry) in (covered.start..destination).zip(entries) {
-            self.map.storage[index] = entry.descriptor;
-            self.owners[index] = entry.owner;
-        }
         self.map.used = used;
         self.map.map_key = key;
-        Ok(())
+        covered.start..destination
+    }
+
+    fn write_entry(&mut self, index: usize, entry: Entry) {
+        self.map.storage[index] = entry.descriptor;
+        self.owners[index] = entry.owner;
     }
 
     fn entry(&self, index: usize) -> Entry {

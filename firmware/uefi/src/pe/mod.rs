@@ -2,6 +2,7 @@
 
 mod authenticode;
 mod loader;
+mod pages;
 mod parser;
 mod reloc;
 #[cfg(test)]
@@ -9,5 +10,6 @@ mod test_image;
 
 pub use authenticode::{DigestAlgorithm, DigestError, authenticode_digest};
 pub use loader::{LoadError, MappedImage, load_into};
+pub(crate) use pages::{MAX_REGIONS, PageLayout};
 pub use parser::{Error, PeImage, Section, Subsystem};
 pub use reloc::RelocationError;

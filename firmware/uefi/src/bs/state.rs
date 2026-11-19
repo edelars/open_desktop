@@ -3,8 +3,10 @@
 use super::config_table::ConfigurationTables;
 use super::event::EventRegistry;
 use super::exit::BootExit;
+use super::image::ImageRegistry;
 use super::protocol::ProtocolRegistry;
 use crate::mem::pages::PageAllocator;
+use crate::paging::{ActivePageTables, BootPaging};
 use crate::uefi::status::Status;
 use crate::uefi::system_table::{RuntimeServicesStorage, SystemTable};
 use core::cell::{Cell, UnsafeCell};
@@ -14,6 +16,8 @@ struct BspServices {
     busy: Cell<bool>,
     allocator: UnsafeCell<Option<PageAllocator<'static, 'static>>>,
     protocols: UnsafeCell<ProtocolRegistry>,
+    images: UnsafeCell<ImageRegistry>,
+    active_tables: Cell<Option<ActivePageTables>>,
     events: UnsafeCell<EventRegistry>,
     configuration: UnsafeCell<ConfigurationTables>,
     system_table: Cell<Option<NonNull<SystemTable>>>,
@@ -30,6 +34,8 @@ static BOOT_SERVICES: BspServices = BspServices {
     busy: Cell::new(false),
     allocator: UnsafeCell::new(None),
     protocols: UnsafeCell::new(ProtocolRegistry::new()),
+    images: UnsafeCell::new(ImageRegistry::new()),
+    active_tables: Cell::new(None),
     events: UnsafeCell::new(EventRegistry::new()),
     configuration: UnsafeCell::new(ConfigurationTables::new()),
     system_table: Cell::new(None),
@@ -40,6 +46,8 @@ static BOOT_SERVICES: BspServices = BspServices {
 pub(crate) struct ServiceState<'a> {
     pub allocator: &'a mut PageAllocator<'static, 'static>,
     pub protocols: &'a mut ProtocolRegistry,
+    pub images: &'a mut ImageRegistry,
+    pub active_tables: Option<ActivePageTables>,
     pub events: &'a mut EventRegistry,
     pub configuration: &'a mut ConfigurationTables,
     pub system_table: Option<NonNull<SystemTable>>,
@@ -70,6 +78,16 @@ pub unsafe fn initialize(
         (&mut *BOOT_SERVICES.events.get()).set_clock(tsc_hz, read_tsc);
         BOOT_SERVICES.allocator.get().write(Some(allocator));
     }
+}
+
+/// # Safety
+/// The BSP must already be executing on `paging`'s private identity tables.
+/// Their RAM reservation must remain valid until `ExitBootServices`.
+pub unsafe fn attach_image_paging(paging: &BootPaging<'_, '_>) {
+    BOOT_SERVICES.active_tables.set(Some(ActivePageTables::new(
+        paging.root(),
+        paging.table_words() as u64 * 8,
+    )));
 }
 
 /// # Safety
@@ -127,6 +145,8 @@ pub(crate) unsafe fn try_with<R>(operation: impl FnOnce(ServiceState<'_>) -> R) 
         Some(operation(ServiceState {
             allocator,
             protocols: &mut *BOOT_SERVICES.protocols.get(),
+            images: &mut *BOOT_SERVICES.images.get(),
+            active_tables: BOOT_SERVICES.active_tables.get(),
             events: &mut *BOOT_SERVICES.events.get(),
             configuration: &mut *BOOT_SERVICES.configuration.get(),
             system_table: BOOT_SERVICES.system_table.get(),

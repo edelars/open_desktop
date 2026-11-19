@@ -100,13 +100,13 @@ unsafe fn decode_pairs(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProtocolPair {
+pub(in crate::bs) struct ProtocolPair {
     pub protocol: Guid,
     pub interface: *mut c_void,
 }
 
 impl ProtocolRegistry {
-    pub(super) fn install_bindings(
+    pub(in crate::bs) fn install_bindings(
         &mut self,
         requested: Handle,
         pairs: &[ProtocolPair],
@@ -126,19 +126,7 @@ impl ProtocolRegistry {
                 return Err(Status::INVALID_PARAMETER);
             }
         }
-        if self
-            .bindings
-            .iter()
-            .filter(|slot| slot.is_none())
-            .nth(pairs.len() - 1)
-            .is_none()
-        {
-            return Err(Status::OUT_OF_RESOURCES);
-        }
-        let last_revision = self
-            .last_revision
-            .checked_add(pairs.len())
-            .ok_or(Status::OUT_OF_RESOURCES)?;
+        let last_revision = self.next_bindings_revision(pairs.len())?;
         let handle = if requested.is_null() {
             let id = self
                 .last_handle
@@ -165,6 +153,21 @@ impl ProtocolRegistry {
         }
         self.last_revision = last_revision;
         Ok(handle)
+    }
+
+    pub(super) fn next_bindings_revision(&self, count: usize) -> Result<usize, Status> {
+        if self
+            .bindings
+            .iter()
+            .filter(|slot| slot.is_none())
+            .nth(count - 1)
+            .is_none()
+        {
+            return Err(Status::OUT_OF_RESOURCES);
+        }
+        self.last_revision
+            .checked_add(count)
+            .ok_or(Status::OUT_OF_RESOURCES)
     }
 
     fn uninstall_bindings(&mut self, handle: Handle, pairs: &[ProtocolPair]) -> Status {

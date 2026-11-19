@@ -20354,7 +20354,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0x22, OperandSize::Byte) | (0x23, OperandSize::Dword)
+                    (0x22, OperandSize::Byte) | (0x23, OperandSize::Dword | OperandSize::Qword)
                 ),
                 Operation::Logic {
                     kind: LogicKind::And,
@@ -20406,7 +20406,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => {
                     instruction.opcode.byte == 0x2b
-                        && instruction.operand_size == OperandSize::Qword
+                        && matches!(
+                            instruction.operand_size,
+                            OperandSize::Dword | OperandSize::Qword
+                        )
                 }
                 Operation::Arithmetic { .. } => {
                     matches!(
@@ -20419,7 +20422,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 kind: ArithmeticKind::Add,
                                 ..
                             },
-                            0x00,
+                            0x00 | 0x04,
                             OperandSize::Byte
                         ) | (
                             Operation::Arithmetic {
@@ -20436,7 +20439,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => {
                     instruction.opcode.byte == 0xf7
-                        && instruction.operand_size == OperandSize::Dword
+                        && matches!(
+                            instruction.operand_size,
+                            OperandSize::Dword | OperandSize::Qword
+                        )
                 }
                 Operation::Logic {
                     kind: LogicKind::Xor,

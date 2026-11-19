@@ -2,6 +2,9 @@
 
 use crate::handoff::{Handoff, region_kind::*};
 
+mod active;
+pub(crate) use active::ActivePageTables;
+
 pub const PAGE_BYTES: u64 = 4096;
 const ENTRIES: usize = 512;
 const STACK_BYTES: u64 = 256 * 1024;

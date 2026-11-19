@@ -9,4 +9,4 @@ pub mod misc;
 pub mod protocol;
 mod state;
 
-pub use state::{attach_system_tables, attach_watchdog, initialize};
+pub use state::{attach_image_paging, attach_system_tables, attach_watchdog, initialize};

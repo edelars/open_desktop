@@ -60,7 +60,7 @@ impl ProtocolRegistry {
         }
     }
 
-    pub(super) fn signal_installations(
+    pub(in crate::bs) fn signal_installations(
         &self,
         events: &mut EventRegistry,
         mut installed: impl FnMut(Guid) -> bool,

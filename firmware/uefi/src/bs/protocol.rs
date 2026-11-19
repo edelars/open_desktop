@@ -5,7 +5,7 @@ use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::ffi::c_void;
 use core::ptr;
 
-mod multiple;
+pub(super) mod multiple;
 mod notify;
 mod query;
 
@@ -100,11 +100,42 @@ impl ProtocolRegistry {
         }
     }
 
-    fn known_handle(&self, handle: Handle) -> bool {
+    pub(super) fn known_handle(&self, handle: Handle) -> bool {
         self.bindings
             .iter()
             .flatten()
             .any(|binding| binding.handle == handle)
+    }
+
+    pub(super) fn can_install_image(&self) -> bool {
+        self.last_handle.checked_add(1).is_some() && self.next_bindings_revision(2).is_ok()
+    }
+
+    pub(super) fn can_remove_image(&self, handle: Handle) -> bool {
+        self.opens.iter().flatten().all(|open| {
+            open.agent == handle
+                || open.attributes != OPEN_BY_DRIVER
+                || self.bindings[open.binding].is_none_or(|binding| binding.handle != handle)
+        })
+    }
+
+    /// Remove bindings on the image handle and close protocols it opened as an agent.
+    pub(super) fn remove_image(&mut self, handle: Handle) {
+        for (index, slot) in self.bindings.iter_mut().enumerate() {
+            if slot.is_some_and(|binding| binding.handle == handle) {
+                *slot = None;
+                for slot in &mut self.opens {
+                    if slot.is_some_and(|open| open.binding == index) {
+                        *slot = None;
+                    }
+                }
+            }
+        }
+        for slot in &mut self.opens {
+            if slot.is_some_and(|open| open.agent == handle) {
+                *slot = None;
+            }
+        }
     }
 
     fn connect_without_driver_binding(&self, controller: Handle) -> Status {
@@ -421,7 +452,7 @@ pub unsafe extern "efiapi" fn reinstall_protocol_interface(
 }
 
 /// Call on the BSP after committing the entire installation and releasing the guard.
-unsafe fn dispatch_after_install(status: Status) -> Status {
+pub(super) unsafe fn dispatch_after_install(status: Status) -> Status {
     if status == Status::SUCCESS {
         unsafe { super::event::dispatch_pending() };
     }

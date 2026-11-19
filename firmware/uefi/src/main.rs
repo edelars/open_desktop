@@ -195,7 +195,10 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     let service_map_key = allocator.map().key() as usize;
     // SAFETY: this is the one BSP initialization; the diagnostic has finished
     // borrowing the allocator. All ensuing accesses go through Boot Services.
-    unsafe { od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc) };
+    unsafe {
+        od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc);
+        od_firmware::bs::attach_image_paging(&paging);
+    }
     let fixed_hardware = match handoff.acpi_fixed_hardware() {
         Ok(entry) => entry,
         Err(_) => stop(STOP_BOOT_SERVICES, 58),
@@ -1243,7 +1246,7 @@ fn verify_service_boundaries(system: &SystemTable) {
             != Status::INVALID_PARAMETER
             || load(0, handle, ptr::null(), ptr::null(), 0, &mut image) != Status::NOT_FOUND
             || load(0, handle, ptr::null(), b"MZ".as_ptr().cast(), 2, &mut image)
-                != Status::UNSUPPORTED
+                != Status::LOAD_ERROR
             || image != handle
             || start(handle, &mut exit_size, &mut exit_data) != Status::INVALID_PARAMETER
             || exit_size != 43
