@@ -42586,7 +42586,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Rdtsc {
+    if matches!(instruction.operation, Operation::Rdtsc) {
         let (Some(controls), Some(source)) = (rdtsc_controls, rdtsc_source) else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -42612,7 +42612,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Cpuid {
+    if matches!(instruction.operation, Operation::Cpuid) {
         let Some(cpuid) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -42629,7 +42629,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Syscall {
+    if matches!(instruction.operation, Operation::Syscall) {
         return Ok(execute_syscall(
             state,
             context,
@@ -42641,7 +42641,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             guest_msr_cells,
         ));
     }
-    if instruction.operation == Operation::Sysret {
+    if matches!(instruction.operation, Operation::Sysret) {
         return Ok(execute_sysret(
             state,
             context,

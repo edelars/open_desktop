@@ -1566,6 +1566,15 @@ guard changes. The paired ratios at budget 2 were 1.9716 and
 The remaining interpreter gap is tracked in ISSUE-521.
 [Historical comparison and evidence](STAGE_3_S3-40ag_2026-11-19.md)
 
+S3-40ah replaced the RDTSC, CPUID, SYSCALL and SYSRET variant
+comparisons with `matches!` after attributing four direct equality
+calls in the profiled M1 Pro STEP. Those calls disappeared in the
+replacement build. The paired median RUN times fell by 5.91–6.70%
+for the two MOV sequences at budgets 1 and 2. The budget-zero
+ranges included unity. Both builds passed the MOV state and
+access checks and all 6,007 `od-isa` tests.
+[Profiles, RUN timings and verification](STAGE_3_S3-40ah_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version

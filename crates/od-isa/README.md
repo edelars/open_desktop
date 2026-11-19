@@ -47,6 +47,12 @@ x87 с одним помощником. На M1 Pro время обычного 
 на 2,58–3,28% по парным медианам.
 [Проверки и замеры](../../docs/reports/STAGE_3_S3-40af_2026-11-19.md)
 
+S3-40ah использует отдельные `matches!` для допуска RDTSC, CPUID,
+SYSCALL и SYSRET. На M1 Pro время обычного `execute::run` на двух
+MOV-последовательностях при бюджетах 1 и 2 сократилось на 5,91–6,70%
+по парным медианам.
+[Профили, проверки и замеры](../../docs/reports/STAGE_3_S3-40ah_2026-11-19.md)
+
 S2-37a/b add two separate local-only scalar approximation instructions:
 register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
 `Binary32` references and update only the destination low dword; the rest of

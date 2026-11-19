@@ -1716,6 +1716,15 @@ Use the unchanged S3-40z driver and fixed counts to compare
 for each build before recording six paired rounds at nice −5.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-40ag_2026-11-19.md)
 
+### S3-40ah. System instruction variant checks in interpreter RUN
+
+Use short stack samples of the exact signed S3-40ag images to locate
+the RDTSC, CPUID, SYSCALL and SYSRET comparisons. Verify that the
+four calls disappear in the signed candidate, then time the unchanged
+S3-40z RUN workload at budgets 0, 1 and 2 on M1 Pro at nice −5.
+Keep attribution samples and paired RUN timings in separate archives.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ah_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
