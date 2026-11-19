@@ -1651,7 +1651,72 @@ mod tests {
             call.stop,
             set,
             call.consecutive_faults,
+            call.machine_stop,
         )
+    }
+
+    #[test]
+    fn a_guest_pm_stop_retires_the_port_write_and_preempts_the_next_instruction() {
+        use crate::acpi_pm::{ACPI_PM_BASE_PORT, ACPI_RESET_REG, ACPI_RESET_VALUE};
+        use crate::clock_owner::NS_PER_RETIRED;
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        for (port, value, reason, budget) in [
+            (ACPI_PM_BASE_PORT + 5, 0x34, MachineStopReason::Shutdown, 64),
+            (
+                ACPI_RESET_REG,
+                ACPI_RESET_VALUE,
+                MachineStopReason::Reset,
+                3,
+            ),
+        ] {
+            let mut board = board(2);
+            let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+            let [port_low, port_high] = port.to_le_bytes();
+            patch(
+                &mut board,
+                CODE_1,
+                &[
+                    0xBA, port_low, port_high, 0x00, 0x00, // mov edx, port
+                    0xB0, value, // mov al, value
+                    0xEE,  // out dx, al
+                    0xF4,  // must not retire
+                ],
+            );
+            let bsp = board.vcpu_mut(BOOT_VCPU_INDEX).unwrap();
+            bsp.state.activity = Some(CpuActivity::Halted);
+            bsp.state.rflags &= !u64::from(EFLAGS_IF);
+            install(
+                &mut board,
+                1,
+                long_state(CODE_1, STACK_1, cr3, false),
+                0xD01,
+            );
+            let start_ns = board.clock().now_ns();
+            let (report, ()) = run(&mut board, config(64, budget), |control| {
+                assert!(control.wait_finished(WAIT));
+                assert_eq!(control.retired()[1], 3);
+                assert_eq!(control.now_ns(), start_ns + 3 * NS_PER_RETIRED);
+            });
+            assert_eq!(
+                report.finished,
+                ParallelFinish::GuestStop(reason),
+                "{report:?}"
+            );
+            assert_joined(&report, 2);
+            assert_eq!(report.cpus[1].calls, 1);
+            assert_eq!(board.vcpu(1).unwrap().state.rip, CODE_1 + 8);
+            assert_eq!(board.acpi_pm().unwrap().stop_request(), Some(reason));
+
+            let (repeated, ()) = run(&mut board, config(64, 64), |control| {
+                assert!(control.wait_finished(WAIT));
+                assert_eq!(control.retired()[1], 0);
+                assert_eq!(control.now_ns(), start_ns + 3 * NS_PER_RETIRED);
+            });
+            assert_eq!(repeated.finished, ParallelFinish::GuestStop(reason));
+            assert_joined(&repeated, 2);
+            assert_eq!(board.vcpu(1).unwrap().state.rip, CODE_1 + 8);
+        }
     }
 
     #[test]
@@ -1979,6 +2044,7 @@ mod tests {
                         &mut stop,
                         set,
                         call.consecutive_faults,
+                        call.machine_stop,
                     )
                 })
             },

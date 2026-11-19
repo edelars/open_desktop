@@ -185,11 +185,12 @@ impl AcpiPmHandle {
 
     /// Whether a PM timer read has queued time that nobody has taken yet.
     pub(crate) fn timer_tick_pending(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .timer_tick_pending_ns
-            != 0
+        self.quantum_boundary_pending(false)
+    }
+    /// Observe the timer tick and, on paths that can publish it, the machine stop in one lock.
+    pub(crate) fn quantum_boundary_pending(&self, check_stop: bool) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.timer_tick_pending_ns != 0 || (check_stop && state.stop.is_some())
     }
 
     /// Takes the virtual time queued by PM timer reads (the port tick,

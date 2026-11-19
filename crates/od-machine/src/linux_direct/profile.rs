@@ -259,6 +259,7 @@ mod tests {
                 call.stop,
                 &set,
                 call.consecutive_faults,
+                call.machine_stop,
             );
             cells.commit(call.vcpu);
             outcome

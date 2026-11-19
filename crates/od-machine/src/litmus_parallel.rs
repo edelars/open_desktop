@@ -327,6 +327,7 @@ impl Driver<'_> {
             gate,
             budget,
             consecutive_faults,
+            machine_stop,
             stop,
             ..
         } = call;
@@ -469,6 +470,7 @@ impl Driver<'_> {
                             &mut poll,
                             &set,
                             consecutive_faults,
+                            machine_stop,
                         )
                     };
                     let executed = match executed {

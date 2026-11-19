@@ -26,8 +26,9 @@
 //! plan S6-16 6). The shared Linux-profile quantum reads the current board clock for `RDTSC`,
 //! then ends the quantum and returns its device tick to the scheduler. There is no fetch cache.
 //!
-//! The NVMe doorbell, PM stop request, checkpoint recorder and observation collectors belong
-//! to the boot processor's Linux boot loop. The MSR and FP cells of the vCPU are the
+//! The shared quantum also ends at a latched ACPI PM stop request and reports it to the
+//! scheduler. The NVMe doorbell, checkpoint recorder and observation collectors belong to
+//! the boot processor's Linux boot loop. The MSR and FP cells of the vCPU are the
 //! caller's: the `set` it hands in is built over the cells of `cpu` (loaded from the `Vcpu::guest_*`
 //! fields before the call and stored back after it, as `linux_direct` does for the boot processor).
 
@@ -47,7 +48,8 @@ use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
 use crate::{
-    AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle, VirtualClockHandle,
+    AcpiPmHandle, LocalApicHandle, MachineBus, MachineStopReason, Pit8254Handle, Uart16550Handle,
+    VirtualClockHandle,
 };
 use od_isa::execute::Cpl0ProfileSet;
 use std::cell::Cell;
@@ -120,6 +122,7 @@ struct QuantumEnv<'a> {
     /// The gate of the split `LOCK` of a vCPU thread of the parallel mode.
     gate: Option<&'a dyn SplitLockGate>,
     rdtsc_clock: Option<&'a VirtualClockHandle>,
+    check_acpi_stop: bool,
 }
 
 /// What a vCPU has to have before a quantum can run (checked before anything changes).
@@ -159,6 +162,7 @@ fn quantum_loop(
         board_source,
         gate,
         rdtsc_clock,
+        check_acpi_stop,
     } = env;
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
@@ -204,7 +208,9 @@ fn quantum_loop(
                 || rdtsc_read.get()
                 || uart.holding_occupied()
                 || lapic.timer_register_writes() != timer_writes
-                || acpi_pm.as_ref().is_some_and(|pm| pm.timer_tick_pending())
+                || acpi_pm
+                    .as_ref()
+                    .is_some_and(|pm| pm.quantum_boundary_pending(check_acpi_stop))
                 || pit.as_ref().is_some_and(|pit| pit.port_tick_pending())
         },
         |_| {},
@@ -333,6 +339,7 @@ impl LoadedFirmwareBoard {
                 board_source: &mut *self.irq_source,
                 gate: None,
                 rdtsc_clock: None,
+                check_acpi_stop: false,
             },
             inputs,
             budget,
@@ -414,7 +421,8 @@ impl ThreadQuantumEnv<'_> {
 /// the same call of the CPL0-set loop, on the shared machine, for the vCPU the thread owns.
 /// `board_source` is the interrupt source of the board for the boot processor; it is not asked
 /// for any other vCPU. `gate` is the stop-all of the split `LOCK`. The bus takes the device
-/// lock for each access. The Linux-profile board supplies the clock for `RDTSC`.
+/// lock for each access. The Linux-profile board supplies the clock for `RDTSC`. The worker
+/// publishes `machine_stop` after charging the executed prefix.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_vcpu_set_quantum_shared(
     env: &ThreadQuantumEnv<'_>,
@@ -427,6 +435,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
     consecutive_faults: &mut u64,
+    machine_stop: &mut Option<MachineStopReason>,
 ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     let inputs = quantum_inputs(vcpu)?;
     env.pump_uart_transmit();
@@ -443,6 +452,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
             board_source,
             gate,
             rdtsc_clock: env.rdtsc_clock,
+            check_acpi_stop: true,
         },
         inputs,
         budget,
@@ -455,7 +465,9 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     // A completed quantum takes pending board requests for the clock owner.
     // A peer may have queued them before this call.
     let device_ns = env.take_device_ticks().saturating_add(rdtsc_ns);
-    quantum_result(report, cpu, vcpu, device_ns)
+    let executed = quantum_result(report, cpu, vcpu, device_ns)?;
+    *machine_stop = env.acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+    Ok(executed)
 }
 
 /// The CPL0 interpreter for a litmus probe with no board-device or IRQ polling.

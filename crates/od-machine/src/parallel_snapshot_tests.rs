@@ -47,6 +47,7 @@ fn parallel_quantum(call: QuantumCall<'_, '_>) -> Result<Executed, RunFailure<Fi
             call.stop,
             set,
             call.consecutive_faults,
+            call.machine_stop,
         )
     })
 }

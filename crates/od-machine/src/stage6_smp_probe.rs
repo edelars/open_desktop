@@ -470,6 +470,7 @@ impl Stage6SmpProbe {
             call.stop,
             &set,
             call.consecutive_faults,
+            call.machine_stop,
         )
     }
 
