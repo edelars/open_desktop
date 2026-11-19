@@ -7,8 +7,8 @@ use core::ptr;
 mod query;
 
 pub use query::{
-    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OpenProtocolInformationEntry, locate_handle,
-    locate_handle_buffer, open_protocol_information, protocols_per_handle,
+    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OpenProtocolInformationEntry, locate_device_path,
+    locate_handle, locate_handle_buffer, open_protocol_information, protocols_per_handle,
 };
 
 const MAX_PROTOCOL_BINDINGS: usize = 128;

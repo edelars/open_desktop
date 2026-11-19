@@ -13,6 +13,7 @@
 pub mod acpi;
 pub mod bs;
 mod crc32;
+pub mod device_path;
 pub mod handoff;
 pub mod idt;
 pub mod image;

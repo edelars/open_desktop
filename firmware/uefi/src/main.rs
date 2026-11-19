@@ -17,6 +17,7 @@ use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::bs::protocol::{
     LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OPEN_BY_DRIVER, OPEN_GET_PROTOCOL,
 };
+use od_firmware::device_path::{DEVICE_PATH_PROTOCOL_GUID, DevicePathNode};
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
@@ -383,6 +384,7 @@ fn verify_protocol_services(system: &SystemTable) {
         if contents.cast::<u8>().read() != 0xa5 || free(contents) != Status::SUCCESS {
             stop(STOP_BOOT_SERVICES, 16);
         }
+        verify_device_path(boot);
     }
     com1_write(b"OD-FW S7-05 Boot Services protocol registry verified\r\n");
 }
@@ -566,6 +568,95 @@ unsafe fn verify_protocol_enumeration(
             || free(opens.cast()) != Status::SUCCESS
         {
             stop(STOP_BOOT_SERVICES, 26);
+        }
+    }
+}
+
+/// The BSP owns the live diagnostic table.
+#[inline(never)]
+unsafe fn verify_device_path(boot: *const BootServices) {
+    static PARENT: [u8; 10] = [1, 1, 6, 0, 0, 1, 0x7f, 0xff, 4, 0];
+    static CHILD: [u8; 16] = [1, 1, 6, 0, 0, 1, 1, 1, 6, 0, 0, 2, 0x7f, 0xff, 4, 0];
+    static INPUT: [u8; 34] = [
+        1, 1, 6, 0, 0, 1, 1, 1, 6, 0, 0, 2, 4, 4, 8, 0, b'x', 0, 0, 0, 0x7f, 1, 4, 0, 1, 1, 6, 0,
+        0, 3, 0x7f, 0xff, 4, 0,
+    ];
+    static BAD_LENGTH: [u8; 4] = [1, 1, 2, 0];
+    static SECOND_ONLY: [u8; 26] = [
+        1, 1, 6, 0, 0, 3, 0x7f, 1, 4, 0, 1, 1, 6, 0, 0, 1, 1, 1, 6, 0, 0, 2, 0x7f, 0xff, 4, 0,
+    ];
+    let parent_path = PARENT.as_ptr().cast_mut().cast::<DevicePathNode>();
+    let child_path = CHILD.as_ptr().cast_mut().cast::<DevicePathNode>();
+    let input_path = INPUT.as_ptr().cast_mut().cast::<DevicePathNode>();
+    let mut parent = ptr::null_mut();
+    let mut child = ptr::null_mut();
+    unsafe {
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        let locate = ptr::addr_of!((*boot).locate_device_path).read_volatile();
+        if install(
+            &mut parent,
+            &DEVICE_PATH_PROTOCOL_GUID,
+            0,
+            parent_path.cast(),
+        ) != Status::SUCCESS
+            || install(&mut parent, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS
+            || install(&mut child, &DEVICE_PATH_PROTOCOL_GUID, 0, child_path.cast())
+                != Status::SUCCESS
+            || install(&mut child, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 27);
+        }
+
+        let mut remaining = input_path;
+        let mut found = ptr::null_mut();
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, &mut found) != Status::SUCCESS
+            || found != child
+            || remaining != input_path.byte_add(12)
+        {
+            stop(STOP_BOOT_SERVICES, 28);
+        }
+        remaining = child_path;
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, &mut found) != Status::SUCCESS
+            || found != child
+            || remaining != child_path.byte_add(12)
+            || uninstall(child, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 29);
+        }
+        remaining = input_path;
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, &mut found) != Status::SUCCESS
+            || found != parent
+            || remaining != input_path.byte_add(6)
+        {
+            stop(STOP_BOOT_SERVICES, 29);
+        }
+
+        let no_match = SECOND_ONLY.as_ptr().cast_mut().cast();
+        remaining = no_match;
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, ptr::null_mut()) != Status::NOT_FOUND
+            || remaining != no_match
+        {
+            stop(STOP_BOOT_SERVICES, 31);
+        }
+        remaining = input_path;
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, ptr::null_mut())
+            != Status::INVALID_PARAMETER
+            || remaining != input_path
+        {
+            stop(STOP_BOOT_SERVICES, 31);
+        }
+
+        let malformed = BAD_LENGTH.as_ptr().cast_mut().cast();
+        remaining = malformed;
+        if locate(&DIAGNOSTIC_PROTOCOL, &mut remaining, &mut found) != Status::INVALID_PARAMETER
+            || remaining != malformed
+            || found != parent
+            || uninstall(child, &DEVICE_PATH_PROTOCOL_GUID, child_path.cast()) != Status::SUCCESS
+            || uninstall(parent, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS
+            || uninstall(parent, &DEVICE_PATH_PROTOCOL_GUID, parent_path.cast()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 30);
         }
     }
 }

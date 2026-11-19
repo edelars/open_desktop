@@ -54753,6 +54753,114 @@ fn firmware_boot_movzx_word_guid_field_checks_memory_before_committing() {
 }
 
 #[test]
+fn firmware_boot_and_byte_source_fault_leaves_register_and_flags_unchanged() {
+    let code = [0x44, 0x22, 0x54, 0x24, 0x08]; // AND R10B,[RSP+8]
+    let address = DATA + 8;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 8] = 0x0f;
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::R10 as usize] = 0xdead_beef_1234_56a5;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 0x803;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8c5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::R10 as usize] = 0xdead_beef_1234_5605;
+            expected.rflags = 6;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_cmp_byte_registers_sets_flags_without_writing_operands() {
+    let code = [0x41, 0x38, 0xf8]; // CMP R8B,DIL
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R8 as usize] = 0xdead_beef_1234_5605;
+    cpu.gpr[Register::Rdi as usize] = 0x1234_5678_9abc_de06;
+    cpu.rflags = 2;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0x38 }
+    );
+    assert_eq!(cpu, before);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        2,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 2 | 0x8d5);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    expected.rflags = 0x97;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_inc_byte_preserves_carry_and_the_rest_of_the_register() {
+    let code = [0x41, 0xfe, 0xc1]; // INC R9B
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R9 as usize] = 0xdead_beef_1234_56ff;
+    cpu.rflags = 3;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0xfe }
+    );
+    assert_eq!(cpu, before);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        2,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 2 | 0x8d4);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    expected.gpr[Register::R9 as usize] = 0xdead_beef_1234_5600;
+    expected.rflags = 0x57;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
         (&[0x48, 0x0f, 0x47, 0x03][..], 0x47),       // CMOVA RAX,[RBX]
@@ -54792,6 +54900,8 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),    // address override on TEST
         (&[0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST EDX,imm32
         (&[0x48, 0xff, 0x03][..], 0xff),             // INC qword [RBX]
+        (&[0xfe, 0x03][..], 0xfe),                   // INC byte ptr [RBX]
+        (&[0x41, 0xfe, 0xc9][..], 0xfe),             // DEC R9B
         (&[0x48, 0xff, 0x0b][..], 0xff),             // DEC qword [RBX]
         (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),       // SHL qword [RBX],21
         (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),       // SHR CX,21

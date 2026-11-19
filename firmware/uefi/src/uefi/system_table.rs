@@ -6,6 +6,7 @@ use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
 use crate::bs::{memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
+use crate::device_path::DevicePathNode;
 use crate::mem::map::{MemoryDescriptor, MemoryType};
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
@@ -55,6 +56,8 @@ type LocateHandleBuffer = unsafe extern "efiapi" fn(
     *mut usize,
     *mut *mut Handle,
 ) -> Status;
+type LocateDevicePath =
+    unsafe extern "efiapi" fn(*const Guid, *mut *mut DevicePathNode, *mut Handle) -> Status;
 type CalculateCrc32 = unsafe extern "efiapi" fn(*const c_void, usize, *mut u32) -> Status;
 type CopyMem = unsafe extern "efiapi" fn(*mut c_void, *const c_void, usize);
 type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
@@ -82,7 +85,7 @@ pub struct BootServices {
     reserved: *const c_void,
     register_protocol_notify: *const c_void,
     pub locate_handle: LocateHandle,
-    locate_device_path: *const c_void,
+    pub locate_device_path: LocateDevicePath,
     install_configuration_table: *const c_void,
     load_image: *const c_void,
     start_image: *const c_void,
@@ -132,7 +135,7 @@ impl BootServices {
             reserved: ptr::null(),
             register_protocol_notify: ptr::null(),
             locate_handle: protocol::locate_handle,
-            locate_device_path: ptr::null(),
+            locate_device_path: protocol::locate_device_path,
             install_configuration_table: ptr::null(),
             load_image: ptr::null(),
             start_image: ptr::null(),
@@ -315,6 +318,7 @@ mod tests {
         assert_eq!(offset_of!(BootServices, open_protocol), 280);
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
         assert_eq!(offset_of!(BootServices, locate_handle), 176);
+        assert_eq!(offset_of!(BootServices, locate_device_path), 184);
         assert_eq!(offset_of!(BootServices, open_protocol_information), 296);
         assert_eq!(offset_of!(BootServices, protocols_per_handle), 304);
         assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);

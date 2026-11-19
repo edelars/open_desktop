@@ -2,6 +2,7 @@
 
 use super::{MAX_OPEN_RECORDS, MAX_PROTOCOL_BINDINGS, ProtocolRegistry};
 use crate::bs::{memory::allocate_pool_in, misc, state};
+use crate::device_path::{DEVICE_PATH_PROTOCOL_GUID, DevicePathNode, first_instance_extent};
 use crate::mem::map::MemoryType;
 use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::ffi::c_void;
@@ -240,6 +241,71 @@ pub unsafe extern "efiapi" fn open_protocol_information(
     }
 }
 
+/// # Safety
+/// Call on the BSP. Non-null scalar pointer arguments are readable and aligned,
+/// with disjoint writable output storage outside firmware-private state.
+/// The input path and any installed Device Path interfaces must have readable
+/// and stable backing for their described nodes through the first End node.
+pub unsafe extern "efiapi" fn locate_device_path(
+    protocol: *const Guid,
+    device_path: *mut *mut DevicePathNode,
+    device: *mut Handle,
+) -> Status {
+    if protocol.is_null() || device_path.is_null() {
+        return Status::INVALID_PARAMETER;
+    }
+    unsafe {
+        let protocol = protocol.read();
+        let start = device_path.read();
+        let Some(length) = first_instance_extent(start) else {
+            return Status::INVALID_PARAMETER;
+        };
+        let input = core::slice::from_raw_parts(start.cast::<u8>(), length);
+        state::with(|state| {
+            let Some((handle, matched_bytes)) =
+                state.protocols.closest_device_path(protocol, input)
+            else {
+                return Status::NOT_FOUND;
+            };
+            if device.is_null() {
+                return Status::INVALID_PARAMETER;
+            }
+            device.write(handle);
+            device_path.write(start.byte_add(matched_bytes));
+            Status::SUCCESS
+        })
+    }
+}
+
+impl ProtocolRegistry {
+    /// Installed interfaces with the Device Path GUID must point to readable
+    /// path storage. The input ends at a validated node boundary.
+    unsafe fn closest_device_path(&self, protocol: Guid, input: &[u8]) -> Option<(Handle, usize)> {
+        let mut best = None;
+        for binding in self.bindings.iter().flatten() {
+            if binding.protocol != DEVICE_PATH_PROTOCOL_GUID
+                || self.binding_index(binding.handle, protocol).is_none()
+            {
+                continue;
+            }
+            let path = binding.interface.cast::<DevicePathNode>();
+            let Some(prefix_length) = (unsafe { first_instance_extent(path) }) else {
+                continue;
+            };
+            if prefix_length > input.len()
+                || best.is_some_and(|(_, length)| length >= prefix_length)
+            {
+                continue;
+            }
+            let prefix = unsafe { core::slice::from_raw_parts(path.cast::<u8>(), prefix_length) };
+            if input.starts_with(prefix) {
+                best = Some((binding.handle, prefix_length));
+            }
+        }
+        best
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +363,61 @@ mod tests {
                 Some(Status::INVALID_PARAMETER)
             );
         }
+    }
+
+    #[test]
+    fn closest_valid_device_path_must_also_have_the_requested_protocol() {
+        let mut registry = ProtocolRegistry::new();
+        let marker = ptr::null_mut();
+        let protocol = Guid {
+            data1: 0xbf76_a044,
+            data2: 0x6d3f,
+            data3: 0x11d2,
+            data4: [0x15; 8],
+        };
+        let malformed = [1u8, 1, 3, 0];
+        let parent = [1u8, 1, 6, 0, 0, 1, 0x7f, 0xff, 4, 0];
+        let child = [1u8, 1, 6, 0, 0, 1, 1, 1, 6, 0, 0, 2, 0x7f, 0xff, 4, 0];
+        let malformed_handle = registry
+            .install(
+                marker,
+                DEVICE_PATH_PROTOCOL_GUID,
+                malformed.as_ptr().cast_mut().cast(),
+            )
+            .unwrap();
+        registry
+            .install(malformed_handle, protocol, marker)
+            .unwrap();
+        let parent_handle = registry
+            .install(
+                marker,
+                DEVICE_PATH_PROTOCOL_GUID,
+                parent.as_ptr().cast_mut().cast(),
+            )
+            .unwrap();
+        registry.install(parent_handle, protocol, marker).unwrap();
+        let child_handle = registry
+            .install(
+                marker,
+                DEVICE_PATH_PROTOCOL_GUID,
+                child.as_ptr().cast_mut().cast(),
+            )
+            .unwrap();
+
+        // SAFETY: all of the registered path buffers stay live and readable.
+        let input = &child[..12];
+        assert_eq!(
+            unsafe { registry.closest_device_path(protocol, input) },
+            Some((parent_handle, 6))
+        );
+        registry.install(child_handle, protocol, marker).unwrap();
+        assert_eq!(
+            unsafe { registry.closest_device_path(protocol, input) },
+            Some((child_handle, 12))
+        );
+        assert_eq!(
+            unsafe { registry.closest_device_path(protocol, &[1, 1, 6, 0, 0, 3]) },
+            None
+        );
     }
 }

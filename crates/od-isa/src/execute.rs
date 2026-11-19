@@ -20248,7 +20248,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ Operand::Register(_),
         }
         | Operation::Logic {
-            kind: LogicKind::Xor | LogicKind::Or,
+            kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
             dst: Operand::Register(destination),
             src: source @ Operand::Memory(_),
         }
@@ -20268,11 +20268,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: ArithmeticKind::Inc | ArithmeticKind::Dec,
                     ..
                 } => {
-                    instruction.opcode.byte == 0xff
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0xff, OperandSize::Dword | OperandSize::Qword)
+                    ) || (instruction.opcode.byte == 0xfe
+                        && instruction.operand_size == OperandSize::Byte
                         && matches!(
-                            instruction.operand_size,
-                            OperandSize::Dword | OperandSize::Qword
-                        )
+                            operation,
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Inc,
+                                ..
+                            }
+                        ))
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Adc,
@@ -20310,6 +20317,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0xf7, OperandSize::Dword | OperandSize::Qword)
                     )
+                }
+                Operation::Logic {
+                    kind: LogicKind::And,
+                    src: Operand::Memory(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x22 && instruction.operand_size == OperandSize::Byte
                 }
                 Operation::Logic {
                     kind: LogicKind::And,
@@ -20372,7 +20386,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 kind: ArithmeticKind::Cmp,
                                 ..
                             },
-                            0x3c | 0x80,
+                            0x38 | 0x3c | 0x80,
                             OperandSize::Byte
                         )
                     )
