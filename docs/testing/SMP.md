@@ -524,12 +524,23 @@ done
 
 ### S6-22 — проверка гостевых нагрузок
 
-После загрузки с `rdinit=/s6-smp-init` передайте JSON LinuxDirect в верификатор. Используйте тот же nonce, который получила гостевая программа.
+На macOS arm64 передайте `--rootfs-raw` рабочую копию принятого образа ext4. Runner открывает её на запись с эксклюзивной блокировкой, подключает к PCI/NVMe и добавляет `rdinit=/s6-smp-init`. Для каждого повтора создавайте новую копию образа и указывайте свободный путь отчёта. Установите `kernel`, `overlay` и `accepted_raw` в пути проверенных файлов, а `kernel_sha256` и `overlay_sha256` в ожидаемые хеши ядра и initramfs. Соберите release runner и задайте `budget` по длительности прогона.
 
 ```sh
+mkdir -p work/stage6/s6-22-rootfs
+run_dir=$(mktemp -d work/stage6/s6-22-rootfs/seeded.XXXXXX)
+cp -c "$accepted_raw" "$run_dir/working.raw"
+nonce=s6-workloads20261119
+target/release/od-runner linux-direct \
+  --vmlinuz "$kernel" --initramfs "$overlay" \
+  --acpi-blob tests/fixtures/guest/stage6/smp-init/acpi-nvme-2-vcpus.bin \
+  --expected-vmlinuz-sha256 "$kernel_sha256" --expected-initramfs-sha256 "$overlay_sha256" \
+  --expected-acpi-manifest-hash a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af \
+  --ram-mib 128 --nonce "$nonce" --out "$run_dir/boot.json" \
+  --rootfs-raw "$run_dir/working.raw" --run --budget "$budget" \
+  --set-cpl0 --cpuid-profile stage4a-apic --user-mode --vcpus 2 --seed 24301
 python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
-  --verify-report work/stage6/s6-22/boot.json \
-  --nonce s6-workloads20261119 --expect-online 2
+  --verify-report "$run_dir/boot.json" --nonce "$nonce" --expect-online 2
 ```
 
 Проверка сверяет сводку ядра о поднятых CPU, SHA-256 исходника из гостя, nonce, пару процессоров и полный результат пяти нагрузок. Перед завершением гостевой сценарий читает `/sys/devices/system/cpu/online`. Для поточного запуска на четырёх vCPU используйте `--expect-online 4`. Длительность, повторяемость и расход памяти проверяются по критериям отдельного прогона.

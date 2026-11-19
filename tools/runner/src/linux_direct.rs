@@ -70,15 +70,16 @@
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput,
-    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason,
-    load_linux_direct_board_with_vcpus, run_linux_direct_board,
-    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode_interleaved,
+    LinuxExecutionObservations, LinuxStopRecord, MachineStopReason, NvmeBackend, NvmeConfig,
+    load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
+    run_linux_direct_board, run_linux_direct_board_set_observed,
+    run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::ExitCode;
 
 #[cfg(test)]
@@ -90,6 +91,7 @@ pub(crate) mod series;
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
  [--vcpus 1|2] [--seed <u64> (stage4a or stage4a-apic user mode)] \
+ [--rootfs-raw <working-copy.raw> (--vcpus 2|4, seeded stage4a-apic user mode, new report path)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -111,6 +113,7 @@ struct Options {
     vmlinuz: String,
     initramfs: String,
     acpi_blob: String,
+    rootfs_raw: Option<String>,
     nonce: String,
     /// Carry the nonce in the initrd bootconfig instead of the early command line.
     nonce_bootconfig: bool,
@@ -180,7 +183,40 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let (mut value, code) = evaluate(&options);
+    let (rootfs, mut report_file) = if let Some(path) = &options.rootfs_raw {
+        let backend = match open_rootfs(path) {
+            Ok(backend) => backend,
+            Err(detail) => {
+                let value = refusal(
+                    "invalid_input",
+                    "rootfs_raw",
+                    detail,
+                    json!({"retired": 0, "guest_started": false}),
+                );
+                println!("{value}");
+                return ExitCode::from(3);
+            }
+        };
+        // Reserve the output without following a symlink or truncating an existing file, then
+        // keep that exact descriptor through the run. The report can never overwrite the RAW.
+        let file = match File::create_new(&options.out) {
+            Ok(file) => file,
+            Err(error) => {
+                let value = refusal(
+                    "invalid_input",
+                    "out_file",
+                    error.to_string(),
+                    json!({"retired": 0, "guest_started": false}),
+                );
+                println!("{value}");
+                return ExitCode::from(3);
+            }
+        };
+        (Some(backend), Some(file))
+    } else {
+        (None, None)
+    };
+    let (mut value, code) = evaluate_with_rootfs(&options, &DiagnosticEnv::from_process(), rootfs);
     let skip_report_write = value
         .get("_skip_report_write")
         .and_then(Value::as_bool)
@@ -209,7 +245,11 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::from(3);
     }
     let text = format!("{value:#}\n");
-    if let Err(error) = std::fs::write(&options.out, &text) {
+    let written = match &mut report_file {
+        Some(file) => file.write_all(text.as_bytes()),
+        None => std::fs::write(&options.out, &text),
+    };
+    if let Err(error) = written {
         let value = refusal(
             "invalid_input",
             "out_file",
@@ -223,11 +263,24 @@ pub fn run(args: &[String]) -> ExitCode {
     ExitCode::from(code)
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn open_rootfs(path: &str) -> Result<Box<dyn NvmeBackend + Send>, String> {
+    use od_host::persistent_nvme::PersistentNvmeBackend;
+    PersistentNvmeBackend::open(std::path::Path::new(path))
+        .map(|backend| Box::new(backend) as Box<dyn NvmeBackend + Send>)
+        .map_err(|error| format!("{path}: {error}"))
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn open_rootfs(_path: &str) -> Result<Box<dyn NvmeBackend + Send>, String> {
+    Err("--rootfs-raw requires the macOS arm64 persistent storage backend".into())
+}
+
 /// Runs the whole pipeline and returns the JSON evidence and the exit code (0 loaded, 4 refused,
 /// 3 unreadable input). Without `--run` the guest is not started; with `--run` it runs until the
 /// budget or its first stop, after the load has succeeded.
 fn evaluate(options: &Options) -> (Value, u8) {
-    evaluate_with_env(options, &DiagnosticEnv::from_process())
+    evaluate_with_rootfs(options, &DiagnosticEnv::from_process(), None)
 }
 
 /// The environment variables of the diagnostic runs, read once (S4-13, S4-13b); a test gives its
@@ -253,7 +306,16 @@ impl DiagnosticEnv {
     }
 }
 
+#[cfg(test)]
 fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
+    evaluate_with_rootfs(options, env, None)
+}
+
+fn evaluate_with_rootfs(
+    options: &Options,
+    env: &DiagnosticEnv,
+    rootfs: Option<Box<dyn NvmeBackend + Send>>,
+) -> (Value, u8) {
     let mut evidence = json!({
         "retired": 0,
         "guest_started": false,
@@ -390,7 +452,7 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
     });
 
     // 6 (cmdline). The runner builds the line; od-machine checks it.
-    let (cmdline, loaded_initrd_sha256) = if options.nonce_bootconfig {
+    let (mut cmdline, loaded_initrd_sha256) = if options.nonce_bootconfig {
         let trailer = nonce_bootconfig_trailer(&options.nonce, initramfs.len() as u64);
         let loaded_bytes = initramfs.len() + trailer.len();
         if loaded_bytes as u64 > ram_bytes {
@@ -424,6 +486,9 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
             initramfs_sha,
         )
     };
+    if rootfs.is_some() {
+        cmdline.push_str(" rdinit=/s6-smp-init");
+    }
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
@@ -435,8 +500,39 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
         expected_acpi_manifest_hash: options.expected_acpi_manifest_hash,
         ram_bytes,
     };
-    match load_linux_direct_board_with_vcpus(&machine_input, options.vcpu_count) {
+    let loaded = if let Some(backend) = &rootfs {
+        let namespace_sectors = backend.sector_count();
+        evidence["inputs"]["rootfs_raw"] = json!({
+            "path": options.rootfs_raw,
+            "namespace_sectors": namespace_sectors,
+        });
+        load_linux_direct_board_with_nvme_and_vcpus(
+            &machine_input,
+            NvmeConfig {
+                namespace_sectors,
+                ..NvmeConfig::default()
+            },
+            options.vcpu_count,
+        )
+    } else {
+        load_linux_direct_board_with_vcpus(&machine_input, options.vcpu_count)
+    };
+    match loaded {
         Ok(mut boot) => {
+            if let Some(backend) = rootfs {
+                let nvme = boot.board.nvme().expect("loaded PCI/NVMe board");
+                if let Err(error) = nvme.attach_backend(backend) {
+                    return (
+                        refusal(
+                            "nvme_attach_failed",
+                            "rootfs_raw",
+                            format!("{error:?}"),
+                            evidence,
+                        ),
+                        4,
+                    );
+                }
+            }
             describe(
                 &mut evidence,
                 &boot,
@@ -1349,6 +1445,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut vmlinuz = None;
     let mut initramfs = None;
     let mut acpi_blob = None;
+    let mut rootfs_raw = None;
     let mut nonce = None;
     let mut nonce_bootconfig = false;
     let mut expected_vmlinuz = None;
@@ -1490,6 +1587,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--out" => &mut out,
             "--budget" => &mut budget,
             "--vcpus" => &mut vcpus,
+            "--rootfs-raw" => &mut rootfs_raw,
             "--seed" => &mut seed,
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--checkpoint-table" => &mut checkpoint_table,
@@ -1634,8 +1732,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let vcpu_count = match vcpus.map(|text| decimal("--vcpus", text)).transpose()? {
         None | Some(1) => 1,
         Some(2) => 2,
+        Some(4) if rootfs_raw.is_some() => 4,
         Some(count) => return Err(format!("unsupported --vcpus {count}: expected 1 or 2")),
     };
+    if rootfs_raw.is_some() && !(run && vcpu_count > 1) {
+        return Err("--rootfs-raw needs --run with --vcpus 2 or 4".into());
+    }
     if run
         && vcpu_count > 1
         && !(seed.is_some()
@@ -1643,10 +1745,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             && cpuid_profile == CpuidProfile::X8664V1Stage4AApic
             && user_mode)
     {
-        return Err(
-            "--vcpus 2 needs --seed, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
-                .into(),
-        );
+        return Err(format!(
+            "--vcpus {vcpu_count} needs --seed, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
+        ));
     }
     if vcpu_count > 1
         && (checkpoint_table.is_some()
@@ -1837,6 +1938,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         vmlinuz: required(vmlinuz, "--vmlinuz")?,
         initramfs: required(initramfs, "--initramfs")?,
         acpi_blob: required(acpi_blob, "--acpi-blob")?,
+        rootfs_raw,
         nonce,
         nonce_bootconfig,
         expected_vmlinuz_sha256: parse_sha256(&required(
@@ -3243,6 +3345,7 @@ mod tests {
                 budget: None,
                 vcpu_count: 1,
                 interleaved_seed: None,
+                rootfs_raw: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -4874,6 +4977,25 @@ mod tests {
         assert_eq!(smp_options.vcpu_count, 2);
         assert_eq!(smp_options.interleaved_seed, Some(24301));
         assert!(parse_base(&["--vcpus", "2"]).is_ok());
+        assert!(parse_base(&["--vcpus", "4"]).is_err());
+        assert!(parse_base(&["--vcpus", "2", "--rootfs-raw", "working.raw"]).is_err());
+        for count in ["2", "4"] {
+            let disk = [
+                &apic_profile[..],
+                &[
+                    "--vcpus",
+                    count,
+                    "--seed",
+                    "24301",
+                    "--rootfs-raw",
+                    "working.raw",
+                ],
+            ]
+            .concat();
+            let options = parse_base(&disk).unwrap();
+            assert_eq!(options.rootfs_raw.as_deref(), Some("working.raw"));
+            assert_eq!(options.vcpu_count.to_string(), count);
+        }
         assert!(parse_base(&[&smp[..], &["--stack-context-out", "trace.json"]].concat()).is_err());
         let mut wrong_profile = profile;
         wrong_profile[5] = "diagnostic";
@@ -4881,6 +5003,85 @@ mod tests {
         let mut zero_budget = profile;
         zero_budget[2] = "0";
         assert!(parse_base(&[&zero_budget[..], &["--seed", "1"]].concat()).is_err());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn linux_direct_raw_run_reserves_a_distinct_report_and_uses_image_geometry() {
+        use std::os::unix::fs::symlink;
+
+        let expected_manifest = "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af";
+        let blob =
+            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-2-vcpus.bin");
+        let case = Case::new("disk-smp", &bzimage_with_entry(&[0xf4]), &[], blob);
+        let raw = case.dir.join("working.raw");
+        let bytes = vec![0x35; 16 * 512];
+        std::fs::write(&raw, &bytes).unwrap();
+        let hardlink = case.dir.join("report-hardlink");
+        let symlink_path = case.dir.join("report-symlink");
+        std::fs::hard_link(&raw, &hardlink).unwrap();
+        symlink(&raw, &symlink_path).unwrap();
+
+        let args = |out: &str| {
+            [
+                "--vmlinuz",
+                &case.options.vmlinuz,
+                "--initramfs",
+                &case.options.initramfs,
+                "--acpi-blob",
+                &case.options.acpi_blob,
+                "--nonce",
+                &case.options.nonce,
+                "--expected-vmlinuz-sha256",
+                &case.options.expected_vmlinuz_sha256,
+                "--expected-initramfs-sha256",
+                &case.options.expected_initramfs_sha256,
+                "--expected-acpi-manifest-hash",
+                expected_manifest,
+                "--ram-mib",
+                "128",
+                "--out",
+                out,
+                "--rootfs-raw",
+                raw.to_str().unwrap(),
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--cpuid-profile",
+                "stage4a-apic",
+                "--user-mode",
+                "--vcpus",
+                "2",
+                "--seed",
+                "24301",
+            ]
+            .map(String::from)
+        };
+        for alias in [&raw, &hardlink, &symlink_path] {
+            assert_eq!(run(&args(alias.to_str().unwrap())), ExitCode::from(3));
+            assert_eq!(std::fs::read(alias).unwrap(), bytes);
+        }
+        assert_eq!(run(&args(&case.options.out)), ExitCode::SUCCESS);
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(&case.options.out).unwrap()).unwrap();
+        assert_eq!(report["inputs"]["rootfs_raw"]["namespace_sectors"], 16);
+        assert_eq!(report["guest_started"], true);
+        assert_eq!(report["retired"], 1);
+        assert_eq!(
+            report["interleaved_scheduler"]["cpu_stats"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            report["cmdline_in_memory"]
+                .as_str()
+                .unwrap()
+                .ends_with(" rdinit=/s6-smp-init")
+        );
+        assert_eq!(std::fs::read(&raw).unwrap(), bytes);
     }
 
     #[test]
@@ -6816,6 +7017,7 @@ mod tests {
             budget: None,
             vcpu_count: 1,
             interleaved_seed: None,
+            rootfs_raw: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -6876,6 +7078,7 @@ mod tests {
             budget: Some(1000),
             vcpu_count: 1,
             interleaved_seed: None,
+            rootfs_raw: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -6940,6 +7143,7 @@ mod tests {
             budget: Some(2_600_000_000),
             vcpu_count: 1,
             interleaved_seed: None,
+            rootfs_raw: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
@@ -7025,6 +7229,7 @@ mod tests {
             budget: Some(30_000_000),
             vcpu_count: 1,
             interleaved_seed: None,
+            rootfs_raw: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,

@@ -677,6 +677,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
             "--expected-s5-marker" => expected_s5_marker_keys.push(value.clone()),
             "--out" => set_unique(&mut out, value, name)?,
             "--nonce" => return Err("--nonce is generated separately for each test run".into()),
+            "--rootfs-raw" => return Err("--rootfs-raw requires a single LinuxDirect run".into()),
             _ => {
                 forwarded.push(name.to_string());
                 forwarded.push(value.clone());
