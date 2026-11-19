@@ -1025,8 +1025,16 @@ At 64 and 4096 iterations with one RIP, the dispatcher took 7.6% and 5.6%
 of the previous JIT time by the median absolute comparison. The one-pass
 case cost 3.75% more. The two-RIP controls showed 2.22–3.47% median normalized
 overhead. The signed process suite passed 46/46 with the timed dispatcher
-patch. Cold and broader workload acceptance remain open.
+patch. Broader workload acceptance remains open.
 [S3-36g report and raw evidence](STAGE_3_S3-36g_2026-11-19.md)
+
+S3-35e measured session initialization and first RUN with an empty code
+cache on the same six inputs. At 64 and 4096 iterations with one RIP, the
+current JIT beat the interpreter in all scored pairs. The median times
+were 10.6 µs versus 27.5 µs and 163 µs versus 1752 µs respectively. Short
+and alternating-RIP inputs still favored the interpreter. The broader cold
+matrix and fine-grained compiler phases remain open.
+[S3-35e report and raw evidence](STAGE_3_S3-35e_2026-11-19.md)
 
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite

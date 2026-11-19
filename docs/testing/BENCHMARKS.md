@@ -1421,6 +1421,17 @@ normalizing against the ordinary cached dispatcher. The
 [report and evidence archive](../reports/STAGE_3_S3-31f_2026-11-19.md)
 contain raw ranges, the benchmark patch, reproduction steps and build hashes.
 
+### S3-35e. Cold retained-session first execution
+
+Both signed builds use a fresh `Session` for every scored JIT call on the
+same six countdown profiles as S3-36g. The contiguous timer spans session
+creation and first execution. The phase split records initialization and
+the first RUN with the two cold-cache probes. The driver checks empty
+counters, exact publications, state and retired work on each call. Process
+launch has its own S3-35d measurement. The archive contains the fixed-call
+schedule, signed build provenance, raw times and the offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-35e_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
