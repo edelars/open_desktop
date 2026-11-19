@@ -3,11 +3,13 @@
 #include "open_desktop/session_abi_v1.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #define LAYOUT(type, size_constant, size, alignment)                   \
@@ -93,9 +95,9 @@ static void assert_sentinel(const void *output, size_t size) {
     }
 }
 
-static void require_normal_notification(od_session_handle_v1 handle) {
+static void require_normal_notification(od_session_handle_v1 handle, uint32_t id) {
     /* ZF set, so the branch falls through to the end after one instruction. */
-    od_session_run_request_v1 request = make_request(1, 8, 0x42);
+    od_session_run_request_v1 request = make_request(id, 8, 0x42);
     int fd = begin(handle, &request);
     uint8_t notification[2];
     assert(read(fd, notification, sizeof(notification)) == 1);
@@ -113,9 +115,65 @@ static void require_normal_notification(od_session_handle_v1 handle) {
     assert(close(fd) == 0);
 }
 
-static void require_notification_failure(od_session_handle_v1 handle) {
+static void require_pipe_creation_failure(od_session_handle_v1 handle, uint32_t id) {
+    enum { DESCRIPTOR_CAP = 32 };
+    struct rlimit saved;
+    assert(getrlimit(RLIMIT_NOFILE, &saved) == 0);
+    struct rlimit temporary = saved;
+    if (temporary.rlim_cur > DESCRIPTOR_CAP) {
+        temporary.rlim_cur = DESCRIPTOR_CAP;
+    }
+    assert(setrlimit(RLIMIT_NOFILE, &temporary) == 0);
+
+    int held[DESCRIPTOR_CAP];
+    size_t count = 0;
+    for (;;) {
+        int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            assert(errno == EMFILE);
+            break;
+        }
+        assert(count < DESCRIPTOR_CAP);
+        held[count++] = fd;
+    }
+    assert(count > 0);
+    /* Leave one slot. pipe() needs two, so it must undo any partial allocation. */
+    int available_fd = held[--count];
+    assert(close(available_fd) == 0);
+    int probe[2];
+    assert(pipe(probe) == -1 && errno == EMFILE);
+
+    od_session_run_request_v1 request = make_request(id, 8, 0x42);
+    od_session_run_token_v1 token;
+    memset(&token, 0xA5, sizeof(token));
+    uint32_t begin_status = od_session_begin_run_v1(handle, &request, sizeof(request), &token, sizeof(token));
+    assert(begin_status == OD_SESSION_STATUS_ALLOCATION_FAILED_V1);
+    assert_sentinel(&token, sizeof(token));
+    assert(od_session_request_stop_v1(handle, id) == OD_SESSION_STATUS_NO_ACTIVE_RUN_V1);
+    od_session_run_result_v1 result;
+    memset(&result, 0xA5, sizeof(result));
+    assert(od_session_wait_run_v1(handle, id, &result, sizeof(result)) == OD_SESSION_STATUS_NO_ACTIVE_RUN_V1);
+    assert_sentinel(&result, sizeof(result));
+
+    int reopened = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    assert(reopened == available_fd);
+    assert(close(reopened) == 0);
+    while (count > 0) {
+        assert(close(held[--count]) == 0);
+    }
+    assert(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+
+    assert(od_session_begin_run_v1(handle, &request, sizeof(request), &token, sizeof(token)) ==
+           OD_SESSION_STATUS_INVALID_REQUEST_ID_V1);
+    assert_sentinel(&token, sizeof(token));
+    require_normal_notification(handle, id + 1);
+    printf("pipe EMFILE: begin status=%u, no active run, retained high-water mark, recovered on greater ID\n",
+           begin_status);
+}
+
+static void require_notification_failure(od_session_handle_v1 handle, uint32_t id) {
     /* ZF clear and effectively unlimited budget, so STOP drives completion. */
-    od_session_run_request_v1 request = make_request(2, UINT64_MAX, 2);
+    od_session_run_request_v1 request = make_request(id, UINT64_MAX, 2);
     int fd = begin(handle, &request);
     /* Fault injection only. A real caller keeps this descriptor open through wait. */
     assert(close(fd) == 0);
@@ -130,7 +188,7 @@ static void require_notification_failure(od_session_handle_v1 handle) {
            OD_SESSION_STATUS_INVALID_STATE_V1);
     assert_sentinel(&result, sizeof(result));
 
-    request.request_id = 3;
+    request.request_id = id + 1;
     od_session_run_token_v1 token;
     memset(&token, 0xA5, sizeof(token));
     assert(od_session_begin_run_v1(handle, &request, sizeof(request), &token, sizeof(token)) ==
@@ -150,13 +208,14 @@ int main(void) {
     assert(od_session_abi_version() == OD_SESSION_ABI_VERSION_V1);
     assert((od_session_abi_capabilities() & OD_SESSION_CAP_S0_09_SAME_CODE_V1) != 0);
     od_session_handle_v1 handle = create_session();
-    require_normal_notification(handle);
+    require_normal_notification(handle, 1);
     puts("normal notification: one byte, EOF, then valid result");
-    require_notification_failure(handle);
+    require_pipe_creation_failure(handle, 2);
+    require_notification_failure(handle, 4);
     assert(od_session_destroy_v1(handle) == OD_SESSION_STATUS_OK_V1);
 
     handle = create_session();
-    require_normal_notification(handle);
+    require_normal_notification(handle, 1);
     assert(od_session_destroy_v1(handle) == OD_SESSION_STATUS_OK_V1);
     assert(sigaction(SIGPIPE, NULL, &action) == 0 && action.sa_handler == SIG_DFL);
     alarm(0);

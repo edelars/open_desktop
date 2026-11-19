@@ -1333,7 +1333,9 @@ The signed native ARM64 C client verified public ABI layout and normal
 notification delivery. With the default `SIGPIPE` disposition and an injected
 reader loss before STOP, the `ef44df6` client exited by signal 13. The fixed
 client observed `INVALID_STATE` with unchanged output, destroyed the failed
-session and acquired a fresh one. Pipe setup failure injection remains open.
+session and acquired a fresh one. With one available FD, both builds returned
+`ALLOCATION_FAILED`, retained the request ID high-water mark and recovered
+with a greater ID. Failure injection at pipe `fcntl` setup remains open.
 [Native C smoke and reproduction](STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
 ### Hardware acceptance
 

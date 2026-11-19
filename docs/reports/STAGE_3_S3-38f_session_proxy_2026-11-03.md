@@ -106,5 +106,20 @@ codesign --verify --strict "$target_dir/session-abi-v1-smoke"
 "$target_dir/session-abi-v1-smoke"
 ```
 
-Failure injection verified the notification write path. Pipe creation and
-`fcntl` setup errors were not injected in this run.
+### Pipe creation under descriptor exhaustion
+
+The signed C client also exercises pipe creation with one available file
+descriptor. It temporarily reduces its own `RLIMIT_NOFILE`, fills the
+descriptor table with owned descriptors and confirms that raw `pipe()`
+returns `EMFILE`. The public begin returns `ALLOCATION_FAILED` without
+writing the token. STOP and wait report `NO_ACTIVE_RUN`, output remains
+intact, and the remaining descriptor slot can be allocated again.
+
+After the client restores its limit, the same request ID is rejected.
+A greater ID completes with normal notification and state. Both the
+`ef44df6` and fixed signed libraries passed this part on local macOS
+26.7.1. The fixture executes it before the lost-reader test.
+
+A separate signed probe showed that `F_SETFD` and `F_SETNOSIGPIPE` on an
+existing pipe still succeed with a full descriptor table. Failure injection
+for those setup calls remains open.
