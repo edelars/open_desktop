@@ -268,6 +268,8 @@ OD_S6_WAKE_ROUNDS=50000 cargo test --release -p od-machine --offline --lib -- --
 OD_S6_LITMUS_RUNS=200 cargo test --release -p od-machine --offline --lib -- --ignored parallel_run::tests::split_lock_litmus_many_runs --nocapture
 ```
 
+В JSON параллельного пробника `idle_heals` показывает число решений о пробуждении по готовому вектору LAPIC при повторно наблюдаемом простое без kick. Длинный прогон `parallel_probe_many_runs` проверяет ноль в каждом штатном exchange и shootdown. Тест `the_idle_arbiter_counts_recovery_of_a_pending_vector_without_a_kick` пропускает ровно один kick и проверяет доставку вектора и счётчик 1.
+
 Что и сколько раз (значения записаны в отчёте S6-34, раздел «Тесты»; пределы: ожидание конца прогона 60 с, остановка 5–10 с, шлюз split `LOCK` 20 с, тайм-аут теста остановки 60 мс):
 
 | Проверка | Повторы | Что должно быть |

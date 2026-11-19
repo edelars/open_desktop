@@ -240,6 +240,8 @@ pub struct Stage6SmpProbeParallelReport {
     pub cpus: Vec<Stage6SmpProbeParallelCpu>,
     pub idle_ns: u64,
     pub idle_jumps: u64,
+    /// Idle-arbiter wake-ups for an eligible LAPIC vector without a pending kick.
+    pub idle_heals: u64,
     #[cfg(feature = "lock-wait-metrics")]
     pub lock_wait_metrics: crate::BoardLockWaitMetrics,
 }
@@ -630,6 +632,7 @@ impl Stage6SmpProbe {
             cpus,
             idle_ns: report.idle_ns,
             idle_jumps: report.idle_jumps,
+            idle_heals: report.idle_heals,
             #[cfg(feature = "lock-wait-metrics")]
             lock_wait_metrics: self.board.lock_wait_metrics(),
         }

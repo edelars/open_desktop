@@ -1218,6 +1218,7 @@ fn parallel_run_ok(built: &Built, scenario_expected: &str, quantum: u64) -> Stag
         Stage6SmpProbeParallelFinish::AllIdle,
         "quantum {quantum}: {report:?}"
     );
+    assert_eq!(report.idle_heals, 0, "quantum {quantum}: {report:?}");
     assert_eq!(
         String::from_utf8(report.com1.clone()).unwrap(),
         scenario_expected,

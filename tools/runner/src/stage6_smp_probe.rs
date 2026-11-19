@@ -531,6 +531,7 @@ fn run_parallel(
         "legacy": cpus.iter().map(|cpu| cpu.legacy).collect::<Vec<_>>(),
         "idle_ns": report.idle_ns,
         "idle_jumps": report.idle_jumps,
+        "idle_heals": report.idle_heals,
         "com1_text": String::from_utf8_lossy(&report.com1),
         "com1_hex": report.com1.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         "cells": cells,

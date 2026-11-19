@@ -193,6 +193,8 @@ pub(crate) struct ParallelReport {
     /// Virtual nanoseconds the idle jumps skipped, and the number of jumps.
     pub(crate) idle_ns: u64,
     pub(crate) idle_jumps: u64,
+    /// Wake-up decisions for an eligible LAPIC vector with every worker idle and no kick pending.
+    pub(crate) idle_heals: u64,
     /// Threads started and threads that ran to their end: both are the number of vCPUs when the
     /// run returns (every thread has been joined; none is left running).
     pub(crate) threads_started: usize,
@@ -448,6 +450,7 @@ struct SharedState<'a> {
     remaining: AtomicU64,
     idle_ns: AtomicU64,
     idle_jumps: AtomicU64,
+    idle_heals: AtomicU64,
     started: AtomicUsize,
     exited: AtomicUsize,
     lapics: Vec<LocalApicHandle>,
@@ -866,6 +869,11 @@ impl SharedState<'_> {
             match step.outcome {
                 IdleOutcome::Stopped | IdleOutcome::Runnable(_) => return,
                 IdleOutcome::Woken(_) => {
+                    // A regular post can race this decision. It publishes its kick before the
+                    // eligible vector becomes visible, so only count recovery while still idle.
+                    if self.quiescent_for_idle() {
+                        self.idle_heals.fetch_add(1, SEQ);
+                    }
                     self.kicks.kick_all();
                     return;
                 }
@@ -894,10 +902,12 @@ impl SharedState<'_> {
 
     /// No thread is busy, no kick is pending, no stop or split gate or end is in force.
     fn quiescent_for_idle(&self) -> bool {
+        // A worker publishes busy before clearing its kick. Read the kick first so that
+        // its transition from pending kick to active worker stays visible to this check.
         !self.finish.load(SEQ)
             && !self.stop_all.load(SEQ)
             && self.split_owner.load(SEQ) == NO_OWNER
-            && (0..self.count).all(|cpu| !self.cells[cpu].busy.load(SEQ) && !self.kicks.flag(cpu))
+            && (0..self.count).all(|cpu| !self.kicks.flag(cpu) && !self.cells[cpu].busy.load(SEQ))
     }
 }
 
@@ -1681,6 +1691,7 @@ fn run_threads_inner<R>(
         remaining: AtomicU64::new(config.budget),
         idle_ns: AtomicU64::new(0),
         idle_jumps: AtomicU64::new(0),
+        idle_heals: AtomicU64::new(0),
         started: AtomicUsize::new(0),
         exited: AtomicUsize::new(0),
         lapics: lapics.clone(),
@@ -1767,6 +1778,7 @@ fn run_threads_inner<R>(
         cpus: shared.cells.iter().map(Cell::report).collect(),
         idle_ns: shared.idle_ns.load(SEQ),
         idle_jumps: shared.idle_jumps.load(SEQ),
+        idle_heals: shared.idle_heals.load(SEQ),
         threads_started: shared.started.load(SEQ),
         threads_exited: shared.exited.load(SEQ),
     };
@@ -2345,6 +2357,7 @@ mod tests {
                 (false, false),
             );
             assert_eq!(report.idle_jumps, u64::from(ap_starts_halted));
+            assert_eq!(report.idle_heals, 0);
             assert!(
                 (8_381..8_421).contains(&board.clock().now_ns()),
                 "{report:?}"
@@ -3222,6 +3235,7 @@ mod tests {
             assert!(control.wait_finished(WAIT), "the run does not end");
         });
         assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+        assert_eq!(report.idle_heals, 0);
         assert_joined(&report, 2);
         assert_eq!(board.vcpu(0).unwrap().activity(), CpuActivity::Halted);
         assert_eq!(board.vcpu(1).unwrap().activity(), CpuActivity::Halted);
@@ -3254,6 +3268,7 @@ mod tests {
                     "quantum {quantum}: {report:?}"
                 );
                 assert_joined(&report, 2);
+                assert_eq!(report.idle_heals, 0, "quantum {quantum}: {report:?}");
                 assert_eq!(dword(&mut board, COUNTER_1), ROUNDS, "quantum {quantum}");
                 assert_eq!(dword(&mut board, COUNTER_0), ROUNDS, "quantum {quantum}");
             }
@@ -3388,6 +3403,42 @@ mod tests {
             }
             HELD_AT_SLEEP.store(false, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn the_idle_arbiter_counts_recovery_of_a_pending_vector_without_a_kick() {
+        let _injection = lock(&TEST_INJECTION);
+        let mut board = sleeping_ap_board();
+        let apic = board.local_apic_of(1).unwrap();
+        let config = ParallelConfig {
+            pre_sleep: Some(hold_vcpu_1_at_the_start_of_its_sleep),
+            ..open_config(8)
+        };
+        HELD_AT_SLEEP.store(false, SEQ);
+        RELEASE_SLEEP.store(false, SEQ);
+        HOLD_AT_SLEEP.store(true, SEQ);
+
+        let (report, ()) = run(&mut board, config, |control| {
+            let reached = control.wait_until(WAIT, || HELD_AT_SLEEP.load(SEQ));
+            let posted = reached.then(|| {
+                // Put the vector behind the worker's last LAPIC look without publishing a kick.
+                let wake = lock(&apic.0).wake.0.clone();
+                apic.set_wake_sink(None);
+                let posted = apic.request_fixed_edge(TO_AP);
+                apic.set_wake_sink(wake);
+                posted
+            });
+            HOLD_AT_SLEEP.store(false, SEQ);
+            RELEASE_SLEEP.store(true, SEQ);
+            assert!(reached, "AP did not reach the sleep window");
+            posted.unwrap().unwrap();
+            assert!(control.wait_until(WAIT, || {
+                cell(control, COUNTER_1) == 1 && apic.vector_state(TO_AP) == (false, false)
+            }));
+        });
+        assert_joined(&report, 2);
+        assert_eq!(report.idle_heals, 1);
+        assert_eq!(report.idle_jumps, 0);
     }
 
     /// Step 2, the window held open: the AP has looked at its Local APIC, found nothing and gone to

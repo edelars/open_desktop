@@ -196,6 +196,7 @@ fn the_parallel_mode_runs_the_probe_on_threads_and_gives_the_manifest_result_eve
             assert_eq!(x["mode"], "parallel");
             assert_eq!(x["status"], "guest_idle");
             assert_eq!(x["exit"], "all_idle");
+            assert_eq!(x["idle_heals"], 0);
             assert_eq!(x["quantum"].as_u64().unwrap().to_string(), quantum);
             assert_eq!(x["com1_text"].as_str().unwrap(), built.expected(2));
             assert_eq!(x["activity"], serde_json::json!(["Halted", "Halted"]));

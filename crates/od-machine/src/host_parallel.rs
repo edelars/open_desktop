@@ -366,6 +366,8 @@ pub struct HostParallelReport {
     pub nmi_delivered: Vec<u64>,
     /// Split `LOCK` operations each vCPU executed behind the gate (S6-42c).
     pub split_locks: Vec<u64>,
+    /// Idle-arbiter wake-ups for an eligible LAPIC vector without a pending kick.
+    pub idle_heals: u64,
 }
 
 /// The proof of a stop of every vCPU.
@@ -651,6 +653,7 @@ fn host_report(report: ParallelReport) -> HostParallelReport {
         threads_exited: report.threads_exited,
         nmi_delivered: report.cpus.iter().map(|cpu| cpu.nmi_delivered).collect(),
         split_locks: report.cpus.iter().map(|cpu| cpu.split_locks).collect(),
+        idle_heals: report.idle_heals,
     }
 }
 
