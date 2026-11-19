@@ -20805,17 +20805,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         instruction.operand_size == OperandSize::Dword
                             && matches!(
                                 (instruction.opcode.byte, src),
-                                (0xb6, _)
-                                    | (0xb7, Operand::Register(_))
-                                    | (
-                                        0xb7,
-                                        Operand::Memory(MemoryOperand {
-                                            base: AddressBase::Register(Register::Rdi),
-                                            index: None,
-                                            displacement: 0 | 2 | 4,
-                                            ..
-                                        })
-                                    )
+                                (0xb6 | 0xb7, Operand::Register(_) | Operand::Memory(_))
                             )
                     }
                     _ => false,

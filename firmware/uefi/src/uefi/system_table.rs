@@ -4,7 +4,7 @@
 use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
-use crate::bs::{memory, misc};
+use crate::bs::{memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::mem::map::{MemoryDescriptor, MemoryType};
 use core::ffi::c_void;
@@ -26,6 +26,15 @@ type GetMemoryMap = unsafe extern "efiapi" fn(
 ) -> Status;
 type AllocatePool = unsafe extern "efiapi" fn(MemoryType, usize, *mut *mut c_void) -> Status;
 type FreePool = unsafe extern "efiapi" fn(*mut c_void) -> Status;
+type InstallProtocolInterface =
+    unsafe extern "efiapi" fn(*mut Handle, *const Guid, u32, *mut c_void) -> Status;
+type ReinstallProtocolInterface =
+    unsafe extern "efiapi" fn(Handle, *const Guid, *mut c_void, *mut c_void) -> Status;
+type UninstallProtocolInterface =
+    unsafe extern "efiapi" fn(Handle, *const Guid, *mut c_void) -> Status;
+type HandleProtocol = unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
+type LocateProtocol =
+    unsafe extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
 type CalculateCrc32 = unsafe extern "efiapi" fn(*const c_void, usize, *mut u32) -> Status;
 type CopyMem = unsafe extern "efiapi" fn(*mut c_void, *const c_void, usize);
 type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
@@ -46,10 +55,10 @@ pub struct BootServices {
     signal_event: *const c_void,
     close_event: *const c_void,
     check_event: *const c_void,
-    install_protocol_interface: *const c_void,
-    reinstall_protocol_interface: *const c_void,
-    uninstall_protocol_interface: *const c_void,
-    handle_protocol: *const c_void,
+    pub install_protocol_interface: InstallProtocolInterface,
+    pub reinstall_protocol_interface: ReinstallProtocolInterface,
+    pub uninstall_protocol_interface: UninstallProtocolInterface,
+    pub handle_protocol: HandleProtocol,
     reserved: *const c_void,
     register_protocol_notify: *const c_void,
     locate_handle: *const c_void,
@@ -70,7 +79,7 @@ pub struct BootServices {
     open_protocol_information: *const c_void,
     protocols_per_handle: *const c_void,
     locate_handle_buffer: *const c_void,
-    locate_protocol: *const c_void,
+    pub locate_protocol: LocateProtocol,
     install_multiple_protocol_interfaces: *const c_void,
     uninstall_multiple_protocol_interfaces: *const c_void,
     pub calculate_crc32: CalculateCrc32,
@@ -96,10 +105,10 @@ impl BootServices {
             signal_event: ptr::null(),
             close_event: ptr::null(),
             check_event: ptr::null(),
-            install_protocol_interface: ptr::null(),
-            reinstall_protocol_interface: ptr::null(),
-            uninstall_protocol_interface: ptr::null(),
-            handle_protocol: ptr::null(),
+            install_protocol_interface: protocol::install_protocol_interface,
+            reinstall_protocol_interface: protocol::reinstall_protocol_interface,
+            uninstall_protocol_interface: protocol::uninstall_protocol_interface,
+            handle_protocol: protocol::handle_protocol,
             reserved: ptr::null(),
             register_protocol_notify: ptr::null(),
             locate_handle: ptr::null(),
@@ -120,7 +129,7 @@ impl BootServices {
             open_protocol_information: ptr::null(),
             protocols_per_handle: ptr::null(),
             locate_handle_buffer: ptr::null(),
-            locate_protocol: ptr::null(),
+            locate_protocol: protocol::locate_protocol,
             install_multiple_protocol_interfaces: ptr::null(),
             uninstall_multiple_protocol_interfaces: ptr::null(),
             calculate_crc32: misc::calculate_crc32,
@@ -278,7 +287,12 @@ mod tests {
         assert_eq!(offset_of!(BootServices, get_memory_map), 56);
         assert_eq!(offset_of!(BootServices, allocate_pool), 64);
         assert_eq!(offset_of!(BootServices, free_pool), 72);
+        assert_eq!(offset_of!(BootServices, install_protocol_interface), 128);
+        assert_eq!(offset_of!(BootServices, reinstall_protocol_interface), 136);
+        assert_eq!(offset_of!(BootServices, uninstall_protocol_interface), 144);
+        assert_eq!(offset_of!(BootServices, handle_protocol), 152);
         assert_eq!(offset_of!(BootServices, reserved), 160);
+        assert_eq!(offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(offset_of!(BootServices, calculate_crc32), 344);
         assert_eq!(offset_of!(BootServices, copy_mem), 352);
         assert_eq!(offset_of!(BootServices, set_mem), 360);

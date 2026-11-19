@@ -1,61 +1,11 @@
 //! UEFI 2.11 §7.2 memory services over the firmware's single page allocator.
 
-use super::misc;
+use super::{misc, state};
 use crate::mem::map::{DESCRIPTOR_VERSION, MemoryDescriptor, MemoryType};
-use crate::mem::pages::{AllocateAt, PageAllocator, PageError, PoolError, PoolHeader, PoolMemory};
+use crate::mem::pages::{AllocateAt, PageError, PoolError, PoolHeader, PoolMemory};
 use crate::uefi::status::Status;
-use core::cell::{Cell, UnsafeCell};
 use core::ffi::c_void;
 use core::ptr;
-
-struct BspAllocator {
-    busy: Cell<bool>,
-    allocator: UnsafeCell<Option<PageAllocator<'static, 'static>>>,
-}
-
-// SAFETY: only the boot processor accesses this state. All entrances are
-// unsafe and require execution on the BSP; none dispatch a callback or poll
-// events inside the exclusive access.
-unsafe impl Sync for BspAllocator {}
-
-static ALLOCATOR: BspAllocator = BspAllocator {
-    busy: Cell::new(false),
-    allocator: UnsafeCell::new(None),
-};
-
-impl BspAllocator {
-    /// The caller must be the BSP. The closure must return before invoking a
-    /// notification or yielding control to an EFI image.
-    unsafe fn with(
-        &self,
-        operation: impl FnOnce(&mut PageAllocator<'static, 'static>) -> Status,
-    ) -> Status {
-        if self.busy.replace(true) {
-            return Status::NOT_READY;
-        }
-        let _guard = BusyGuard(&self.busy);
-        // SAFETY: the BSP and the busy flag give us exclusive access.
-        let allocator = unsafe { &mut *self.allocator.get() };
-        allocator.as_mut().map_or(Status::NOT_READY, operation)
-    }
-}
-
-struct BusyGuard<'a>(&'a Cell<bool>);
-
-impl Drop for BusyGuard<'_> {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
-}
-
-/// Takes ownership of the live memory map and page allocations.
-///
-/// # Safety
-/// Invoke once on the BSP, before calling or publishing the services.
-pub unsafe fn initialize(allocator: PageAllocator<'static, 'static>) {
-    // SAFETY: initialization precedes the first access and has a single caller.
-    unsafe { ALLOCATOR.allocator.get().write(Some(allocator)) };
-}
 
 pub struct IdentityPoolMemory;
 
@@ -87,8 +37,11 @@ pub unsafe extern "efiapi" fn allocate_pages(
         _ => return Status::INVALID_PARAMETER,
     };
     unsafe {
-        ALLOCATOR.with(|allocator| {
-            match allocator.allocate_pages(placement, memory_type, pages as u64) {
+        state::with(|state| {
+            match state
+                .allocator
+                .allocate_pages(placement, memory_type, pages as u64)
+            {
                 Ok(base) => {
                     address.write(base);
                     Status::SUCCESS
@@ -105,8 +58,8 @@ pub unsafe extern "efiapi" fn allocate_pages(
 /// Call on the BSP.
 pub unsafe extern "efiapi" fn free_pages(address: u64, pages: usize) -> Status {
     unsafe {
-        ALLOCATOR.with(
-            |allocator| match allocator.free_pages(address, pages as u64) {
+        state::with(
+            |state| match state.allocator.free_pages(address, pages as u64) {
                 Ok(()) => Status::SUCCESS,
                 Err(PageError::NotFound) => Status::NOT_FOUND,
                 Err(error) => allocate_page_error(error),
@@ -131,8 +84,8 @@ pub unsafe extern "efiapi" fn get_memory_map(
     }
     let capacity = unsafe { memory_map_size.read() };
     unsafe {
-        ALLOCATOR.with(|allocator| {
-            let map = allocator.map();
+        state::with(|state| {
+            let map = state.allocator.map();
             let descriptors = map.descriptors();
             let required = core::mem::size_of_val(descriptors);
             if capacity >= required && memory_map.is_null() {
@@ -169,8 +122,11 @@ pub unsafe extern "efiapi" fn allocate_pool(
         return Status::INVALID_PARAMETER;
     }
     unsafe {
-        ALLOCATOR.with(|allocator| {
-            match allocator.allocate_pool(&mut IdentityPoolMemory, memory_type, size as u64) {
+        state::with(|state| {
+            match state
+                .allocator
+                .allocate_pool(&mut IdentityPoolMemory, memory_type, size as u64)
+            {
                 Ok(address) => {
                     buffer.write(ptr::with_exposed_provenance_mut(address as usize));
                     Status::SUCCESS
@@ -193,8 +149,11 @@ pub unsafe extern "efiapi" fn allocate_pool(
 /// Call on the BSP.
 pub unsafe extern "efiapi" fn free_pool(buffer: *mut c_void) -> Status {
     unsafe {
-        ALLOCATOR.with(|allocator| {
-            match allocator.free_pool(&mut IdentityPoolMemory, buffer.addr() as u64) {
+        state::with(|state| {
+            match state
+                .allocator
+                .free_pool(&mut IdentityPoolMemory, buffer.addr() as u64)
+            {
                 Ok(()) => Status::SUCCESS,
                 Err(PoolError::Pages(error)) => allocate_page_error(error),
                 Err(_) => Status::INVALID_PARAMETER,
@@ -218,7 +177,7 @@ fn allocate_page_error(error: PageError) -> Status {
 mod tests {
     use super::*;
     use crate::mem::map::MemoryMap;
-    use crate::mem::pages::PageOwner;
+    use crate::mem::pages::{PageAllocator, PageOwner};
 
     #[test]
     fn efi_memory_map_sizes_and_keys_follow_the_live_allocator() {
@@ -230,7 +189,7 @@ mod tests {
         unsafe {
             let map =
                 MemoryMap::test_conventional(&mut *ptr::addr_of_mut!(MAP), 0x100000, 0x110000);
-            initialize(PageAllocator::new(map, &mut *ptr::addr_of_mut!(OWNERS)).unwrap());
+            state::initialize(PageAllocator::new(map, &mut *ptr::addr_of_mut!(OWNERS)).unwrap());
 
             let mut snapshot = [MemoryDescriptor::EMPTY; 8];
             let mut size = 0;
@@ -263,7 +222,7 @@ mod tests {
 
             let mut page = 0x104fff;
             assert_eq!(
-                ALLOCATOR.with(|_| allocate_pages(1, MemoryType::LOADER_DATA, 1, &mut page)),
+                state::with(|_| allocate_pages(1, MemoryType::LOADER_DATA, 1, &mut page)),
                 Status::NOT_READY
             );
             assert_eq!(page, 0x104fff);

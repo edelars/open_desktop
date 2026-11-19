@@ -54705,6 +54705,54 @@ fn firmware_boot_movsx_byte_sign_extends_into_qword() {
 }
 
 #[test]
+fn firmware_boot_movzx_word_guid_field_checks_memory_before_committing() {
+    let code = [0x44, 0x0f, 0xb7, 0x5a, 0x04]; // MOVZX R11D,word ptr [RDX+4]
+    let address = DATA + 4;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 4..DATA_PHYSICAL + 6]
+            .copy_from_slice(&0x81ab_u16.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        cpu.gpr[Register::R11 as usize] = 0xdead_beef_1234_5678;
+        let mut expected = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode: 0xb7 }
+        );
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::R11 as usize] = 0x81ab;
+        }
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 2)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
 fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
     for (bytes, opcode) in [
         (&[0x48, 0x0f, 0x47, 0x03][..], 0x47),       // CMOVA RAX,[RBX]
@@ -54718,7 +54766,8 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x66, 0x56][..], 0x56),                   // PUSH SI
         (&[0x67, 0x41, 0xff, 0xd6][..], 0xff),       // address override on CALL R14
         (&[0x8f, 0x00][..], 0x8f),                   // POP [RAX]
-        (&[0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // MOVZX word source
+        (&[0x48, 0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // MOVZX qword destination
+        (&[0x67, 0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // address32 MOVZX word source
         (&[0x48, 0x0f, 0xbe, 0x03][..], 0xbe),       // MOVSX RAX,byte ptr [RBX]
         (&[0x0f, 0xbe, 0xc0][..], 0xbe),             // MOVSX EAX,AL
         (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6), // address32 MOVZX

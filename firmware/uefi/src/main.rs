@@ -12,7 +12,7 @@ use core::panic::PanicInfo;
 use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
-use od_firmware::bs::memory::{self, IdentityPoolMemory};
+use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
@@ -25,6 +25,7 @@ use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
     STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
 };
+use od_firmware::uefi::guid::Guid;
 use od_firmware::uefi::status::Status;
 use od_firmware::uefi::system_table::{BootServices, RuntimeServices, SystemTable};
 
@@ -50,6 +51,12 @@ static mut BOOT_DESCRIPTORS: [MemoryDescriptor; BOOT_DESCRIPTOR_CAPACITY] =
     [MemoryDescriptor::EMPTY; BOOT_DESCRIPTOR_CAPACITY];
 static mut BOOT_PAGE_OWNERS: [PageOwner; BOOT_DESCRIPTOR_CAPACITY] =
     [PageOwner::Initial; BOOT_DESCRIPTOR_CAPACITY];
+const DIAGNOSTIC_PROTOCOL: Guid = Guid {
+    data1: 0x0a44_97ec,
+    data2: 0x12b6,
+    data3: 0x478b,
+    data4: [0xa3, 0x63, 0x07, 0x3c, 0x00, 0x41, 0x25, 0x61],
+};
 
 fn halt_forever() -> ! {
     loop {
@@ -157,7 +164,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     // SAFETY: this is the one BSP initialization; the diagnostic has finished
     // borrowing the allocator. All ensuing accesses go through Boot Services.
-    unsafe { memory::initialize(allocator) };
+    unsafe { od_firmware::bs::initialize(allocator) };
     let mut boot = BootServices::diagnostic();
     let mut runtime = RuntimeServices::diagnostic();
     boot.update_crc32();
@@ -170,6 +177,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     system.update_crc32();
     verify_boot_services(&system);
     verify_memory_services(&system, key as usize);
+    verify_protocol_services(&system);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -312,6 +320,65 @@ fn verify_memory_services(system: &SystemTable, initial_key: usize) {
     com1_write(b"OD-FW S7-05 Boot Services memory verified key=0x");
     com1_write(&fixed_hex(key as u64));
     com1_write(b"\r\n");
+}
+
+#[inline(never)]
+fn verify_protocol_services(system: &SystemTable) {
+    // SAFETY: the BSP owns the private tables and all the following output
+    // storage. The protocol pointer is backed by a live pool allocation.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let allocate = ptr::addr_of!((*boot).allocate_pool).read_volatile();
+        let free = ptr::addr_of!((*boot).free_pool).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let reinstall = ptr::addr_of!((*boot).reinstall_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        let handle_protocol = ptr::addr_of!((*boot).handle_protocol).read_volatile();
+        let locate_protocol = ptr::addr_of!((*boot).locate_protocol).read_volatile();
+
+        let mut contents = ptr::null_mut();
+        if allocate(MemoryType::LOADER_DATA, 1, &mut contents) != Status::SUCCESS
+            || contents.is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 11);
+        }
+        contents.cast::<u8>().write(0xa5);
+        let mut handle = ptr::null_mut();
+        if install(&mut handle, &DIAGNOSTIC_PROTOCOL, 0, contents) != Status::SUCCESS
+            || handle.is_null()
+            || install(&mut handle, &DIAGNOSTIC_PROTOCOL, 0, contents) != Status::INVALID_PARAMETER
+        {
+            stop(STOP_BOOT_SERVICES, 12);
+        }
+
+        let mut found = ptr::null_mut();
+        if handle_protocol(handle, &DIAGNOSTIC_PROTOCOL, &mut found) != Status::SUCCESS
+            || found != contents
+            || locate_protocol(&DIAGNOSTIC_PROTOCOL, ptr::null_mut(), &mut found) != Status::SUCCESS
+            || found != contents
+            || found.cast::<u8>().read() != 0xa5
+        {
+            stop(STOP_BOOT_SERVICES, 13);
+        }
+        if reinstall(handle, &DIAGNOSTIC_PROTOCOL, contents, ptr::null_mut()) != Status::SUCCESS
+            || handle_protocol(handle, &DIAGNOSTIC_PROTOCOL, &mut found) != Status::SUCCESS
+            || !found.is_null()
+        {
+            stop(STOP_BOOT_SERVICES, 14);
+        }
+        if uninstall(handle, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS
+            || locate_protocol(&DIAGNOSTIC_PROTOCOL, ptr::null_mut(), &mut found)
+                != Status::NOT_FOUND
+            || handle_protocol(handle, &DIAGNOSTIC_PROTOCOL, &mut found)
+                != Status::INVALID_PARAMETER
+        {
+            stop(STOP_BOOT_SERVICES, 15);
+        }
+        if contents.cast::<u8>().read() != 0xa5 || free(contents) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 16);
+        }
+    }
+    com1_write(b"OD-FW S7-05 Boot Services protocol registry verified\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

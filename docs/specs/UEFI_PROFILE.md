@@ -49,6 +49,28 @@ Conventional. Запрос больше физической ёмкости пр
 `EFI_OUT_OF_RESOURCES` без изменения карты или выходного указателя.
 [UEFI 2.11, §7.2](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#memory-allocation-services).
 
+### База протоколов
+
+Внутренняя база BSP хранит до 128 привязок `(EFI_HANDLE, EFI_GUID)`. GUID
+хранится по значению. Указатель на интерфейс предоставляется вызывающим и
+остаётся в его владении. NULL-указатель допускается для маркирующего
+протокола. Идентификатор handle выдаётся один раз за запуск. После удаления
+последней привязки этого handle база перестаёт его принимать.
+
+| Boot Service | Поведение диагностической реализации |
+|---|---|
+| `InstallProtocolInterface` | С `EFI_NATIVE_INTERFACE` создаёт handle при NULL на входе или добавляет GUID к существующему handle. Дубликат GUID на том же handle даёт `EFI_INVALID_PARAMETER`. Исчерпание записей даёт `EFI_OUT_OF_RESOURCES`. |
+| `ReinstallProtocolInterface` | Сверяет прежний указатель и заменяет его на новый с сохранением handle. |
+| `UninstallProtocolInterface` | Удаляет запись после сверки указателя. Отсутствующая привязка даёт `EFI_NOT_FOUND`. |
+| `HandleProtocol` | Ищет GUID на указанном действующем handle. При отсутствии GUID возвращает `EFI_UNSUPPORTED` и записывает NULL. |
+| `LocateProtocol` | При NULL в `Registration` возвращает первую найденную привязку GUID. При отсутствии привязки возвращает `EFI_NOT_FOUND` и записывает NULL. |
+
+Эти операции используют ту же эксклюзивную секцию BSP, что сервисы памяти.
+Запись в базе протоколов обходится без выделения памяти и сохраняет
+`MapKey`. Списки открытий, поиск массивов handles и уведомления идут
+отдельными срезами S7-05.
+[UEFI 2.11, §7.3](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#protocol-handler-services).
+
 Редакция 2.11 задаёт для x64 при вызове EFI-образа `FCW = 0x037f` и
 `MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
 реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
