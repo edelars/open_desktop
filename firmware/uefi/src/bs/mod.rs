@@ -3,6 +3,7 @@
 pub(crate) mod config_table;
 pub mod event;
 pub mod exit;
+pub mod image;
 pub mod memory;
 pub mod misc;
 pub mod protocol;

@@ -39,6 +39,7 @@ use od_firmware::stop::{
     STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
 };
 use od_firmware::uefi::guid::Guid;
+use od_firmware::uefi::runtime::{RESET_COLD, RESET_WARM, ResetType};
 use od_firmware::uefi::status::Status;
 use od_firmware::uefi::system_table::{BootServices, RuntimeServicesStorage, SystemTable};
 use od_firmware::uefi::types::Handle;
@@ -187,7 +188,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     };
     let runtime =
         ptr::with_exposed_provenance_mut::<RuntimeServicesStorage>(runtime_address as usize);
-    let mut runtime_storage = RuntimeServicesStorage::diagnostic();
+    let mut runtime_storage = RuntimeServicesStorage::diagnostic(diagnostic_reset_system);
     runtime_storage.table.update_crc32();
     // SAFETY: the pool allocated a live, aligned runtime storage slot.
     unsafe { runtime.write(runtime_storage) };
@@ -225,6 +226,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_timer_services(&system, handoff.tsc_hz());
     verify_configuration_services(system_pointer);
     verify_watchdog_services(&system, fixed_hardware.is_some());
+    verify_service_boundaries(&system);
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
@@ -266,6 +268,14 @@ fn verify_boot_services(system: &SystemTable) {
         {
             stop(STOP_BOOT_SERVICES, 2);
         }
+        let runtime = ptr::addr_of!(system.runtime_services).read_volatile();
+        com1_write(b"OD-FW S7-05 table CRC ST=0x");
+        com1_write(&fixed_hex(u64::from(system.header.crc32)));
+        com1_write(b" BS=0x");
+        com1_write(&fixed_hex(u64::from((*boot).header.crc32)));
+        com1_write(b" RT=0x");
+        com1_write(&fixed_hex(u64::from((*runtime).header.crc32)));
+        com1_write(b"\r\n");
     }
     com1_write(b"OD-FW S7-05 Boot Services utilities verified ST=0x");
     com1_write(&fixed_hex(ptr::from_ref(system).addr() as u64));
@@ -445,6 +455,7 @@ unsafe fn verify_tracked_open(boot: *const BootServices, handle: Handle, content
     unsafe {
         let open = ptr::addr_of!((*boot).open_protocol).read_volatile();
         let close = ptr::addr_of!((*boot).close_protocol).read_volatile();
+        let disconnect = ptr::addr_of!((*boot).disconnect_controller).read_volatile();
         let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
         let reinstall = ptr::addr_of!((*boot).reinstall_protocol_interface).read_volatile();
         let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
@@ -488,6 +499,7 @@ unsafe fn verify_tracked_open(boot: *const BootServices, handle: Handle, content
             OPEN_BY_DRIVER,
         ) != Status::ACCESS_DENIED
             || !found.is_null()
+            || disconnect(handle, ptr::null_mut(), ptr::null_mut()) != Status::DEVICE_ERROR
             || uninstall(handle, &DIAGNOSTIC_PROTOCOL, contents) != Status::ACCESS_DENIED
             || reinstall(handle, &DIAGNOSTIC_PROTOCOL, contents, ptr::null_mut())
                 != Status::ACCESS_DENIED
@@ -590,6 +602,9 @@ unsafe fn verify_protocol_enumeration(
         {
             stop(STOP_BOOT_SERVICES, 25);
         }
+        com1_write(b"OD-FW S7-05 diagnostic handle protocols=0x");
+        com1_write(&fixed_hex(count as u64));
+        com1_write(b"\r\n");
 
         let mut opens = ptr::null_mut();
         if information(handle, &DIAGNOSTIC_PROTOCOL, &mut opens, &mut count) != Status::SUCCESS
@@ -1158,15 +1173,114 @@ fn read_tsc() -> u64 {
     (u64::from(high) << 32) | u64::from(low)
 }
 
-fn reset_for_watchdog(port: u16, value: u8, code: u64) -> ! {
-    com1_write(b"OD-FW S7-05 watchdog expired code=0x");
-    com1_write(&fixed_hex(code));
-    com1_write(b"\r\n");
+fn request_reset(port: u16, value: u8) -> ! {
     // SAFETY: this port and value were decoded from validated fixed hardware.
     unsafe {
         asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags))
     };
     halt_forever()
+}
+
+fn reset_for_watchdog(port: u16, value: u8, code: u64) -> ! {
+    com1_write(b"OD-FW S7-05 watchdog expired code=0x");
+    com1_write(&fixed_hex(code));
+    com1_write(b"\r\n");
+    request_reset(port, value)
+}
+
+unsafe extern "efiapi" fn diagnostic_reset_system(
+    reset_type: ResetType,
+    status: Status,
+    _data_size: usize,
+    _reset_data: *const c_void,
+) {
+    let digit = if reset_type <= 3 {
+        b'0' + reset_type as u8
+    } else {
+        b'?'
+    };
+    com1_write(b"OD-FW RESET type=");
+    com1_write(&[digit]);
+    com1_write(b" status=0x");
+    com1_write(&fixed_hex(status.raw() as u64));
+    com1_write(b"\r\n");
+
+    if matches!(reset_type, RESET_COLD | RESET_WARM)
+        && let Ok(handoff) = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX)
+        && let Ok(Some(pm)) = handoff.acpi_fixed_hardware()
+    {
+        request_reset(pm.reset_reg, pm.reset_value);
+    }
+    halt_forever()
+}
+
+#[inline(never)]
+fn verify_service_boundaries(system: &SystemTable) {
+    // SAFETY: the private tables are live before exit. All provided buffers
+    // and output variables meet their service signatures.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let runtime = ptr::addr_of!(system.runtime_services).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        let load = ptr::addr_of!((*boot).load_image).read_volatile();
+        let start = ptr::addr_of!((*boot).start_image).read_volatile();
+        let exit = ptr::addr_of!((*boot).exit).read_volatile();
+        let unload = ptr::addr_of!((*boot).unload_image).read_volatile();
+        let count = ptr::addr_of!((*boot).get_next_monotonic_count).read_volatile();
+        let connect = ptr::addr_of!((*boot).connect_controller).read_volatile();
+        let disconnect = ptr::addr_of!((*boot).disconnect_controller).read_volatile();
+
+        let mut handle = ptr::null_mut();
+        if install(&mut handle, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 64);
+        }
+        let mut image = handle;
+        let mut exit_size = 43;
+        let mut exit_data = ptr::null_mut();
+        let mut monotonic = 43;
+        if load(0, ptr::null_mut(), ptr::null(), ptr::null(), 0, &mut image)
+            != Status::INVALID_PARAMETER
+            || load(0, handle, ptr::null(), ptr::null(), 0, &mut image) != Status::NOT_FOUND
+            || load(0, handle, ptr::null(), b"MZ".as_ptr().cast(), 2, &mut image)
+                != Status::UNSUPPORTED
+            || image != handle
+            || start(handle, &mut exit_size, &mut exit_data) != Status::INVALID_PARAMETER
+            || exit_size != 43
+            || !exit_data.is_null()
+            || exit(handle, Status::SUCCESS, 0, ptr::null()) != Status::INVALID_PARAMETER
+            || unload(handle) != Status::INVALID_PARAMETER
+            || count(ptr::null_mut()) != Status::INVALID_PARAMETER
+            || count(&mut monotonic) != Status::DEVICE_ERROR
+            || monotonic != 43
+            || connect(handle, ptr::null(), ptr::null(), 0) != Status::NOT_FOUND
+            || disconnect(handle, ptr::null_mut(), ptr::null_mut()) != Status::SUCCESS
+            || disconnect(handle, handle, ptr::null_mut()) != Status::INVALID_PARAMETER
+            || uninstall(handle, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 65);
+        }
+
+        let get_variable = ptr::addr_of!((*runtime).get_variable).read_volatile();
+        let name = [0x41u16, 0];
+        let mut attributes = 43;
+        let mut size = 1;
+        let mut data = 0xa5u8;
+        if get_variable(
+            name.as_ptr(),
+            &DIAGNOSTIC_PROTOCOL,
+            &mut attributes,
+            &mut size,
+            ptr::addr_of_mut!(data).cast(),
+        ) != Status::UNSUPPORTED
+            || attributes != 43
+            || size != 1
+            || data != 0xa5
+        {
+            stop(STOP_BOOT_SERVICES, 66);
+        }
+    }
+    com1_write(b"OD-FW S7-05 service ABI boundaries verified\r\n");
 }
 
 #[inline(never)]

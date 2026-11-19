@@ -56,13 +56,17 @@ cmp tests/fixtures/firmware/boot_core_com1.txt "$od_fw_check/boot_core.com1"
 
 В прогоне по умолчанию строка `OD-FW S7-05 Boot Services utilities verified`
 появляется после вызовов `SetMem`, `CopyMem` и `CalculateCrc32` через
-фактические указатели таблицы. Для независимой проверки после `HLT` считать
+фактические указатели таблицы. Строка `OD-FW S7-05 table CRC` перед ней
+показывает исходные CRC трёх таблиц. Для независимой проверки после `HLT` считать
 120 байт System Table с напечатанного адреса в identity-mapped RAM. В
 полях по смещениям 88 и 96 находятся адреса Runtime Services (136 байт)
 и Boot Services (376 байт). В каждой копии заголовка сохранить ожидаемую
 контрольную сумму, обнулить четыре байта со смещения 16 и пересчитать
 CRC по полному размеру таблицы через Python `zlib.crc32`. Адреса утилит
 по смещениям 344, 352 и 360 в Boot Services сверить по символам ELF.
+После успешного `ExitBootServices` CRC System Table меняется, его
+указатель Boot Services обнулён. Последняя строка диагностики содержит
+исходный адрес Boot Services для чтения её байтов извне.
 [Результаты запуска и независимой сверки](../reports/STAGE_7_REPORT.md#s7-05--таблицы-uefi-и-утилиты-boot-services).
 
 Строка `OD-FW S7-05 Boot Services memory verified` подтверждает вызовы
@@ -137,6 +141,14 @@ Services для проверки в RAM. После успеха диагнос�
 взведения, продвигает виртуальные часы на одну секунду и продолжает
 исполнение. Ожидаются код watchdog в COM1 и останов машины по Reset.
 [Результаты watchdog](../reports/STAGE_7_REPORT.md#s7-05--watchdog).
+
+Строка `OD-FW S7-05 service ABI boundaries verified` подтверждает вызовы
+слотов образов, счётчика, контроллера и пятиаргументного `GetVariable`.
+Сверка таблиц покрывает 43 адреса Boot Services, NULL в Reserved и 14
+адресов Runtime Services. Отдельный прогон читает адрес `ResetSystem`
+из живой таблицы до выхода и входит в него с регистрами и стеком
+Win64. С ACPI ожидается запрос Reset, без ACPI — останов на `HLT`.
+[Результаты проверки ABI](../reports/STAGE_7_REPORT.md#s7-05--завершение-abi-таблиц-uefi).
 
 Строка `OD-FW S7-05 runtime events registered` появляется в обработчике
 BEFORE. Она подтверждает оба способа регистрации смены виртуальных

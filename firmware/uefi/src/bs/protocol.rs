@@ -1,5 +1,6 @@
 //! The BSP's bounded handle database and UEFI 2.11 §7.3 protocol interface services.
 
+use crate::device_path::DevicePathNode;
 use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::ffi::c_void;
 use core::ptr;
@@ -16,6 +17,37 @@ pub use query::{
     OpenProtocolInformationEntry, locate_device_path, locate_handle, locate_handle_buffer,
     open_protocol_information, protocols_per_handle,
 };
+
+/// # Safety
+/// Call on the BSP. The driver list and remaining path are currently unused.
+pub unsafe extern "efiapi" fn connect_controller(
+    controller: Handle,
+    _driver_order: *const Handle,
+    _remaining_path: *const DevicePathNode,
+    _recursive: u8,
+) -> Status {
+    // SAFETY: this is a Boot Services call on the BSP.
+    unsafe {
+        super::state::with(|state| state.protocols.connect_without_driver_binding(controller))
+    }
+}
+
+/// # Safety
+/// Call on the BSP. This firmware does not publish Driver Binding yet.
+pub unsafe extern "efiapi" fn disconnect_controller(
+    controller: Handle,
+    driver: Handle,
+    child: Handle,
+) -> Status {
+    // SAFETY: this is a Boot Services call on the BSP.
+    unsafe {
+        super::state::with(|state| {
+            state
+                .protocols
+                .disconnect_without_driver_binding(controller, driver, child)
+        })
+    }
+}
 
 const MAX_PROTOCOL_BINDINGS: usize = 128;
 const NATIVE_INTERFACE: u32 = 0;
@@ -73,6 +105,40 @@ impl ProtocolRegistry {
             .iter()
             .flatten()
             .any(|binding| binding.handle == handle)
+    }
+
+    fn connect_without_driver_binding(&self, controller: Handle) -> Status {
+        if self.known_handle(controller) {
+            Status::NOT_FOUND
+        } else {
+            Status::INVALID_PARAMETER
+        }
+    }
+
+    fn disconnect_without_driver_binding(
+        &self,
+        controller: Handle,
+        driver: Handle,
+        child: Handle,
+    ) -> Status {
+        // The diagnostic publishes no driver images that support Driver Binding.
+        if !self.known_handle(controller)
+            || !driver.is_null()
+            || (!child.is_null() && !self.known_handle(child))
+        {
+            return Status::INVALID_PARAMETER;
+        }
+
+        let managing_open = self.opens.iter().flatten().any(|open| {
+            open.attributes == OPEN_BY_DRIVER
+                && self.bindings[open.binding].is_some_and(|binding| binding.handle == controller)
+        });
+        if managing_open {
+            // A tracked owner must close the binding. There is no Stop dispatcher.
+            Status::DEVICE_ERROR
+        } else {
+            Status::SUCCESS
+        }
     }
 
     fn binding_index(&self, handle: Handle, protocol: Guid) -> Option<usize> {
@@ -532,6 +598,59 @@ mod tests {
             data3: 0x478b,
             data4: [0xa3, 0x63, 0x07, 0x3c, 0, 0x41, 0x25, 0x61],
         }
+    }
+
+    #[test]
+    fn controllers_report_absence_and_preserve_driver_opens() {
+        let mut registry = ProtocolRegistry::new();
+        let null = ptr::null_mut();
+        let controller = registry.install(null, guid(1), null).unwrap();
+        let agent = registry.install(null, guid(2), null).unwrap();
+        let unknown = ptr::without_provenance_mut(usize::MAX);
+        assert_eq!(
+            registry.connect_without_driver_binding(controller),
+            Status::NOT_FOUND
+        );
+        assert_eq!(
+            registry.connect_without_driver_binding(null),
+            Status::INVALID_PARAMETER
+        );
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, null, null),
+            Status::SUCCESS
+        );
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, unknown, null),
+            Status::INVALID_PARAMETER
+        );
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, agent, null),
+            Status::INVALID_PARAMETER
+        );
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, null, unknown),
+            Status::INVALID_PARAMETER
+        );
+
+        assert_eq!(
+            registry.open(controller, guid(1), agent, controller, OPEN_BY_DRIVER),
+            Ok((Status::SUCCESS, null))
+        );
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, null, null),
+            Status::DEVICE_ERROR
+        );
+        assert_eq!(
+            registry.uninstall(controller, guid(1), null),
+            Err(Status::ACCESS_DENIED)
+        );
+        registry
+            .close(controller, guid(1), agent, controller)
+            .unwrap();
+        assert_eq!(
+            registry.disconnect_without_driver_binding(controller, null, null),
+            Status::SUCCESS
+        );
     }
 
     #[test]

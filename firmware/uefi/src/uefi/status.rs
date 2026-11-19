@@ -17,6 +17,10 @@ impl Status {
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);
 
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+
     pub const fn is_error(self) -> bool {
         self.0 & Self::ERROR_BIT != 0
     }

@@ -2,10 +2,11 @@
 //! are private to firmware diagnostics.
 
 use super::guid::Guid;
+use super::runtime::{self, CapsuleHeader, ResetSystem, ResetType, Time, TimeCapabilities};
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
 use crate::bs::event::{self, Event, EventNotify, RuntimeEventTable, Tpl};
-use crate::bs::{config_table, exit, memory, misc, protocol};
+use crate::bs::{config_table, exit, image, memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::device_path::DevicePathNode;
 use crate::mem::map::{MemoryDescriptor, MemoryType};
@@ -36,6 +37,21 @@ type Stall = unsafe extern "efiapi" fn(usize) -> Status;
 type SetWatchdogTimer = unsafe extern "efiapi" fn(usize, u64, usize, *const Char16) -> Status;
 type InstallConfigurationTable = unsafe extern "efiapi" fn(*const Guid, *mut c_void) -> Status;
 type ExitBootServices = unsafe extern "efiapi" fn(Handle, usize) -> Status;
+type LoadImage = unsafe extern "efiapi" fn(
+    u8,
+    Handle,
+    *const DevicePathNode,
+    *const c_void,
+    usize,
+    *mut Handle,
+) -> Status;
+type StartImage = unsafe extern "efiapi" fn(Handle, *mut usize, *mut *mut Char16) -> Status;
+type Exit = unsafe extern "efiapi" fn(Handle, Status, usize, *const Char16) -> Status;
+type UnloadImage = unsafe extern "efiapi" fn(Handle) -> Status;
+type GetNextMonotonicCount = unsafe extern "efiapi" fn(*mut u64) -> Status;
+type ConnectController =
+    unsafe extern "efiapi" fn(Handle, *const Handle, *const DevicePathNode, u8) -> Status;
+type DisconnectController = unsafe extern "efiapi" fn(Handle, Handle, Handle) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
 type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
 type GetMemoryMap = unsafe extern "efiapi" fn(
@@ -109,16 +125,16 @@ pub struct BootServices {
     pub locate_handle: LocateHandle,
     pub locate_device_path: LocateDevicePath,
     pub install_configuration_table: InstallConfigurationTable,
-    load_image: *const c_void,
-    start_image: *const c_void,
-    exit: *const c_void,
-    unload_image: *const c_void,
+    pub load_image: LoadImage,
+    pub start_image: StartImage,
+    pub exit: Exit,
+    pub unload_image: UnloadImage,
     pub exit_boot_services: ExitBootServices,
-    get_next_monotonic_count: *const c_void,
+    pub get_next_monotonic_count: GetNextMonotonicCount,
     pub stall: Stall,
     pub set_watchdog_timer: SetWatchdogTimer,
-    connect_controller: *const c_void,
-    disconnect_controller: *const c_void,
+    pub connect_controller: ConnectController,
+    pub disconnect_controller: DisconnectController,
     pub open_protocol: OpenProtocol,
     pub close_protocol: CloseProtocol,
     pub open_protocol_information: OpenProtocolInformation,
@@ -159,16 +175,16 @@ impl BootServices {
             locate_handle: protocol::locate_handle,
             locate_device_path: protocol::locate_device_path,
             install_configuration_table: config_table::install_configuration_table,
-            load_image: ptr::null(),
-            start_image: ptr::null(),
-            exit: ptr::null(),
-            unload_image: ptr::null(),
+            load_image: image::load_image,
+            start_image: image::start_image,
+            exit: image::exit,
+            unload_image: image::unload_image,
             exit_boot_services: exit::exit_boot_services,
-            get_next_monotonic_count: ptr::null(),
+            get_next_monotonic_count: misc::get_next_monotonic_count,
             stall: event::stall,
             set_watchdog_timer: event::set_watchdog_timer,
-            connect_controller: ptr::null(),
-            disconnect_controller: ptr::null(),
+            connect_controller: protocol::connect_controller,
+            disconnect_controller: protocol::disconnect_controller,
             open_protocol: protocol::open_protocol,
             close_protocol: protocol::close_protocol,
             open_protocol_information: protocol::open_protocol_information,
@@ -194,40 +210,55 @@ impl BootServices {
 #[repr(C)]
 pub struct RuntimeServices {
     pub header: TableHeader,
-    get_time: *const c_void,
-    set_time: *const c_void,
-    get_wakeup_time: *const c_void,
-    set_wakeup_time: *const c_void,
-    set_virtual_address_map: *const c_void,
-    convert_pointer: *const c_void,
-    get_variable: *const c_void,
-    get_next_variable_name: *const c_void,
-    set_variable: *const c_void,
-    get_next_high_monotonic_count: *const c_void,
-    reset_system: *const c_void,
-    update_capsule: *const c_void,
-    query_capsule_capabilities: *const c_void,
-    query_variable_info: *const c_void,
+    pub get_time: unsafe extern "efiapi" fn(*mut Time, *mut TimeCapabilities) -> Status,
+    pub set_time: unsafe extern "efiapi" fn(*const Time) -> Status,
+    pub get_wakeup_time: unsafe extern "efiapi" fn(*mut u8, *mut u8, *mut Time) -> Status,
+    pub set_wakeup_time: unsafe extern "efiapi" fn(u8, *const Time) -> Status,
+    pub set_virtual_address_map:
+        unsafe extern "efiapi" fn(usize, usize, u32, *const MemoryDescriptor) -> Status,
+    pub convert_pointer: unsafe extern "efiapi" fn(usize, *mut *mut c_void) -> Status,
+    pub get_variable: unsafe extern "efiapi" fn(
+        *const Char16,
+        *const Guid,
+        *mut u32,
+        *mut usize,
+        *mut c_void,
+    ) -> Status,
+    pub get_next_variable_name:
+        unsafe extern "efiapi" fn(*mut usize, *mut Char16, *mut Guid) -> Status,
+    pub set_variable:
+        unsafe extern "efiapi" fn(*const Char16, *const Guid, u32, usize, *const c_void) -> Status,
+    pub get_next_high_monotonic_count: unsafe extern "efiapi" fn(*mut u32) -> Status,
+    pub reset_system: ResetSystem,
+    pub update_capsule:
+        unsafe extern "efiapi" fn(*const *const CapsuleHeader, usize, u64) -> Status,
+    pub query_capsule_capabilities: unsafe extern "efiapi" fn(
+        *const *const CapsuleHeader,
+        usize,
+        *mut u64,
+        *mut ResetType,
+    ) -> Status,
+    pub query_variable_info: unsafe extern "efiapi" fn(u32, *mut u64, *mut u64, *mut u64) -> Status,
 }
 
 impl RuntimeServices {
-    pub const fn diagnostic() -> Self {
+    pub const fn diagnostic(reset_system: ResetSystem) -> Self {
         Self {
             header: TableHeader::new(RUNTIME_SERVICES_SIGNATURE, size_of::<Self>()),
-            get_time: ptr::null(),
-            set_time: ptr::null(),
-            get_wakeup_time: ptr::null(),
-            set_wakeup_time: ptr::null(),
-            set_virtual_address_map: ptr::null(),
-            convert_pointer: ptr::null(),
-            get_variable: ptr::null(),
-            get_next_variable_name: ptr::null(),
-            set_variable: ptr::null(),
-            get_next_high_monotonic_count: ptr::null(),
-            reset_system: ptr::null(),
-            update_capsule: ptr::null(),
-            query_capsule_capabilities: ptr::null(),
-            query_variable_info: ptr::null(),
+            get_time: runtime::get_time,
+            set_time: runtime::set_time,
+            get_wakeup_time: runtime::get_wakeup_time,
+            set_wakeup_time: runtime::set_wakeup_time,
+            set_virtual_address_map: runtime::set_virtual_address_map,
+            convert_pointer: runtime::convert_pointer,
+            get_variable: runtime::get_variable,
+            get_next_variable_name: runtime::get_next_variable_name,
+            set_variable: runtime::set_variable,
+            get_next_high_monotonic_count: runtime::get_next_high_monotonic_count,
+            reset_system,
+            update_capsule: runtime::update_capsule,
+            query_capsule_capabilities: runtime::query_capsule_capabilities,
+            query_variable_info: runtime::query_variable_info,
         }
     }
 
@@ -246,9 +277,9 @@ pub struct RuntimeServicesStorage {
 }
 
 impl RuntimeServicesStorage {
-    pub const fn diagnostic() -> Self {
+    pub const fn diagnostic(reset_system: ResetSystem) -> Self {
         Self {
-            table: RuntimeServices::diagnostic(),
+            table: RuntimeServices::diagnostic(reset_system),
             event_table: ptr::null_mut(),
         }
     }
@@ -353,6 +384,10 @@ mod tests {
     use crate::crc32::crc32;
     use core::mem::align_of;
 
+    unsafe extern "efiapi" fn unused_reset(_: ResetType, _: Status, _: usize, _: *const c_void) {
+        unreachable!();
+    }
+
     #[test]
     fn table_layout_matches_x64_uefi() {
         assert_eq!(align_of::<TableHeader>(), 8);
@@ -392,7 +427,14 @@ mod tests {
         assert_eq!(offset_of!(BootServices, locate_handle), 176);
         assert_eq!(offset_of!(BootServices, locate_device_path), 184);
         assert_eq!(offset_of!(BootServices, install_configuration_table), 192);
+        assert_eq!(offset_of!(BootServices, load_image), 200);
+        assert_eq!(offset_of!(BootServices, start_image), 208);
+        assert_eq!(offset_of!(BootServices, exit), 216);
+        assert_eq!(offset_of!(BootServices, unload_image), 224);
         assert_eq!(offset_of!(BootServices, exit_boot_services), 232);
+        assert_eq!(offset_of!(BootServices, get_next_monotonic_count), 240);
+        assert_eq!(offset_of!(BootServices, connect_controller), 264);
+        assert_eq!(offset_of!(BootServices, disconnect_controller), 272);
         assert_eq!(offset_of!(BootServices, open_protocol_information), 296);
         assert_eq!(offset_of!(BootServices, protocols_per_handle), 304);
         assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);
@@ -410,10 +452,67 @@ mod tests {
         assert_eq!(offset_of!(BootServices, copy_mem), 352);
         assert_eq!(offset_of!(BootServices, set_mem), 360);
         assert_eq!(offset_of!(BootServices, create_event_ex), 368);
+        assert_eq!(size_of::<Time>(), 16);
+        assert_eq!(offset_of!(Time, nanosecond), 8);
+        assert_eq!(offset_of!(Time, time_zone), 12);
+        assert_eq!(size_of::<TimeCapabilities>(), 12);
+        assert_eq!(offset_of!(TimeCapabilities, sets_to_zero), 8);
+        assert_eq!(size_of::<CapsuleHeader>(), 28);
+        assert_eq!(offset_of!(CapsuleHeader, capsule_image_size), 24);
+        assert_eq!(offset_of!(RuntimeServices, get_time), 24);
+        assert_eq!(offset_of!(RuntimeServices, set_time), 32);
+        assert_eq!(offset_of!(RuntimeServices, get_wakeup_time), 40);
+        assert_eq!(offset_of!(RuntimeServices, set_wakeup_time), 48);
+        assert_eq!(offset_of!(RuntimeServices, set_virtual_address_map), 56);
+        assert_eq!(offset_of!(RuntimeServices, convert_pointer), 64);
         assert_eq!(offset_of!(RuntimeServices, get_variable), 72);
+        assert_eq!(offset_of!(RuntimeServices, get_next_variable_name), 80);
+        assert_eq!(offset_of!(RuntimeServices, set_variable), 88);
+        assert_eq!(
+            offset_of!(RuntimeServices, get_next_high_monotonic_count),
+            96
+        );
+        assert_eq!(offset_of!(RuntimeServices, reset_system), 104);
+        assert_eq!(offset_of!(RuntimeServices, update_capsule), 112);
+        assert_eq!(offset_of!(RuntimeServices, query_capsule_capabilities), 120);
         assert_eq!(offset_of!(RuntimeServices, query_variable_info), 128);
         assert_eq!(offset_of!(RuntimeServicesStorage, table), 0);
         assert_eq!(offset_of!(RuntimeServicesStorage, event_table), 136);
+    }
+
+    #[test]
+    fn runtime_status_slots_report_unavailable_without_accessing_arguments() {
+        let table = RuntimeServices::diagnostic(unused_reset);
+        // These diagnostic entry points return before following any pointer.
+        let statuses = unsafe {
+            [
+                (table.get_time)(ptr::null_mut(), ptr::null_mut()),
+                (table.set_time)(ptr::null()),
+                (table.get_wakeup_time)(ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
+                (table.set_wakeup_time)(0, ptr::null()),
+                (table.set_virtual_address_map)(0, 0, 0, ptr::null()),
+                (table.convert_pointer)(0, ptr::null_mut()),
+                (table.get_variable)(
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                ),
+                (table.get_next_variable_name)(ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
+                (table.set_variable)(ptr::null(), ptr::null(), 0, 0, ptr::null()),
+                (table.get_next_high_monotonic_count)(ptr::null_mut()),
+                (table.update_capsule)(ptr::null(), 0, 0),
+                (table.query_capsule_capabilities)(
+                    ptr::null(),
+                    0,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                ),
+                (table.query_variable_info)(0, ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
+            ]
+        };
+        assert_eq!(statuses, [Status::UNSUPPORTED; 13]);
     }
 
     #[test]
@@ -445,7 +544,7 @@ mod tests {
 
     #[test]
     fn recalculating_ignores_old_crc_and_covers_payload() {
-        let mut runtime = RuntimeServices::diagnostic();
+        let mut runtime = RuntimeServices::diagnostic(unused_reset);
         runtime.update_crc32();
         let expected = runtime.header.crc32;
         assert_ne!(expected, 0);
