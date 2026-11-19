@@ -1520,6 +1520,16 @@ sequences. The audit retains all 128 intervals and checks their
 schedule, call counts and corpus identity.
 [Report and reproduction](../reports/STAGE_3_S3-40p_2026-11-19.md)
 
+### S3-40q. Cold and warm checked-memory JIT after the MOV decoder update
+
+Two signed builds run the same frozen corpus and fixed sweep counts
+in four alternating process pairs. Each process measures all six
+cold/warm/interpreter orders per sequence. The current warm ratios
+are 0.901 and 0.908 versus the current interpreter, and the cold
+ratios are 21.738 and 21.772. Cross-revision interpreter ratios
+use medians from separate processes within each round.
+[Report and reproduction](../reports/STAGE_3_S3-40q_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

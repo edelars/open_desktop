@@ -1161,6 +1161,14 @@ retirement, budgets and STOP behavior. The remaining historical
 gap and current JIT/interpreter ratios require separate measurements.
 [Full-call measurements and reproduction](STAGE_3_S3-40p_2026-11-19.md)
 
+S3-40q repeated the S3-34a cold/warm JIT and interpreter comparison
+on `b7c9c92` and `d24865d` with common sweep counts. On the current build,
+warm native/interpreter ratios were 0.901 and 0.908. Cold ratios were
+21.738 and 21.772. The interpreter still takes about 2.8 times the
+historical time on these streams. The throughput benefit is bounded
+to repeated hits on the two checked-memory streams.
+[Matched cold, warm and historical measurements](STAGE_3_S3-40q_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
