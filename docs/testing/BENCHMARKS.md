@@ -1576,6 +1576,15 @@ The evidence includes the load trace, all scored samples and an
 offline audit.
 [Report and reproduction](../reports/STAGE_3_S3-40v_2026-11-19.md)
 
+### S3-40w. Interpreter RUN, STEP and decode controls on S3-34a
+
+Two signed builds compare the same 2,400 inputs at three public call
+boundaries. Six alternating rounds use shared sweep counts and cover
+all six control orders. The audit checks all 432 scored intervals and
+the startup UID, `nice -5` and QoS in every process. The archive
+retains raw rows, host load and offline replay.
+[Report and reproduction](../reports/STAGE_3_S3-40w_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

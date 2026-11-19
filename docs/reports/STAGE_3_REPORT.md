@@ -1309,6 +1309,14 @@ Cold/interpreter stayed near 27. Evidence covers the two local ARM64
 fixtures and one retained key.
 [Exact-key measurements and reproduction](STAGE_3_S3-40v_2026-11-19.md)
 
+S3-40w compared `d9ecaa2` with `d24865d` in six matched process
+rounds, using ordinary interpreter RUN, two public STEP calls and two
+long-mode decodes as separate controls. The current RUN ratios were
+2.073 and 2.107, STEP ratios were 2.794 and 2.872, and decode ratios
+were 0.740 and 0.730. The two measured profiles retain an interpreter
+gap. ISSUE-521 remains open.
+[Interpreter measurements and reproduction](STAGE_3_S3-40w_2026-11-19.md)
+
 S3-37g timed between-call backing invalidation and redispatch separately.
 Deleting the oldest pair took median 0.221 µs at two resident entries
 and 0.364 µs at sixteen. Both first calls on the new backing version
