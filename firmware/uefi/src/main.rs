@@ -30,11 +30,12 @@ use od_firmware::handoff::{
 };
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
-    DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
+    BOOT_DESCRIPTOR_CAPACITY, DESCRIPTOR_VERSION, MemoryDescriptor, MemoryMap, MemoryMapError,
     MemoryType,
 };
 use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError, PageOwner, PoolError};
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
+use od_firmware::rt::time::{RTC_CENTURY_REGISTER, Rtc};
 use od_firmware::rt::variable::RuntimeVariables;
 use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
@@ -58,14 +59,14 @@ const VERSION_LINE: &[u8] = concat!("OD-FW version ", env!("CARGO_PKG_VERSION"),
 const HANDOFF_VALIDATED_LINE: &[u8] = b"OD-FW S7-04 handoff validated\r\n";
 const PAGING_PREPARED_LINE: &[u8] = b"OD-FW S7-04 page tables prepared\r\n";
 const PAGING_ACTIVE_LINE: &[u8] = b"OD-FW S7-04 page tables active\r\n";
-// Three live allocations can each introduce two additional descriptors.
-const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
 static FIRMWARE_VENDOR: [u16; 13] = [
     0x4f, 0x70, 0x65, 0x6e, 0x20, 0x44, 0x65, 0x73, 0x6b, 0x74, 0x6f, 0x70, 0,
 ];
 #[repr(C)]
 struct RetainedRuntime {
     services: RuntimeServicesStorage,
+    system: SystemTable,
+    vendor: [u16; 13],
     variables: RuntimeVariables,
 }
 static mut BOOT_DESCRIPTORS: [MemoryDescriptor; BOOT_DESCRIPTOR_CAPACITY] =
@@ -194,9 +195,11 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     };
     let retained = ptr::with_exposed_provenance_mut::<RetainedRuntime>(runtime_address as usize);
     // SAFETY: calculate both field addresses in the allocation before initialization.
-    let (runtime, variables) = unsafe {
+    let (runtime, system_pointer, vendor, variables) = unsafe {
         (
             ptr::addr_of_mut!((*retained).services),
+            ptr::addr_of_mut!((*retained).system),
+            ptr::addr_of_mut!((*retained).vendor),
             ptr::addr_of_mut!((*retained).variables),
         )
     };
@@ -221,8 +224,16 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         com1_write(&fixed_hex(u64::from(report.missing_defaults)));
         com1_write(b"\r\n");
     }
+    let fixed_hardware = match handoff.acpi_fixed_hardware() {
+        Ok(entry) => entry,
+        Err(_) => stop(STOP_BOOT_SERVICES, 58),
+    };
     let mut runtime_storage = RuntimeServicesStorage::diagnostic(diagnostic_reset_system);
     runtime_storage.variables = variables;
+    runtime_storage.fixed_hardware = fixed_hardware;
+    runtime_storage.rtc = handoff
+        .rtc_base_unix_seconds()
+        .map(|_| Rtc::new(RTC_CENTURY_REGISTER));
     runtime_storage.table.update_crc32();
     // SAFETY: the pool allocated a live, aligned runtime storage slot.
     unsafe { runtime.write(runtime_storage) };
@@ -233,10 +244,6 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc);
         od_firmware::bs::attach_image_paging(&paging);
     }
-    let fixed_hardware = match handoff.acpi_fixed_hardware() {
-        Ok(entry) => entry,
-        Err(_) => stop(STOP_BOOT_SERVICES, 58),
-    };
     if let Some(pm) = fixed_hardware {
         // SAFETY: the ACPI manifest validated the reset target from the handoff.
         unsafe {
@@ -245,25 +252,26 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     let mut boot = BootServices::diagnostic();
     boot.update_crc32();
-    let mut system = SystemTable::diagnostic(
-        FIRMWARE_VENDOR.as_ptr(),
-        runtime.cast(),
-        ptr::addr_of_mut!(boot),
-    );
+    let mut system =
+        SystemTable::diagnostic(vendor.cast(), runtime.cast(), ptr::addr_of_mut!(boot));
     system.update_crc32();
-    let system_pointer = ptr::addr_of_mut!(system);
-    // SAFETY: the System Table stays on the boot stack and the Runtime
-    // Services storage resides in its dedicated runtime pool.
-    unsafe { od_firmware::bs::attach_system_tables(system_pointer, runtime) };
-    verify_boot_services(&system);
-    verify_memory_services(&system, service_map_key);
-    verify_protocol_services(&system);
-    verify_event_services(&system);
-    verify_protocol_notify(&system);
-    verify_timer_services(&system, handoff.tsc_hz());
+    // SAFETY: both table roots and the vendor string reside in the live runtime pool.
+    unsafe {
+        vendor.write(FIRMWARE_VENDOR);
+        system_pointer.write(system);
+        od_firmware::bs::attach_system_tables(system_pointer, runtime);
+        verify_boot_services(&*system_pointer);
+        verify_memory_services(&*system_pointer, service_map_key);
+        verify_protocol_services(&*system_pointer);
+        verify_event_services(&*system_pointer);
+        verify_protocol_notify(&*system_pointer);
+        verify_timer_services(&*system_pointer, handoff.tsc_hz());
+    }
     verify_configuration_services(system_pointer);
-    verify_watchdog_services(&system, fixed_hardware.is_some());
-    verify_service_boundaries(&system);
+    unsafe {
+        verify_watchdog_services(&*system_pointer, fixed_hardware.is_some());
+        verify_service_boundaries(&*system_pointer);
+    }
     // SAFETY: the BSP owns the initialized Boot Services registry.
     if unsafe { od_firmware::device_path::utilities::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 67);
@@ -274,13 +282,13 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }
-    boot_fv_image(&system, handoff.fv_app());
-    verify_exit_boot_services(system_pointer, handoff.tsc_hz());
+    let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app());
+    verify_exit_boot_services(system_pointer, handoff.tsc_hz(), runtime_installed);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
             "/* {system} {boot} {runtime} */",
-            system = in(reg) &system,
+            system = in(reg) system_pointer,
             boot = in(reg) &boot,
             runtime = in(reg) runtime,
             options(nostack, preserves_flags),
@@ -1332,7 +1340,7 @@ fn verify_service_boundaries(system: &SystemTable) {
 }
 
 #[inline(never)]
-fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
+fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> bool {
     // Console initialization and failed applications can leave an open COM1 line.
     fn fail(detail: u64) -> ! {
         com1_write(b"\r\n");
@@ -1342,12 +1350,15 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
     let Ok(archive) = od_firmware::fv::embedded() else {
         fail(69);
     };
-    if requested.is_none() && archive.get("hello").is_none() {
-        return;
+    let install_runtime = archive.get("runtime").is_some();
+    let boot_application = requested.is_some() || archive.get("hello").is_some();
+    if !install_runtime && !boot_application {
+        return false;
     }
     let name = match requested {
         Some(FirmwareFvApp::Ebs) => "ebs",
         Some(FirmwareFvApp::Vars) => "vars",
+        Some(FirmwareFvApp::Rt) => "rt",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1358,7 +1369,7 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
     // SAFETY: the table is active and the encoded path and scalar buffers
     // remain live through their Boot Services calls.
     unsafe {
-        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let boot = ptr::addr_of!((*system).boot_services).read_volatile();
         let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
         let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
         let load = ptr::addr_of!((*boot).load_image).read_volatile();
@@ -1367,11 +1378,34 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
         if install(&mut parent, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS {
             fail(71);
         }
+        if install_runtime {
+            let mut driver_path = [0; 64];
+            let Some(path) =
+                od_firmware::bs::image::firmware_file_device_path("runtime", &mut driver_path)
+            else {
+                fail(77);
+            };
+            let mut driver = ptr::null_mut();
+            let loaded = load(0, parent, path.as_ptr().cast(), ptr::null(), 0, &mut driver);
+            if loaded != Status::SUCCESS {
+                fail(loaded.raw() as u64);
+            }
+            let started = start(driver, ptr::null_mut(), ptr::null_mut());
+            if started != Status::SUCCESS {
+                fail(started.raw() as u64);
+            }
+        }
+        if !boot_application {
+            if uninstall(parent, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS {
+                fail(73);
+            }
+            return install_runtime;
+        }
         let mut image = ptr::null_mut();
         match load(0, parent, path.as_ptr().cast(), ptr::null(), 0, &mut image) {
             Status::SUCCESS => {
                 let status = start(image, ptr::null_mut(), ptr::null_mut());
-                if requested == Some(FirmwareFvApp::Ebs) {
+                if matches!(requested, Some(FirmwareFvApp::Ebs | FirmwareFvApp::Rt)) {
                     fail(75);
                 }
                 if status != Status::SUCCESS {
@@ -1395,6 +1429,7 @@ fn boot_fv_image(system: &SystemTable, requested: Option<FirmwareFvApp>) {
     if requested.is_some() {
         stop(STOP_NO_BOOT_OPTIONS, 0);
     }
+    install_runtime
 }
 
 #[inline(never)]
@@ -1677,6 +1712,7 @@ struct ExitProbe {
     system: *mut SystemTable,
     boot: *mut BootServices,
     tsc_hz: u64,
+    runtime_installed: bool,
     trace: [u8; 4],
     count: usize,
 }
@@ -1699,7 +1735,11 @@ unsafe fn record_exit_notification(probe: *mut ExitProbe, value: u8) {
     }
 }
 
-unsafe fn verify_runtime_events(boot: *mut BootServices, runtime_context: *mut c_void) {
+unsafe fn verify_runtime_events(
+    boot: *mut BootServices,
+    runtime_context: *mut c_void,
+    runtime_installed: bool,
+) {
     // SAFETY: this runs in the private BEFORE notification, with the table
     // and output arrays live and no mutable references across service calls.
     unsafe {
@@ -1764,7 +1804,8 @@ unsafe fn verify_runtime_events(boot: *mut BootServices, runtime_context: *mut c
             stop(STOP_BOOT_SERVICES, 62);
         }
         let retained = read_key();
-        if before.checked_add(1) != Some(retained)
+        let allocation_count = usize::from(!runtime_installed);
+        if before.checked_add(allocation_count) != Some(retained)
             || create_ex(
                 EVT_NOTIFY_SIGNAL,
                 TPL_NOTIFY,
@@ -1815,6 +1856,7 @@ unsafe extern "efiapi" fn notify_before_exit(_: Event, context: *mut c_void) {
         verify_runtime_events(
             boot,
             ptr::addr_of!((*system).runtime_services).read().cast(),
+            ptr::addr_of!((*probe).runtime_installed).read(),
         );
         record_exit_notification(probe, b'B');
     }
@@ -1858,7 +1900,7 @@ unsafe extern "efiapi" fn notify_unexpected_exit_timer(_: Event, _: *mut c_void)
 }
 
 #[inline(never)]
-fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
+fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64, runtime_installed: bool) {
     // SAFETY: the environment is the private BSP diagnostic. The System
     // Table, context, and outputs stay live through both exit attempts.
     unsafe {
@@ -1878,6 +1920,7 @@ fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
             system,
             boot,
             tsc_hz,
+            runtime_installed,
             trace: [0; 4],
             count: 0,
         };
@@ -1946,7 +1989,10 @@ fn verify_exit_boot_services(system: *mut SystemTable, tsc_hz: u64) {
             stop(STOP_BOOT_SERVICES, 55);
         }
         let fresh_key = read_key();
-        if key.checked_add(3) != Some(fresh_key) || exit(image, fresh_key) != Status::SUCCESS {
+        let expected_allocations = if runtime_installed { 2 } else { 3 };
+        if key.checked_add(expected_allocations) != Some(fresh_key)
+            || exit(image, fresh_key) != Status::SUCCESS
+        {
             stop(STOP_BOOT_SERVICES, 56);
         }
 

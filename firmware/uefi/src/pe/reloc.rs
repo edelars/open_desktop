@@ -7,9 +7,49 @@ pub enum RelocationError {
     InvalidPageRva,
     UnsupportedType(u16),
     TargetOutsideImage,
+    OverlappingTargets,
 }
 
-pub(super) fn for_each_dir64(
+/// An immutable fixup record captured after the initial physical relocation.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct RuntimeFixup {
+    rva: usize,
+    physical_value: u64,
+}
+
+impl RuntimeFixup {
+    pub(crate) fn capture(rva: usize, mapped: &[u8]) -> Self {
+        Self {
+            rva,
+            physical_value: u64::from_le_bytes(mapped[rva..rva + 8].try_into().unwrap()),
+        }
+    }
+
+    pub(crate) fn validate_targets(records: &mut [Self]) -> Result<(), RelocationError> {
+        records.sort_unstable_by_key(|fixup| fixup.rva);
+        if records.windows(2).any(|pair| pair[0].rva + 8 > pair[1].rva) {
+            return Err(RelocationError::OverlappingTargets);
+        }
+        Ok(())
+    }
+
+    /// # Safety
+    /// The image is live at its physical base and this fixup target permits
+    /// reads and writes. Caller serializes the transition on the owning CPU.
+    pub unsafe fn apply(self, physical_base: usize, delta: u64) {
+        let word = core::ptr::with_exposed_provenance_mut::<u64>(physical_base + self.rva);
+        // SAFETY: PE permits unaligned DIR64 targets, validated at load time.
+        unsafe {
+            if word.read_unaligned() == self.physical_value {
+                word.write_unaligned(self.physical_value.wrapping_add(delta));
+            }
+        }
+    }
+}
+
+/// Visits DIR64 target RVAs in a PE32+ relocation directory.
+pub fn for_each_dir64(
     directory_rva: u32,
     data: &[u8],
     image_size: u32,
@@ -56,4 +96,37 @@ pub(super) fn for_each_dir64(
         offset += size;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_relocation_only_patches_unchanged_words() {
+        let mut image = [0; 24];
+        image[1..9].copy_from_slice(&0x1000u64.to_le_bytes());
+        image[12..20].copy_from_slice(&0x2000u64.to_le_bytes());
+        let mut records = [
+            RuntimeFixup::capture(12, &image),
+            RuntimeFixup::capture(1, &image),
+        ];
+        RuntimeFixup::validate_targets(&mut records).unwrap();
+        image[12..20].copy_from_slice(&0x1234u64.to_le_bytes());
+        let base = image.as_mut_ptr().addr();
+        for record in records {
+            // SAFETY: both target words are inside the exclusively writable image.
+            unsafe { record.apply(base, 0x8000) };
+        }
+        assert_eq!(u64::from_le_bytes(image[1..9].try_into().unwrap()), 0x9000);
+        assert_eq!(
+            u64::from_le_bytes(image[12..20].try_into().unwrap()),
+            0x1234
+        );
+        let same = RuntimeFixup::capture(1, &image);
+        assert_eq!(
+            RuntimeFixup::validate_targets(&mut [same, same]),
+            Err(RelocationError::OverlappingTargets)
+        );
+    }
 }

@@ -74,7 +74,7 @@ fn invoke_with_args(image: &[u8], budget: &str, extra: &[&str]) -> Run {
 fn fv_app_rejects_invalid_selection_before_launch() {
     let legacy = image(&[0xf4]);
     for (extra, error) in [
-        (&["--fv-app", "other"][..], "expected hello, ebs or vars"),
+        (&["--fv-app", "other"][..], "expected hello, ebs, vars or rt"),
         (
             &["--fv-app", "hello", "--fv-app", "ebs"][..],
             "duplicate option --fv-app",
@@ -91,17 +91,20 @@ fn fv_app_rejects_invalid_selection_before_launch() {
 
 #[test]
 fn fv_app_requires_a_compatible_firmware_before_launch() {
-    let run = invoke_with_args(&image(&[0xf4]), "64", &["--fv-app", "ebs"]);
-    assert_eq!(run.output.status.code(), Some(4));
-    let result = report(&run);
-    assert_eq!(result["status"], "loader_error");
-    assert!(
-        result["error"]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("handoff_minor_max")
-    );
-    assert!(!run.com1.exists());
+    let legacy = image(&[0xf4]);
+    for app in ["ebs", "rt"] {
+        let run = invoke_with_args(&legacy, "64", &["--fv-app", app]);
+        assert_eq!(run.output.status.code(), Some(4));
+        let result = report(&run);
+        assert_eq!(result["status"], "loader_error");
+        assert!(
+            result["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("handoff_minor_max")
+        );
+        assert!(!run.com1.exists());
+    }
 }
 
 fn report(run: &Run) -> Value {

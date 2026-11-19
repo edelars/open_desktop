@@ -469,8 +469,9 @@
 
 ### S7-11. Реализовать Runtime Services
 
-- [ ] Принято после ревью. Зависит от S7-14 (reset register и RTC/CMOS): `GetTime`/`SetTime` и `ResetSystem` реализуются через реальные регистры, не через `HLT`.
-- **Где:** `firmware/uefi/src/rt/{time,reset,virt,capsule}.rs`, `firmware/uefi/src/rt/mod.rs` (таблица RT), `docs/specs/UEFI_PROFILE.md` (раздел «Runtime Services»).
+- [x] Принято после независимого ревью `gpt-6.1-sol` / `high` 2026-11-19.
+- **Текущий статус (2026-11-19).** Приложение `rt` переключает CR3 после EBS и проверяет переменные, перенос DIR64, таблицы и RTC по виртуальным адресам. Пять прогонов дошли до аппаратного `Shutdown`. `vars` подтвердило сохранение счётчика в NVRAM между двумя платами одного процесса. [Результаты проверки](../reports/STAGE_7_REPORT.md#s7-11-runtime-services-после-exitbootservices).
+- **Где.** `firmware/uefi/src/rt/{driver,time,reset,virt,variable}.rs`, `firmware/uefi/src/uefi/{runtime,system_table}.rs`, [Runtime Services](../specs/UEFI_PROFILE.md#runtime-services).
 - **Сделать:**
   1. `SetVirtualAddressMap`: применить механизм перемещения RT-части, принятый в S7-02 (повторные relocations перемещаемого RT-образа или таблица static-PIE), переписать собственные указатели RT (таблица, переменные, драйвер NVRAM) через `ConvertPointer`, сигналить `EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE`; записать, какие регионы `EfiRuntimeServicesCode/Data` и `EfiMemoryMappedIO` с атрибутом `EFI_MEMORY_RUNTIME` (окно NVRAM) отдаются ОС. Тест: приложение `rt` после EBS **строит собственные таблицы страниц** с неидентичным отображением RT-регионов (как делает Windows), переключает `CR3`, вызывает `SetVirtualAddressMap`, затем `GetVariable`/`SetVariable` по новым VA.
   2. `ResetSystem(Cold/Warm/Shutdown/PlatformSpecific)`: запись в reset register / PM1 `SLP_EN` ACPI fixed hardware (S7-14); машина останавливается с причиной `Reset`/`Shutdown`.

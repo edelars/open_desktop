@@ -66,6 +66,41 @@ pub(crate) struct RuntimeEventTable {
     records: [RuntimeEventRecord; MAX_EVENTS],
 }
 
+#[cfg(target_os = "uefi")]
+impl RuntimeEventTable {
+    fn virtual_notifications(&self) -> impl Iterator<Item = RuntimeEventRecord> + '_ {
+        self.records.iter().copied().filter(|record| {
+            record.has_group != 0
+                && record.group == VIRTUAL_ADDRESS_CHANGE
+                && record.notify.is_some()
+        })
+    }
+
+    pub(crate) fn validate_virtual_notifications(
+        &self,
+        map: &crate::rt::virt::VirtualMap<'_>,
+    ) -> Result<(), Status> {
+        for record in self.virtual_notifications() {
+            map.translate(record.notify.unwrap() as usize as u64)?;
+        }
+        Ok(())
+    }
+
+    /// # Safety
+    /// The notifications are still physically mapped and executable. The
+    /// caller has opened the ConvertPointer phase and holds no mutable borrow
+    /// of the runtime driver or of notification contexts.
+    pub(crate) unsafe fn notify_virtual_address_change(&self) {
+        for priority in [super::TPL_NOTIFY, super::TPL_CALLBACK] {
+            for record in self.virtual_notifications() {
+                if record.notify_tpl == priority {
+                    unsafe { record.notify.unwrap()(record.event, record.context) };
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct RuntimeEventRegistrations {
     table: Option<NonNull<RuntimeEventTable>>,
 }

@@ -18,7 +18,7 @@ S7-01 задаёт отдельную freestanding сборку образа ROM
 | Образ | `rust-objcopy -O binary` из sysroot, затем `tools/build/build_firmware.py` пишет заголовок и дополняет до `0x400000` | Формат — FIRMWARE_BOOT.md, раздел 3.2 |
 | Зависимости | `sha2 =0.11.1` без default features, версии зафиксированы в `Cargo.lock` | SHA-256 для Authenticode. На `x86_64-unknown-none` применяется `sha2_backend="soft"` |
 
-**RT-образ и тестовые EFI-приложения.** Штатный target `x86_64-unknown-uefi` используется для PE32+ probe S7-01 и предназначен для приложений S7-06. Отдельный PE32+ RT-драйвер (subsystem `EFI_RUNTIME_DRIVER`) использует тот же target по решению 4 [контракта входа](../../docs/specs/FIRMWARE_BOOT.md#9-решение-4-перемещение-rt-части-после-setvirtualaddressmap). Размещение RT-драйвера во встроенном firmware volume входит в S7-11.
+**RT-образ и тестовые EFI-приложения.** Target `x86_64-unknown-uefi` собирает встроенный PE32+ Runtime Driver с subsystem `EFI_RUNTIME_DRIVER` и обязательной секцией `.reloc`. Сборщик помещает драйвер в firmware volume каждого обычного ROM. Тем же target собираются PE32+ probe S7-01 и тестовые приложения. [Контракт входа и переноса RT](../../docs/specs/FIRMWARE_BOOT.md#9-решение-4-перемещение-rt-части-после-setvirtualaddressmap).
 
 ## Изменение toolchain
 
@@ -27,7 +27,7 @@ S7-01 задаёт отдельную freestanding сборку образа ROM
 ## Требования
 
 - `clang` (системный; startup-ассемблер). Нужен только для сборки образа, не для `cargo test`. Путь можно задать `OD_FW_CLANG`.
-- `rustup` target `x86_64-unknown-none`: `rustup target add x86_64-unknown-none` (образ ROM); `x86_64-unknown-uefi`: `rustup target add x86_64-unknown-uefi` (только для probe).
+- Для обычного ROM нужны оба Rust target. Установка выполняется через `rustup target add x86_64-unknown-none x86_64-unknown-uefi`.
 - `rust-objcopy` из sysroot (компонент `rustup component add llvm-tools`; путь можно задать `OD_FW_RUST_OBJCOPY`). `rust-lld` берётся cargo из sysroot автоматически.
 - Python 3 (скрипт сборки и его тесты), `cargo`, `rustc`.
 
@@ -54,7 +54,7 @@ python3 -m unittest tools/build/test_build_firmware.py
 # Образ прошивки (ROM): ELF -> raw -> заголовок ODFWIMG1 -> ровно 0x400000 байт; печатает SHA-256 и размер
 python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
 
-# ROM с архивом собственных hello.efi, echo.efi, ebs.efi и vars.efi. Нужен target x86_64-unknown-uefi.
+# ROM с Runtime Driver и приложениями hello, echo, ebs, rt и vars.
 python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-with-apps.bin
 
 # Побайтовая проверка COM1 для базового ROM и запусков hello, ebs и vars из FV
@@ -110,11 +110,10 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 
 ## Раскладка образа
 
-- В `.rodata` находится канонический пустой архив FV или встроенные PE32+ приложения. Вариант с приложениями использует отдельный каталог сборки по SHA-256 архива. [Формат FV](../../docs/specs/UEFI_PROFILE.md#встроенный-архив-fv).
+- В `.rodata` находится firmware volume с встроенным PE32+ Runtime Driver. Флаг `--with-test-apps` добавляет приложения. Для каждого содержимого архива используется отдельный каталог сборки по SHA-256. [Формат FV](../../docs/specs/UEFI_PROFILE.md#встроенный-архив-fv).
 - Линковочный адрес `0x0020_0000` (`FIRMWARE_SHADOW`), размер образа `0x0040_0000`, вход `RIP = 0x0020_0000 + entry_offset`.
 - `0x00–0x3F` — заголовок `ODFWIMG1` (линковщик только резервирует 0x40 нулевых байт в `.image_header`, поля пишет `build_firmware.py`); далее `.text` (с `_start` первым), `.rodata`, `.data`, `.bss`. Хвост до `0x400000` — нули.
 - `.bss` зануляется startup-кодом; сам образ при загрузке перезаписывает shadow целиком.
-- Зарезервировано, не реализовано: embedded firmware volume (S7-06), боевой RT-образ и его размещение в FV (S7-11, зависит от S7-06).
 
 ## Вход текущего бинаря
 

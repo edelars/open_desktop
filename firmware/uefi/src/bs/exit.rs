@@ -157,6 +157,12 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
             {
                 variables.enter_runtime();
             }
+            if let Some(runtime) = state.runtime_services {
+                let runtime = runtime.as_ptr();
+                (&mut *core::ptr::addr_of_mut!((*runtime).final_runtime_map))
+                    .capture(state.allocator.map().descriptors());
+                core::ptr::addr_of_mut!((*runtime).at_runtime).write(true);
+            }
             state.exit.phase = ExitPhase::Exited;
             Status::SUCCESS
         })

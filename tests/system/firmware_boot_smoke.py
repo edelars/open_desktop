@@ -63,14 +63,15 @@ def run_case(
         )
     report = json.loads(result.stdout)
     if (
-        report["exit"] != "halted"
+        report["exit"] != case.get("exit", "halted")
+        or report.get("stop_reason") != case.get("stop_reason")
         or report["status"] != case["status"]
         or report["fw_stop"] != case["fw_stop"]
         or report["image_sha256"] != image_sha256
         or not 0 < report["retired"] <= case["instruction_budget"]
         or not 0 < report["quanta"] <= case["max_quanta"]
     ):
-        raise RuntimeError(f"{label} did not reach its expected halt: {report}")
+        raise RuntimeError(f"{label} did not reach its expected stop: {report}")
 
     if not transcript.exists():
         raise RuntimeError(f"{label} produced no COM1 transcript")

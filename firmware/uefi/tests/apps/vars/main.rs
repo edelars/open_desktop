@@ -34,6 +34,8 @@ const NV_SET: &[u8] = b"OD-UEFI vars NV probe set\r\n\0";
 const NV_RESTORED: &[u8] = b"OD-UEFI vars NV probe restored od-s7-10\r\n\0";
 static SET_MESSAGE: [Char16; NV_SET.len()] = ascii_to_char16(NV_SET);
 static RESTORED_MESSAGE: [Char16; NV_RESTORED.len()] = ascii_to_char16(NV_RESTORED);
+const NV_COUNT: &[u8] = b"OD-UEFI vars NV monotonic high advanced\r\n\0";
+static COUNT_MESSAGE: [Char16; NV_COUNT.len()] = ascii_to_char16(NV_COUNT);
 
 #[unsafe(no_mangle)]
 unsafe extern "efiapi" fn efi_main(handle: Handle, system: *mut SystemTable) -> Status {
@@ -56,14 +58,33 @@ unsafe extern "efiapi" fn efi_main(handle: Handle, system: *mut SystemTable) -> 
     if status != Status::SUCCESS {
         return status;
     }
-    let message = match check_nv_probe(rt) {
-        Ok(message) => message,
+    let restored = match check_nv_probe(rt) {
+        Ok(restored) => restored,
         Err(error) => return error,
     };
-    unsafe { output(system, message.as_ptr()) }
+    let message = if restored {
+        RESTORED_MESSAGE.as_ptr()
+    } else {
+        SET_MESSAGE.as_ptr()
+    };
+    unsafe {
+        let printed = output(system, message);
+        if printed != Status::SUCCESS {
+            return printed;
+        }
+        let mut count = 0;
+        let boot = (*system).boot_services;
+        match ((*boot).get_next_monotonic_count)(&mut count) {
+            Status::SUCCESS if count == (u64::from(restored) + 1) << 32 | 1 => {
+                output(system, COUNT_MESSAGE.as_ptr())
+            }
+            Status::DEVICE_ERROR if !restored => Status::SUCCESS,
+            _ => Status::LOAD_ERROR,
+        }
+    }
 }
 
-fn check_nv_probe(rt: &RuntimeServices) -> Result<&'static [Char16], Status> {
+fn check_nv_probe(rt: &RuntimeServices) -> Result<bool, Status> {
     let mut value = [0; NV_VALUE.len()];
     let mut size = value.len();
     let mut attributes = 0;
@@ -87,14 +108,14 @@ fn check_nv_probe(rt: &RuntimeServices) -> Result<&'static [Char16], Status> {
                 if status != Status::SUCCESS {
                     return Err(status);
                 }
-                Ok(&SET_MESSAGE)
+                Ok(false)
             }
             Status::SUCCESS
                 if size == NV_VALUE.len()
                     && attributes == NON_VOLATILE_RUNTIME
                     && &value == NV_VALUE =>
             {
-                Ok(&RESTORED_MESSAGE)
+                Ok(true)
             }
             _ => Err(Status::LOAD_ERROR),
         }

@@ -97,6 +97,9 @@ pub unsafe fn attach_image_paging(paging: &BootPaging<'_, '_>) {
 pub unsafe fn attach_system_tables(system: *mut SystemTable, runtime: *mut RuntimeServicesStorage) {
     BOOT_SERVICES.system_table.set(NonNull::new(system));
     BOOT_SERVICES.runtime_services.set(NonNull::new(runtime));
+    if !runtime.is_null() {
+        unsafe { core::ptr::addr_of_mut!((*runtime).system).write(system) };
+    }
 }
 
 /// # Safety

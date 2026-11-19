@@ -6,8 +6,8 @@
 //! (`docs/specs/FIRMWARE_BOOT.md` sections 8 and 11).
 
 use od_machine::{
-    FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp, LoadedFirmwareBoard, NvramConfig,
-    PagedProbeExit, load_firmware_image,
+    FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp, LoadedFirmwareBoard,
+    MachineStopReason, NvramConfig, PagedProbeExit, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars] [--nvram-reboot-out <file>]";
+                    [--fv-app hello|ebs|vars|rt] [--nvram-reboot-out <file>]";
 
 struct Options {
     image: String,
@@ -45,12 +45,13 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
+    let rt = options.fv_app == Some(FirmwareFvApp::Rt);
     let config = FirmwareBoardConfig {
         fv_app: options.fv_app,
-        nvram: options
-            .nvram_reboot_out
-            .as_ref()
-            .map(|_| NvramConfig::Empty),
+        acpi_pm: rt,
+        acpi_tables: rt,
+        rtc_base_unix_seconds: rt.then_some(1_704_067_200),
+        nvram: (rt || options.nvram_reboot_out.is_some()).then_some(NvramConfig::Empty),
         ..FirmwareBoardConfig::default()
     };
     let first = match boot(&image, &config, options.budget, &options.com1_out) {
@@ -234,18 +235,22 @@ fn boot(
         PagedProbeExit::IntegrationError(_) => "integration_error",
     };
     let halted = matches!(report.exit, PagedProbeExit::Halted);
-    let (status, code) = match (halted, &fw_stop) {
+    let rt = config.fv_app == Some(FirmwareFvApp::Rt);
+    let rt_shutdown = rt
+        && matches!(report.exit, PagedProbeExit::Stopped)
+        && report.stop_reason == Some(MachineStopReason::Shutdown);
+    let (status, code) = match ((halted && !rt) || rt_shutdown, &fw_stop) {
         (true, None) => ("completed", 0),
         (true, Some(_)) => ("firmware_stop", 6),
         (false, _) => ("error", 5),
     };
     let state = board.state();
-    let result = json!({
+    let mut result = json!({
         "schema_version": 1,
         "command": "boot-firmware",
         "status": status,
         "exit": exit,
-        "exit_detail": if halted { Value::Null } else { json!(format!("{:?}", report.exit)) },
+        "exit_detail": if halted || rt_shutdown { Value::Null } else { json!(format!("{:?}", report.exit)) },
         "retired": report.retired,
         "quanta": report.quanta,
         "rip": format!("0x{:016x}", state.rip),
@@ -266,6 +271,12 @@ fn boot(
         "page_fault": report.page_fault.map(|fault| format!("{fault:?}")),
         "memory_error": report.memory_error.map(|error| format!("{error:?}")),
     });
+    if rt {
+        result["stop_reason"] = json!(report.stop_reason.map(|reason| match reason {
+            MachineStopReason::Reset => "Reset",
+            MachineStopReason::Shutdown => "Shutdown",
+        }));
+    }
     Ok(BootRun {
         board,
         report: result,
@@ -302,9 +313,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     "hello" => FirmwareFvApp::Hello,
                     "ebs" => FirmwareFvApp::Ebs,
                     "vars" => FirmwareFvApp::Vars,
+                    "rt" => FirmwareFvApp::Rt,
                     _ => {
                         return Err(format!(
-                            "invalid --fv-app '{value}'; expected hello, ebs or vars"
+                            "invalid --fv-app '{value}'; expected hello, ebs, vars or rt"
                         ));
                     }
                 });

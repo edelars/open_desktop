@@ -11,6 +11,7 @@ mod state;
 
 pub use state::{attach_image_paging, attach_system_tables, attach_watchdog, initialize};
 
+#[cfg(not(target_os = "uefi"))]
 pub(crate) unsafe fn with_runtime_variables(
     operation: impl FnOnce(&mut crate::rt::variable::RuntimeVariables) -> crate::uefi::status::Status,
 ) -> crate::uefi::status::Status {

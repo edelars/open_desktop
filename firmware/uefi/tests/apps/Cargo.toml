@@ -42,6 +42,13 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "rt"
+path = "rt/main.rs"
+test = false
+bench = false
+doc = false
+
 [profile.dev]
 panic = "abort"
 

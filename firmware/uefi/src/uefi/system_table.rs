@@ -207,6 +207,7 @@ impl BootServices {
     }
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct RuntimeServices {
     pub header: TableHeader,
@@ -266,6 +267,35 @@ impl RuntimeServices {
         // SAFETY: like BootServices, the initialized header and pointer fields fill the layout.
         self.header.crc32 = unsafe { table_crc32(ptr::from_ref(self)) };
     }
+
+    #[cfg(target_os = "uefi")]
+    pub(crate) fn relocated(&self, map: &crate::rt::virt::VirtualMap<'_>) -> Result<Self, Status> {
+        let mut table = *self;
+        macro_rules! convert {
+            ($($slot:ident),+ $(,)?) => {$(
+                let address = map.convert_pointer(0, self.$slot as usize)?;
+                // SAFETY: the map translates this EFI function's current
+                // entry to its alias with the identical signature and ABI.
+                table.$slot = unsafe { core::mem::transmute(address) };
+            )+};
+        }
+        convert!(
+            get_time,
+            set_time,
+            get_wakeup_time,
+            set_wakeup_time,
+            get_variable,
+            get_next_variable_name,
+            set_variable,
+            get_next_high_monotonic_count,
+            reset_system,
+            update_capsule,
+            query_capsule_capabilities,
+            query_variable_info,
+        );
+        table.update_crc32();
+        Ok(table)
+    }
 }
 
 /// Firmware-owned storage for the Runtime Services table and its retained
@@ -275,6 +305,16 @@ pub struct RuntimeServicesStorage {
     pub table: RuntimeServices,
     pub(crate) event_table: *mut RuntimeEventTable,
     pub variables: *mut crate::rt::variable::RuntimeVariables,
+    pub rtc: Option<crate::rt::time::Rtc>,
+    pub fixed_hardware: Option<crate::acpi::manifest::AcpiPmEntry>,
+    pub(crate) system: *mut SystemTable,
+    pub(crate) at_runtime: bool,
+    pub(crate) virtual_mode: bool,
+    pub(crate) monotonic: Option<(u32, u32)>,
+    pub(crate) driver_loaded: bool,
+    pub(crate) properties: crate::uefi::runtime::RuntimeProperties,
+    pub(crate) final_runtime_map: crate::rt::virt::RuntimeRanges,
+    pub(crate) images: crate::rt::virt::RuntimeImages,
 }
 
 impl RuntimeServicesStorage {
@@ -283,6 +323,16 @@ impl RuntimeServicesStorage {
             table: RuntimeServices::diagnostic(reset_system),
             event_table: ptr::null_mut(),
             variables: ptr::null_mut(),
+            rtc: None,
+            fixed_hardware: None,
+            system: ptr::null_mut(),
+            at_runtime: false,
+            virtual_mode: false,
+            monotonic: None,
+            driver_loaded: false,
+            properties: crate::uefi::runtime::RuntimeProperties::new(false, false, false),
+            final_runtime_map: crate::rt::virt::RuntimeRanges::new(),
+            images: crate::rt::virt::RuntimeImages::new(),
         }
     }
 }
@@ -294,6 +344,7 @@ pub struct ConfigurationTable {
     pub vendor_table: *mut c_void,
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct SystemTable {
     pub header: TableHeader,
@@ -313,6 +364,10 @@ pub struct SystemTable {
 }
 
 impl SystemTable {
+    pub const fn firmware_vendor(&self) -> *const Char16 {
+        self.firmware_vendor
+    }
+
     pub fn console_in(&self) -> *mut c_void {
         self.con_in
     }
@@ -385,6 +440,22 @@ impl SystemTable {
         // SAFETY: the C layout starts with a header, and the explicit padding field
         // covers the only gap between x64 fields. The entire table is initialized.
         self.header.crc32 = unsafe { table_crc32(ptr::from_ref(self)) };
+    }
+
+    #[cfg(target_os = "uefi")]
+    pub(crate) fn relocated(&self, map: &crate::rt::virt::VirtualMap<'_>) -> Result<Self, Status> {
+        use crate::rt::virt::OPTIONAL_POINTER;
+
+        let mut table = *self;
+        table.firmware_vendor =
+            ptr::with_exposed_provenance(map.convert_pointer(0, self.firmware_vendor.addr())?);
+        table.runtime_services =
+            ptr::with_exposed_provenance_mut(map.convert_pointer(0, self.runtime_services.addr())?);
+        table.configuration_table = ptr::with_exposed_provenance_mut(
+            map.convert_pointer(OPTIONAL_POINTER, self.configuration_table.addr())?,
+        );
+        table.update_crc32();
+        Ok(table)
     }
 }
 

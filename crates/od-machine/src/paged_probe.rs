@@ -817,7 +817,7 @@ fn run_paged_probe_inner(
                         }
                     }
                     TranslationContextChange::Cr0Write { old_cr0, new_cr0 }
-                        if cpu_cr0_wp_profile =>
+                        if cpu_cr0_wp_profile || firmware_boot_profile =>
                     {
                         let active_cr0 = paging.cr0();
                         if old_cr0 != active_cr0 || state.cr0 != Some(new_cr0) {
@@ -837,7 +837,7 @@ fn run_paged_probe_inner(
                                 &translation_context_changes,
                             );
                         }
-                        let cr3 = state.cr3.expect("CPU CR3 was admitted before execution");
+                        let cr3 = paging.cr3();
                         match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
                             Ok(candidate) => candidate,
                             Err(error) => {
@@ -1140,21 +1140,28 @@ impl PagedProbeMemory<'_> {
             && self.firmware_boot_profile
             && !self.large_ram_profile
             && request.context.origin == AccessOrigin::Explicit
-            && matches!(
-                request.operation,
-                RamAccessOperation::Read {
-                    width: crate::AccessWidth::Word
-                        | crate::AccessWidth::Dword
-                        | crate::AccessWidth::Qword,
+        {
+            let split = match request.operation {
+                RamAccessOperation::Read { .. } => {
+                    crate::page_walk::read_long64_4k_bounded_ram_read(
+                        self.memory,
+                        &self.paging,
+                        request,
+                        &mut *self.committed_write,
+                    )
+                    .map(TrackedAccessOutcome::Read)
                 }
-            ) {
-            match crate::page_walk::read_long64_4k_bounded_ram_read(
-                self.memory,
-                &self.paging,
-                request,
-                &mut *self.committed_write,
-            ) {
-                Ok(value) => return Ok(TrackedAccessOutcome::Read(value)),
+                RamAccessOperation::Write { .. } => crate::page_walk::write_long64_4k_bounded_ram(
+                    self.memory,
+                    &self.paging,
+                    request,
+                    &mut *self.committed_write,
+                )
+                .map(|()| TrackedAccessOutcome::Written),
+                _ => Err(error),
+            };
+            match split {
+                Ok(outcome) => return Ok(outcome),
                 Err(error) => error,
             }
         } else {

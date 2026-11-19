@@ -12,10 +12,32 @@ pub(crate) const MEMORY_CHUNK: usize = 1024;
 /// A non-null output would hold the count if the platform could supply one.
 pub unsafe extern "efiapi" fn get_next_monotonic_count(count: *mut u64) -> Status {
     if count.is_null() {
-        Status::INVALID_PARAMETER
-    } else {
-        // There is no persistent high word at this stage.
-        Status::DEVICE_ERROR
+        return Status::INVALID_PARAMETER;
+    }
+    unsafe {
+        super::state::with(|state| {
+            let Some(runtime) = state.runtime_services else {
+                return Status::DEVICE_ERROR;
+            };
+            let runtime = runtime.as_ptr();
+            let counter = ptr::addr_of_mut!((*runtime).monotonic);
+            let Some((mut high, low)) = counter.read() else {
+                return Status::DEVICE_ERROR;
+            };
+            let (next, overflow) = low.overflowing_add(1);
+            if overflow {
+                let Some(variables) = ptr::addr_of!((*runtime).variables).read().as_mut() else {
+                    return Status::DEVICE_ERROR;
+                };
+                match variables.advance_monotonic_high() {
+                    Ok(value) => high = value,
+                    Err(status) => return status,
+                }
+            }
+            counter.write(Some((high, next)));
+            count.write_unaligned(u64::from(high) << 32 | u64::from(next));
+            Status::SUCCESS
+        })
     }
 }
 

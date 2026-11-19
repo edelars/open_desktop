@@ -11,6 +11,8 @@ pub const CMOS_DATA_PORT: u16 = 0x71;
 pub const CMOS_PORT_BYTES: u32 = 2;
 pub const CMOS_RTC_NOT_PRESENT_BIT: u32 = 5;
 pub const RTC_BASE_UNIX_SECONDS_MAX: u64 = 253_402_300_799;
+const MIN_CALENDAR_YEAR: u16 = 1900;
+const MAX_CALENDAR_YEAR: u16 = 9999;
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 // Status A resets to 0x26 (32.768 kHz). Table 6 gives a 1.984 ms update cycle; UIP is
@@ -57,7 +59,7 @@ struct Calendar {
 #[derive(Debug)]
 pub struct RtcCmos {
     clock: VirtualClockHandle,
-    anchor_unix_seconds: u64,
+    anchor_unix_seconds: i64,
     anchor_clock_ns: u64,
     selected_register: u8,
     nmi_disabled: bool,
@@ -76,7 +78,7 @@ impl RtcCmos {
         let anchor_clock_ns = clock.snapshot().now_ns();
         Ok(Self {
             clock,
-            anchor_unix_seconds: base_unix_seconds,
+            anchor_unix_seconds: base_unix_seconds as i64,
             anchor_clock_ns,
             selected_register: 0,
             nmi_disabled: false,
@@ -93,11 +95,11 @@ impl RtcCmos {
         self.clock.snapshot().now_ns()
     }
 
-    fn current_unix_seconds_at(&self, now_ns: u64) -> u64 {
+    fn current_unix_seconds_at(&self, now_ns: u64) -> i64 {
         let elapsed_seconds = now_ns.saturating_sub(self.anchor_clock_ns) / NANOS_PER_SECOND;
         self.anchor_unix_seconds
-            .saturating_add(elapsed_seconds)
-            .min(RTC_BASE_UNIX_SECONDS_MAX)
+            .saturating_add(elapsed_seconds as i64)
+            .min(RTC_BASE_UNIX_SECONDS_MAX as i64)
     }
 
     fn current_calendar(&self) -> Calendar {
@@ -248,7 +250,7 @@ impl RtcCmos {
             }
             _ => return,
         }
-        if !(1970..=9999).contains(&calendar.year) {
+        if !(MIN_CALENDAR_YEAR..=MAX_CALENDAR_YEAR).contains(&calendar.year) {
             return;
         }
         if self.status_b & STATUS_B_SET != 0 {
@@ -333,14 +335,14 @@ fn days_in_month(year: u16, month: u8) -> u8 {
     }
 }
 
-fn days_before_year(year: u16) -> u64 {
-    let y = u64::from(year);
-    let leap_count_before = |year: u64| year / 4 - year / 100 + year / 400;
+fn days_before_year(year: u16) -> i64 {
+    let y = i64::from(year);
+    let leap_count_before = |year: i64| year / 4 - year / 100 + year / 400;
     365 * (y - 1970) + leap_count_before(y - 1) - leap_count_before(1969)
 }
 
-fn calendar_to_unix_seconds(calendar: Calendar) -> Option<u64> {
-    if !(1970..=9999).contains(&calendar.year)
+fn calendar_to_unix_seconds(calendar: Calendar) -> Option<i64> {
+    if !(MIN_CALENDAR_YEAR..=MAX_CALENDAR_YEAR).contains(&calendar.year)
         || !(1..=12).contains(&calendar.month)
         || !(1..=days_in_month(calendar.year, calendar.month)).contains(&calendar.day)
         || calendar.hour > 23
@@ -351,22 +353,22 @@ fn calendar_to_unix_seconds(calendar: Calendar) -> Option<u64> {
     }
     let mut days = days_before_year(calendar.year);
     for month in 1..calendar.month {
-        days += u64::from(days_in_month(calendar.year, month));
+        days += i64::from(days_in_month(calendar.year, month));
     }
-    days += u64::from(calendar.day - 1);
-    let seconds = days * 86_400
-        + u64::from(calendar.hour) * 3_600
-        + u64::from(calendar.minute) * 60
-        + u64::from(calendar.second);
-    (seconds <= RTC_BASE_UNIX_SECONDS_MAX).then_some(seconds)
+    days += i64::from(calendar.day - 1);
+    Some(
+        days * 86_400
+            + i64::from(calendar.hour) * 3_600
+            + i64::from(calendar.minute) * 60
+            + i64::from(calendar.second),
+    )
 }
 
-fn unix_seconds_to_calendar(unix_seconds: u64) -> Calendar {
-    let unix_seconds = unix_seconds.min(RTC_BASE_UNIX_SECONDS_MAX);
-    let mut days = unix_seconds / 86_400;
-    let seconds_of_day = unix_seconds % 86_400;
-    let mut low = 1970u16;
-    let mut high = 10_000u16;
+fn unix_seconds_to_calendar(unix_seconds: i64) -> Calendar {
+    let mut days = unix_seconds.div_euclid(86_400);
+    let seconds_of_day = unix_seconds.rem_euclid(86_400);
+    let mut low = MIN_CALENDAR_YEAR;
+    let mut high = MAX_CALENDAR_YEAR + 1;
     while low + 1 < high {
         let mid = low + (high - low) / 2;
         if days_before_year(mid) <= days {
@@ -378,8 +380,8 @@ fn unix_seconds_to_calendar(unix_seconds: u64) -> Calendar {
     let year = low;
     days -= days_before_year(year);
     let mut month = 1u8;
-    while days >= u64::from(days_in_month(year, month)) {
-        days -= u64::from(days_in_month(year, month));
+    while days >= i64::from(days_in_month(year, month)) {
+        days -= i64::from(days_in_month(year, month));
         month += 1;
     }
     Calendar {
@@ -401,7 +403,7 @@ fn weekday(calendar: Calendar) -> u8 {
     })
     .unwrap_or(0)
         / 86_400;
-    ((days + 4) % 7 + 1) as u8
+    ((days + 4).rem_euclid(7) + 1) as u8
 }
 
 fn shifted_weekday(natural_weekday: u8, offset: i8) -> u8 {
@@ -504,6 +506,32 @@ mod tests {
             .advance_standalone(30 * NANOS_PER_SECOND)
             .unwrap();
         assert_eq!(read_reg(&mut year_end, REG_YEAR), 0x25);
+    }
+
+    #[test]
+    fn set_latch_accepts_pre_unix_years_and_crosses_the_unix_epoch() {
+        let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut rtc = RtcCmos::new(clock.clone(), 0).unwrap();
+        write_reg(&mut rtc, REG_STATUS_B, STATUS_B_SET | STATUS_B_24_HOUR);
+        write_reg(&mut rtc, REG_YEAR, 0x00);
+        write_reg(&mut rtc, RTC_CENTURY_REGISTER, 0x19);
+        assert_eq!(read_reg(&mut rtc, REG_WEEKDAY), 0x02); // Monday, 1900-01-01
+        write_reg(&mut rtc, REG_YEAR, 0x69);
+        write_reg(&mut rtc, REG_MONTH, 0x12);
+        write_reg(&mut rtc, REG_DAY, 0x31);
+        write_reg(&mut rtc, REG_HOURS, 0x23);
+        write_reg(&mut rtc, REG_MINUTES, 0x59);
+        write_reg(&mut rtc, REG_SECONDS, 0x59);
+        write_reg(&mut rtc, REG_STATUS_B, STATUS_B_24_HOUR);
+        assert_eq!(read_reg(&mut rtc, REG_WEEKDAY), 0x04); // Wednesday
+        assert_eq!(rtc.current_unix_seconds_at(rtc.now_ns()), -1);
+
+        clock.advance_standalone(NANOS_PER_SECOND).unwrap();
+        assert_eq!(read_reg(&mut rtc, REG_YEAR), 0x70);
+        assert_eq!(read_reg(&mut rtc, REG_MONTH), 0x01);
+        assert_eq!(read_reg(&mut rtc, REG_DAY), 0x01);
+        assert_eq!(read_reg(&mut rtc, REG_SECONDS), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_WEEKDAY), 0x05); // Thursday
     }
 
     #[test]

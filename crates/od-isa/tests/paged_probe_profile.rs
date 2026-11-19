@@ -22974,12 +22974,38 @@ fn rust_helper_test_rax_rax_is_unsupported_in_cpl3_profile() {
 const TEST_AX_AX: [u8; 3] = [0x66, 0x85, 0xc0];
 
 #[test]
+fn firmware_reads_cr0_and_active_cr3_and_undefines_arithmetic_flags() {
+    let active_cr3 = 0x600000;
+    for (encoding, value) in [([0x0f, 0x20, 0xc0], CR0), ([0x0f, 0x20, 0xd8], active_cr3)] {
+        let mut cpu = state();
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rax as usize] = value;
+        expected.rip += encoding.len() as u64;
+        let result = execute::step_paged_firmware_probe_with_cr3(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut Memory::new(&encoding),
+            &mut Pio::default(),
+            ring0(),
+            od_isa::INTEGER_FLAGS,
+            active_cr3,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (1 << 10) | 2);
+        assert_eq!(cpu, expected);
+    }
+}
+
+#[test]
 fn firmware_variable_snapshot_xor_uses_exact_dword_masks() {
     for (code, register, mask, exact) in [
         (&[0x35, 0xd0, 0, 0, 0][..], Register::Rax, 0xd0, true),
         (&[0x35, 0xd1, 0, 0, 0][..], Register::Rax, 0xd0, false),
         (&[0x81, 0xf7, 0xd0, 0, 0, 0][..], Register::Rdi, 0xd0, true),
         (&[0x81, 0xf7, 0xd1, 0, 0, 0][..], Register::Rdi, 0xd0, false),
+        (&[0x81, 0xf1, 0xd0, 0, 0, 0][..], Register::Rcx, 0xd0, true),
+        (&[0x83, 0xf0, 1][..], Register::Rax, 1, true),
         (&[0x83, 0xf1, 0x53][..], Register::Rcx, 0x53, true),
         (&[0x83, 0xf1, 0x54][..], Register::Rcx, 0x53, false),
     ] {
@@ -53780,6 +53806,7 @@ fn firmware_boot_byte_test_from_memory_reads_once_and_commits_after_read() {
     for (code, offset) in [
         (&[0xf6, 0x44, 0x24, 0x58, 1][..], 0x58),
         (&[0x84, 0x84, 0x24, 0x4c, 1, 0, 0][..], 0x14c),
+        (&[0x84, 0x84, 0x24, 0x5c, 1, 0, 0][..], 0x15c),
     ] {
         let address = DATA + offset as u64;
         let fault = od_isa::ArchitecturalFault {
@@ -56653,10 +56680,12 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x48, 0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST RDX,imm32
         (&[0xff, 0x03][..], 0xff),                         // INC dword [RBX]
         (&[0xfe, 0x03][..], 0xfe),                         // INC byte ptr [RBX]
-        (&[0x41, 0xfe, 0xc9][..], 0xfe),                   // DEC R9B
+        (&[0x41, 0xfe, 0xca][..], 0xfe),                   // DEC R10B
+        (&[0xfe, 0xcc][..], 0xfe),                         // DEC AH
         (&[0x67, 0x48, 0xff, 0x0b][..], 0xff),             // address32 DEC qword [EBX]
         (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),             // SHL qword [RBX],21
         (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),             // SHR CX,21
+        (&[0x66, 0xc1, 0xc1, 1][..], 0xc1),                // ROL CX,1
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1),       // address override on SHR
         (&[0x41, 0xd3, 0xee][..], 0xd3),                   // SHR R14D,CL
         (&[0x49, 0xd3, 0x2e][..], 0xd3),                   // SHR qword [R14],CL

@@ -4,10 +4,23 @@ use crate::uefi::{guid::Guid, status::Status, types::Char16};
 use crate::var::{
     codec::{Decoder, MAX_NAME_UNITS, MAX_STORE_BYTES, MAX_VALUE_BYTES, Name, valid_unit},
     nvram::Nvram,
-    services::{BootDefaults, seed_defaults},
+    services::{BootDefaults, NON_VOLATILE_RUNTIME, seed_defaults},
     store::VariableStore,
 };
 use core::{ffi::c_void, slice};
+
+#[cfg(target_os = "uefi")]
+use super::driver::with_variables;
+#[cfg(not(target_os = "uefi"))]
+use crate::bs::with_runtime_variables as with_variables;
+
+const MONOTONIC_GUID: Guid = Guid {
+    data1: 0xcf84_fede,
+    data2: 0xa501,
+    data3: 0x46c2,
+    data4: [0x8a, 0x8d, 0x12, 0xba, 0x32, 0x24, 0x19, 0x2f],
+};
+const MONOTONIC_NAME: &[u8] = b"O\0D\0M\0o\0n\0o\0t\0o\0n\0i\0c\0H\0i\0g\0h\0";
 
 #[repr(C)]
 pub struct RuntimeVariables {
@@ -65,6 +78,42 @@ impl RuntimeVariables {
 
     pub(crate) fn enter_runtime(&mut self) {
         self.store.enter_runtime();
+    }
+
+    pub(crate) fn advance_monotonic_high(&mut self) -> Result<u32, Status> {
+        if self.nvram_base == 0 {
+            return Err(Status::DEVICE_ERROR);
+        }
+        let name = Name::new(MONOTONIC_NAME).unwrap();
+        let high = match self.store.get(MONOTONIC_GUID, name) {
+            None => 0,
+            Some(record) => {
+                if record.attributes != NON_VOLATILE_RUNTIME {
+                    return Err(Status::DEVICE_ERROR);
+                }
+                let bytes = record.value.try_into().map_err(|_| Status::DEVICE_ERROR)?;
+                u32::from_le_bytes(bytes)
+            }
+        };
+        let next = high.checked_add(1).ok_or(Status::DEVICE_ERROR)?;
+        self.set(
+            MONOTONIC_GUID,
+            name,
+            NON_VOLATILE_RUNTIME,
+            &next.to_le_bytes(),
+        )
+        .map_err(|_| Status::DEVICE_ERROR)?;
+        Ok(next)
+    }
+
+    #[cfg(target_os = "uefi")]
+    pub(super) fn nvram_base(&self) -> usize {
+        self.nvram_base
+    }
+
+    #[cfg(target_os = "uefi")]
+    pub(super) fn set_nvram_base(&mut self, address: usize) {
+        self.nvram_base = address;
     }
 
     pub fn nv_image(&self) -> &[u8] {
@@ -166,7 +215,7 @@ pub(crate) unsafe extern "efiapi" fn get_variable(
     data: *mut c_void,
 ) -> Status {
     unsafe {
-        crate::bs::with_runtime_variables(|state| {
+        with_variables(|state| {
             if name.is_null() || guid.is_null() || size.is_null() {
                 return Status::INVALID_PARAMETER;
             }
@@ -205,7 +254,7 @@ pub(crate) unsafe extern "efiapi" fn get_next_variable_name(
     guid: *mut Guid,
 ) -> Status {
     unsafe {
-        crate::bs::with_runtime_variables(|state| {
+        with_variables(|state| {
             if size.is_null() || name.is_null() || guid.is_null() {
                 return Status::INVALID_PARAMETER;
             }
@@ -243,7 +292,7 @@ pub(crate) unsafe extern "efiapi" fn set_variable(
     data: *const c_void,
 ) -> Status {
     unsafe {
-        crate::bs::with_runtime_variables(|state| {
+        with_variables(|state| {
             if name.is_null() || guid.is_null() || (size != 0 && data.is_null()) {
                 return Status::INVALID_PARAMETER;
             }
@@ -262,7 +311,11 @@ pub(crate) unsafe extern "efiapi" fn set_variable(
             } else {
                 slice::from_raw_parts(data.cast(), size)
             };
-            match state.set(guid.read_unaligned(), name, attributes, value) {
+            let guid = guid.read_unaligned();
+            if guid == MONOTONIC_GUID && name.as_bytes() == MONOTONIC_NAME {
+                return Status::WRITE_PROTECTED;
+            }
+            match state.set(guid, name, attributes, value) {
                 Ok(()) => Status::SUCCESS,
                 Err(status) => status,
             }
@@ -429,7 +482,7 @@ pub(crate) unsafe extern "efiapi" fn query_variable_info(
     maximum: *mut u64,
 ) -> Status {
     unsafe {
-        crate::bs::with_runtime_variables(|state| {
+        with_variables(|state| {
             if storage.is_null() || remaining.is_null() || maximum.is_null() {
                 return Status::INVALID_PARAMETER;
             }

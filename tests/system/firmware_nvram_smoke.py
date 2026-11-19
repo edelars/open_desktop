@@ -60,7 +60,7 @@ def main() -> None:
                 raise RuntimeError(f"Boot #{index} fixture checksum differs from manifest")
             actual = transcript.read_bytes()
             check_transcript(actual, expected, f"NVRAM boot #{index}")
-            if marker not in actual:
+            if marker not in actual or b"OD-UEFI vars NV monotonic high advanced\r\n" not in actual:
                 raise RuntimeError(f"Boot #{index} did not exercise its expected NV probe path")
             print(f"NVRAM boot #{index} {boot['retired']} instructions, {boot['quanta']} quanta")
 

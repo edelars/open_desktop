@@ -16,6 +16,12 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OD_FW_FV_ARCHIVE");
 
     let target = env::var("TARGET").unwrap_or_default();
+    if target == "x86_64-unknown-uefi" {
+        println!("cargo:rustc-link-arg-bin=od-runtime=/subsystem:efi_runtime_driver");
+        println!("cargo:rustc-link-arg-bin=od-runtime=/Brepro");
+        println!("cargo:rustc-link-arg-bin=od-runtime=/debug:none");
+        return;
+    }
     if target != "x86_64-unknown-none" {
         return;
     }

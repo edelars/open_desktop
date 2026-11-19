@@ -16,6 +16,7 @@ impl Status {
     pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
     pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);
     pub const ACCESS_DENIED: Self = Self(Self::ERROR_BIT | 15);
+    pub const NO_MAPPING: Self = Self(Self::ERROR_BIT | 17);
     pub const ALREADY_STARTED: Self = Self(Self::ERROR_BIT | 20);
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);

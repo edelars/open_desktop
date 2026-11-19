@@ -10,6 +10,7 @@ use crate::device_path::{DevicePathNode, END_PATH_BYTES, path_bytes};
 use crate::mem::{map::MemoryType, pages::ImageMemoryRange};
 use crate::paging::PAGE_BYTES;
 use crate::pe::{self, MappedImage, PageLayout, PeImage, Subsystem};
+use crate::rt::virt::{MAX_IMAGES, RuntimeImage};
 use crate::uefi::{
     loaded_image::{
         LOADED_IMAGE_DEVICE_PATH_PROTOCOL_GUID, LOADED_IMAGE_PROTOCOL_GUID,
@@ -27,8 +28,6 @@ mod path;
 #[cfg(target_os = "none")]
 pub use path::install_firmware_volume;
 pub use path::{LOAD_FILE_PROTOCOL_GUID, LoadFileProtocol, firmware_file_device_path};
-
-const MAX_IMAGES: usize = 64;
 
 struct ImageRecord {
     handle: Handle,
@@ -159,16 +158,34 @@ pub unsafe extern "efiapi" fn load_image(
                 return Status::LOAD_ERROR;
             }
             let (code, data) = image_types(pe.subsystem());
+            let runtime = if pe.subsystem() == Subsystem::RuntimeDriver {
+                let Some(storage) = state.runtime_services else {
+                    return Status::NOT_READY;
+                };
+                Some(storage)
+            } else {
+                None
+            };
+            let fixup_count = if runtime.is_some() && pe.base_relocations().is_some() {
+                match pe::runtime_fixup_count(&pe) {
+                    Ok(count) => count,
+                    Err(_) => return Status::LOAD_ERROR,
+                }
+            } else {
+                0
+            };
+            let fixup_pages =
+                (fixup_count as u64 * size_of::<pe::RuntimeFixup>() as u64).div_ceil(PAGE_BYTES);
             let default = ImageMemoryRange {
                 pages: 0,
                 memory_type: data,
             };
-            let mut regions = [default; pe::MAX_REGIONS + 1];
+            let mut regions = [default; pe::MAX_REGIONS + 2];
             let run_count = layout.runs().len();
             for (region, run) in regions[..run_count].iter_mut().zip(layout.runs()) {
                 *region = ImageMemoryRange {
                     pages: u64::from(run.end - run.first),
-                    memory_type: if run.permissions.executable() {
+                    memory_type: if runtime.is_some() || run.permissions.executable() {
                         code
                     } else {
                         data
@@ -178,12 +195,13 @@ pub unsafe extern "efiapi" fn load_image(
             let metadata_pages = location
                 .as_ref()
                 .map_or(0, |path| (path.storage_len() as u64).div_ceil(PAGE_BYTES));
-            let region_count = if metadata_pages != 0 {
-                regions[run_count].pages = metadata_pages;
-                run_count + 1
-            } else {
-                run_count
-            };
+            let mut region_count = run_count;
+            for pages in [fixup_pages, metadata_pages] {
+                if pages != 0 {
+                    regions[region_count].pages = pages;
+                    region_count += 1;
+                }
+            }
 
             let (Some(system), Some(tables)) = (state.system_table, state.active_tables) else {
                 return Status::NOT_READY;
@@ -229,6 +247,19 @@ pub unsafe extern "efiapi" fn load_image(
                 chunk.fill(0);
             }
             let metadata_base = span.end - metadata_pages * PAGE_BYTES;
+            let fixup_base = metadata_base - fixup_pages * PAGE_BYTES;
+            if fixup_count != 0 {
+                let (bytes, tail) = destination.split_at_mut((fixup_base - span.start) as usize);
+                // The zeroed, aligned tail is exclusive and fits this record array.
+                let records = slice::from_raw_parts_mut(
+                    tail.as_mut_ptr().cast::<pe::RuntimeFixup>(),
+                    fixup_count,
+                );
+                if pe::capture_runtime_fixups(&pe, &bytes[..mapped.size as usize], records).is_err()
+                {
+                    return Status::LOAD_ERROR;
+                }
+            }
             let (device, file_path, image_path) = match location {
                 Some(path) => {
                     let target = destination
@@ -291,6 +322,14 @@ pub unsafe extern "efiapi" fn load_image(
                 stack_base: None,
             });
 
+            if let Some(runtime) = runtime {
+                (*ptr::addr_of_mut!((*runtime.as_ptr()).images)).0[index] = RuntimeImage {
+                    base: mapped.base,
+                    size: u64::from(mapped.size),
+                    fixups: ptr::with_exposed_provenance(fixup_base as usize),
+                    fixup_count,
+                };
+            }
             state.allocator.commit_image(plan);
             for run in layout.runs() {
                 let start = mapped.base + u64::from(run.first) * PAGE_BYTES;
@@ -301,8 +340,8 @@ pub unsafe extern "efiapi" fn load_image(
                     run.permissions.executable(),
                 );
             }
-            if metadata_pages != 0 {
-                tables.set(metadata_base..span.end, false, false);
+            if fixup_base != span.end {
+                tables.set(fixup_base..span.end, false, false);
             }
             tables.flush();
 
@@ -427,5 +466,10 @@ unsafe fn release_record(state: &mut state::ServiceState<'_>, index: usize) -> S
     }
     state.protocols.remove_image(image);
     state.images.records[index] = None;
+    if mapped.subsystem == Subsystem::RuntimeDriver
+        && let Some(runtime) = state.runtime_services
+    {
+        unsafe { (*ptr::addr_of_mut!((*runtime.as_ptr()).images)).0[index] = RuntimeImage::EMPTY };
+    }
     Status::SUCCESS
 }

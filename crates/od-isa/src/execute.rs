@@ -18943,10 +18943,13 @@ fn commit_mov_cr0_wp(
     state: &mut LongModeState,
     next_rip: u64,
     rflags_defined: &mut u64,
+    firmware: bool,
 ) -> Result<TranslationContextChange, ()> {
     let old_cr0 = state.cr0.ok_or(())?;
     let new_cr0 = state.gpr[Register::Rax as usize];
-    if new_cr0 != Cr0Profile::BASE && new_cr0 != (Cr0Profile::BASE & !(1 << 16)) {
+    if (firmware && (new_cr0 ^ old_cr0) & !(1 << 16) != 0)
+        || (!firmware && !Cr0Profile::MovCr3WpLong64V1.accepts(new_cr0))
+    {
         return Err(());
     }
     state.cr0 = Some(new_cr0);
@@ -19996,12 +19999,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 value == Cr0Profile::BASE || value == (Cr0Profile::BASE & !(1 << 16))
             })
     } else {
-        state
-            .cr0
-            .is_some_and(|value| Cr0Profile::PagedMovLong64V1.accepts(value))
-            && state
-                .cr4
-                .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
+        state.cr0.is_some_and(|value| {
+            let wp = if firmware_boot_cr3.is_some() {
+                1 << 16
+            } else {
+                0
+            };
+            Cr0Profile::PagedMovLong64V1.accepts(value | wp)
+        }) && state
+            .cr4
+            .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
     };
     if !control_registers_admitted {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
@@ -20360,7 +20367,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         }
         | Operation::Arithmetic {
-            kind: ArithmeticKind::Sub | ArithmeticKind::Sbb,
+            kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Sbb,
             dst: Operand::Register(destination),
             src: source @ Operand::Memory(_),
         }
@@ -20392,16 +20399,33 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0xff, OperandSize::Dword | OperandSize::Qword)
+                        (
+                            0xff,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
                     ) || (instruction.opcode.byte == 0xfe
                         && instruction.operand_size == OperandSize::Byte
-                        && matches!(
-                            operation,
+                        && match operation {
                             Operation::Arithmetic {
                                 kind: ArithmeticKind::Inc,
                                 ..
-                            }
-                        ))
+                            } => true,
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Dec,
+                                ..
+                            } => match instruction.prefixes.rex {
+                                None => {
+                                    destination
+                                        == RegisterView::low(Register::Rax, OperandSize::Byte)
+                                }
+                                Some(0x41) => {
+                                    destination
+                                        == RegisterView::low(Register::R9, OperandSize::Byte)
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        })
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Adc,
@@ -20423,15 +20447,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Sbb,
                     ..
-                } => matches!(
-                    (instruction.opcode.byte, instruction.operand_size, source),
-                    (
-                        0x83,
-                        OperandSize::Dword | OperandSize::Qword,
-                        Operand::Immediate(_)
-                    ) | (0x19, OperandSize::Qword, Operand::Register(_))
-                        | (0x1b, OperandSize::Qword, Operand::Memory(_))
-                ),
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size, source),
+                        (
+                            0x83,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Immediate(_)
+                        ) | (0x19, OperandSize::Qword, Operand::Register(_))
+                            | (0x1b, OperandSize::Qword, Operand::Memory(_))
+                    ) || (instruction.opcode.byte == 0x19
+                        && instruction.operand_size == OperandSize::Dword
+                        && source == Operand::Register(destination))
+                }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Neg,
                     ..
@@ -20520,12 +20548,19 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => {
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
-                        (0x08 | 0x0a, OperandSize::Byte)
+                        (0x08 | 0x0a | 0x80, OperandSize::Byte)
                             | (
-                                0x09 | 0x0b | 0x81 | 0x83,
+                                0x09 | 0x0b | 0x0d | 0x81 | 0x83,
                                 OperandSize::Dword | OperandSize::Qword
                             )
                     )
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Add,
+                    src: Operand::Memory(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x02 && instruction.operand_size == OperandSize::Byte
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Sub,
@@ -20550,6 +20585,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 ..
                             },
                             0x00 | 0x04,
+                            OperandSize::Byte
+                        ) | (
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Sub,
+                                ..
+                            },
+                            0x28,
                             OperandSize::Byte
                         ) | (
                             Operation::Arithmetic {
@@ -20590,11 +20632,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ) || (instruction.operand_size == OperandSize::Dword
                         && instruction.prefixes == Prefixes::default()
                         && match (instruction.opcode.byte, instruction.length, source) {
-                            (0x35, 5, Operand::Immediate(0xd0)) => {
+                            (0x35, 5, Operand::Immediate(0xd0))
+                            | (0x83, 3, Operand::Immediate(1)) => {
                                 destination == RegisterView::low(Register::Rax, OperandSize::Dword)
                             }
                             (0x81, 6, Operand::Immediate(0xd0)) => {
-                                destination == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                                matches!(destination.register(), Register::Rcx | Register::Rdi)
                             }
                             (0x83, 3, Operand::Immediate(0x53)) => {
                                 destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
@@ -20685,7 +20728,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         Operation::ImulImmediate { .. }
                     )
             )
-            && instruction.operand_size == OperandSize::Qword
+            && (instruction.operand_size == OperandSize::Qword
+                || (instruction.operand_size == OperandSize::Dword
+                    && matches!(
+                        operation,
+                        Operation::ImulImmediate {
+                            immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29,
+                            ..
+                        }
+                    )))
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
@@ -20696,7 +20747,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 Operation::ImulImmediate { immediate, .. } => (state.read(source), immediate),
                 _ => (state.read(destination), state.read(source)),
             };
-            let (value, flags) = multiply_truncated(OperandSize::Qword, lhs, rhs, state.rflags);
+            let (value, flags) =
+                multiply_truncated(instruction.operand_size, lhs, rhs, state.rflags);
             state.write(destination, value);
             state.rflags = flags;
             state.rip = next_rip;
@@ -20746,7 +20798,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         }
         // S7-04: page indices use shifts, and the startup diagnostic rotates hex digits.
         Operation::Shift {
-            kind: kind @ (ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Rol),
+            kind:
+                kind @ (ShiftKind::Shl
+                | ShiftKind::Shr
+                | ShiftKind::Sar
+                | ShiftKind::Rol
+                | ShiftKind::Ror),
             dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
             source: None,
             count: count_source @ (Operand::Immediate(_) | Operand::Register(_)),
@@ -20755,10 +20812,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.opcode.map == OpcodeMap::Primary
             && matches!(
                 instruction.operand_size,
-                OperandSize::Byte | OperandSize::Dword | OperandSize::Qword
+                OperandSize::Byte | OperandSize::Word | OperandSize::Dword | OperandSize::Qword
             )
             && match (destination, kind, instruction.opcode.byte) {
-                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => true,
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => matches!(
+                    instruction.operand_size,
+                    OperandSize::Dword | OperandSize::Qword
+                ),
                 (Operand::Register(register), ShiftKind::Shr, 0xd0) => {
                     instruction.operand_size == OperandSize::Byte
                         && count_source == Operand::Immediate(1)
@@ -20768,6 +20828,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             }
                             (3, Some(0x40)) => {
                                 register == RegisterView::low(Register::Rdi, OperandSize::Byte)
+                            }
+                            (3, Some(0x41)) => {
+                                register == RegisterView::low(Register::R8, OperandSize::Byte)
                             }
                             _ => false,
                         }
@@ -20780,8 +20843,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 OperandSize::Byte,
                             ))
                 }
-                (Operand::Register(_), ShiftKind::Rol, 0xc1) => {
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar, 0xc0) => {
+                    instruction.operand_size == OperandSize::Byte
+                }
+                (Operand::Register(_), ShiftKind::Rol | ShiftKind::Ror, 0xc1) => {
                     matches!(count_source, Operand::Immediate(_))
+                        && (instruction.operand_size != OperandSize::Word || kind == ShiftKind::Ror)
                 }
                 (Operand::Memory(_), ShiftKind::Shr, 0xc1) => {
                     instruction.operand_size == OperandSize::Qword
@@ -20792,6 +20859,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,
+                    operand_override: instruction.operand_size == OperandSize::Word,
                     ..Prefixes::default()
                 }) =>
         {
@@ -21198,7 +21266,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             ..
         }
         | Operation::Extend {
-            src: Operand::Register(_),
+            src: Operand::Register(_) | Operand::Memory(_),
             signed: true,
             ..
         }
@@ -21248,6 +21316,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             )
                             && instruction.prefixes == Prefixes::default()
                     }
+                    (OpcodeMap::Primary, Operation::Extend { signed: true, .. }) => {
+                        instruction.opcode.byte == 0x63
+                            && instruction.operand_size == OperandSize::Qword
+                    }
                     (OpcodeMap::Primary, _) => matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x88, OperandSize::Byte)
@@ -21257,7 +21329,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             )
                             | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
                     ),
-                    (OpcodeMap::Escape0f, Operation::Extend { signed: true, .. }) => {
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            src: Operand::Register(_),
+                            signed: true,
+                            ..
+                        },
+                    ) => {
                         instruction.opcode.byte == 0xbe
                             && instruction.operand_size == OperandSize::Qword
                     }
@@ -21327,8 +21406,26 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         {
             state.rip = next_rip;
         }
+        Operation::ReadCr0 | Operation::ReadCr3
+            if firmware_boot_cr3.is_some()
+                && instruction.length == 3
+                && instruction.opcode.byte == 0x20
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.gpr[Register::Rax as usize] = if instruction.operation == Operation::ReadCr0 {
+                state.cr0.expect("admitted CR0")
+            } else {
+                firmware_boot_cr3.expect("active CR3")
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
+            };
+        }
         Operation::WriteCr0
-            if allow_cr0_wp
+            if (allow_cr0_wp || firmware_boot_cr3.is_some())
                 && instruction.length == 3
                 && instruction.opcode.byte == 0x22
                 && instruction.prefixes == Prefixes::default() =>
@@ -21344,7 +21441,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 );
             }
             let mut rflags_defined = initial_rflags_defined;
-            let effect = match commit_mov_cr0_wp(state, next_rip, &mut rflags_defined) {
+            let effect = match commit_mov_cr0_wp(
+                state,
+                next_rip,
+                &mut rflags_defined,
+                firmware_boot_cr3.is_some(),
+            ) {
                 Ok(effect) => effect,
                 Err(()) => return unsupported(),
             };
@@ -22075,6 +22177,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
+        Operation::InDx {
+            size: OperandSize::Word,
+        }
+        | Operation::OutDx {
+            size: OperandSize::Word,
+        } if firmware_boot_profile => match commit_pio_u16(state, &instruction, pio) {
+            PioU8Commit::Retired => {}
+            PioU8Commit::Unsupported { .. } => return unsupported(),
+            PioU8Commit::PortIo { error, .. } => {
+                return result(PagedProbeExit::PortIo(error), 0);
+            }
+        },
         Operation::Hlt
             if instruction.length == 1
                 && instruction.opcode.byte == 0xf4
@@ -22131,9 +22245,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         Operation::ConditionalMove {
             condition,
             dst,
-            src: source @ Operand::Memory(_),
+            src: source @ Operand::Memory(address),
         } if firmware_boot_profile
-            && instruction.operand_size == OperandSize::Qword
+            && (instruction.operand_size == OperandSize::Qword
+                || (instruction.operand_size == OperandSize::Dword
+                    && address.base == AddressBase::Register(Register::Rsp)
+                    && address.index.is_none()))
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -23242,7 +23359,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
                 || (firmware_boot_profile
                     && instruction.length == 7
-                    && destination.displacement == 0x14c
+                    && matches!(destination.displacement, 0x14c | 0x15c)
                     && instruction.prefixes == Prefixes::default()
                     && source == RegisterView::low(Register::Rax, OperandSize::Byte))) =>
         {
@@ -23947,14 +24064,21 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 })
                     }
                     Operand::Register(register) => {
-                        instruction.length == 3
+                        register.size() == OperandSize::Qword
+                            && matches!(
+                                (
+                                    instruction.length,
+                                    instruction.prefixes.rex,
+                                    register.register()
+                                ),
+                                (2, None, Register::Rax)
+                                    | (3, Some(0x41), Register::R8 | Register::R9 | Register::R12)
+                            )
                             && instruction.prefixes
                                 == (Prefixes {
-                                    rex: Some(0x41),
+                                    rex: instruction.prefixes.rex,
                                     ..Prefixes::default()
                                 })
-                            && (register == RegisterView::low(Register::R9, OperandSize::Qword)
-                                || register == RegisterView::low(Register::R12, OperandSize::Qword))
                     }
                     _ => false,
                 } =>

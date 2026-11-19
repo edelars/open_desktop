@@ -5,11 +5,12 @@ use crate::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 
 // The shadow can add two splits and the boot RAM reservation can add four.
 pub const MAX_INITIAL_DESCRIPTORS: usize = MAX_HANDOFF_REGIONS + 6;
+pub const BOOT_DESCRIPTOR_CAPACITY: usize = MAX_INITIAL_DESCRIPTORS + 6;
 pub const DESCRIPTOR_VERSION: u32 = 1;
 
 const UC: u64 = 1;
 pub(super) const WB: u64 = 1 << 3;
-pub(super) const RUNTIME: u64 = 1 << 63;
+pub const RUNTIME: u64 = 1 << 63;
 
 /// The UEFI 2.11 §7.2.1 32-bit memory type, including OEM and OS loader values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

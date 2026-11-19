@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build the Open Desktop firmware ROM image (S7-01).
 
-Pipeline: `cargo build --target x86_64-unknown-none` in firmware/uefi (build.rs assembles
+The x64 UEFI runtime driver is built first and packed into the firmware volume.
+`cargo build --target x86_64-unknown-none` in firmware/uefi (build.rs assembles
 start.S with the system clang and links with firmware/uefi/linker.ld) -> ELF -> `rust-objcopy -O
 binary` -> flat raw bytes -> ODFWIMG1 header + zero padding to exactly 0x400000 bytes.
 
-The image format is docs/specs/FIRMWARE_BOOT.md, section 3.2. The result of S7-01 is a build
-skeleton that proves the toolchain works; it is not a firmware implementation.
+The image format is docs/specs/FIRMWARE_BOOT.md, section 3.2.
 
 `--efi-probe <path>` is a separate mode: it builds firmware/uefi/probe/efi_probe for
 `x86_64-unknown-uefi`, checks the PE32+ headers (Machine, magic, Subsystem, `.reloc`, base
@@ -47,13 +47,14 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
-TEST_APPS = ("ebs", "echo", "hello", "vars")
+TEST_APPS = ("ebs", "echo", "hello", "rt", "vars")
 FV_MAGIC = b"ODFVARC\0"
 FV_VERSION = 1
 FV_HEADER_SIZE = 24
 PE_MACHINE_X64 = 0x8664
 PE32_PLUS_MAGIC = 0x20B
 PE_SUBSYSTEM_EFI_APPLICATION = 10
+PE_SUBSYSTEM_EFI_RUNTIME_DRIVER = 12
 PE_DIRECTORY_BASERELOC = 5
 
 IMAGE_MAGIC = b"ODFWIMG1"
@@ -62,7 +63,7 @@ HEADER_SIZE = 0x40
 IMAGE_SIZE = 0x0040_0000
 LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
-HANDOFF_MINOR_MAX = 7
+HANDOFF_MINOR_MAX = 8
 CRC_OFFSET = 0x30
 
 # --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
@@ -207,11 +208,11 @@ def inspect_elf(elf: bytes) -> tuple[int, int, int]:
 # --- PE32+ checks (EFI probe) ------------------------------------------------------------------
 
 
-def inspect_pe(pe: bytes) -> dict[str, int]:
-    """Check that `pe` is an x86-64 PE32+ EFI application with a base relocation table.
+def inspect_pe(pe: bytes, expected_subsystem: int = PE_SUBSYSTEM_EFI_APPLICATION) -> dict[str, int]:
+    """Check that `pe` is an x86-64 PE32+ EFI image with a base relocation table.
 
-    Checked: MZ/PE signatures, Machine = 0x8664, optional header magic = 0x20B, Subsystem = 10
-    (EFI_APPLICATION), a section named `.reloc` and DataDirectory[5] (Base Relocation Table)
+    Checked: MZ/PE signatures, Machine = 0x8664, optional header magic = 0x20B, the expected
+    subsystem, a section named `.reloc` and DataDirectory[5] (Base Relocation Table)
     pointing inside that section. Returns the decoded fields.
     """
     if len(pe) < 0x40 or pe[:2] != b"MZ":
@@ -233,8 +234,8 @@ def inspect_pe(pe: bytes) -> dict[str, int]:
     if optional_size < 112:
         raise BuildError("PE32+ optional header is shorter than the fixed part")
     subsystem = struct.unpack_from("<H", pe, optional + 68)[0]
-    if subsystem != PE_SUBSYSTEM_EFI_APPLICATION:
-        raise BuildError(f"PE Subsystem is {subsystem}, expected {PE_SUBSYSTEM_EFI_APPLICATION} (EFI_APPLICATION)")
+    if subsystem != expected_subsystem:
+        raise BuildError(f"PE Subsystem is {subsystem}, expected {expected_subsystem}")
     directory_count = struct.unpack_from("<I", pe, optional + 108)[0]
     directory_base = optional + 112
     if directory_count <= PE_DIRECTORY_BASERELOC or directory_base + 8 * directory_count > optional + optional_size:
@@ -468,7 +469,26 @@ def build_probe(tools: ProbeTools, target_dir: Path, out: Path) -> tuple[bytes, 
     return pe, fields
 
 
-def build_test_apps(tools: ProbeTools, target_dir: Path) -> bytes:
+def build_runtime_driver(tools: ProbeTools, target_dir: Path) -> bytes:
+    env = dict(tools.tool_env)
+    env.pop("RUSTFLAGS", None)
+    env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    _run(
+        [str(tools.cargo), "build", "--release", "--target", PROBE_TARGET,
+         "--bin", "od-runtime", "--features", "runtime-driver", "--locked", "--offline"],
+        env=env,
+        cwd=FIRMWARE_DIR,
+    )
+    artifact = target_dir / PROBE_TARGET / "release" / "od-runtime.efi"
+    if not artifact.is_file():
+        raise BuildError(f"cargo did not produce {artifact}")
+    pe = artifact.read_bytes()
+    inspect_pe(pe, PE_SUBSYSTEM_EFI_RUNTIME_DRIVER)
+    return pe
+
+
+def build_test_apps(tools: ProbeTools, target_dir: Path) -> dict[str, bytes]:
     env = dict(tools.tool_env)
     env.pop("RUSTFLAGS", None)
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
@@ -484,10 +504,10 @@ def build_test_apps(tools: ProbeTools, target_dir: Path) -> bytes:
         if not artifact.is_file():
             raise BuildError(f"cargo did not produce {artifact}")
         files[name] = artifact.read_bytes()
-    return pack_fv(files)
+    return files
 
 
-def write_test_app_archive(target_dir: Path, archive: bytes) -> Path:
+def write_fv_archive(target_dir: Path, archive: bytes) -> Path:
     archive_dir = target_dir / "fv" / hashlib.sha256(archive).hexdigest()
     archive_dir.mkdir(parents=True, exist_ok=True)
     path = archive_dir / "archive.bin"
@@ -543,7 +563,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--with-test-apps",
         action="store_true",
-        help="build the hello, echo, ebs and vars EFI applications and embed them in the firmware volume",
+        help="build test EFI applications (hello, echo, ebs, rt and vars) and embed them in the firmware volume",
     )
     args = parser.parse_args(argv)
     if args.with_test_apps and (args.smoke or args.efi_probe is not None):
@@ -611,12 +631,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         tools = resolve_tools()
         target_dir = args.target_dir.absolute()
-        fv_archive = None
+        pe_tools = resolve_probe_tools()
+        fv_files = {"runtime": build_runtime_driver(pe_tools, target_dir / "runtime")}
         if args.with_test_apps:
-            archive = build_test_apps(resolve_probe_tools(), target_dir / "test-apps")
-            fv_archive = write_test_app_archive(target_dir, archive)
-            target_dir = fv_archive.parent
-        image, fields = build_image(tools, target_dir, args.out.absolute(), fv_archive=fv_archive)
+            fv_files.update(build_test_apps(pe_tools, target_dir / "test-apps"))
+        fv_archive = write_fv_archive(target_dir, pack_fv(fv_files))
+        image, fields = build_image(tools, fv_archive.parent, args.out.absolute(), fv_archive=fv_archive)
         versions = tool_versions(tools)
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)

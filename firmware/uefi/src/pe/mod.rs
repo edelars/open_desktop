@@ -10,6 +10,7 @@ mod test_image;
 
 pub use authenticode::{DigestAlgorithm, DigestError, authenticode_digest};
 pub use loader::{LoadError, MappedImage, load_into};
+pub(crate) use loader::{capture_runtime_fixups, runtime_fixup_count};
 pub(crate) use pages::{MAX_REGIONS, PageLayout};
 pub use parser::{Error, PeImage, Section, Subsystem};
-pub use reloc::RelocationError;
+pub use reloc::{RelocationError, RuntimeFixup, for_each_dir64};

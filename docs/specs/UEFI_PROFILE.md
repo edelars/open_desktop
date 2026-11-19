@@ -165,20 +165,41 @@ PKCS#7, цепочки и политики загрузки относится �
 Приложения выводят начальную строку через `ConOut`.
 [UEFI 2.11 §9.1](https://uefi.org/specs/UEFI/2.11/09_Protocols_EFI_Loaded_Image.html), [§12.4](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
 
-### Диагностическая таблица Runtime Services
+### Runtime Services
 
-Все 14 слотов имеют собственные сигнатуры UEFI x64. В таблице до
-`ExitBootServices` сервисы времени, виртуальной адресации, капсул и
-старшей части монотонного счётчика возвращают `EFI_UNSUPPORTED` и сохраняют
-выходы. Четыре слота [переменных](#переменные) обслуживают загрузочную фазу.
+Основной ROM запускает встроенный PE32+ Runtime Driver через `LoadImage`
+и `StartImage`. Драйвер публикует 14 слотов UEFI x64 и маску доступных
+сервисов в `EFI_RT_PROPERTIES_TABLE`. Система после `ExitBootServices`
+может использовать физические адреса или один раз вызвать
+`SetVirtualAddressMap`. Карта должна содержать отображение каждого
+runtime-дескриптора из последней карты Boot Services. Драйвер проверяет
+версию, шаг массива, отсутствие коллизий и каноничность адресов. Затем он
+сигналит события смены адресов, применяет PE fixup, обновляет указатели
+и пересчитывает CRC обеих таблиц. `ConvertPointer` работает внутри
+уведомлений, а `EFI_OPTIONAL_PTR` разрешает NULL.
+[Контракт памяти](FIRMWARE_BOOT.md#9-решение-4-перемещение-rt-части-после-setvirtualaddressmap), [UEFI 2.11, §8.4](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#virtual-memory-services).
 
-`ResetSystem` имеет сигнатуру с результатом VOID. Вызов пишет тип и
-статус в COM1. Для Cold и Warm он пишет значение сброса в ACPI reset-регистр
-при наличии валидной записи в handoff. При отсутствии сброса вызов
-останавливает BSP через `CLI`, затем `HLT`. Диагностическая таблица
-проверяется при физической адресации до выхода. Runtime-код, перенос
-адресов и сервисы после выхода относятся к S7-11.
-[UEFI 2.11, §8](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html).
+`GetTime` и `SetTime` обращаются к RTC/CMOS через порты `0x70/0x71`,
+поддерживают календарь с 1900 по 9999 год и учитывают текущий BCD или
+двоичный формат, 12- или 24-часовой режим. Разрешение равно одной секунде.
+`SetTime` сбрасывает её дробную часть. TimeZone и Daylight остаются в
+runtime-памяти текущей загрузки. RTC отсутствует в базовой конфигурации
+платы. `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и
+`QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED`.
+[UEFI 2.11, §8.3](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#time-services).
+
+При наличии ACPI fixed hardware `ResetSystem` выполняет аппаратный
+запрос. Cold, Warm и PlatformSpecific используют ACPI reset-регистр.
+Плата применяет Cold для Warm и для любого PlatformSpecific GUID,
+поскольку собственных GUID сброса у неё нет. Shutdown пишет тип S5 и
+`SLP_EN` в PM1a_CNT.
+
+`GetNextHighMonotonicCount` увеличивает старшее слово счётчика после
+`ExitBootServices`. Прошивка также увеличивает его при загрузке и
+переносе из младшего слова Boot Services. Старшее слово записывается в
+защищённую переменную `ODMonotonicHigh` до возврата нового значения.
+Сервис требует подключённого NVRAM. При сбое записи он возвращает
+`EFI_DEVICE_ERROR`. [UEFI 2.11, §8.5](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#miscellaneous-runtime-services).
 
 ### Конфигурационные таблицы
 
@@ -437,8 +458,9 @@ runtime-время жизни callback и context. `CloseEvent` очищает �
 По завершении BEFORE и проверке ключа прошивка записывает адрес массива
 в runtime-область рядом с Runtime Services. Поле адреса лежит за
 границей `HeaderSize` и CRC таблицы. Записи остаются в runtime-памяти
-после `ExitBootServices`. Вызов уведомлений при смене адресации и
-перенос указателей на виртуальные адреса относятся к S7-11.
+после `ExitBootServices`. Runtime Driver вызывает сохранённые уведомления
+в физическом режиме `SetVirtualAddressMap`. Обработчики используют
+`ConvertPointer` для своих динамических указателей.
 [UEFI 2.11, §§7.1 и 8.4](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#virtual-memory-services).
 
 ### Watchdog
@@ -464,7 +486,7 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 
 ## Переменные
 
-S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их через фактическую EFI-таблицу до `ExitBootServices`. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. После завершения `ExitBootServices` эти слоты возвращают `EFI_UNSUPPORTED` до реализации S7-11.
+S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их до `ExitBootServices`, а `rt` обслуживает проверку физического и виртуального режимов после выхода. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. В runtime видимы записи с `EFI_VARIABLE_RUNTIME_ACCESS`.
 
 - Ключ содержит GUID поставщика и имя UCS-2 длиной до 127 кодовых единиц. Имена сравниваются с учётом регистра. Малый буфер получает требуемый размер, а `GetVariable` также возвращает атрибуты. Перечисление начинается с пустого имени и проходит по видимым ключам в порядке создания.
 - `RT` требует `BS`. `APPEND_WRITE` добавляет данные, пустой append ничего не меняет. Нулевой размер без append или отсутствие атрибутов доступа удаляет существующую запись. Остальные операции над существующим ключом требуют совпадающих атрибутов. `QueryVariableInfo` игнорирует `APPEND_WRITE` и возвращает общий бюджет таблицы, свободные байты и максимальный размер значения 16 КиБ.

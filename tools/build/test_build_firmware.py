@@ -53,7 +53,7 @@ class ImageHeaderTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<Q", image, 0)[0], 0x3147_4D49_5746_444F)
         self.assertEqual(struct.unpack_from("<II", image, 0x08), (1, 0x40))
         self.assertEqual(struct.unpack_from("<QQQ", image, 0x10), (0x0040_0000, 0x0020_0000, 0x40))
-        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 7, 0))
+        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 8, 0))
         self.assertEqual(image[0x34:0x40], bytes(12))
         # code after the header is untouched, the tail is zero padding
         self.assertEqual(image[0x40:0x100], sample_raw()[0x40:])
@@ -121,7 +121,7 @@ SAMPLE_IMAGE_CRC32 = 0x9971_494B
 
 class CrossValidatorTest(unittest.TestCase):
     def test_header_matches_reference_bytes_checked_by_rust(self) -> None:
-        header = BUILDER.build_header(0x40, 0x1234_5678)
+        header = BUILDER.build_header(0x40, 0x1234_5678, handoff_minor_max=7)
         self.assertEqual(header.hex(), REFERENCE_HEADER_HEX)
         self.assertEqual(len(header), 0x40)
         self.assertEqual(struct.unpack_from("<I", header, 0x30)[0], 0x1234_5678)
@@ -129,7 +129,7 @@ class CrossValidatorTest(unittest.TestCase):
 
     def test_sample_image_crc_matches_value_checked_by_rust(self) -> None:
         raw = bytes(0x40) + bytes([0x90, 0x90, 0x90, 0x90, 0xF4, 0xEB, 0xFD, 0x00])
-        image = BUILDER.assemble_image(raw, 0x40)
+        image = BUILDER.assemble_image(raw, 0x40, handoff_minor_max=7)
         self.assertEqual(BUILDER.image_crc(image), SAMPLE_IMAGE_CRC32)
         self.assertEqual(struct.unpack_from("<I", image, 0x30)[0], SAMPLE_IMAGE_CRC32)
         self.assertEqual(BUILDER.validate_image(image)["image_crc32"], SAMPLE_IMAGE_CRC32)
@@ -348,13 +348,22 @@ class CommandLineTest(unittest.TestCase):
             self.assertFalse((Path(directory) / "fw.bin").exists())
 
 
-@unittest.skipUnless(toolchain_available(), "the firmware toolchain is not installed")
+def probe_toolchain_available() -> bool:
+    try:
+        BUILDER.resolve_probe_tools()
+    except BuildError:
+        return False
+    return True
+
+
+@unittest.skipUnless(toolchain_available() and probe_toolchain_available(), "requires both firmware targets")
 class FullBuildTest(unittest.TestCase):
     def test_build_produces_valid_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "firmware.bin"
+            target_dir = Path(directory) / "target"
             result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--out", str(out)],
+                [sys.executable, str(SCRIPT), "--target-dir", str(target_dir), "--out", str(out)],
                 capture_output=True,
                 text=True,
                 cwd=ROOT,
@@ -369,15 +378,9 @@ class FullBuildTest(unittest.TestCase):
             self.assertIn("size: 0x400000", result.stdout)
             # the entry stub starts with `cld` (0xFC), see firmware/uefi/src/start.S
             self.assertEqual(image[fields["entry_offset"]], 0xFC)
-            self.assertIn(BUILDER.pack_fv({}), image)
-
-
-def probe_toolchain_available() -> bool:
-    try:
-        BUILDER.resolve_probe_tools()
-    except BuildError:
-        return False
-    return True
+            driver = (target_dir / "runtime" / BUILDER.PROBE_TARGET / "release" / "od-runtime.efi").read_bytes()
+            self.assertEqual(BUILDER.inspect_pe(driver, 12)["subsystem"], 12)
+            self.assertIn(BUILDER.pack_fv({"runtime": driver}), image)
 
 
 @unittest.skipUnless(probe_toolchain_available(), "the x86_64-unknown-uefi target is not installed")
@@ -417,11 +420,12 @@ class FirmwareVolumeBuildTest(unittest.TestCase):
                 else:
                     self.assertEqual(hashlib.sha256(out.read_bytes()).hexdigest(), first_sha256)
             app_dir = target_dir / "test-apps" / BUILDER.PROBE_TARGET / "release"
-            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in ("ebs", "echo", "hello", "vars")}
+            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in BUILDER.TEST_APPS}
             for name, pe in files.items():
                 with self.subTest(name=name):
                     self.assertEqual(BUILDER.inspect_pe(pe)["subsystem"], 10)
-            archive = BUILDER.pack_fv(files)
+            driver = target_dir / "runtime" / BUILDER.PROBE_TARGET / "release" / "od-runtime.efi"
+            archive = BUILDER.pack_fv({"runtime": driver.read_bytes(), **files})
             actual = target_dir / "fv" / hashlib.sha256(archive).hexdigest() / "archive.bin"
             self.assertEqual(actual.read_bytes(), archive)
             image = out.read_bytes()

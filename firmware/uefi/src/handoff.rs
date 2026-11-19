@@ -19,7 +19,8 @@ const HANDOFF_MINOR_RTC: u16 = 4;
 const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
 const HANDOFF_MINOR_NVRAM: u16 = 7;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_NVRAM;
+const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_RT;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
@@ -31,6 +32,7 @@ pub enum FirmwareFvApp {
     Hello = 1,
     Ebs = 2,
     Vars = 3,
+    Rt = 4,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -469,6 +471,13 @@ fn validate_devices(
             kind: DEVICE_RTC_CMOS,
         });
     }
+    if version_minor == HANDOFF_MINOR_FV_APP_RT {
+        for kind in [9, DEVICE_RTC_CMOS] {
+            if !seen[kind as usize] {
+                return Err(HandoffError::MissingDeviceType { kind });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -589,9 +598,10 @@ impl<'a> Handoff<'a> {
             2 => (8..=9).contains(&device_count),
             3 => device_count == 9,
             HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
-            HANDOFF_MINOR_FV_APP | HANDOFF_MINOR_FV_APP_VARS | HANDOFF_MINOR_NVRAM => {
-                (7..=10).contains(&device_count)
-            }
+            HANDOFF_MINOR_FV_APP
+            | HANDOFF_MINOR_FV_APP_VARS
+            | HANDOFF_MINOR_NVRAM
+            | HANDOFF_MINOR_FV_APP_RT => (7..=10).contains(&device_count),
             _ => false,
         };
         if !valid_device_count {
@@ -648,11 +658,15 @@ impl<'a> Handoff<'a> {
                 1 => Some(FirmwareFvApp::Hello),
                 2 => Some(FirmwareFvApp::Ebs),
                 3 if minor >= HANDOFF_MINOR_FV_APP_VARS => Some(FirmwareFvApp::Vars),
+                4 if minor >= HANDOFF_MINOR_FV_APP_RT => Some(FirmwareFvApp::Rt),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
             None
         };
+        if minor == HANDOFF_MINOR_FV_APP_RT && fv_app != Some(FirmwareFvApp::Rt) {
+            return Err(HandoffError::InvalidFvApp(u32_at(bytes, 0xA0)));
+        }
         let handoff = Self {
             bytes: &bytes[..total],
             version_minor: minor,
@@ -1199,6 +1213,18 @@ mod tests {
         let handoff = Handoff::parse(&bytes, 7).unwrap();
         assert_eq!(handoff.nvram_base(), Some(NVRAM_BASE));
         assert_eq!(handoff.fv_app(), Some(FirmwareFvApp::Vars));
+        bytes[0x0A] = 8;
+        bytes[0xA0] = 4;
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse(&bytes, 7),
+            Err(HandoffError::UnsupportedVersion { major: 1, minor: 8 })
+        );
+        assert_eq!(
+            Handoff::parse(&bytes, 8),
+            Err(HandoffError::MissingDeviceType { kind: 9 })
+        );
+        bytes[0xA0] = 3;
         bytes[0x0A] = 6;
         seal(&mut bytes);
         assert!(matches!(

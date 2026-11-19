@@ -170,6 +170,7 @@ const HANDOFF_MINOR_RTC: u16 = 4;
 const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
 const HANDOFF_MINOR_NVRAM: u16 = 7;
+const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -184,6 +185,7 @@ pub enum FirmwareFvApp {
     Hello = 1,
     Ebs = 2,
     Vars = 3,
+    Rt = 4,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -475,6 +477,13 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "acpi_tables describes the PM block and needs acpi_pm",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Rt)
+        && !(config.acpi_tables && config.rtc_base_unix_seconds.is_some() && config.nvram.is_some())
+    {
+        return Err(FirmwareBoardError::Config(
+            "rt FV application needs ACPI fixed hardware, RTC and NVRAM",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
@@ -658,7 +667,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.nvram.is_some() {
+    if config.fv_app == Some(FirmwareFvApp::Rt) {
+        HANDOFF_MINOR_FV_APP_RT
+    } else if config.nvram.is_some() {
         HANDOFF_MINOR_NVRAM
     } else if config.fv_app == Some(FirmwareFvApp::Vars) {
         HANDOFF_MINOR_FV_APP_VARS
@@ -6226,6 +6237,54 @@ mod tests {
             assert_eq!(le_u32(bytes, 0xA4).unwrap(), 0);
             assert!(crc_is_valid(bytes));
         }
+    }
+
+    #[test]
+    fn rt_selector_requires_v18_and_all_runtime_devices() {
+        let legacy = test_image(&[0xf4], &[(0x2A, &7u16.to_le_bytes())]);
+        let image = test_image(&[0xf4], &[(0x2A, &8u16.to_le_bytes())]);
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Rt),
+            acpi_pm: true,
+            acpi_tables: true,
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            nvram: Some(NvramConfig::Empty),
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 7,
+            })
+        ));
+        for missing in [
+            FirmwareBoardConfig {
+                acpi_tables: false,
+                ..config.clone()
+            },
+            FirmwareBoardConfig {
+                rtc_base_unix_seconds: None,
+                ..config.clone()
+            },
+            FirmwareBoardConfig {
+                nvram: None,
+                ..config.clone()
+            },
+        ] {
+            assert!(matches!(
+                load_firmware_image(&image, &missing),
+                Err(FirmwareBoardError::Config(
+                    "rt FV application needs ACPI fixed hardware, RTC and NVRAM"
+                ))
+            ));
+        }
+        let board = load_firmware_image(&image, &config).unwrap();
+        let bytes = board.handoff_block();
+        assert_eq!(le_u16(bytes, 0x0A).unwrap(), 8);
+        assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
+        assert_eq!(le_u32(bytes, 0xA0).unwrap(), 4);
+        assert!(crc_is_valid(bytes));
     }
 
     #[test]

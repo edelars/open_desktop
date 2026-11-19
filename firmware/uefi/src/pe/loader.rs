@@ -2,7 +2,7 @@
 
 use super::{
     parser::{PeImage, Subsystem},
-    reloc::{RelocationError, for_each_dir64},
+    reloc::{RelocationError, RuntimeFixup, for_each_dir64},
 };
 use crate::{bs::misc::MEMORY_CHUNK, paging::PAGE_BYTES};
 
@@ -13,6 +13,31 @@ pub enum LoadError {
     RelocationsRequired,
     ConflictingRelocationFlag,
     Relocation(RelocationError),
+}
+
+pub(crate) fn runtime_fixup_count(image: &PeImage<'_>) -> Result<usize, LoadError> {
+    let (rva, data) = image
+        .relocation_data()
+        .ok_or(LoadError::RelocationsRequired)?;
+    let mut count = 0;
+    for_each_dir64(rva, data, image.image_size(), |_| count += 1).map_err(LoadError::Relocation)?;
+    Ok(count)
+}
+
+pub(crate) fn capture_runtime_fixups(
+    image: &PeImage<'_>,
+    mapped: &[u8],
+    records: &mut [RuntimeFixup],
+) -> Result<(), LoadError> {
+    let (rva, data) = image
+        .relocation_data()
+        .ok_or(LoadError::RelocationsRequired)?;
+    let mut output = records.iter_mut();
+    for_each_dir64(rva, data, image.image_size(), |target| {
+        *output.next().expect("preflighted fixup count") = RuntimeFixup::capture(target, mapped);
+    })
+    .map_err(LoadError::Relocation)?;
+    RuntimeFixup::validate_targets(records).map_err(LoadError::Relocation)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
