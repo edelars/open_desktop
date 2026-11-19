@@ -291,8 +291,8 @@ fn decode_activity(code: u8) -> SchedActivity {
     }
 }
 
-/// What the other threads (and the controller) may know of a vCPU between its passes: published by
-/// the owner thread at every change, read by the idle arbiter and by the stop.
+/// What the other threads (and the controller) may know of a vCPU between its passes: initialized
+/// from its state before spawn, then published by the owner thread at each change.
 struct Cell {
     /// The thread is doing something other than sleeping or standing still. The idle arbiter
     /// concludes "nobody runs" only when no thread is busy and no kick is pending.
@@ -320,12 +320,12 @@ struct Cell {
 }
 
 impl Cell {
-    fn new() -> Self {
+    fn new(vcpu: &Vcpu) -> Self {
         Self {
             busy: AtomicBool::new(true),
-            activity: AtomicU8::new(0),
-            if_set: AtomicBool::new(false),
-            rep_restart: AtomicBool::new(false),
+            activity: AtomicU8::new(encode_activity(SchedActivity::from(vcpu.activity()))),
+            if_set: AtomicBool::new(vcpu.interrupts_enabled()),
+            rep_restart: AtomicBool::new(vcpu.skip_first_boundary),
             safe: AtomicBool::new(false),
             quiet: AtomicBool::new(false),
             nvme_work: AtomicBool::new(false),
@@ -1636,7 +1636,7 @@ fn run_threads_inner<R>(
         source_free,
         refresh_device_lines: irq_source.needs_device_line_refresh(),
         kicks: Arc::clone(&kicks),
-        cells: (0..count).map(|_| Cell::new()).collect(),
+        cells: vcpus.iter().map(Cell::new).collect(),
         stop_all: AtomicBool::new(false),
         finish: AtomicBool::new(false),
         reason: Mutex::new(None),
@@ -2923,6 +2923,79 @@ mod tests {
         controller: impl FnOnce(&ParallelControl<'_, '_>) -> R,
     ) -> (ParallelReport, R) {
         run_threads(board, config, &fixture_quantum, controller).expect("the board splits")
+    }
+
+    #[test]
+    fn a_stop_before_the_first_quantum_reports_each_vcpus_initial_state() {
+        use crate::smp_scheduler::{QuantumPolicy, SmpScheduler, StopRequest};
+        use crate::vm_snapshot::VmSnapshot;
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        const VCPU_COUNT: usize = 3;
+        const ALL_ARRIVED: usize = (1 << VCPU_COUNT) - 1;
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        static ARRIVED: AtomicUsize = AtomicUsize::new(0);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+
+        fn hold_first_barrier(cpu: usize) {
+            ARRIVED.fetch_or(1 << cpu, SEQ);
+            while !RELEASE.load(SEQ) {
+                thread::yield_now();
+            }
+        }
+
+        let mut board = board(VCPU_COUNT);
+        let bsp = board.vcpu_mut(0).unwrap();
+        bsp.state.activity = Some(CpuActivity::Halted);
+        bsp.state.rflags |= u64::from(EFLAGS_IF);
+        let restarting = board.vcpu_mut(2).unwrap();
+        restarting.state.activity = Some(CpuActivity::Running);
+        restarting.legacy = None;
+        restarting.skip_first_boundary = true;
+        let scheduler =
+            SmpScheduler::new(VCPU_COUNT, QuantumPolicy::Fixed(8), StopRequest::new()).unwrap();
+        let config = ParallelConfig {
+            barrier_window: Some(hold_first_barrier),
+            ..open_config(8)
+        };
+        let (report, ()) = run_threads(
+            &mut board,
+            config,
+            &|_| panic!("STOP must precede the first guest quantum"),
+            |control| {
+                let arrived = control.wait_until(TIMEOUT, || ARRIVED.load(SEQ) == ALL_ARRIVED);
+                if !arrived {
+                    RELEASE.store(true, SEQ);
+                }
+                assert!(arrived, "workers did not reach the first barrier");
+
+                let proof = thread::scope(|scope| {
+                    let release_on_stop = scope.spawn(|| {
+                        let saw_stop = control.wait_until(TIMEOUT, || control.stopped());
+                        RELEASE.store(true, SEQ);
+                        saw_stop
+                    });
+                    let proof = control.stop_all(TIMEOUT);
+                    assert!(release_on_stop.join().unwrap(), "STOP was never published");
+                    proof.unwrap()
+                });
+                assert_eq!(
+                    proof.acks,
+                    [
+                        StopAck::Asleep(SchedActivity::Halted),
+                        StopAck::Asleep(SchedActivity::WaitForSipi),
+                        StopAck::RepRestart,
+                    ]
+                );
+                assert_eq!(proof.now_ns, 0);
+                assert!(control.shared.cells[0].if_set.load(SEQ));
+                assert!(VmSnapshot::take_parallel(control, &proof, &scheduler).is_ok());
+            },
+        )
+        .unwrap();
+        assert_joined(&report, VCPU_COUNT);
+        assert_eq!(report.finished, ParallelFinish::Stopped);
+        assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
     }
 
     fn assert_joined(report: &ParallelReport, vcpus: usize) {
