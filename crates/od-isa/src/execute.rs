@@ -20352,9 +20352,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::And,
                     src: Operand::Memory(_),
                     ..
-                } => {
-                    instruction.opcode.byte == 0x22 && instruction.operand_size == OperandSize::Byte
-                }
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x22, OperandSize::Byte) | (0x23, OperandSize::Dword)
+                ),
                 Operation::Logic {
                     kind: LogicKind::And,
                     ..
@@ -20653,15 +20654,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
-        // S7-04: TEST can consume a byte from a stack spill while describing the map.
+        // The firmware tests stack spills while describing the memory map and PE image.
         Operation::Logic {
             kind: LogicKind::Test,
             dst: destination @ Operand::Memory(_),
-            src: Operand::Immediate(immediate),
+            src: source @ (Operand::Immediate(_) | Operand::Register(_)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xf6
-            && instruction.operand_size == OperandSize::Byte
+            && matches!(
+                (instruction.opcode.byte, instruction.operand_size, source),
+                (0xf6, OperandSize::Byte, Operand::Immediate(_))
+                    | (0x85, OperandSize::Dword, Operand::Register(_))
+            )
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
                 == (Prefixes {
@@ -20676,11 +20680,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
+            let mask = match source {
+                Operand::Immediate(value) => value,
+                Operand::Register(register) => state.read(register),
+                _ => unreachable!("matched a firmware TEST source"),
+            };
             state.rflags = logic_result(
-                OperandSize::Byte,
+                instruction.operand_size,
                 LogicKind::Test,
                 value,
-                immediate,
+                mask,
                 state.rflags,
             )
             .1;
@@ -20807,7 +20816,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: CMP with one memory operand and qword ADD from memory to a register.
+        // Firmware CMP with one memory operand and ADD from memory to a register.
         Operation::Arithmetic { kind, dst, src }
             if firmware_boot_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -20822,7 +20831,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         (Operand::Memory(_), Operand::Register(_))
                             | (Operand::Register(_), Operand::Memory(_))
                     ),
-                    (ArithmeticKind::Add, 0x03, OperandSize::Qword) => {
+                    (ArithmeticKind::Add, 0x03, OperandSize::Dword | OperandSize::Qword) => {
                         matches!((dst, src), (Operand::Register(_), Operand::Memory(_)))
                     }
                     _ => false,
