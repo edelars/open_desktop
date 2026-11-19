@@ -74,7 +74,7 @@ use od_machine::{
     MachineStopReason, NvmeBackend, NvmeConfig, load_linux_direct_board_with_nvme_and_vcpus,
     load_linux_direct_board_with_vcpus, run_linux_direct_board,
     run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode_interleaved,
-    run_linux_direct_board_set_user_mode_parallel,
+    run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
 };
 use od_testkit::sha256_hex;
@@ -95,6 +95,7 @@ const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blo
  [--vcpus 1|2] [--seed <u64> (stage4a or stage4a-apic user mode)] \
  [--parallel --vcpus 2|4 [--quantum <steps>] [--timeout-s <seconds>]] \
  [--rootfs-raw <working-copy.raw> (--vcpus 2|4, stage4a-apic user mode, new report path)] \
+ [--s6-compute <workers,blocks,checksum> (needs RAW; also supports --vcpus 1)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -117,6 +118,7 @@ struct Options {
     initramfs: String,
     acpi_blob: String,
     rootfs_raw: Option<String>,
+    s6_compute: Option<String>,
     nonce: String,
     /// Carry the nonce in the initrd bootconfig instead of the early command line.
     nonce_bootconfig: bool,
@@ -333,7 +335,7 @@ fn evaluate_with_rootfs(
         "ram_mib": options.ram_mib,
     });
     if options.budget.is_some()
-        && options.vcpu_count > 1
+        && (options.vcpu_count > 1 || options.rootfs_raw.is_some())
         && env
             .fetch_cache_stats
             .as_ref()
@@ -343,7 +345,11 @@ fn evaluate_with_rootfs(
             refusal(
                 "invalid_input",
                 "arguments",
-                "fetch cache statistics require --vcpus 1".into(),
+                if options.rootfs_raw.is_some() {
+                    "fetch cache statistics are unavailable with --rootfs-raw".into()
+                } else {
+                    "fetch cache statistics require --vcpus 1".into()
+                },
                 evidence,
             ),
             3,
@@ -498,6 +504,10 @@ fn evaluate_with_rootfs(
     };
     if rootfs.is_some() {
         cmdline.push_str(" rdinit=/s6-smp-init");
+        if let Some(compute) = &options.s6_compute {
+            cmdline.push_str(" od.s6_compute=");
+            cmdline.push_str(compute);
+        }
     }
     evidence["cmdline"] = json!(cmdline);
 
@@ -792,28 +802,43 @@ fn evaluate_with_rootfs(
                 };
                 let run_started = Instant::now();
                 let result = if let Some(parallel) = &options.parallel {
-                    evidence["parallel_scheduler"] = json!({
+                    let scheduler = &mut evidence["parallel_scheduler"];
+                    *scheduler = json!({
                         "vcpus": options.vcpu_count,
                         "quantum": parallel.quantum,
                         "timeout_s": parallel.timeout.as_secs(),
                     });
-                    run_linux_direct_board_set_user_mode_parallel(
-                        &mut boot,
-                        &machine_input,
-                        budget,
-                        members,
-                        LinuxThreadedOptions {
-                            quantum: parallel.quantum,
-                            timeout: parallel.timeout,
-                        },
-                    )
-                    .map(|report| {
-                        let scheduler = &mut evidence["parallel_scheduler"];
-                        scheduler["terminal_vcpu"] = json!(report.terminal_vcpu);
-                        scheduler["cpu_stats"] = describe_vcpus(&report.vcpus);
-                        scheduler["threads_started"] = json!(report.threads_started);
-                        scheduler["threads_exited"] = json!(report.threads_exited);
-                        report.stop
+                    let limits = LinuxThreadedOptions {
+                        quantum: parallel.quantum,
+                        timeout: parallel.timeout,
+                    };
+                    let result = if options.vcpu_count == 1 {
+                        run_linux_direct_board_set_user_mode_threaded(
+                            &mut boot,
+                            &machine_input,
+                            budget,
+                            members,
+                            limits,
+                        )
+                        .map(|report| (report.stop, report.threads_started, report.threads_exited))
+                    } else {
+                        run_linux_direct_board_set_user_mode_parallel(
+                            &mut boot,
+                            &machine_input,
+                            budget,
+                            members,
+                            limits,
+                        )
+                        .map(|report| {
+                            scheduler["terminal_vcpu"] = json!(report.terminal_vcpu);
+                            scheduler["cpu_stats"] = describe_vcpus(&report.vcpus);
+                            (report.stop, report.threads_started, report.threads_exited)
+                        })
+                    };
+                    result.map(|(stop, threads_started, threads_exited)| {
+                        scheduler["threads_started"] = json!(threads_started);
+                        scheduler["threads_exited"] = json!(threads_exited);
+                        stop
                     })
                 } else if options.vcpu_count > 1 {
                     run_linux_direct_board_set_user_mode_interleaved(
@@ -1484,6 +1509,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut initramfs = None;
     let mut acpi_blob = None;
     let mut rootfs_raw = None;
+    let mut s6_compute = None;
     let mut nonce = None;
     let mut nonce_bootconfig = false;
     let mut expected_vmlinuz = None;
@@ -1636,6 +1662,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--budget" => &mut budget,
             "--vcpus" => &mut vcpus,
             "--rootfs-raw" => &mut rootfs_raw,
+            "--s6-compute" => &mut s6_compute,
             "--seed" => &mut seed,
             "--quantum" => &mut quantum,
             "--timeout-s" => &mut timeout_s,
@@ -1785,20 +1812,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
         Some(4) if rootfs_raw.is_some() || parallel => 4,
         Some(count) => return Err(format!("unsupported --vcpus {count}: expected 1 or 2")),
     };
-    if rootfs_raw.is_some() && !(run && vcpu_count > 1) {
-        return Err("--rootfs-raw needs --run with --vcpus 2 or 4".into());
+    if let Some(compute) = &s6_compute {
+        if rootfs_raw.is_none() {
+            return Err("--s6-compute requires --rootfs-raw".into());
+        }
+        validate_compute(compute, vcpu_count)?;
+    }
+    if rootfs_raw.is_some()
+        && !(run
+            && (vcpu_count > 1 || s6_compute.is_some())
+            && (seed.is_some() || parallel)
+            && cpuid_profile == CpuidProfile::X8664V1Stage4AApic
+            && user_mode)
+    {
+        return Err("--rootfs-raw requires stage4a-apic user mode and either --seed or --parallel, with 2/4 vCPUs or --s6-compute".into());
     }
     let parallel = if parallel {
         if seed.is_some() {
             return Err("--parallel conflicts with --seed".into());
         }
-        if vcpu_count < 2
+        if (vcpu_count < 2 && s6_compute.is_none())
             || !budget.is_some_and(|n| n > 0)
             || cpuid_profile != CpuidProfile::X8664V1Stage4AApic
             || !user_mode
         {
             return Err(
-                "--parallel needs --vcpus 2 or 4, --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
+                "--parallel needs --vcpus 2 or 4 (1 with --s6-compute), --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
                     .into(),
             );
         }
@@ -1837,15 +1876,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--vcpus {vcpu_count} needs --seed, --set-cpl0, --cpuid-profile stage4a-apic and --user-mode"
         ));
     }
-    if vcpu_count > 1
+    if (vcpu_count > 1 || rootfs_raw.is_some())
         && (checkpoint_table.is_some()
             || stack_context_out.is_some()
             || execution_observations_out.is_some())
     {
-        return Err("checkpoint and observation sidecars require --vcpus 1".into());
+        return Err("checkpoint and observation sidecars require diskless --vcpus 1".into());
     }
-    if vcpu_count > 1 && diagnostic_past_c7 {
-        return Err("--diagnostic-past-c7 requires --vcpus 1".into());
+    if (vcpu_count > 1 || rootfs_raw.is_some()) && diagnostic_past_c7 {
+        return Err("--diagnostic-past-c7 requires diskless --vcpus 1".into());
     }
     let interleaved_seed = seed.map(|text| decimal("--seed", text)).transpose()?;
     if interleaved_seed.is_some()
@@ -2027,6 +2066,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         initramfs: required(initramfs, "--initramfs")?,
         acpi_blob: required(acpi_blob, "--acpi-blob")?,
         rootfs_raw,
+        s6_compute,
         nonce,
         nonce_bootconfig,
         expected_vmlinuz_sha256: parse_sha256(&required(
@@ -2066,6 +2106,30 @@ fn parse(args: &[String]) -> Result<Options, String> {
         execution_observations_quantum_trace,
         execution_observations_elf_stack_copy,
     })
+}
+
+fn validate_compute(value: &str, vcpu_count: usize) -> Result<(), String> {
+    let fields = value.split(',').collect::<Vec<_>>();
+    let valid = match fields.as_slice() {
+        [workers @ ("1" | "2" | "4"), blocks, checksum] => {
+            let workers = workers.parse::<usize>().expect("matched worker count");
+            workers <= vcpu_count
+                && !blocks.starts_with('0')
+                && blocks.bytes().all(|byte| byte.is_ascii_digit())
+                && blocks
+                    .parse::<u64>()
+                    .is_ok_and(|count| count >= workers as u64)
+                && checksum.len() == 16
+                && checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(
+            "--s6-compute needs 1, 2 or 4 workers within the vCPU count, at least one decimal block per worker, and a 16-digit hex checksum".into(),
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn parse_rdtsc_sample_window(
@@ -3435,6 +3499,7 @@ mod tests {
                 vcpu_count: 1,
                 interleaved_seed: None,
                 rootfs_raw: None,
+                s6_compute: None,
                 parallel: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
@@ -5024,6 +5089,107 @@ mod tests {
         .collect();
         args.extend(extra.iter().map(|s| s.to_string()));
         parse(&args)
+    }
+
+    #[test]
+    fn compute_requires_raw_and_validated_workers_blocks_and_checksum() {
+        let run = [
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a-apic",
+            "--user-mode",
+            "--rootfs-raw",
+            "working.raw",
+        ];
+        let args = [&run[..], &["--s6-compute", "1,4097,ec4675d8578a4e14"]].concat();
+        for schedule in [&["--seed", "24301"][..], &["--parallel"][..]] {
+            let options = parse_base(&[&args[..], schedule].concat()).unwrap();
+            assert_eq!(options.vcpu_count, 1);
+            assert_eq!(
+                options.s6_compute.as_deref(),
+                Some("1,4097,ec4675d8578a4e14")
+            );
+        }
+        for value in [
+            "2,4097,ec4675d8578a4e14",
+            "1,0,ec4675d8578a4e14",
+            "1,18446744073709551616,ec4675d8578a4e14",
+            "1,+4097,ec4675d8578a4e14",
+            "1,4097,ec4675d8578a4e1x",
+            "1,4097,ec4675d8578a4e14 foo",
+        ] {
+            assert!(
+                parse_base(&[&run[..], &["--seed", "24301", "--s6-compute", value]].concat())
+                    .is_err(),
+                "{value}"
+            );
+        }
+        assert!(parse_base(&args).is_err());
+        assert!(
+            parse_base(
+                &[
+                    &run[..7],
+                    &["--s6-compute", "1,4097,ec4675d8578a4e14", "--seed", "24301"]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_base(
+                &[
+                    &args[..],
+                    &["--seed", "1", "--stack-context-out", "trace.json"]
+                ]
+                .concat()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn raw_compute_runs_one_vcpu_through_both_schedulers() {
+        let img = bzimage_with_entry(&[0xf4]);
+        let blob =
+            include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-1-vcpu.bin");
+        let mut case = Case::new("compute-up", &img, &[], blob);
+        let options = &mut case.options;
+        options.expected_acpi_manifest_hash =
+            parse_hash("a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af").unwrap();
+        options.rootfs_raw = Some("working.raw".into());
+        options.s6_compute = Some("1,4097,ec4675d8578a4e14".into());
+        options.cpuid_profile = CpuidProfile::X8664V1Stage4AApic;
+        options.set_cpl0 = true;
+        options.user_mode = true;
+        options.budget = Some(1);
+        for parallel in [false, true] {
+            options.interleaved_seed = (!parallel).then_some(24301);
+            options.parallel = parallel.then_some(ParallelOptions {
+                quantum: 16,
+                timeout: Duration::from_secs(5),
+            });
+            let backend = Box::new(od_machine::InMemoryBackend::new(16).unwrap());
+            let (report, code) =
+                evaluate_with_rootfs(options, &DiagnosticEnv::default(), Some(backend));
+            assert_eq!(code, 0, "{report:#}");
+            assert_eq!(report["retired"], 1);
+            assert_eq!(report["inputs"]["rootfs_raw"]["namespace_sectors"], 16);
+            assert!(
+                report["cmdline_in_memory"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(" rdinit=/s6-smp-init od.s6_compute=1,4097,ec4675d8578a4e14")
+            );
+            if parallel {
+                assert_eq!(report["parallel_scheduler"]["threads_started"], 1);
+                assert_eq!(report["parallel_scheduler"]["threads_exited"], 1);
+            } else {
+                assert_eq!(report["interleaved_scheduler"]["seed"], 24301);
+            }
+        }
     }
 
     #[test]
@@ -7177,6 +7343,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            s6_compute: None,
             parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -7239,6 +7406,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            s6_compute: None,
             parallel: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
@@ -7305,6 +7473,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            s6_compute: None,
             parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
@@ -7392,6 +7561,7 @@ mod tests {
             vcpu_count: 1,
             interleaved_seed: None,
             rootfs_raw: None,
+            s6_compute: None,
             parallel: None,
             set_cpl0: true,
             diagnostic_past_c7: false,

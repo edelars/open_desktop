@@ -577,6 +577,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
                 | "--execution-observations-out"
                 | "--execution-observations-post-iret-index"
                 | "--rootfs-raw"
+                | "--s6-compute"
                 | "--parallel"
                 | "--quantum"
                 | "--timeout-s"
