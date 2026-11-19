@@ -1442,6 +1442,7 @@ fn run_linux_direct_board_set_with_post_iret_index(
     // and the interrupt hook. Every other run (also `--diagnostic-past-c7` without the flag,
     // `DiagnosticV1`, the base probe) keeps the board as it was.
     let mut members = members;
+    members.clock_owner |= boot.board.linux_interleaved();
     // S4-38L8d: the APIC profile (`X8664V1Stage4AApic`) gets the timer line through the IOAPIC and the
     // Local APIC instead (PIT OUT0 -> INTIN2 -> LAPIC IRR), the clock owner (the LAPIC timer and the
     // idle wake need it: without it the tick hangs after `check_timer`), `halt` and the interrupt
@@ -3644,6 +3645,33 @@ mod tests {
     }
 
     #[test]
+    fn s6_21_interleaved_keeps_the_retirement_budget_after_partial_rep() {
+        // REP MOVSQ; JMP $, with continuation needed after the first two REP calls.
+        let code = [0xF3, 0x48, 0xA5, 0xEB, 0xFE];
+        let file = bzimage_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            clock_owner: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        for budget in [1, 64] {
+            let mut direct_boot = rep_boot(&code, false);
+            let direct = run_set_facade(&mut direct_boot, &file, budget, members);
+            assert_eq!(direct.exit, PagedProbeExit::BudgetExhausted);
+            assert_eq!(direct.retired, budget);
+            assert_eq!(direct.quanta, 3);
+
+            let mut scheduled_boot = rep_boot(&code, false);
+            scheduled_boot.board.enable_linux_interleaved().unwrap();
+            let scheduled = run_set_facade(&mut scheduled_boot, &file, budget, members);
+            assert_eq!(scheduled, direct);
+            assert_eq!(
+                read_bytes(&mut scheduled_boot, REP_DST, REP_QWORDS * 8),
+                rep_pattern()
+            );
+        }
+    }
+
+    #[test]
     fn set_facade_guest_stop_after_a_resumed_rep_sees_the_finished_copy() {
         // MOV DX, ACPI_RESET_REG; MOV AL, ACPI_RESET_VALUE; REP MOVSQ; OUT DX, AL; HLT.
         let code = [
@@ -3859,6 +3887,14 @@ mod tests {
         assert_eq!((record.retired, record.quanta), (12, 8));
         assert_eq!(record.virtual_ns, 12 + 7 * 1_000);
         assert_eq!(boot.board.clock().now_ns(), record.virtual_ns);
+        let (mut scheduled, file) = boot_with_entry(&set_code);
+        program_pit_channel_2(&mut scheduled);
+        scheduled.board.enable_linux_interleaved().unwrap();
+        let mut scheduled_record = run_set_facade(&mut scheduled, &file, 64, members);
+        scheduled_record
+            .set_members
+            .retain(|name| name != "clock_owner");
+        assert_eq!(scheduled_record, record);
         assert_eq!(
             record.virtual_ns - base.virtual_ns,
             1,
@@ -4125,6 +4161,13 @@ mod tests {
         assert_eq!(record.gpr[Register::Rax as usize], 2_003);
         assert_eq!(record.gpr[Register::Rdx as usize], 0);
         assert_eq!(record.tsc_hz, 1_000_000_000);
+        let (mut scheduled, file) = boot_with_entry(&code);
+        scheduled.board.enable_linux_interleaved().unwrap();
+        let mut scheduled_record = run_set_facade(&mut scheduled, &file, 64, members);
+        scheduled_record
+            .set_members
+            .retain(|name| name != "clock_owner");
+        assert_eq!(scheduled_record, record);
     }
 
     #[test]
@@ -15646,6 +15689,77 @@ mod tests {
         }
 
         #[test]
+        fn s6_21_interleaved_runs_the_scheduler_nmi_boundary() {
+            let mut boot = nmi_board();
+            boot.board.enable_linux_interleaved().unwrap();
+            send_nmi(&boot);
+            assert!(boot.board.local_apic().pending_nmi());
+
+            let cli = CliProfile::NonPviLong64V1;
+            let set = minimal_set(&cli);
+            let report = boot
+                .board
+                .run_linux_boot_cpl0_set(1, &set, false, false, false)
+                .unwrap();
+            // The one retired instruction is the NMI handler's IRETQ, which returns to CLD.
+            assert_eq!(report.run.retired, 1);
+            assert_eq!(boot.board.state().rip, ENTRY);
+            assert!(!boot.board.local_apic().pending_nmi());
+            assert!(!boot.board.state().nmi_blocked);
+        }
+
+        #[test]
+        fn s6_21_interleaved_can_wake_from_halt_by_nmi_before_the_board_irq() {
+            struct NmiOnIdle {
+                lapic: crate::LocalApicHandle,
+                fired: Cell<bool>,
+            }
+
+            impl crate::irq_source::BoardIrqSource for NmiOnIdle {
+                fn pending_vector(&self) -> Option<u8> {
+                    None
+                }
+
+                fn acknowledge(&mut self, _: u8) {
+                    panic!("the board IRQ has not arrived");
+                }
+
+                fn next_deadline_ns(&self) -> Option<u64> {
+                    Some(10_000)
+                }
+
+                fn wake_ns(&self) -> Option<u64> {
+                    if !self.fired.replace(true) {
+                        self.lapic.write_icr(0, 0, NMI_ICR).unwrap();
+                    }
+                    Some(10_000)
+                }
+            }
+
+            let mut boot = nmi_board();
+            write_phys(&mut boot, ENTRY, &[0xF4, CLD]);
+            boot.board.state_mut().rflags |= 1 << 9;
+            boot.board.set_irq_source(Box::new(NmiOnIdle {
+                lapic: boot.board.local_apic(),
+                fired: Cell::new(false),
+            }));
+            boot.board.enable_linux_interleaved().unwrap();
+
+            let cli = CliProfile::NonPviLong64V1;
+            let halt = HaltProfile::Long64V1;
+            let set = minimal_set(&cli).with_halt(&halt);
+            let report = boot
+                .board
+                .run_linux_boot_cpl0_set(2, &set, false, false, true)
+                .unwrap();
+            assert_eq!(report.run.exit, PagedProbeExit::BudgetExhausted);
+            assert_eq!((report.run.retired, report.run.virtual_ns), (2, 2));
+            assert_eq!(report.irq.halt_wakes, 0);
+            assert_eq!(boot.board.state().rip, ENTRY + 1);
+            assert!(!boot.board.local_apic().pending_nmi());
+        }
+
+        #[test]
         fn the_second_nmi_during_the_handler_is_delivered_after_iretq_and_the_third_is_lost() {
             let mut boot = nmi_board();
             let rsp = boot.board.state().gpr[Register::Rsp as usize];
@@ -16144,6 +16258,77 @@ mod tests {
             }
 
             #[test]
+            fn s6_21_interleaved_matches_owned_linux_halt_and_pic_delivery() {
+                let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
+                let handler = eoi_handler();
+                // Eight OUT sequences retire three instructions each. STI; HLT adds two.
+                let through_halt = 8 * 3 + 2;
+                for budget in [0, through_halt, through_halt + 1, 20_000] {
+                    let direct = outcome(&code, &handler, true, budget);
+                    assert_eq!(
+                        direct.report.irq.halt_wakes,
+                        u64::from(budget > through_halt)
+                    );
+                    if budget == through_halt + 1 {
+                        assert_eq!(direct.report.run.retired, through_halt);
+                        assert_eq!(direct.report.run.exit, PagedProbeExit::BudgetExhausted);
+                    }
+                    let (mut boot, _) = board(&code, &handler, true);
+                    boot.board.enable_linux_interleaved().unwrap();
+                    let report = run(&mut boot, budget);
+                    let scheduled = Outcome {
+                        report,
+                        state: boot.board.state().clone(),
+                        com1: boot.board.com1_transcript().to_vec(),
+                        now: boot.board.clock().now_ns(),
+                        pic: pic(&boot),
+                    };
+                    assert_eq!(scheduled, direct, "budget {budget}");
+                }
+            }
+
+            #[test]
+            #[ignore = "S6-10 parity uses locally staged Linux and initramfs images"]
+            fn s6_21_interleaved_matches_owned_linux_on_s6_10_image() {
+                let root =
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/stage4");
+                let kernel = std::fs::read(root.join("linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"))
+                    .expect("staged S6-10 Linux kernel");
+                let initramfs = std::fs::read(root.join("initramfs/initramfs.cpio"))
+                    .expect("staged S6-10 initramfs");
+                assert_eq!(
+                    hex(&sha256(&kernel)),
+                    "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+                );
+                assert_eq!(
+                    hex(&sha256(&initramfs)),
+                    "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+                );
+                let input = LinuxDirectInput {
+                    cmdline: b"console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s6-10-ctl nokaslr",
+                    ..input(&kernel, &initramfs, BLOB, board_hash())
+                };
+                let members = LinuxCpl0SetMembers {
+                    cpuid_profile: CpuidProfile::X8664V1Stage4A,
+                    clock_owner: true,
+                    ..LinuxCpl0SetMembers::linux_default()
+                };
+                let budget = 300_000_000;
+                let run_record = |interleaved| {
+                    let mut boot = load_linux_direct_board(&input).unwrap();
+                    if interleaved {
+                        boot.board.enable_linux_interleaved().unwrap();
+                    }
+                    run_linux_direct_board_set_user_mode(&mut boot, &input, budget, members)
+                        .expect("Linux run")
+                };
+                let direct = run_record(false);
+                assert_eq!(direct.retired, budget);
+                assert_eq!(direct.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(run_record(true), direct);
+            }
+
+            #[test]
             fn default_never_claims_the_clock() {
                 let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
                 let (mut boot, _) = board(&code, &eoi_handler(), true);
@@ -16238,9 +16423,6 @@ mod tests {
                 // would see a LAPIC wake, but the loop delivers the board source only, so the
                 // run is refused instead of letting the guest pass its HLT with no interrupt.
                 let code = program(0x00, &[&STI_HLT, &MARK, &SPIN]);
-                let (mut boot, _) = board(&code, &eoi_handler(), true);
-                arm_lapic_timer(&mut boot, 0x40, 100);
-                boot.board.enable_clock_owner().expect("the board can");
                 let cli = CliProfile::NonPviLong64V1;
                 let sti = StiProfile::NonPviLong64V1;
                 let halt = HaltProfile::Long64V1;
@@ -16248,18 +16430,47 @@ mod tests {
                     .with_pio_u8()
                     .with_sti(&sti)
                     .with_halt(&halt);
-                let failure = boot
-                    .board
-                    .run_linux_boot_cpl0_set(300, &set, false, false, true)
-                    .expect_err("refused");
+                let run_refusal = |interleaved| {
+                    let (mut boot, _) = board(&code, &eoi_handler(), true);
+                    arm_lapic_timer(&mut boot, 0x40, 100);
+                    if interleaved {
+                        boot.board.enable_linux_interleaved().unwrap();
+                    } else {
+                        boot.board.enable_clock_owner().unwrap();
+                    }
+                    let failure = boot
+                        .board
+                        .run_linux_boot_cpl0_set(300, &set, false, false, true)
+                        .expect_err("refused");
+                    assert_eq!(rax_low(&boot), 0x00, "the HLT was not passed");
+                    assert_eq!(boot.board.state().activity, Some(CpuActivity::Halted));
+                    (failure.error, failure.retired, boot.board.clock().now_ns())
+                };
+                let direct = run_refusal(false);
                 assert!(
-                    matches!(
-                        failure.error,
-                        FirmwareBoardError::Config(text) if text.contains("Local APIC vector")
-                    ),
-                    "{failure:?}"
+                    matches!(direct.0, FirmwareBoardError::Config(text) if text.contains("Local APIC vector"))
                 );
-                assert_eq!(rax_low(&boot), 0x00, "the HLT was not passed");
+                assert_eq!(run_refusal(true), direct);
+            }
+
+            #[test]
+            fn s6_21_interleaved_preserves_the_report_for_a_board_already_halted() {
+                let code = program(0x01, &[&STI_HLT, &MARK, &SPIN]);
+                let run_twice = |interleaved| {
+                    let (mut boot, _) = board(&code, &eoi_handler(), true);
+                    arm_lapic_timer(&mut boot, 0x40, 100);
+                    if interleaved {
+                        boot.board.enable_linux_interleaved().unwrap();
+                    } else {
+                        boot.board.enable_clock_owner().unwrap();
+                    }
+                    let first = run(&mut boot, 300);
+                    assert_eq!(first.run.exit, PagedProbeExit::Halted);
+                    assert_eq!(first.irq.halt_wakes, 0);
+                    let second = run(&mut boot, 300);
+                    (first, second, boot.board.state().clone())
+                };
+                assert_eq!(run_twice(true), run_twice(false));
             }
 
             #[test]
@@ -16435,8 +16646,11 @@ mod tests {
         #[test]
         fn opt_in_matches_default_for_the_uart_ir4_run() {
             // S4-23j: the single clock owner changes nothing of the THRE -> IR4 run.
-            let run_record = |clock_owner: bool| {
+            let run_record = |clock_owner: bool, interleaved: bool| {
                 let (mut boot, file) = board();
+                if interleaved {
+                    boot.board.enable_linux_interleaved().unwrap();
+                }
                 let record = run_linux_direct_board_set_user_mode(
                     &mut boot,
                     &input(&file, &[], BLOB, board_hash()),
@@ -16449,12 +16663,15 @@ mod tests {
                 .expect("runs");
                 (boot, record)
             };
-            let (default_boot, default) = run_record(false);
-            let (owned_boot, mut owned) = run_record(true);
+            let (default_boot, default) = run_record(false, false);
+            let (owned_boot, mut owned) = run_record(true, false);
+            let (scheduled_boot, scheduled) = run_record(false, true);
             assert!(!default_boot.board.clock_owner_enabled());
             assert!(owned_boot.board.clock_owner_enabled());
             assert_eq!(default.com1, NONCE, "{default:?}");
             assert!(owned.set_members.iter().any(|name| name == "clock_owner"));
+            assert_eq!(scheduled, owned);
+            assert_eq!(scheduled_boot.board.state(), owned_boot.board.state());
             owned.set_members.retain(|name| name != "clock_owner");
             assert_eq!(owned, default);
             assert_eq!(

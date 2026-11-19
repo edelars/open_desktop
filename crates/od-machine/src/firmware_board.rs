@@ -34,6 +34,9 @@ use crate::paged_memory_adapter::{
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
+use crate::smp_scheduler::{
+    BoardSmpHost, Executed, QuantumPolicy, SmpError, SmpScheduler, StopRequest,
+};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::{
@@ -68,6 +71,7 @@ use od_isa::{CpuActivity, INTEGER_FLAGS, IretqUserEntry, LongModeState, Register
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -968,6 +972,10 @@ fn owner_error(error: ClockOwnerError) -> FirmwareBoardError {
     }
 }
 
+const UNROUTED_LAPIC_WAKE: FirmwareBoardError = FirmwareBoardError::Config(
+    "clock owner: a Local APIC vector would wake the CPU, but the loop delivers the board source only",
+);
+
 /// Result of [`LoadedFirmwareBoard::run_linux_boot_cpl0_set`] (S4-38L3).
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LinuxSetRunReport {
@@ -1033,18 +1041,18 @@ fn resumes_set_exit(
         }
 }
 
-/// Whether the CPL0 set loop calls the set again after a quantum the board cut to the deadline
-/// of the interrupt source (S4-38L8b): the quantum ran its shortened budget out
+/// Whether the CPL0 set loop calls the set again after a quantum shortened by a deadline or
+/// the scheduler: the quantum ran its shortened budget out
 /// (`InstructionBudgetExhausted`) after retiring something, the run was not stopped by the guest
 /// and the run budget is not spent.
-fn resumes_deadline_cut(
+fn resumes_budget_cut(
     exit: &PagedCpl0SetExit,
-    cut_by_deadline: bool,
+    shortened: bool,
     stop_requested: bool,
     remaining: u64,
     instructions_executed: u64,
 ) -> bool {
-    cut_by_deadline
+    shortened
         && !stop_requested
         && remaining > 0
         && instructions_executed > 0
@@ -1260,6 +1268,7 @@ pub struct LoadedFirmwareBoard {
     /// byte-for-byte the S4-37/38 behaviour) or a [`ClockOwner`] that [`Self::enable_clock_owner`]
     /// installed. Never `Owned` unless that call succeeded.
     clock_driver: BoardClock,
+    linux_interleaved: bool,
     /// The opt-in checkpoint recorder of the CPL0-set loop (S4-38L4i, observation only). `None`
     /// until [`Self::enable_checkpoints`]; then the loop shows it every instruction boundary.
     checkpoints: Option<CheckpointRecorder>,
@@ -2086,6 +2095,23 @@ impl LoadedFirmwareBoard {
         matches!(self.clock_driver, BoardClock::Owned(_))
     }
 
+    /// Use the interleaved scheduler for CPL0 Linux execution on a single-vCPU board.
+    /// Zero-budget and non-running entry states use the ordinary CPL0 report path.
+    pub fn enable_linux_interleaved(&mut self) -> Result<(), FirmwareBoardError> {
+        if self.vcpu_count() != 1 {
+            return Err(FirmwareBoardError::Config(
+                "Linux interleaved execution requires one vCPU",
+            ));
+        }
+        self.enable_clock_owner()?;
+        self.linux_interleaved = true;
+        Ok(())
+    }
+
+    pub(crate) fn linux_interleaved(&self) -> bool {
+        self.linux_interleaved
+    }
+
     /// Move the board clock of the CPL0-set loop by `ns` of device time (the PM, PIT and RDTSC
     /// ticks): through the board itself, or through the owner (which also dispatches the LAPIC
     /// timers) once [`Self::enable_clock_owner`] installed it.
@@ -2147,12 +2173,7 @@ impl LoadedFirmwareBoard {
                 IdleOutcome::NoProgress if step.idle_ns > 0 => return Ok(idle),
                 IdleOutcome::Advanced(_) if step.idle_ns > 0 => {}
                 IdleOutcome::Woken(_) if delivers_lapic_vectors => return Ok(idle),
-                IdleOutcome::Woken(_) => {
-                    return Err(FirmwareBoardError::Config(
-                        "clock owner: a Local APIC vector would wake the CPU, but the loop \
-                         delivers the board source only",
-                    ));
-                }
+                IdleOutcome::Woken(_) => return Err(UNROUTED_LAPIC_WAKE),
                 _ => {
                     return Err(FirmwareBoardError::Config(
                         "clock owner: the idle step did not reach the wake time",
@@ -2806,13 +2827,41 @@ impl LoadedFirmwareBoard {
                 .or(prior_cr2)
                 .unwrap_or(0),
         );
-        let result = loop {
-            let uart = self.uart.clone();
+        let mut previous_halt: Option<(u64, bool)> = None;
+        let mut run_quantum = |board: &mut Self,
+                               scheduler_budget: Option<u64>,
+                               scheduler_stop: &mut dyn FnMut() -> bool,
+                               executed: &mut Executed,
+                               can_resume_halt: &mut bool| {
+            if let Some((halted_after_ns, nmi_was_blocked)) = previous_halt.take() {
+                let now = board.clock().now_ns();
+                let woke_for_nmi = !nmi_was_blocked && board.state().nmi_blocked;
+                if !woke_for_nmi
+                    && board.pit_ioapic_source.is_none()
+                    && board.local_apic().eligible().is_some()
+                    && board.irq_wake_ns().is_none_or(|wake| wake > now)
+                {
+                    board.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Halted);
+                    return ControlFlow::Break(Err(LinuxRunFailure {
+                        error: UNROUTED_LAPIC_WAKE,
+                        retired,
+                    }));
+                }
+                if !woke_for_nmi {
+                    let idle = now.saturating_sub(halted_after_ns);
+                    irq_counters.halt_wakes += 1;
+                    irq_counters.halt_idle_ns += idle;
+                    idle_ns_advanced = idle_ns_advanced.saturating_add(idle);
+                    remaining -= 1;
+                }
+                partial_rep = false;
+            }
+            let uart = board.uart.clone();
             let clock_read = Cell::new(None);
             let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
                 observations.build_rdtsc_clock_trace_if_active(|| {
                     let (initial_now_ns, tsc_hz) = *clock_origin.get_or_insert_with(|| {
-                        let snapshot = self.clock.snapshot();
+                        let snapshot = board.clock.snapshot();
                         (snapshot.now_ns(), snapshot.tsc_hz())
                     });
                     delivered_irq_mirror.set(irq_counters.irqs_delivered);
@@ -2835,7 +2884,7 @@ impl LoadedFirmwareBoard {
             let clock_read_ref = &clock_read;
             let delivered_irq_mirror_ref = &delivered_irq_mirror;
             let mut source = rdtsc_tick.clone().map(|tick| {
-                let clock = self.clock.clone();
+                let clock = board.clock.clone();
                 move || {
                     tick.store(true, Ordering::Relaxed);
                     if let Some(quantum_clock_ledger) = quantum_clock_ledger {
@@ -2854,7 +2903,8 @@ impl LoadedFirmwareBoard {
                 }
             });
             let stop = || {
-                uart.holding_occupied()
+                (scheduler_budget.is_some() && scheduler_stop())
+                    || uart.holding_occupied()
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
                     || acpi_pm
                         .as_ref()
@@ -2870,51 +2920,50 @@ impl LoadedFirmwareBoard {
             // S4-38L8b: the quantum ends at the next edge of the source; the clock moves only
             // after the quantum (one instruction is one ns), so the limit is the time left.
             let mut quantum_budget = remaining;
-            let mut cut_by_deadline = false;
-            if let BoardClock::Owned(owner) = &self.clock_driver {
+            if let BoardClock::Owned(owner) = &board.clock_driver {
                 // S4-23j: the owner cuts the quantum at the earliest of its LAPIC timers and the
                 // source's deadline (the source is asked only under the hook, once per quantum,
                 // as before, also with nothing left). An empty budget is never handed to the
                 // owner (it would give one) and stays empty.
                 let deadline = if irq_hook {
-                    self.irq_source.next_deadline_ns()
+                    board.irq_source.next_deadline_ns()
                 } else {
                     None
                 };
                 if remaining > 0 {
                     quantum_budget = owner.step_budget(remaining, deadline);
                     debug_assert!(quantum_budget >= 1 && quantum_budget <= remaining);
-                    if quantum_budget < remaining {
-                        cut_by_deadline = true;
-                        if irq_hook {
-                            irq_counters.quantum_cut_by_deadline += 1;
-                        }
+                    if quantum_budget < remaining && irq_hook {
+                        irq_counters.quantum_cut_by_deadline += 1;
                     }
                 }
-            } else if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
+            } else if irq_hook && let Some(deadline) = board.irq_source.next_deadline_ns() {
                 let limit = deadline
-                    .saturating_sub(self.clock.snapshot().now_ns())
+                    .saturating_sub(board.clock.snapshot().now_ns())
                     .max(1);
                 if limit < remaining {
                     quantum_budget = limit;
-                    cut_by_deadline = true;
                     irq_counters.quantum_cut_by_deadline += 1;
                 }
             }
+            if let Some(budget) = scheduler_budget {
+                quantum_budget = quantum_budget.min(budget);
+            }
+            let shortened = quantum_budget < remaining;
             // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
             if let Some(observations) = execution_observations.as_mut() {
                 observations.begin_instruction_path_quantum(quanta.saturating_add(1), retired);
             }
-            if self.checkpoints.is_some() {
-                let ns_at_start = self.clock.snapshot().now_ns();
-                if let Some(recorder) = self.checkpoints.as_mut() {
+            if board.checkpoints.is_some() {
+                let ns_at_start = board.clock.snapshot().now_ns();
+                if let Some(recorder) = board.checkpoints.as_mut() {
                     recorder.begin_call(retired, quanta + 1, ns_at_start);
                 }
             }
             let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
-                &mut self.vcpus[BOOT_VCPU_INDEX].state,
-                &mut self.bus,
-                self.page_table_root,
+                &mut board.vcpus[BOOT_VCPU_INDEX].state,
+                &mut board.bus,
+                board.page_table_root,
                 FIRMWARE_EFER,
                 context,
                 quantum_budget,
@@ -2928,15 +2977,15 @@ impl LoadedFirmwareBoard {
                 cpuid_boundary,
                 fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
                 irq_hook.then(|| IrqBoundaryHook {
-                    source: &mut *self.irq_source,
+                    source: &mut *board.irq_source,
                     counters: &mut irq_counters,
                     delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
                     skip_first_boundary: partial_rep,
                 }),
-                self.checkpoints.as_mut(),
+                board.checkpoints.as_mut(),
                 execution_observations.as_mut(),
                 fetch_sweep.as_ref(),
-                self.fetch_cache_tag,
+                board.fetch_cache_tag,
             );
             quanta += 1;
             partial_rep = matches!(
@@ -2944,7 +2993,7 @@ impl LoadedFirmwareBoard {
                 PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
             );
             // The walker of the next quantum starts from the CR3 the guest left.
-            self.page_table_root = report.cr3;
+            board.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
             page_faults_delivered += report.delivered_page_faults;
@@ -2954,7 +3003,7 @@ impl LoadedFirmwareBoard {
                 syscall_journal.record(*event);
             }
             if let Some(nvme) = &nvme {
-                nvme.service(&mut self.bus, |_| {});
+                nvme.service(&mut board.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -2967,17 +3016,32 @@ impl LoadedFirmwareBoard {
                     c5_split: report.c5_split,
                 });
             }
-            self.pump_uart_transmit(retired);
+            board.pump_uart_transmit(retired);
             let failure = |error| LinuxRunFailure { error, retired };
-            if let Err(error) = self.charge_retired(report.instructions_executed) {
-                break Err(failure(error));
+            executed.retired = report.instructions_executed;
+            executed.partial_rep = partial_rep;
+            if scheduler_budget.is_none()
+                && let Err(error) = board.charge_retired(report.instructions_executed)
+            {
+                return ControlFlow::Break(Err(failure(error)));
             }
+            let mut charge_device = |board: &mut Self, ns| {
+                if scheduler_budget.is_some() {
+                    executed.device_ns = executed
+                        .device_ns
+                        .checked_add(ns)
+                        .ok_or(FirmwareBoardError::Clock(VirtualClockError::TimeOverflow))?;
+                    Ok(())
+                } else {
+                    board.charge_ns(ns)
+                }
+            };
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
                 #[cfg(test)]
-                let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
-                if let Err(error) = self.charge_ns(tick_ns) {
-                    break Err(failure(error));
+                let tick_ns = if board.suppress_pm_tick { 0 } else { tick_ns };
+                if let Err(error) = charge_device(board, tick_ns) {
+                    return ControlFlow::Break(Err(failure(error)));
                 }
                 if capture_clock_read {
                     pm_timer_ns_charged = pm_timer_ns_charged.saturating_add(tick_ns);
@@ -2985,8 +3049,8 @@ impl LoadedFirmwareBoard {
             }
             if let Some(pit) = &pit {
                 let tick_ns = pit.take_port_tick_ns();
-                if let Err(error) = self.charge_ns(tick_ns) {
-                    break Err(failure(error));
+                if let Err(error) = charge_device(board, tick_ns) {
+                    return ControlFlow::Break(Err(failure(error)));
                 }
                 if capture_clock_read {
                     pit_ns_charged = pit_ns_charged.saturating_add(tick_ns);
@@ -2996,7 +3060,7 @@ impl LoadedFirmwareBoard {
                 && flag.swap(false, Ordering::Relaxed)
             {
                 rdtsc_reads = rdtsc_reads.saturating_add(1);
-                let cpl = self
+                let cpl = board
                     .state()
                     .cs_selector
                     .map_or(0, |selector| (selector & 3) as usize);
@@ -3008,31 +3072,31 @@ impl LoadedFirmwareBoard {
                         .wants_delay_tsc_call_summary()
                         && report.last_instruction_rip == Some(crate::LINUX_DELAY_TSC_ENTRY_RIP)
                     {
-                        self.capture_delay_tsc_frame_chain(
+                        board.capture_delay_tsc_frame_chain(
                             report.last_instruction_rip.unwrap_or_default(),
-                            self.state().gpr[Register::Rbp as usize],
-                            self.page_table_root,
+                            board.state().gpr[Register::Rbp as usize],
+                            board.page_table_root,
                         )
                     } else {
                         (Vec::new(), crate::FrameChainEnd::NullFramePointer)
                     };
                     observations.record_delay_tsc_entry(
                         report.last_instruction_rip,
-                        self.state(),
+                        board.state(),
                         frame_links,
                         frame_chain_end,
                     );
                     observations.record_cpl0_rdtsc(report.last_instruction_rip);
                     observations.record_rdtsc_site_sample(
                         report.last_instruction_rip,
-                        self.state(),
+                        board.state(),
                         clock_read.get().filter(|_| {
                             report.last_instruction_rip == selected_rdtsc_entry_sample_rip
                         }),
                     );
                     let prefix_ordinal = observations.record_rdtsc_prefix(
                         report.last_instruction_rip,
-                        self.state(),
+                        board.state(),
                         clock_read.get(),
                         page_faults_delivered,
                         general_protection_faults_delivered,
@@ -3054,9 +3118,13 @@ impl LoadedFirmwareBoard {
                 }
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
-                let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
-                if let Err(error) = self.charge_ns(tick_ns) {
-                    break Err(failure(error));
+                let tick_ns = if board.suppress_rdtsc_tick {
+                    0
+                } else {
+                    tick_ns
+                };
+                if let Err(error) = charge_device(board, tick_ns) {
+                    return ControlFlow::Break(Err(failure(error)));
                 }
                 if execution_observations
                     .as_ref()
@@ -3077,16 +3145,35 @@ impl LoadedFirmwareBoard {
             // (`None`: the line is masked or in service, no edge) or a PM stop request leave the
             // exit as it was: the run ends as `halted`. Each wake costs one unit of the budget,
             // so a source that wakes the CPU without ever giving a vector cannot loop forever.
-            if irq_hook
-                && stop_reason.is_none()
+            let halted_with_budget = stop_reason.is_none()
                 && remaining > 0
-                && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted))
-                && self.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0
-                && let Some(wake) = self.idle_wake_ns()
+                && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+            let wake_allowed = irq_hook
+                && halted_with_budget
+                && board.vcpus[BOOT_VCPU_INDEX].state.rflags & (1 << 9) != 0;
+            if scheduler_budget.is_some()
+                && halted_with_budget
+                && ((wake_allowed
+                    && (board.pit_ioapic_source.is_some() || board.irq_wake_ns().is_some()))
+                    || (!board.state().nmi_blocked && board.local_apic().pending_nmi()))
             {
-                let idle = match self.idle_to(wake) {
+                *can_resume_halt = true;
+                previous_halt = Some((
+                    board
+                        .clock()
+                        .now_ns()
+                        .saturating_add(executed.retired)
+                        .saturating_add(executed.device_ns),
+                    board.state().nmi_blocked,
+                ));
+            }
+            if scheduler_budget.is_none()
+                && wake_allowed
+                && let Some(wake) = board.idle_wake_ns()
+            {
+                let idle = match board.idle_to(wake) {
                     Ok(idle) => idle,
-                    Err(error) => break Err(failure(error)),
+                    Err(error) => return ControlFlow::Break(Err(failure(error))),
                 };
                 irq_counters.halt_wakes += 1;
                 irq_counters.halt_idle_ns += idle;
@@ -3096,10 +3183,10 @@ impl LoadedFirmwareBoard {
                 {
                     idle_ns_advanced = idle_ns_advanced.saturating_add(idle);
                 }
-                self.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
+                board.vcpus[BOOT_VCPU_INDEX].state.activity = Some(CpuActivity::Running);
                 remaining -= 1;
                 partial_rep = false;
-                continue;
+                return ControlFlow::Continue(());
             }
             let cpuid_divergence_leaf = match report.exit {
                 PagedCpl0SetExit::CpuidDivergence { leaf } => Some(leaf),
@@ -3118,18 +3205,20 @@ impl LoadedFirmwareBoard {
                 stop_reason.is_some(),
                 remaining,
                 report.instructions_executed,
-            ) || resumes_deadline_cut(
+            ) || resumes_budget_cut(
                 &report.exit,
-                cut_by_deadline,
+                shortened,
                 stop_reason.is_some(),
                 remaining,
                 report.instructions_executed,
             ) {
-                continue;
+                return ControlFlow::Continue(());
             }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
                 Ok(exit) => exit,
-                Err(error) => break Err(failure(error.into_board_error(self.state()))),
+                Err(error) => {
+                    return ControlFlow::Break(Err(failure(error.into_board_error(board.state()))));
+                }
             };
             let exit = match exit {
                 PagedProbeExit::Stopped
@@ -3142,26 +3231,98 @@ impl LoadedFirmwareBoard {
                 }
                 other => other,
             };
-            break Ok(FirmwareRunReport {
-                exit,
-                page_fault: report.page_fault,
-                memory_error: report.memory_error,
-                retired,
-                quanta,
-                com1: self.com1_log.clone(),
-                virtual_ns: self.clock().now_ns(),
-                tsc_hz: self.clock().tsc_hz(),
-                rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
-                rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
-                pit_port_b_reads: pit_port_b_reads_before
-                    .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
-                    .map(|(before, after)| after.saturating_sub(before)),
-                pit_counter_port_reads: pit_counter_port_reads_before
-                    .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
-                    .map(|(before, after)| after.saturating_sub(before)),
-                stop_reason,
+            ControlFlow::Break(
+                Ok(FirmwareRunReport {
+                    exit,
+                    page_fault: report.page_fault,
+                    memory_error: report.memory_error,
+                    retired,
+                    quanta,
+                    com1: board.com1_log.clone(),
+                    virtual_ns: board.clock().now_ns(),
+                    tsc_hz: board.clock().tsc_hz(),
+                    rdtsc_reads: rdtsc_tick.as_ref().map(|_| rdtsc_reads),
+                    rdtsc_reads_by_cpl: rdtsc_tick.as_ref().map(|_| rdtsc_reads_by_cpl),
+                    pit_port_b_reads: pit_port_b_reads_before
+                        .zip(pit.as_ref().map(Pit8254Handle::port_b_reads))
+                        .map(|(before, after)| after.saturating_sub(before)),
+                    pit_counter_port_reads: pit_counter_port_reads_before
+                        .zip(pit.as_ref().map(Pit8254Handle::counter_port_reads))
+                        .map(|(before, after)| after.saturating_sub(before)),
+                    stop_reason,
+                })
+                .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry)),
+            )
+        };
+        let result = if self.linux_interleaved
+            && instruction_budget != 0
+            && self.vcpus[BOOT_VCPU_INDEX].activity() == CpuActivity::Running
+        {
+            let stop_request = StopRequest::new();
+            let mut scheduler = SmpScheduler::new(
+                1,
+                // With one runnable vCPU the run budget and device deadlines limit each call.
+                // Partial REP returns consume turn steps without shrinking the retirement budget.
+                QuantumPolicy::Fixed(u64::MAX),
+                stop_request.clone(),
+            )
+            .expect("one vCPU and a nonzero instruction budget");
+            let mut outcome = None;
+            let schedule = match BoardSmpHost::new(
+                self,
+                |board: &mut Self, _, budget, stop: &mut dyn FnMut() -> bool| {
+                    let mut executed = Executed::default();
+                    let mut can_resume_halt = false;
+                    match run_quantum(
+                        board,
+                        Some(budget),
+                        stop,
+                        &mut executed,
+                        &mut can_resume_halt,
+                    ) {
+                        ControlFlow::Continue(()) => outcome = None,
+                        ControlFlow::Break(result) => {
+                            outcome = Some(result);
+                            if !can_resume_halt {
+                                stop_request.request();
+                            }
+                        }
+                    }
+                    Ok(executed)
+                },
+            ) {
+                Ok(mut host) => scheduler.run(&mut host, instruction_budget),
+                Err(error) => Err(SmpError::Host(error)),
+            };
+            let failure = |error| LinuxRunFailure { error, retired };
+            match schedule {
+                Ok(_) => outcome.unwrap_or_else(|| {
+                    Err(failure(FirmwareBoardError::Config(
+                        "Linux scheduler ended without a quantum result",
+                    )))
+                }),
+                Err(SmpError::Host(error)) => Err(failure(error)),
+                Err(SmpError::Clock(error)) => Err(failure(owner_error(error))),
+                Err(_) => Err(failure(FirmwareBoardError::Config(
+                    "Linux scheduler refused a quantum",
+                ))),
+            }
+            .map(|(mut run, detail, leaf, entry)| {
+                run.virtual_ns = self.clock().now_ns();
+                (run, detail, leaf, entry)
             })
-            .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
+        } else {
+            loop {
+                if let ControlFlow::Break(result) = run_quantum(
+                    self,
+                    None,
+                    &mut || false,
+                    &mut Executed::default(),
+                    &mut false,
+                ) {
+                    break result;
+                }
+            }
         };
         if let Some(observations) = execution_observations.as_mut() {
             observations.finish_elf_copy_run(
@@ -3725,6 +3886,7 @@ impl AssembledBoard {
             uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
+            linux_interleaved: false,
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
@@ -3797,6 +3959,7 @@ impl AssembledBoard {
             uart_ioapic_source: None,
             pit_ioapic_source: None,
             clock_driver: BoardClock::Standalone,
+            linux_interleaved: false,
             checkpoints: None,
             fetch_cache_report_enabled: false,
             fetch_cache_report: None,
@@ -7086,22 +7249,16 @@ mod tests {
             }
         );
         let budget = PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted);
-        assert!(resumes_deadline_cut(&budget, true, false, 5, 3));
-        assert!(!resumes_deadline_cut(&budget, false, false, 5, 3), "no cut");
+        assert!(resumes_budget_cut(&budget, true, false, 5, 3));
+        assert!(!resumes_budget_cut(&budget, false, false, 5, 3), "no cut");
+        assert!(!resumes_budget_cut(&budget, true, true, 5, 3), "guest stop");
+        assert!(!resumes_budget_cut(&budget, true, false, 0, 3), "no budget");
         assert!(
-            !resumes_deadline_cut(&budget, true, true, 5, 3),
-            "guest stop"
-        );
-        assert!(
-            !resumes_deadline_cut(&budget, true, false, 0, 3),
-            "no budget"
-        );
-        assert!(
-            !resumes_deadline_cut(&budget, true, false, 5, 0),
+            !resumes_budget_cut(&budget, true, false, 5, 0),
             "no progress"
         );
         let tick = PagedCpl0SetExit::Run(RunExit::StopRequested);
-        assert!(!resumes_deadline_cut(&tick, true, false, 5, 3));
+        assert!(!resumes_budget_cut(&tick, true, false, 5, 3));
     }
 
     #[test]
