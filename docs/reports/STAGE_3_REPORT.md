@@ -1424,11 +1424,34 @@ The same executable passed the pipe `EMFILE` and lost-reader cases.
 [Native observation](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-observation.json)
 [Build and signature provenance](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-provenance.txt)
 
+### Expanded local and VMHost selectors on M1 Pro
+
+Both selectors passed on clean `2e9b601` using the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4 and Rust and Cargo 1.99.0. Both runs recorded
+the same start and end source fingerprint
+`cff2d326879a8c51215665664cf5fc9b26c37e276449c8072f4b6c3b20d7b69e`
+and input manifest SHA-256
+`a50fabd672192219814115b17d4f54f3e66854728187c6bb648680d747e64fb0`.
+[Toolchain receipt](data/stage3/s3-41-m1pro-2e9b601-20261119/host.log)
+
+| Selector | Run | Passed |
+| --- | --- | ---: |
+| `local` | `stage3-20261119-230848-3c79fbb7c8` | 360/360 |
+| `vmhost-process` | `stage3-20261119-232128-871eaad8e2` | 46/46 |
+
+The local selector passed the new mixed-register corpus and the reducer
+self-check. The process selector passed the generated-fault case. Archive
+verification checked all 406 selected step logs and 58 child logs against
+their recorded hashes.
+
+- Local archive with 416 files, SHA-256 `58ff6d481de3ef16ad47b3f922266112c8ca8a8ca10411fbf3aa8f4bcbf12f31`. [Local archive](data/stage3/s3-41-m1pro-2e9b601-20261119/local-360.json.gz)
+- VMHost archive with 174 files, SHA-256 `2df8f440f66c0e5f6a19506100280bf5f76bbb565b2348e7afee856e93b41cad`. [VMHost archive](data/stage3/s3-41-m1pro-2e9b601-20261119/vmhost-process.json.gz)
+
 ### Hardware acceptance
 
-The M1 Pro passed both ARM64 selectors on `d48eef9` and passed the
-signed native C ABI cases for concurrent wait, lost notification and
-pipe creation failure.
+The M1 Pro passed both ARM64 selectors on `2e9b601`. The separate signed
+native C ABI cases for concurrent wait, lost notification and pipe creation
+failure passed against `d48eef9`.
 The Mac mini configuration, native execution on physical x86 and
 final S3-41 acceptance remain open.
 
