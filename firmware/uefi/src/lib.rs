@@ -29,6 +29,7 @@ mod nvme;
 pub mod paging;
 pub mod pe;
 pub mod rt;
+pub mod secure_boot;
 pub mod smbios;
 pub mod stop;
 pub mod tpm;

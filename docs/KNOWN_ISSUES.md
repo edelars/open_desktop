@@ -6402,3 +6402,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-19, `od-tpm`, `TPM_CAP_COMMANDS` и приёмка фазы B.
 - **Основание.** Независимое ревью сравнило объявленные 60 команд с §5.2, таблица 16 PC Client PTP 1.07. Среди отсутствующих обязательных команд есть `ActivateCredential`/`MakeCredential`, `Duplicate`/`Import`, `ObjectChangeAuth`, `PolicySigned`, `PolicyTicket`, `PolicyLocality`, `PolicyNV`, `PolicyCpHash` и `PolicyNameHash`. `PCR_Allocate` в текущем профиле отклоняется. [PC Client PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md), [VTPM](specs/VTPM.md).
 - **Статус и следующий шаг.** Открыто. Зафиксировать инвентарь требований Table 16 с условиями и Errata 1.1, сверить его с принятым набором алгоритмов и режимов. Закрыть применимые пропуски отдельными проверяемыми срезами. Расхождения между обязательным PTP и целевым алгоритмическим профилем требуют согласования требований и отражения в ADR до полной приёмки S7-23.
+
+<a id="issue-530"></a>
+
+### ISSUE-530 — S7-24: граница защиты переменных Secure Boot в NVRAM
+
+- **Дата и компонент.** 2026-11-19, `NvramDevice`, runtime variable services, платформа UEFI.
+- **Основание.** Текущий прямой путь MMIO `WRITE` → `FLUSH` принимает новый снимок целиком. CRC проверяет целостность передачи и банка. Гостевой код с доступом к MMIO может заменить или удалить `PK` и `dbx`, минуя будущую проверку Auth2 в `SetVariable`. UEFI требует защищённое от подмены хранение этих переменных. [NVRAM](specs/NVRAM_DEVICE.md#устройство), [UEFI 2.11 §§32.3 и 32.7](https://uefi.org/specs/UEFI/2.11/32_Secure_Boot_and_Driver_Signing.html).
+- **Статус и следующий шаг.** Блокирует приёмку Secure Boot. Защитить изменения политики на границе host-owned NVRAM. Для authenticated update проверять подпись и текущий timestamp на защищённом пути коммита, применять совместно с новым значением. Обычные записи должны сохранять защищённые данные побайтно. Проверить прямой MMIO, отказ с сохранением активного банка, rollback timestamp, штатный вызов до и после EBS и восстановление снимка.

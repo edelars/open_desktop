@@ -1,0 +1,15 @@
+# Публичные данные для Secure Boot
+
+Получены 2026-11-19 из Microsoft Secure Boot Objects, тег `v1.7.2` (выпуск 2026-11-02). UEFI Forum указывает этот репозиторий как источник `KEK`, `db` и `dbx`. Данные распространяются с исходным текстом лицензии. [Microsoft v1.7.2](https://github.com/microsoft/secureboot_objects/releases/tag/v1.7.2), [UEFI Forum](https://uefi.org/revocationlistfile), [лицензия](LICENSE-Microsoft-Secure-Boot-Objects.txt).
+
+| Файл | Назначение | SHA-256 | Путь в источнике |
+|---|---|---|---|
+| `windows-production-pca-2011.der` | `db`, Microsoft Windows Production PCA 2011 | `e8e95f0733a55e8bad7be0a1413ee23c51fcea64b3c8fa6a786935fddcc71961` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/DB/Certificates/MicWinProPCA2011_2011-10-19.der) |
+| `windows-uefi-ca-2023.der` | `db`, Windows UEFI CA 2023 | `076f1fea90ac29155ebf77c17682f75f1fdd1be196da302dc8461e350a9ae330` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/DB/Certificates/windows%20uefi%20ca%202023.der) |
+| `microsoft-uefi-ca-2011.der` | `db`, Microsoft Corporation UEFI CA 2011 | `48e99b991f57fc52f76149599bff0a58c47154229b9f8d603ac40d3500248507` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/DB/Certificates/MicCorUEFCA2011_2011-06-27.der) |
+| `microsoft-uefi-ca-2023.der` | `db`, Microsoft UEFI CA 2023 | `f6124e34125bee3fe6d79a574eaa7b91c0e7bd9d929c1a321178efd611dad901` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/DB/Certificates/microsoft%20uefi%20ca%202023.der) |
+| `microsoft-kek-ca-2011.der` | `KEK`, Microsoft Corporation KEK CA 2011 | `a1117f516a32cefcba3f2d1ace10a87972fd6bbe8fe0d0b996e09e65d802a503` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/KEK/Certificates/MicCorKEKCA2011_2011-06-24.der) |
+| `microsoft-kek-ca-2023.der` | `KEK`, Microsoft Corporation KEK 2K CA 2023 | `3cd3f0309edae228767a976dd40d9f4affc4fbd5218f2e8cc3c9dd97e8ac6f9d` | [Microsoft DER](https://github.com/microsoft/secureboot_objects/blob/v1.7.2/PreSignedObjects/KEK/Certificates/microsoft%20corporation%20kek%202k%20ca%202023.der) |
+| `dbx-x64-v1.7.2.bin` | `dbx`, исходный x64 `EFI_SIGNATURE_LIST` | `7fbf186e4d045556ed92f449234606943006a105d11d078b9271a794225fd338` | `MicrosoftOnly/Firmware/DefaultDbx.bin` из [архива Microsoft](https://github.com/microsoft/secureboot_objects/releases/download/v1.7.2/edk2-x64-secureboot-binaries.tar.gz) |
+
+SHA-256 архива `96d02ae9e691f0f34f1369cb266235cabdf8a6812ba462f723f961ea2c9719a7` совпал с опубликованным digest. Извлечённый `dbx` содержит 445 SHA-256 записей в 21 388 байтах. Все шесть DER прочитаны OpenSSL 4.1.0 и содержат открытые ключи RSA-2048. [Метаданные выпуска](https://api.github.com/repos/microsoft/secureboot_objects/releases/tags/v1.7.2).
