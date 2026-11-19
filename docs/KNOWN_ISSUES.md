@@ -1894,11 +1894,11 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 ### ISSUE-066 — S7-16: обязательные log pages и проверка соответствия NVMe
 
-- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Статус частично исправлено, сверка открыта.
+- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Закрыто в заявленном минимальном профиле S7-16.
 - **Исходное расхождение.** Figure 31 Base 2.4 требует для I/O controller страницы Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Ранее профиль предоставлял только `0x01`–`0x03`, и гость не получал сведения о поддерживаемых командах, журналах и features. [NVMe Base 2.4, Figure 31](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=74).
 - **Исправление.** Добавлены три страницы. Тесты через `MachineBus` проверяют все записи, `LPA` в Identify Controller, допустимые `NSID`, смещения и запрос длиннее страницы в пределах `MDTS`. [Контракт Get Log Page](specs/NVME_DEVICE.md#92-get-log-page).
 - **Исправление длины и области действия.** Figure 204 допускает запрос длиной больше страницы. Модель возвращает данные страницы и нулевой хвост в пределах `MDTS` для всех поддерживаемых страниц. Error Information требует controller scope по Figure 209. Тест `log_pages_check_supported_id_scope_and_offset` проверяет чтение 1024 байт со страницы SMART длиной 512 байт и отказ с `Invalid Field` для Error Information при `NSID = 1`. [Base 2.4, с. 213–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239).
-- **Остаток проверки PCI.** MSI-X проверен через `MachineBus` до IRR второго vCPU. Поддерживаемая форма — Fixed edge с физическим xAPIC ID. Фактический выбор режима и доставка прерывания драйверу в загруженном госте остаются непроверенными. [Контракт прерываний](specs/NVME_DEVICE.md#31-прерывания-pci).
+- **Гостевая проверка PCI.** Драйвер Linux `nvme` прочитал 4 096 байт с совпадением по RAW. В `/proc/interrupts` подтверждены MSI-X для Admin и I/O. Поддерживаемый маршрут — Fixed edge с физическим xAPIC ID. [Отчёт](reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 - **Исправление Error Information.** Ошибочный CQE и соответствующая запись содержат общий бит `More`. Сброс очищает записи, сохраняя идентификатор последней ошибки и суммарный счётчик SMART. У ошибки doorbell без команды `SQID = CID = 0xFFFF`. [Base 2.4, §5.2.13.1.2 и Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=244).
 - **Исправление арбитража.** Контроллер обслуживает по одной команде каждой активной SQ, включая Admin SQ. Тест через `MachineBus` проверяет точный порядок шести CQE из трёх очередей. [Отчёт](reports/STAGE_7_REPORT.md#арбитраж-round-robin).
 - **Исправление Identify.** Добавлены обязательные CNS `0x05`–`0x08` для единственного NVM namespace. Бит `VWC.VWCP` остаётся нулём, `VWC.FB = 10b` явно сообщает об отказе на широковещательный `Flush`. [Отчёт](reports/STAGE_7_REPORT.md#структуры-identify-для-nvm).
@@ -1906,7 +1906,7 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 - **Диагностика команды.** Журнал записывает применимый байт и бит поля SQE и первый недопустимый LBA для `LBA Out of Range`. Для doorbell вне команды `Parameter Error Location = 0xFFFF`. [Отчёт](reports/STAGE_7_REPORT.md#поле-параметра-и-lba-в-журнале-ошибок).
 - **Пороги и события.** Настройки Temperature Threshold влияют на SMART.TTC и условное уведомление AER. Чтение связанного журнала очищает ожидающий AER event при `RAE = 0`. [Отчёт](reports/STAGE_7_REPORT.md#пороги-температуры-и-smart-aer).
 - **Согласованность Identify.** VID и SSVID берутся из PCI Configuration Header. Фиксированный MMIO-профиль сохраняет нулевые значения. [Отчёт](reports/STAGE_7_REPORT.md#идентификаторы-pci-в-identify-controller).
-- **Следующий шаг.** Проверить прерывания в госте и применимость оставшихся расширенных полей Error Information. Размеры записей очередей исправлены отдельно. [Пункты сверки](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно), [ISSUE-519](#issue-519).
+- **Приёмка.** Ревью минимального профиля подтверждено после гостевого повтора на `74581ed`. Ограничения телеметрии и статусных полей описаны в [NVME_DEVICE.md](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно). FLR для полного PCIe-профиля отслеживается в [ISSUE-521](#issue-521).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
@@ -6336,3 +6336,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-18, `od-tpm`, проверка `authHandle` команды `PolicySecret`. Закрыто.
 - **Основание и последствие.** TPM Library требует `userWithAuth = SET` у обычного объекта и `TPMA_NV_AUTHREAD = SET` у поддерживаемых непиновых NV-индексов. Ранее policy-авторизация объекта и парольная авторизация индекса могли пройти при сброшенном бите. [TPM Library v185 Part 3, §23.4.1, Table 146](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=218).
 - **Исправление и проверка.** На этапе получения `authValue` обычный объект проходит общую проверку `userWithAuth`, а NV-индекс — проверку `AUTHREAD`. Тесты проверяют отказ и сохранение digest при сброшенном бите, успех при выставленном бите и авторизацию иерархий. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-521"></a>
+
+### ISSUE-521 — NVMe PCIe: отсутствует Function Level Reset
+
+- **Дата и компонент.** 2026-11-18, `od-machine`, PCI-профиль NVMe. Открыто.
+- **Основание и последствие.** Цепочка PCI capabilities содержит MSI-X. PCI Express Device Capabilities для FLR и обработка Initiate FLR отсутствуют. Для полного NVMe over PCIe Transport 1.4 требуется Function Level Reset. Принятый S7-16 охватывает минимальную модель регистров, очередей и прерываний. [PCIe Transport 1.4, §3.8.5.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=26).
+- **Следующий шаг.** Реализовать capability и согласовать сброс PCI-функции с очередями, MSI-X и backend при расширении PCIe-профиля. Проверить чтение capability и reset через обычный гостевой путь PCI.

@@ -3497,9 +3497,11 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   возникает, пока листья ROM помечены NX.
 - Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
   ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
-  NVMe: PCI-привязка и прерывания (S7-16: срезы A и B выполнены, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
   UUID/серийного номера из командной строки runner (используются значения по
   умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
+  Базовый firmware-профиль NVMe использует фиксированное MMIO. Опциональная
+  PCI-привязка описана ниже в разделе «NVMe controller».
 - Расширение handoff block (новые поля и устройства) повышает `version_minor`
   по правилам раздела 6.4 FIRMWARE_BOOT.md; машина выдаёт v1.0 и принимает образы
   с любым `handoff_minor_max`; v1.1 (запись NVMe) — только при `FirmwareBoardConfig::nvme = Some(..)`
@@ -3512,9 +3514,10 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 ## NVMe controller (S7-16, срезы A и B)
 
-**Статус.** Реализованы управление, ввод-вывод `Read`, `Write`, `Flush` и PCI-прерывания в opt-in профиле. Контракт устройства,
-регистры, команды, границы, разрывы и значения без сверки со спецификацией —
-[NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
+**Статус.** Минимальный S7-16 принят. Реализованы управление и ввод-вывод
+`Read`, `Write`, `Flush`. В opt-in PCI-профиле подтверждены чтение и MSI-X
+в запущенном Linux. Контракт устройства и его границы описаны отдельно.
+Код находится в `crates/od-machine/src/nvme/`. [NVME_DEVICE.md](NVME_DEVICE.md) · [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 
 - **Шина.** В firmware-профиле контроллер занимает регион `[0xFC00_1000, 0xFC00_3000)`. В PCI-профиле `MachineBus` открывает BAR0/1 `[0xFC00_4000, 0xFC00_8000)` через MMIO, включая таблицу MSI-X и PBA.
   Ошибки доступа к окну — `DeviceError` по классам контракта шины:

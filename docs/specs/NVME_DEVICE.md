@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx и пятью векторами MSI-X. Постоянный RAW backend реализован в `od-host` (раздел 14). Добавлены страницы журналов `0x00`, `0x05` и `0x12`. Открыты проверка драйвера в запущенном госте и оставшаяся сверка по разделу 11.
+**Статус S7-16: принят минимальный профиль.** Реализованы регистры, admin-очереди и Admin-команды, `Read`, `Write`, `Flush` и подключение backend. Фиксированное firmware MMIO использует опрос. Опциональный PCI endpoint использует INTx и пять MSI-X векторов. Драйвер Linux подтвердил чтение RAW и MSI-X для Admin и I/O. [Гостевая проверка](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux) · [Границы приёмки](../reports/STAGE_7_REPORT.md#границы-приёмки-s7-16).
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -8,7 +8,7 @@
 
 Редакция по плану: NVM Express Base Specification 2.4, NVM Command Set Specification 1.3, NVMe over PCIe Transport Specification 1.4 (ratified 2026-07-31, [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md)).
 
-На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`. Их форматы и объявление поддержки в Identify Controller сверены по разделу 9.2. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
+На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`. Их форматы и объявление поддержки в Identify Controller сверены по разделу 9.2. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Сверка принятых функций отражена в разделах по регистрам, очередям, Identify, Features, журналам и I/O.
 
 Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Figure 41 связывает допустимые `CC.IOSQES` и `CC.IOCQES` с SQES/CQES в Identify Controller. Таблицы статусов Create I/O CQ и Create I/O SQ относят `Invalid Queue Size` к неинициализированному `CC.IOCQES` и `CC.IOSQES` соответственно. Модель проверяет соответствующее поле при обработке каждой команды. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85), [Figure 574](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=554), [Figure 579](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=557), [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
 
@@ -34,7 +34,7 @@
 - смещения Identify Controller и Identify Namespace;
 - смещения Error log, SMART, Firmware Slot log.
 
-**Оставшиеся вопросы сверки:** коды AER info 0 и 1; правила PRP; значения features по умолчанию; поведение при ошибках; обязательность Admin-команд; `VS` 2.0.0 против 2.4.0. Пометки в заголовках `controller.rs`, `admin.rs` и `queues.rs` отражают первоначальную сверку и будут уточнены при изменении кода. Наименее надёжные места перечислены в разделе 11.
+Сверка обязательных Admin-команд, Identify и features для принятого профиля приведена в разделах 7–9. Подробности по остающимся краевым случаям PRP и статусам собраны в разделе 11.
 
 ## 2. Размещение и handoff block
 
@@ -42,7 +42,7 @@
 - **Handoff block.** В v1.0 поля NVMe нет (коды 8–15 зарезервированы). Поэтому устройство добавляется как запись кода 8 и повышает `version_minor` до 1 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) 6.3–6.4): `PRESENT = 1`, MMIO, `base = 0xFC00_1000`, `length = 0x2000`, `gsi = 0xFFFF_FFFF` (нет IRQ), `irq_flags = 0`, `param0 = param1 = 0`; в таблицу регионов добавляется регион `MMIO` с `owner_device = 7`.
 - **Включается опционально:** `FirmwareBoardConfig::nvme: Option<NvmeConfig>`. По умолчанию `None`: handoff остаётся v1.0 байт в байт (эталон `REFERENCE_HANDOFF_HEX` не менялся), окна нет, `Unmapped`. При `Some` образ обязан объявлять `handoff_minor_max ≥ 1`, иначе загрузка отклоняется (`ImageHeader { field: "handoff_minor_max" }`). Прошивка в репозитории (`firmware/uefi`) пока понимает только minor 0 и NVMe-запись не читает — это работа S7-17.
 - Устройство подключается к шине только когда запись PRESENT; без конфигурации оно не существует и не объявляется.
-- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_8000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера в запущенном госте ещё не проверялась.
+- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_8000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера, чтение и MSI-X подтверждены в запущенном Linux. [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 
 ### 3.1. Прерывания PCI
 
@@ -59,7 +59,7 @@ Admin CQ использует вектор 0, I/O CQ выбирает векто
 - завершение команды видно гостю не сразу после записи в doorbell, а после ближайшего `service`; драйвер, который опрашивает фазовый бит в CQ (прошивка), это допускает; время виртуальной машины между doorbell и completion не моделируется;
 - все команды исполняются полностью внутри одного `service`; поэтому `Abort` никогда не находит команду в работе (раздел 7), а AER — единственный вид команды, который остаётся невыполненным;
 - DMA разрешён только в RAM (`MemoryRegionKind::Ram`); PRP, указывающий в MMIO (в том числе в окно самого NVMe), ROM, framebuffer или вне карты, — `Data Transfer Error` команды, а не доступ и не паника. Записи в RAM сообщают диапазон в `committed_write`, как любые другие записи гостевой RAM.
-- **Разрыв в тестах (не код).** Путь «гость пишет doorbell → квант останавливается по `doorbell_pending` → `service` между квантами» тестом не покрыт. Причина: интерпретатор поддерживает 64-битный `mov [rbx], rcx`, а doorbell — 32-битный регистр (`Dword`), поэтому гость-тест не может записать doorbell. Doorbell гостем end-to-end не тестируется. Покрыто: `service` на стороне хоста (`run_boot_executes_commands_submitted_before_the_guest_starts` — команды, поданные до старта гостя) и запись в doorbell через шину в тестах модуля `nvme`.
+- **Проверка doorbell.** Драйвер Linux публикует команды Admin и I/O через doorbells PCI-профиля. В госте получены завершения и проверено чтение RAW. `run_boot_executes_commands_submitted_before_the_guest_starts` отдельно проверяет в firmware-профиле команды, поданные до старта гостя. [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 - Очередь SQ/CQ в не-RAM (ASQ/ACQ, I/O-очереди) обнаруживается при обращении: ошибка чтения SQE или записи CQE переводит контроллер в `CSTS.CFS = 1`; выход — сброс (`CC.EN = 0`).
 
 ## 4. Регистры контроллера
@@ -243,7 +243,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Device Self-test, Format NVM, Sanitize, Security Send/Receive, Keep Alive, Directives, Virtualization, Doorbell Buffer Config | вне scope; `Invalid Command Opcode` |
 | SGL | вне scope; `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Прерывания в профиле firmware MMIO | `gsi = 0xFFFF_FFFF`. Прошивка опрашивает CQ |
-| Доставка MSI-X в PCI-профиле | Fixed edge в физический xAPIC ID. Гостевые драйверы и другие форматы сообщений остаются непроверенными |
+| Доставка MSI-X в PCI-профиле | Fixed edge в физический xAPIC ID. Linux подтвердил сообщения обоих используемых векторов через `/proc/interrupts`. Другие форматы сообщений вне принятого профиля |
 | Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
 | `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR | вне реализованного профиля; `CAP` их не объявляет |
@@ -252,12 +252,12 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 ## 11. NOT VERIFIED: места, где расхождение наиболее вероятно
 
-Сверка с Linux `nvme.h` (раздел 1) не заменяет сверку с текстом NVMe Base 2.4; NOT VERIFIED остаётся всё, что в разделе 1 не перечислено как сверенное. Особо проверить при сверке:
+Здесь перечислены оставшиеся вопросы для расширения профиля и более широкой проверки соответствия. Приёмка минимального профиля охватывает команды, регистры и сценарии, указанные в плане S7-16. Подтверждённые результаты описаны в соответствующих разделах и отчёте.
 
 - положение и значения полей `CAP` (`MQES`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
 - битовые поля `CC`, `CSTS`, `AQA` и поведение при недопустимых значениях `CC` (здесь — `CSTS.CFS = 1`, `RDY = 0`) и при записи `AQA/ASQ/ACQ` при `CC.EN = 1` (здесь — `Busy` на шине, без эффекта);
 - смещения и размеры остальных полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`. Применимые `CNS 0x00`–`0x03` и `0x05`–`0x08` сверены в Figure 336;
-- перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
+- подробная сверка `SEL` и сохранения feature-значений при расширении выявленных возможностей. Обязательные Admin-команды и features для принятого контроллера перечислены в разделах 7 и 9.1;
 - коды статусов и их SCT, особенно `PRP Offset Invalid`, `Invalid Interrupt Vector`, `Invalid Queue Deletion`, порядок проверок при создании очередей, `DNR`;
 - применимость прочих расширенных полей Error Information к отдельным ошибкам и сохранение счётчиков через новый экземпляр контроллера. Проверенные поля `Parameter Error Location` и `LBA` описаны в разделе 9.2;
 - расширенные правила AER для других типов событий вне текущего профиля. Маскирование и `RAE` для Error и SMART описаны в разделе 9.3;
@@ -270,12 +270,12 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 **Открытые вопросы среза A (для ревью и S7-17):**
 
 1. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
-2. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
+2. Doorbells проверены в госте в профиле PCI. [Отчёт](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 3. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
 
 ## 12. Проверка
 
-`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, три log page, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды; путь «гость пишет doorbell → остановка кванта → `service`» end-to-end не покрыт, раздел 3). Срез B: тесты `nvme/tests.rs` (раздел «I/O») и `nvme/backend.rs`, `nvme/queues.rs` (`read_from_host`): Write → Read через PRP1+PRP2 и PRP list, максимум 1 MiB, Flush, LBA/NSID/NLB/поля/PRP-ошибки, ошибка backend, нет backend, полная CQ, отсутствующая SQ, счётчики SMART. Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
+`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, шесть log pages, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды, проверены ECAM, BAR и PCI-прерывания). Срез B: тесты `nvme/tests.rs` (раздел «I/O») и `nvme/backend.rs`, `nvme/queues.rs` (`read_from_host`): Write → Read через PRP1+PRP2 и PRP list, максимум 1 MiB, Flush, LBA/NSID/NLB/поля/PRP-ошибки, ошибка backend, нет backend, полная CQ, отсутствующая SQ, счётчики SMART. Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
 
 ## 13. Срез B: I/O
 
@@ -335,8 +335,8 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Namespace Management, несколько NS, широковещательный `NSID = 0xFFFF_FFFF` | вне scope; Flush на `0xFFFF_FFFF` отвергается |
 | SGL | `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Файловый/CoW backend | вне `od-machine` (`od-storage`) |
-| Прерывания | нет IRQ-маршрута, прошивка опрашивает CQ; `IEN` хранится без эффекта |
-| PCI-привязка | S4-30 |
+| Прерывания | Firmware MMIO опрашивает CQ. PCI использует `IEN` для INTx или MSI-X в границах раздела 3.1 |
+| PCI-привязка | Opt-in Linux direct boot использует класс `010802`, BAR0/1, INTx и MSI-X. FLR отслеживается отдельно в [ISSUE-521](../KNOWN_ISSUES.md#issue-521) |
 | Атомарность записи (`AWUN`/`AWUPF`), `Write Atomicity` | команда в `service` исполняется целиком; гарантии для гостя нет в обозначенных границах, поля не объявлены |
 | Время исполнения, ограничение скорости | нет |
 | I/O без созданной SQ | `Invalid Queue Identifier` невозможна: doorbell несозданной SQ даёт событие среза A (invalid doorbell register); `Invalid Queue Identifier` проверяется на Delete SQ несозданной очереди |
@@ -347,12 +347,11 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 2. Точный статус для ненулевых полей защиты данных в `Read`/`Write` при формате LBA без метаданных и защиты данных.
 3. `Flush` с `NSID = 0` и поведение `Flush` без volatile write cache (`VWC.VWCP = 0`). Отказ для `NSID = 0xFFFF_FFFF` сверён с объявленным `VWC.FB = 10b`.
 4. Порядок проверок (`Namespace Not Ready` после `NSID`, до полей), `MDTS`: статус при превышении (`Invalid Field`).
-5. Единицы и округление `Data Units Read/Written` в SMART.
-6. Обязательность `Write Zeroes`/`Dataset Management` для заявляемого профиля и требования `stornvme`/Linux к ним (первые кандидаты в дефекты после сверки).
+5. Округление `Data Units Read/Written` сверено с Figure 213. `Write Zeroes` и `Dataset Management` — необязательные команды выбранного NVM-профиля. Проверка операционной системы Windows относится к S7-32.
 
 ## 14. Постоянный backend на стороне host (S5-02)
 
-**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Он не принимает `S7-16`, не меняет его регистры/Identify/команды и не заменяет end-to-end guest storage/flush gate [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
+**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Приёмка минимального S7-16 описана в начале документа. Сквозная проверка guest storage и `Flush` относится к [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
 
 ### 14.1. Состав и владение
 
