@@ -1043,6 +1043,14 @@ loops. Those loops still favored the interpreter. The signed process suite
 passed 46/46 with the measured patch.
 [S3-36h report and raw evidence](STAGE_3_S3-36h_2026-11-19.md)
 
+S3-35f repeated the cold measurement on the dispatcher revision used in
+S3-36h. The JIT still beat the interpreter on the 64- and 4096-iteration
+one-RIP profiles in every pair. Relative to the previous dispatcher, the
+normalized ratios stayed below 1 in each of four rounds for the long
+one-RIP profile and the two-RIP controls. The other three ranges crossed
+parity. Both two-RIP profiles remained slower than the interpreter.
+[S3-35f report and raw evidence](STAGE_3_S3-35f_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

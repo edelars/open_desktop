@@ -1432,6 +1432,15 @@ launch has its own S3-35d measurement. The archive contains the fixed-call
 schedule, signed build provenance, raw times and the offline audit.
 [Report and reproduction](../reports/STAGE_3_S3-35e_2026-11-19.md)
 
+### S3-35f. Cold first RUN after the cache-index change
+
+The same cold driver and six profiles compare `06bb39a` with `2b0f598`.
+Four process rounds balance execution order and retain 32 paired cold
+samples per build and profile. Each pair checks the published work,
+architectural state and retirement. The archive contains the build
+scripts, fixed schedule, raw data and offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-35f_2026-11-19.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter
