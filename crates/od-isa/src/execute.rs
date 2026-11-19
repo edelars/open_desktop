@@ -44694,6 +44694,8 @@ fn step_configured(
         | Operation::LockSubMem { .. }
         // S4-38L7ai: and for LOCK ADD m32/m64, r32/r64.
         | Operation::LockAddMemReg { .. }
+        // S6-21: LOCK SUB m64, r64.
+        | Operation::LockSubMemReg { .. }
         // S4-38L7ag/S6-21: LOCK AND m8 or m64, imm8.
         | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
@@ -58826,6 +58828,7 @@ fn step_configured(
         | Operation::LockAddMem { .. }
         | Operation::LockSubMem { .. }
         | Operation::LockAddMemReg { .. }
+        | Operation::LockSubMemReg { .. }
         | Operation::LockXaddMem { .. }
         // S4-38L9g: and for XADD m32/m64 with a DS override, without LOCK.
         | Operation::XaddDsMem { .. }
@@ -65368,35 +65371,24 @@ fn transfer(
         Operation::LockAddMemReg {
             destination,
             source,
+        }
+        | Operation::LockSubMemReg {
+            destination,
+            source,
         } => {
-            // S4-38L7ai: as LockAddMem, with a register addend (read before the access, masked
-            // to the operand width by the register view). One `atomic_rmw_integer` call (S6-20).
-            // The address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
-            // resolved before any access (a RIP-relative operand is relative to the end of the
-            // instruction). The sum is written back even for a zero addend; the flags commit
-            // only after the call succeeded, so a faulting write leaves memory and flags
-            // untouched. Nothing is written to a register.
-            let addend = state.read(source);
+            let kind = if matches!(operation, Operation::LockSubMemReg { .. }) {
+                ArithmeticKind::Sub
+            } else {
+                ArithmeticKind::Add
+            };
+            let operand = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
-                arithmetic_result(
-                    destination.size,
-                    ArithmeticKind::Add,
-                    old,
-                    addend,
-                    rflags,
-                ).0
+                arithmetic_result(destination.size, kind, old, operand, rflags).0
             })?;
-            // The flags are a function of the returned old value and the operand, computed outside
-            // the closure: `update` stays a pure function (GuestMemory::atomic_rmw_integer).
-            let (_, flags) = arithmetic_result(
-                    destination.size,
-                    ArithmeticKind::Add,
-                    old,
-                    addend,
-                    rflags,
-                );
+            // Use the old value that the atomic update actually replaced.
+            let (_, flags) = arithmetic_result(destination.size, kind, old, operand, rflags);
             state.rflags = flags;
         }
         Operation::LockXaddMem {
@@ -77145,6 +77137,83 @@ mod tests {
         assert_eq!(bare, before_bare);
         assert!(memory.atomic_rmws.is_empty());
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn lock_sub_qword_register_uses_one_atomic_rmw_and_commits_only_on_success() {
+        let bytes = [0xf0, 0x48, 0x29, 0x42, 0x28];
+        let mut initial = LongModeState {
+            cr0: Some(Cr0Profile::BASE),
+            cr4: Some(Cr4Profile::BASE),
+            sti_shadow: Some(crate::StiShadow::Clear),
+            activity: Some(crate::CpuActivity::Running),
+            rflags: 0x0cd7,
+            ..LongModeState::default()
+        };
+        initial.gpr[Register::Rdx as usize] = 0xfe0;
+        initial.gpr[Register::Rax as usize] = 0x8000_0000_0000_0001;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+        let config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        };
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1008),
+        };
+        for injected_fault in [None, Some(fault)] {
+            let mut memory = Memory::new(&bytes);
+            memory.bytes[8..16].fill(0);
+            memory.atomic_error = injected_fault.clone().map(MemoryError::Architectural);
+            let mut expected_ram = memory.bytes.clone();
+            let mut state = initial.clone();
+            let run = run_with_cpl0_profile_set(
+                &mut state,
+                &mut memory,
+                config,
+                crate::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            )
+            .unwrap();
+            if let Some(fault) = injected_fault {
+                assert_eq!(run.exit, Cpl0ProfileSetExit::Run(RunExit::Fault(fault)));
+                assert_eq!(run.instructions_executed, 0);
+                assert_eq!(state, initial);
+            } else {
+                assert_eq!(
+                    run.exit,
+                    Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                );
+                assert_eq!(run.instructions_executed, 1);
+                assert_eq!(state.rip, bytes.len() as u64);
+                assert_eq!(state.rflags, 0x0402 | crate::CF | crate::AF | crate::PF);
+                assert_eq!(state.gpr, initial.gpr);
+                expected_ram[8..16].copy_from_slice(&0x7fff_ffff_ffff_ffffu64.to_le_bytes());
+            }
+            assert_eq!(memory.atomic_rmws, [(0x1008, OperandSize::Qword)]);
+            assert_eq!(memory.bytes, expected_ram);
+        }
+
+        let bare_initial = LongModeState {
+            gpr: initial.gpr,
+            ..LongModeState::default()
+        };
+        let mut bare = bare_initial.clone();
+        let mut memory = Memory::new(&bytes);
+        assert_eq!(
+            step(&mut bare, &mut memory, context),
+            Ok(StepOutcome::Unsupported { opcode: 0x29 })
+        );
+        assert_eq!(bare, bare_initial);
+        assert!(memory.atomic_rmws.is_empty());
     }
 
     #[test]
