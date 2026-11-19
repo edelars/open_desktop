@@ -1,0 +1,24 @@
+{
+  "commit": "e42b4b1",
+  "runner_sha256": "2aa26806f4ad2d90097b643121426e13aeecc5ad15daa132752cd992bee29e8f",
+  "report_sha256": "85a0594273f378c2814e6628837dc944cf6cfa8dc28d8eb984189891e2c69d2b",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "9fc785549a0644840659a4a99f459f79508fd3f118214166684be66ff0675f9c",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "busybox_entry": "0x4c7c80",
+  "busybox_stop_file_offset": "0xc7c89",
+  "nonce": "s6-compute-up20261119",
+  "seed": 24301,
+  "retired": 2394020543,
+  "retired_cpl3": 3,
+  "rip": "0x4c7c89",
+  "rip_gpa": "0x7d92c89",
+  "rip_bytes": "5e 48 89 e2 48 83 e4 f0 50 54 45 31 c0 31 c9 48",
+  "exit_detail": "Unsupported { opcode: 94 }",
+  "compute_timing": {
+    "boundary": "com1_line_publication",
+    "status": "incomplete"
+  },
+  "guest_verifier": "expected one ordered compute result with matching nonce, source, blocks and checksum"
+}

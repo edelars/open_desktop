@@ -2091,6 +2091,72 @@ fn run3_data(
 
 const DATA: u64 = 0x0060_1000;
 
+#[test]
+fn cpl3_pop_register_reads_one_qword_and_commits_the_stack_pointer() {
+    const VALUE: u64 = 0x0000_7fff_a1b2_c3d4;
+    let mut initial = user_state();
+    initial.gpr[Register::Rsp as usize] = DATA;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    for (code, register) in [
+        (&[0x5e][..], Register::Rsi),
+        (&[0x41, 0x5e][..], Register::R14),
+        (&[0x5c][..], Register::Rsp),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        for (offset, byte) in VALUE.to_le_bytes().into_iter().enumerate() {
+            memory = memory.with_user(DATA + offset as u64, byte);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = initial.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rsp as usize] += 8;
+        expected.gpr[register as usize] = VALUE;
+        assert_eq!(state, expected);
+        assert_eq!(memory.reads, 1);
+        assert!(memory.writes.is_empty());
+    }
+
+    let next_page = DATA + 4096;
+    let stack_end = next_page - 7;
+    let mut before_fault = initial.clone();
+    before_fault.gpr[Register::Rsp as usize] = stack_end;
+    let mut state = before_fault.clone();
+    let mut memory = DataMemory::new(&[0x5e]).with_supervisor(next_page, 0);
+    for offset in 0..7 {
+        memory = memory.with_user(stack_end + offset, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(next_page),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before_fault);
+    assert!(memory.writes.is_empty());
+
+    for (code, opcode) in [
+        (&[0x66, 0x5e][..], 0x5e),
+        (&[0x56][..], 0x56),
+        (&[0x8f, 0x06][..], 0x8f),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
 fn mov_byte_state() -> LongModeState {
     let mut state = user_state();
     for (index, value) in state.gpr.iter_mut().enumerate() {
