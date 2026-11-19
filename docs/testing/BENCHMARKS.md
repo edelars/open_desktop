@@ -1036,10 +1036,52 @@ those paths for the warm side.
 
 The [S3 Core report](../reports/STAGE_3_CORE_REPORT.md)
 records the six process runs and their limitations. S3-35a's 1,010-case cold
-corpus differs from this five-case workload; its numbers are context, not a
-direct comparison. S3-36b uses the same five-case digests and is comparable as
-a bounded historical warm observation, with the source-revision difference
-reported. Neither comparison accepts Stage 3 as a whole.
+corpus has its own direct comparison below. S3-36b uses the same five-case
+digests as the bounded historical warm observation. The reports record the
+build differences. Stage 3 acceptance is tracked separately in S3-41.
+
+#### S3-56 cold comparison on the recovered S3-17 corpus
+
+The `cold-first-run --relocated-s3-17-paths` opt-in accepts an explicit
+list of alternate fixture paths for the exact historical S3-17 trace.
+The trace hash, 1,010 ordered fixture identifiers and hashes, 1,322 visits,
+outcomes and retirements remain binding. Reports record the actual list
+hash, the expected historical list hash and `case_list_mode`. The original
+list check remains the default for S3-17. Both FIFO and `--generic-register`
+accept the opt-in. The generic cold path requires native-only admission
+for all inputs.
+
+Recover the trace, list and fixtures at the paths in the recovery report.
+Build `od-bench` in release mode, sign it for Hardened Runtime with
+`apps/vmhost/Configuration/vmhost-smoke.entitlements`, and use its absolute
+path as `OD_BENCH`. The following example runs round 1 from the repository
+root and assumes the launching shell has nice 0. Check that each benchmark
+process runs under the caller's UID with effective nice −5. The archived
+launcher checks those values and user-interactive QoS in the benchmark
+process itself. Use the archived build and launcher to repeat the measured
+series with the same QoS, input and ordering controls.
+
+```sh
+input_dir=work/tmp/s3-17-exact-recovery/verified
+benchmark_uid=$(/usr/bin/id -u)
+run_cold_s3_17() {
+    /usr/bin/sudo -n /usr/bin/nice -n -5 /usr/bin/sudo -n -u "#$benchmark_uid" -- \
+        "$OD_BENCH" cold-first-run --relocated-s3-17-paths \
+        --case-list "$input_dir/relocated-cases.txt" \
+        --trace "$input_dir/dispatch-trace.json" "$@"
+}
+run_cold_s3_17 --process-run 1 --output work/tmp/s3-56-cold-fifo-1.json
+run_cold_s3_17 --process-run 1 --output work/tmp/s3-56-cold-generic-1.json --generic-register
+```
+
+Use fresh output paths and reverse process order in round 2, then repeat
+round 1 order in round 3. Each process times 20 paired JIT/interpreter
+intervals with the same number of sweeps per side and a 200 ms floor per
+interval. Compare the same-binary processes first, and report the historical
+S3-35a comparison with its own interpreter baseline. The S3-36b comparison
+uses the five S3-14 inputs described above.
+[Recovered inputs](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+[Cold results, exact release build and archived launcher](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 ### S3-36c: resident warm NOP-fallback comparison
 

@@ -56,6 +56,10 @@ const BRANCH_HELPER_TRACE_SHA256: &str =
     "272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8";
 const BRANCH_HELPER_INPUTS: usize = 5;
 const BRANCH_HELPER_VISITS: usize = 5;
+const S3_17_INPUTS: usize = 1_010;
+const S3_17_VISITS: usize = 1_322;
+const S3_14_GENERIC_SCOPE: &str =
+    "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback";
 const WARM_DISPATCH_PHASE_MAX_RESTARTS: usize = 8;
 const WARM_DISPATCH_PHASE_STRATA: [WarmDispatchPhaseStratumSpec; 2] = [
     WarmDispatchPhaseStratumSpec {
@@ -562,6 +566,10 @@ struct FirstRunReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -1170,7 +1178,13 @@ pub fn run_cold_first_execution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
-    run_cold_first_profile(case_list, trace_path, process_run, false)
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        false,
+        ColdCaseListPaths::Frozen,
+    )
 }
 
 /// S3-56: the frozen resident S3-14 corpus through the generic native path.
@@ -1179,7 +1193,76 @@ pub fn run_generic_cold_first_execution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
-    run_cold_first_profile(case_list, trace_path, process_run, true)
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        true,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Use alternate fixture paths for the exact historical S3-17 trace.
+pub fn run_relocated_s3_17_cold_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    generic: bool,
+) -> Result<serde_json::Value, BenchError> {
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        generic,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColdCaseListPaths {
+    Frozen,
+    RelocatedS3_17,
+}
+
+fn validate_cold_corpus_digests(
+    case_list_sha256: &str,
+    trace_sha256: &str,
+    generic: bool,
+    paths: ColdCaseListPaths,
+) -> Result<(usize, usize), BenchError> {
+    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = match paths {
+        ColdCaseListPaths::RelocatedS3_17 => (
+            None,
+            FROZEN_TRACE_SHA256,
+            S3_17_INPUTS,
+            S3_17_VISITS,
+            "S3-17",
+        ),
+        ColdCaseListPaths::Frozen
+            if generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256 =>
+        {
+            (
+                Some(BRANCH_HELPER_CASE_LIST_SHA256),
+                BRANCH_HELPER_TRACE_SHA256,
+                BRANCH_HELPER_INPUTS,
+                BRANCH_HELPER_VISITS,
+                "S3-14 branch/helper",
+            )
+        }
+        ColdCaseListPaths::Frozen => (
+            Some(FROZEN_CASE_LIST_SHA256),
+            FROZEN_TRACE_SHA256,
+            S3_17_INPUTS,
+            S3_17_VISITS,
+            "S3-17",
+        ),
+    };
+    if list_hash.is_some_and(|hash| case_list_sha256 != hash) || trace_sha256 != trace_hash {
+        return Err(err(format!(
+            "case list or trace does not match the frozen {label} corpus"
+        )));
+    }
+    Ok((expected_inputs, expected_visits))
 }
 
 fn run_cold_first_profile(
@@ -1187,6 +1270,7 @@ fn run_cold_first_profile(
     trace_path: &Path,
     process_run: u8,
     generic: bool,
+    paths: ColdCaseListPaths,
 ) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cold-first-run measurement requires a release build"));
@@ -1199,29 +1283,8 @@ fn run_cold_first_profile(
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
     let case_list_sha256 = od_testkit::sha256_hex(&list);
     let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
-    let branch_helper = generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256;
-    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = if branch_helper {
-        (
-            BRANCH_HELPER_CASE_LIST_SHA256,
-            BRANCH_HELPER_TRACE_SHA256,
-            BRANCH_HELPER_INPUTS,
-            BRANCH_HELPER_VISITS,
-            "S3-14 branch/helper",
-        )
-    } else {
-        (
-            FROZEN_CASE_LIST_SHA256,
-            FROZEN_TRACE_SHA256,
-            MAX_INPUTS,
-            1_322,
-            "S3-17",
-        )
-    };
-    if case_list_sha256 != list_hash || trace_sha256 != trace_hash {
-        return Err(err(format!(
-            "case list or trace does not match the frozen {label} corpus"
-        )));
-    }
+    let (expected_inputs, expected_visits) =
+        validate_cold_corpus_digests(&case_list_sha256, &trace_sha256, generic, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
     if trace.inputs.len() != expected_inputs
@@ -1305,10 +1368,13 @@ fn run_cold_first_profile(
             interpreter / fifo
         })
         .collect();
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = FirstRunReport {
         schema: 2,
         process_run,
         case_list_sha256,
+        case_list_mode: relocated.then_some("relocated-s3-17-paths"),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
         trace_sha256,
         capture_host: trace.capture_host.clone(),
         measure_host: HostMetadata::current(),
@@ -1329,6 +1395,11 @@ fn run_cold_first_profile(
         serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
         generic,
         &cases,
+        if relocated {
+            "native-only S3-17 corpus; does not exercise S3-55 mixed denied-form fallback"
+        } else {
+            S3_14_GENERIC_SCOPE
+        },
     )
 }
 
@@ -2441,6 +2512,7 @@ fn run_warm_profile(
         serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
         generic,
         cases,
+        S3_14_GENERIC_SCOPE,
     )
 }
 
@@ -4145,6 +4217,7 @@ fn annotate_generic_report(
     mut value: serde_json::Value,
     generic: bool,
     cases: &[Case],
+    scope: &str,
 ) -> Result<serde_json::Value, BenchError> {
     if !generic {
         return Ok(value);
@@ -4158,7 +4231,7 @@ fn annotate_generic_report(
         "case_ids": cases.iter().map(|case| &case.id).collect::<Vec<_>>(),
         "fallback_helper_calls": 0,
         "fallback_helper_calls_basis": "preflight rejects bare NOP, the only NativeRegisterV1 interpreter handoff; each successful dispatch also verifies retired_interpreter == 0",
-        "scope": "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback"
+        "scope": scope
     }));
     let variants = object
         .get_mut("variants")
@@ -4832,6 +4905,92 @@ mod tests {
         assert!(matches!(&engine, Variant::Lru { .. }));
         replace_variant(&mut engine, VariantName::SingleEntryArena16).unwrap();
         assert!(matches!(&engine, Variant::Single { .. }));
+    }
+
+    #[test]
+    fn cold_corpus_digest_gate_requires_explicit_relocation() {
+        use ColdCaseListPaths::{Frozen, RelocatedS3_17};
+        let admit = |list, trace, generic, paths| {
+            validate_cold_corpus_digests(list, trace, generic, paths).ok()
+        };
+
+        for generic in [false, true] {
+            assert_eq!(
+                admit("relocated", FROZEN_TRACE_SHA256, generic, Frozen),
+                None
+            );
+            for wrong_trace in [BRANCH_HELPER_TRACE_SHA256, "altered"] {
+                assert_eq!(
+                    admit("relocated", wrong_trace, generic, RelocatedS3_17),
+                    None
+                );
+            }
+            assert_eq!(
+                admit("relocated", FROZEN_TRACE_SHA256, generic, RelocatedS3_17),
+                Some((1_010, 1_322))
+            );
+            assert_eq!(
+                admit(
+                    BRANCH_HELPER_CASE_LIST_SHA256,
+                    BRANCH_HELPER_TRACE_SHA256,
+                    generic,
+                    Frozen
+                ),
+                Some((5, 5))
+            );
+        }
+        assert_eq!(
+            admit(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, false, Frozen),
+            Some((1_010, 1_322))
+        );
+        assert_eq!(
+            admit(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, true, Frozen),
+            None
+        );
+    }
+
+    #[test]
+    fn cold_case_preparation_rejects_reordered_or_modified_fixtures() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let trace: RecordedTrace = serde_json::from_slice(include_bytes!(
+            "../../../docs/reports/data/stage3/s3-36b/trace.json"
+        ))
+        .unwrap();
+        let mut paths: Vec<_> =
+            include_str!("../../../tests/fixtures/x86/stage3/s3_14_branch_helper_case_list.txt")
+                .lines()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(|path| root.join(path))
+                .collect();
+        let prepare = |paths: &[PathBuf]| {
+            let list = paths
+                .iter()
+                .map(|path| path.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            prepare_cases(list.as_bytes(), &trace, Instant::now())
+        };
+
+        let error = prepare(&paths[1..]).err().unwrap();
+        assert_eq!(error.to_string(), "case list and trace length differ");
+        paths.swap(0, 1);
+        let error = prepare(&paths).err().unwrap();
+        assert_eq!(error.to_string(), "frozen trace mismatch at 0");
+        paths.swap(0, 1);
+
+        let mut bytes = std::fs::read(&paths[0]).unwrap();
+        bytes.push(b'\n');
+        let modified = std::env::temp_dir().join(format!(
+            "od-bench-{}-modified-fixture.json",
+            std::process::id()
+        ));
+        std::fs::write(&modified, bytes).unwrap();
+        paths[0] = modified.clone();
+        let result = prepare(&paths);
+        std::fs::remove_file(modified).unwrap();
+        let error = result.err().unwrap();
+        assert_eq!(error.to_string(), "frozen trace mismatch at 0");
     }
 
     #[test]

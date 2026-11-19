@@ -59,11 +59,12 @@ The historical S3-36b warm FIFO used the same fixture and trace digests and
 reported 3.736–3.959 µs/sweep for FIFO and 0.726–0.751 µs/sweep for the
 interpreter. Both absolute ranges are lower than the corresponding
 process medians here. The matched round ratios above provide the
-comparison between dispatch routes at the same revision. S3-35a requires
-the separately frozen 1,010-case S3-17 inputs. ISSUE-075 and the historical
-cold comparison remain open. The five admitted fixtures exercise native
+comparison between dispatch routes at the same revision. The separately
+frozen 1,010-case S3-17 inputs are used in the historical cold comparison
+with S3-35a. The five admitted fixtures exercise native
 execution. Physical x86 and Mac mini checks remain deferred.
 [Historical warm evidence](STAGE_3_S3-36b_2026-10-30.md)
+[Historical cold comparison on S3-17](STAGE_3_S3-56_S3-17_2026-11-19.md)
 [Issue and historical cold input](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)
 
 ## Reproduction and evidence

@@ -125,4 +125,5 @@ Its locator strings give it a separate SHA-256
 `e72bb9c57da22b65f14aa8028621021cf171d793267d874330c2e6ca3d2ba074`.
 The default historical list pin stays
 `b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3`.
-S3-35a historical comparison remains in [ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability).
+The relocated list and exact historical trace were used in the three
+matched cold rounds. [S3-56 results on S3-17](STAGE_3_S3-56_S3-17_2026-11-19.md)

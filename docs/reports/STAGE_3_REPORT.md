@@ -11,6 +11,15 @@
 | Physical hardware gate | On Mini (192.168.1.39), the S3-14 register-only gate passed (13 one-block fixtures × 2 repeats) and the S3-15 `jit-dispatch` physical corpus gate passed (10 manual + 1,000 generated fixtures × 2 repeats); all preflights passed 613/613 tests and every pairwise/repeat comparison had zero differences. S3-14 is complete and S3-15 remains partial; the final S3-21 memory/hardware gate, production owner/MMU integration, performance acceptance, and broader Stage 3 conditions remain open. M1 Pro remains deferred. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
 
+S3-56 completed the generic-register comparison on the five-case S3-14
+corpus and both historical comparisons. Warm uses the five S3-36b inputs.
+Cold uses the original S3-35a trace and all 1,010 byte-verified fixtures.
+On the latter, the generic/FIFO ratios of paired JIT/interpreter medians
+were 1.101, 1.094 and 1.085 across three rounds. This evidence covers the
+native-register workload. S3-57 and final S3-41 acceptance remain open.
+[Cold evidence](STAGE_3_S3-56_S3-17_2026-11-19.md)
+[Matched cold and warm evidence](STAGE_3_S3-56_MATCHED_2026-11-19.md)
+
 S3-26f source support and unrun evidence were added for the exact uncached
 `48 89 03 48 89 02` two-store pair. Source/site binding, ordered typed IR,
 second helper operation index 4, host metadata, explicit cached rejection,
