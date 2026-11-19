@@ -13,11 +13,13 @@ use od_firmware::mem::map::{
     DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
     MemoryType,
 };
-use od_firmware::mem::pages::{AllocateAt, PageAllocator, PageError};
+use od_firmware::mem::pages::{
+    AllocateAt, PageAllocator, PageError, PageOwner, PoolError, PoolHeader, PoolMemory,
+};
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
-    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR, STOP_PAGING, fixed_hex,
-    format_stop_line,
+    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR, STOP_PAGING,
+    STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
 };
 
 unsafe extern "C" {
@@ -162,8 +164,14 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         Err(MemoryMapError::Paging(error)) => stop(STOP_PAGING, error.stop_detail()),
     };
     com1_write_memory_map(&map);
-    let key = verify_boot_page_allocator(map, active_cr3);
+    let mut ownership = [PageOwner::Initial; BOOT_DESCRIPTOR_CAPACITY];
+    let mut allocator = require_pages(PageAllocator::new(map, &mut ownership));
+    let key = verify_boot_page_allocator(&mut allocator, active_cr3);
     com1_write(b"OD-FW S7-04 page allocator verified key=0x");
+    com1_write(&fixed_hex(key));
+    com1_write(b"\r\n");
+    let key = verify_boot_pool_allocator(&mut allocator);
+    com1_write(b"OD-FW S7-04 pool allocator verified key=0x");
     com1_write(&fixed_hex(key));
     com1_write(b"\r\n");
     halt_forever()
@@ -177,9 +185,7 @@ fn require_pages<T>(result: Result<T, PageError>) -> T {
 }
 
 #[inline(never)]
-fn verify_boot_page_allocator(map: MemoryMap<'_>, active_cr3: u64) -> u64 {
-    let mut ownership = [false; BOOT_DESCRIPTOR_CAPACITY];
-    let mut allocator = require_pages(PageAllocator::new(map, &mut ownership));
+fn verify_boot_page_allocator(allocator: &mut PageAllocator<'_, '_>, active_cr3: u64) -> u64 {
     let exact = require_pages(allocator.allocate_pages(
         AllocateAt::Address(BOOT_PAGE_TABLES_GPA),
         MemoryType::BootServicesData,
@@ -227,6 +233,74 @@ fn verify_boot_page_allocator(map: MemoryMap<'_>, active_cr3: u64) -> u64 {
     require_pages(allocator.free_pages(exact, 2));
     require_pages(allocator.free_pages(high, 1));
     allocator.map().key()
+}
+
+fn require_pool<T>(result: Result<T, PoolError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => stop(STOP_POOL_ALLOCATOR, error.stop_detail()),
+    }
+}
+
+struct IdentityPoolMemory;
+
+impl PoolMemory for IdentityPoolMemory {
+    unsafe fn header_at(&mut self, address: u64) -> Option<&mut PoolHeader> {
+        // SAFETY: the caller supplies an exclusive, aligned header position.
+        // The active page tables identity-map this RAM and allow writes.
+        Some(unsafe { &mut *(address as *mut PoolHeader) })
+    }
+}
+
+#[inline(never)]
+fn verify_boot_pool_allocator(allocator: &mut PageAllocator<'_, '_>) -> u64 {
+    let mut memory = IdentityPoolMemory;
+    let initial_key = allocator.map().key();
+    let first = require_pool(allocator.allocate_pool(&mut memory, MemoryType::LoaderData, 16));
+    let second =
+        require_pool(allocator.allocate_pool(&mut memory, MemoryType::LoaderData, PAGE_BYTES));
+    let first_page = first & !(PAGE_BYTES - 1);
+    let allocated_key = allocator.map().key();
+    if (first | second) & 7 != 0
+        || second + PAGE_BYTES > first
+        || allocator.free_pages(first_page, 1) != Err(PageError::NotFound)
+        || allocator.free_pool(&mut memory, first + 8) != Err(PoolError::InvalidPointer)
+        || allocator.map().key() != allocated_key
+    {
+        stop(STOP_POOL_ALLOCATOR, 7);
+    }
+    // SAFETY: all three positions are aligned and inside live, disjoint
+    // payloads in writable RAM mapped by the current firmware page tables.
+    unsafe {
+        let first_value = first as *mut u64;
+        let second_value = second as *mut u64;
+        let second_tail = (second + PAGE_BYTES - 8) as *mut u64;
+        const FIRST: u64 = 0x091a_2b3c_4d5e_6f70;
+        const SECOND: u64 = 0x0123_4500_0067_89ab;
+        const TAIL: u64 = 0xf0e1_d2c3_b4a5_9687;
+        first_value.write_volatile(FIRST);
+        second_value.write_volatile(SECOND);
+        second_tail.write_volatile(TAIL);
+        if first_value.read_volatile() != FIRST
+            || second_value.read_volatile() != SECOND
+            || second_tail.read_volatile() != TAIL
+        {
+            stop(STOP_POOL_ALLOCATOR, 7);
+        }
+    }
+    require_pool(allocator.free_pool(&mut memory, first));
+    let freed_key = allocator.map().key();
+    if allocator.free_pool(&mut memory, first) != Err(PoolError::InvalidPointer)
+        || allocator.map().key() != freed_key
+    {
+        stop(STOP_POOL_ALLOCATOR, 7);
+    }
+    require_pool(allocator.free_pool(&mut memory, second));
+    let key = allocator.map().key();
+    if key != initial_key + 4 {
+        stop(STOP_POOL_ALLOCATOR, 7);
+    }
+    key
 }
 
 fn boot_handoff_bytes() -> &'static [u8] {

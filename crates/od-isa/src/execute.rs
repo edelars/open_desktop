@@ -20153,8 +20153,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => {
                     matches!(
-                        (instruction.opcode.byte, instruction.operand_size),
-                        (0x11 | 0x13, OperandSize::Dword | OperandSize::Qword)
+                        (instruction.opcode.byte, instruction.operand_size, source),
+                        (
+                            0x11 | 0x13,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Register(_)
+                        ) | (
+                            0x83,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Immediate(_)
+                        )
                     )
                 }
                 Operation::Arithmetic {
@@ -20184,7 +20192,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (
-                            0x21 | 0x23 | 0x81 | 0x83,
+                            0x21 | 0x23 | 0x25 | 0x81 | 0x83,
                             OperandSize::Dword | OperandSize::Qword
                         ) | (0x20 | 0x22, OperandSize::Byte)
                     )
@@ -28241,18 +28249,24 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
-        // `PagedCpl0ProbeV1` profile; every other profile keeps them
-        // unsupported. RFLAGS is not touched.
+        // The base profile admits bare byte and 66-prefixed word immediates.
+        // Firmware also uses REX to select SPL/BPL/SIL/DIL or R8B–R15B.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && ((instruction.length == 2
-                && matches!(instruction.opcode.byte, 0xb0..=0xb7)
-                && instruction.prefixes == Prefixes::default()
-                && destination.size() == OperandSize::Byte)
+            && ((matches!(instruction.opcode.byte, 0xb0..=0xb7)
+                && destination.size() == OperandSize::Byte
+                && ((instruction.length == 2 && instruction.prefixes == Prefixes::default())
+                    || (firmware_boot_profile
+                        && instruction.length == 3
+                        && instruction.prefixes.rex.is_some()
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: instruction.prefixes.rex,
+                                ..Prefixes::default()
+                            }))))
                 || (instruction.length == 4
                     && matches!(instruction.opcode.byte, 0xb8..=0xbf)
                     && instruction.prefixes

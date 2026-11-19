@@ -51054,6 +51054,31 @@ fn plain_dword_xadd_and_cmpxchg_stay_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn firmware_boot_mov_imm8_rex_selects_the_decoded_low_byte() {
+    for (rex, opcode, target) in [(0x40, 0xb5, Register::Rbp), (0x41, 0xb2, Register::R10)] {
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let mut expected = cpu.clone();
+        let target = &mut expected.gpr[target as usize];
+        *target = (*target & !0xff) | 0x96;
+        expected.rip += 3;
+        let mut memory = Memory::new(&[rex, opcode, 0x96]);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_mov_imm32_zero_extends_each_destination_and_preserves_flags() {
     for register in 0..16 {
         let value = 0xf123_4567u32 + register as u32;
@@ -51407,6 +51432,9 @@ fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
         (&[0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39),
         (&[0x49, 0xd1, 0xef][..], 0xd1),
+        (&[0x40, 0xb5, 0x01][..], 0xb5),
+        (&[0x48, 0x83, 0xd0, 0x28][..], 0x83),
+        (&[0x25, 0xff, 0x0f, 0, 0][..], 0x25),
         (&[0x49, 0x83, 0xda, 0xff][..], 0x83),
         (&[0x3c, 0xff][..], 0x3c),
         (&[0x40, 0x20, 0xdd][..], 0x20),
@@ -52688,6 +52716,13 @@ fn firmware_boot_adc_register_forms_apply_carry_and_width() {
     for (code, reg, input, output, flags) in [
         (&[0x49, 0x11, 0xc8][..], Register::R8, u64::MAX, 0, 0x657),
         (
+            &[0x48, 0x83, 0xd0, 0x28][..],
+            Register::Rax,
+            u64::MAX - 0x28,
+            0,
+            0x657,
+        ),
+        (
             &[0x13, 0xc3][..],
             Register::Rax,
             0xfeed_ffff_7fff_ffff,
@@ -53292,6 +53327,13 @@ fn firmware_boot_or_and_xor_use_the_decoded_width_and_register_aliases() {
             0x4000_0000_0000_0200,
             0xc000_0000_0000_0201,
             0x692,
+        ),
+        (
+            &[0x25, 0xff, 0x0f, 0, 0][..],
+            Register::Rax,
+            0xfeed_babe_f000_0100,
+            0x100,
+            0x616,
         ),
         (
             &[0x0b, 0xc7][..],
@@ -54075,7 +54117,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1), // address override on SHR
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
-        (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
+        (&[0x48, 0x83, 0x12, 0x28][..], 0x83),       // ADC qword [RDX],0x28
         (&[0x48, 0x83, 0x03, 0x28][..], 0x83),       // ADD qword [RBX],0x28
         (&[0x03, 0x13][..], 0x03),                   // ADD EDX,[RBX]
         (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),       // ADC SI,-1

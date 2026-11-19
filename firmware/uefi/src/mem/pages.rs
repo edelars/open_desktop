@@ -5,6 +5,9 @@ use super::map::{MemoryDescriptor, MemoryMap, MemoryType, RUNTIME, WB};
 use crate::paging::PAGE_BYTES;
 use core::ops::Range;
 
+mod pool;
+pub use pool::{PoolError, PoolHeader, PoolMemory};
+
 const PHYSICAL_END: u64 = 1 << 36;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,19 +40,26 @@ impl PageError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageOwner {
+    Initial,
+    Pages,
+    Pool,
+}
+
 /// Takes ownership of the map and caller-provided tags for its entire buffer.
 pub struct PageAllocator<'map, 'tags> {
     map: MemoryMap<'map>,
-    allocated: &'tags mut [bool],
+    owners: &'tags mut [PageOwner],
 }
 
 impl<'map, 'tags> PageAllocator<'map, 'tags> {
-    pub fn new(map: MemoryMap<'map>, allocated: &'tags mut [bool]) -> Result<Self, PageError> {
-        if allocated.len() < map.storage.len() {
+    pub fn new(map: MemoryMap<'map>, owners: &'tags mut [PageOwner]) -> Result<Self, PageError> {
+        if owners.len() < map.storage.len() {
             return Err(PageError::OutOfDescriptors);
         }
-        allocated[..map.used].fill(false);
-        Ok(Self { map, allocated })
+        owners[..map.used].fill(PageOwner::Initial);
+        Ok(Self { map, owners })
     }
 
     pub fn map(&self) -> &MemoryMap<'map> {
@@ -63,13 +73,29 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         count: u64,
     ) -> Result<u64, PageError> {
         let bytes = byte_count(count)?;
-        let attribute = match memory_type {
-            MemoryType::RuntimeServicesCode | MemoryType::RuntimeServicesData => WB | RUNTIME,
-            MemoryType::Conventional | MemoryType::MemoryMappedIo => {
-                return Err(PageError::InvalidType);
-            }
-            _ => WB,
-        };
+        let attribute = allocation_attributes(memory_type)?;
+        let (covered, span) = self.plan_allocation(placement, bytes)?;
+        self.replace(
+            covered,
+            MemoryDescriptor::for_range(memory_type, span.start, span.end, attribute),
+            PageOwner::Pages,
+        )?;
+        Ok(span.start)
+    }
+
+    pub fn free_pages(&mut self, address: u64, count: u64) -> Result<(), PageError> {
+        let span = address_range(address, byte_count(count)?)?;
+        let covered = self.covered_by(span.clone(), |index, _| {
+            self.owners[index] == PageOwner::Pages
+        })?;
+        self.release(covered, span)
+    }
+
+    fn plan_allocation(
+        &self,
+        placement: AllocateAt,
+        bytes: u64,
+    ) -> Result<(Range<usize>, Range<u64>), PageError> {
         let address = match placement {
             AllocateAt::Address(address) => address,
             AllocateAt::Any => self.find_highest_fit(bytes, PHYSICAL_END)?,
@@ -80,21 +106,14 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         };
         let span = address_range(address, bytes)?;
         let covered = self.covered_by(span.clone(), |_, desc| is_free(desc))?;
-        self.replace(
-            covered,
-            MemoryDescriptor::for_range(memory_type, span.start, span.end, attribute),
-            true,
-        )?;
-        Ok(address)
+        Ok((covered, span))
     }
 
-    pub fn free_pages(&mut self, address: u64, count: u64) -> Result<(), PageError> {
-        let span = address_range(address, byte_count(count)?)?;
-        let covered = self.covered_by(span.clone(), |index, _| self.allocated[index])?;
+    fn release(&mut self, covered: Range<usize>, span: Range<u64>) -> Result<(), PageError> {
         self.replace(
             covered,
             MemoryDescriptor::for_range(MemoryType::Conventional, span.start, span.end, WB),
-            false,
+            PageOwner::Initial,
         )
     }
 
@@ -147,7 +166,7 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         &mut self,
         mut covered: Range<usize>,
         replacement: MemoryDescriptor,
-        is_allocated: bool,
+        owner: PageOwner,
     ) -> Result<(), PageError> {
         let first = self.entry(covered.start);
         let last = self.entry(covered.end - 1);
@@ -160,7 +179,7 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         }
         entries[count] = Entry {
             descriptor: replacement,
-            allocated: is_allocated,
+            owner,
         };
         count += 1;
         if replacement.end() < last.descriptor.end() {
@@ -203,11 +222,11 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
         self.map
             .storage
             .copy_within(covered.end..self.map.used, destination);
-        self.allocated
+        self.owners
             .copy_within(covered.end..self.map.used, destination);
         for (index, entry) in (covered.start..destination).zip(entries) {
             self.map.storage[index] = entry.descriptor;
-            self.allocated[index] = entry.allocated;
+            self.owners[index] = entry.owner;
         }
         self.map.used = used;
         self.map.map_key = key;
@@ -217,7 +236,7 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
     fn entry(&self, index: usize) -> Entry {
         Entry {
             descriptor: self.map.storage[index],
-            allocated: self.allocated[index],
+            owner: self.owners[index],
         }
     }
 }
@@ -225,27 +244,37 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
 #[derive(Clone, Copy)]
 struct Entry {
     descriptor: MemoryDescriptor,
-    allocated: bool,
+    owner: PageOwner,
 }
 
 impl Entry {
     const EMPTY: Self = Self {
         descriptor: MemoryDescriptor::EMPTY,
-        allocated: false,
+        owner: PageOwner::Initial,
     };
 
     fn with_range(self, start: u64, end: u64) -> Self {
         Self {
             descriptor: self.descriptor.clipped(start, end),
-            allocated: self.allocated,
+            owner: self.owner,
         }
     }
 
     fn can_join(self, following: Self) -> bool {
-        self.allocated == following.allocated
+        // Each pool allocation must remain a separate descriptor.
+        self.owner != PageOwner::Pool
+            && self.owner == following.owner
             && self.descriptor.memory_type == following.descriptor.memory_type
             && self.descriptor.attribute == following.descriptor.attribute
             && self.descriptor.end() == following.descriptor.physical_start
+    }
+}
+
+fn allocation_attributes(memory_type: MemoryType) -> Result<u64, PageError> {
+    match memory_type {
+        MemoryType::RuntimeServicesCode | MemoryType::RuntimeServicesData => Ok(WB | RUNTIME),
+        MemoryType::Conventional | MemoryType::MemoryMappedIo => Err(PageError::InvalidType),
+        _ => Ok(WB),
     }
 }
 
@@ -295,10 +324,10 @@ mod tests {
 
     fn snapshot(
         allocator: &PageAllocator<'_, '_>,
-    ) -> (Vec<MemoryDescriptor>, Vec<bool>, usize, u64) {
+    ) -> (Vec<MemoryDescriptor>, Vec<PageOwner>, usize, u64) {
         (
             allocator.map.storage.to_vec(),
-            allocator.allocated.to_vec(),
+            allocator.owners.to_vec(),
             allocator.map.used,
             allocator.map.key(),
         )
@@ -307,7 +336,7 @@ mod tests {
     #[test]
     fn all_placement_modes_use_complete_pages_and_contiguous_conventional_ranges() {
         let mut records = [MemoryDescriptor::EMPTY; 12];
-        let mut tags = [true; 12];
+        let mut tags = [PageOwner::Pages; 12];
         let map = initial_map(
             &mut records,
             &[
@@ -356,7 +385,7 @@ mod tests {
     #[test]
     fn partial_free_can_span_allocations_but_cannot_touch_firmware_reservations() {
         let mut records = [MemoryDescriptor::EMPTY; 10];
-        let mut tags = [true; 10];
+        let mut tags = [PageOwner::Pages; 10];
         let initial = [
             memory(MemoryType::BootServicesData, 0x1000, 0x2000),
             memory(MemoryType::Conventional, 0x2000, 0xa000),
@@ -395,7 +424,7 @@ mod tests {
     #[test]
     fn capacity_and_map_key_are_checked_before_either_buffer_is_changed() {
         let mut records = [MemoryDescriptor::EMPTY; 2];
-        let mut too_few_tags = [true; 1];
+        let mut too_few_tags = [PageOwner::Pages; 1];
         let map = initial_map(
             &mut records,
             &[memory(MemoryType::Conventional, 0x1000, 0x5000)],
@@ -404,9 +433,9 @@ mod tests {
             PageAllocator::new(map, &mut too_few_tags),
             Err(PageError::OutOfDescriptors)
         ));
-        assert_eq!(too_few_tags, [true; 1]);
+        assert_eq!(too_few_tags, [PageOwner::Pages; 1]);
 
-        let mut tags = [true; 2];
+        let mut tags = [PageOwner::Pages; 2];
         let map = initial_map(
             &mut records,
             &[memory(MemoryType::Conventional, 0x1000, 0x5000)],
@@ -441,7 +470,7 @@ mod tests {
     #[test]
     fn invalid_addresses_and_types_preserve_the_map_and_gaps() {
         let mut records = [MemoryDescriptor::EMPTY; 6];
-        let mut tags = [false; 6];
+        let mut tags = [PageOwner::Initial; 6];
         let map = initial_map(
             &mut records,
             &[

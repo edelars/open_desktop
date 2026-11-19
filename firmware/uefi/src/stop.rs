@@ -34,6 +34,8 @@ pub const STOP_PAGING: u8 = 0x31;
 pub const STOP_MEMORY_MAP: u8 = 0x32;
 /// The bootstrap page allocator failed.
 pub const STOP_PAGE_ALLOCATOR: u8 = 0x33;
+/// The firmware pool allocator failed its boot verification.
+pub const STOP_POOL_ALLOCATOR: u8 = 0x34;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";
