@@ -1087,6 +1087,15 @@ warm interval. Each epoch verified one committed store, rejection
 of the stale active handle and restoration of resident accounting.
 [S3-37h report and raw evidence](STAGE_3_S3-37h_2026-11-19.md)
 
+S3-31g added invocation-local reuse of the previous resident S0-09 entry.
+For the two alternating-RIP inputs, normalized warm time was 9.05% and
+7.36% of the prior dispatcher. Normalized cold time was 20.36% and 7.52%.
+All 32 JIT/interpreter pairs for each two-RIP profile and timing mode
+favoured the JIT. The 64- and 4096-iteration warm one-RIP controls were
+2.30% and 4.16% slower after normalization. Direct linking and broader
+workloads remain open.
+[S3-31g report, verification and raw evidence](STAGE_3_S3-31g_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

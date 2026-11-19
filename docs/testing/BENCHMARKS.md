@@ -698,10 +698,12 @@ admission and semantics were not established for this corpus.
 real FIFO16 dispatch/cache/compiler path. It reports distinct intervals for
 block build/decode and admission, key/snapshot/lookup, IR lowering, allocation,
 emission plus byte encoding/finalization, publication, and host execution
-boundary. Normal lookup includes block build and key lookup. Same-RIP reuse
-records the previous-entry check and hit accounting in those phases. Guards,
-cache install and other accounting remain in `other_dispatch_ns`; they are not misreported as a
-compiler phase. Stage intervals are non-overlapping and are components of the
+boundary. Normal lookup includes block build and key lookup. When the
+dispatcher reuses the index for the current or previous RIP, the build
+phase checks the saved index and the lookup phase records the hit. Hit
+handling includes adjusting the saved index after LRU reordering. Guards,
+cache install and other accounting remain in `other_dispatch_ns`.
+Stage intervals are non-overlapping and are components of the
 instrumented dispatch pass, not standalone end-to-end measurements.
 An observed phase spans the `Instant` sample taken by `begin` through the clock
 read taken by `end`; it includes the wrapped operation and callback/wrapper
@@ -793,9 +795,10 @@ construction/reset, full result/state validation, and phase-total extraction
 are outside the interval. Warm active phases are block build/admission,
 `key_snapshot_and_initial_lookup`, and the host execution boundary. The lookup
 phase covers minimum sizing, key construction, initial snapshot validation,
-one `cache.find`, and its hit/miss update for normal lookup. Same-RIP
-reuse records the prior-entry check in the build phase and hit accounting in
-the lookup phase. Next-entry selection at continuation, cached-snapshot
+one `cache.find`, and its hit/miss update for normal lookup. When reusing
+the current or previous RIP, the build phase checks the saved index and
+the lookup phase records the hit. Hit handling includes adjusting the
+saved index after LRU reordering. Next-entry selection at continuation, cached-snapshot
 and code-view revalidation, guards, accounting, other cache bookkeeping,
 and adapter and recorder work contribute to the
 unattributed residual. The host boundary includes backend
@@ -1472,6 +1475,18 @@ Two matched signed builds use the S3-36g driver with the same six warm
 profiles. The candidate reuses the post-touch cache index and records a
 continuation index only for same-RIP returns. All six profiles use fixed
 counts and alternating call order. [Report and raw audit](../reports/STAGE_3_S3-36h_2026-11-19.md)
+
+### S3-31g. Cached dispatch across RIP transitions
+
+Two signed release comparisons against the same baseline use the six
+S3-35f and S3-36h countdown inputs and a three-RIP control. The warm timer
+covers RUN with resident entries. The cold timer includes a fresh
+session, empty-cache probes and first RUN. Each comparison uses four
+matched rounds per mode, eight JIT/interpreter pairs per profile per
+process and calibrated fixed counts. The selected change trades a
+small slowdown in long one-RIP controls for a repeatable reduction in
+dispatch time on the two-RIP profiles.
+[Report and raw audits](../reports/STAGE_3_S3-31g_2026-11-19.md)
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 

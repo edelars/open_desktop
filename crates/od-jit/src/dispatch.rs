@@ -323,6 +323,8 @@ trait CachedEntryStore<H> {
     fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError>;
     fn remove(&mut self, index: usize) -> Result<(), CacheError>;
     // Return the current index after applying the eviction policy's hit handling.
+    /// Returns the touched entry's index. A move to the back shifts entries
+    /// after its old index one position toward the front.
     fn record_hit(&mut self, index: usize) -> Result<usize, CacheError>;
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
@@ -1998,6 +2000,7 @@ where
     let mut blocks_executed = 0u64;
 
     let mut next_cached_entry = None;
+    let mut previous_entry: Option<(u64, usize)> = None;
     loop {
         if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
             return Ok(result(exit, remaining, retired_total, blocks_executed));
@@ -2016,10 +2019,23 @@ where
             build_dispatch_block(code, state.rip, admission).map(BlockSelection::Built)
         })
         .map_err(DispatchError::Compile)?;
+        let mut record_hit = |cache: &mut C, index| {
+            let touched = cache.record_hit(index)?;
+            if touched != index
+                && let Some((_, previous_index)) = &mut previous_entry
+            {
+                if *previous_index == index {
+                    *previous_index = touched;
+                } else if index < *previous_index {
+                    *previous_index -= 1;
+                }
+            }
+            Ok::<_, CacheError>(touched)
+        };
         let cached_index = match selection {
             BlockSelection::PreviousEntry(index) => {
                 measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-                    cache.record_hit(index)
+                    record_hit(cache, index)
                 })
                 .map_err(DispatchError::Cache)?
             }
@@ -2049,7 +2065,7 @@ where
                         validate_cached_snapshot(&key, code, dependencies)?;
 
                         let hit_index = if let Some(index) = cache.find(&key) {
-                            Some(cache.record_hit(index).map_err(DispatchError::Cache)?)
+                            Some(record_hit(cache, index).map_err(DispatchError::Cache)?)
                         } else {
                             cache.record_miss().map_err(DispatchError::Cache)?;
                             None
@@ -2079,6 +2095,8 @@ where
                         .size_for_candidate(&key, &compiled)
                         .map_err(DispatchError::Cache)?;
                     let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
+                    // Installing can evict entries and shift their indices.
+                    previous_entry = None;
                     cache
                         .prepare_install(code_bytes, logical_bytes)
                         .map_err(DispatchError::Cache)?;
@@ -2170,8 +2188,17 @@ where
                 if let Some(exit) = event_exit(control) {
                     return Ok(result(exit, remaining, retired_total, blocks_executed));
                 }
-                // The cache is exclusively borrowed until the next iteration.
-                next_cached_entry = (state.rip == entry_rip).then_some(cached_index);
+                // Both indices were resolved against this invocation's
+                // borrowed source and dependencies. The next entry still
+                // goes through the snapshot and control checks above.
+                next_cached_entry = if state.rip == entry_rip {
+                    Some(cached_index)
+                } else {
+                    previous_entry
+                        .filter(|&(rip, _)| rip == state.rip)
+                        .map(|(_, index)| index)
+                };
+                previous_entry = Some((entry_rip, cached_index));
             }
             RuntimeExitTag::BudgetExhausted => {
                 if remaining != 0 {
@@ -8762,7 +8789,7 @@ mod tests {
     }
 
     #[test]
-    fn same_rip_reuse_tracks_the_current_fifo_or_lru_entry() {
+    fn recent_rip_reuse_tracks_current_entries_after_hits_and_eviction() {
         let base = 0x7200;
         let second = base + 10;
         let code = [
@@ -8770,57 +8797,74 @@ mod tests {
         ];
         let (view, admission) = cached_fixture(&code, base);
         let dependencies = dependency(view, 1);
+        let expected = [
+            (1, &[1, 2, 3, 3, 4, 5, 6, 6, 7][..], 2, 7, 6),
+            (2, &[1, 2, 1, 1, 2, 1, 2, 2, 1][..], 7, 2, 0),
+        ];
         for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
-            let tracker = Rc::new(RefCell::new(PublishedTracker {
-                allow_multiple_live: true,
-                ..PublishedTracker::default()
-            }));
-            let mut backend = MockCachedBackend(tracker.clone());
-            let mut cache = MultiEntryBlockCache::with_policy(
-                2,
-                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
-                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
-                policy,
-            )
-            .unwrap();
-            let stop = AtomicU8::new(0);
-            let mut run = |rip, budget| {
-                let mut state = LongModeState {
-                    rip,
-                    ..LongModeState::default()
-                };
-                run_multi_cached_controlled(
-                    view,
-                    &admission,
-                    test_context(),
-                    &dependencies,
-                    &mut state,
-                    budget,
-                    DispatchControl {
-                        stop_rip: None,
-                        stop_requested: &stop,
-                        event_requested: None,
-                    },
-                    &mut cache,
-                    &mut backend,
+            for (capacity, executed, hits, publications, evictions) in expected {
+                let tracker = Rc::new(RefCell::new(PublishedTracker {
+                    allow_multiple_live: true,
+                    ..PublishedTracker::default()
+                }));
+                let mut backend = MockCachedBackend(tracker.clone());
+                let mut cache = MultiEntryBlockCache::with_policy(
+                    capacity,
+                    MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                    policy,
                 )
-                .unwrap()
-            };
-            run(base, 1);
-            run(second, 1);
-            tracker.borrow_mut().scripted_replies = vec![
-                (base, RuntimeExitTag::DispatchCandidate, 1),
-                (second, RuntimeExitTag::DispatchCandidate, 1),
-                (second, RuntimeExitTag::DispatchCandidate, 1),
-                (view.code_end(), RuntimeExitTag::BlockComplete, 1),
-            ];
-            let result = run(base, 6);
-            assert_eq!(result.exit, DispatchExit::CodeEnd);
-            assert_eq!(result.retired_instructions, 4);
-            assert_eq!(result.remaining_budget, 2);
-            assert_eq!(cache.counters().hits, 4);
-            assert_eq!(cache.counters().successful_publications, 2);
-            assert_eq!(tracker.borrow().executed_ids, [1, 2, 1, 1, 2, 2]);
+                .unwrap();
+                let stop = AtomicU8::new(0);
+                let mut run = |rip, budget| {
+                    let mut state = LongModeState {
+                        rip,
+                        ..LongModeState::default()
+                    };
+                    run_multi_cached_controlled(
+                        view,
+                        &admission,
+                        test_context(),
+                        &dependencies,
+                        &mut state,
+                        budget,
+                        DispatchControl {
+                            stop_rip: None,
+                            stop_requested: &stop,
+                            event_requested: None,
+                        },
+                        &mut cache,
+                        &mut backend,
+                    )
+                    .unwrap()
+                };
+                run(base, 1);
+                run(second, 1);
+                // Execute A, A, B, A, B, B, A. With capacity two, moving B
+                // under LRU shifts the remembered index of A. With
+                // capacity one, each RIP change evicts the previous entry.
+                tracker.borrow_mut().scripted_replies = vec![
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+                ];
+                let result = run(base, 9);
+                assert_eq!(result.exit, DispatchExit::CodeEnd);
+                assert_eq!(result.retired_instructions, 7);
+                assert_eq!(result.remaining_budget, 2);
+                assert_eq!(
+                    cache.counters().hits,
+                    hits,
+                    "{policy:?} capacity {capacity}"
+                );
+                assert_eq!(cache.counters().successful_publications, publications);
+                assert_eq!(cache.counters().evictions, evictions);
+                assert_eq!(tracker.borrow().executed_ids, executed);
+            }
         }
     }
 
