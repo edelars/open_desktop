@@ -6231,12 +6231,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 ### ISSUE-509 — S7-14: RTC interrupts and intra-quantum time
 
-- **Дата обнаружения:** 2026-11-18, при реализации RTC/CMOS.
-- **Компонент:** `od-machine` RTC/CMOS (`crates/od-machine/src/rtc_cmos.rs`) and board execution timing.
-- **Статус:** открыта; RTC/CMOS calendar slice implemented, interrupt routing and quantum integration are deferred.
-- **Суть и последствия:** RTC status C always reads zero; periodic, alarm and update-ended interrupt flags/IRQ8 delivery are not modeled. The calendar advances from the shared virtual clock, which is observed at I/O accesses. If guest execution stays in one instruction quantum, RTC UIP/second rollover is not observed during that quantum; firmware/Linux polling loops that expect time to advance inside the quantum can stall.
-- **Основание:** current RTC implementation explicitly has no interrupt route, status C returns zero, and timestamp is derived from `VirtualClockHandle::snapshot()`. No guest OS RTC polling fixture has been run for this slice.
-- **Следующий шаг:** coordinate with S4-38/S7-30 execution timing and interrupt scope; when enabling guest polling, advance/pump virtual time within a quantum and implement only the RTC interrupt semantics required by the accepted platform profile. Keep HPET tracked separately in S7-14.
+- **Дата обнаружения** 2026-11-18, календарный срез S7-14.
+- **Компонент** `od-machine`, RTC/CMOS и модель времени исполнения firmware.
+- **Статус** временная часть firmware-пути закрыта 2026-11-19. Гость проверен по обе стороны границ UIP и секунды внутри одного кванта. Те же чтения при пошаговом начислении времени дали одинаковое состояние. SET и запись календаря используют время соответствующего доступа.
+- **Условие для продолжения** RTC status C возвращает 0. Периодические, alarm и update-ended IRQ требуют подтверждённого потребителя. Переходы времени port polling внутри кванта проверены на firmware-пути.
+- **Следующий шаг** при подтверждении потребителя зафиксировать нужный тип IRQ и маршрут IRQ8 и добавить гостевое доказательство для выбранного профиля. [Результаты S7-14](reports/STAGE_7_REPORT.md#s7-14--точность-rtc-внутри-кванта).
 
 <a id="issue-510-s7-21-phase-a-acceptance-scope"></a>
 

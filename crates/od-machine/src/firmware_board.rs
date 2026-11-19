@@ -7764,6 +7764,97 @@ mod tests {
     }
 
     #[test]
+    fn rtc_reads_cross_uip_and_second_boundaries_in_one_firmware_quantum() {
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            ..reference_config()
+        };
+        let code = [
+            0x66, 0xba, 0x71, 0,    // mov dx,0x71
+            0xec, // in al,dx
+            0x89, 0xc3, // mov ebx,eax
+            0xec, // in al,dx
+            0xf4, // hlt
+        ];
+        let image = minor4_image(&code);
+        for (index, boundary, before, after) in
+            [(0x0a, 999_756_000, 0x26, 0xa6), (0, 1_000_000_000, 0, 1)]
+        {
+            let start = boundary - 2;
+            let load = || {
+                let mut board = load_firmware_image(&image, &config).unwrap();
+                board.advance_time_ns(start).unwrap();
+                board
+                    .bus_mut()
+                    .write_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte, index)
+                    .unwrap();
+                board
+            };
+            let mut whole = load();
+            let report = whole.run_boot(5).unwrap();
+            assert_eq!(report.exit, PagedProbeExit::Halted);
+            assert_eq!((report.retired, report.quanta), (5, 1));
+            assert_eq!(whole.state().gpr[Register::Rbx as usize] as u8, before);
+            assert_eq!(whole.state().gpr[Register::Rax as usize] as u8, after);
+            assert_eq!(report.virtual_ns, start + report.retired);
+
+            let mut split = load();
+            let mut retired = 0;
+            for _ in 0..5 {
+                let quantum = split.run_boot(1).unwrap();
+                retired += quantum.retired;
+                assert_eq!(
+                    quantum.exit,
+                    if retired == 5 {
+                        PagedProbeExit::Halted
+                    } else {
+                        PagedProbeExit::BudgetExhausted
+                    },
+                );
+            }
+            assert_eq!(retired, report.retired);
+            assert_eq!(split.state(), whole.state());
+            assert_eq!(split.clock(), whole.clock());
+        }
+    }
+
+    #[test]
+    fn rtc_timestamp_overflow_does_not_retire_the_port_access() {
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            ..reference_config()
+        };
+        for opcode in [0xec, 0xee] {
+            let code = [0x66, 0xba, 0x71, 0, 0xb0, 0x82, opcode, 0xf4];
+            let mut board = load_firmware_image(&minor4_image(&code), &config).unwrap();
+            let entry = board.state().rip;
+            board.advance_time_ns(u64::MAX).unwrap();
+            board
+                .bus_mut()
+                .write_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte, 0x0b)
+                .unwrap();
+            let report = board.run_quantum(false, true, 8, || false, |_| {});
+            assert!(matches!(
+                report.exit,
+                PagedProbeExit::PortIo(BusAccessError::Device {
+                    source: crate::DeviceError::ClockOverflow,
+                    ..
+                })
+            ));
+            assert_eq!(report.instructions_executed, 2);
+            assert_eq!(board.state().rip, entry + 6);
+            assert_eq!(board.state().gpr[Register::Rax as usize] as u8, 0x82);
+            assert_eq!(board.clock().now_ns(), u64::MAX);
+            assert_eq!(
+                board
+                    .bus_mut()
+                    .read_port(PortAddress::new(crate::CMOS_DATA_PORT), AccessWidth::Byte),
+                Ok(2)
+            );
+        }
+    }
+
+    #[test]
     fn board_without_rtc_configuration_keeps_cmos_absent() {
         let mut board = linux_board();
         assert_eq!(

@@ -108,6 +108,7 @@ pub enum DeviceError {
     ReadOnly,
     WriteOnly,
     CrossesRegister,
+    ClockOverflow,
 }
 
 impl fmt::Display for DeviceError {
@@ -129,6 +130,26 @@ pub trait BusDevice: Send {
     /// effect is committed. Implementations validate the complete operation
     /// before applying its synchronous effect.
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError>;
+
+    /// Sample the currently executing instruction's board time on demand.
+    /// Devices with no time-dependent I/O use their ordinary access method.
+    fn read_at_time(
+        &mut self,
+        access: DeviceAccess,
+        _sample_time: &dyn Fn() -> Result<u64, DeviceError>,
+    ) -> Result<u64, DeviceError> {
+        self.read(access)
+    }
+
+    /// The timed write counterpart of `read_at_time`.
+    fn write_at_time(
+        &mut self,
+        access: DeviceAccess,
+        value: u64,
+        _sample_time: &dyn Fn() -> Result<u64, DeviceError>,
+    ) -> Result<(), DeviceError> {
+        self.write(access, value)
+    }
 
     /// The access of vCPU `cpu`. Only a device with one register window per processor (the
     /// Local APIC, S6-11) tells the processors apart; every other device serves all of them with
@@ -669,6 +690,30 @@ impl MachineBus {
 pub(crate) struct MachineBusPortIo<'a> {
     devices: &'a mut [Box<dyn BusDevice>],
     ports: &'a [PortRegionBinding],
+    quantum_start_ns: Option<u64>,
+    retired_before: u64,
+}
+
+impl MachineBusPortIo<'_> {
+    pub(crate) fn set_firmware_time(&mut self, quantum_start_ns: Option<u64>, retired_before: u64) {
+        self.quantum_start_ns = quantum_start_ns;
+        self.retired_before = retired_before;
+    }
+
+    fn rtc_time(&self, port: u16) -> Option<impl Fn() -> Result<u64, DeviceError> + use<>> {
+        if port != crate::rtc_cmos::CMOS_DATA_PORT {
+            return None;
+        }
+        let start = self.quantum_start_ns?;
+        let retired = self.retired_before;
+        Some(move || {
+            use crate::firmware_board::FIRMWARE_EXECUTION_CYCLE_NS;
+            retired
+                .checked_mul(FIRMWARE_EXECUTION_CYCLE_NS)
+                .and_then(|delta| start.checked_add(delta))
+                .ok_or(DeviceError::ClockOverflow)
+        })
+    }
 }
 
 /// The device and port halves of one set-loop instruction (S4-38L9s). The CPU core takes the
@@ -1060,6 +1105,8 @@ impl MachineBus {
             MachineBusPortIo {
                 devices: exclusive_devices(devices),
                 ports,
+                quantum_start_ns: None,
+                retired_before: 0,
             },
         )
     }
@@ -1738,22 +1785,32 @@ impl PortIo for MachineBusPortIo<'_> {
     type Error = BusAccessError;
 
     fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
-        read_port_from(
+        let sample_time = self.rtc_time(port);
+        read_port_from_with(
             self.devices,
             self.ports,
             PortAddress::new(port),
             AccessWidth::Byte,
+            |device, access| match sample_time {
+                Some(sample) => device.read_at_time(access, &sample),
+                None => device.read(access),
+            },
         )
         .map(|value| value as u8)
     }
 
     fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
-        write_port_to(
+        let sample_time = self.rtc_time(port);
+        write_port_to_with(
             self.devices,
             self.ports,
             PortAddress::new(port),
             AccessWidth::Byte,
             u32::from(value),
+            |device, access, value| match sample_time {
+                Some(sample) => device.write_at_time(access, value, &sample),
+                None => device.write(access, value),
+            },
         )
     }
 
@@ -1809,6 +1866,18 @@ fn read_port_from(
     port: PortAddress,
     width: AccessWidth,
 ) -> Result<u32, BusAccessError> {
+    read_port_from_with(devices, ports, port, width, |device, access| {
+        device.read(access)
+    })
+}
+
+fn read_port_from_with(
+    devices: &mut [Box<dyn BusDevice>],
+    ports: &[PortRegionBinding],
+    port: PortAddress,
+    width: AccessWidth,
+    read: impl FnOnce(&mut dyn BusDevice, DeviceAccess) -> Result<u64, DeviceError>,
+) -> Result<u32, BusAccessError> {
     if width == AccessWidth::Qword {
         return Err(BusAccessError::UnsupportedWidth);
     }
@@ -1830,8 +1899,7 @@ fn read_port_from(
         offset: u64::from(port.0 - binding.range.start.0),
         width,
     };
-    devices[binding.device_index]
-        .read(access)
+    read(devices[binding.device_index].as_mut(), access)
         .map(|v| (v & width.mask()) as u32)
         .map_err(|source| BusAccessError::Device {
             device_index: binding.device_index,
@@ -1845,6 +1913,24 @@ fn write_port_to(
     port: PortAddress,
     width: AccessWidth,
     value: u32,
+) -> Result<(), BusAccessError> {
+    write_port_to_with(
+        devices,
+        ports,
+        port,
+        width,
+        value,
+        |device, access, value| device.write(access, value),
+    )
+}
+
+fn write_port_to_with(
+    devices: &mut [Box<dyn BusDevice>],
+    ports: &[PortRegionBinding],
+    port: PortAddress,
+    width: AccessWidth,
+    value: u32,
+    write: impl FnOnce(&mut dyn BusDevice, DeviceAccess, u64) -> Result<(), DeviceError>,
 ) -> Result<(), BusAccessError> {
     if width == AccessWidth::Qword {
         return Err(BusAccessError::UnsupportedWidth);
@@ -1867,12 +1953,15 @@ fn write_port_to(
         offset: u64::from(port.0 - binding.range.start.0),
         width,
     };
-    devices[binding.device_index]
-        .write(access, u64::from(value) & width.mask())
-        .map_err(|source| BusAccessError::Device {
-            device_index: binding.device_index,
-            source,
-        })
+    write(
+        devices[binding.device_index].as_mut(),
+        access,
+        u64::from(value) & width.mask(),
+    )
+    .map_err(|source| BusAccessError::Device {
+        device_index: binding.device_index,
+        source,
+    })
 }
 
 fn access_width(len: usize) -> Option<AccessWidth> {

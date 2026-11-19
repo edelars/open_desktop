@@ -102,13 +102,13 @@ impl RtcCmos {
             .min(RTC_BASE_UNIX_SECONDS_MAX as i64)
     }
 
-    fn current_calendar(&self) -> Calendar {
+    fn current_calendar_at(&self, now_ns: u64) -> Calendar {
         if self.status_b & STATUS_B_SET != 0 {
             if let Some(frozen) = self.frozen {
                 return frozen;
             }
         }
-        unix_seconds_to_calendar(self.current_unix_seconds_at(self.now_ns()))
+        unix_seconds_to_calendar(self.current_unix_seconds_at(now_ns))
     }
 
     fn write_index(&mut self, value: u8) {
@@ -116,20 +116,11 @@ impl RtcCmos {
         self.selected_register = value & 0x7F;
     }
 
-    fn read_selected(&mut self) -> u8 {
-        let now_ns = self.now_ns();
+    fn read_selected_at(&self, now_ns: u64) -> u8 {
         match self.selected_register {
             REG_SECONDS | REG_MINUTES | REG_HOURS | REG_WEEKDAY | REG_DAY | REG_MONTH
-            | REG_YEAR | RTC_CENTURY_REGISTER => {
-                let calendar = if self.status_b & STATUS_B_SET != 0 {
-                    self.frozen.unwrap_or_else(|| {
-                        unix_seconds_to_calendar(self.current_unix_seconds_at(now_ns))
-                    })
-                } else {
-                    unix_seconds_to_calendar(self.current_unix_seconds_at(now_ns))
-                };
-                self.encode_calendar_register(self.selected_register, calendar)
-            }
+            | REG_YEAR | RTC_CENTURY_REGISTER => self
+                .encode_calendar_register(self.selected_register, self.current_calendar_at(now_ns)),
             REG_STATUS_A => {
                 let elapsed = now_ns.saturating_sub(self.anchor_clock_ns);
                 let phase = elapsed % NANOS_PER_SECOND;
@@ -177,27 +168,29 @@ impl RtcCmos {
         }
     }
 
-    fn write_selected(&mut self, value: u8) {
+    fn write_selected_at(&mut self, value: u8, now_ns: u64) {
         let register = self.selected_register;
         match register {
             REG_STATUS_A => self.status_a = value & 0x7F,
-            REG_STATUS_B => self.write_status_b(value),
+            REG_STATUS_B => self.write_status_b(value, now_ns),
             REG_STATUS_C | REG_STATUS_D => {}
             REG_SECONDS | REG_MINUTES | REG_HOURS | REG_WEEKDAY | REG_DAY | REG_MONTH
-            | REG_YEAR | RTC_CENTURY_REGISTER => self.write_calendar_register(register, value),
+            | REG_YEAR | RTC_CENTURY_REGISTER => {
+                self.write_calendar_register(register, value, now_ns)
+            }
             register => self.cmos_ram[usize::from(register)] = value,
         }
     }
 
-    fn write_status_b(&mut self, value: u8) {
+    fn write_status_b(&mut self, value: u8, now_ns: u64) {
         let was_set = self.status_b & STATUS_B_SET != 0;
         let becomes_set = value & STATUS_B_SET != 0;
         if !was_set && becomes_set {
-            self.frozen = Some(self.current_calendar());
+            self.frozen = Some(self.current_calendar_at(now_ns));
         }
         if was_set && !becomes_set {
             if let Some(calendar) = self.frozen.take() {
-                self.rebase(calendar, self.now_ns());
+                self.rebase(calendar, now_ns);
             }
         }
         self.status_b = if becomes_set {
@@ -207,7 +200,7 @@ impl RtcCmos {
         };
     }
 
-    fn write_calendar_register(&mut self, register: u8, value: u8) {
+    fn write_calendar_register(&mut self, register: u8, value: u8, now_ns: u64) {
         let binary = self.status_b & STATUS_B_BINARY != 0;
         let decoded = if register == REG_HOURS && self.status_b & STATUS_B_24_HOUR == 0 {
             decode_number(value & 0x7F, binary)
@@ -215,7 +208,7 @@ impl RtcCmos {
             decode_number(value, binary)
         };
         let Some(decoded) = decoded else { return };
-        let mut calendar = self.current_calendar();
+        let mut calendar = self.current_calendar_at(now_ns);
         match register {
             REG_SECONDS if decoded < 60 => calendar.second = decoded,
             REG_MINUTES if decoded < 60 => calendar.minute = decoded,
@@ -256,7 +249,7 @@ impl RtcCmos {
         if self.status_b & STATUS_B_SET != 0 {
             self.frozen = Some(calendar);
         } else {
-            self.rebase(calendar, self.now_ns());
+            self.rebase(calendar, now_ns);
         }
     }
 
@@ -268,25 +261,70 @@ impl RtcCmos {
     }
 }
 
-impl BusDevice for RtcCmos {
-    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+impl RtcCmos {
+    fn read_bus(
+        &self,
+        access: DeviceAccess,
+        sample_time: Option<&dyn Fn() -> Result<u64, DeviceError>>,
+    ) -> Result<u64, DeviceError> {
         check_access(access)?;
-        Ok(u64::from(if access.offset == 0 {
+        let value = if access.offset == 0 {
             self.selected_register | if self.nmi_disabled { 0x80 } else { 0 }
         } else {
-            self.read_selected()
-        }))
+            let now_ns = match sample_time {
+                Some(sample) => sample()?,
+                None => self.now_ns(),
+            };
+            self.read_selected_at(now_ns)
+        };
+        Ok(u64::from(value))
     }
 
-    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+    fn write_bus(
+        &mut self,
+        access: DeviceAccess,
+        value: u64,
+        sample_time: Option<&dyn Fn() -> Result<u64, DeviceError>>,
+    ) -> Result<(), DeviceError> {
         check_access(access)?;
         let value = value as u8;
         if access.offset == 0 {
             self.write_index(value);
         } else {
-            self.write_selected(value);
+            let now_ns = match sample_time {
+                Some(sample) => sample()?,
+                None => self.now_ns(),
+            };
+            self.write_selected_at(value, now_ns);
         }
         Ok(())
+    }
+}
+
+impl BusDevice for RtcCmos {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read_bus(access, None)
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.write_bus(access, value, None)
+    }
+
+    fn read_at_time(
+        &mut self,
+        access: DeviceAccess,
+        sample_time: &dyn Fn() -> Result<u64, DeviceError>,
+    ) -> Result<u64, DeviceError> {
+        self.read_bus(access, Some(sample_time))
+    }
+
+    fn write_at_time(
+        &mut self,
+        access: DeviceAccess,
+        value: u64,
+        sample_time: &dyn Fn() -> Result<u64, DeviceError>,
+    ) -> Result<(), DeviceError> {
+        self.write_bus(access, value, Some(sample_time))
     }
 }
 
@@ -438,6 +476,70 @@ mod tests {
     fn write_reg(rtc: &mut RtcCmos, index: u8, value: u8) {
         select(rtc, index);
         rtc.write(access(1), u64::from(value)).unwrap();
+    }
+
+    #[test]
+    fn timed_writes_freeze_and_rebase_at_the_access_time() {
+        let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut rtc = RtcCmos::new(clock.clone(), 1_704_067_200).unwrap();
+        let second = NANOS_PER_SECOND;
+        select(&mut rtc, REG_STATUS_B);
+        rtc.write_at_time(
+            access(1),
+            u64::from(STATUS_B_SET | STATUS_B_24_HOUR),
+            &|| Ok(second + 42),
+        )
+        .unwrap();
+        assert_eq!(read_reg(&mut rtc, REG_SECONDS), 1);
+
+        rtc.write_at_time(access(1), 5, &|| Ok(second + 53))
+            .unwrap();
+        select(&mut rtc, REG_STATUS_B);
+        let unfreeze = 2 * second + 99;
+        rtc.write_at_time(access(1), u64::from(STATUS_B_24_HOUR), &|| Ok(unfreeze))
+            .unwrap();
+        select(&mut rtc, REG_SECONDS);
+        assert_eq!(
+            rtc.read_at_time(access(1), &|| Ok(unfreeze + second - 1)),
+            Ok(5)
+        );
+        assert_eq!(
+            rtc.read_at_time(access(1), &|| Ok(unfreeze + second)),
+            Ok(6)
+        );
+
+        let rewrite = 4 * second + 127;
+        rtc.write_at_time(access(1), 0x29, &|| Ok(rewrite)).unwrap();
+        assert_eq!(
+            rtc.read_at_time(access(1), &|| Ok(rewrite + second - 1)),
+            Ok(0x29)
+        );
+        assert_eq!(
+            rtc.read_at_time(access(1), &|| Ok(rewrite + second)),
+            Ok(0x30)
+        );
+        assert_eq!(clock.snapshot().now_ns(), 0);
+    }
+
+    #[test]
+    fn invalid_rtc_width_precedes_time_sampling() {
+        let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut rtc = RtcCmos::new(clock, 0).unwrap();
+        let invalid = DeviceAccess {
+            width: AccessWidth::Word,
+            ..access(1)
+        };
+        let sample = || panic!("invalid accesses must not sample time");
+        select(&mut rtc, REG_STATUS_B);
+        assert_eq!(
+            rtc.read_at_time(invalid, &sample),
+            Err(DeviceError::UnsupportedWidth)
+        );
+        assert_eq!(
+            rtc.write_at_time(invalid, 0x82, &sample),
+            Err(DeviceError::UnsupportedWidth)
+        );
+        assert_eq!(rtc.read(access(1)), Ok(2));
     }
 
     #[test]

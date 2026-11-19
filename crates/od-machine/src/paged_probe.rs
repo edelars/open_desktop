@@ -578,6 +578,12 @@ fn run_paged_probe_inner(
     } else {
         None
     };
+    let rtc_clock_start_ns = match &inputs {
+        Some(ProbeInputs::Firmware {
+            clock: Some(clock), ..
+        }) => Some(clock.now_ns()),
+        _ => None,
+    };
     loop {
         if stop() {
             return report(
@@ -634,6 +640,7 @@ fn run_paged_probe_inner(
         let (cpu, page_fault, memory_error) = match &mut bus {
             ProbeBus::Exclusive(bus) => {
                 let (memory, mut pio) = bus.split_for_pio_step();
+                pio.set_firmware_time(rtc_clock_start_ns, step.retired_before);
                 step.run(
                     state,
                     memory,
