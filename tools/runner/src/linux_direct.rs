@@ -88,6 +88,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> [--nonce-bootconfig] --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
+ [--vcpus 1] [--seed <u64> (stage4a user mode)] \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a|stage4a-apic] [--user-mode [--linux-norandmaps] [--linux-no-randomize-kstack-offset]] [--checkpoint-table <oracle.json>] [--stack-context-out <json>] [--execution-observations-out <json> [--execution-observations-delay-call-summary] [--execution-observations-elf-stack-copy] [--execution-observations-rdtsc-prefix] [--execution-observations-quantum-trace] [--execution-observations-post-iret-index <n>] [--execution-observations-rdtsc-rip <hex> [--execution-observations-rdtsc-stride <n>] [--execution-observations-rdtsc-entry-rip <hex>] [--execution-observations-rdtsc-window <start:end>]]]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
@@ -119,6 +120,8 @@ struct Options {
     out: String,
     /// `--run --budget N`: run the guest for at most N instructions after loading.
     budget: Option<u64>,
+    /// `--seed N`: use the seeded interleaved scheduler for a Stage 6 run.
+    interleaved_seed: Option<u64>,
     /// `--set-cpl0`: run through the CPL0 profile set instead of the base probe profile.
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
@@ -422,6 +425,23 @@ fn evaluate_with_env(options: &Options, env: &DiagnosticEnv) -> (Value, u8) {
                 &vmlinuz,
                 &loaded_initrd_sha256,
             );
+            if let Some(seed) = options.interleaved_seed {
+                if let Err(error) = boot.board.enable_seeded_linux_interleaved(seed) {
+                    return (
+                        refusal(
+                            "run_failed",
+                            "scheduler",
+                            format!("could not enable the interleaved scheduler: {error:?}"),
+                            evidence,
+                        ),
+                        4,
+                    );
+                }
+                evidence["interleaved_scheduler"] = json!({
+                    "seed": seed,
+                    "vcpus": boot.board.vcpu_count(),
+                });
+            }
             if let Some(budget) = options.budget {
                 let mut sidecar_file = None;
                 let mut execution_observations_file = None;
@@ -1290,6 +1310,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut linux_norandmaps = false;
     let mut linux_no_randomize_kstack_offset = false;
     let mut budget = None;
+    let mut vcpus = None;
+    let mut seed = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut checkpoint_table: Option<String> = None;
     let mut stack_context_out = None;
@@ -1414,6 +1436,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--ram-mib" => &mut ram_mib,
             "--out" => &mut out,
             "--budget" => &mut budget,
+            "--vcpus" => &mut vcpus,
+            "--seed" => &mut seed,
             "--cpuid-profile" => &mut cpuid_profile_text,
             "--checkpoint-table" => &mut checkpoint_table,
             "--stack-context-out" => &mut stack_context_out,
@@ -1548,6 +1572,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
             ));
         }
     };
+    let decimal = |flag: &str, text: String| {
+        text.parse::<u64>()
+            .ok()
+            .filter(|_| !text.starts_with('+'))
+            .ok_or_else(|| format!("invalid {flag} '{text}': expected an unsigned decimal integer"))
+    };
+    if let Some(text) = vcpus {
+        let count = decimal("--vcpus", text)?;
+        if count != 1 {
+            return Err(format!(
+                "unsupported --vcpus {count}: linux-direct currently requires one vCPU"
+            ));
+        }
+    }
+    let interleaved_seed = seed.map(|text| decimal("--seed", text)).transpose()?;
+    if interleaved_seed.is_some()
+        && !(budget.is_some_and(|n| n > 0)
+            && set_cpl0
+            && cpuid_profile == CpuidProfile::X8664V1Stage4A
+            && user_mode)
+    {
+        return Err(
+            "--seed needs --run with a positive --budget, --set-cpl0, --cpuid-profile stage4a and --user-mode"
+                .into(),
+        );
+    }
     // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
     // `diagnostic` profile) never turns it on.
     if user_mode && !cpuid_profile.is_stage4a_family() {
@@ -1732,6 +1782,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         ram_mib,
         out: required(out, "--out")?,
         budget,
+        interleaved_seed,
         set_cpl0,
         diagnostic_past_c7,
         cpuid_profile,
@@ -3117,6 +3168,7 @@ mod tests {
                 ram_mib: 128,
                 out: dir.join("out.json").to_string_lossy().into_owned(),
                 budget: None,
+                interleaved_seed: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -4705,6 +4757,81 @@ mod tests {
         .collect();
         args.extend(extra.iter().map(|s| s.to_string()));
         parse(&args)
+    }
+
+    #[test]
+    fn linux_direct_seed_and_vcpu_arguments() {
+        let profile = [
+            "--run",
+            "--budget",
+            "512",
+            "--set-cpl0",
+            "--cpuid-profile",
+            "stage4a",
+            "--user-mode",
+        ];
+        assert!(parse_base(&profile).unwrap().interleaved_seed.is_none());
+        for (text, seed) in [("0", 0), ("18446744073709551615", u64::MAX)] {
+            let options =
+                parse_base(&[&profile[..], &["--seed", text, "--vcpus", "1"]].concat()).unwrap();
+            assert_eq!(options.interleaved_seed, Some(seed));
+        }
+        for tail in [
+            &["--seed", "1", "--seed", "2"][..],
+            &["--seed", "18446744073709551616"][..],
+            &["--seed", "+1"][..],
+            &["--vcpus", "0"][..],
+            &["--vcpus", "2"][..],
+            &["--vcpus", "1", "--vcpus", "1"][..],
+        ] {
+            assert!(
+                parse_base(&[&profile[..], tail].concat()).is_err(),
+                "{tail:?}"
+            );
+        }
+        assert!(parse_base(&["--seed", "1"]).is_err());
+        let mut wrong_profile = profile;
+        wrong_profile[5] = "stage4a-apic";
+        assert!(parse_base(&[&wrong_profile[..], &["--seed", "1"]].concat()).is_err());
+        let mut zero_budget = profile;
+        zero_budget[2] = "0";
+        assert!(parse_base(&[&zero_budget[..], &["--seed", "1"]].concat()).is_err());
+    }
+
+    #[test]
+    fn linux_direct_seed_changes_quanta_and_repeats_the_stop_record() {
+        let code = vec![0xFC; 1024]; // CLD
+        let mut case = Case::new(
+            "seeded-interleaved",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(512);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4A;
+        case.options.user_mode = true;
+        let env = DiagnosticEnv::default();
+        let (plain, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 0, "{plain:#}");
+        assert!(plain.get("interleaved_scheduler").is_none());
+        case.options.interleaved_seed = Some(24301);
+        let (seeded, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 0, "{seeded:#}");
+        assert_eq!(
+            seeded["interleaved_scheduler"],
+            json!({"seed": 24301, "vcpus": 1})
+        );
+        assert_eq!(seeded["stop"]["exit_kind"], "budget_exhausted");
+        assert_eq!(seeded["stop"]["retired"], 512);
+        assert_eq!(seeded["stop"]["gpr"], plain["stop"]["gpr"]);
+        assert_eq!(seeded["stop"]["rip"], plain["stop"]["rip"]);
+        assert!(
+            seeded["stop"]["quanta"].as_u64().unwrap() > plain["stop"]["quanta"].as_u64().unwrap()
+        );
+        let (repeat, exit) = evaluate_with_env(&case.options, &env);
+        assert_eq!(exit, 0, "{repeat:#}");
+        assert_eq!(seeded["stop"], repeat["stop"]);
     }
 
     #[test]
@@ -6602,6 +6729,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: None,
+            interleaved_seed: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -6660,6 +6788,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(1000),
+            interleaved_seed: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
@@ -6722,6 +6851,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(2_600_000_000),
+            interleaved_seed: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::X8664V1Stage4AApic,
@@ -6805,6 +6935,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(30_000_000),
+            interleaved_seed: None,
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,

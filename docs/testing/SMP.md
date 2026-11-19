@@ -428,6 +428,31 @@ od-runner --stage6-litmus (--fixture FILE | --corpus DIR |
 
 ### S6-21 — гостевые доказательства запуска Linux SMP
 
+Для одно-vCPU проверки seed соберите штатный `od-runner`. Пример использует зафиксированное ядро S6-10 из локального каталога этапа 4 и initramfs наблюдения, который собирается из исходников фикстуры.
+
+```sh
+proof_dir=work/stage6/s6-21-seeded-cli
+mkdir -p "$proof_dir"
+python3 tools/build/build_stage6_smp_initramfs.py --out "$proof_dir/initramfs.cpio"
+cargo build --release --locked --offline -p od-runner
+kernel=work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic
+acpi=tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin
+nonce=SMPUpObservation20261119
+for attempt in first second; do
+  report="$proof_dir/seed-$attempt.json"
+  target/release/od-runner linux-direct --vmlinuz "$kernel" \
+    --initramfs "$proof_dir/initramfs.cpio" --acpi-blob "$acpi" \
+    --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+    --expected-initramfs-sha256 5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d \
+    --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+    --ram-mib 128 --nonce "$nonce" --out "$report" --run --budget 2500000000 \
+    --set-cpl0 --cpuid-profile stage4a --user-mode --vcpus 1 --seed 24301
+  python3 tools/build/build_stage6_smp_initramfs.py \
+    --verify-report "$report" --nonce "$nonce" --expect-online 1
+done
+cmp "$proof_dir/seed-first.json" "$proof_dir/seed-second.json"
+```
+
 Для зачётного прогона на двух vCPU передайте один raw JSON `linux-direct` и nonce, с которым стартовал гость.
 
 ```sh

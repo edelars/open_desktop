@@ -1116,6 +1116,9 @@ fn configuration_from_runner(runner: &Value) -> Value {
     {
         configuration["nonce_transport"] = json!("bootconfig");
     }
+    if let Some(scheduler) = runner.get("interleaved_scheduler") {
+        configuration["interleaved_scheduler"] = scheduler.clone();
+    }
     configuration
 }
 
@@ -5773,6 +5776,45 @@ mod tests {
         assert_eq!(configuration["linux_norandmaps"], true);
         assert_eq!(configuration["linux_no_randomize_kstack_offset"], true);
         assert_eq!(configuration["acceptance"], "diagnostic_not_counted");
+    }
+
+    #[test]
+    fn seeded_configuration_difference_is_visible_with_identical_stop_and_uart() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage6-seed-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = write_test_series(&temp, "seed", "nonceStage6Seed0001", "PASS");
+        let manifest = fresh_manifest(&path).unwrap();
+        let mut left = load_run_manifest(&path, &manifest.runs[0]).unwrap();
+        let raw_path = path.parent().unwrap().join(&left.runner.raw_json);
+        let mut raw: Value = serde_json::from_slice(&fs::read(raw_path).unwrap()).unwrap();
+        assert!(left.configuration.get("interleaved_scheduler").is_none());
+        raw["interleaved_scheduler"] = json!({"seed": 0, "vcpus": 1});
+        assert!(!configuration_matches_runner(&left.configuration, &raw));
+        left.configuration = configuration_from_runner(&raw);
+        assert!(configuration_matches_runner(&left.configuration, &raw));
+
+        let mut right = left.clone();
+        raw["interleaved_scheduler"]["seed"] = json!(1);
+        right.configuration = configuration_from_runner(&raw);
+        let (mut explained, mut unexplained) = (Vec::new(), Vec::new());
+        compare_run(
+            0,
+            &path,
+            &path,
+            &left,
+            &right,
+            &mut explained,
+            &mut unexplained,
+        )
+        .unwrap();
+        assert_eq!(unexplained, ["run[0].configuration differs"]);
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]

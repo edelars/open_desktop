@@ -1,0 +1,76 @@
+{
+  "task": "S6-21 CLI interleaved seed",
+  "platform": "MacBook Pro Mac15,11, Apple M3 Max ARM64, macOS 26.7.1 (25G241)",
+  "rustc": "1.99.0 (b940084d7 2026-09-28)",
+  "build": "cargo build --release --locked --offline -p od-runner",
+  "od_runner_sha256": "0212ef14fde55cd14fd078468152b9f43090c79e1d50fe5c220496dde01eb3ec",
+  "previous_runner_sha256": "67a6557df55538e9e0c924bc8258b2d3e1b31042e116124b3e3b4ec6444af1a6",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "6fc25b091348d8ad314bdd0f4f579ec9dd3969c961020a7a61d2daeb8dc26d4d",
+  "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+  "ram_mib": 128,
+  "prefix_without_seed": {
+    "budget": 1000000,
+    "retired": 1000000,
+    "exit_kind": "budget_exhausted",
+    "report_sha256": "dbee437dfc09e192f65d2994ba5fc5974542675fc74375c378d162a311bed33b",
+    "equal_reports": [
+      "previous runner",
+      "current runner",
+      "current runner with --vcpus 1"
+    ]
+  },
+  "vcpus_2": {
+    "exit_code": 3,
+    "guest_started": false,
+    "error": {
+      "code": "invalid_input",
+      "detail": "unsupported --vcpus 2: linux-direct currently requires one vCPU",
+      "stage": "arguments"
+    }
+  },
+  "seeded_pair": {
+    "mode": "two concurrent independent CLI processes",
+    "profile": "stage4a user-mode",
+    "seed": 24301,
+    "vcpus": 1,
+    "budget": 2500000000,
+    "identical_full_report_sha256": "19ce31754ca08c50d1656e062b1c761be16fa19c54a69017b21dbe26652e9e17",
+    "com1_bytes": 22939,
+    "com1_sha256": "c37f842b82a72fefedd36809791dc4a910195096c26a6d1bbdbe4514840fe596",
+    "stop": {
+      "exit_kind": "budget_exhausted",
+      "retired": 2499968232,
+      "quanta": 21033794,
+      "cpl3_retired": 6397,
+      "rip": "0xffffffff8158c45e",
+      "gpr": {
+        "r10": "0x0",
+        "r11": "0x0",
+        "r12": "0x0",
+        "r13": "0xa724f3e9eb",
+        "r14": "0xa724f3e9eb",
+        "r15": "0xffff888007821a80",
+        "r8": "0x0",
+        "r9": "0x0",
+        "rax": "0x4e3246",
+        "rbp": "0xffffc90000003e98",
+        "rbx": "0xffffffff83e0f200",
+        "rcx": "0x20",
+        "rdi": "0x0",
+        "rdx": "0x0",
+        "rsi": "0x7fff0017289e",
+        "rsp": "0xffffc90000003e70"
+      },
+      "virtual_ns": 720424647065
+    },
+    "guest_observation": {
+      "nonce": "SMPUpObservation20261119",
+      "online": "0",
+      "cpus": [
+        0
+      ]
+    }
+  }
+}
