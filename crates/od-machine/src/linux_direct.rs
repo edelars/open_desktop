@@ -4004,6 +4004,218 @@ mod tests {
         }
     }
 
+    // S4-41c-1: the host stop request.
+    fn host_stop_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    #[test]
+    fn s4_41c_an_unset_host_stop_request_changes_nothing_the_guest_or_the_record_can_see() {
+        // MOV ECX,1_500_000; L: DEC ECX; JNZ L; RDTSC; JMP $ . The clock of the board moves after a
+        // quantum, so a quantum that was cut in advance would show a different RDTSC. The request
+        // is only a predicate on the instruction boundary: the whole record, `quanta` included,
+        // is bit for bit that of a run without a request.
+        let code = [
+            0xB9, 0x60, 0xE3, 0x16, 0x00, 0xFF, 0xC9, 0x75, 0xFC, 0x0F, 0x31, 0xEB, 0xFE,
+        ];
+        let members = LinuxCpl0SetMembers::linux_default();
+        let budget = 3_100_000;
+        let (mut plain_boot, file) = boot_with_entry(&code);
+        let plain = run_set_facade(&mut plain_boot, &file, budget, members);
+        let (mut flagged_boot, _) = boot_with_entry(&code);
+        flagged_boot.board.set_host_stop(host_stop_flag());
+        let flagged = run_set_facade(&mut flagged_boot, &file, budget, members);
+        assert_eq!(plain.exit, PagedProbeExit::BudgetExhausted, "{plain:?}");
+        assert_eq!(flagged, plain);
+        assert_eq!(flagged_boot.board.state(), plain_boot.board.state());
+        assert!(!flagged_boot.board.take_host_stop_honoured());
+    }
+
+    #[test]
+    fn s4_41c_a_host_stop_request_set_before_the_run_ends_it_at_once() {
+        let (mut boot, file) = boot_with_entry(&[0xEB, 0xFE]);
+        let flag = host_stop_flag();
+        boot.board.set_host_stop(flag.clone());
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        let record = run_set_facade(&mut boot, &file, 10_000, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!(record.exit_kind, "budget_exhausted");
+        assert_eq!((record.retired, record.rip), (0, ENTRY));
+        assert!(boot.board.take_host_stop_honoured());
+        assert!(
+            !boot.board.take_host_stop_honoured(),
+            "the record is cleared by the take"
+        );
+        // The same guest state as an explicit budget of 0 (the diagnostic text of the last quantum
+        // and the quantum count may differ).
+        let (mut zero_boot, _) = boot_with_entry(&[0xEB, 0xFE]);
+        let zero = run_set_facade(&mut zero_boot, &file, 0, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            (
+                record.exit,
+                record.retired,
+                record.rip,
+                record.gpr,
+                record.rflags
+            ),
+            (zero.exit, zero.retired, zero.rip, zero.gpr, zero.rflags)
+        );
+        assert_eq!(record.com1, zero.com1);
+        assert_eq!(boot.board.state(), zero_boot.board.state());
+    }
+
+    #[test]
+    fn s4_41c_a_host_stop_request_mid_run_equals_a_run_with_that_budget() {
+        // MOV DX,0x3F8; MOV AL,'A'; OUT DX,AL; JMP $ : the first COM1 byte sets the request.
+        let code = [0x66, 0xBA, 0xF8, 0x03, 0xB0, 0x41, 0xEE, 0xEB, 0xFE];
+        let members = LinuxCpl0SetMembers {
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        let flag = host_stop_flag();
+        boot.board.set_host_stop(flag.clone());
+        let observed = flag.clone();
+        boot.board.set_com1_observer(move |_| {
+            observed.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let stopped = run_set_facade(&mut boot, &file, 100_000, members);
+        assert_eq!(stopped.exit, PagedProbeExit::BudgetExhausted, "{stopped:?}");
+        assert!(boot.board.take_host_stop_honoured(), "{stopped:?}");
+        assert!(
+            stopped.retired > 0 && stopped.retired < 100_000,
+            "stopped at {} of 100000",
+            stopped.retired
+        );
+        assert_eq!(stopped.com1, b"A");
+
+        // A fresh run with the retired count as its budget, no request and no observer: the
+        // guest state, the COM1 bytes and the exit are the same.
+        let (mut reference_boot, _) = boot_with_entry(&code);
+        let mut reference = run_set_facade(&mut reference_boot, &file, stopped.retired, members);
+        assert_eq!(
+            reference.exit,
+            PagedProbeExit::BudgetExhausted,
+            "{reference:?}"
+        );
+        assert!(!reference_boot.board.take_host_stop_honoured());
+        // Only the quantum count may differ: the stopped run starts one more, empty quantum after
+        // the one the request ended (it executes nothing and ends on the same predicate).
+        assert!(
+            stopped.quanta >= reference.quanta,
+            "{stopped:?} {reference:?}"
+        );
+        reference.quanta = stopped.quanta;
+        assert_eq!(reference, stopped);
+        assert_eq!(reference_boot.board.state(), boot.board.state());
+    }
+
+    #[test]
+    fn s4_41c_the_request_is_honoured_under_the_seeded_one_vcpu_scheduler_too() {
+        // Preset: nothing runs.
+        let (mut boot, file) = boot_with_entry(&[0xEB, 0xFE]);
+        boot.board.enable_seeded_linux_interleaved(6).unwrap();
+        let flag = host_stop_flag();
+        boot.board.set_host_stop(flag.clone());
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        let record = run_set_facade(&mut boot, &file, 10_000, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!(record.retired, 0);
+        assert!(boot.board.take_host_stop_honoured());
+
+        // Mid-run, set by the first COM1 byte: the same state as a run with that budget.
+        let code = [0x66, 0xBA, 0xF8, 0x03, 0xB0, 0x41, 0xEE, 0xEB, 0xFE];
+        let members = LinuxCpl0SetMembers {
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        boot.board.enable_seeded_linux_interleaved(6).unwrap();
+        let flag = host_stop_flag();
+        boot.board.set_host_stop(flag.clone());
+        let observed = flag.clone();
+        boot.board.set_com1_observer(move |_| {
+            observed.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let stopped = run_set_facade(&mut boot, &file, 100_000, members);
+        assert_eq!(stopped.exit, PagedProbeExit::BudgetExhausted, "{stopped:?}");
+        assert!(boot.board.take_host_stop_honoured());
+        assert!(
+            stopped.retired > 0 && stopped.retired < 100_000,
+            "{stopped:?}"
+        );
+        let (mut reference_boot, _) = boot_with_entry(&code);
+        reference_boot
+            .board
+            .enable_seeded_linux_interleaved(6)
+            .unwrap();
+        let mut reference = run_set_facade(&mut reference_boot, &file, stopped.retired, members);
+        reference.quanta = stopped.quanta;
+        reference.set_exit_detail = stopped.set_exit_detail.clone();
+        assert_eq!(reference, stopped);
+    }
+
+    #[test]
+    fn s4_41c_a_request_set_by_another_thread_ends_a_long_run_within_one_instruction_boundary() {
+        // JMP $ with a budget that would take far longer than the test: only the flag ends it, and
+        // it does so inside the quantum (the whole budget is one quantum without a device).
+        let (mut boot, file) = boot_with_entry(&[0xEB, 0xFE]);
+        let flag = host_stop_flag();
+        boot.board.set_host_stop(flag.clone());
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        let budget = 100_000_000_000;
+        let record = run_set_facade(&mut boot, &file, budget, LinuxCpl0SetMembers::minimal());
+        let elapsed = started.elapsed();
+        setter.join().unwrap();
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert!(boot.board.take_host_stop_honoured());
+        assert!(record.retired > 0 && record.retired < budget, "{record:?}");
+        assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+    }
+
+    /// Measurement for AGENTS.md ("decisions on hot paths need numbers"): the cost of the host stop
+    /// predicate on the instruction boundary. `cargo test -p od-machine --offline --release --lib
+    /// s4_41c_measure_the_stop_predicate_cost -- --ignored --nocapture`. Alternates the two variants
+    /// on the same scenario (JMP $, one long quantum) and prints ns per instruction for each.
+    #[test]
+    #[ignore = "measurement, not a check; run with --release --ignored --nocapture"]
+    fn s4_41c_measure_the_stop_predicate_cost() {
+        let budget = 20_000_000u64;
+        let run = |with_request: bool| {
+            let (mut boot, file) = boot_with_entry(&[0xEB, 0xFE]);
+            if with_request {
+                boot.board.set_host_stop(host_stop_flag());
+            }
+            let started = std::time::Instant::now();
+            let record = run_set_facade(&mut boot, &file, budget, LinuxCpl0SetMembers::minimal());
+            assert_eq!(record.retired, budget);
+            started.elapsed().as_secs_f64() * 1e9 / budget as f64
+        };
+        run(false); // warm up
+        let (mut without, mut with) = (Vec::new(), Vec::new());
+        for _ in 0..7 {
+            without.push(run(false));
+            with.push(run(true));
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        let (w0, w1) = (median(&mut without), median(&mut with));
+        eprintln!(
+            "ns/instruction without request {w0:.3} (min {:.3} max {:.3}); with request {w1:.3} (min {:.3} max {:.3}); ratio {:.4}",
+            without[0],
+            without[6],
+            with[0],
+            with[6],
+            w1 / w0
+        );
+    }
+
     #[test]
     fn s6_21_seed_controls_the_linux_quantum_cuts() {
         let run = |seed| {

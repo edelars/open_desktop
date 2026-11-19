@@ -1262,6 +1262,12 @@ pub struct LoadedFirmwareBoard {
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
     rdtsc_tick: Option<Arc<AtomicBool>>,
+    /// Host stop request (S4-41c-1): when set by another thread or a signal handler, the CPL0-set
+    /// loop ends the quantum at the next instruction boundary and the next quantum starts with an
+    /// empty budget (a budget exit). `None` (default) keeps the loop exactly as it was.
+    host_stop: Option<Arc<AtomicBool>>,
+    /// The latest run was ended by `host_stop` (cleared at the start of each run).
+    host_stop_honoured: bool,
     /// The source of maskable external interrupts (S4-38L8b). [`NoIrqSource`] (never a vector,
     /// never a deadline) until [`Self::enable_pit_pic_irq`] (S4-39g, user-mode run) installs the
     /// PIT -> 8259 source; consulted only by the CPL0-set loop and only when the run asks for the hook (`irq` member).
@@ -1716,6 +1722,21 @@ impl LoadedFirmwareBoard {
     /// machine or block. Installing another observer replaces the previous one.
     pub fn set_com1_observer(&mut self, observer: impl FnMut(u8) + Send + 'static) {
         self.com1_log.observer = Some(Box::new(observer));
+    }
+    /// Installs the host stop request (S4-41c-1). Setting the flag (from another thread or an
+    /// async-signal-safe handler: one atomic store) ends the current quantum at the next
+    /// instruction boundary; the next quantum starts with an empty budget, so the CPL0-set run
+    /// ends with the budget exit, and [`Self::take_host_stop_honoured`] says that the stop was
+    /// honoured. The quanta are not cut in advance: a run whose flag is never set is identical
+    /// to a run without a request. Only `run_linux_boot_cpl0_set*` looks at the request, on one
+    /// vCPU (also under the seeded one-vCPU scheduler); the multi-vCPU, threaded and parallel
+    /// runners ignore it.
+    pub fn set_host_stop(&mut self, flag: Arc<AtomicBool>) {
+        self.host_stop = Some(flag);
+    }
+    /// Whether the latest run was ended by the host stop request; clears the record.
+    pub fn take_host_stop_honoured(&mut self) -> bool {
+        std::mem::take(&mut self.host_stop_honoured)
     }
 
     /// Enables bounded diagnostic sampling at selected completed console-output lines.
@@ -2910,6 +2931,7 @@ impl LoadedFirmwareBoard {
         });
         let mut cpl3_retired = 0u64;
         let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
+        self.host_stop_honoured = false;
         self.com1_log.bytes.clear();
         self.console_context_snapshots.clear();
         if self.console_context_parser.is_some() {
@@ -3002,6 +3024,19 @@ impl LoadedFirmwareBoard {
                 }
                 partial_rep = false;
             }
+            // S4-41c-1: a host stop request (it also ended the previous quantum through the stop
+            // predicate) empties the remaining budget at this quantum boundary, so the quantum
+            // below executes nothing and the run ends with the ordinary budget exit (state as at
+            // this boundary). Once honoured it stays honoured.
+            if board.host_stop_honoured
+                || board
+                    .host_stop
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                board.host_stop_honoured = true;
+                remaining = 0;
+            }
             let uart = board.uart.clone();
             let clock_read = Cell::new(None);
             let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
@@ -3048,6 +3083,11 @@ impl LoadedFirmwareBoard {
                     }
                 }
             });
+            // S4-41c-1: the host stop request ends the quantum at the next instruction boundary
+            // (one relaxed load, only when a request is installed); the quantum is not cut in
+            // advance, so the guest-visible time and the quantum layout of a run whose request is
+            // never set are those of a run without a request.
+            let host_stop = board.host_stop.clone();
             let stop = || {
                 (scheduler_budget.is_some() && scheduler_stop())
                     || uart.holding_occupied()
@@ -3061,6 +3101,9 @@ impl LoadedFirmwareBoard {
                     || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
                     || rdtsc_tick
                         .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                    || host_stop
+                        .as_deref()
                         .is_some_and(|flag| flag.load(Ordering::Relaxed))
             };
             // S4-38L8b: the quantum ends at the next edge of the source; the clock moves only
@@ -4048,6 +4091,8 @@ impl AssembledBoard {
             console_context_snapshots: Vec::new(),
             uart_output_context: None,
             rdtsc_tick,
+            host_stop: None,
+            host_stop_honoured: false,
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,
@@ -4122,6 +4167,8 @@ impl AssembledBoard {
             console_context_snapshots: Vec::new(),
             uart_output_context: None,
             rdtsc_tick,
+            host_stop: None,
+            host_stop_honoured: false,
             irq_source: Box::new(NoIrqSource),
             pic_master,
             pit_pic_source: None,

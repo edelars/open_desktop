@@ -39,8 +39,9 @@ final class LinuxDirectXCTests: XCTestCase {
             + "\"error\": {\"code\": \"\(code)\", \"stage\": \"\(stage)\", \"detail\": \"d-\(code)\"}}"
     }
 
-    private func report(exitKind: String, retired: Int, com1: String, userMode: Bool = false) -> String {
+    private func report(exitKind: String, retired: Int, com1: String, userMode: Bool = false, hostStop: String? = nil) -> String {
         var stop = "\"exit_kind\": \"\(exitKind)\", \"retired\": \(retired), \"com1_text\": \"\(com1)\", \"rip\": \"0x1000\""
+        if let hostStop { stop += ", \"host_stop\": \(hostStop)" }
         if userMode {
             stop += ", \"user_mode\": true, \"cpl3_retired\": 7, \"syscall_journal\": {\"capacity\": 8, \"entered\": 2, \"returned\": 1, "
                 + "\"entries\": [{\"nr\": 1, \"rip\": \"0x401000\", \"rax_return\": \"0x1\"}, {\"nr\": 60, \"rip\": \"0x401010\", \"rax_return\": null}]}"
@@ -130,6 +131,67 @@ final class LinuxDirectXCTests: XCTestCase {
         ]))
         let arguments = try String(contentsOfFile: path("args"), encoding: .utf8)
         XCTAssertTrue(arguments.contains("--set-cpl0\n") && arguments.contains("--cpuid-profile\nstage4a\n") && arguments.contains("--user-mode\n"))
+    }
+
+    // MARK: S4-41c-2: stop is a status
+
+    func testTheStopOptionIsPassedOnlyWithSetCPL0() throws {
+        let plain = LinuxDirectProfileRunner(configuration: config(runner: try reportScript("plain", json: report(exitKind: "halted", retired: 1, com1: ""))))
+        _ = try plain.runSession()
+        XCTAssertFalse(try String(contentsOfFile: path("args"), encoding: .utf8).contains("--stop-on-sigterm"))
+        let set = LinuxDirectProfileRunner(configuration: config(
+            runner: try reportScript("set", json: report(exitKind: "halted", retired: 1, com1: "")), setCPL0: true))
+        _ = try set.runSession()
+        let arguments = try String(contentsOfFile: path("args"), encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertTrue(arguments.contains("--set-cpl0") && arguments.contains("--stop-on-sigterm"))
+        XCTAssertEqual(arguments.filter { $0 == "--stop-on-sigterm" }.count, 1)
+    }
+
+    func testHostStopOfTheReportIsStrictAndOnlyPrintedWhenTrue() throws {
+        let stopped = try LinuxDirectStatus.parse(report: Data(report(exitKind: "budget_exhausted", retired: 9, com1: "", hostStop: "true").utf8))
+        XCTAssertTrue(stopped.hostStop)
+        XCTAssertEqual(stopped.jsonObject["host_stop"] as? Bool, true)
+        let notStopped = try LinuxDirectStatus.parse(report: Data(report(exitKind: "budget_exhausted", retired: 9, com1: "", hostStop: "false").utf8))
+        XCTAssertFalse(notStopped.hostStop)
+        XCTAssertNil(notStopped.jsonObject["host_stop"])
+        let absent = try LinuxDirectStatus.parse(report: Data(report(exitKind: "budget_exhausted", retired: 9, com1: "").utf8))
+        XCTAssertFalse(absent.hostStop)
+        XCTAssertNil(absent.jsonObject["host_stop"])
+        for bad in ["1", "\"yes\"", "null"] {
+            XCTAssertThrowsError(try LinuxDirectStatus.parse(report: Data(report(exitKind: "budget_exhausted", retired: 9, com1: "", hostStop: bad).utf8)),
+                                 bad) { error in
+                guard case .runnerFailed? = error as? LinuxDirectError else { return XCTFail("\(error)") }
+            }
+        }
+    }
+
+    func testStopOfARunnerThatReportsItsStopIsAStatusNotAFailure() throws {
+        // The runner of S4-41c-1: SIGTERM ends the run, the report says `host_stop`, the exit code is 0.
+        let pidFile = path("reporting.pid")
+        let stopReport = path("stop-report.json")
+        try report(exitKind: "budget_exhausted", retired: 777, com1: "boot", hostStop: "true").write(toFile: stopReport, atomically: true, encoding: .utf8)
+        let reporting = try script("reporting", "trap 'cp \"\(stopReport)\" \"$out\"; exit 0' TERM\n"
+            + "echo $$ > \"\(pidFile).tmp\"; mv \"\(pidFile).tmp\" \"\(pidFile)\"\nwhile :; do sleep 0.1; done")
+        let runner = LinuxDirectProfileRunner(configuration: config(runner: reporting, setCPL0: true))
+        let finished = expectation(description: "session ends")
+        var outcome: Result<LinuxDirectStatus, Error>?
+        Thread {
+            outcome = Result { try runner.runSession() }
+            finished.fulfill()
+        }.start()
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: pidFile), Date() < deadline { usleep(5_000) }
+        usleep(100_000) // the trap is set before the pid file is written
+        try runner.stop()
+        wait(for: [finished], timeout: 10)
+        guard case .success(let status)? = outcome else { return XCTFail("a stop that was reported came back as \(String(describing: outcome))") }
+        XCTAssertTrue(status.hostStop)
+        XCTAssertEqual(status.exitKind, "budget_exhausted")
+        XCTAssertEqual(status.retired, 777)
+        XCTAssertEqual(status.com1Text, "boot")
+        XCTAssertEqual(runner.lastStatus, status)
+        assertGone(runner.lastChildPID)
+        XCTAssertEqual(leftoverSessionDirectories(), [])
     }
 
     func testGuestFaultIsAResultNotACrash() throws {

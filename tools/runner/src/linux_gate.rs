@@ -18,7 +18,25 @@
 //! * `stop.syscall_journal` is exactly mkdir(83), mount(165), openat(257), read(0), close(3),
 //!   write(1), getpid(39), nanosleep(35), exit(60) as in `init.S`, every call but the last has
 //!   returned, the last (`exit`) has not, nothing overflowed, and `write` returned the length of
-//!   `OD_NONCE=<nonce>\n`.
+//!   `OD_NONCE=<nonce>\n`;
+//! * (ISSUE-098) `cpuid_profile`: the report names the expected CPUID profile (default
+//!   `X8664V1Stage4A`, `--expected-cpuid-profile` for another one); `acceptance_consistent`: a
+//!   `counted` report has `diagnostic_past_c7` false in the report and in `stop`;
+//! * (ISSUE-098) `exit_kind`: `stop.exit_kind` is `budget_exhausted`, the end the board produces
+//!   in the panic loop (any other end, including a missing field, fails); `no_machine_fault`:
+//!   `machine_stop_reason`, `memory_error`, `unsupported_opcode`, `page_fault` and
+//!   `cpuid_divergence_leaf` are present and `null`;
+//! * (ISSUE-098) `timer_irq`: `irq0_edges`, `irqs_delivered` and `cpl3_retired` are each at least 1,
+//!   and `journal_nanosleep`: `nanosleep` returned 0. `irq0_edges` counts edges of the IRQ0 source,
+//!   not deliveries to the CPU, and `irqs_delivered` counts every external IRQ (UART IRQ4 too), and
+//!   neither is split by CPL: this is evidence that the timer ticked and some external IRQs were
+//!   delivered, NOT that IRQ0 was delivered or that an IRQ was taken from CPL3 (S4-39h, ISSUE-090);
+//! * (ISSUE-092) `nonce_fresh`: with `--used-nonces <file>` (one nonce per line, `#` comments) the
+//!   run's nonce is not in the list of earlier accepted runs. The gate only reads the file; a
+//!   malformed entry (`,`, `;`, whitespace, control characters) is an argument error, a trailing
+//!   `# comment` and a BOM are tolerated. Without the option the check does not fail and its detail
+//!   says `NOT CHECKED` (the verdict's `expected.used_nonces_checked` is false). The gate cannot
+//!   tell a fresh nonce from a reused one on its own: the operator keeps the list.
 //!
 //! The journal entry has no `rdi`: the exit code of `exit()` is checked through the kernel's
 //! `exitcode=0x00000000` in the panic line (for `exit(n)` the kernel prints `(n & 0xff) << 8`),
@@ -42,13 +60,29 @@ use std::process::ExitCode;
 
 const USAGE: &str = "linux-direct-gate --report <json> --nonce <token> \
 --expected-vmlinuz-sha256 <hex> --expected-initramfs-sha256 <hex> \
---expected-acpi-manifest-hash <hex> [--out <json>] [--allow-diagnostic-acceptance]";
+--expected-acpi-manifest-hash <hex> [--expected-cpuid-profile <name>] [--used-nonces <file>] \
+[--out <json>] [--allow-diagnostic-acceptance]";
 
 /// The syscalls of `/init` (tests/fixtures/guest/stage4/initramfs/init.S) in order.
 const EXPECTED_SYSCALLS: [u64; 9] = [83, 165, 257, 0, 3, 1, 39, 35, 60];
 const SYS_WRITE: u64 = 1;
 const SYS_EXIT: u64 = 60;
 const PANIC_LINE: &str = "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000";
+const SYS_NANOSLEEP: u64 = 35;
+/// The profile of the counted S4-39j run (`X8664V1Stage4A`, 8259 PIC, no APIC).
+const DEFAULT_CPUID_PROFILE: &str = "X8664V1Stage4A";
+/// The only accepted end of the scenario: the instruction budget runs out while the kernel loops
+/// in the `Attempted to kill init!` panic. A terminal `user_exit` stop is not produced by the
+/// board; if it is added, it is added here together with its evidence.
+const ACCEPTED_EXIT_KIND: &str = "budget_exhausted";
+/// `stop` fields that name a machine failure; each must be present and `null` in a PASS.
+const FAULT_FIELDS: [&str; 5] = [
+    "machine_stop_reason",
+    "memory_error",
+    "unsupported_opcode",
+    "page_fault",
+    "cpuid_divergence_leaf",
+];
 
 struct Options {
     report: String,
@@ -58,6 +92,11 @@ struct Options {
     acpi_manifest_hash: String,
     out: Option<String>,
     allow_diagnostic: bool,
+    /// The CPUID profile the report must name (`--expected-cpuid-profile`, default stage4a).
+    cpuid_profile: String,
+    /// Nonces of earlier accepted runs (`--used-nonces <file>`, one per line); the run's nonce
+    /// must not be among them. The gate only reads the file.
+    used_nonces: Option<Vec<String>>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -103,6 +142,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut initramfs = None;
     let mut acpi = None;
     let mut out = None;
+    let mut cpuid_profile = None;
+    let mut used_nonces_file = None;
     let mut allow_diagnostic = false;
     let mut index = 0;
     while index < args.len() {
@@ -121,6 +162,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--expected-initramfs-sha256" => &mut initramfs,
             "--expected-acpi-manifest-hash" => &mut acpi,
             "--out" => &mut out,
+            "--expected-cpuid-profile" => &mut cpuid_profile,
+            "--used-nonces" => &mut used_nonces_file,
             _ => return Err(format!("unknown option {name}; usage: {USAGE}")),
         };
         let value = args
@@ -135,13 +178,24 @@ fn parse(args: &[String]) -> Result<Options, String> {
         value.ok_or_else(|| format!("missing {name}; usage: {USAGE}"))
     };
     let nonce = need(nonce, "--nonce")?;
-    if nonce.is_empty()
-        || nonce
-            .bytes()
-            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
-    {
+    if !is_token(&nonce) {
         return Err("--nonce must be a non-empty token without whitespace".to_string());
     }
+    let cpuid_profile = cpuid_profile.unwrap_or_else(|| DEFAULT_CPUID_PROFILE.to_string());
+    if cpuid_profile.is_empty() || cpuid_profile.bytes().any(|b| b.is_ascii_whitespace()) {
+        return Err("--expected-cpuid-profile must be a non-empty token".to_string());
+    }
+    let used_nonces = match used_nonces_file {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|error| format!("--used-nonces {path}: {error}"))?;
+            Some(
+                parse_used_nonces(&text)
+                    .map_err(|error| format!("--used-nonces {path}: {error}"))?,
+            )
+        }
+        None => None,
+    };
     Ok(Options {
         report: need(report, "--report")?,
         nonce,
@@ -150,7 +204,39 @@ fn parse(args: &[String]) -> Result<Options, String> {
         acpi_manifest_hash: parse_sha256(&need(acpi, "--expected-acpi-manifest-hash")?)?,
         out,
         allow_diagnostic,
+        cpuid_profile,
+        used_nonces,
     })
+}
+
+/// A non-empty token without whitespace and control characters.
+fn is_token(text: &str) -> bool {
+    !text.is_empty()
+        && !text
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+}
+
+/// The `--used-nonces` file: one nonce per line; a leading BOM is dropped; everything from `#` to
+/// the end of the line is a comment; blank lines are skipped. An entry that is not a token, or
+/// that holds a list separator (`,` or `;`), is an error: a malformed entry must not turn into a
+/// nonce that silently matches nothing.
+fn parse_used_nonces(text: &str) -> Result<Vec<String>, String> {
+    let mut nonces = Vec::new();
+    for (index, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+        let entry = line.split('#').next().unwrap_or("").trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if !is_token(entry) || entry.contains([',', ';']) {
+            return Err(format!(
+                "line {}: '{entry}' is not a single nonce token (one nonce per line, `#` starts a comment)",
+                index + 1
+            ));
+        }
+        nonces.push(entry.to_string());
+    }
+    Ok(nonces)
 }
 
 /// A lowercase 64-digit hex string.
@@ -246,6 +332,93 @@ fn check_report(report: &Value, report_sha256: &str, options: &Options) -> Value
         format!(
             "report nonce={}, cmdline has {token} and matches guest memory: {cmdline_ok}",
             report["nonce"]
+        ),
+    );
+
+    // Nonce freshness (ISSUE-092): the nonce was not used by an earlier accepted run.
+    // Without `--used-nonces` nothing is checked: the check does not fail, and says so.
+    let reused = options
+        .used_nonces
+        .as_ref()
+        .is_some_and(|used| used.iter().any(|used| *used == options.nonce));
+    checks.add(
+        "nonce_fresh",
+        !reused,
+        match &options.used_nonces {
+            None => format!(
+                "NOT CHECKED: --used-nonces not given, the freshness of nonce {} is unknown",
+                options.nonce
+            ),
+            Some(_) if reused => format!("nonce {} is already in --used-nonces", options.nonce),
+            Some(used) => format!(
+                "nonce {} is not among the {} nonce(s) in --used-nonces",
+                options.nonce,
+                used.len()
+            ),
+        },
+    );
+
+    // The CPUID profile of the run (ISSUE-098): a PASS is a claim about one profile.
+    checks.add(
+        "cpuid_profile",
+        report["cpuid_profile"].as_str() == Some(options.cpuid_profile.as_str()),
+        format!(
+            "report cpuid_profile={}, expected \"{}\"",
+            report["cpuid_profile"], options.cpuid_profile
+        ),
+    );
+    // A `counted` report cannot come from a run that went past C7: the flag must be present and
+    // false in the report and in `stop`. A diagnostic report is not held to this (it is the
+    // diagnostic path that `--allow-diagnostic-acceptance` opens).
+    let consistent = acceptance != Some("counted")
+        || (report["diagnostic_past_c7"] == json!(false)
+            && stop["diagnostic_past_c7"] == json!(false));
+    checks.add(
+        "acceptance_consistent",
+        consistent,
+        format!(
+            "acceptance={:?}, diagnostic_past_c7: report={}, stop={}; counted needs both false",
+            acceptance, report["diagnostic_past_c7"], stop["diagnostic_past_c7"]
+        ),
+    );
+
+    // How the run ended (ISSUE-098): the accepted end, and no machine failure behind it.
+    checks.add(
+        "exit_kind",
+        stop["exit_kind"].as_str() == Some(ACCEPTED_EXIT_KIND),
+        format!(
+            "stop.exit_kind={}, expected \"{ACCEPTED_EXIT_KIND}\"",
+            stop["exit_kind"]
+        ),
+    );
+    let faults: Vec<String> = FAULT_FIELDS
+        .iter()
+        .filter(|field| stop.get(**field) != Some(&Value::Null))
+        .map(|field| format!("{field}={}", stop.get(*field).unwrap_or(&json!("<absent>"))))
+        .collect();
+    checks.add(
+        "no_machine_fault",
+        faults.is_empty(),
+        if faults.is_empty() {
+            format!("{FAULT_FIELDS:?} are all present and null")
+        } else {
+            format!("fields that are absent or not null: {}", faults.join(", "))
+        },
+    );
+
+    // Timer and user-code evidence (ISSUE-098). The report counts external interrupts, not their
+    // CPL, so this is evidence that the timer ran and was delivered, and that CPL3 code retired;
+    // an IRQ taken from CPL3 is not isolated here (S4-39h, ISSUE-090).
+    let counter = |name: &str| stop[name].as_u64().unwrap_or(0);
+    let timer_ok = counter("irq0_edges") >= 1
+        && counter("irqs_delivered") >= 1
+        && counter("cpl3_retired") >= 1;
+    checks.add(
+        "timer_irq",
+        timer_ok,
+        format!(
+            "irq0_edges={}, irqs_delivered={}, cpl3_retired={}, each expected >= 1",
+            stop["irq0_edges"], stop["irqs_delivered"], stop["cpl3_retired"]
         ),
     );
 
@@ -350,6 +523,9 @@ fn check_report(report: &Value, report_sha256: &str, options: &Options) -> Value
             "vmlinuz_sha256": options.vmlinuz_sha256,
             "initramfs_sha256": options.initramfs_sha256,
             "acpi_manifest_hash": options.acpi_manifest_hash,
+            "cpuid_profile": options.cpuid_profile,
+            "used_nonces_checked": options.used_nonces.is_some(),
+            "used_nonces_count": options.used_nonces.as_ref().map(Vec::len),
         },
         "acceptance": report["acceptance"],
         "exit_kind": stop["exit_kind"],
@@ -426,6 +602,18 @@ fn check_journal(stop: &Value, options: &Options, checks: &mut Checks) {
         exit_ok,
         format!("last entry {last}, expected exit(60) that did not return, rdi absent or 0x0"),
     );
+    // `nanosleep` is the user-visible timer effect: it returns 0 only after the sleep finished.
+    let sleep = entries
+        .iter()
+        .find(|entry| entry["nr"].as_u64() == Some(SYS_NANOSLEEP));
+    checks.add(
+        "journal_nanosleep",
+        sleep.and_then(|entry| parse_hex(&entry["rax_return"])) == Some(0),
+        format!(
+            "nanosleep rax_return={}, expected \"0x0\"",
+            sleep.map_or(Value::Null, |entry| entry["rax_return"].clone())
+        ),
+    );
     let want = (format!("OD_NONCE={}\n", options.nonce)).len() as u64;
     let write = entries
         .iter()
@@ -456,6 +644,8 @@ mod tests {
             acpi_manifest_hash: ACPI.to_string(),
             out: None,
             allow_diagnostic: false,
+            cpuid_profile: DEFAULT_CPUID_PROFILE.to_string(),
+            used_nonces: None,
         }
     }
 
@@ -490,12 +680,23 @@ mod tests {
             "nonce": NONCE,
             "cmdline": format!("console=ttyS0 od.nonce={NONCE} nokaslr"),
             "cmdline_in_memory_matches": true,
+            "cpuid_profile": DEFAULT_CPUID_PROFILE,
+            "diagnostic_past_c7": false,
             "inputs": {"vmlinuz": {"sha256": VMLINUZ}, "initramfs": {"sha256": INITRAMFS}},
             "memory_sha256": {"initrd": INITRAMFS},
             "acpi": {"manifest_hash": ACPI},
             "stop": {
                 "user_mode": true,
                 "exit_kind": "budget_exhausted",
+                "diagnostic_past_c7": false,
+                "machine_stop_reason": null,
+                "memory_error": null,
+                "unsupported_opcode": null,
+                "page_fault": null,
+                "cpuid_divergence_leaf": null,
+                "irq0_edges": 34799,
+                "irqs_delivered": 34804,
+                "cpl3_retired": 796,
                 "com1_text": com1,
                 "syscall_journal": journal(),
                 "inputs": {
@@ -1076,5 +1277,274 @@ mod tests {
             assert_eq!(value["counted"], true);
             assert_eq!(value["exit_kind"], "budget_exhausted");
         }
+    }
+
+    // ---- ISSUE-098 / ISSUE-092: exit kind, CPUID profile, machine faults, timer, nonce reuse ----
+
+    #[test]
+    fn s4_40_an_end_other_than_the_accepted_one_fails_exit_kind() {
+        for kind in [
+            "user_exit",
+            "halted",
+            "shutdown",
+            "stopped",
+            "unsupported",
+            "",
+        ] {
+            let mut report = good();
+            report["stop"]["exit_kind"] = json!(kind);
+            failed(&report, "exit_kind");
+        }
+        let mut report = good();
+        report["stop"]["exit_kind"] = Value::Null;
+        failed(&report, "exit_kind");
+        report["stop"].as_object_mut().unwrap().remove("exit_kind");
+        failed(&report, "exit_kind");
+    }
+
+    #[test]
+    fn s4_40_a_machine_failure_field_fails_even_with_a_clean_log() {
+        // COM1 and the journal are perfect; the machine nevertheless reports a failure.
+        for (field, value) in [
+            ("machine_stop_reason", json!("shutdown")),
+            ("memory_error", json!({"gpa": "0x1000"})),
+            ("unsupported_opcode", json!("0xfc")),
+            ("page_fault", json!({"cr2": "0x0"})),
+            ("cpuid_divergence_leaf", json!("0x1")),
+        ] {
+            let mut report = good();
+            report["stop"][field] = value;
+            failed(&report, "no_machine_fault");
+        }
+        // A field that is absent is not "no failure": a schema change must not pass silently.
+        for field in FAULT_FIELDS {
+            let mut report = good();
+            report["stop"].as_object_mut().unwrap().remove(field);
+            failed(&report, "no_machine_fault");
+        }
+    }
+
+    #[test]
+    fn s4_40_a_wrong_cpuid_profile_fails() {
+        for profile in [
+            json!("X8664V1Stage4AApic"),
+            json!("X8664V1"),
+            json!(""),
+            Value::Null,
+        ] {
+            let mut report = good();
+            report["cpuid_profile"] = profile;
+            failed(&report, "cpuid_profile");
+        }
+        let mut report = good();
+        report.as_object_mut().unwrap().remove("cpuid_profile");
+        failed(&report, "cpuid_profile");
+    }
+
+    #[test]
+    fn s4_40_a_counted_report_from_a_run_past_c7_fails() {
+        // `acceptance: counted` contradicts a run that went past C7 (or does not say).
+        let mut report = good();
+        report["diagnostic_past_c7"] = json!(true);
+        failed(&report, "acceptance_consistent");
+        let mut report = good();
+        report["stop"]["diagnostic_past_c7"] = json!(true);
+        failed(&report, "acceptance_consistent");
+        let mut report = good();
+        report.as_object_mut().unwrap().remove("diagnostic_past_c7");
+        failed(&report, "acceptance_consistent");
+        let mut report = good();
+        report["stop"]
+            .as_object_mut()
+            .unwrap()
+            .remove("diagnostic_past_c7");
+        failed(&report, "acceptance_consistent");
+        // The same flags are the normal content of a diagnostic report: allowed, not counted.
+        let mut report = good();
+        report["acceptance"] = json!("diagnostic_not_counted");
+        report["diagnostic_past_c7"] = json!(true);
+        report["stop"]["diagnostic_past_c7"] = json!(true);
+        let mut allowing = options();
+        allowing.allow_diagnostic = true;
+        let value = check_report(&report, "00", &allowing);
+        assert_eq!(value["verdict"], "PASS_DIAGNOSTIC_NOT_COUNTED", "{value:#}");
+        assert_eq!(value["counted"], false);
+    }
+
+    #[test]
+    fn s4_40_the_expected_cpuid_profile_is_the_one_named_on_the_command_line() {
+        let mut report = good();
+        report["cpuid_profile"] = json!("X8664V1Stage4AApic");
+        let mut apic = options();
+        apic.cpuid_profile = "X8664V1Stage4AApic".to_string();
+        assert_eq!(check_report(&report, "00", &apic)["verdict"], "PASS");
+        // The default expectation does not accept the APIC profile, and the other way round.
+        assert_eq!(check_report(&report, "00", &options())["verdict"], "FAIL");
+        assert_eq!(check_report(&good(), "00", &apic)["verdict"], "FAIL");
+    }
+
+    #[test]
+    fn s4_40_a_run_without_timer_interrupts_fails() {
+        // The disabled IRQ route: the PIT never reached the CPU.
+        let mut report = good();
+        report["stop"]["irq0_edges"] = json!(0);
+        report["stop"]["irqs_delivered"] = json!(0);
+        failed(&report, "timer_irq");
+        // Edges counted but nothing delivered (masked, shadowed, refused).
+        let mut report = good();
+        report["stop"]["irqs_delivered"] = json!(0);
+        failed(&report, "timer_irq");
+        // Delivered interrupts of another source do not stand for the timer.
+        let mut report = good();
+        report["stop"]["irq0_edges"] = json!(0);
+        failed(&report, "timer_irq");
+        // No user code retired at all.
+        let mut report = good();
+        report["stop"]["cpl3_retired"] = json!(0);
+        failed(&report, "timer_irq");
+        for field in ["irq0_edges", "irqs_delivered", "cpl3_retired"] {
+            let mut report = good();
+            report["stop"].as_object_mut().unwrap().remove(field);
+            failed(&report, "timer_irq");
+        }
+    }
+
+    #[test]
+    fn s4_40_a_nanosleep_that_did_not_complete_fails() {
+        // Not returned: the journal check for returns fails as well.
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][7]["rax_return"] = Value::Null;
+        failed(&report, "journal_nanosleep");
+        failed(&report, "journal_returns");
+        // Returned with an error (EINTR, -4).
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][7]["rax_return"] = json!("0xfffffffffffffffc");
+        failed(&report, "journal_nanosleep");
+        // No nanosleep in the journal.
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][7]["nr"] = json!(2);
+        failed(&report, "journal_nanosleep");
+    }
+
+    #[test]
+    fn s4_40_a_reused_nonce_fails_and_a_fresh_one_passes() {
+        let mut used = options();
+        used.used_nonces = Some(vec!["s4-38l4z".to_string(), NONCE.to_string()]);
+        let value = check_report(&good(), "00", &used);
+        assert_eq!(value["verdict"], "FAIL", "{value:#}");
+        assert!(
+            value["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap().starts_with("nonce_fresh:")),
+            "{value:#}"
+        );
+        // A similar nonce is not the same nonce.
+        let mut other = options();
+        other.used_nonces = Some(vec![format!("{NONCE}x"), "s4-38l4".to_string()]);
+        assert_eq!(check_report(&good(), "00", &other)["verdict"], "PASS");
+        // No list given: the check is reported and passes (the operator did not ask for it).
+        let value = verdict(&good());
+        let check = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "nonce_fresh")
+            .unwrap();
+        assert_eq!(check["ok"], true);
+        assert!(
+            check["detail"].as_str().unwrap().starts_with("NOT CHECKED"),
+            "{check}"
+        );
+        assert_eq!(value["expected"]["used_nonces_checked"], false);
+        assert_eq!(value["expected"]["cpuid_profile"], DEFAULT_CPUID_PROFILE);
+        // With a list the verdict says so.
+        let mut listed = options();
+        listed.used_nonces = Some(vec!["other".to_string()]);
+        let value = check_report(&good(), "00", &listed);
+        assert_eq!(value["expected"]["used_nonces_checked"], true);
+        assert_eq!(value["expected"]["used_nonces_count"], 1);
+    }
+
+    #[test]
+    fn the_used_nonces_file_has_one_strict_format() {
+        // Comments, blank lines, CRLF, surrounding spaces and a BOM are accepted.
+        let text = "\u{feff}# accepted runs\r\ns4-39-run-1\r\n\r\n  s4-39-run-2  # cold2\n";
+        assert_eq!(
+            parse_used_nonces(text).unwrap(),
+            ["s4-39-run-1", "s4-39-run-2"]
+        );
+        // A trailing comment must not hide the nonce (it would pass as fresh).
+        assert_eq!(parse_used_nonces("s4-38l4a # cold1").unwrap(), [NONCE]);
+        assert_eq!(parse_used_nonces("\u{feff}s4-38l4a").unwrap(), [NONCE]);
+        assert!(parse_used_nonces("").unwrap().is_empty());
+        // Anything that is not one nonce per line is an error, never a silent non-match.
+        for bad in [
+            "s4-38l4a,s4-x",
+            "s4-38l4a;s4-x",
+            "s4-38l4a s4-x",
+            "s4\u{0}x",
+        ] {
+            assert!(parse_used_nonces(bad).is_err(), "{bad:?}");
+        }
+        // End to end: a reused nonce hidden behind a comment is refused by the gate.
+        let mut used = options();
+        used.used_nonces = Some(parse_used_nonces("s4-38l4a # cold1\n").unwrap());
+        assert_eq!(check_report(&good(), "00", &used)["verdict"], "FAIL");
+    }
+
+    fn args(extra: &[&str]) -> Vec<String> {
+        let hex = "ab".repeat(32);
+        let mut all: Vec<String> = [
+            "--report",
+            "report.json",
+            "--nonce",
+            NONCE,
+            "--expected-vmlinuz-sha256",
+            &hex,
+            "--expected-initramfs-sha256",
+            &hex,
+            "--expected-acpi-manifest-hash",
+            &hex,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        all.extend(extra.iter().map(|s| s.to_string()));
+        all
+    }
+
+    #[test]
+    fn the_new_options_are_parsed_and_validated() {
+        let options = parse(&args(&[])).unwrap();
+        assert_eq!(options.cpuid_profile, DEFAULT_CPUID_PROFILE);
+        assert!(options.used_nonces.is_none());
+
+        let options = parse(&args(&["--expected-cpuid-profile", "X8664V1Stage4AApic"])).unwrap();
+        assert_eq!(options.cpuid_profile, "X8664V1Stage4AApic");
+        assert!(parse(&args(&["--expected-cpuid-profile", ""])).is_err());
+        assert!(parse(&args(&["--expected-cpuid-profile", "a b"])).is_err());
+        assert!(
+            parse(&args(&[
+                "--expected-cpuid-profile",
+                "A",
+                "--expected-cpuid-profile",
+                "B"
+            ]))
+            .is_err()
+        );
+
+        let path = std::env::temp_dir().join(format!("od-gate-used-nonces-{}", std::process::id()));
+        std::fs::write(&path, "# accepted runs\ns4-39-run-1\n\n  s4-39-run-2  \n").unwrap();
+        let path_text = path.to_str().unwrap();
+        let options = parse(&args(&["--used-nonces", path_text])).unwrap();
+        assert_eq!(
+            options.used_nonces.as_deref(),
+            Some(&["s4-39-run-1".to_string(), "s4-39-run-2".to_string()][..])
+        );
+        std::fs::remove_file(&path).unwrap();
+        // An unreadable list is an invalid argument, not an empty list (no silent skip).
+        assert!(parse(&args(&["--used-nonces", path_text])).is_err());
     }
 }
