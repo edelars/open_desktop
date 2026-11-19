@@ -52099,6 +52099,52 @@ fn firmware_boot_inc_dec_qword_preserve_cf_and_its_definedness() {
 }
 
 #[test]
+fn firmware_boot_qword_add_from_memory_commits_only_after_read() {
+    let code = [0x48, 0x03, 0x44, 0x24, 0x60];
+    let address = DATA + 0x60;
+    let position = DATA_PHYSICAL + 0x60;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[position..position + 8].copy_from_slice(&1u64.to_le_bytes());
+        if faulted {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rax as usize] = u64::MAX;
+        cpu.rflags = 0x602;
+        let mut expected = cpu.clone();
+        let (expected_exit, expected_defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0x657;
+            expected.gpr[Register::Rax as usize] = 0;
+            (PagedProbeExit::Retired, DEFINED | 0x10)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, expected_defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
 fn firmware_boot_qword_add_to_memory_commits_only_after_write() {
     let code = [0x48, 0x01, 0x44, 0x24, 0x30];
     let address = DATA + 0x30;
@@ -52216,7 +52262,7 @@ fn firmware_boot_qword_cmov_reads_the_condition_and_preserves_flags() {
 }
 
 #[test]
-fn firmware_boot_shr_qword_masks_count_and_defines_only_architectural_flags() {
+fn firmware_boot_shifts_qword_mask_count_and_define_only_architectural_flags() {
     const ARITHMETIC_FLAGS: u64 = 0x8d5;
     const SHIFT_DEFINED: u64 = 0x0c5;
     for (code, reg, input, value, flags, initial_defined, defined) in [
@@ -52246,6 +52292,24 @@ fn firmware_boot_shr_qword_masks_count_and_defines_only_architectural_flags() {
             ARITHMETIC_FLAGS,
             0x010,
             0x010,
+        ),
+        (
+            [0x48, 0xc1, 0xe0, 0x0c],
+            Register::Rax,
+            0x12_3456,
+            0x1_2345_6000,
+            0x004,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            [0x49, 0xc1, 0xe0, 0x01],
+            Register::R8,
+            0x4000_0000_0000_0001,
+            0x8000_0000_0000_0002,
+            0x880,
+            0,
+            SHIFT_DEFINED | 0x800,
         ),
     ] {
         let mut memory = Memory::new(&code);
@@ -53179,7 +53243,7 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
         (&[0x49, 0x83, 0xd3, 0x28][..], 0x83),       // ADC R11,0x28
         (&[0x48, 0x83, 0x03, 0x28][..], 0x83),       // ADD qword [RBX],0x28
-        (&[0x48, 0x03, 0x13][..], 0x03),             // ADD RDX,[RBX]
+        (&[0x03, 0x13][..], 0x03),                   // ADD EDX,[RBX]
         (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),       // ADC SI,-1
         (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
         (&[0x88, 0x58, 0x4c][..], 0x88),             // byte register store

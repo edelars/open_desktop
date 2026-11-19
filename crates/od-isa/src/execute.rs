@@ -20144,9 +20144,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: the firmware maps physical ranges with qword SHR by an immediate.
+        // S7-04: the firmware counts page-table blocks with qword immediate shifts.
         Operation::Shift {
-            kind: kind @ ShiftKind::Shr,
+            kind: kind @ (ShiftKind::Shl | ShiftKind::Shr),
             dst: Operand::Register(destination),
             source: None,
             count: Operand::Immediate(immediate),
@@ -20223,55 +20223,56 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: ordinary CMP with one memory operand reads before changing flags.
-        Operation::Arithmetic {
-            kind: ArithmeticKind::Cmp,
-            dst,
-            src,
-        } if firmware_boot_profile
-            && matches!(
-                (dst, src),
-                (Operand::Memory(_), Operand::Register(_))
-                    | (Operand::Register(_), Operand::Memory(_))
-            )
-            && instruction.opcode.map == OpcodeMap::Primary
-            && matches!(
-                (instruction.opcode.byte, instruction.operand_size),
-                (0x38 | 0x3a, OperandSize::Byte)
+        // S7-04: CMP with one memory operand and qword ADD from memory to a register.
+        Operation::Arithmetic { kind, dst, src }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && match (kind, instruction.opcode.byte, instruction.operand_size) {
+                    (ArithmeticKind::Cmp, 0x38 | 0x3a, OperandSize::Byte)
                     | (
+                        ArithmeticKind::Cmp,
                         0x39 | 0x3b,
-                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
-                    )
-            )
-            && instruction.address_size == OperandSize::Qword
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: instruction.prefixes.rex,
-                    operand_override: instruction.operand_size == OperandSize::Word,
-                    ..Prefixes::default()
-                }) =>
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword,
+                    ) => matches!(
+                        (dst, src),
+                        (Operand::Memory(_), Operand::Register(_))
+                            | (Operand::Register(_), Operand::Memory(_))
+                    ),
+                    (ArithmeticKind::Add, 0x03, OperandSize::Qword) => {
+                        matches!((dst, src), (Operand::Register(_), Operand::Memory(_)))
+                    }
+                    _ => false,
+                }
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
+                        ..Prefixes::default()
+                    }) =>
         {
-            let comparison = (|| {
+            let arithmetic = (|| {
                 let lhs = read_operand(state, memory, context, next_rip, dst)?;
                 let rhs = read_operand(state, memory, context, next_rip, src)?;
-                Ok::<_, MemoryError>(
-                    arithmetic_result(
-                        instruction.operand_size,
-                        ArithmeticKind::Cmp,
-                        lhs,
-                        rhs,
-                        state.rflags,
-                    )
-                    .1,
-                )
+                Ok::<_, MemoryError>(arithmetic_result(
+                    instruction.operand_size,
+                    kind,
+                    lhs,
+                    rhs,
+                    state.rflags,
+                ))
             })();
-            state.rflags = match comparison {
-                Ok(flags) => flags,
+            let (value, flags) = match arithmetic {
+                Ok(result) => result,
                 Err(MemoryError::Architectural(fault)) => {
                     return result(PagedProbeExit::Fault(fault), 0);
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
+            if let (ArithmeticKind::Add, Operand::Register(destination)) = (kind, dst) {
+                state.write(destination, value);
+            }
+            state.rflags = flags;
             state.rip = next_rip;
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,
