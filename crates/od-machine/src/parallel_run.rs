@@ -423,6 +423,7 @@ struct SharedState<'a> {
     /// A7 of S6-40: the boot processor locks the board interrupt source per operation during a
     /// host quantum. The ordinary interpreter quantum takes the lock across the call.
     source_free: bool,
+    refresh_device_lines: bool,
     kicks: Arc<Kicks>,
     cells: Vec<Cell>,
     /// The controller asks every vCPU to stand still.
@@ -534,6 +535,25 @@ impl SharedState<'_> {
         }
         self.finish_with(ParallelFinish::BudgetExhausted);
         true
+    }
+
+    fn refresh_device_lines_until_stop(&self, cpu: usize) -> bool {
+        loop {
+            let refreshed = match self.irq.try_lock() {
+                Ok(source) => source.try_refresh_device_lines(),
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    error.into_inner().try_refresh_device_lines()
+                }
+                Err(std::sync::TryLockError::WouldBlock) => false,
+            };
+            if refreshed {
+                return true;
+            }
+            if self.call_must_end(cpu) {
+                return false;
+            }
+            thread::park_timeout(Duration::from_micros(200));
+        }
     }
 
     fn publish(&self, cpu: usize, vcpu: &Vcpu) {
@@ -1170,6 +1190,12 @@ impl Worker<'_, '_, '_, '_> {
         if let Some(error) = failure {
             return Err(error);
         }
+        // A completion may target an AP even with the BSP masked. Likewise, a CQ-head write
+        // must publish the new level before the guest reaches EOI. Keep a deferred sample
+        // with the same device-only continuation used by an interrupted drain.
+        if SERVICE_NVME && sh.refresh_device_lines && machine_stop.is_none() && !*nvme_pending {
+            *nvme_pending = !sh.refresh_device_lines_until_stop(cpu);
+        }
         if SERVICE_NVME && !*nvme_pending {
             cell.nvme_work.store(false, SEQ);
         }
@@ -1575,6 +1601,7 @@ fn run_threads_inner<R>(
         count,
         config,
         source_free,
+        refresh_device_lines: irq_source.needs_device_line_refresh(),
         kicks: Arc::clone(&kicks),
         cells: (0..count).map(|_| Cell::new()).collect(),
         stop_all: AtomicBool::new(false),
@@ -2020,65 +2047,168 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_nvme_completion_interrupt_wakes_the_halted_bsp() {
+    fn a_startup_nvme_completion_interrupt_wakes_the_halted_destination() {
         use crate::apic_pair::{NVME_PIN, SCI_LEVEL_LOW};
         use crate::{AccessWidth, IO_APIC_MMIO_BASE};
 
-        let (mut board, doorbell, cr3) = nvme_identify_board();
-        assert!(board.enable_pit_ioapic_irq());
-        assert!(board.enable_uart_ioapic_irq4());
-        system(&mut board, false);
-        let mut handler = [
-            mov_ebx((doorbell + 4).try_into().unwrap()),
-            mov_eax(1),
-            vec![0x89, 0x03], // mov [rbx], eax: acknowledge the completion queue
-            count_and_eoi(COUNTER_0),
-        ]
-        .concat();
-        handler.extend([0x48, 0xCF]); // iretq
-        patch(&mut board, HANDLER_0, &handler);
-        patch(&mut board, CODE_0, &[0xF4]);
-        let mut bsp = long_state(CODE_0, STACK_0, cr3, true);
-        bsp.activity = Some(CpuActivity::Halted);
-        install(&mut board, 0, bsp, 0xD01);
-
-        let bus = board.bus_mut();
-        for (address, value) in [
-            (LOCAL_APIC_MMIO_BASE + 0xf0, 0x1ff),
-            (IO_APIC_MMIO_BASE, (0x10 + 2 * NVME_PIN) as u64),
-            (
-                IO_APIC_MMIO_BASE + 0x10,
-                u64::from(SCI_LEVEL_LOW | u32::from(TO_BSP)),
-            ),
-            (doorbell, 1),
+        for (cpu, vector, handler_rip, counter, code_rip, stack) in [
+            (0, TO_BSP, HANDLER_0, COUNTER_0, CODE_0, STACK_0),
+            (1, TO_AP, HANDLER_1, COUNTER_1, CODE_1, STACK_1),
         ] {
-            bus.write_physical(
-                GuestPhysicalAddress::new(address),
+            let (mut board, doorbell, cr3) = nvme_identify_board();
+            assert!(board.enable_pit_ioapic_irq());
+            assert!(board.enable_uart_ioapic_irq4());
+            system(&mut board, false);
+            let mut handler = [
+                mov_ebx((doorbell + 4).try_into().unwrap()),
+                mov_eax(1),
+                vec![0x89, 0x03], // mov [rbx], eax: acknowledge the completion queue
+                count_and_eoi(counter),
+            ]
+            .concat();
+            handler.extend([0x48, 0xCF]); // iretq
+            patch(&mut board, handler_rip, &handler);
+            patch(&mut board, code_rip, &[0xF4]);
+            let mut target = long_state(code_rip, stack, cr3, true);
+            target.activity = Some(CpuActivity::Halted);
+            install(&mut board, cpu, target, 0xD01);
+            if cpu != BOOT_VCPU_INDEX {
+                let bsp = board.vcpu_mut(BOOT_VCPU_INDEX).unwrap();
+                bsp.state.activity = Some(CpuActivity::Halted);
+                bsp.state.rflags &= !(1 << 9);
+            }
+
+            let bus = board.bus_mut();
+            bus.write_mmio_shared(
+                cpu,
+                GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0xf0),
                 AccessWidth::Dword,
-                value,
+                0x1ff,
+            )
+            .unwrap();
+            for (address, value) in [
+                (IO_APIC_MMIO_BASE, (0x11 + 2 * NVME_PIN) as u64),
+                (IO_APIC_MMIO_BASE + 0x10, (cpu as u64) << 24),
+                (IO_APIC_MMIO_BASE, (0x10 + 2 * NVME_PIN) as u64),
+                (
+                    IO_APIC_MMIO_BASE + 0x10,
+                    u64::from(SCI_LEVEL_LOW | u32::from(vector)),
+                ),
+                (doorbell, 1),
+            ] {
+                bus.write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+            }
+            let nvme = board.nvme().unwrap();
+            assert!(nvme.doorbell_pending());
+            let start_ns = board.clock().now_ns();
+
+            let (report, ()) = run(&mut board, config(64, 64), |control| {
+                assert!(control.wait_finished(WAIT));
+            });
+            assert_eq!(report.finished, ParallelFinish::AllIdle);
+            assert_joined(&report, 2);
+            assert_eq!(report.cpus[cpu].wakes, 1, "target {cpu}: {report:?}");
+            assert_eq!(dword(&mut board, counter), 1);
+            assert_eq!(report.cpus[1 - cpu].retired, 0);
+            assert_eq!(board.clock().now_ns() - start_ns, report.cpus[cpu].retired);
+            assert_eq!(
+                board.local_apic_of(cpu).unwrap().vector_state(vector),
+                (false, false)
+            );
+            assert!(!nvme.pci_interrupt_line());
+            assert!(!nvme.doorbell_pending());
+        }
+    }
+
+    #[test]
+    fn a_deferred_nvme_irq_sample_survives_stop_at_zero_budget() {
+        use crate::AccessWidth;
+        use std::sync::mpsc::{SyncSender, sync_channel};
+
+        struct DelayedRefresh {
+            ready: Arc<AtomicBool>,
+            first: std::cell::Cell<Option<SyncSender<()>>>,
+        }
+
+        impl BoardIrqSource for DelayedRefresh {
+            fn pending_vector(&self) -> Option<u8> {
+                None
+            }
+
+            fn acknowledge(&mut self, _vector: u8) {}
+
+            fn next_deadline_ns(&self) -> Option<u64> {
+                None
+            }
+
+            fn needs_device_line_refresh(&self) -> bool {
+                true
+            }
+
+            fn try_refresh_device_lines(&self) -> bool {
+                if let Some(first) = self.first.take() {
+                    first.send(()).unwrap();
+                }
+                self.ready.load(SEQ)
+            }
+        }
+
+        let (mut board, doorbell, _) = nvme_identify_board();
+        let (first, attempted) = sync_channel(1);
+        let ready = Arc::new(AtomicBool::new(false));
+        board.set_irq_source(Box::new(DelayedRefresh {
+            ready: Arc::clone(&ready),
+            first: std::cell::Cell::new(Some(first)),
+        }));
+        board.vcpu_mut(0).unwrap().state.activity = Some(CpuActivity::Halted);
+        board
+            .bus_mut()
+            .write_physical(
+                GuestPhysicalAddress::new(doorbell),
+                AccessWidth::Dword,
+                1,
                 |_| {},
             )
             .unwrap();
-        }
-        let nvme = board.nvme().unwrap();
-        assert!(nvme.doorbell_pending());
         let start_ns = board.clock().now_ns();
-
-        let (report, ()) = run(&mut board, config(64, 64), |control| {
+        let address = GuestPhysicalAddress::new(NVME_IDENTIFY_BUFFER);
+        let (report, generation) = run(&mut board, config(64, 0), |control| {
+            attempted.recv_timeout(WAIT).unwrap();
+            assert_eq!(control.stop_all(WAIT).unwrap().now_ns, start_ns);
+            assert_eq!(control.retired(), [0, 0]);
+            assert_eq!(
+                cell(control, NVME_IDENTIFY_BUFFER + 4),
+                u32::from_le_bytes(*b"OD-N")
+            );
+            let generation = control
+                .bus()
+                .physical_memory()
+                .code_page_generation(address)
+                .unwrap();
+            ready.store(true, SEQ);
+            control.resume();
             assert!(control.wait_finished(WAIT));
+            generation
         });
-        assert_eq!(report.finished, ParallelFinish::AllIdle);
+        assert_eq!(report.finished, ParallelFinish::BudgetExhausted);
         assert_joined(&report, 2);
-        assert_eq!(report.cpus[0].wakes, 1);
-        assert_eq!(dword(&mut board, COUNTER_0), 1);
-        assert_eq!(report.cpus[1].retired, 0);
-        assert_eq!(board.clock().now_ns() - start_ns, report.cpus[0].retired);
+        assert_eq!(report.cpus[0].calls, 2);
+        assert!(report.cpus.iter().all(|cpu| cpu.retired == 0));
+        assert_eq!(board.clock().now_ns(), start_ns);
         assert_eq!(
-            board.local_apic_of(0).unwrap().vector_state(TO_BSP),
-            (false, false)
+            board
+                .bus_mut()
+                .physical_memory()
+                .code_page_generation(address)
+                .unwrap(),
+            generation,
         );
-        assert!(!nvme.pci_interrupt_line());
-        assert!(!nvme.doorbell_pending());
     }
 
     #[test]

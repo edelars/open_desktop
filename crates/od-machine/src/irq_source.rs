@@ -43,6 +43,17 @@ pub(crate) trait BoardIrqSource: Send {
         0
     }
 
+    /// Publish device line levels after a parallel quantum. A busy device can defer sampling
+    /// to a continuation, returning false rather than waiting for in-flight device work.
+    fn try_refresh_device_lines(&self) -> bool {
+        true
+    }
+
+    /// Whether this source needs a post-quantum device line refresh.
+    fn needs_device_line_refresh(&self) -> bool {
+        false
+    }
+
     /// S4-39g: the absolute virtual time (ns, the board clock) at which a CPU halted by `HLT`
     /// with IF = 1 can next be woken: the time of now when a vector is deliverable now, the time
     /// of the next edge when that edge would be deliverable, `None` when nothing can wake it

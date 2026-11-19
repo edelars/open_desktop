@@ -266,6 +266,12 @@ impl NvmeState {
                 .any(CompletionQueue::requests_interrupt)
     }
 
+    fn pci_interrupt_line(&self) -> bool {
+        self.pci.as_ref().is_some_and(|pci| {
+            pci.command() & COMMAND_INTX_DISABLE == 0 && self.interrupt_pending()
+        })
+    }
+
     pub(super) fn set_fatal(&mut self) {
         self.csts |= CSTS_CFS;
     }
@@ -732,11 +738,14 @@ impl NvmeHandle {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn pci_interrupt_line(&self) -> bool {
-        let state = lock(&self.state);
-        state.pci.as_ref().is_some_and(|pci| {
-            pci.command() & COMMAND_INTX_DISABLE == 0 && state.interrupt_pending()
-        })
+        lock(&self.state).pci_interrupt_line()
+    }
+
+    /// Sample INTx without waiting for a worker inside the storage provider.
+    pub(crate) fn try_pci_interrupt_line(&self) -> Option<bool> {
+        self.try_state().map(|state| state.pci_interrupt_line())
     }
 
     pub(crate) fn has_pci_transport(&self) -> bool {
@@ -752,12 +761,16 @@ impl NvmeHandle {
 
     /// Observe possible work without waiting for a peer inside the storage provider.
     pub(crate) fn doorbell_pending_or_contended(&self) -> bool {
-        let state = match self.state.try_lock() {
-            Ok(state) => state,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return true,
-        };
-        state.pending && state.dma_enabled()
+        self.try_state()
+            .is_none_or(|state| state.pending && state.dma_enabled())
+    }
+
+    fn try_state(&self) -> Option<std::sync::MutexGuard<'_, NvmeState>> {
+        match self.state.try_lock() {
+            Ok(state) => Some(state),
+            Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 
     /// `CSTS.RDY = 1` and no fatal status.
@@ -788,11 +801,7 @@ impl NvmeHandle {
         memory: &crate::PhysicalMemory,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> Option<NvmeServiceReport> {
-        let mut state = match self.state.try_lock() {
-            Ok(state) => state,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
+        let mut state = self.try_state()?;
         Some(Self::service_ram(&mut state, memory, committed_write, true))
     }
 
