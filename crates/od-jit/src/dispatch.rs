@@ -8869,6 +8869,81 @@ mod tests {
     }
 
     #[test]
+    fn recent_rip_reuse_rebases_after_middle_lru_hits() {
+        let a = 0x7200;
+        let b = a + 10;
+        let c = b + 10;
+        let code = [
+            0x48, 0xb8, 0x11, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xb8, 0x22, 0, 0, 0, 0, 0, 0, 0, 0x48,
+            0xb8, 0x33, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (view, admission) = cached_fixture(&code, a);
+        let dependencies = dependency(view, 1);
+        let (mut backend, tracker) = new_fixture_backend();
+        let mut cache = MultiEntryBlockCache::with_policy(
+            3,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            CacheEvictionPolicy::Lru,
+        )
+        .unwrap();
+        let stop = AtomicU8::new(0);
+        let mut run = |rip, budget| {
+            let mut state = LongModeState {
+                rip,
+                ..LongModeState::default()
+            };
+            run_multi_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                budget,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: None,
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap()
+        };
+        for rip in [a, b, c] {
+            run(rip, 1);
+        }
+        // A moves to the back of [A, B, C]. The middle hit on C shifts
+        // the remembered A, and the middle memo hit on A shifts C again.
+        tracker.borrow_mut().scripted_replies = vec![
+            (c, RuntimeExitTag::DispatchCandidate, 1),
+            (a, RuntimeExitTag::DispatchCandidate, 1),
+            (c, RuntimeExitTag::DispatchCandidate, 1),
+            (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+        ];
+        let result = run(a, 5);
+
+        assert_eq!(result.exit, DispatchExit::CodeEnd);
+        assert_eq!(result.retired_instructions, 4);
+        assert_eq!(result.blocks_executed, 4);
+        assert_eq!(result.remaining_budget, 1);
+        assert_eq!(tracker.borrow().executed_ids, [1, 2, 3, 1, 3, 1, 3]);
+        let counters = cache.counters();
+        assert_eq!(counters.hits, 4);
+        assert_eq!(counters.misses, 3);
+        assert_eq!(counters.successful_publications, 3);
+        assert_eq!(counters.evictions, 0);
+        assert_eq!(
+            cache
+                .entries
+                .iter()
+                .map(|entry| entry.key.entry_rip())
+                .collect::<Vec<_>>(),
+            [b, a, c],
+        );
+    }
+
+    #[test]
     fn multi_entry_cache_reuses_sixteen_keys_and_evicts_exact_fifo_victim() {
         let tracker = Rc::new(RefCell::new(PublishedTracker {
             allow_multiple_live: true,
