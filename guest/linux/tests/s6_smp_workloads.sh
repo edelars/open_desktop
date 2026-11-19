@@ -58,6 +58,9 @@ run_workloads() (
     step=run
     "$build_dir/workloads" "$@"
     if [ "$task" -eq 22 ]; then
+        step=online
+        IFS= read -r online </sys/devices/system/cpu/online
+        printf 'OD_S6_22_ONLINE nonce=%s cpus=%s\n' "$nonce" "$online"
         printf 'OD_S6_22_COMPLETE nonce=%s\n' "$nonce"
     fi
 )

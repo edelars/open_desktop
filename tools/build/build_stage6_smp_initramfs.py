@@ -128,9 +128,7 @@ def parse_observation(
     return {"nonce": nonce, "online": online, "cpus": cpus, "interrupts": interrupts, "ipi_counts": ipis}
 
 
-def verify_report(
-    path: Path, nonce: str, expected_online: int | None, *, require_smp_evidence: bool = False
-) -> dict[str, object]:
+def read_com1_text(path: Path) -> str:
     report = json.loads(path.read_text())
     try:
         transcript = report["stop"]["com1_text"]
@@ -138,6 +136,13 @@ def verify_report(
         raise BuildError("missing stop.com1_text in the Linux run report") from error
     if not isinstance(transcript, str):
         raise BuildError("stop.com1_text is not text")
+    return transcript
+
+
+def verify_report(
+    path: Path, nonce: str, expected_online: int | None, *, require_smp_evidence: bool = False
+) -> dict[str, object]:
+    transcript = read_com1_text(path)
     observation = parse_observation(transcript, nonce, require_smp_evidence=require_smp_evidence)
     if expected_online is not None and observation["cpus"] != list(range(expected_online)):
         raise BuildError(f"expected online CPUs 0 through {expected_online - 1}")

@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Append the Stage 6 SMP workloads to a Stage 5 rootfs boot initramfs."""
+"""Package the Stage 6 SMP workloads or verify their Linux guest report."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
 import io
+import json
 from pathlib import Path
+import re
 import stat
 import zlib
 
 from build_stage4_initramfs import BuildError, pack_cpio, parse_cpio, sha256
+from build_stage6_smp_initramfs import SMP_BRINGUP, parse_online, read_com1_text
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -19,6 +22,22 @@ INIT_NAME = "s6-smp-init"
 PAYLOAD_DIR = "s6-smp"
 SOURCE_NAME = "s6_smp_workloads.c"
 WRAPPER_NAME = "s6_smp_workloads.sh"
+WORKLOAD_COUNTS = (
+    ("counter", 20_000),
+    ("condition", 256),
+    ("exchange", 128),
+    ("mapping", 32),
+    ("processes", 32),
+)
+PASS = re.compile(
+    r"OD_S6_22_PASS nonce=([A-Za-z0-9._-]+) case=([a-z]+)"
+    r" cpus=([0-9]{1,3}),([0-9]{1,3}) checked=([0-9]{1,8})"
+)
+LINUX_FAILURE = re.compile(
+    r"\b(?:BUG|Oops):|Kernel panic|detected (?:soft|hard) lockup"
+    r"|\brcu\b[^\r\n]*\bdetected stalls?\b|\btask\b[^\r\n]*\bblocked for more than [0-9]+ seconds",
+    re.I,
+)
 
 STAGE5_HANDOFF = b"""/bin/busybox mount -o move /proc /newroot/proc || fail 'proc mount handoff failed'
 /bin/busybox mount -o move /sys /newroot/sys || fail 'sysfs mount handoff failed'
@@ -80,11 +99,85 @@ def build_archive(stage5_initramfs: bytes) -> bytes:
     return result.getvalue()
 
 
+def verify_workloads(path: Path, nonce: str, expected_online: int) -> dict[str, object]:
+    if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", nonce) is None:
+        raise BuildError("invalid workload nonce")
+    if expected_online not in (2, 4):
+        raise BuildError("expected 2 or 4 online CPUs")
+    # Kernel output may be interleaved with complete marker lines on COM1.
+    lines = [line.strip() for line in read_com1_text(path).splitlines()]
+    if any(LINUX_FAILURE.search(line) for line in lines):
+        raise BuildError("kernel reported a BUG, panic, oops, lockup or task/CPU stall")
+    markers = [(index, line) for index, line in enumerate(lines) if line.startswith("OD_S6_22_")]
+    if len(markers) != len(WORKLOAD_COUNTS) + 3:
+        raise BuildError("expected source, all five workloads, online CPUs and completion")
+    source_hash = sha256((FIXTURES / SOURCE_NAME).read_bytes())
+    if markers[0][1] != f"OD_S6_22_SOURCE nonce={nonce} sha256={source_hash}":
+        raise BuildError("guest source hash or nonce mismatch")
+    if markers[-1][1] != f"OD_S6_22_COMPLETE nonce={nonce}":
+        raise BuildError("missing matching workload completion")
+    online_prefix = f"OD_S6_22_ONLINE nonce={nonce} cpus="
+    online_marker = markers[-2][1]
+    if not online_marker.startswith(online_prefix):
+        raise BuildError("missing matching sysfs online CPU list at workload completion")
+    online = parse_online(online_marker.removeprefix(online_prefix))
+    if online != list(range(expected_online)):
+        raise BuildError("guest sysfs online CPUs differ from the expected topology")
+    brought_up = [
+        (index, int(match[1]))
+        for index, line in enumerate(lines)
+        if (match := SMP_BRINGUP.fullmatch(line)) is not None
+    ]
+    if (
+        len(brought_up) != 1
+        or brought_up[0][0] >= markers[0][0]
+        or brought_up[0][1] != expected_online
+    ):
+        raise BuildError("expected one matching kernel SMP bring-up summary before the workloads")
+    cpus: tuple[int, int] | None = None
+    counts = {}
+    for (case, checked), (_, line) in zip(WORKLOAD_COUNTS, markers[1:-2], strict=True):
+        match = PASS.fullmatch(line)
+        if match is None or match[1] != nonce or match[2] != case or int(match[5]) != checked:
+            raise BuildError(f"invalid result for workload {case}")
+        previous, current = int(match[3]), int(match[4])
+        if not 0 <= previous < current < expected_online:
+            raise BuildError(f"invalid CPU pair for workload {case}")
+        if cpus is not None and cpus != (previous, current):
+            raise BuildError(f"CPU pair changed in workload {case}")
+        cpus = previous, current
+        counts[case] = checked
+    return {
+        "nonce": nonce,
+        "source_sha256": source_hash,
+        "online_cpus": online,
+        "workload_cpus": cpus,
+        "checked": counts,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage5-initramfs", type=Path, required=True, help="accepted Stage 5 gzip initramfs")
-    parser.add_argument("--out", type=Path, required=True, help="new gzip initramfs path")
+    parser.add_argument("--stage5-initramfs", type=Path, help="accepted Stage 5 gzip initramfs")
+    parser.add_argument("--out", type=Path, help="new gzip initramfs path")
+    parser.add_argument("--verify-report", type=Path, help="LinuxDirect JSON with the guest serial transcript")
+    parser.add_argument("--nonce", help="expected nonce in the workload report")
+    parser.add_argument("--expect-online", type=int, choices=(2, 4), help="expected CPUs brought online by Linux")
     args = parser.parse_args()
+    if args.verify_report is not None:
+        if args.stage5_initramfs is not None or args.out is not None:
+            parser.error("--verify-report is separate from initramfs packaging")
+        if args.nonce is None or args.expect_online is None:
+            parser.error("--verify-report requires --nonce and --expect-online")
+        try:
+            print(json.dumps(verify_workloads(args.verify_report, args.nonce, args.expect_online), indent=2))
+        except (BuildError, OSError, json.JSONDecodeError) as error:
+            parser.exit(1, f"{error}\n")
+        return 0
+    if args.stage5_initramfs is None or args.out is None:
+        parser.error("packaging requires --stage5-initramfs and --out")
+    if args.nonce is not None or args.expect_online is not None:
+        parser.error("--nonce and --expect-online require --verify-report")
     try:
         archive = build_archive(args.stage5_initramfs.read_bytes())
         args.out.parent.mkdir(parents=True, exist_ok=True)
