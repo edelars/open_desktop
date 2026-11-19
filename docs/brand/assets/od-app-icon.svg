@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><title>Open Desktop</title><defs><clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath></defs><rect x="100" y="100" width="824" height="824" rx="185" fill="#FFFFFF"/><g clip-path="url(#body)" stroke="#1A2240" stroke-opacity="0.07" stroke-width="2">
+<path d="M132 100V924M100 132H924"/>
+<path d="M172 100V924M100 172H924"/>
+<path d="M212 100V924M100 212H924"/>
+<path d="M252 100V924M100 252H924"/>
+<path d="M292 100V924M100 292H924"/>
+<path d="M332 100V924M100 332H924"/>
+<path d="M372 100V924M100 372H924"/>
+<path d="M412 100V924M100 412H924"/>
+<path d="M452 100V924M100 452H924"/>
+<path d="M492 100V924M100 492H924"/>
+<path d="M532 100V924M100 532H924"/>
+<path d="M572 100V924M100 572H924"/>
+<path d="M612 100V924M100 612H924"/>
+<path d="M652 100V924M100 652H924"/>
+<path d="M692 100V924M100 692H924"/>
+<path d="M732 100V924M100 732H924"/>
+<path d="M772 100V924M100 772H924"/>
+<path d="M812 100V924M100 812H924"/>
+<path d="M852 100V924M100 852H924"/>
+<path d="M892 100V924M100 892H924"/>
+</g><rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#1A2240" stroke-opacity="0.14" stroke-width="2"/><g transform="translate(176 176) scale(14)">
+<g fill="#1A2240"><rect x="8" y="11" width="3" height="5.5" rx="1"/><rect x="13" y="11" width="9" height="5.5" rx="1"/><rect x="24" y="11" width="5" height="5.5" rx="1"/><rect x="31" y="11" width="9" height="5.5" rx="1"/></g><rect x="8" y="21.25" width="32" height="5.5" rx="1" fill="#2F52CC"/><g fill="#1A2240"><rect x="8" y="31.5" width="6.5" height="5.5" rx="1"/><rect x="16.5" y="31.5" width="6.5" height="5.5" rx="1"/><rect x="25" y="31.5" width="6.5" height="5.5" rx="1"/><rect x="33.5" y="31.5" width="6.5" height="5.5" rx="1"/></g>
+</g></svg>

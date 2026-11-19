@@ -1,0 +1,57 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Open Desktop</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--grid); color: var(--ink); font-family: var(--font-display); overflow: hidden; }
+  .cover { position: relative; height: 288px; overflow: hidden; }
+  .art { position: absolute; top: 0; left: 480px; width: 480px; height: 288px; overflow: hidden; }
+  .art svg { display: block; width: 480px; height: 288px; }
+  .ink { fill: var(--ink); }
+  .trace { fill: var(--trace); }
+  .bar { rx: var(--radius-1); }
+  .plus { stroke: var(--line-strong); stroke-width: 1; fill: none; }
+  .words { position: absolute; left: var(--space-8); bottom: var(--space-6); max-width: 440px; }
+  .name { margin: 0; font-size: 100px; line-height: .95; font-weight: 600; letter-spacing: -.01em; color: var(--ink); }
+  .tag { margin: var(--space-2) 0 0 4px; font-family: var(--font-mono); font-size: 13px; line-height: 20px; color: var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 480 288" width="480" height="288">
+<!--
+  blocks      the mark at cover scale: ink top bar cut 40/136/72/120 (x86 variable-length bytes), trace middle bar 452 wide, bleeding 4px off the right edge, ink bottom bar cut into four equal 92-wide words (ARM64); each 64 tall (space-12 + space-4); about 27% of 960×288
+  arrangement a strip of unequal bands stacked with space-6 gutters, starting space-6 from the top, left edge at space-8 inside the box
+  pattern     plus grid, "precise, technical, mono": the protocol grid of grid-pitch thinned to one plus every space-12 (10 × 6 = 60 units) in line-strong, visible in the cuts between segments
+  scales      space-6, space-8, space-12, grid-pitch; radius-1 on every bar
+-->
+  <g class="plus">
+    <path d="M24 20v8M20 24h8M72 20v8M68 24h8M120 20v8M116 24h8M168 20v8M164 24h8M216 20v8M212 24h8M264 20v8M260 24h8M312 20v8M308 24h8M360 20v8M356 24h8M408 20v8M404 24h8M456 20v8M452 24h8"/>
+    <path d="M24 68v8M20 72h8M72 68v8M68 72h8M120 68v8M116 72h8M168 68v8M164 72h8M216 68v8M212 72h8M264 68v8M260 72h8M312 68v8M308 72h8M360 68v8M356 72h8M408 68v8M404 72h8M456 68v8M452 72h8"/>
+    <path d="M24 116v8M20 120h8M72 116v8M68 120h8M120 116v8M116 120h8M168 116v8M164 120h8M216 116v8M212 120h8M264 116v8M260 120h8M312 116v8M308 120h8M360 116v8M356 120h8M408 116v8M404 120h8M456 116v8M452 120h8"/>
+    <path d="M24 164v8M20 168h8M72 164v8M68 168h8M120 164v8M116 168h8M168 164v8M164 168h8M216 164v8M212 168h8M264 164v8M260 168h8M312 164v8M308 168h8M360 164v8M356 168h8M408 164v8M404 168h8M456 164v8M452 168h8"/>
+    <path d="M24 212v8M20 216h8M72 212v8M68 216h8M120 212v8M116 216h8M168 212v8M164 216h8M216 212v8M212 216h8M264 212v8M260 216h8M312 212v8M308 216h8M360 212v8M356 216h8M408 212v8M404 216h8M456 212v8M452 216h8"/>
+    <path d="M24 260v8M20 264h8M72 260v8M68 264h8M120 260v8M116 264h8M168 260v8M164 264h8M216 260v8M212 264h8M264 260v8M260 264h8M312 260v8M308 264h8M360 260v8M356 264h8M408 260v8M404 264h8M456 260v8M452 264h8"/>
+  </g>
+  <rect class="ink bar" x="32" y="24" width="40" height="64"/>
+  <rect class="ink bar" x="88" y="24" width="136" height="64"/>
+  <rect class="ink bar" x="240" y="24" width="72" height="64"/>
+  <rect class="ink bar" x="328" y="24" width="120" height="64"/>
+  <rect class="trace bar" x="32" y="112" width="452" height="64"/>
+  <rect class="ink bar" x="32" y="200" width="92" height="64"/>
+  <rect class="ink bar" x="140" y="200" width="92" height="64"/>
+  <rect class="ink bar" x="248" y="200" width="92" height="64"/>
+  <rect class="ink bar" x="356" y="200" width="92" height="64"/>
+</svg>
+</div>
+<div class="words">
+  <h1 class="name">Open<br>Desktop</h1>
+  <p class="tag">x86-64 ≡ ARM64. Checked instruction by instruction.</p>
+</div>
+</div>
+</body>
+</html>

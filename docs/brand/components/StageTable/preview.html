@@ -1,0 +1,21 @@
+<!-- @dsCard group="Status" height=380 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>StageTable preview</title></head>
+<body>
+<div id="root" class="od-stack od-grid"></div>
+<script>
+  var O = window.OpenDesktop, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(O.StageTable, { caption: 'Roadmap', stages: [
+    { n: 0, scope: 'Technical contract and feasibility prototype', status: 'in-progress' },
+    { n: 1, scope: 'Correctness foundation: fixtures, physical x86 oracle', status: 'accepted', note: 'register-only profile' },
+    { n: 2, scope: 'Reference x86-64 interpreter', status: 'in-progress' },
+    { n: 3, scope: 'First x86-64 \u2192 ARM64 JIT', status: 'in-progress' },
+    { n: 4, scope: 'System memory, interrupts, single-CPU machine', status: 'in-progress' },
+    { n: 5, scope: 'Linux as a system test bench', status: 'planned' },
+    { n: 9, scope: 'Data reliability and VM state management', status: 'early' },
+    { n: 11, scope: 'macOS integration and desktop app quality', status: 'partial' }
+  ] }));
+</script>
+</body>
+</html>

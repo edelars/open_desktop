@@ -1,0 +1,17 @@
+<!-- @dsCard group="Actions" height=88 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Button preview</title></head>
+<body>
+<div id="root" class="od-row od-grid"></div>
+<script>
+  var O = window.OpenDesktop, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(O.Button, { variant: 'primary' }, 'Start'),
+    h(O.Button, null, 'Open log'),
+    h(O.Button, { variant: 'quiet' }, 'Show fixtures'),
+    h(O.Button, { variant: 'primary', disabled: true }, 'Take snapshot'),
+    h(O.Button, { size: 'sm' }, 'Copy RIP')));
+</script>
+</body>
+</html>

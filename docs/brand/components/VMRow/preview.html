@@ -1,0 +1,15 @@
+<!-- @dsCard group="App" height=200 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>VMRow preview</title></head>
+<body>
+<div id="root" class="od-stack od-grid"></div>
+<script>
+  var O = window.OpenDesktop, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(O.VMRow, { name: 'Windows 11 Pro', cpus: 4, memory: '8 GiB', state: 'running', actions: h(O.Button, { size: 'sm' }, 'Stop') }),
+    h(O.VMRow, { name: 'Debian 12', cpus: 2, memory: '4 GiB', state: 'stopped', actions: h(O.Button, { size: 'sm', variant: 'primary' }, 'Start') }),
+    h(O.VMRow, { name: 'Windows Server 2022', cpus: 2, memory: '4 GiB', state: 'error', detail: 'Triple fault at RIP 0xFFFFFFF0. The log has the last 64 instructions.', actions: h(O.Button, { size: 'sm' }, 'Open log') })));
+</script>
+</body>
+</html>
