@@ -5255,7 +5255,14 @@ ISSUE-046 is resolved for the S3-34dn artifact-protection self-check only. See t
 
 #### S3-34do. Bounded value-only reducer for one S3-34dn artifact
 
-**Статус реализации, независимого статического Sol/high review и synthetic self-check: PASS; реальный artifact run отложен.** Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. The exact reducer self-check and pinned Python self-test passed (Rust 1/1; Python exit 0). No real artifact was reduced and no runtime acceptance gate was executed.
+**Статус:** пройден локальный сценарий сохранения, повтора и сокращения
+артефакта с контролируемым расхождением. Оба движка исполняют `67 89 04 24`
+с исходным набором и с кандидатами reducer. Тест меняет бит R9 в наблюдении
+после успешного исполнения JIT. С обычным наблюдением повтор выдаёт
+`not_reproduced`, а reducer проверяет исходное состояние и останавливается
+до перебора кандидатов. С тем же искажением reducer сохраняет уменьшенный
+вход, исходный файл остаётся побайтно цел, а повтор уменьшенного входа
+подтверждает расхождение. Общая приёмка S3-34 остаётся открытой.
 
 Reduce one validated S3-34dn mismatch artifact for the exact profile
 `67 89 04 24`. First replay the original artifact twice from its saved state
@@ -5299,33 +5306,21 @@ framework.
 Write a profile-specific reduced artifact using create-only semantics only
 after at least one candidate meets every acceptance condition and the chosen
 result has lower mutable-value popcount. Never replace the original or an
-existing reduced artifact. The reducer self-check is a fail-closed acceptance
-gate using explicitly labeled synthetic data; it is not a real artifact run
-and does not establish runtime mismatch evidence. The real S3-34dn artifact
-must not be run or reduced as part of this documentation task.
+existing reduced artifact. The reducer has a synthetic self-check and a
+separate diagnostic that executes the local interpreter and JIT with a
+deliberately altered JIT observation.
 
 The Rust reducer identity is `reduce_saved_s3_34do_value_only_artifact`; its
 self-check identity is
 `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`.
-Harness gate: `s3_34do_value_only_reducer_self_check`; fail-closed harness
-self-test: `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
-At the S3-34do integration revision, manifest totals were pinned at 305 gates
-(295 acceptance + 10 lifecycle), 323 steps, and 138 self-test names. The
-current manifest after S3-34dr contains 324 gates (306 acceptance + 18
-lifecycle), 342 steps, 149 self-test names, and 18 source pins; the exact
-checks above did not run that full manifest. The self-check uses synthetic
-data only: no real S3-34dn artifact was replayed or reduced, and no JIT parity
-or S3-34.2 runtime acceptance is established. No runtime API, dependency,
-opcode, or generalized reducer framework is in scope. ISSUE-045 is resolved
-for the separate S3-20eg retry-assertion host gate; ISSUE-046 is resolved for
-the S3-34dn artifact-protection self-check only. Neither closure establishes
-general S3-34.2 runtime acceptance. No runtime reducer execution
-gate, full Python harness, build, formatting, Mini, or M1 check was run. Mini
-remains unavailable and M1 is deferred. Physical-x86, production owner/MMU,
-performance, and broader Stage 3 acceptance remain open. Stage 3 remains
-partial. See the
-[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md) and the
-[JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).
+The local harness requires `s3_34do_value_only_reducer_self_check` and
+`s3_34do_captured_runtime_mismatch`. The fail-closed harness self-test
+`test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`
+checks both exact identities and rejects missing, zero-match, ignored or
+failed results. См. [отчёт о проверке](../reports/STAGE_3_S3-34do_2026-11-03.md#controlled-runtime-capture-replay-and-reduction).
+The controlled run covers the exact store profile. General S3-34.2 runtime
+acceptance remains open. Physical x86 and Mac mini checks are deferred. See
+the [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).
 
 #### S3-34dp. Exact local harness gates for S3-38e session ownership
 

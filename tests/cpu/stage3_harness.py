@@ -1464,6 +1464,10 @@ ADDITIONAL_TEST_GATES = (
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
     ),
     (
+        "s3_34do_captured_runtime_mismatch", "local_acceptance", "od-host",
+        "s3_34do_captured_runtime_mismatch_replays_and_reduces",
+    ),
+    (
         "s3_26f_store_store_source_sites_and_pc_map", "local_acceptance", "od-jit",
         "memory_load_v2::tests::ir_store_then_store_binds_two_exact_ordered_sites",
     ),
@@ -1552,6 +1556,10 @@ RUST_TEST_TARGET_OVERRIDES = {
     (
         "od-host",
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
+    ): ("--test", "stage3_dword_store_corpus"),
+    (
+        "od-host",
+        "s3_34do_captured_runtime_mismatch_replays_and_reduces",
     ): ("--test", "stage3_dword_store_corpus"),
 }
 RUST_TEST_ARGV_OVERRIDES = {

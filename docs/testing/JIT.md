@@ -2840,10 +2840,18 @@ command ran. See the
 
 ## S3-34do: bounded value-only reducer for one S3-34dn artifact
 
-**Status:** reducer implementation, independent static Sol/high review, and
-synthetic self-check passed; real-artifact execution is deferred. Runtime
-commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. No
-real artifact was reduced.
+The local selector requires `s3_34do_captured_runtime_mismatch` in addition
+to the synthetic reducer self-check. It runs the interpreter and native
+JIT on a fixed-seed store input, then flips one R9 bit in the JIT observation
+after execution. The corpus captures the resulting mismatch. The saved input
+replays and reduces with the same injection. Ordinary replay of the original
+reports `not_reproduced`, and ordinary reduction stops before trying any
+candidate. The test checks that the original bytes survive reduction, the
+reduced input preserves profile and provenance, and its mismatch replays.
+
+```sh
+cargo test --offline -p od-host --test stage3_dword_store_corpus s3_34do_captured_runtime_mismatch_replays_and_reduces -- --exact --test-threads=1
+```
 
 The reducer consumes exactly one validated S3-34dn artifact for
 `67 89 04 24`. First replay the original saved input twice through the
@@ -2894,17 +2902,10 @@ cargo test -p od-host --test stage3_dword_store_corpus s3_34do_value_only_reduce
 PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed
 ```
 
-The Rust gate passed 1/1 and the Python self-test exited 0. These checks
-exercise only the labeled synthetic self-check and fail-closed harness pin.
-No real S3-34dn artifact was replayed or reduced, and no JIT/interpreter
-parity or S3-34.2 runtime acceptance is established. ISSUE-045 is resolved
-for the separate S3-20eg retry-assertion host gate; ISSUE-046 is resolved for
-the S3-34dn artifact-protection self-check only. Neither closure establishes
-general runtime acceptance. Mini remains unavailable, M1
-is deferred, and physical-x86, production owner/MMU, performance, and broader
-Stage 3 acceptance remain open. No generic reducer framework, runtime API,
-dependency, or opcode is added. Stage 3 remains partial. See the
-[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
+The Rust synthetic self-check and the Python fail-closed test each passed.
+The controlled runtime test covers the exact store profile. General S3-34.2
+acceptance remains open. See the
+[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md#controlled-runtime-capture-replay-and-reduction).
 
 ## S3-23b: MemoryPairCache invalidation between synchronous calls
 
