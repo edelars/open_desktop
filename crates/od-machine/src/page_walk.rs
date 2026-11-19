@@ -1468,6 +1468,7 @@ pub(crate) fn access_long64_4k_with_mmio(
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
+    windows: Option<&[MmioWindow]>,
     mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal(
@@ -1478,7 +1479,7 @@ pub(crate) fn access_long64_4k_with_mmio(
         true,
         Some(&mut mmio),
         false,
-        None,
+        windows,
     )
 }
 

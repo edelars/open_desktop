@@ -1085,6 +1085,7 @@ impl MachineBus {
             paging,
             request,
             committed_write,
+            None,
             |address, width, operation| {
                 let width = match width {
                     8 => AccessWidth::Qword,

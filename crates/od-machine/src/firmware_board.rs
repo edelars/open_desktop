@@ -12,6 +12,7 @@ use crate::console_output_context::{
     UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
     capture_frame_chain,
 };
+use crate::crc32::crc32_ieee;
 use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
     RdtscClockReadLedger,
@@ -26,6 +27,9 @@ use crate::linux_checkpoints::{
 };
 use crate::nvme::irq_source::NvmeIoapicIrqSource;
 use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES, NVME_PCI_SLOT};
+use crate::nvram_device::{
+    NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramConfig, NvramContentsError, NvramDevice, NvramHandle,
+};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
@@ -134,6 +138,7 @@ const REGION_RAM: u32 = 1;
 const REGION_RESERVED: u32 = 2;
 const REGION_MMIO: u32 = 3;
 const REGION_ROM: u32 = 4;
+const REGION_NVRAM: u32 = 5;
 const REGION_FRAMEBUFFER: u32 = 6;
 const REGION_HANDOFF: u32 = 7;
 const REGION_BOOT_STACK: u32 = 8;
@@ -149,6 +154,8 @@ const DEV_COM1: usize = 0;
 const DEV_LAPIC: usize = 1;
 const DEV_IOAPIC: usize = 2;
 const DEV_DISPLAY: usize = 3;
+const DEV_NVRAM: usize = 4;
+const DEVICE_CODE_NVRAM: u32 = 5;
 /// Device-table index and bus index of the optional NVMe controller (device code 8).
 const DEV_NVME_TABLE: usize = 7;
 const DEVICE_CODE_NVME: u32 = 8;
@@ -162,6 +169,7 @@ const DEVICE_CODE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
 const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
+const HANDOFF_MINOR_NVRAM: u16 = 7;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -196,6 +204,8 @@ pub struct FirmwareBoardConfig {
     /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
     /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
     pub nvme: Option<NvmeConfig>,
+    /// Optional variable device. Its presence uses handoff v1.7 and slot 5.
+    pub nvram: Option<NvramConfig>,
     /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
     /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
     pub nvme_pci: bool,
@@ -249,6 +259,7 @@ impl Default for FirmwareBoardConfig {
             system_uuid: [0; 16],
             serial: Vec::new(),
             nvme: None,
+            nvram: None,
             nvme_pci: false,
             pci_ecam: false,
             acpi_pm: false,
@@ -311,6 +322,7 @@ pub enum FirmwareBoardError {
     },
     Config(&'static str),
     Nvme(NvmeConfigError),
+    Nvram(NvramContentsError),
     BootTablesDoNotFit {
         required_end: u64,
         ram_end: u64,
@@ -356,36 +368,6 @@ impl fmt::Display for FirmwareBoardError {
 }
 
 impl std::error::Error for FirmwareBoardError {}
-
-/// CRC-32 IEEE 802.3, reflected (FIRMWARE_BOOT.md 6.6).
-pub(crate) fn crc32_ieee(parts: &[&[u8]]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
-        let mut index = 0;
-        while index < 256 {
-            let mut value = index as u32;
-            let mut bit = 0;
-            while bit < 8 {
-                value = if value & 1 != 0 {
-                    (value >> 1) ^ 0xEDB8_8320
-                } else {
-                    value >> 1
-                };
-                bit += 1;
-            }
-            table[index] = value;
-            index += 1;
-        }
-        table
-    };
-    let mut crc = 0xFFFF_FFFFu32;
-    for part in parts {
-        for &byte in *part {
-            crc = TABLE[usize::from((crc as u8) ^ byte)] ^ (crc >> 8);
-        }
-    }
-    !crc
-}
 
 /// `N` bytes at `offset`, or `ImageTruncated` when the buffer is too short
 /// (no panic on a malformed buffer).
@@ -567,8 +549,8 @@ impl DeviceEntry {
     }
 }
 
-/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM and TPM CRB
-/// are `PRESENT = 0` until S7-10 and S7-22 add them; ECAM is `PRESENT = 0` unless
+/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). The base NVRAM, TPM CRB,
+/// and ECAM slots start absent. ECAM is `PRESENT = 0` unless
 /// `pci_ecam` is set (S4-30c). With `nvme` the table gets the eighth entry,
 /// device code 8 (FIRMWARE_BOOT.md 6.3); with `acpi_tables` the last entry is code 9.
 fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -> Vec<DeviceEntry> {
@@ -600,7 +582,7 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -
         } else {
             DeviceEntry::absent(4)
         },
-        DeviceEntry::absent(5),
+        DeviceEntry::absent(DEVICE_CODE_NVRAM),
         DeviceEntry::absent(6),
         DeviceEntry::absent(DEVICE_CODE_ECAM),
     ];
@@ -641,6 +623,14 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
         config.acpi_tables,
         config.display_enabled,
     );
+    if config.nvram.is_some() {
+        devices[DEV_NVRAM] = DeviceEntry {
+            flags: DEVICE_PRESENT,
+            base: NVRAM_MMIO_BASE,
+            length: NVRAM_MMIO_BYTES,
+            ..DeviceEntry::absent(DEVICE_CODE_NVRAM)
+        };
+    }
     if let Some(base_unix_seconds) = config.rtc_base_unix_seconds {
         devices.push(DeviceEntry {
             code: DEVICE_CODE_RTC_CMOS,
@@ -668,7 +658,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.fv_app == Some(FirmwareFvApp::Vars) {
+    if config.nvram.is_some() {
+        HANDOFF_MINOR_NVRAM
+    } else if config.fv_app == Some(FirmwareFvApp::Vars) {
         HANDOFF_MINOR_FV_APP_VARS
     } else if config.fv_app.is_some() {
         HANDOFF_MINOR_FV_APP
@@ -904,7 +896,14 @@ fn handoff_regions(
             }
             MemoryRegionKind::Ram => table.push(simple(REGION_RAM, 0, NO_OWNER)),
             MemoryRegionKind::Reserved => table.push(simple(REGION_RESERVED, 0, NO_OWNER)),
-            MemoryRegionKind::Mmio => table.push(simple(REGION_MMIO, 0, owner_of(base))),
+            MemoryRegionKind::Mmio => {
+                let kind = if base == NVRAM_MMIO_BASE {
+                    REGION_NVRAM
+                } else {
+                    REGION_MMIO
+                };
+                table.push(simple(kind, 0, owner_of(base)));
+            }
             MemoryRegionKind::Rom => table.push(simple(REGION_ROM, 0, NO_OWNER)),
             MemoryRegionKind::Framebuffer => {
                 let screen = u32::from(base == DISPLAY_SECOND_FRAMEBUFFER_BASE);
@@ -920,7 +919,8 @@ fn build_handoff(
     devices: &[DeviceEntry],
     regions: &[HandoffRegion],
 ) -> Vec<u8> {
-    let header_size = if config.fv_app.is_some() {
+    let minor = handoff_minor(config, devices);
+    let header_size = if minor >= HANDOFF_MINOR_FV_APP {
         FV_APP_HANDOFF_HEADER_BYTES
     } else {
         HANDOFF_HEADER_BYTES
@@ -940,7 +940,7 @@ fn build_handoff(
     };
     block[..8].copy_from_slice(HANDOFF_MAGIC);
     put16(&mut block, 0x08, 1);
-    put16(&mut block, 0x0A, handoff_minor(config, devices));
+    put16(&mut block, 0x0A, minor);
     put32(&mut block, 0x0C, header_size as u32);
     put32(&mut block, 0x10, total_size as u32);
     // 0x14 crc32 is filled last.
@@ -1238,6 +1238,7 @@ pub struct LoadedFirmwareBoard {
     uart: Uart16550Handle,
     display: DisplayHandle,
     nvme: Option<NvmeHandle>,
+    nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
     /// The PIT observer of the Linux profile (S4-37a3); `None` without the flag.
     pit: Option<Pit8254Handle>,
@@ -1860,6 +1861,11 @@ impl LoadedFirmwareBoard {
     /// Handle of the NVMe controller; `None` unless `FirmwareBoardConfig::nvme` was set.
     pub fn nvme(&self) -> Option<NvmeHandle> {
         self.nvme.clone()
+    }
+
+    /// Both committed NVRAM banks, for the owning host between guest quanta.
+    pub fn nvram_snapshot(&self) -> Option<Vec<u8>> {
+        self.nvram.as_ref().map(NvramHandle::nvram_snapshot)
     }
 
     /// Replaces the board's interrupt source (S4-38L8b). Only tests call it; production code
@@ -2524,6 +2530,7 @@ impl LoadedFirmwareBoard {
                 &mut vcpu.state,
                 &mut vcpu.guest_fp,
                 &mut self.bus,
+                self.nvram.as_ref(),
                 self.page_table_root,
                 FIRMWARE_EFER,
                 context,
@@ -3402,6 +3409,7 @@ pub(crate) struct AssembledBoard {
     uart: Uart16550Handle,
     display: DisplayHandle,
     nvme: Option<NvmeHandle>,
+    nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
     pit: Option<Pit8254Handle>,
     pic_master: Option<Pic8259Handle>,
@@ -3510,6 +3518,23 @@ pub(crate) fn assemble_board(
             device_index: DEV_DISPLAY,
         });
     }
+    let nvram = if let Some(initial) = &config.nvram {
+        let device = match initial {
+            NvramConfig::Empty => NvramDevice::new(),
+            NvramConfig::Snapshot(bytes) => {
+                NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?
+            }
+        };
+        let handle = device.handle();
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_NVRAM].base),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        Some(handle)
+    } else {
+        None
+    };
     // The device exists on the bus only when the manifest entry is PRESENT.
     let mut nvme = None;
     if let Some(nvme_config) = &config.nvme
@@ -3646,6 +3671,7 @@ pub(crate) fn assemble_board(
         uart,
         display,
         nvme,
+        nvram,
         acpi_pm,
         pit: pit_handle,
         pic_master: pic_master_handle,
@@ -3690,6 +3716,7 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            nvram,
             acpi_pm,
             pit,
             pic_master,
@@ -3744,6 +3771,7 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            nvram,
             acpi_pm,
             pit,
             lapic,
@@ -3800,6 +3828,7 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            nvram,
             acpi_pm,
             pit,
             pic_master,
@@ -3816,6 +3845,7 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            nvram,
             acpi_pm,
             pit,
             lapic,
@@ -6219,6 +6249,87 @@ mod tests {
         assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
         assert_eq!(le_u32(bytes, 0xA0).unwrap(), 3);
         assert!(crc_is_valid(bytes));
+    }
+
+    #[test]
+    fn nvram_is_opt_in_v17_owned_mmio_and_roundtrips_an_independent_board() {
+        let config = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Empty),
+            ..reference_config()
+        };
+        let old = test_image(&[0xf4], &[(0x2A, &6u16.to_le_bytes())]);
+        assert!(matches!(
+            load_firmware_image(&old, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 6
+            })
+        ));
+        assert!(
+            load_firmware_image(&old, &reference_config())
+                .unwrap()
+                .nvram_snapshot()
+                .is_none()
+        );
+        let image = test_image(&[0xf4], &[(0x2A, &7u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let block = board.handoff_block();
+        assert_eq!(le_u16(block, 0x0A).unwrap(), 7);
+        assert_eq!(le_u32(block, 0x0C).unwrap(), 0xA8);
+        assert_eq!(le_u32(block, 0xA0).unwrap(), 0);
+        assert_eq!(le_u32(block, 0x40).unwrap(), 7);
+        let device = le_u32(block, 0x3C).unwrap() as usize + DEV_NVRAM * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u32(block, device).unwrap(), DEVICE_CODE_NVRAM);
+        assert_eq!(le_u32(block, device + 4).unwrap(), DEVICE_PRESENT);
+        assert_eq!(le_u64(block, device + 8).unwrap(), NVRAM_MMIO_BASE);
+        let start = le_u32(block, 0x30).unwrap() as usize;
+        let count = le_u32(block, 0x34).unwrap() as usize;
+        let table = &block[start..start + count * REGION_ENTRY_BYTES];
+        assert!(
+            table
+                .chunks_exact(REGION_ENTRY_BYTES)
+                .any(|region| region_tuple(region)
+                    == (
+                        REGION_NVRAM,
+                        NVRAM_MMIO_BASE,
+                        NVRAM_MMIO_BYTES,
+                        DEV_NVRAM as u32
+                    ))
+        );
+        assert!(crc_is_valid(block));
+
+        let register = NVRAM_MMIO_BASE + crate::NVRAM_STORE_BYTES as u64;
+        let bus = board.bus_mut();
+        for (address, width, value) in [
+            (register + 4, AccessWidth::Dword, 4),
+            (register + 8, AccessWidth::Dword, 2),
+            (NVRAM_MMIO_BASE, AccessWidth::Dword, 0x7856_3412),
+            (register + 8, AccessWidth::Dword, 3),
+        ] {
+            bus.write_physical(GuestPhysicalAddress::new(address), width, value, |_| {})
+                .unwrap();
+        }
+        let bytes = board.nvram_snapshot().unwrap();
+        let restored = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(bytes.clone())),
+            ..config
+        };
+        let mut board = load_firmware_image(&image, &restored).unwrap();
+        assert_eq!(board.nvram_snapshot().unwrap(), bytes);
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(GuestPhysicalAddress::new(register + 16), AccessWidth::Dword)
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(GuestPhysicalAddress::new(register + 12), AccessWidth::Dword)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

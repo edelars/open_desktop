@@ -28,6 +28,12 @@ static START: [Char16; BANNER.len()] = ascii_to_char16(BANNER);
 static START_ADDRESS: &[Char16; BANNER.len()] = &START;
 const VERIFIED: &[u8] = b"OD-UEFI vars defaults create read append enumerate delete verified\r\n\0";
 static FINISH: [Char16; VERIFIED.len()] = ascii_to_char16(VERIFIED);
+static NV_PROBE: [Char16; 8] = ascii_to_char16(b"ODNvram\0");
+const NV_VALUE: &[u8; 8] = b"od-s7-10";
+const NV_SET: &[u8] = b"OD-UEFI vars NV probe set\r\n\0";
+const NV_RESTORED: &[u8] = b"OD-UEFI vars NV probe restored od-s7-10\r\n\0";
+static SET_MESSAGE: [Char16; NV_SET.len()] = ascii_to_char16(NV_SET);
+static RESTORED_MESSAGE: [Char16; NV_RESTORED.len()] = ascii_to_char16(NV_RESTORED);
 
 #[unsafe(no_mangle)]
 unsafe extern "efiapi" fn efi_main(handle: Handle, system: *mut SystemTable) -> Status {
@@ -46,7 +52,53 @@ unsafe extern "efiapi" fn efi_main(handle: Handle, system: *mut SystemTable) -> 
     if !check_defaults(rt) || !check_store(rt) {
         return Status::LOAD_ERROR;
     }
-    unsafe { output(system, FINISH.as_ptr()) }
+    let status = unsafe { output(system, FINISH.as_ptr()) };
+    if status != Status::SUCCESS {
+        return status;
+    }
+    let message = match check_nv_probe(rt) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+    unsafe { output(system, message.as_ptr()) }
+}
+
+fn check_nv_probe(rt: &RuntimeServices) -> Result<&'static [Char16], Status> {
+    let mut value = [0; NV_VALUE.len()];
+    let mut size = value.len();
+    let mut attributes = 0;
+    // SAFETY: the name and all buffers are live and cover their EFI lengths.
+    unsafe {
+        match (rt.get_variable)(
+            NV_PROBE.as_ptr(),
+            &VENDOR,
+            &mut attributes,
+            &mut size,
+            value.as_mut_ptr().cast(),
+        ) {
+            Status::NOT_FOUND => {
+                let status = (rt.set_variable)(
+                    NV_PROBE.as_ptr(),
+                    &VENDOR,
+                    NON_VOLATILE_RUNTIME,
+                    NV_VALUE.len(),
+                    NV_VALUE.as_ptr().cast(),
+                );
+                if status != Status::SUCCESS {
+                    return Err(status);
+                }
+                Ok(&SET_MESSAGE)
+            }
+            Status::SUCCESS
+                if size == NV_VALUE.len()
+                    && attributes == NON_VOLATILE_RUNTIME
+                    && &value == NV_VALUE =>
+            {
+                Ok(&RESTORED_MESSAGE)
+            }
+            _ => Err(Status::LOAD_ERROR),
+        }
+    }
 }
 
 fn check_defaults(rt: &RuntimeServices) -> bool {

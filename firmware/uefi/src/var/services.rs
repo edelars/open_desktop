@@ -68,8 +68,19 @@ pub(super) fn valid_write(guid: Guid, name: Name<'_>, value: &[u8], append: bool
         || (!append && value == PLATFORM_LANGUAGE)
 }
 
-pub(crate) fn seed_defaults(store: &mut VariableStore, console_path: &[u8]) -> Result<(), Status> {
-    let variables: [(&[u8], u32, &[u8]); 8] = [
+#[derive(Clone, Copy)]
+pub(crate) enum BootDefaults {
+    All,
+    Volatile,
+    NonVolatile,
+}
+
+pub(crate) fn seed_defaults(
+    store: &mut VariableStore,
+    console_path: &[u8],
+    selection: BootDefaults,
+) -> u32 {
+    let variables: [(&[u8], u32, &[u8]); 9] = [
         (b"PlatformLangCodes", BOOT_RUNTIME, PLATFORM_LANGUAGE),
         (b"PlatformLang", NON_VOLATILE_RUNTIME, PLATFORM_LANGUAGE),
         (b"ConIn", NON_VOLATILE_RUNTIME, console_path),
@@ -78,11 +89,20 @@ pub(crate) fn seed_defaults(store: &mut VariableStore, console_path: &[u8]) -> R
         (b"Timeout", NON_VOLATILE_RUNTIME, &[0; 2]),
         (b"OsIndicationsSupported", BOOT_RUNTIME, &[0; 8]),
         (b"SecureBoot", BOOT_RUNTIME, &[0]),
+        (b"SetupMode", BOOT_RUNTIME, &[1]),
     ];
+    let mut missing = 0;
     for (ascii, attributes, value) in variables {
-        seed_ascii(store, ascii, attributes, value)?;
+        let selected = match selection {
+            BootDefaults::All => true,
+            BootDefaults::Volatile => attributes & NON_VOLATILE == 0,
+            BootDefaults::NonVolatile => attributes & NON_VOLATILE != 0,
+        };
+        if selected && seed_ascii(store, ascii, attributes, value).is_err() {
+            missing += 1;
+        }
     }
-    seed_ascii(store, b"SetupMode", BOOT_RUNTIME, &[1])
+    missing
 }
 
 fn seed_ascii(
@@ -96,6 +116,9 @@ fn seed_ascii(
         pair[0] = byte;
     }
     let name = Name::new(&bytes[..2 * ascii.len()]).unwrap();
+    if store.get(GLOBAL_VARIABLE, name).is_some() {
+        return Ok(());
+    }
     store.seed(Record {
         guid: GLOBAL_VARIABLE,
         name,

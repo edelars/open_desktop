@@ -3495,7 +3495,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 - Fetch из ROM — `#PF`, error code `0x11`, адрес fetch (тест
   `instruction_fetch_from_rom_is_a_page_fault_by_nx`); backend-ошибка не
   возникает, пока листья ROM помечены NX.
-- Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
+- Не реализованы: повторное копирование shadow при сбросе (S7-26),
   ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
   доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
   UUID/серийного номера из командной строки runner (используются значения по
@@ -3511,6 +3511,16 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 `cargo test -p od-runner --offline --test firmware_boot_cli`,
 `python3 -m unittest tools/build/test_build_firmware.py`; методика —
 [FIRMWARE.md](../testing/FIRMWARE.md).
+
+## Устройство NVRAM
+
+`FirmwareBoardConfig::nvram` подключает окно `[0xFF00_0000, 0xFF04_1000)` как `Mmio`. В handoff v1.7 устройство 5 владеет регионом типа `NVRAM`. Плата хранит два банка в `NvramDevice`. Содержимое банка остаётся непрозрачным для машины. [Регистры, банки и Host API](NVRAM_DEVICE.md).
+
+Квант прошивки передаёт простые чтения и записи через 4-КиБ страничный walker только для этого окна. Полный операнд должен помещаться в регион. Для прочих MMIO-окон действует прежний отказ. Выборка инструкции, чтение псевдодескриптора, read-for-write и locked-доступ через это окно не поддерживаются.
+
+`NvramDevice` возвращает `UnsupportedSpace` для PIO, `UnsupportedWidth` при ширине регистра кроме dword, `Misaligned` для невыровненного регистра и `CrossesRegister` на границе данных и регистров. Неизвестное смещение и выход за диапазон передачи дают `UnknownOffset`. Чтение окна без READ даёт `Busy`, запись без WRITE — `ReadOnly`. Запись в `STATUS` и `ACTIVE_LEN` запрещена, чтение `CMD` даёт `WriteOnly`. Ошибка доступа сохраняет состояние устройства. Ошибки команд после корректной записи в `CMD` сообщаются через `STATUS`.
+
+Хост получает снимок между квантами. Повторная загрузка может создать плату с тем же ROM и восстановленным снимком NVRAM. Управление общим сбросом платы относится к S7-26, сохранение снимка в VM bundle — к S9-26.
 
 ## NVMe controller (S7-16, срезы A и B)
 

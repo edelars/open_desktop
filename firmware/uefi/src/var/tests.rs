@@ -2,8 +2,9 @@ use super::*;
 use crate::var::{
     codec::{DecodeError, Decoder, MAX_NAME_UNITS},
     services::{
-        AUTHENTICATED_WRITE_ACCESS, BOOT_RUNTIME, ENHANCED_AUTHENTICATED_ACCESS, GLOBAL_VARIABLE,
-        HARDWARE_ERROR_RECORD, TIME_BASED_AUTHENTICATED_WRITE_ACCESS, seed_defaults,
+        AUTHENTICATED_WRITE_ACCESS, BOOT_RUNTIME, BootDefaults, ENHANCED_AUTHENTICATED_ACCESS,
+        GLOBAL_VARIABLE, HARDWARE_ERROR_RECORD, TIME_BASED_AUTHENTICATED_WRITE_ACCESS,
+        seed_defaults,
     },
 };
 
@@ -256,7 +257,14 @@ fn runtime_hides_boot_only_records_and_freezes_volatile_values() {
 #[test]
 fn platform_seeds_default_values_and_protects_policy_globals() {
     let mut store = VariableStore::new();
-    seed_defaults(&mut store, &crate::console::COM1_DEVICE_PATH).unwrap();
+    assert_eq!(
+        seed_defaults(
+            &mut store,
+            &crate::console::COM1_DEVICE_PATH,
+            BootDefaults::All
+        ),
+        0
+    );
     let name = |bytes| Name::new(bytes).unwrap();
     let setup = name(b"S\0e\0t\0u\0p\0M\0o\0d\0e\0");
     let secure = name(b"S\0e\0c\0u\0r\0e\0B\0o\0o\0t\0");

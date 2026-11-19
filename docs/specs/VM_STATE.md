@@ -69,7 +69,7 @@
 
 | Компонент | Код | Статус |
 |---|---|---|
-| UEFI variables | `firmware/uefi/src/` — `.gitkeep` | Отсутствует; этап 7 ([план](../plans/STAGE_7.md)). Блокирует S9-26 и `full-windows-vm` |
+| UEFI variables | `firmware/uefi/src/var/`, `od-machine::NvramDevice` | Есть хранилище переменных и устройство NVRAM. Снимок двух банков доступен владельцу машины между квантами. Persistence в bundle и согласованный checkpoint входят в S9-26. [Контракт NVRAM](NVRAM_DEVICE.md#host-api) |
 | vTPM 2.0 | Нет кода ни в одном crate | Отсутствует; этап 7 ([план](../plans/STAGE_7.md)). Блокирует S9-27 и `full-windows-vm` |
 | Guest agents | `guest/linux/agent/src/`, `guest/windows/agent/src/` — `.gitkeep`; `protocols/guest/` — `.gitkeep` | Отсутствуют; S9-34 опционален |
 

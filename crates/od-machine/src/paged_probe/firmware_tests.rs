@@ -138,6 +138,7 @@ fn step_with_fp(
         state,
         fp,
         bus,
+        None,
         ROOT,
         EFER,
         AccessContext {
@@ -151,6 +152,94 @@ fn step_with_fp(
         |_| {},
         None,
     )
+}
+
+#[test]
+fn nvram_dispatch_leaves_unserved_mmio_unwritten_and_clean() {
+    let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x10000).unwrap();
+    let lapic = GuestPhysicalRange::new(
+        GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE),
+        0x1000,
+    )
+    .unwrap();
+    let nvram =
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(NVRAM_MMIO_BASE), NVRAM_MMIO_BYTES)
+            .unwrap();
+    let map = MachineMemoryMap::new(
+        36,
+        vec![
+            MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+            MemoryRegionSpec::new(lapic, MemoryRegionKind::Mmio),
+            MemoryRegionSpec::new(nvram, MemoryRegionKind::Mmio),
+        ],
+    )
+    .unwrap();
+    let memory = crate::PhysicalMemory::new(&map, RamLimits::new(0x10000)).unwrap();
+    let nvram_registers = NVRAM_MMIO_BASE + crate::NVRAM_STORE_BYTES as u64;
+    for (at, value) in [
+        (ROOT, 0x2003u64),
+        (0x2000, 0x3003),
+        (0x3020, 0x5003),
+        (0x5000, crate::LOCAL_APIC_MMIO_BASE | 3),
+        (0x5008, nvram_registers | 3),
+    ] {
+        memory
+            .store_bytes(GuestPhysicalAddress::new(at), &value.to_le_bytes(), |_| {})
+            .unwrap();
+    }
+    let (state, _) = fixture(&[0xf4]);
+    let paging = Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER).unwrap();
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: PrivilegeLevel::Ring0,
+        origin: AccessOrigin::Explicit,
+    };
+    let device = crate::NvramDevice::new();
+    let handle = device.handle();
+    let drive = |address, operation, handle: Option<&NvramHandle>| {
+        let mut probe = PagedProbeMemory {
+            memory: &memory,
+            paging,
+            instruction_rip: CODE,
+            large_ram_profile: false,
+            firmware_boot_profile: true,
+            nvram: handle,
+            committed_write: &mut |_| {},
+            page_fault: None,
+            memory_error: None,
+        };
+        let access = probe.access(address, context, operation);
+        (access, probe.memory_error)
+    };
+    let write = RamAccessOperation::Write {
+        width: AccessWidth::Dword,
+        value: 1,
+    };
+    let (_, error) = drive(DATA, write, Some(&handle));
+    assert_eq!(
+        error,
+        Some(TrackedAccessError::DeviceUnavailable {
+            address: lapic.start()
+        })
+    );
+    let mut pte = [0; 8];
+    memory
+        .load_bytes(GuestPhysicalAddress::new(0x5000), &mut pte)
+        .unwrap();
+    assert_eq!(u64::from_le_bytes(pte) & (1 << 6), 0);
+
+    let read = RamAccessOperation::Read {
+        width: AccessWidth::Dword,
+    };
+    let active_len = DATA + 0x1000 + 16;
+    assert_eq!(
+        drive(active_len, read, Some(&handle)).0,
+        Ok(TrackedAccessOutcome::Read(24))
+    );
+    let (_, error) = drive(active_len, read, None);
+    assert!(
+        matches!(error, Some(TrackedAccessError::OperandPhysical { address, .. }) if address.get() == nvram_registers + 16)
+    );
 }
 
 #[test]

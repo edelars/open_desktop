@@ -5,7 +5,7 @@
       "name": "boot_core",
       "fv_app": null,
       "fixture": "boot_core_com1.txt",
-      "fixture_sha256": "e1af1fe68c1019fd815b0c0ce2634572fa80edbf4531ac8fa9cc39ebdd79ae48",
+      "fixture_sha256": "327570ee7f408dab1fe6ff475cf15bd3bd1604bcc3a79a58caed4c9c7455dccf",
       "repetitions": 1,
       "returncode": 0,
       "status": "completed",
@@ -17,7 +17,7 @@
       "name": "hello",
       "fv_app": "hello",
       "fixture": "hello_com1.txt",
-      "fixture_sha256": "63548785169398f4bba2913f3a51413657aec5c1bdc416c6802d1ffe1f046b34",
+      "fixture_sha256": "2916ec501915c15115cdf4517e60872b9d4885d722b6f5bf216ff8bc4ce706d7",
       "repetitions": 5,
       "returncode": 6,
       "status": "firmware_stop",
@@ -32,7 +32,7 @@
       "name": "ebs",
       "fv_app": "ebs",
       "fixture": "ebs_com1.txt",
-      "fixture_sha256": "aad0c0aecd5b83b678f9b568a6ba281f56845742b3b565799ed1628463a8a2c7",
+      "fixture_sha256": "5fc05e6ebdaa76b73beeb6da74762e00a7fb33f5c15af8039c075973bd349419",
       "repetitions": 5,
       "returncode": 0,
       "status": "completed",
@@ -44,7 +44,7 @@
       "name": "vars",
       "fv_app": "vars",
       "fixture": "vars_com1.txt",
-      "fixture_sha256": "1ac9714d2cb84b6dbdf1597274c8013aa233079a004acfa018dc920c1a538452",
+      "fixture_sha256": "e9fa95c76f8c731cfdf976ca0ee0c30e16649f6bdd6f8920de3fd8f43b9aca4c",
       "repetitions": 1,
       "returncode": 6,
       "status": "firmware_stop",
@@ -55,5 +55,24 @@
       "instruction_budget": 4000000,
       "max_quanta": 3500
     }
-  ]
+  ],
+  "nvram_reboot": {
+    "instruction_budget": 4000000,
+    "max_quanta": 3500,
+    "fw_stop": {
+      "code": "0x21",
+      "detail": "0x0000000000000000"
+    },
+    "snapshot_sha256": "283b6c6396042f3a5c233f9cb388e1e50f0f68b760fa2e238d52a78137dd64f6",
+    "boots": [
+      {
+        "fixture": "nvram_first_com1.txt",
+        "fixture_sha256": "f30950f39002c2f45bbb4648fc0e73692473b56ac41da61577f5058d82af5906"
+      },
+      {
+        "fixture": "nvram_second_com1.txt",
+        "fixture_sha256": "6d20a106298121c88e0d0126c66159350a2b97eeb64676fc59587f9b24428535"
+      }
+    ]
+  }
 }

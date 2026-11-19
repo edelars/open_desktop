@@ -20496,20 +20496,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ) || (instruction.opcode.byte == 0x85
                         && instruction.operand_size == OperandSize::Word
                         && source == Operand::Register(destination)
-                        && ((instruction.length == 4
-                            && instruction.prefixes.rex == Some(0x45)
-                            && (destination
-                                == RegisterView::low(Register::R8, OperandSize::Word)
-                                || destination
-                                    == RegisterView::low(Register::R9, OperandSize::Word)
-                                || destination
-                                    == RegisterView::low(Register::R10, OperandSize::Word)))
-                            || (instruction.length == 3
-                                && instruction.prefixes.rex.is_none()
-                                && (destination
-                                    == RegisterView::low(Register::Rbp, OperandSize::Word)
-                                    || destination
-                                        == RegisterView::low(Register::Rdx, OperandSize::Word)))))
+                        && matches!(
+                            (
+                                instruction.length,
+                                instruction.prefixes.rex,
+                                destination.register()
+                            ),
+                            (4, Some(0x45), Register::R8 | Register::R9 | Register::R10)
+                                | (3, None, Register::Rbp | Register::Rdx | Register::Rcx)
+                        ))
                 }
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20766,10 +20761,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => true,
                 (Operand::Register(register), ShiftKind::Shr, 0xd0) => {
                     instruction.operand_size == OperandSize::Byte
-                        && instruction.length == 2
-                        && instruction.prefixes == Prefixes::default()
-                        && register == RegisterView::low(Register::Rdx, OperandSize::Byte)
                         && count_source == Operand::Immediate(1)
+                        && match (instruction.length, instruction.prefixes.rex) {
+                            (2, None) => {
+                                register == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                            }
+                            (3, Some(0x40)) => {
+                                register == RegisterView::low(Register::Rdi, OperandSize::Byte)
+                            }
+                            _ => false,
+                        }
                 }
                 (Operand::Register(_), ShiftKind::Shr, 0xd3) => {
                     instruction.operand_size == OperandSize::Qword
@@ -20988,7 +20989,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && destination.base == AddressBase::Register(Register::Rsp)
                         && destination.index.is_none()
                         && destination.scale == 1
-                        && destination.displacement == 0x10
+                        && matches!(destination.displacement, 0x10 | 0x38)
                 }
                 (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
                     instruction.opcode.byte == 0x29
@@ -21386,6 +21387,27 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.prefixes == Prefixes::default() =>
         {
             if let Err(error) = leave_stack_frame(state, memory, context) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PushMemory { source }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xff
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword
+                && instruction.length == 7
+                && instruction.prefixes == Prefixes::default()
+                && source.base == AddressBase::Register(Register::Rsp)
+                && source.index.is_none()
+                && source.scale == 1
+                && source.displacement == 0xc8 =>
+        {
+            if let Err(error) = push_stack_source(state, memory, context, next_rip, source) {
                 return match error {
                     MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
                     error => result(PagedProbeExit::Backend(error), 0),
@@ -61393,19 +61415,7 @@ fn step_configured(
             }
         }
         Operation::PushMemory { source } => {
-            // Resolve and read the complete source with the pre-instruction
-            // state (notably [RSP]), then attempt the bounded write of the
-            // selected word or qword stack item. Neither side commits if
-            // either access faults.
-            let value =
-                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
-                    Ok(value) => value,
-                    Err(MemoryError::Architectural(fault)) => {
-                        return Ok(StepOutcome::Fault(fault));
-                    }
-                    Err(error) => return Err(error),
-                };
-            if let Err(error) = push_stack_value(state, memory, context, value, source.size) {
+            if let Err(error) = push_stack_source(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
             }
         }
@@ -65504,6 +65514,18 @@ fn stack_access_address(rsp: u64, push: bool, size: OperandSize) -> Result<u64, 
         }));
     }
     Ok(address)
+}
+
+fn push_stack_source(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(), MemoryError> {
+    // RSP-relative sources use the stack pointer before the push.
+    let value = read_operand(state, memory, context, next_rip, Operand::Memory(source))?;
+    push_stack_value(state, memory, context, value, source.size)
 }
 
 fn push_stack_value(

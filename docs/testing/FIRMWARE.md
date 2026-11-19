@@ -25,6 +25,14 @@ python3 tests/system/firmware_boot_smoke.py
 
 В базовом ROM обработчик `ExitBootServices` записывает переменную с `NV` через живую Runtime Services table. После завершения EBS диагностика читает снимок в сохранённой памяти и печатает `OD-FW S7-09 variable image retained` только при совпадении записи. [Профиль переменных](../specs/UEFI_PROFILE.md#переменные).
 
+## Повторная загрузка с NVRAM
+
+```sh
+python3 tests/system/firmware_nvram_smoke.py
+```
+
+Runner загружает `vars` с пустым устройством, получает снимок между квантами после `HLT` и создаёт новую плату с тем же ROM и `NvramDevice::with_contents`. Второй `vars` читает через `GetVariable` ранее записанные байты `od-s7-10`. Скрипт сверяет два транскрипта COM1, коды `0x21`, хеши ROM, handoff и снимка, пределы инструкций и квантов. Снимок передаётся внутри одного процесса runner. [Host API NVRAM](../specs/NVRAM_DEVICE.md#host-api).
+
 ## Уровни доказательств
 
 | Уровень | Что проверяет | Команда | Состояние |

@@ -1,11 +1,14 @@
-//! Bounded mixed-instruction quantum through the tracked Long64 RAM walker.
+//! Bounded mixed-instruction quantum through the tracked Long64 walker.
 
 #[cfg(test)]
 mod firmware_tests;
 
+use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
+use crate::page_walk::MmioDispatchError;
 use crate::{
-    GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
-    TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest, VirtualClock,
+    DeviceAccess, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, IoSpace,
+    Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
+    TrackedAccessRequest, VirtualClock,
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
@@ -185,6 +188,7 @@ pub(crate) fn run_paged_firmware_probe(
     state: &mut LongModeState,
     fp: &mut GuestFpState,
     bus: &mut MachineBus,
+    nvram: Option<&NvramHandle>,
     cr3: u64,
     efer: u64,
     context: AccessContext,
@@ -209,7 +213,7 @@ pub(crate) fn run_paged_firmware_probe(
         rflags_defined,
         stop,
         committed_write,
-        Some(ProbeInputs::Firmware { clock, fp }),
+        Some(ProbeInputs::Firmware { clock, fp, nvram }),
     )
 }
 
@@ -435,6 +439,7 @@ enum ProbeInputs<'a> {
     Firmware {
         clock: Option<VirtualClock>,
         fp: &'a mut GuestFpState,
+        nvram: Option<&'a NvramHandle>,
     },
 }
 
@@ -691,7 +696,8 @@ fn run_paged_probe_inner(
                     && let ProbeBus::Exclusive(bus) = &mut bus
                 {
                     let (physical_memory, _) = bus.split_for_pio_step();
-                    let mut delivery_memory = step.memory(physical_memory, &mut committed_write);
+                    let mut delivery_memory =
+                        step.memory(physical_memory, &mut committed_write, None);
                     match delivery_memory.deliver_firmware_fault(
                         state,
                         &fault,
@@ -892,6 +898,7 @@ impl ProbeStep {
         &self,
         memory: &'a crate::PhysicalMemory,
         committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+        nvram: Option<&'a NvramHandle>,
     ) -> PagedProbeMemory<'a> {
         PagedProbeMemory {
             memory,
@@ -899,6 +906,7 @@ impl ProbeStep {
             instruction_rip: self.instruction_rip,
             large_ram_profile: self.large_ram_profile,
             firmware_boot_profile: self.firmware_boot_profile,
+            nvram,
             committed_write,
             page_fault: None,
             memory_error: None,
@@ -917,7 +925,11 @@ impl ProbeStep {
         Option<PageFaultRecord>,
         Option<TrackedAccessError>,
     ) {
-        let mut memory = self.memory(memory, committed_write);
+        let nvram = match inputs.as_deref() {
+            Some(ProbeInputs::Firmware { nvram, .. }) => *nvram,
+            _ => None,
+        };
+        let mut memory = self.memory(memory, committed_write, nvram);
         let context = AccessContext {
             origin: AccessOrigin::Explicit,
             ..self.context
@@ -954,7 +966,7 @@ impl ProbeStep {
                 self.rflags_defined,
             )
         } else if self.firmware_boot_profile {
-            let Some(ProbeInputs::Firmware { clock, fp }) = inputs else {
+            let Some(ProbeInputs::Firmware { clock, fp, .. }) = inputs else {
                 unreachable!("firmware execution uses its vCPU context");
             };
             let mut sample = clock.as_ref().map(|snapshot| {
@@ -1028,6 +1040,7 @@ struct PagedProbeMemory<'a> {
     instruction_rip: u64,
     large_ram_profile: bool,
     firmware_boot_profile: bool,
+    nvram: Option<&'a NvramHandle>,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -1093,6 +1106,15 @@ impl PagedProbeMemory<'_> {
                 request,
                 &mut *self.committed_write,
             )
+        } else if let Some(nvram) = self.nvram {
+            crate::page_walk::access_long64_4k_with_mmio(
+                self.memory,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+                Some(&[(NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES)]),
+                |address, _, operation| access_nvram(nvram, address, operation),
+            )
         } else {
             crate::access_long64_4k_ram(
                 self.memory,
@@ -1151,6 +1173,40 @@ impl PagedProbeMemory<'_> {
             }
         }
     }
+}
+
+fn access_nvram(
+    nvram: &NvramHandle,
+    address: GuestPhysicalAddress,
+    operation: RamAccessOperation,
+) -> Result<u64, MmioDispatchError> {
+    // The page walker dispatches only operands wholly within the NVRAM window.
+    let offset = address.get() - NVRAM_MMIO_BASE;
+    let result = match operation {
+        RamAccessOperation::Read { width } => nvram.read(DeviceAccess {
+            space: IoSpace::Mmio,
+            offset,
+            width,
+        }),
+        RamAccessOperation::Write { width, value } => nvram
+            .write(
+                DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset,
+                    width,
+                },
+                value,
+            )
+            .map(|()| 0),
+        _ => {
+            return Err(MmioDispatchError::Backend(
+                "NVRAM accepts only plain data reads and writes".to_owned(),
+            ));
+        }
+    };
+    result.map_err(|error| {
+        MmioDispatchError::Backend(format!("NVRAM access at {offset:#x}: {error:?}"))
+    })
 }
 
 impl GuestMemory for PagedProbeMemory<'_> {

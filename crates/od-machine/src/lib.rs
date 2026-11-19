@@ -8,6 +8,7 @@ mod apic_pair;
 mod bus;
 mod clock_owner;
 mod console_output_context;
+mod crc32;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
@@ -40,6 +41,7 @@ mod litmus_interleaving;
 mod litmus_parallel;
 mod local_apic;
 mod nvme;
+mod nvram_device;
 mod page_walk;
 mod paged_apic_entry;
 mod paged_descriptor;
@@ -116,6 +118,10 @@ pub use bus::{
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
+};
+pub use nvram_device::{
+    NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_STORE_BYTES, NvramConfig, NvramContentsError,
+    NvramDevice,
 };
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,

@@ -738,10 +738,11 @@ pub(crate) fn serialize_linux_boot_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crc32::crc32_ieee;
     use crate::firmware_board::{
         FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
         FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
-        FIRMWARE_MAX_RAM_BYTES, FirmwareBoardConfig, crc32_ieee, load_firmware_image,
+        FIRMWARE_MAX_RAM_BYTES, FirmwareBoardConfig, load_firmware_image,
     };
     use crate::linux_boot::{LinuxBzImageHeader, parse_linux_bzimage_header};
     use crate::linux_placement::{LinuxPlacementInput, plan_linux_placement};

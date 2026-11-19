@@ -29,6 +29,36 @@ pub struct VariableInfo {
     pub maximum_value: u64,
 }
 
+pub(crate) struct Mutation<'a> {
+    previous: Range<usize>,
+    bytes: usize,
+    nv: bool,
+    kind: Change<'a>,
+}
+
+enum Change<'a> {
+    Delete,
+    Replace(Record<'a>),
+    Append { extra: &'a [u8], value_size: usize },
+}
+
+impl Mutation<'_> {
+    pub(crate) fn changes_nv(&self) -> bool {
+        self.nv
+    }
+
+    fn write_record(&self, destination: &mut [u8]) {
+        match self.kind {
+            Change::Delete => {}
+            Change::Replace(record) => codec::write_record(destination, record),
+            Change::Append { extra, value_size } => {
+                codec::copy_bytes(&mut destination[self.previous.len()..], extra);
+                codec::seal_record(destination, value_size);
+            }
+        }
+    }
+}
+
 impl VariableStore {
     #[cfg(test)]
     pub(super) const fn new() -> Self {
@@ -70,6 +100,21 @@ impl VariableStore {
         attributes: u32,
         value: &[u8],
     ) -> Result<bool, Status> {
+        let Some(mutation) = self.prepare_set(guid, name, attributes, value)? else {
+            return Ok(false);
+        };
+        let nv = mutation.changes_nv();
+        self.apply(mutation);
+        Ok(nv)
+    }
+
+    pub(crate) fn prepare_set<'a>(
+        &self,
+        guid: Guid,
+        name: Name<'a>,
+        attributes: u32,
+        value: &'a [u8],
+    ) -> Result<Option<Mutation<'a>>, Status> {
         validate_attributes(attributes)?;
         if read_only(guid, name) {
             return Err(Status::WRITE_PROTECTED);
@@ -96,52 +141,69 @@ impl VariableStore {
             if append {
                 return Err(Status::INVALID_PARAMETER);
             }
-            let (range, _) = existing.ok_or(Status::NOT_FOUND)?;
-            self.resize(range, 0)?;
-            return Ok(effective & NON_VOLATILE != 0);
+            let (previous, _) = existing.ok_or(Status::NOT_FOUND)?;
+            return Ok(Some(Mutation {
+                previous,
+                bytes: 0,
+                nv: effective & NON_VOLATILE != 0,
+                kind: Change::Delete,
+            }));
         }
         if global_attributes(guid, name).is_some_and(|expected| attributes != expected) {
             return Err(Status::INVALID_PARAMETER);
         }
         if append && value.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         if !valid_write(guid, name, value, append) {
             return Err(Status::INVALID_PARAMETER);
         }
-        if let Some((range, record)) = existing {
-            if append {
-                let old_end = range.end;
+        let (previous, value_size, kind) = match existing {
+            Some((range, record)) if append => {
                 let value_size = record.value.len().saturating_add(value.len());
-                if value_size > MAX_VALUE_BYTES {
-                    return Err(Status::INVALID_PARAMETER);
-                }
-                let new = self.resize(range, codec::record_size(name, value_size))?;
-                codec::copy_bytes(&mut self.bytes[old_end..new.end], value);
-                codec::seal_record(&mut self.bytes[new], value_size);
-                return Ok(attributes & NON_VOLATILE != 0);
+                (
+                    range,
+                    value_size,
+                    Change::Append {
+                        extra: value,
+                        value_size,
+                    },
+                )
             }
-            self.replace(
-                range,
-                Record {
-                    guid,
-                    name,
-                    attributes,
-                    value,
-                },
-            )?;
-        } else {
-            self.replace(
-                self.used..self.used,
-                Record {
-                    guid,
-                    name,
-                    attributes,
-                    value,
-                },
-            )?;
+            entry => {
+                let previous = entry.map_or(self.used..self.used, |(range, _)| range);
+                (
+                    previous,
+                    value.len(),
+                    Change::Replace(Record {
+                        guid,
+                        name,
+                        attributes,
+                        value,
+                    }),
+                )
+            }
+        };
+        if value_size > MAX_VALUE_BYTES {
+            return Err(Status::INVALID_PARAMETER);
         }
-        Ok(attributes & NON_VOLATILE != 0)
+        let bytes = codec::record_size(name, value_size);
+        if self.used - previous.len() + bytes > CAPACITY {
+            return Err(Status::OUT_OF_RESOURCES);
+        }
+        Ok(Some(Mutation {
+            previous,
+            bytes,
+            nv: attributes & NON_VOLATILE != 0,
+            kind,
+        }))
+    }
+
+    pub(crate) fn apply(&mut self, mutation: Mutation<'_>) {
+        let target = self
+            .resize(mutation.previous.clone(), mutation.bytes)
+            .unwrap();
+        mutation.write_record(&mut self.bytes[target]);
     }
 
     pub(super) fn seed(&mut self, record: Record<'_>) -> Result<(), Status> {
@@ -163,19 +225,59 @@ impl VariableStore {
     /// Serialize the compact set of NV-tagged records into a store image.
     /// The caller owns the destination and retains the returned byte count.
     pub fn encode_nv(&self, out: &mut [u8]) -> Result<usize, Status> {
+        self.encode_nv_after(out, None)
+    }
+
+    /// Encode the candidate for an NV mutation without changing the live store.
+    pub(crate) fn preview_nv(
+        &self,
+        out: &mut [u8],
+        mutation: &Mutation<'_>,
+    ) -> Result<usize, Status> {
+        debug_assert!(mutation.changes_nv());
+        self.encode_nv_after(out, Some(mutation))
+    }
+
+    fn encode_nv_after(
+        &self,
+        out: &mut [u8],
+        mutation: Option<&Mutation<'_>>,
+    ) -> Result<usize, Status> {
         let records = || {
             self.records()
                 .filter(|(_, record)| record.attributes & NON_VOLATILE != 0)
         };
-        let total = HEADER_BYTES + records().map(|(range, _)| range.len()).sum::<usize>();
+        let current = HEADER_BYTES + records().map(|(range, _)| range.len()).sum::<usize>();
+        let total = mutation.map_or(current, |change| {
+            current - change.previous.len() + change.bytes
+        });
         if out.len() < total {
             return Err(Status::BUFFER_TOO_SMALL);
         }
         let mut position = HEADER_BYTES;
         for (range, _) in records() {
-            let end = position + range.len();
-            codec::copy_bytes(&mut out[position..end], &self.bytes[range]);
-            position = end;
+            if let Some(change) = mutation
+                && change.previous == range
+            {
+                let end = position + change.bytes;
+                if matches!(change.kind, Change::Append { .. }) {
+                    codec::copy_bytes(
+                        &mut out[position..position + range.len()],
+                        &self.bytes[range],
+                    );
+                }
+                change.write_record(&mut out[position..end]);
+                position = end;
+            } else {
+                let end = position + range.len();
+                codec::copy_bytes(&mut out[position..end], &self.bytes[range]);
+                position = end;
+            }
+        }
+        if let Some(change) = mutation
+            && change.previous.is_empty()
+        {
+            change.write_record(&mut out[position..total]);
         }
         codec::write_header(out, total);
         Ok(total)

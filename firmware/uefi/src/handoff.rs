@@ -18,7 +18,11 @@ const DEVICE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
 const HANDOFF_MINOR_FV_APP: u16 = 5;
 const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_FV_APP_VARS;
+const HANDOFF_MINOR_NVRAM: u16 = 7;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_NVRAM;
+const DEVICE_NVRAM: u32 = 5;
+const NVRAM_BASE: u64 = 0xff00_0000;
+const NVRAM_BYTES: u64 = 0x0004_1000;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,6 +374,7 @@ fn validate_devices(
             return Err(HandoffError::InvalidDeviceType { index, kind });
         }
         let required_minor = match kind {
+            DEVICE_NVRAM if present => HANDOFF_MINOR_NVRAM,
             8 => 1,
             9 => 2,
             DEVICE_RTC_CMOS => HANDOFF_MINOR_RTC,
@@ -400,7 +405,8 @@ fn validate_devices(
         {
             return Err(HandoffError::InvalidDeviceFlags { index, flags });
         }
-        if kind >= 8 && !present {
+        if (kind >= 8 || (kind == DEVICE_NVRAM && version_minor >= HANDOFF_MINOR_NVRAM)) && !present
+        {
             return Err(HandoffError::RequiredDeviceNotPresent { index, kind });
         }
         if (!present && (base != 0 || length != 0))
@@ -427,6 +433,17 @@ fn validate_devices(
             {
                 return Err(HandoffError::InvalidRtcBaseTime { index });
             }
+        }
+        if kind == DEVICE_NVRAM
+            && present
+            && (base != NVRAM_BASE
+                || length != NVRAM_BYTES
+                || u32_at(bytes, at + 0x18) != NO_OWNER
+                || irq_flags != 0
+                || u64_at(bytes, at + 0x20) != 0
+                || u64_at(bytes, at + 0x28) != 0)
+        {
+            return Err(HandoffError::InvalidDeviceRange { index });
         }
     }
     for kind in 1..=7 {
@@ -572,7 +589,9 @@ impl<'a> Handoff<'a> {
             2 => (8..=9).contains(&device_count),
             3 => device_count == 9,
             HANDOFF_MINOR_RTC => (8..=10).contains(&device_count),
-            HANDOFF_MINOR_FV_APP | HANDOFF_MINOR_FV_APP_VARS => (7..=10).contains(&device_count),
+            HANDOFF_MINOR_FV_APP | HANDOFF_MINOR_FV_APP_VARS | HANDOFF_MINOR_NVRAM => {
+                (7..=10).contains(&device_count)
+            }
             _ => false,
         };
         if !valid_device_count {
@@ -628,13 +647,13 @@ impl<'a> Handoff<'a> {
                 0 => None,
                 1 => Some(FirmwareFvApp::Hello),
                 2 => Some(FirmwareFvApp::Ebs),
-                3 if minor == HANDOFF_MINOR_FV_APP_VARS => Some(FirmwareFvApp::Vars),
+                3 if minor >= HANDOFF_MINOR_FV_APP_VARS => Some(FirmwareFvApp::Vars),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {
             None
         };
-        Ok(Self {
+        let handoff = Self {
             bytes: &bytes[..total],
             version_minor: minor,
             tsc_hz: u64_at(bytes, 0x20),
@@ -646,7 +665,11 @@ impl<'a> Handoff<'a> {
             device_table_offset: device_offset as usize,
             device_count: device_count as usize,
             device_entry_size: device_entry_size as usize,
-        })
+        };
+        if minor >= HANDOFF_MINOR_NVRAM {
+            handoff.validate_nvram_region()?;
+        }
+        Ok(handoff)
     }
 
     /// Parses and validates the block for use as this board's firmware boot handoff.
@@ -666,6 +689,36 @@ impl<'a> Handoff<'a> {
 
     pub fn fv_app(&self) -> Option<FirmwareFvApp> {
         self.fv_app
+    }
+
+    /// Available only in a block with the validated NVRAM device and region.
+    pub fn nvram_base(&self) -> Option<u64> {
+        (self.version_minor >= HANDOFF_MINOR_NVRAM).then_some(NVRAM_BASE)
+    }
+
+    fn validate_nvram_region(&self) -> Result<(), HandoffError> {
+        let owner = (0..self.device_count)
+            .find(|&index| {
+                u32_at(
+                    self.bytes,
+                    self.device_table_offset + index * self.device_entry_size,
+                ) == DEVICE_NVRAM
+            })
+            .unwrap() as u32;
+        let mut regions = self
+            .regions()
+            .filter(|region| region.kind == region_kind::NVRAM);
+        if let Some(region) = regions.next()
+            && region.base == NVRAM_BASE
+            && region.length == NVRAM_BYTES
+            && region.owner == owner
+            && regions.next().is_none()
+        {
+            return Ok(());
+        }
+        Err(HandoffError::InvalidBootReservation {
+            kind: region_kind::NVRAM,
+        })
     }
 
     pub const fn version_minor(&self) -> u16 {
@@ -1115,6 +1168,51 @@ mod tests {
         assert_eq!(
             Handoff::parse(&bytes, 5),
             Err(HandoffError::TableOutOfBounds { table: "region" })
+        );
+    }
+
+    #[test]
+    fn v17_binds_the_nvram_device_to_its_exact_owned_region() {
+        let mut bytes = sample();
+        bytes.splice(HEADER_SIZE..HEADER_SIZE, [0; 8]);
+        let region = FV_APP_HEADER_SIZE + 0x20;
+        bytes.splice(region..region, [0; 0x20]);
+        let total = bytes.len() as u32;
+        let devices = region + 0x20;
+        let nvram = devices + 4 * 0x30;
+        bytes[0x0A] = 7;
+        bytes[0xA0] = 3;
+        bytes[0x0C..0x10].copy_from_slice(&0xA8u32.to_le_bytes());
+        bytes[0x10..0x14].copy_from_slice(&total.to_le_bytes());
+        bytes[0x30..0x34].copy_from_slice(&0xA8u32.to_le_bytes());
+        bytes[0x34..0x38].copy_from_slice(&2u32.to_le_bytes());
+        bytes[0x3C..0x40].copy_from_slice(&(devices as u32).to_le_bytes());
+        bytes[region..region + 4].copy_from_slice(&region_kind::NVRAM.to_le_bytes());
+        bytes[region + 8..region + 16].copy_from_slice(&NVRAM_BASE.to_le_bytes());
+        bytes[region + 16..region + 24].copy_from_slice(&NVRAM_BYTES.to_le_bytes());
+        bytes[region + 24..region + 28].copy_from_slice(&4u32.to_le_bytes());
+        bytes[nvram + 4..nvram + 8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[nvram + 8..nvram + 16].copy_from_slice(&NVRAM_BASE.to_le_bytes());
+        bytes[nvram + 16..nvram + 24].copy_from_slice(&NVRAM_BYTES.to_le_bytes());
+        bytes[nvram + 24..nvram + 28].copy_from_slice(&NO_OWNER.to_le_bytes());
+        seal(&mut bytes);
+        let handoff = Handoff::parse(&bytes, 7).unwrap();
+        assert_eq!(handoff.nvram_base(), Some(NVRAM_BASE));
+        assert_eq!(handoff.fv_app(), Some(FirmwareFvApp::Vars));
+        bytes[0x0A] = 6;
+        seal(&mut bytes);
+        assert!(matches!(
+            Handoff::parse(&bytes, 7),
+            Err(HandoffError::InvalidDeviceVersion { kind: 5, .. })
+        ));
+        bytes[0x0A] = 7;
+        bytes[region + 24] = 3;
+        seal(&mut bytes);
+        assert_eq!(
+            Handoff::parse(&bytes, 7),
+            Err(HandoffError::InvalidBootReservation {
+                kind: region_kind::NVRAM
+            })
         );
     }
 

@@ -201,10 +201,25 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         )
     };
     // SAFETY: this pool is exclusive, identity-mapped runtime data.
-    if unsafe { RuntimeVariables::initialize(variables, &od_firmware::console::COM1_DEVICE_PATH) }
-        .is_err()
-    {
-        stop(STOP_BOOT_SERVICES, 76);
+    let restore = unsafe {
+        RuntimeVariables::initialize(
+            variables,
+            &od_firmware::console::COM1_DEVICE_PATH,
+            handoff.nvram_base(),
+        )
+    };
+    let Ok(restore) = restore else {
+        stop(STOP_BOOT_SERVICES, 76)
+    };
+    if let Some(report) = restore {
+        if report.invalid_header {
+            com1_write(b"OD-FW S7-10 NVRAM ignored invalid store header\r\n");
+        }
+        com1_write(b"OD-FW S7-10 NVRAM restored discarded=0x");
+        com1_write(&fixed_hex(u64::from(report.discarded_records)));
+        com1_write(b" missing_defaults=0x");
+        com1_write(&fixed_hex(u64::from(report.missing_defaults)));
+        com1_write(b"\r\n");
     }
     let mut runtime_storage = RuntimeServicesStorage::diagnostic(diagnostic_reset_system);
     runtime_storage.variables = variables;
