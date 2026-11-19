@@ -1,0 +1,82 @@
+{
+  "task": "S6-38 step 2",
+  "source_commit": "8a86c0e",
+  "target": "od-runner release --locked --offline",
+  "od_runner_sha256": "136878204c1cab7ec346c7aa8091c42b71145a183408fd254937f70667461890",
+  "platform": "macOS 26.7.1 (25G241), ARM64",
+  "rustc": "1.99.0 (b940084d7 2026-09-28)",
+  "sampler": "/usr/bin/sample PID 5 1",
+  "analysis": "Sum inclusive sample-node counts within od-vcpu worker trees, with run_cpl0_set_loop as an ancestor for tracked 4 KiB access, walker, and the listed PhysicalMemory symbols. Counts of nested frames overlap. Scan descendants for Rust Mutex lock/unlock, pthread mutex/rwlock, unfair lock, ulock and psynch mutex symbols. Adjacent mutex entries count only the selected parent symbols.",
+  "profiles": [
+    {
+      "case": "IRIW",
+      "fixture": "tests/fixtures/guest/stage6/litmus/iriw.json",
+      "fixture_sha256": "45c203f5a63bd69ece03b4c2f2d1f3b0519db614a353056c07d5bf61fb39ebe4",
+      "vcpus": 4,
+      "rounds": 1000000,
+      "placements": 24,
+      "verdict": "allowed_only",
+      "late_barrier_rounds": 0,
+      "run_json_sha256": "cf16b31d29fb57ec113b5dbc5e3448a425d86a2f0a230a0d4423af320e459232",
+      "sample_txt_sha256": "2210f49237ad232621c27a8f51b2dda671466d5d4deae8eeaf0a7d021b4f97c9",
+      "sample_counts_by_worker": {
+        "od-vcpu-0": 3484,
+        "od-vcpu-1": 3484,
+        "od-vcpu-2": 3484,
+        "od-vcpu-3": 3484
+      },
+      "cpl0_loop_frame_samples": 6338,
+      "ram_frame_samples_with_cpl0_loop_ancestor": {
+        "page_walk::access_long64_4k_internal_windowed": 381,
+        "page_walk::walk_long64_4k_with_writer": 248,
+        "PhysicalMemory::load_u64": 96,
+        "PhysicalMemory::load_u8": 15,
+        "PhysicalMemory::load_bytes": 3,
+        "PhysicalMemory::store_bytes": 5,
+        "PhysicalMemory::commit_write": 1
+      },
+      "lock_descendant_frames_under_these_ram_frames": {},
+      "selected_adjacent_rust_mutex_lock_parents": {
+        "LAPIC timer state": 103,
+        "CPL0 loop without sampled RAM frame": 38,
+        "UART transmit": 194,
+        "parallel worker": 2349,
+        "LAPIC has_timer": 60
+      }
+    },
+    {
+      "case": "MP",
+      "fixture": "tests/fixtures/guest/stage6/litmus/mp.json",
+      "fixture_sha256": "c1fe2c087e1ae99964e5c10f0fe49fcd42d8a6c38b9580fc0df094f35fe104d4",
+      "vcpus": 2,
+      "rounds": 1000000,
+      "placements": 2,
+      "verdict": "allowed_only",
+      "late_barrier_rounds": 0,
+      "run_json_sha256": "89f292dd315727c27f9f4a24cf051ce9f565701f3d09c2ab042c001f369ae2f2",
+      "sample_txt_sha256": "0953f93bcb06bd148022a5b5b3df4fc7242ff226097fb690d5e37c97d30b7349",
+      "sample_counts_by_worker": {
+        "od-vcpu-0": 3770,
+        "od-vcpu-1": 3770
+      },
+      "cpl0_loop_frame_samples": 3778,
+      "ram_frame_samples_with_cpl0_loop_ancestor": {
+        "page_walk::access_long64_4k_internal_windowed": 48,
+        "page_walk::walk_long64_4k_with_writer": 35,
+        "PhysicalMemory::load_u64": 8,
+        "PhysicalMemory::load_u8": 2,
+        "PhysicalMemory::load_bytes": 1,
+        "PhysicalMemory::store_bytes": 0,
+        "PhysicalMemory::commit_write": 0
+      },
+      "lock_descendant_frames_under_these_ram_frames": {},
+      "selected_adjacent_rust_mutex_lock_parents": {
+        "LAPIC timer state": 3,
+        "UART transmit": 4,
+        "parallel worker": 149,
+        "CPL0 loop without sampled RAM frame": 1,
+        "LAPIC has_timer": 2
+      }
+    }
+  ]
+}
