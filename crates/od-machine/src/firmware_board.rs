@@ -1408,6 +1408,7 @@ pub(crate) struct ThreadParts<'a> {
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
     pub(crate) irq_source: &'a mut dyn BoardIrqSource,
     pub(crate) owner: &'a mut ClockOwner,
+    pub(crate) rdtsc_clock: Option<&'a VirtualClockHandle>,
     pub(crate) com1: &'a mut Vec<u8>,
     /// The board's page-table root (the walk root of a vCPU that has no CR3 of its own).
     pub(crate) page_table_root: u64,
@@ -1481,6 +1482,7 @@ impl LoadedFirmwareBoard {
             uart_ioapic_source: self.uart_ioapic_source.as_ref(),
             irq_source: &mut *self.irq_source,
             owner,
+            rdtsc_clock: self.rdtsc_tick.as_ref().map(|_| &self.clock),
             com1: &mut self.com1_log,
             page_table_root: self.page_table_root,
         })

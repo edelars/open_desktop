@@ -22,21 +22,19 @@
 //!   than the rest of the quantum), and on a PM-timer or PIT-port read (their device time is the
 //!   call's `device_ns`).
 //!
-//! The call never touches the clock: not `charge_retired`, not `charge_ns`, not `idle_to`. It
-//! returns what it retired and the device nanoseconds, and the scheduler charges them (D7, the
-//! condition (c) of the plan S6-16 6). It has no fetch cache.
+//! The scheduler charges retired instructions and device nanoseconds (D7, condition (c) of
+//! plan S6-16 6). The shared Linux-profile quantum reads the current board clock for `RDTSC`,
+//! then ends the quantum and returns its device tick to the scheduler. There is no fetch cache.
 //!
-//! Not here: the NVMe doorbell, the PM stop request and the RDTSC source (the guest of an
-//! application processor has no time source: `RDTSC` is not an instruction of the quantum), the
-//! checkpoint recorder and the observation collectors: they belong to the Linux boot loop of the
-//! boot processor, which this call does not replace. The MSR and FP cells of the vCPU are the
+//! The NVMe doorbell, PM stop request, checkpoint recorder and observation collectors belong
+//! to the boot processor's Linux boot loop. The MSR and FP cells of the vCPU are the
 //! caller's: the `set` it hands in is built over the cells of `cpu` (loaded from the `Vcpu::guest_*`
 //! fields before the call and stored back after it, as `linux_direct` does for the boot processor).
 
 use super::{
     AccessContext, AccessOrigin, BOOT_VCPU_INDEX, FirmwareBoardError, INTEGER_FLAGS,
-    InstructionMode, IrqCounters, LoadedFirmwareBoard, PagedCpl0SetExit, PrivilegeLevel, RunExit,
-    set_exit_to_probe_exit,
+    InstructionMode, IrqCounters, LoadedFirmwareBoard, PagedCpl0SetExit, PrivilegeLevel,
+    RDTSC_TICK_NS, RunExit, set_exit_to_probe_exit,
 };
 use crate::bus::SplitLockGate;
 use crate::irq_source::{BoardIrqSource, IrqBoundaryHook};
@@ -48,7 +46,9 @@ use crate::smp_scheduler::{Executed, RunFailure};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::Vcpu;
-use crate::{AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle};
+use crate::{
+    AcpiPmHandle, LocalApicHandle, MachineBus, Pit8254Handle, Uart16550Handle, VirtualClockHandle,
+};
 use od_isa::execute::Cpl0ProfileSet;
 use std::cell::Cell;
 use std::sync::{Mutex, PoisonError};
@@ -119,6 +119,7 @@ struct QuantumEnv<'a> {
     board_source: &'a mut dyn BoardIrqSource,
     /// The gate of the split `LOCK` of a vCPU thread of the parallel mode.
     gate: Option<&'a dyn SplitLockGate>,
+    rdtsc_clock: Option<&'a VirtualClockHandle>,
 }
 
 /// What a vCPU has to have before a quantum can run (checked before anything changes).
@@ -149,7 +150,7 @@ fn quantum_loop(
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
     exception_delivery: ExceptionDeliveryMode<'_>,
-) -> PagedCpl0SetReport {
+) -> (PagedCpl0SetReport, u64) {
     let QuantumEnv {
         lapic,
         uart,
@@ -157,6 +158,7 @@ fn quantum_loop(
         pit,
         board_source,
         gate,
+        rdtsc_clock,
     } = env;
     // CR2 is a cell of the vCPU between calls and the state's during the call (S4-38L5c).
     let prior_cr2 = vcpu.state.cr2;
@@ -173,6 +175,14 @@ fn quantum_loop(
         &mut own
     };
     let mut counters = IrqCounters::default();
+    let rdtsc_read = Cell::new(false);
+    let mut rdtsc = rdtsc_clock.map(|clock| {
+        let rdtsc_read = &rdtsc_read;
+        move || {
+            rdtsc_read.set(true);
+            clock.snapshot().tsc()
+        }
+    });
     let report = run_cpl0_set_loop(
         &mut vcpu.state,
         bus,
@@ -188,9 +198,10 @@ fn quantum_loop(
         budget,
         INTEGER_FLAGS,
         &set,
-        None,
+        rdtsc.as_mut().map(|read| read as &mut dyn FnMut() -> u64),
         || {
             stop()
+                || rdtsc_read.get()
                 || uart.holding_occupied()
                 || lapic.timer_register_writes() != timer_writes
                 || acpi_pm.as_ref().is_some_and(|pm| pm.timer_tick_pending())
@@ -218,7 +229,8 @@ fn quantum_loop(
         report.exit,
         PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
     );
-    report
+    let rdtsc_ns = u64::from(rdtsc_read.get()) * RDTSC_TICK_NS;
+    (report, rdtsc_ns)
 }
 
 /// The result of a quantum from its report, after the pump and the device ticks: an exit of a
@@ -309,7 +321,7 @@ impl LoadedFirmwareBoard {
         }
         self.pump_uart_transmit(0);
 
-        let report = quantum_loop(
+        let (report, rdtsc_ns) = quantum_loop(
             &mut self.vcpus[cpu],
             cpu,
             LoopBus::Exclusive(&mut self.bus),
@@ -320,6 +332,7 @@ impl LoadedFirmwareBoard {
                 pit,
                 board_source: &mut *self.irq_source,
                 gate: None,
+                rdtsc_clock: None,
             },
             inputs,
             budget,
@@ -329,7 +342,7 @@ impl LoadedFirmwareBoard {
         );
 
         self.pump_uart_transmit(report.instructions_executed);
-        let mut device_ns = 0u64;
+        let mut device_ns = rdtsc_ns;
         if let Some(pm) = &self.acpi_pm {
             device_ns += pm.take_timer_tick_ns();
         }
@@ -351,6 +364,8 @@ pub(crate) struct ThreadQuantumEnv<'a> {
     pub(crate) nvme: Option<crate::NvmeHandle>,
     pub(crate) uart_irq_source: Option<&'a UartPicIrqSource>,
     pub(crate) uart_ioapic_source: Option<&'a UartIoapicIrqSource>,
+    /// Clock read by a shared Linux-profile interpreter; the scheduler owns advancement.
+    pub(crate) rdtsc_clock: Option<&'a VirtualClockHandle>,
     /// The COM1 log. The lock is taken for the whole pump (it is above the UART lock: the pump
     /// takes the UART's lock under it, nothing takes this one under the UART's).
     pub(crate) com1: &'a Mutex<&'a mut Vec<u8>>,
@@ -398,8 +413,8 @@ impl ThreadQuantumEnv<'_> {
 /// [`LoadedFirmwareBoard::run_vcpu_set_quantum`] for a vCPU thread of the parallel mode (S6-34):
 /// the same call of the CPL0-set loop, on the shared machine, for the vCPU the thread owns.
 /// `board_source` is the interrupt source of the board for the boot processor; it is not asked
-/// for any other vCPU. `gate` is the stop-all of the split `LOCK`. Nothing else differs: the
-/// device lock of the bus is taken for each device access and not across an instruction.
+/// for any other vCPU. `gate` is the stop-all of the split `LOCK`. The bus takes the device
+/// lock for each access. The Linux-profile board supplies the clock for `RDTSC`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_vcpu_set_quantum_shared(
     env: &ThreadQuantumEnv<'_>,
@@ -416,7 +431,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     let inputs = quantum_inputs(vcpu)?;
     env.pump_uart_transmit();
 
-    let report = quantum_loop(
+    let (report, rdtsc_ns) = quantum_loop(
         vcpu,
         cpu,
         LoopBus::Shared(env.bus),
@@ -427,6 +442,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
             pit: env.pit.clone(),
             board_source,
             gate,
+            rdtsc_clock: env.rdtsc_clock,
         },
         inputs,
         budget,
@@ -438,7 +454,8 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     env.pump_uart_transmit();
     // A completed quantum takes pending board requests for the clock owner.
     // A peer may have queued them before this call.
-    quantum_result(report, cpu, vcpu, env.take_device_ticks())
+    let device_ns = env.take_device_ticks().saturating_add(rdtsc_ns);
+    quantum_result(report, cpu, vcpu, device_ns)
 }
 
 /// The CPL0 interpreter for a litmus probe with no board-device or IRQ polling.

@@ -1494,6 +1494,7 @@ fn run_threads_inner<R>(
         uart_ioapic_source,
         irq_source,
         owner,
+        rdtsc_clock,
         com1,
         page_table_root,
     } = parts;
@@ -1515,6 +1516,7 @@ fn run_threads_inner<R>(
         nvme,
         uart_irq_source,
         uart_ioapic_source,
+        rdtsc_clock,
         com1: &com1,
     };
     if discard_startup_port_ticks {
@@ -1631,20 +1633,84 @@ mod tests {
     fn fixture_quantum(
         call: QuantumCall<'_, '_>,
     ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
-        with_set(|set| {
-            run_vcpu_set_quantum_shared(
-                call.env,
-                call.vcpu,
-                call.cpu,
-                call.lapic,
-                call.source,
-                Some(call.gate),
-                call.budget,
-                call.stop,
-                set,
-                call.consecutive_faults,
-            )
-        })
+        with_set(|set| fixture_quantum_with_set(call, set))
+    }
+
+    fn fixture_quantum_with_set(
+        call: QuantumCall<'_, '_>,
+        set: &od_isa::execute::Cpl0ProfileSet<'_>,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+        run_vcpu_set_quantum_shared(
+            call.env,
+            call.vcpu,
+            call.cpu,
+            call.lapic,
+            call.source,
+            Some(call.gate),
+            call.budget,
+            call.stop,
+            set,
+            call.consecutive_faults,
+        )
+    }
+
+    #[test]
+    fn rdtsc_cuts_shared_quanta_and_charges_the_clock_for_each_vcpu_read() {
+        use crate::clock_owner::NS_PER_RETIRED;
+        use od_isa::real_mode_exec::EFLAGS_IF;
+
+        const RDTSC_TICK_NS: u64 = 1_000;
+        for readers in [1, 2] {
+            let mut board = board(2);
+            let cr3 = tables(&mut board, TABLES_0, 0x20_0000, 0);
+            let code = [
+                0x0F, 0x31, // rdtsc
+                0x89, 0xC3, // mov ebx, eax
+                0x0F, 0x31, // rdtsc
+                0xF4, // hlt
+            ];
+            for (cpu, rip, rsp) in [(0, CODE_0, STACK_0), (1, CODE_1, STACK_1)] {
+                patch(&mut board, rip, &code);
+                let mut state = long_state(rip, rsp, cr3, false);
+                if cpu == BOOT_VCPU_INDEX && readers == 1 {
+                    state.activity = Some(CpuActivity::Halted);
+                    state.rflags &= !u64::from(EFLAGS_IF);
+                }
+                install(&mut board, cpu, state, 0xD01);
+            }
+            let start_clock = board.clock();
+            let quantum = |call: QuantumCall<'_, '_>| {
+                with_set(|set| fixture_quantum_with_set(call, &set.with_rdtsc()))
+            };
+            let (report, ()) = run_threads(&mut board, config(64, 64), &quantum, |control| {
+                assert!(control.wait_finished(WAIT));
+            })
+            .unwrap();
+
+            assert_eq!(report.finished, ParallelFinish::AllIdle, "{report:?}");
+            assert_joined(&report, 2);
+            assert_eq!(report.idle_jumps, 0, "{report:?}");
+            assert_eq!(
+                board.clock().now_ns() - start_clock.now_ns(),
+                readers * (4 * NS_PER_RETIRED + 2 * RDTSC_TICK_NS),
+            );
+            for cpu in (2 - readers as usize)..2 {
+                assert_eq!(report.cpus[cpu].calls, 3);
+                assert_eq!(report.cpus[cpu].retired, 4);
+                let state = &board.vcpu(cpu).unwrap().state;
+                let first = state.gpr[Register::Rbx as usize];
+                let second = state.gpr[Register::Rax as usize];
+                assert!(second > first, "{state:?}");
+                if readers == 1 {
+                    assert_eq!(first, start_clock.tsc());
+                    let mut next_clock = start_clock;
+                    next_clock
+                        .advance_time_ns(NS_PER_RETIRED + RDTSC_TICK_NS)
+                        .unwrap();
+                    assert_eq!(second, next_clock.tsc());
+                }
+            }
+        }
     }
 
     #[test]
