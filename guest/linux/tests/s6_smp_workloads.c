@@ -26,11 +26,12 @@ enum {
 
 static const char *nonce = "invalid";
 static const char *scenario = "setup";
+static unsigned task = 22;
 
 static _Noreturn void fail(const char *operation, int error)
 {
-    fprintf(stderr, "OD_S6_22_FAIL nonce=%s case=%s operation=%s%s%s\n",
-            nonce, scenario, operation, error ? ": " : "", error ? strerror(error) : "");
+    fprintf(stderr, "OD_S6_%u_FAIL nonce=%s case=%s operation=%s%s%s\n",
+            task, nonce, scenario, operation, error ? ": " : "", error ? strerror(error) : "");
     exit(EXIT_FAILURE);
 }
 
@@ -298,21 +299,130 @@ static uint64_t processes(const int cpus[WORKERS])
     return WORKERS * PROCESS_ROUNDS;
 }
 
+enum { MAX_COMPUTE_WORKERS = 4, COMPUTE_STEPS = 256 };
+
+struct compute_work {
+    pthread_barrier_t *start;
+    uint64_t begin;
+    uint64_t end;
+    uint64_t checksum;
+    uint64_t processed;
+    int cpu;
+};
+
+static uint64_t compute_value(uint64_t block)
+{
+    uint64_t value = block + 1;
+    for (unsigned step = 0; step < COMPUTE_STEPS; ++step) {
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        value *= UINT64_C(0x2545f4914f6cdd1d);
+    }
+    return value;
+}
+
+static void *compute_range(void *argument)
+{
+    struct compute_work *work = argument;
+    pin(work->cpu);
+    rendezvous(work->start);
+    rendezvous(work->start);
+    for (uint64_t block = work->begin; block < work->end; ++block) {
+        work->checksum += compute_value(block);
+        ++work->processed;
+    }
+    require(on_cpu(work->cpu), "cpu-affinity-after-work");
+    return NULL;
+}
+
+static uint64_t decimal(const char *value, const char *label)
+{
+    require(*value && value[strspn(value, "0123456789")] == '\0', label);
+    errno = 0;
+    uint64_t number = strtoumax(value, NULL, 10);
+    if (errno != 0)
+        fail(label, errno);
+    return number;
+}
+
+static uint64_t hex_checksum(const char *value)
+{
+    require(strlen(value) == 16 && strspn(value, "0123456789abcdefABCDEF") == 16,
+            "expected-checksum");
+    return strtoumax(value, NULL, 16);
+}
+
+static void run_compute(unsigned workers, const int *cpus, uint64_t blocks, uint64_t expected)
+{
+    pthread_t threads[MAX_COMPUTE_WORKERS];
+    struct compute_work work[MAX_COMPUTE_WORKERS];
+    pthread_barrier_t start;
+    check_pthread(pthread_barrier_init(&start, NULL, workers + 1), "pthread_barrier_init");
+    uint64_t begin = 0;
+    for (unsigned i = 0; i < workers; ++i) {
+        uint64_t end = begin + blocks / workers + (i < blocks % workers);
+        work[i] = (struct compute_work){.start = &start, .begin = begin, .end = end, .cpu = cpus[i]};
+        check_pthread(pthread_create(&threads[i], NULL, compute_range, &work[i]), "pthread_create");
+        begin = end;
+    }
+    rendezvous(&start);
+    if (printf("OD_S6_38_BEGIN nonce=%s workers=%u blocks=%" PRIu64 "\n", nonce, workers, blocks) < 0 ||
+        fflush(stdout) == EOF)
+        fail("stdout", errno);
+    rendezvous(&start);
+    for (unsigned i = 0; i < workers; ++i)
+        check_pthread(pthread_join(threads[i], NULL), "pthread_join");
+    if (printf("OD_S6_38_END nonce=%s\n", nonce) < 0 || fflush(stdout) == EOF)
+        fail("stdout", errno);
+    check_pthread(pthread_barrier_destroy(&start), "pthread_barrier_destroy");
+
+    uint64_t processed = 0, checksum = 0;
+    for (unsigned i = 0; i < workers; ++i) {
+        processed += work[i].processed;
+        checksum += work[i].checksum;
+    }
+    require(processed == blocks, "processed-blocks");
+    require(checksum == expected, "checksum");
+    if (printf("OD_S6_38_COMPLETE nonce=%s workers=%u blocks=%" PRIu64 " checksum=%016" PRIx64 "\n",
+               nonce, workers, processed, checksum) < 0 || fflush(stdout) == EOF)
+        fail("stdout", errno);
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2 || !argv[1][0] || strlen(argv[1]) > 128 ||
+    int compute = argc > 2 && strcmp(argv[2], "--compute") == 0;
+    if (compute)
+        task = 38;
+    require(argc == (compute ? 6 : 2), compute ? "arguments" : "nonce");
+    if (!argv[1][0] || strlen(argv[1]) > 128 ||
         argv[1][strspn(argv[1], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")])
         fail("nonce", 0);
     nonce = argv[1];
+
+    unsigned workers = WORKERS;
+    uint64_t blocks = 0, expected = 0;
+    if (compute) {
+        uint64_t count = decimal(argv[3], "workers");
+        require(count == 1 || count == 2 || count == MAX_COMPUTE_WORKERS, "workers");
+        workers = (unsigned)count;
+        blocks = decimal(argv[4], "blocks");
+        require(blocks >= workers, "blocks");
+        expected = hex_checksum(argv[5]);
+    }
     cpu_set_t mask;
     if (sched_getaffinity(0, sizeof(mask), &mask) != 0)
         fail("sched_getaffinity", errno);
-    int cpus[WORKERS];
+    int cpus[MAX_COMPUTE_WORKERS];
     unsigned selected = 0;
-    for (int cpu = 0; cpu < CPU_SETSIZE && selected < WORKERS; ++cpu)
+    for (int cpu = 0; cpu < CPU_SETSIZE && selected < workers; ++cpu)
         if (CPU_ISSET(cpu, &mask))
             cpus[selected++] = cpu;
-    require(selected == WORKERS, "requires-two-allowed-cpus");
+    require(selected == workers, compute ? "requires-allowed-cpus" : "requires-two-allowed-cpus");
+    if (compute) {
+        run_compute(workers, cpus, blocks, expected);
+        return 0;
+    }
 
     const struct {
         const char *name;

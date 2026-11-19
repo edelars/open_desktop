@@ -6,6 +6,7 @@ export PATH LC_ALL
 
 run_workloads() (
     set -eu
+    task=22
     nonce=invalid
     step=nonce
     build_dir=
@@ -13,7 +14,7 @@ run_workloads() (
     finish() {
         status=$?
         if [ "$status" -ne 0 ]; then
-            printf 'OD_S6_22_WRAPPER_FAIL nonce=%s step=%s rc=%s\n' "$nonce" "$step" "$status" >&2
+            printf 'OD_S6_%s_WRAPPER_FAIL nonce=%s step=%s rc=%s\n' "$task" "$nonce" "$step" "$status" >&2
         fi
         if [ -n "$build_dir" ]; then
             rm -rf -- "$build_dir"
@@ -21,18 +22,31 @@ run_workloads() (
     }
     trap finish 0
 
-    [ "$#" -eq 1 ] || exit 64
+    if [ "$#" -eq 3 ] && [ "$2" = --compute ]; then
+        task=38
+    else
+        [ "$#" -eq 1 ] || exit 64
+    fi
     case $1 in
         ''|*[!A-Za-z0-9._-]*) exit 64 ;;
     esac
     [ "${#1}" -le 128 ] || exit 64
     nonce=$1
+    if [ "$task" -eq 38 ]; then
+        step=compute-arguments
+        workers=${3%%,*}
+        remainder=${3#*,}
+        blocks=${remainder%%,*}
+        checksum=${remainder#*,}
+        [ "$3" = "$workers,$blocks,$checksum" ] || exit 64
+        set -- "$nonce" --compute "$workers" "$blocks" "$checksum"
+    fi
 
     step=source
     fixture_dir=/run/open-desktop-stage6
     source=$fixture_dir/s6_smp_workloads.c
     digest=$(sha256sum "$source")
-    printf 'OD_S6_22_SOURCE nonce=%s sha256=%s\n' "$nonce" "${digest%% *}"
+    printf 'OD_S6_%s_SOURCE nonce=%s sha256=%s\n' "$task" "$nonce" "${digest%% *}"
 
     step=compile
     build_dir=$(mktemp -d "$fixture_dir/build.XXXXXXXX")
@@ -42,8 +56,10 @@ run_workloads() (
         "$source" -o "$build_dir/workloads"
 
     step=run
-    "$build_dir/workloads" "$nonce"
-    printf 'OD_S6_22_COMPLETE nonce=%s\n' "$nonce"
+    "$build_dir/workloads" "$@"
+    if [ "$task" -eq 22 ]; then
+        printf 'OD_S6_22_COMPLETE nonce=%s\n' "$nonce"
+    fi
 )
 
 run_workloads "$@"

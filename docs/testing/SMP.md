@@ -426,6 +426,35 @@ od-runner --stage6-litmus (--fixture FILE | --corpus DIR |
 
 Результат на корпусе S6-05 (`--corpus`, полный перебор): при срезе S6-19b было 8 `equal` и 7 `unsupported` (LOCK-CMPXCHG-MUTEX, LOCK-XADD, SB-LOCK, SB-LOCK-LOCAL, SB-LOCK-XADD, SB-XCHG, XCHG-MUTEX; LOCK-INC счётчик тоже); **после S6-20 — 15 fixture = 15 `equal`**, счётчик LOCK-INC тоже `equal`; ожидания CLI-теста `stage6_litmus_cli.rs` изменены с «unsupported = 7» на «equal = 15, unsupported = 0» (эталон читается из fixture, не из прогона; гистограммы и число расписаний всех 15 совпадают с `s6-19-litmus-interleaving.json`, проверено тестом). Команды: `cargo test -p od-runner --offline --test stage6_litmus_cli`; `od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus`; `od-runner --stage6-litmus --fixture tests/fixtures/guest/stage6/litmus/sb.json --mode seed --seeds 0..=99`.
 
+### S6-38 — вычислительная нагрузка гостя
+
+`s6_smp_workloads` делит заданное общее число блоков на соседние непересекающиеся диапазоны. Блок `i` начинает со значения `i + 1` и выполняет 256 раундов сдвигов, XOR и умножения `uint64_t`. Контрольная сумма складывает значения блоков по модулю 2⁶⁴. Один, два и четыре рабочих потока выполняют одинаковый объём работы и проверяют число обработанных блоков и ожидаемую контрольную сумму. Каждый поток закреплён на отдельном разрешённом CPU. [Гостевой исходник](../../guest/linux/tests/s6_smp_workloads.c).
+
+Рецепт S6-22 собирает initramfs с обоими режимами. Для вычислительной проверки добавьте к параметрам ядра `od.s6_compute=<потоки>,<блоки>,<сумма>` вместе с `rdinit` и `od.nonce`. Без параметра `od.s6_compute` выполняются пять проверок S6-22. [Рецепт](../../tools/build/build_stage6_smp_rootfs_initramfs.py).
+
+```text
+rdinit=/s6-smp-init od.nonce=compute od.s6_compute=4,4097,ec4675d8578a4e14
+```
+
+Сверьте контрольную сумму для выбранного объёма до прогонов. Для 4097 блоков независимый расчёт выглядит так.
+
+```python
+blocks = 4097
+mask = (1 << 64) - 1
+checksum = 0
+for seed in range(1, blocks + 1):
+    value = seed
+    for _ in range(256):
+        value ^= value >> 12
+        value ^= (value << 25) & mask
+        value ^= value >> 27
+        value = (value * 0x2545f4914f6cdd1d) & mask
+    checksum = (checksum + value) & mask
+print(f"{checksum:016x}")
+```
+
+Для многопоточной серии используйте 1, 2 и 4 потока при соответствующем числе vCPU. Для цены простаивающих vCPU используйте один рабочий поток при каждом числе vCPU. Границы сбора времени по часам хоста и CPU-времени VM задают `OD_S6_38_BEGIN` и `OD_S6_38_END`. Подготовка потоков и компиляция идут перед `BEGIN`. Интервал включает освобождение барьера, вычисления, проверку привязки и завершение потоков. Сверка суммы идёт после `END`. В сравнение входит прогон с `OD_S6_38_COMPLETE`, ожидаемым nonce и точным результатом. Объём 4097 блоков использован для проверки корректности. Для замеров отдельно калибруйте объём и применяйте правила повторов, разброса и окружения. [Методика замеров](BENCHMARKS.md#сравнительный-протокол) · [Локальная проверка](../reports/data/stage6/s6-38-compute-package.txt).
+
 ### S6-43a — cross-modifying code на двух vCPU с JIT
 
 Проба проверяет два vCPU на одноинструкционном профиле JIT. A пишет код и публикует сигнал. B читает сигнал, в сериализующем варианте исполняет CPUID и затем запускает новую форму X. Эталон CPL0 использует те же байты гостя. [Отчёт](../reports/STAGE_6_S6-43a_2026-11-18.md).

@@ -1,0 +1,45 @@
+S6-38 step 1, fixed-work guest package preflight, 2026-11-19
+
+Stage 5 base initramfs SHA-256 17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1
+Stage 6 archive SHA-256        9edfc4044faac54172c72b4ebee52d23c1c7ddd7b73c3a76e3d0ec4f11c312e3
+Workload C SHA-256             595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a
+Guest wrapper SHA-256          14f104438f007a6c85198c79a1a3a89912ac9f5b5a3f88a355bd39b6374db1c0
+Stage 5 ext4 RAW SHA-256       c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
+Reference checksum for 4097 blocks from the independent Python calculation in SMP.md
+ec4675d8578a4e14
+
+Ran build_stage6_smp_rootfs_initramfs.py twice. The gzip outputs were byte-identical
+and the decoded Stage 5 archive was the unchanged prefix. Checked the alternate
+init with the base BusyBox and the wrapper with the rootfs shell. Ran the argument parsing
+portion of the extracted init with BusyBox and synthetic kernel argument strings;
+it forwarded the compute option, preserved the default, and rejected duplicates.
+
+Container rust:1.99.0-bookworm, cached linux/amd64 under ARM64 OrbStack,
+sha256:19059486ff9ddb4c6895cbc02a186f00274c257adcc6f79611ca29f55d36cdda.
+Used --pull never, --network none, --read-only, --memory=6g, and
+--tmpfs /var/tmp:size=4g,exec. Mounted the input RAW and archive payload read-only.
+Used debugfs -R 'rdump / /var/tmp/rootfs' /input.raw and staged extracted files
+under /var/tmp/rootfs/run/open-desktop-stage6. Both RAW hashes matched.
+
+  taskset -c "$cpus" chroot /var/tmp/rootfs /bin/sh \
+    /run/open-desktop-stage6/s6_smp_workloads.sh compute --compute "$workers,4097,ec4675d8578a4e14"
+
+GCC 15.2.0 (Ubuntu 15.2.0-16ubuntu1). CPU masks for 1, 2, and 4 workers were
+`2`, `2,5`, and `2,3,4,5`. One-worker transcripts matched on all three masks.
+
+OD_S6_38_BEGIN nonce=compute workers=1 blocks=4097
+OD_S6_38_END nonce=compute
+OD_S6_38_COMPLETE nonce=compute workers=1 blocks=4097 checksum=ec4675d8578a4e14
+OD_S6_38_BEGIN nonce=compute workers=2 blocks=4097
+OD_S6_38_END nonce=compute
+OD_S6_38_COMPLETE nonce=compute workers=2 blocks=4097 checksum=ec4675d8578a4e14
+OD_S6_38_BEGIN nonce=compute workers=4 blocks=4097
+OD_S6_38_END nonce=compute
+OD_S6_38_COMPLETE nonce=compute workers=4 blocks=4097 checksum=ec4675d8578a4e14
+
+The default invocation on CPU 2,5 emitted all five OD_S6_22_PASS lines and
+OD_S6_22_COMPLETE. Invalid nonce and truncated descriptor exited 64. An invalid
+worker count, too few allowed CPUs, too few blocks, decimal overflow, and an
+incorrect checksum exited 1. No rejected invocation emitted a COMPLETE marker.
+No temporary build directories remained. The preflight did not boot a guest
+kernel or measure Open Desktop wall time, host CPU time, or lock wait time.

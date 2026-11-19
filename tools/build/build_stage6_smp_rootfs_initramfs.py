@@ -34,11 +34,20 @@ mkdir /newroot/run/open-desktop-stage6 || fail 'S6 payload directory failed'
 read -r cmdline </newroot/proc/cmdline || fail 'S6 cmdline read failed'
 set -f
 set --
+compute_requested=0
 for word in $cmdline; do
   case $word in
     od.nonce=*) set -- "$@" "${{word#od.nonce=}}" ;;
+    od.s6_compute=*)
+      [ "$compute_requested" -eq 0 ] || fail 'S6 compute option repeated'
+      compute_requested=1
+      compute_setting=${{word#od.s6_compute=}}
+      ;;
   esac
 done
+if [ "$compute_requested" -eq 1 ]; then
+  set -- "$@" --compute "$compute_setting"
+fi
 exec /bin/busybox switch_root /newroot /bin/sh /run/open-desktop-stage6/{WRAPPER_NAME} "$@"
 """.encode("ascii")
 
