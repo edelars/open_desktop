@@ -25,6 +25,7 @@ use od_firmware::stop::{
 unsafe extern "C" {
     static __shadow_read_only_start: u8;
     static __shadow_writable_start: u8;
+    fn od_fw_install_gdt();
 }
 
 const COM1_BASE: u16 = 0x3F8;
@@ -136,6 +137,10 @@ pub extern "C" fn od_fw_main(handoff_gpa: u64) -> ! {
 
 extern "C" fn paging_active(active_cr3: u64) -> ! {
     com1_write(PAGING_ACTIVE_LINE);
+    // SAFETY: the guest is at CPL0, its own CR3 and stack are active,
+    // and the linked descriptor table is mapped in writable firmware RAM.
+    unsafe { od_fw_install_gdt() };
+    com1_write(b"OD-FW S7-04 GDT active\r\n");
     let parsed = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX);
     let handoff = match &parsed {
         Ok(handoff) => handoff,

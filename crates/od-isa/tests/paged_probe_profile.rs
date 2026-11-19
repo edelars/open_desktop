@@ -51432,6 +51432,9 @@ fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
     for (bytes, opcode) in [
         (&[0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39),
         (&[0x49, 0xd1, 0xef][..], 0xd1),
+        (&[0x0f, 0x01, 0x15, 0x19, 0x40, 0, 0][..], 0x01),
+        (&[0x48, 0xcb][..], 0xcb),
+        (&[0x8e, 0xd8][..], 0x8e),
         (&[0x40, 0xb5, 0x01][..], 0xb5),
         (&[0x48, 0x83, 0xd0, 0x28][..], 0x83),
         (&[0x25, 0xff, 0x0f, 0, 0][..], 0x25),
@@ -52840,6 +52843,210 @@ fn firmware_boot_paging_alu_uses_operand_width_and_defined_flags() {
         assert_eq!(cpu, expected, "{code:02x?} input={input:#x}");
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
+}
+
+#[test]
+fn firmware_boot_loads_the_gdtr_without_a_previous_table() {
+    let address = DATA + 0x20;
+    let base = DATA + 0x80;
+    let mut code = vec![0x0f, 0x01, 0x15];
+    code.extend_from_slice(&((address - (RIP + 7)) as u32).to_le_bytes());
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address + 8),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x20..DATA_PHYSICAL + 0x22]
+            .copy_from_slice(&23u16.to_le_bytes());
+        memory.bytes[DATA_PHYSICAL + 0x22..DATA_PHYSICAL + 0x2a]
+            .copy_from_slice(&base.to_le_bytes());
+        if fail {
+            memory.fail_read_at = Some((address + 8, MemoryError::Architectural(fault.clone())));
+        }
+        let mut cpu = state();
+        let mut expected = cpu.clone();
+        if !fail {
+            expected.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
+            expected.rip += 7;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            if fail {
+                PagedProbeExit::Fault(fault.clone())
+            } else {
+                PagedProbeExit::Retired
+            }
+        );
+        assert_eq!(result.instructions_executed, u64::from(!fail));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8), (address + 2, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_far_return_loads_cs_and_marks_the_gdt_descriptor() {
+    const CODE: u64 = 0x00af_9a00_0000_ffff;
+    let gdt = DATA + 0x80;
+    let rsp = DATA + 0x100;
+    let target = RIP + 0x40;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(gdt + 8),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&[0x48, 0xcb]);
+        for (offset, value) in [(0x88, CODE), (0x100, target), (0x108, 8)] {
+            let offset = DATA_PHYSICAL + offset;
+            memory.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        if fail {
+            memory.fail_write_on = Some((1, MemoryError::Architectural(fault.clone())));
+        }
+        let mut cpu = state();
+        cpu.gdtr = Some(od_isa::state::Gdtr {
+            base: gdt,
+            limit: 23,
+        });
+        cpu.gpr[Register::Rsp as usize] = rsp;
+        let mut expected = cpu.clone();
+        if !fail {
+            expected.rip = target;
+            expected.gpr[Register::Rsp as usize] += 16;
+            expected.cs_selector = Some(8);
+            expected.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9b,
+                flags: 0xa,
+            });
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            if fail {
+                PagedProbeExit::Fault(fault.clone())
+            } else {
+                PagedProbeExit::Retired
+            }
+        );
+        assert_eq!(result.instructions_executed, u64::from(!fail));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(
+            memory.read_addresses,
+            [(rsp, 8), (rsp + 8, 8), (gdt + 8, 8)]
+        );
+        assert_eq!(memory.write_addresses, [gdt + 8]);
+        let descriptor = if fail { CODE } else { CODE | (1 << 40) };
+        assert_eq!(
+            memory.bytes[DATA_PHYSICAL + 0x88..DATA_PHYSICAL + 0x90],
+            descriptor.to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn firmware_boot_loads_data_caches_and_consumes_mov_ss_shadow_once() {
+    const DATA_DESCRIPTOR: u64 = 0x00cf_9200_0000_ffff;
+    let mut memory = Memory::new(&[
+        0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xe0, 0x8e, 0xe8, 0x8e, 0xd0, 0x90,
+    ]);
+    let base = DATA + 0x60;
+    let descriptor = DATA_PHYSICAL + 0x70;
+    memory.bytes[descriptor..descriptor + 8].copy_from_slice(&DATA_DESCRIPTOR.to_le_bytes());
+    let mut cpu = state();
+    cpu.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
+    cpu.gpr[Register::Rax as usize] = 0x10;
+    let initial_rflags = cpu.rflags;
+    let mut pio = Pio::default();
+    for next in [RIP + 2, RIP + 4, RIP + 6, RIP + 8, RIP + 10] {
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu.rip, next);
+        assert_eq!(
+            cpu.sti_shadow,
+            Some(if next == RIP + 10 {
+                StiShadow::Blocking
+            } else {
+                StiShadow::Clear
+            })
+        );
+    }
+    assert_eq!(cpu.rflags, initial_rflags);
+    assert_eq!(
+        [
+            cpu.ds_selector,
+            cpu.es_selector,
+            cpu.fs_selector,
+            cpu.gs_selector
+        ],
+        [0x10; 4]
+    );
+    assert_eq!(cpu.ss_selector, Some(0x10));
+    assert!(cpu.ds_cache.is_some() && cpu.es_cache.is_some() && cpu.ss_cache.is_some());
+    assert!(cpu.fs_cache.is_some() && cpu.gs_cache.is_some());
+    assert_eq!(memory.write_addresses, [base + 0x10]);
+
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(cpu.rip),
+    };
+    memory.fail_fetch = Some(MemoryError::Architectural(fault.clone()));
+    let blocked = cpu.clone();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, blocked);
+    memory.fail_fetch = None;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cpu.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(cpu.rip, RIP + 11);
 }
 
 #[test]

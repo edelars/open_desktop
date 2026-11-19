@@ -111,3 +111,40 @@ _start:
     .asciz  "\r\n"
 .Lhex_digits:
     .ascii  "0123456789ABCDEF"
+
+
+    .section .data,"aw",@progbits
+    .p2align 3
+    .globl od_fw_gdt
+od_fw_gdt:
+    .quad 0
+    .quad 0x00af9a000000ffff           /* 08: present ring-0 long-mode code */
+    .quad 0x00cf92000000ffff           /* 10: present ring-0 writable data */
+.Lgdt_end:
+
+    .section .rodata,"a",@progbits
+    .p2align 3
+.Lgdtr:
+    .word .Lgdt_end - od_fw_gdt - 1
+    .quad od_fw_gdt
+
+    .section .text,"ax",@progbits
+    .globl od_fw_install_gdt
+    .type od_fw_install_gdt, @function
+od_fw_install_gdt:
+    lgdt    .Lgdtr(%rip)
+    movl    $0x08, %eax
+    pushq   %rax
+    leaq    .Lgdt_reload(%rip), %rax
+    pushq   %rax
+    lretq
+.Lgdt_reload:
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %fs
+    movw    %ax, %gs
+    movw    %ax, %ss
+    nop                               /* consumes the MOV SS interrupt shadow */
+    retq
+    .size od_fw_install_gdt, .-od_fw_install_gdt

@@ -19134,7 +19134,8 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
     initial_rflags_defined: u64,
     active_cr3: Option<u64>,
 ) -> PagedProbeResult<P::Error> {
-    step_paged_probe_mode(
+    let old_shadow = state.sti_shadow;
+    let result = step_paged_probe_mode(
         false,
         false,
         false,
@@ -19151,8 +19152,13 @@ fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
         context,
         initial_rflags_defined,
         None,
-    )
+    );
+    if result.instructions_executed != 0 && old_shadow == Some(crate::StiShadow::Blocking) {
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+    }
+    result
 }
+
 /// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
 /// an explicit time source for the exact bare `RDTSC` (`0F 31`, no prefixes).
 /// The source is called exactly once per retired `RDTSC`; it owns the TSC and
@@ -19948,7 +19954,9 @@ fn step_paged_probe_mode<P: crate::PortIo>(
     if state.sti_shadow.is_none() {
         return reject(PagedProbeRejection::StiShadowMissing);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if state.sti_shadow != Some(crate::StiShadow::Clear)
+        && !(firmware_boot_profile && state.rflags & (1 << 9) == 0)
+    {
         return reject(PagedProbeRejection::StiShadowActive);
     }
     if user_mov && state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
@@ -20101,6 +20109,71 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
+        // S7-04: firmware installs its linked GDT while the old GDTR is unmodeled.
+        Operation::LoadGdtr { source }
+            if firmware_boot_profile
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.gdtr =
+                match read_pseudo_descriptor_qwords(state, memory, context, next_rip, source) {
+                    Ok((base, limit)) => Some(crate::state::Gdtr { base, limit }),
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            state.rip = next_rip;
+        }
+        Operation::FarReturn
+            if firmware_boot_profile
+                && instruction.length == 2
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    }) =>
+        {
+            match far_return_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+        }
+        operation @ (Operation::LoadNullDsSelector
+        | Operation::LoadNullEsSelector
+        | Operation::LoadNullSsSelector
+        | Operation::LoadFsSelector
+        | Operation::LoadGsSelector)
+            if firmware_boot_profile
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let register = match operation {
+                Operation::LoadNullDsSelector => Cpl0Sreg::Ds,
+                Operation::LoadNullEsSelector => Cpl0Sreg::Es,
+                Operation::LoadNullSsSelector => Cpl0Sreg::Ss,
+                Operation::LoadFsSelector => Cpl0Sreg::Fs,
+                Operation::LoadGsSelector => Cpl0Sreg::Gs,
+                _ => unreachable!("matched a segment load"),
+            };
+            let selector = state.gpr[Register::Rax as usize] as u16;
+            match load_sreg_cpl0(state, memory, context, register, selector, true) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+            if register == Cpl0Sreg::Ss {
+                state.sti_shadow = Some(crate::StiShadow::Blocking);
+            }
+            state.rip = next_rip;
+        }
         // S7-04: ordinary register arithmetic in the firmware parser uses
         // the decoder's operand width and sign-extended immediate.
         operation @ (Operation::Arithmetic {
@@ -59667,7 +59740,7 @@ fn step_configured(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector)
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector, false)
                     } else {
                         load_ds_gdt_selector(state, memory, context, selector)
                     };
@@ -59693,7 +59766,7 @@ fn step_configured(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector)
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector, false)
                     } else {
                         load_es_gdt_selector(state, memory, context, selector)
                     };
@@ -59720,7 +59793,7 @@ fn step_configured(
                 state.ss_selector = Some(0);
                 state.ss_unusable = true;
             } else {
-                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector) {
+                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector, false) {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(StepOutcome::Unsupported {
@@ -59945,7 +60018,7 @@ fn step_configured(
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector)
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector, false)
             } else {
                 load_fs_gdt_selector(state, memory, context, selector)
             };
@@ -59965,7 +60038,7 @@ fn step_configured(
         Operation::LoadGsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector)
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector, false)
             } else {
                 load_gs_gdt_selector(state, memory, context, selector)
             };
@@ -63998,6 +64071,7 @@ fn load_sreg_cpl0(
     context: AccessContext,
     register: Cpl0Sreg,
     selector: u16,
+    initialize_cache: bool,
 ) -> Result<bool, MemoryError> {
     let Some(gdtr) = state.gdtr else {
         return Ok(false);
@@ -64009,7 +64083,7 @@ fn load_sreg_cpl0(
         Cpl0Sreg::Fs => state.fs_cache.is_some(),
         Cpl0Sreg::Gs => state.gs_cache.is_some(),
     };
-    if !cache_modeled || selector & 0xfffc == 0 || selector & 4 != 0 {
+    if (!cache_modeled && !initialize_cache) || selector & 0xfffc == 0 || selector & 4 != 0 {
         return Ok(false);
     }
     // CPL is 0 inside the set; the SS selector must carry RPL = CPL.

@@ -109,7 +109,8 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 `od_fw_main` по внутреннему System V ABI. Ошибка GPA останавливает прошивку
 со строкой `OD-FW STOP` через COM1. Rust-точка входа сверяет GPA и разбирает
 handoff block. Затем прошивка готовит собственные таблицы 4 KiB и резерв
-стека, переключает гостевые CR3 и RSP и печатает начальную карту EFI в COM1.
+стека, переключает гостевые CR3 и RSP, загружает свою GDT и устанавливает
+селекторы. Затем прошивка печатает начальную карту EFI в COM1.
 Вывод включает MapKey, версию, число дескрипторов и запись `OD-FW MEM`
 для каждого диапазона. Затем прошивка проверяет выделение, запись, чтение
 и возврат страниц во всех трёх режимах и для двух блоков pool. В COM1
@@ -128,7 +129,7 @@ handoff block. Затем прошивка готовит собственные
 | `src/stop.rs` | форматирование строки останова `OD-FW STOP code=0xNN detail=0x...` без `core::fmt` | нет |
 | `src/mem/` | начальная карта EFI, внутренние аллокаторы страниц и pool, общий MapKey | нет |
 | `src/main.rs` | бинарь: COM1, panic handler, `od_fw_main` | порт ввода-вывода |
-| `src/start.S` | вход `_start`, первичная проверка `RDI`, путь останова через COM1, зануление `.bss` | CPU |
+| `src/start.S` | вход `_start`, проверка `RDI`, останов через COM1, зануление `.bss`, установка GDT и селекторов | CPU |
 | `build.rs` | сборка `start.S` системным `clang` и ключи линковки (только для target `x86_64-unknown-none`) | host-инструмент |
 | `linker.ld` | собственный linker script | — |
 | `.cargo/config.toml` | `relocation-model=static` для target прошивки | — |
