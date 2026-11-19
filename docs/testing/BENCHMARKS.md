@@ -1399,6 +1399,16 @@ The profile medians improved by 9.3–16.3% after normalization against the
 interpreter control. The [measurement report](../reports/STAGE_3_S3-31d_2026-11-19.md)
 records raw ranges, source provenance, reproduction commands and the archive.
 
+### S3-31e. Prepared-key reuse after S3-31d
+
+The S3-31c procedure above was repeated on clean revision `b142e96` after
+the exact dependency snapshot comparison landed. The validator accepted
+60 triples per profile. All retained samples at 64 and 4,096 iterations
+favored prepared-key reuse against ordinary JIT and the interpreter.
+At one iteration the prepared variant's median exceeded ordinary JIT in
+both profiles. Prepared-key reuse remains opt-in. See the
+[refresh report and evidence archive](../reports/STAGE_3_S3-31e_2026-11-19.md).
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
