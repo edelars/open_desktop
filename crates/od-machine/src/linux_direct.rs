@@ -56,6 +56,10 @@ use profile::{LinuxCpl0Profile, LinuxVcpuCells};
 use std::cell::Cell;
 
 mod profile;
+mod threaded;
+pub use threaded::{
+    LinuxThreadedOptions, LinuxThreadedRunReport, run_linux_direct_board_set_user_mode_threaded,
+};
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -791,9 +795,21 @@ fn stop_record(
     pm_timer_reads_before: Option<u64>,
     extras: SetExtras<'_>,
 ) -> LinuxStopRecord {
-    let state = boot.board.state().clone();
-    let (rip_gpa, rip_bytes, rip_bytes_error) =
-        boot.board.fetch_view_2m(state.rip, LINUX_STOP_RIP_BYTES);
+    let view = boot
+        .board
+        .fetch_view_2m(boot.board.state().rip, LINUX_STOP_RIP_BYTES);
+    stop_record_with_view(boot, input, report, pm_timer_reads_before, extras, view)
+}
+
+fn stop_record_with_view(
+    boot: &LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    report: FirmwareRunReport,
+    pm_timer_reads_before: Option<u64>,
+    extras: SetExtras<'_>,
+    (rip_gpa, rip_bytes, rip_bytes_error): (Option<u64>, Vec<u8>, Option<String>),
+) -> LinuxStopRecord {
+    let state = boot.board.state();
     let unsupported_opcode = match report.exit {
         PagedProbeExit::Unsupported { opcode } => Some(opcode),
         _ => None,
@@ -7666,6 +7682,24 @@ mod tests {
         assert_eq!(second.pci_config_address, 0x8000_1000);
     }
 
+    #[test]
+    fn threaded_linux_imports_the_config_address_set_by_the_ordinary_run() {
+        let mut code = mov_eax(0x8000_1000);
+        code.extend(mov_edx(0xcf8));
+        code.extend([0xEF, 0x31, 0xC0, 0xED, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = halting_default();
+        let first = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(first.pci_config_address, 0x8000_1000);
+        let second = run_threaded_test(&mut boot, &file, 4, 2, members)
+            .unwrap()
+            .stop;
+        assert_eq!(second.exit, PagedProbeExit::Halted);
+        assert_eq!(second.retired, 3);
+        assert_eq!(second.gpr[Register::Rax as usize], 0x8000_1000);
+        assert_eq!(second.pci_config_address, 0x8000_1000);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
@@ -11973,6 +12007,101 @@ mod tests {
             &[0xb8, 0x2a, 0, 0, 0, 0x48, 0x0f, 0x07],
         );
         (boot, file)
+    }
+
+    fn run_threaded_test(
+        boot: &mut LinuxDirectBoot,
+        file: &[u8],
+        budget: u64,
+        quantum: u64,
+        members: LinuxCpl0SetMembers,
+    ) -> Result<LinuxThreadedRunReport, LinuxDirectError> {
+        run_linux_direct_board_set_user_mode_threaded(
+            boot,
+            &input(file, &[], BLOB, board_hash()),
+            budget,
+            LinuxCpl0SetMembers {
+                cpuid_profile: CpuidProfile::X8664V1Stage4A,
+                ..members
+            },
+            LinuxThreadedOptions {
+                quantum,
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+    }
+
+    #[test]
+    fn threaded_linux_records_syscalls_and_stops_on_the_unsupported_user_instruction() {
+        let (mut boot, file) = syscall_round_trip_board();
+        write_phys(&mut boot, USER_CODE_AT + 14, &[0xF1, 0xB8, 1, 0, 0, 0]);
+        boot.board.set_guest_efer(0xd01);
+        boot.board.set_guest_star(0x0023_0010_0000_0000);
+        boot.board.set_guest_lstar(SYSCALL_KERNEL_AT);
+        boot.board.set_guest_syscall_mask(0x25_7fd5);
+        let report = run_threaded_test(&mut boot, &file, 32, 1, syscall_members()).unwrap();
+        assert_eq!((report.threads_started, report.threads_exited), (1, 1));
+        let stop = report.stop;
+        assert_eq!(stop.exit_kind, "user_mode_unsupported", "{stop:?}");
+        assert_eq!(stop.unsupported_opcode, Some(0xf1));
+        assert_eq!(
+            (stop.retired, stop.cpl3_retired, stop.virtual_ns),
+            (9, 4, 9)
+        );
+        assert_eq!(stop.rip, USER_CODE_AT + 14);
+        assert_eq!(stop.rip_bytes.first(), Some(&0xF1));
+        assert_eq!(stop.gpr[Register::Rax as usize], 0x2a);
+        assert_eq!(
+            (stop.syscall_journal.entered, stop.syscall_journal.returned),
+            (2, 2)
+        );
+    }
+
+    #[test]
+    fn threaded_linux_reports_the_new_cr3_and_reuses_it_on_the_next_run() {
+        let (mut boot, file) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let old_cr3 = boot.board.cr3();
+        let members = LinuxCpl0SetMembers {
+            cpu_owned_cr3: true,
+            fetch_cache: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let first = run_threaded_test(&mut boot, &file, 3, 2, members)
+            .unwrap()
+            .stop;
+        assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(first.cr3, TREE_PML4);
+        assert_eq!(first.rip_gpa, Some(TREE_CODE + 0x20B));
+        assert_eq!(&first.rip_bytes[..7], &[0x48, 0xC7, 0xC3, 0x22, 0x22, 0, 0]);
+        assert_eq!(first.last_cr3_change, Some((old_cr3, TREE_PML4)));
+        let second = run_threaded_test(&mut boot, &file, 2, 2, members)
+            .unwrap()
+            .stop;
+        assert_eq!(second.retired, 2);
+        assert_eq!(second.cr3, TREE_PML4);
+        assert_eq!(second.gpr[Register::Rbx as usize], 0x2222);
+    }
+
+    #[test]
+    fn threaded_linux_reports_a_port_failure_after_charging_the_completed_prefix() {
+        // MOV EDX, 0xCFD; IN EAX, DX. The PCI device refuses a misaligned dword input.
+        let (mut boot, file) = boot_with_entry(&[0xBA, 0xFD, 0x0C, 0, 0, 0xED]);
+        let error = run_threaded_test(
+            &mut boot,
+            &file,
+            8,
+            8,
+            LinuxCpl0SetMembers {
+                pci_config: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        )
+        .unwrap_err();
+        assert_eq!((error.code, error.retired), ("run_failed", Some(1)));
+        assert!(error.detail.contains("Bus("), "{error:?}");
+        assert_eq!(boot.board.state().rip, ENTRY + 5);
+        assert_eq!(boot.board.clock().now_ns(), 1);
     }
 
     #[test]

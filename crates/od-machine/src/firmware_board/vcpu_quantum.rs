@@ -155,7 +155,8 @@ fn quantum_loop(
     stop: &mut dyn FnMut() -> bool,
     set: &Cpl0ProfileSet<'_>,
     exception_delivery: ExceptionDeliveryMode<'_>,
-) -> (PagedCpl0SetReport, u64) {
+    fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
+) -> (PagedCpl0SetReport, u64, IrqCounters) {
     let QuantumEnv {
         lapic,
         uart,
@@ -219,7 +220,7 @@ fn quantum_loop(
         },
         |_| {},
         false,
-        None,
+        fetch_cache,
         Some(IrqBoundaryHook {
             source,
             delivered_mirror: None,
@@ -241,36 +242,42 @@ fn quantum_loop(
         PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
     );
     let rdtsc_ns = u64::from(rdtsc_read.get()) * RDTSC_TICK_NS;
-    (report, rdtsc_ns)
+    (report, rdtsc_ns, counters)
 }
 
 /// The result of a quantum from its report, after the pump and the device ticks: an exit of a
 /// quantum is benign (the budget, a halt, STOP, a REP restart) or an error that keeps the state.
-fn quantum_result(
-    report: PagedCpl0SetReport,
-    cpu: usize,
-    vcpu: &Vcpu,
-    device_ns: u64,
-) -> Result<Executed, RunFailure<FirmwareBoardError>> {
-    let partial_rep = matches!(
-        report.exit,
-        PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
-    );
-    let benign = matches!(
-        report.exit,
+pub(crate) fn is_quantum_boundary(exit: &PagedCpl0SetExit) -> bool {
+    matches!(
+        exit,
         PagedCpl0SetExit::Run(
             RunExit::Halted
                 | RunExit::InstructionBudgetExhausted
                 | RunExit::StopRequested
                 | RunExit::RepIterationBudgetExhausted
         )
-    );
-    let executed = Executed {
+    )
+}
+
+pub(crate) fn quantum_progress(report: &PagedCpl0SetReport, device_ns: u64) -> Executed {
+    Executed {
         retired: report.instructions_executed,
-        partial_rep,
+        partial_rep: matches!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
+        ),
         device_ns,
-    };
-    if !benign {
+    }
+}
+
+fn quantum_result(
+    report: PagedCpl0SetReport,
+    cpu: usize,
+    vcpu: &Vcpu,
+    device_ns: u64,
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+    let executed = quantum_progress(&report, device_ns);
+    if !is_quantum_boundary(&report.exit) {
         let (page_fault, memory_error) = (report.page_fault, report.memory_error);
         let error = match set_exit_to_probe_exit(report.exit) {
             Err(error) => error.into_board_error(&vcpu.state),
@@ -332,7 +339,7 @@ impl LoadedFirmwareBoard {
         }
         self.pump_uart_transmit(0);
 
-        let (report, rdtsc_ns) = quantum_loop(
+        let (report, rdtsc_ns, _) = quantum_loop(
             &mut self.vcpus[cpu],
             cpu,
             LoopBus::Exclusive(&mut self.bus),
@@ -353,6 +360,7 @@ impl LoadedFirmwareBoard {
             stop,
             set,
             ExceptionDeliveryMode::Quantum,
+            None,
         );
 
         self.pump_uart_transmit(report.instructions_executed);
@@ -487,7 +495,51 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     set: &Cpl0ProfileSet<'_>,
     consecutive_faults: &mut u64,
     machine_stop: &mut Option<MachineStopReason>,
+    nvme_pending: Option<&mut bool>,
+) -> Result<Executed, RunFailure<FirmwareBoardError>> {
+    run_shared_set_quantum(
+        env,
+        vcpu,
+        cpu,
+        lapic,
+        board_source,
+        gate,
+        budget,
+        stop,
+        set,
+        consecutive_faults,
+        machine_stop,
+        nvme_pending,
+        None,
+        |report, vcpu| quantum_result(report.cpu, cpu, vcpu, report.device_ns),
+    )
+}
+
+pub(crate) struct SharedSetReport {
+    pub(crate) cpu: PagedCpl0SetReport,
+    pub(crate) irq: IrqCounters,
+    pub(crate) device_ns: u64,
+    pub(crate) rdtsc_cpl: Option<usize>,
+}
+
+pub(crate) fn run_shared_set_quantum(
+    env: &ThreadQuantumEnv<'_>,
+    vcpu: &mut Vcpu,
+    cpu: usize,
+    lapic: &LocalApicHandle,
+    board_source: &mut dyn BoardIrqSource,
+    gate: Option<&dyn SplitLockGate>,
+    budget: u64,
+    stop: &mut dyn FnMut() -> bool,
+    set: &Cpl0ProfileSet<'_>,
+    consecutive_faults: &mut u64,
+    machine_stop: &mut Option<MachineStopReason>,
     mut nvme_pending: Option<&mut bool>,
+    fetch_cache: Option<&crate::fetch_translation_cache::FetchTranslationCache>,
+    report_result: impl FnOnce(
+        SharedSetReport,
+        &Vcpu,
+    ) -> Result<Executed, RunFailure<FirmwareBoardError>>,
 ) -> Result<Executed, RunFailure<FirmwareBoardError>> {
     if let Some(pending) = nvme_pending.as_deref_mut() {
         let continuation = *pending;
@@ -512,7 +564,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     env.pump_uart_transmit();
     let set = set.route_pci_config_through_port_io();
 
-    let (report, rdtsc_ns) = quantum_loop(
+    let (report, rdtsc_ns, irq) = quantum_loop(
         vcpu,
         cpu,
         LoopBus::Shared(env.bus),
@@ -533,6 +585,7 @@ pub(crate) fn run_vcpu_set_quantum_shared(
         stop,
         &set,
         ExceptionDeliveryMode::Thread(consecutive_faults),
+        fetch_cache,
     );
 
     env.pump_uart_transmit();
@@ -540,7 +593,16 @@ pub(crate) fn run_vcpu_set_quantum_shared(
     // A peer may have queued them before this call.
     let device_ns = env.take_device_ticks().saturating_add(rdtsc_ns);
     let mmio_written = report.mmio_written;
-    let executed = quantum_result(report, cpu, vcpu, device_ns)?;
+    let rdtsc_cpl = (rdtsc_ns != 0).then(|| usize::from(vcpu.state.cs_selector.unwrap_or(0) & 3));
+    let executed = report_result(
+        SharedSetReport {
+            cpu: report,
+            irq,
+            device_ns,
+            rdtsc_cpl,
+        },
+        vcpu,
+    )?;
     // The instruction and its device-table access have ended. Drain before the next instruction
     // or before the worker publishes budget exhaustion for an exact-budget doorbell write.
     if mmio_written && let Some(pending) = nvme_pending {

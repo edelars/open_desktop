@@ -465,6 +465,34 @@ python3 tools/build/build_stage6_smp_initramfs.py \
 
 Проверка требует один полный блок `/init`, online CPU `0–1`, согласованный заголовок `/proc/interrupts` и предшествующую строку ядра `smp: Brought up …, 2 CPUs`. На каждом online CPU хотя бы один из рядов `RES`, `CAL` или `TLB` должен иметь ненулевое значение. Формат строки ядра зафиксирован в S6-02. Предупреждения ядра и детерминизм повторных запусков входят в общую проверку S6-21. Для одно-vCPU наблюдения используйте только `--expect-online 1`. [План S6-21](../plans/STAGE_6.md#s6-21-запустить-второй-процессор-в-linux) · [Инвентарь S6-02](../reports/data/stage6/ap-start-inventory.json).
 
+### S6-37 — LinuxDirect на одном рабочем потоке
+
+Rust API `run_linux_direct_board_set_user_mode_threaded` проверяется с прежними ядром, ACPI и initramfs наблюдения из S6-21. Интеграционный тест требует точный бюджет в 2,5 млрд retired, один стартовавший и завершившийся поток, исполнение в CPL3, завершённые системные вызовы и полный блок гостевого `/init`.
+
+```sh
+cargo test --locked --offline -p od-machine --lib threaded_linux_
+out=work/stage6/s6-37-threaded-linux
+mkdir -p "$out"
+for quantum in 1024 4096; do
+  OD_S6_LINUX_QUANTUM="$quantum" cargo test --release --locked --offline -p od-machine \
+    --test stage6_linux_seeded -- --ignored --exact a_vcpu_worker_reaches_real_linux_guest_init --nocapture \
+    > "$out/boot-$quantum.log" 2>&1 || exit 1
+  python3 - "$out/boot-$quantum.log" "$out/guest-$quantum.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+transcript = Path(sys.argv[1]).read_text()
+Path(sys.argv[2]).write_text(json.dumps({"stop": {"com1_text": transcript}}))
+PY
+  python3 tools/build/build_stage6_smp_initramfs.py \
+    --verify-report "$out/guest-$quantum.json" --nonce SMPUpObservation20261119 --expect-online 1 \
+    || exit 1
+done
+```
+
+Проверки на 2 и 4 online vCPU и длительные гостевые нагрузки относятся к полной приёмке S6-37. [Отчёт запуска](../reports/STAGE_6_REPORT.md#s6-37--linuxdirect-на-рабочем-потоке-vcpu)
+
 ### S6-38 — вычислительная нагрузка гостя
 
 `s6_smp_workloads` делит заданное общее число блоков на соседние непересекающиеся диапазоны. Блок `i` начинает со значения `i + 1` и выполняет 256 раундов сдвигов, XOR и умножения `uint64_t`. Контрольная сумма складывает значения блоков по модулю 2⁶⁴. Один, два и четыре рабочих потока выполняют одинаковый объём работы и проверяют число обработанных блоков и ожидаемую контрольную сумму. Каждый поток закреплён на отдельном разрешённом CPU. [Гостевой исходник](../../guest/linux/tests/s6_smp_workloads.c).

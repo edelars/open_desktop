@@ -144,6 +144,9 @@ pub(crate) enum ParallelFinish {
     Stopped,
     BudgetExhausted,
     GuestStop(MachineStopReason),
+    GuestExit {
+        cpu: usize,
+    },
     /// Every vCPU waits for SIPI, has shut down, or is halted with nothing that could wake it.
     AllIdle,
     /// A vCPU's host call, boundary or clock charge failed; every thread was stopped.
@@ -161,7 +164,7 @@ impl ParallelFinish {
     fn priority(&self) -> u8 {
         match self {
             Self::Stopped | Self::BudgetExhausted | Self::AllIdle => 0,
-            Self::GuestStop(_) => 1,
+            Self::GuestStop(_) | Self::GuestExit { .. } => 1,
             Self::Error { .. } | Self::Panicked { .. } => 2,
         }
     }
@@ -370,11 +373,15 @@ pub(crate) struct QuantumCall<'a, 'b> {
     pub(crate) source: &'a mut dyn BoardIrqSource,
     pub(crate) gate: &'a dyn SplitLockGate,
     pub(crate) budget: u64,
+    pub(crate) deadline_cut: bool,
     pub(crate) consecutive_faults: &'a mut u64,
     pub(crate) stop: &'a mut dyn FnMut() -> bool,
     pub(crate) native_stop: Option<&'a AtomicU8>,
     /// A guest machine stop requested by the host quantum, published after its charge.
     pub(crate) machine_stop: &'a mut Option<MachineStopReason>,
+    /// The host quantum reached a terminal guest outcome. Published after its charge.
+    pub(crate) guest_exit: &'a mut bool,
+    pub(crate) fetch_cache: Option<&'a crate::fetch_translation_cache::FetchTranslationCache>,
     /// Pending service for an NVMe-equipped run. A pending call services the device without
     /// executing guest instructions, even when the guest budget is zero.
     pub(crate) nvme_pending: Option<&'a mut bool>,
@@ -943,6 +950,7 @@ struct Worker<'s, 'a, 'e, 'b> {
     /// A host quantum can supply EFER independently of the modelled vCPU MSR.
     nmi_efer: Option<u64>,
     cpu: usize,
+    fetch_cache: Option<crate::fetch_translation_cache::FetchTranslationCache>,
 }
 
 impl Worker<'_, '_, '_, '_> {
@@ -1146,6 +1154,7 @@ impl Worker<'_, '_, '_, '_> {
                 &mut inert,
                 &gate,
                 0,
+                false,
                 consecutive_faults,
                 &mut stop,
                 pending,
@@ -1167,6 +1176,7 @@ impl Worker<'_, '_, '_, '_> {
                 &mut source,
                 &gate,
                 budget,
+                budget < left,
                 consecutive_faults,
                 &mut stop,
                 pending,
@@ -1185,6 +1195,7 @@ impl Worker<'_, '_, '_, '_> {
                 &mut **source,
                 &gate,
                 budget,
+                budget < left,
                 consecutive_faults,
                 &mut stop,
                 pending,
@@ -1204,13 +1215,14 @@ impl Worker<'_, '_, '_, '_> {
                 &mut inert,
                 &gate,
                 budget,
+                budget < left,
                 consecutive_faults,
                 &mut stop,
                 pending,
             )
         };
-        let (executed, machine_stop, failure) = match dispatched {
-            Ok((executed, reason)) => (executed, reason, None),
+        let (executed, machine_stop, guest_exit, failure) = match dispatched {
+            Ok((executed, reason, guest_exit)) => (executed, reason, guest_exit, None),
             Err(failure) => {
                 let (executed, error) = failure.into_parts();
                 if executed == Executed::default() {
@@ -1219,7 +1231,7 @@ impl Worker<'_, '_, '_, '_> {
                     }
                     return Err(error);
                 }
-                (executed, None, Some(error))
+                (executed, None, false, Some(error))
             }
         };
         if executed.retired > left {
@@ -1259,7 +1271,12 @@ impl Worker<'_, '_, '_, '_> {
         // A completion may target an AP even with the BSP masked. Likewise, a CQ-head write
         // must publish the new level before the guest reaches EOI. Keep a deferred sample
         // with the same device-only continuation used by an interrupted drain.
-        if SERVICE_NVME && sh.refresh_device_lines && machine_stop.is_none() && !*nvme_pending {
+        if SERVICE_NVME
+            && sh.refresh_device_lines
+            && machine_stop.is_none()
+            && !guest_exit
+            && !*nvme_pending
+        {
             *nvme_pending = !sh.refresh_device_lines_until_stop(cpu);
         }
         if SERVICE_NVME && !*nvme_pending {
@@ -1267,6 +1284,8 @@ impl Worker<'_, '_, '_, '_> {
         }
         if let Some(reason) = machine_stop {
             sh.finish_with(ParallelFinish::GuestStop(reason));
+        } else if guest_exit {
+            sh.finish_with(ParallelFinish::GuestExit { cpu });
         } else if sh.remaining.load(SEQ) == 0 {
             sh.finish_budget::<SERVICE_NVME>();
         }
@@ -1283,12 +1302,14 @@ impl Worker<'_, '_, '_, '_> {
         source: &mut dyn BoardIrqSource,
         gate: &WorkerGate<'_, '_>,
         budget: u64,
+        deadline_cut: bool,
         consecutive_faults: &mut u64,
         stop: &mut dyn FnMut() -> bool,
         mut nvme_pending: Option<&mut bool>,
-    ) -> Result<(Executed, Option<MachineStopReason>), RunFailure<FirmwareBoardError>> {
+    ) -> Result<(Executed, Option<MachineStopReason>, bool), RunFailure<FirmwareBoardError>> {
         let cpu = self.cpu;
         let mut machine_stop = None;
+        let mut guest_exit = false;
         let device_only = nvme_pending.as_deref().copied() == Some(true);
         let mut quantum = |vcpu: &mut Vcpu,
                            source: &mut dyn BoardIrqSource,
@@ -1303,16 +1324,19 @@ impl Worker<'_, '_, '_, '_> {
                 source,
                 gate,
                 budget,
+                deadline_cut,
                 consecutive_faults,
                 stop,
                 native_stop: self.shared.kicks.cells[cpu].native_stop.as_ref(),
                 machine_stop: &mut machine_stop,
+                guest_exit: &mut guest_exit,
+                fetch_cache: self.fetch_cache.as_ref(),
                 nvme_pending: nvme_pending.as_deref_mut(),
             })
         };
         if device_only || vcpu.legacy.is_none() {
             let executed = quantum(vcpu, source, budget, consecutive_faults, stop)?;
-            return Ok((executed, machine_stop));
+            return Ok((executed, machine_stop, guest_exit));
         }
         let legacy = crate::ap_legacy_exec::run_legacy_on(
             vcpu,
@@ -1332,7 +1356,7 @@ impl Worker<'_, '_, '_, '_> {
                 .map_err(|failure| failure.with_prefix(executed))?;
             executed = executed.followed_by(rest);
         }
-        Ok((executed, machine_stop))
+        Ok((executed, machine_stop, guest_exit))
     }
 }
 
@@ -1588,6 +1612,7 @@ pub(crate) fn run_threads_with<R>(
             source_free,
             nmi_paging: NmiPaging::Board,
             discard_startup_port_ticks: true,
+            fetch_cache: false,
         },
         controller,
     )
@@ -1605,6 +1630,7 @@ pub(crate) struct ThreadRunOptions<'a> {
     pub(crate) source_free: bool,
     pub(crate) nmi_paging: NmiPaging<'a>,
     pub(crate) discard_startup_port_ticks: bool,
+    pub(crate) fetch_cache: bool,
 }
 
 /// Paging inputs shared by a host quantum and NMI delivery on its vCPU.
@@ -1645,6 +1671,7 @@ fn run_threads_inner<R>(
         source_free,
         nmi_paging,
         discard_startup_port_ticks,
+        fetch_cache,
     } = options;
     let parts = board.thread_parts()?;
     let ThreadParts {
@@ -1748,22 +1775,35 @@ fn run_threads_inner<R>(
                         (Some(paging.root), Some(paging.efer))
                     }),
             };
-            let worker = Worker {
-                shared: &shared,
-                env: &env,
-                run,
-                page_table_root,
-                nmi_efer,
-                cpu,
-            };
+            let shared = &shared;
+            let env = &env;
             thread::Builder::new()
                 .name(format!("od-vcpu-{cpu}"))
                 .spawn_scoped(scope, move || {
-                    let shared = worker.shared;
                     let _ = shared.kicks.cells[cpu].thread.set(thread::current());
                     shared.started.fetch_add(1, SEQ);
-                    let cpu = worker.cpu;
-                    if catch_unwind(AssertUnwindSafe(|| worker.run())).is_err() {
+                    if catch_unwind(AssertUnwindSafe(|| {
+                        use crate::fetch_translation_cache::{
+                            FetchCacheInvalidation, FetchTranslationCache,
+                        };
+                        Worker {
+                            shared,
+                            env,
+                            run,
+                            page_table_root,
+                            nmi_efer,
+                            cpu,
+                            fetch_cache: fetch_cache.then(|| {
+                                FetchTranslationCache::persistent(
+                                    FetchCacheInvalidation::WriteWatch,
+                                )
+                                .with_insert_generations()
+                            }),
+                        }
+                        .run();
+                    }))
+                    .is_err()
+                    {
                         shared.finish_with(ParallelFinish::Panicked { cpu });
                         let cell = &shared.cells[cpu];
                         cell.safe.store(true, SEQ);

@@ -1080,7 +1080,7 @@ pub(crate) enum SetExitMappingError {
 }
 
 impl SetExitMappingError {
-    fn into_board_error(self, state: &LongModeState) -> FirmwareBoardError {
+    pub(crate) fn into_board_error(self, state: &LongModeState) -> FirmwareBoardError {
         match self {
             Self::Integration(detail) => FirmwareBoardError::Config(detail),
             Self::ExternalInterrupt { vector, failure } => {
@@ -1232,9 +1232,10 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
-    /// The guest PCI CONFIG_ADDRESS register (port `0xCF8`, S4-38L7w), kept between CPL0-set runs.
-    /// There is no device behind CONFIG_DATA; the value is only stored and read back.
+    /// The CONFIG_ADDRESS value last recorded by a LinuxDirect run.
     pci_config_address: u32,
+    /// The ordinary CPL0 set changed its address cell since the last transfer to the shared bus.
+    pci_config_pending: bool,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Disabled by default. Diagnostic snapshots are sampled only at completed COM1 lines.
@@ -2365,7 +2366,22 @@ impl LoadedFirmwareBoard {
 
     /// Stores the CONFIG_ADDRESS a CPL0-set run left (S4-38L7w).
     pub(crate) fn set_pci_config_address(&mut self, value: u32) {
+        self.pci_config_pending |= self.pci_config_address != value;
         self.pci_config_address = value;
+    }
+
+    pub(crate) fn import_threaded_linux_pci_address(&mut self) -> Result<(), FirmwareBoardError> {
+        if self.pci_config_pending {
+            self.bus
+                .write_port_shared(
+                    PortAddress::new(crate::pci_ecam::PCI_CONF1_BASE_PORT),
+                    AccessWidth::Dword,
+                    self.pci_config_address,
+                )
+                .map_err(FirmwareBoardError::Bus)?;
+            self.pci_config_pending = false;
+        }
+        Ok(())
     }
 
     /// The guest `IA32_STAR` (S4-38L7ao); `0` until a guest `WRMSR` of it. Not readable by the
@@ -2608,15 +2624,25 @@ impl LoadedFirmwareBoard {
         rip: u64,
         len: usize,
     ) -> (Option<u64>, Vec<u8>, Option<String>) {
+        self.fetch_view_2m_with_privilege(rip, len, PrivilegeLevel::Ring0, FIRMWARE_EFER)
+    }
+
+    pub(crate) fn fetch_view_2m_with_privilege(
+        &mut self,
+        rip: u64,
+        len: usize,
+        privilege: PrivilegeLevel,
+        efer: u64,
+    ) -> (Option<u64>, Vec<u8>, Option<String>) {
         let context = AccessContext {
             mode: InstructionMode::Long64,
-            privilege: PrivilegeLevel::Ring0,
+            privilege,
             origin: AccessOrigin::Explicit,
         };
         let paging = match Long64ProbeConfig::from_cpu_state(
             &self.vcpus[BOOT_VCPU_INDEX].state,
             self.page_table_root,
-            FIRMWARE_EFER,
+            efer,
         ) {
             Ok(paging) => paging,
             Err(error) => return (None, Vec::new(), Some(format!("{error:?}"))),
@@ -2646,6 +2672,31 @@ impl LoadedFirmwareBoard {
             }
         }
         (first, bytes, None)
+    }
+
+    pub(crate) fn sync_threaded_linux_boot_views(&mut self) -> Result<(), FirmwareBoardError> {
+        let cr3 = self.vcpus[BOOT_VCPU_INDEX]
+            .state
+            .cr3
+            .ok_or(FirmwareBoardError::Config(
+                "threaded LinuxDirect: the BSP has no CR3",
+            ))?;
+        self.page_table_root = cr3;
+        let cf8 = self
+            .bus
+            .read_port_shared(
+                PortAddress::new(crate::pci_ecam::PCI_CONF1_BASE_PORT),
+                AccessWidth::Dword,
+            )
+            .map_err(FirmwareBoardError::Bus)?;
+        self.pci_config_address = cf8;
+        Ok(())
+    }
+
+    pub(crate) fn pit_read_counts(&self) -> Option<[u64; 2]> {
+        self.pit
+            .as_ref()
+            .map(|pit| [pit.port_b_reads(), pit.counter_port_reads()])
     }
 
     /// Run quanta until the guest halts, faults or the instruction budget is
@@ -3945,6 +3996,7 @@ impl AssembledBoard {
             page_table_bytes,
             page_table_root,
             pci_config_address: 0,
+            pci_config_pending: false,
             com1_log: Vec::new(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),
@@ -4018,6 +4070,7 @@ impl AssembledBoard {
             page_table_bytes,
             page_table_root,
             pci_config_address: 0,
+            pci_config_pending: false,
             com1_log: Vec::new(),
             console_context_parser: None,
             console_context_snapshots: Vec::new(),

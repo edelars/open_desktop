@@ -627,6 +627,7 @@ fn run_host_threads_inner<R>(
             source_free: true,
             nmi_paging,
             discard_startup_port_ticks: false,
+            fetch_cache: false,
         },
         |control| controller(&HostParallelControl { inner: control }),
     )?;
@@ -638,6 +639,10 @@ fn host_report(report: ParallelReport) -> HostParallelReport {
         ParallelFinish::Stopped => HostParallelFinish::Stopped,
         ParallelFinish::BudgetExhausted => HostParallelFinish::BudgetExhausted,
         ParallelFinish::GuestStop(reason) => HostParallelFinish::GuestStop(reason),
+        ParallelFinish::GuestExit { cpu } => HostParallelFinish::Error {
+            cpu,
+            message: "a host quantum published an interpreter guest exit".to_owned(),
+        },
         ParallelFinish::AllIdle => HostParallelFinish::AllIdle,
         ParallelFinish::Error { cpu, error } => HostParallelFinish::Error {
             cpu,

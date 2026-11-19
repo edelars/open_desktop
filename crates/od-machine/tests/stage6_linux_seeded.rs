@@ -1,10 +1,12 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
-    FirmwareBoardConfig, LinuxCpl0SetMembers, LinuxDirectInput, load_linux_direct_board,
-    run_linux_direct_board_set_user_mode,
+    FirmwareBoardConfig, LinuxCpl0SetMembers, LinuxDirectInput, LinuxThreadedOptions,
+    load_linux_direct_board, run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_threaded,
 };
 
 const SEED: u64 = 0x5eed;
@@ -156,6 +158,84 @@ fn seeded_interleaved_reaches_guest_init() {
         report.gpr[od_isa::Register::Rcx as usize],
     );
     assert!(report.cpl3_retired > 0);
+    assert!(transcript.contains("Run /init as init process"));
+    assert!(transcript.contains("OD_SMP_V1 SMPUpObservation20261119"));
+    assert!(transcript.contains("OD_SMP_END"));
+}
+
+#[test]
+#[ignore = "uses the staged Linux kernel and S6-21 observation initramfs"]
+fn a_vcpu_worker_reaches_real_linux_guest_init() {
+    const BUDGET: u64 = 2_500_000_000;
+    let quantum = std::env::var("OD_S6_LINUX_QUANTUM")
+        .ok()
+        .map_or(1024, |value| value.parse().expect("a positive quantum"));
+    let kernel = kernel();
+    let initrd = std::fs::read(work_dir().join("stage6/smp-init/initramfs.cpio"))
+        .expect("staged S6-21 observation initrd");
+    let input = input(
+        &kernel,
+        &initrd,
+        b"console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=SMPUpObservation20261119 nokaslr",
+    );
+    let mut boot = load_linux_direct_board(&input).expect("load the S6-21 guest");
+    let members = LinuxCpl0SetMembers {
+        msr_tdx_keyid_partitioning_read: true,
+        fp_state: true,
+        int3: true,
+        ..MEMBERS
+    };
+    let result = run_linux_direct_board_set_user_mode_threaded(
+        &mut boot,
+        &input,
+        BUDGET,
+        members,
+        LinuxThreadedOptions {
+            quantum,
+            timeout: Duration::from_secs(3600),
+        },
+    );
+    let report = result.unwrap_or_else(|error| {
+        eprintln!("{}", String::from_utf8_lossy(boot.board.com1_transcript()));
+        panic!(
+            "{error}; retired={:?}, RIP={:#x}",
+            error.retired,
+            boot.board.state().rip
+        );
+    });
+    let stop = &report.stop;
+    let transcript = String::from_utf8_lossy(&stop.com1);
+    println!("{transcript}");
+    println!(
+        "quantum={quantum} exit={} retired={} cpl3_retired={} syscalls_entered={} syscalls_returned={} quanta={} virtual_ns={} started={} exited={} rip={:#x}",
+        stop.exit_kind,
+        stop.retired,
+        stop.cpl3_retired,
+        stop.syscall_journal.entered,
+        stop.syscall_journal.returned,
+        stop.quanta,
+        stop.virtual_ns,
+        report.threads_started,
+        report.threads_exited,
+        stop.rip,
+    );
+    assert_eq!(hex(stop.inputs.bzimage_sha256), KERNEL_SHA256);
+    assert_eq!(
+        hex(stop.inputs.initrd_sha256.unwrap()),
+        "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d"
+    );
+    assert_eq!((report.threads_started, report.threads_exited), (1, 1));
+    assert_eq!(
+        stop.exit_kind, "budget_exhausted",
+        "{}; RIP bytes {:02x?}",
+        stop.exit_detail, stop.rip_bytes
+    );
+    assert_eq!(stop.retired, BUDGET);
+    assert!(
+        stop.cpl3_retired > 0
+            && stop.syscall_journal.entered > 0
+            && stop.syscall_journal.returned > 0
+    );
     assert!(transcript.contains("Run /init as init process"));
     assert!(transcript.contains("OD_SMP_V1 SMPUpObservation20261119"));
     assert!(transcript.contains("OD_SMP_END"));

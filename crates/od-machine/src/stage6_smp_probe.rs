@@ -597,6 +597,10 @@ impl Stage6SmpProbe {
             ParallelFinish::AllIdle => Stage6SmpProbeParallelFinish::AllIdle,
             ParallelFinish::BudgetExhausted => Stage6SmpProbeParallelFinish::BudgetExhausted,
             ParallelFinish::GuestStop(reason) => Stage6SmpProbeParallelFinish::GuestStop(reason),
+            ParallelFinish::GuestExit { cpu } => Stage6SmpProbeParallelFinish::Error {
+                cpu,
+                error: "a probe quantum published a Linux guest exit".to_owned(),
+            },
             ParallelFinish::Stopped if !ended => Stage6SmpProbeParallelFinish::Timeout,
             ParallelFinish::Stopped => Stage6SmpProbeParallelFinish::AllIdle,
             ParallelFinish::Error { cpu, error } => Stage6SmpProbeParallelFinish::Error {
