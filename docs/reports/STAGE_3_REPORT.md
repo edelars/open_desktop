@@ -1508,6 +1508,14 @@ retained. On this build, JIT won every measured cold and warm pair at
 64 and 4,096 iterations for one and two RIPs.
 [Current register-loop timings and decision](STAGE_3_S3-31h_2026-11-19.md)
 
+S3-31i ran the same seven warm S0-09 profiles on M1 Pro from `5c92bf7`.
+The current build added 2.01% and 2.82% to raw JIT time on the two
+long one-RIP loops. Both six-round ranges were above the ranges of
+the repeated-current control. With two RIPs, current took 8.23%
+and 6.70% of the original JIT time. The dispatcher is retained and
+the one-RIP regression remains open in ISSUE-520.
+[M1 Pro warm results and evidence](STAGE_3_S3-31i_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

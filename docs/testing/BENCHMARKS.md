@@ -1737,6 +1737,16 @@ production choice follows the complete-call measurements on the
 one-, two-, and three-RIP fixtures.
 [Report and reproduction](../reports/STAGE_3_S3-31h_2026-11-19.md)
 
+### S3-31i. Warm S0-09 register loops on M1 Pro
+
+Compare the current dispatcher with the exact pre-memo body using
+one source pin and the S3-31h driver. Use the same signed current
+file for the A/A control. Six rounds cover all arm orders and
+preserve eight JIT/interpreter pairs per process and profile.
+The primary result uses full warm JIT times. The recorded controls
+include CPU idle samples, effective nice −5 and the 30 ms interval floor.
+[Report and reproduction](../reports/STAGE_3_S3-31i_2026-11-19.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
