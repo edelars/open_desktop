@@ -1206,10 +1206,53 @@ with the hashes recorded by its parent.
 Both results cover the same local macOS ARM64 snapshot. Final S3-41
 acceptance remains open, including the deferred hardware checks.
 
+### Full local and VMHost process checks on M1 Pro after the Swift fix
+
+Both selectors ran from clean `f6b5214` on MacBookPro18,3, Apple M1 Pro,
+macOS 14.6.1 (23G93), Xcode 15.4 / Swift 5.10, and rustc and Cargo 1.99.0.
+The first attempt on `06f0875` passed 348 local steps before Swift failed
+to type-check `NotificationQueue.bufferedBytes`. The process selector
+stopped at the same compiler error. `f6b5214` splits the byte count into
+typed sums and preserves the queue behavior.
+[Swift build fix and exact compiler replay](STAGE_3_S3-38d-local_2026-11-01.md#vmhost-build-on-swift-510-2026-11-19)
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `local` | `stage3-20261119-165435-b3d334ca7f` | 359/359 | 0 |
+| `vmhost-process` | `stage3-20261119-170237-5e58d2ae65` | 46/46 | 0 |
+
+The local selector passed 157 harness self-tests, both repeats of the
+1,010 Stage 1 inputs, both repeats of the 4,800 memory inputs, and the
+signed VMHost RESULT check. The process selector passed the signed helper,
+launcher, lifecycle, isolation and generated-code fault checks. The
+validators accepted both summaries on the original run directories.
+All 405 distinct selected steps matched their raw log digests after
+transfer. The Stage 1 child summary and input manifest also matched their
+recorded digests.
+
+Both runs retained source fingerprint
+`1d2b69641f72256f603e0fb7f9658fd82efb94011b78dd8c65163a8ec8216086`
+and input manifest SHA-256
+`301d452726359564f312308e7c868ab3d6a58192838c5c9556e89472e104f2d1`.
+Run the same selectors in a clean `f6b5214` checkout with the given tools
+and macOS deployment target 14.0.
+
+```sh
+export MACOSX_DEPLOYMENT_TARGET=14.0
+unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS
+unset CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS
+python3 tests/cpu/stage3_harness.py --suite local
+python3 tests/cpu/stage3_harness.py --suite vmhost-process
+```
+
+- The local archive contains 415 files and has SHA-256 `f41e2a67af238c5128d8383e1b847b15931b4ca8d06c9146b29eb312303d5c14`. [Local archive](data/stage3/s3-41-m1pro-f6b5214-20261119/local.json.gz)
+- The process archive contains 174 files and has SHA-256 `bcce08310ae84e9168dbcb920cd4e8a683dbc3a11108799f4aa7026cc5152782`. [VMHost process archive](data/stage3/s3-41-m1pro-f6b5214-20261119/vmhost-process.json.gz)
+
 ### Hardware acceptance
 
-Mac mini/physical-x86 acceptance remains deferred to the end of Stage 3. Local
-ARM64 fixture and harness evidence does not replace that gate.
+The full ARM64 local and VMHost process selectors passed on the M1 Pro.
+The Mac mini configuration and native execution on physical x86 remain
+open, as does final S3-41 acceptance.
 
 ### Performance measurements
 
