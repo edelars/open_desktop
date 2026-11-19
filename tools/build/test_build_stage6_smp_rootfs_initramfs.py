@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from build_stage4_initramfs import BuildError, sha256
-from build_stage6_smp_rootfs_initramfs import FIXTURES, SOURCE_NAME, verify_workloads
+from build_stage6_smp_rootfs_initramfs import FIXTURES, SOURCE_NAME, verify_compute, verify_workloads
 
 NONCE = "s6-workload-check"
 
@@ -71,3 +71,61 @@ class SmpWorkloadReportTests(unittest.TestCase):
         for label, transcript in invalid.items():
             with self.subTest(label=label), self.assertRaises(BuildError):
                 self.verify(transcript)
+
+
+class ComputeReportTests(unittest.TestCase):
+    checksum = "ec4675d8578a4e14"
+
+    def transcript(self, online: int, workers: int) -> str:
+        source = sha256((FIXTURES / SOURCE_NAME).read_bytes())
+        summary = "1 CPU" if online == 1 else f"{online} CPUs"
+        cpus = "0" if online == 1 else f"0-{online - 1}"
+        return (
+            f"[    1.71] smp: Brought up 1 node, {summary}\r\n"
+            f"OD_S6_38_SOURCE nonce={NONCE} sha256={source}\r\n"
+            f"OD_S6_38_BEGIN nonce={NONCE} workers={workers} blocks=4097\r\n"
+            f"OD_S6_38_END nonce={NONCE}\r\n"
+            f"OD_S6_38_COMPLETE nonce={NONCE} workers={workers} blocks=4097 checksum={self.checksum}\r\n"
+            f"OD_S6_38_ONLINE nonce={NONCE} cpus={cpus}\r\n"
+        )
+
+    def verify(self, transcript: str, online: int, compute: str):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text(json.dumps({"stop": {"com1_text": transcript}}))
+            return verify_compute(report, NONCE, online, compute)
+
+    def test_one_worker_can_be_measured_with_other_cpus_online(self):
+        for online, workers in [(1, 1), (2, 2), (4, 1), (4, 4)]:
+            with self.subTest(online=online, workers=workers):
+                result = self.verify(
+                    self.transcript(online, workers), online, f"{workers},4097,{self.checksum.upper()}"
+                )
+                self.assertEqual(result["online_cpus"], list(range(online)))
+                self.assertEqual(result["workers"], workers)
+                self.assertEqual(result["blocks"], 4097)
+                self.assertEqual(result["checksum"], self.checksum)
+
+    def test_compute_requires_complete_matching_ordered_guest_evidence(self):
+        good = self.transcript(4, 2)
+        boot, source, begin, end, complete, online = good.splitlines()
+        invalid = {
+            "repeat": good + complete,
+            "late boot": "\n".join([source, boot, begin, end, complete, online]),
+            "late begin": "\n".join([boot, source, end, begin, complete, online]),
+            "incomplete": "\n".join([boot, source, begin, end, online]),
+            "missing online": "\n".join([boot, source, begin, end, complete]),
+            "thread count": good.replace("workers=2", "workers=1"),
+            "checksum": good.replace(self.checksum, "0" * 16),
+            "nonce": good.replace(end, end.replace(NONCE, "wrong")),
+            "source digest": good.replace("sha256=", "sha256=0"),
+            "online count": good.replace("cpus=0-3", "cpus=0-1"),
+            "wrapper failure": good + f"OD_S6_38_WRAPPER_FAIL nonce={NONCE} step=online rc=1",
+            "kernel oops": good + "Oops: general protection fault",
+        }
+        for label, transcript in invalid.items():
+            with self.subTest(label=label), self.assertRaises(BuildError):
+                self.verify(transcript, 4, f"2,4097,{self.checksum}")
+        for args in ["2,1", f"2,1,{self.checksum}", f"2,{2**64},{self.checksum}", f"2,4097,0x{self.checksum}"]:
+            with self.subTest(args=args), self.assertRaises(BuildError):
+                self.verify(good, 4, args)
