@@ -38,6 +38,23 @@ type LocateProtocol =
 type OpenProtocol =
     unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void, Handle, Handle, u32) -> Status;
 type CloseProtocol = unsafe extern "efiapi" fn(Handle, *const Guid, Handle, Handle) -> Status;
+type LocateHandle =
+    unsafe extern "efiapi" fn(u32, *const Guid, *mut c_void, *mut usize, *mut Handle) -> Status;
+type OpenProtocolInformation = unsafe extern "efiapi" fn(
+    Handle,
+    *const Guid,
+    *mut *mut protocol::OpenProtocolInformationEntry,
+    *mut usize,
+) -> Status;
+type ProtocolsPerHandle =
+    unsafe extern "efiapi" fn(Handle, *mut *mut *mut Guid, *mut usize) -> Status;
+type LocateHandleBuffer = unsafe extern "efiapi" fn(
+    u32,
+    *const Guid,
+    *mut c_void,
+    *mut usize,
+    *mut *mut Handle,
+) -> Status;
 type CalculateCrc32 = unsafe extern "efiapi" fn(*const c_void, usize, *mut u32) -> Status;
 type CopyMem = unsafe extern "efiapi" fn(*mut c_void, *const c_void, usize);
 type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
@@ -64,7 +81,7 @@ pub struct BootServices {
     pub handle_protocol: HandleProtocol,
     reserved: *const c_void,
     register_protocol_notify: *const c_void,
-    locate_handle: *const c_void,
+    pub locate_handle: LocateHandle,
     locate_device_path: *const c_void,
     install_configuration_table: *const c_void,
     load_image: *const c_void,
@@ -79,9 +96,9 @@ pub struct BootServices {
     disconnect_controller: *const c_void,
     pub open_protocol: OpenProtocol,
     pub close_protocol: CloseProtocol,
-    open_protocol_information: *const c_void,
-    protocols_per_handle: *const c_void,
-    locate_handle_buffer: *const c_void,
+    pub open_protocol_information: OpenProtocolInformation,
+    pub protocols_per_handle: ProtocolsPerHandle,
+    pub locate_handle_buffer: LocateHandleBuffer,
     pub locate_protocol: LocateProtocol,
     install_multiple_protocol_interfaces: *const c_void,
     uninstall_multiple_protocol_interfaces: *const c_void,
@@ -114,7 +131,7 @@ impl BootServices {
             handle_protocol: protocol::handle_protocol,
             reserved: ptr::null(),
             register_protocol_notify: ptr::null(),
-            locate_handle: ptr::null(),
+            locate_handle: protocol::locate_handle,
             locate_device_path: ptr::null(),
             install_configuration_table: ptr::null(),
             load_image: ptr::null(),
@@ -129,9 +146,9 @@ impl BootServices {
             disconnect_controller: ptr::null(),
             open_protocol: protocol::open_protocol,
             close_protocol: protocol::close_protocol,
-            open_protocol_information: ptr::null(),
-            protocols_per_handle: ptr::null(),
-            locate_handle_buffer: ptr::null(),
+            open_protocol_information: protocol::open_protocol_information,
+            protocols_per_handle: protocol::protocols_per_handle,
+            locate_handle_buffer: protocol::locate_handle_buffer,
             locate_protocol: protocol::locate_protocol,
             install_multiple_protocol_interfaces: ptr::null(),
             uninstall_multiple_protocol_interfaces: ptr::null(),
@@ -297,6 +314,11 @@ mod tests {
         assert_eq!(offset_of!(BootServices, reserved), 160);
         assert_eq!(offset_of!(BootServices, open_protocol), 280);
         assert_eq!(offset_of!(BootServices, close_protocol), 288);
+        assert_eq!(offset_of!(BootServices, locate_handle), 176);
+        assert_eq!(offset_of!(BootServices, open_protocol_information), 296);
+        assert_eq!(offset_of!(BootServices, protocols_per_handle), 304);
+        assert_eq!(offset_of!(BootServices, locate_handle_buffer), 312);
+        assert_eq!(size_of::<protocol::OpenProtocolInformationEntry>(), 24);
         assert_eq!(offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(offset_of!(BootServices, calculate_crc32), 344);
         assert_eq!(offset_of!(BootServices, copy_mem), 352);

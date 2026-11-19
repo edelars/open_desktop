@@ -14,7 +14,9 @@ use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::bs::memory::IdentityPoolMemory;
-use od_firmware::bs::protocol::{OPEN_BY_DRIVER, OPEN_GET_PROTOCOL};
+use od_firmware::bs::protocol::{
+    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OPEN_BY_DRIVER, OPEN_GET_PROTOCOL,
+};
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
 use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
@@ -456,7 +458,11 @@ unsafe fn verify_tracked_open(boot: *const BootServices, handle: Handle, content
             OPEN_GET_PROTOCOL,
         ) != Status::SUCCESS
             || found != contents
-            || close(handle, &DIAGNOSTIC_PROTOCOL, owner, handle) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 21);
+        }
+        verify_protocol_enumeration(boot, handle, owner, other, &agent_guid);
+        if close(handle, &DIAGNOSTIC_PROTOCOL, owner, handle) != Status::SUCCESS
             || close(handle, &DIAGNOSTIC_PROTOCOL, owner, handle) != Status::NOT_FOUND
         {
             stop(STOP_BOOT_SERVICES, 21);
@@ -465,6 +471,101 @@ unsafe fn verify_tracked_open(boot: *const BootServices, handle: Handle, content
             || uninstall(other, &agent_guid, ptr::null_mut()) != Status::SUCCESS
         {
             stop(STOP_BOOT_SERVICES, 22);
+        }
+    }
+}
+
+/// The BSP owns the live diagnostic table, agents and tested protocol.
+#[inline(never)]
+unsafe fn verify_protocol_enumeration(
+    boot: *const BootServices,
+    handle: Handle,
+    owner: Handle,
+    other: Handle,
+    agent_guid: &Guid,
+) {
+    unsafe {
+        let locate = ptr::addr_of!((*boot).locate_handle).read_volatile();
+        let locate_buffer = ptr::addr_of!((*boot).locate_handle_buffer).read_volatile();
+        let protocols = ptr::addr_of!((*boot).protocols_per_handle).read_volatile();
+        let information = ptr::addr_of!((*boot).open_protocol_information).read_volatile();
+        let free = ptr::addr_of!((*boot).free_pool).read_volatile();
+
+        let mut handles = [ptr::null_mut(); 3];
+        let mut bytes = 0;
+        if locate(
+            LOCATE_ALL_HANDLES,
+            ptr::null(),
+            ptr::null_mut(),
+            &mut bytes,
+            ptr::null_mut(),
+        ) != Status::BUFFER_TOO_SMALL
+            || bytes != size_of_val(&handles)
+            || locate(
+                LOCATE_ALL_HANDLES,
+                ptr::null(),
+                ptr::null_mut(),
+                &mut bytes,
+                handles.as_mut_ptr(),
+            ) != Status::SUCCESS
+            || handles != [handle, owner, other]
+        {
+            stop(STOP_BOOT_SERVICES, 23);
+        }
+
+        let mut count = 0;
+        let mut pool_handles = ptr::null_mut();
+        if locate_buffer(
+            LOCATE_BY_PROTOCOL,
+            agent_guid,
+            ptr::null_mut(),
+            &mut count,
+            &mut pool_handles,
+        ) != Status::SUCCESS
+            || pool_handles.is_null()
+            || count != 2
+            || pool_handles.read() != owner
+            || pool_handles.add(1).read() != other
+            || free(pool_handles.cast()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 24);
+        }
+
+        let mut guids = ptr::null_mut();
+        if protocols(handle, &mut guids, &mut count) != Status::SUCCESS
+            || guids.is_null()
+            || count != 1
+        {
+            stop(STOP_BOOT_SERVICES, 25);
+        }
+        let guid = guids.read();
+        if guid.is_null()
+            || guid.read() != DIAGNOSTIC_PROTOCOL
+            || free(guids.cast()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 25);
+        }
+
+        let mut opens = ptr::null_mut();
+        if information(handle, &DIAGNOSTIC_PROTOCOL, &mut opens, &mut count) != Status::SUCCESS
+            || opens.is_null()
+            || count != 2
+        {
+            stop(STOP_BOOT_SERVICES, 26);
+        }
+        let driver = opens.read();
+        let reader = opens.add(1).read();
+        if driver.agent_handle != owner
+            || driver.controller_handle != handle
+            || driver.attributes != OPEN_BY_DRIVER
+            || driver.open_count != 1
+            || reader.agent_handle != other
+            || !reader.controller_handle.is_null()
+            || reader.attributes != OPEN_GET_PROTOCOL
+            || reader.open_count != 1
+            || free(opens.cast()) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 26);
         }
     }
 }

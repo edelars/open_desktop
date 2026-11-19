@@ -2,7 +2,7 @@
 
 use super::{misc, state};
 use crate::mem::map::{DESCRIPTOR_VERSION, MemoryDescriptor, MemoryType};
-use crate::mem::pages::{AllocateAt, PageError, PoolError, PoolHeader, PoolMemory};
+use crate::mem::pages::{AllocateAt, PageAllocator, PageError, PoolError, PoolHeader, PoolMemory};
 use crate::uefi::status::Status;
 use core::ffi::c_void;
 use core::ptr;
@@ -122,26 +122,34 @@ pub unsafe extern "efiapi" fn allocate_pool(
         return Status::INVALID_PARAMETER;
     }
     unsafe {
-        state::with(|state| {
-            match state
-                .allocator
-                .allocate_pool(&mut IdentityPoolMemory, memory_type, size as u64)
-            {
+        state::with(
+            |state| match allocate_pool_in(state.allocator, memory_type, size) {
                 Ok(address) => {
-                    buffer.write(ptr::with_exposed_provenance_mut(address as usize));
+                    buffer.write(address);
                     Status::SUCCESS
                 }
-                Err(
-                    PoolError::Pages(PageError::InvalidPageCount)
-                    | PoolError::SizeOverflow
-                    | PoolError::MemoryUnavailable,
-                ) => Status::OUT_OF_RESOURCES,
-                Err(PoolError::Pages(error)) => allocate_page_error(error),
-                Err(PoolError::InvalidPointer | PoolError::InvalidHeader) => {
-                    Status::INVALID_PARAMETER
-                }
-            }
-        })
+                Err(status) => status,
+            },
+        )
+    }
+}
+
+/// Allocate under an already-held BSP service guard. The map must describe
+/// identity-mapped and writable conventional RAM.
+pub(super) unsafe fn allocate_pool_in(
+    allocator: &mut PageAllocator<'_, '_>,
+    memory_type: MemoryType,
+    size: usize,
+) -> Result<*mut c_void, Status> {
+    match allocator.allocate_pool(&mut IdentityPoolMemory, memory_type, size as u64) {
+        Ok(address) => Ok(ptr::with_exposed_provenance_mut(address as usize)),
+        Err(
+            PoolError::Pages(PageError::InvalidPageCount)
+            | PoolError::SizeOverflow
+            | PoolError::MemoryUnavailable,
+        ) => Err(Status::OUT_OF_RESOURCES),
+        Err(PoolError::Pages(error)) => Err(allocate_page_error(error)),
+        Err(PoolError::InvalidPointer | PoolError::InvalidHeader) => Err(Status::INVALID_PARAMETER),
     }
 }
 

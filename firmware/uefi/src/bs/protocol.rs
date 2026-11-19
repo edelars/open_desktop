@@ -4,6 +4,13 @@ use crate::uefi::{guid::Guid, status::Status, types::Handle};
 use core::ffi::c_void;
 use core::ptr;
 
+mod query;
+
+pub use query::{
+    LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OpenProtocolInformationEntry, locate_handle,
+    locate_handle_buffer, open_protocol_information, protocols_per_handle,
+};
+
 const MAX_PROTOCOL_BINDINGS: usize = 128;
 const NATIVE_INTERFACE: u32 = 0;
 
