@@ -1685,6 +1685,14 @@ same-RIP profiles and by 2.62–3.25% on two alternating-RIP profiles.
 All four ranges lie below their same-file A/A ranges.
 [Warm JIT results, source and disassembly](STAGE_3_S3-31k_2026-11-19.md)
 
+S3-31l held all other source at `a4dbc7d` and compared the pre-memo
+function with the adopted dispatcher. Warm `same_64` overlaps
+the same-file control. The raw `same_4096` median was 0.33% higher
+for warm execution and 0.36% higher for first dispatch including
+session creation. Both alternating-RIP profiles favoured the current
+dispatcher in both modes. ISSUE-520 remains open.
+[Warm and first-dispatch evidence](STAGE_3_S3-31l_2026-11-19.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in

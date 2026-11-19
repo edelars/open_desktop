@@ -1805,6 +1805,15 @@ ordinary-user priority and 30 ms floor. Assess raw warm JIT times
 against the same-file control before interpreting normalized ratios.
 [Report and reproduction](../reports/STAGE_3_S3-31k_2026-11-19.md)
 
+### S3-31l. Direct warm and first-dispatch comparison with pre-memo
+
+Hold both builds at `a4dbc7d` and restore the pre-memo function in
+the original arm. Keep the seven warm profiles, fixed counts and
+same-file A/A. Link the exact S3-31h cold driver against the same
+two release libraries and run the dedicated shared calibration and
+first-dispatch series. Keep both raw archives and replay commands.
+[Report and reproduction](../reports/STAGE_3_S3-31l_2026-11-19.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
