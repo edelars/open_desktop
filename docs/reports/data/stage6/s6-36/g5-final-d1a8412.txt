@@ -1,0 +1,71 @@
+S6-36 stock replay for G5, 2026-11-18
+Source: d1a841278067a56c1fa0ccdd325e810279bcb100
+Apple M3 Max (Mac15,11), macOS 26.7.1 (25G241), arm64
+rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)
+Build: cargo build --release --offline --locked -p od-runner
+Release runner SHA-256: 6161069c1fbfb76106c8bae5fa283e7388c57415d1d1ee6c51034e094f6469a7
+One fresh runner process per command. Both test-weakening features are false.
+Columns for executed cases: fixture, guest threads, rounds, forbidden, late barrier, fixture SHA-256.
+
+$ od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 14, "cases": 15, "forbidden": 0, "not_applicable": 1}
+  2+2W	2	1000000	0	0	0a439a9c99700618e9bb4036c3b827e40fbd141a3161b2e60c290ee531049812
+  IRIW	4	not_applicable
+  LB	2	1000000	0	0	1475355cd88166fd29a573c9ac29b9e8f096182e5eecbd7d0d507107b7fd9efd
+  LOCK-CMPXCHG-MUTEX	2	1000000	0	0	8b73d851778b333d1dda331af7f1015420f05501550b13154f23197193861648
+  LOCK-XADD	2	1000000	0	0	73ad7dfd10b5b99fdad5ed171af3604355b84011198b8b215e971350edf8b749
+  MP	2	1000000	0	0	c1fe2c087e1ae99964e5c10f0fe49fcd42d8a6c38b9580fc0df094f35fe104d4
+  SB-LOCK-LOCAL	2	1000000	0	0	fe6b3b0d2a4d52c925ff5edffd780307838c1f03215afe923b5fbfa68e868de5
+  SB-LOCK-XADD	2	1000000	0	0	6e968b0930ae65df23894ada2dba347abe8c02a8f3493b5a5e0f742eb425a381
+  SB-LOCK	2	1000000	0	0	79e2c36845444c5b411b81f9bc89d1167e0089e308cc8322dde58c630f0510c1
+  SB-MFENCE	2	1000000	0	0	5c0b6032dd8be8ef49fe78abf4886abab9a93ead7f43463faa922fa0112301fe
+  SB-XCHG	2	1000000	0	0	b4862439a8ad9d829246f74f2338a2c91b67ca0da85798240dae86f375f10d80
+  SB	2	1000000	0	0	8060b9dfefd9c59b5213e42c82f6c74b741ac77ba3bc59cc2da2c8b29cdd543f
+  STORE-FORWARDING	2	1000000	0	0	75f00c05d65f074ab2699afb70448638cd8cc9fef2130ae6dddeed0564900fce
+  UNLOCKED-INC	2	1000000	0	0	23c4690628378bba890189c9140932de954f7256db94c3c7c2d192e9aec1376f
+  XCHG-MUTEX	2	1000000	0	0	d24fdb13ab5a66c0db230d5cc18958c35709d9d71a145965b4b5c8a407aeedd0
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter LOCK-INC --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  LOCK-INC(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter UNLOCKED-INC --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  UNLOCKED-INC(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter THREE-INSN-COUNTER --threads 2 --rounds 2 --parallel --vcpus 2 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  THREE-INSN-COUNTER(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+$ od-runner --stage6-litmus --corpus tests/fixtures/guest/stage6/litmus --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 15, "cases": 15, "forbidden": 0, "not_applicable": 0}
+  2+2W	2	1000000	0	0	0a439a9c99700618e9bb4036c3b827e40fbd141a3161b2e60c290ee531049812
+  IRIW	4	1000000	0	0	45c203f5a63bd69ece03b4c2f2d1f3b0519db614a353056c07d5bf61fb39ebe4
+  LB	2	1000000	0	0	1475355cd88166fd29a573c9ac29b9e8f096182e5eecbd7d0d507107b7fd9efd
+  LOCK-CMPXCHG-MUTEX	2	1000000	0	0	8b73d851778b333d1dda331af7f1015420f05501550b13154f23197193861648
+  LOCK-XADD	2	1000000	0	0	73ad7dfd10b5b99fdad5ed171af3604355b84011198b8b215e971350edf8b749
+  MP	2	1000000	0	0	c1fe2c087e1ae99964e5c10f0fe49fcd42d8a6c38b9580fc0df094f35fe104d4
+  SB-LOCK-LOCAL	2	1000000	0	0	fe6b3b0d2a4d52c925ff5edffd780307838c1f03215afe923b5fbfa68e868de5
+  SB-LOCK-XADD	2	1000000	0	0	6e968b0930ae65df23894ada2dba347abe8c02a8f3493b5a5e0f742eb425a381
+  SB-LOCK	2	1000000	0	0	79e2c36845444c5b411b81f9bc89d1167e0089e308cc8322dde58c630f0510c1
+  SB-MFENCE	2	1000000	0	0	5c0b6032dd8be8ef49fe78abf4886abab9a93ead7f43463faa922fa0112301fe
+  SB-XCHG	2	1000000	0	0	b4862439a8ad9d829246f74f2338a2c91b67ca0da85798240dae86f375f10d80
+  SB	2	1000000	0	0	8060b9dfefd9c59b5213e42c82f6c74b741ac77ba3bc59cc2da2c8b29cdd543f
+  STORE-FORWARDING	2	1000000	0	0	75f00c05d65f074ab2699afb70448638cd8cc9fef2130ae6dddeed0564900fce
+  UNLOCKED-INC	2	1000000	0	0	23c4690628378bba890189c9140932de954f7256db94c3c7c2d192e9aec1376f
+  XCHG-MUTEX	2	1000000	0	0	d24fdb13ab5a66c0db230d5cc18958c35709d9d71a145965b4b5c8a407aeedd0
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter LOCK-INC --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  LOCK-INC(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter UNLOCKED-INC --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  UNLOCKED-INC(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+$ od-runner --stage6-litmus --formula tests/fixtures/guest/stage6/litmus/counters-formula.json --counter THREE-INSN-COUNTER --threads 2 --rounds 2 --parallel --vcpus 4 --iterations 1000000
+  {"allowed_only": 1, "cases": 1, "forbidden": 0, "not_applicable": 0}
+  THREE-INSN-COUNTER(N=2,K=2)	2	1000000	0	0	087e2237943d8bdd41c9f7daffe79a6b0bb0e94c3c1d732f8b948470d303051b
+
+Total: 35000000 rounds, 0 forbidden, 0 late barrier.
