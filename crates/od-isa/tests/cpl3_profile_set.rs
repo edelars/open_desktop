@@ -205,6 +205,52 @@ fn init_prefix_runs_in_ring3_up_to_syscall() {
 }
 
 #[test]
+fn endbr64_in_cpl3_retires_as_a_four_byte_nop() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let bytes = [0xf3, 0x0f, 0x1e, 0xfa];
+    let mut initial = user_state();
+    initial.gpr[Register::Rbx as usize] = 0x1234_5678;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    let mut state = initial.clone();
+    let mut memory = Memory::code(&bytes);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    let mut expected = initial.clone();
+    expected.rip += 4;
+    assert_eq!(state, expected);
+    assert_eq!(memory.accesses, 0);
+
+    let mut state = initial.clone();
+    let mut memory = Memory::code(&bytes[..3]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::MemoryError(MemoryError::Unmapped {
+            address: RIP + 3,
+            access: AccessKind::Fetch,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, initial);
+    assert_eq!(memory.accesses, 0);
+
+    for (neighbor, opcode) in [
+        (&[0xf3, 0x0f, 0x1e, 0xfb][..], 0x1e),
+        (&[0xf3, 0x90][..], 0x90),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = Memory::code(neighbor);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert_eq!(memory.accesses, 0);
+    }
+}
+
+#[test]
 fn budget_and_stop_address_are_honored_per_instruction() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();

@@ -28717,6 +28717,10 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
+    // S6-38: the decoder admits only F3 0F 1E FA as Endbr64Nop. The set has no CET IBT.
+    if instruction.operation == Operation::Endbr64Nop {
+        return true;
+    }
     let prefixes = instruction.prefixes;
     if prefixes.group1.is_some()
         || prefixes.segment.is_some()
