@@ -20,11 +20,11 @@ from pathlib import Path
 import stage3_harness as harness
 
 # Keep inventory pins independent of the runtime registries.
-EXPECTED_SELF_TESTS = 156
-EXPECTED_RUST_GATES = 340
+EXPECTED_SELF_TESTS = 157
+EXPECTED_RUST_GATES = 341
 EXPECTED_LOCAL_ACCEPTANCE_GATES = 321
-EXPECTED_LOCAL_LIFECYCLE_GATES = 19
-EXPECTED_LOCAL_STEPS = 358
+EXPECTED_LOCAL_LIFECYCLE_GATES = 20
+EXPECTED_LOCAL_STEPS = 359
 
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
@@ -1735,6 +1735,40 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ])
         self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         self.assertEqual(len(manifest_by_name), EXPECTED_RUST_GATES)
+
+    def test_s3_24c_following_block_gate_is_pinned_and_fail_closed(self):
+        step = "active_code_v3_republishes_immediate_of_following_block"
+        identity = "tests::active_code_v3_republishes_immediate_of_following_block"
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(harness.LIFECYCLE_TESTS.count(step), 1)
+        self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+        self.assertEqual(
+            [gate for gate in harness.rust_test_gate_manifest() if gate["step"] == step],
+            [{"step": step, "suite": "local_lifecycle", "package": "od-host", "identity": identity}],
+        )
+        self.assertEqual(harness.rust_test_argv("od-host", identity), [
+            "cargo", "test", "--offline", "-p", "od-host", "--lib", identity,
+            "--", "--exact", "--test-threads=1",
+        ])
+        self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-host/src/lib.rs"), 1)
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            missing = steps.copy()
+            del missing[step]
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(missing, run_root)
+
+            replace_step_log_output(
+                steps[step],
+                "test tests::active_code_v3_invalidates_exact_not_yet_executed_tail_immediate ... ok\n",
+            )
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
 
     def test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed(self):
         expected = (

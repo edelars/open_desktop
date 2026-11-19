@@ -74967,6 +74967,197 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn active_code_v3_republishes_immediate_of_following_block() {
+        use od_isa::LongModeState;
+        use od_jit::dispatch::{
+            CodeInvalidation, DispatchExit, DispatchResult, MultiEntryBlockCache,
+        };
+        use od_jit::translation::BackingVersion;
+
+        let _guard = jit_test_lock();
+        let entry = 0x1000;
+        let successor_alias = 0x3000;
+        let unrelated = 0x4000;
+        let old_immediate = 0xCAFE_BABE_1234_5678_u64;
+        let new_immediate = 0x8877_6655_4433_2211_u64;
+        let mut program = vec![0x48, 0xBA]; // MOV RDX, imm64
+        program.extend_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0xB9]); // MOV [RBX], RAX; MOV RCX, imm64
+        program.extend_from_slice(&0xA5A5_5A5A_F0F0_0F0F_u64.to_le_bytes());
+        let successor = entry + program.len() as u64;
+        let mut successor_code = [0_u8; 10];
+        successor_code[..2].copy_from_slice(&[0x48, 0xB9]); // MOV RCX, imm64
+        successor_code[2..].copy_from_slice(&old_immediate.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let make_owner = || {
+            let mut owner = TrackedCodeFixture::new(
+                &program[10..13],
+                &successor_code,
+                &[0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0],
+            );
+            owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+            owner.active_source_rip = entry + 10;
+            owner.active_source = (0, 10, 3);
+            owner.mappings[0].len = program.len();
+            owner.mappings[1].start = successor;
+            owner
+        };
+        let expected_change = CodeInvalidation::BackingContentChanged {
+            backing: TrackedCodeFixture::id(3),
+            current_version: BackingVersion::new(TrackedCodeFixture::nz(2)),
+        };
+
+        for target in [successor + 2, successor_alias + 2] {
+            let mut owner = make_owner();
+            let mut interpreter = make_owner();
+            let mut arena = PublishedArenaBackend::new(5).unwrap();
+            let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+            let mut cache = MultiEntryBlockCache::new(
+                4,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+            run_tracked_code_block(&owner, unrelated, &mut cache, &mut arena);
+            for rip in [successor, successor_alias] {
+                let (report, old) = run_tracked_code_block(&owner, rip, &mut cache, &mut arena);
+                assert_eq!(report.retired_instructions, 1);
+                assert_eq!(old.gpr[1], old_immediate);
+            }
+            assert_eq!(cache.resident_entries(), 4);
+            assert_eq!(arena.available_slots(), 0);
+            let before_store = cache.counters();
+            assert_eq!(before_store.successful_publications, 4);
+
+            let mut native = LongModeState {
+                rip: entry,
+                rflags: 0xA55,
+                gpr: std::array::from_fn(|index| 0x1234_5678_0000_0000 + index as u64),
+                ..LongModeState::default()
+            };
+            native.gpr[0] = new_immediate;
+            native.gpr[3] = target;
+            let mut expected = native.clone();
+            assert_eq!(
+                od_isa::execute::step(&mut expected, &mut interpreter, AccessContext::default())
+                    .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            );
+            assert_eq!(expected.rip, entry + 10);
+            interpreter.begin_interpreter_write_scope(entry + 10, 3);
+            assert_eq!(
+                od_isa::execute::step(&mut expected, &mut interpreter, AccessContext::default())
+                    .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            );
+            let (interpreter_changes, _) = interpreter.finish_guest_write();
+            interpreter.end_interpreter_write_scope();
+            assert_eq!(interpreter_changes.first(), Some(expected_change));
+            assert_eq!(
+                od_isa::execute::step(&mut expected, &mut interpreter, AccessContext::default())
+                    .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            );
+
+            let mut notification = None;
+            let report = active
+                .execute_tracked_v3(
+                    &mut native,
+                    &mut owner,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &AtomicU8::new(0),
+                    |change| {
+                        assert!(notification.replace(change).is_none());
+                        assert_eq!(cache.invalidate(change), 2);
+                    },
+                )
+                .unwrap();
+            assert_eq!(report.exit, ActiveCodeExecutionExitV3::Complete);
+            assert_eq!(report.retired_instructions, 3);
+            assert_eq!(report.remaining_budget, 1);
+            assert_eq!(native.rip, successor);
+            assert_eq!(native, expected);
+            assert_eq!(notification, Some(expected_change));
+            assert_eq!(owner.write_count, 1);
+            assert_eq!(interpreter.write_count, 1);
+            assert_eq!(owner.write_attempt_count, 1);
+            assert_eq!(cache.resident_entries(), 2);
+            assert_eq!(arena.available_slots(), 2);
+            assert_eq!(
+                cache.counters().successful_publications,
+                before_store.successful_publications
+            );
+            for (observed, reference) in owner.backings.iter().zip(&interpreter.backings) {
+                assert_eq!(observed.bytes, reference.bytes);
+                assert_eq!(observed.version, reference.version);
+            }
+            assert_eq!(owner.backings[0].version.get(), 1);
+            assert_eq!(owner.backings[1].version.get(), 2);
+
+            for rip in [successor, successor_alias] {
+                let mut input = native.clone();
+                input.rip = rip;
+                let mut expected = input.clone();
+                assert_eq!(
+                    od_isa::execute::step(
+                        &mut expected,
+                        &mut interpreter,
+                        AccessContext::default()
+                    )
+                    .unwrap(),
+                    od_isa::execute::StepOutcome::Advanced
+                );
+                let (report, resumed) =
+                    run_tracked_code_block_with_state(&owner, rip, input, &mut cache, &mut arena);
+                assert_eq!(
+                    report,
+                    DispatchResult {
+                        exit: DispatchExit::CodeEnd,
+                        remaining_budget: 0,
+                        retired_instructions: 1,
+                        blocks_executed: 1,
+                    }
+                );
+                assert_eq!(resumed.gpr[1], new_immediate);
+                assert_eq!(resumed, expected);
+            }
+            let republished = cache.counters();
+            assert_eq!(republished.misses, before_store.misses + 2);
+            assert_eq!(
+                republished.successful_compiles,
+                before_store.successful_compiles + 2
+            );
+            assert_eq!(
+                republished.successful_publications,
+                before_store.successful_publications + 2
+            );
+            assert_eq!(republished.evictions, 0);
+            assert_eq!(arena.available_slots(), 0);
+            assert_eq!(owner.write_count, 1);
+
+            for rip in [entry, unrelated, successor, successor_alias] {
+                run_tracked_code_block(&owner, rip, &mut cache, &mut arena);
+            }
+            assert_eq!(cache.counters().hits, republished.hits + 4);
+            assert_eq!(
+                cache.counters().successful_publications,
+                republished.successful_publications
+            );
+            cache.clear();
+            assert_eq!(arena.available_slots(), 4);
+            drop(active);
+            assert_eq!(arena.available_slots(), 5);
+        }
+    }
+
+    #[test]
     fn active_code_v3_invalidates_exact_not_yet_executed_tail_immediate() {
         use od_isa::LongModeState;
         let _guard = jit_test_lock();

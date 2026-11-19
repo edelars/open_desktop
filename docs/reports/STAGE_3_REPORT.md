@@ -970,6 +970,16 @@ at start and finish. The input manifest SHA-256 is
 The summary SHA-256 is
 `a0905ea2d2cc349a6c034693301324d416f754e6cc27ceed72cbc34bb8573159`.
 
+### Local next-block SMC regression, 2026-11-19 UTC
+
+Run `stage3-20261119-053704-96e70bb3d6` passed all 359 selected local
+steps. The new S3-24c gate writes the immediate of the block at the
+following RIP through direct and alias addresses. The V3 writer
+finishes, both stale successor entries are removed, and fresh
+execution matches the interpreter at both addresses. The test covers
+one committed store, precise retirement and available arena slots.
+[S3-24c and run bindings](../plans/STAGE_3.md#s3-24c-запись-в-отдельный-блок-по-следующему-rip)
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced

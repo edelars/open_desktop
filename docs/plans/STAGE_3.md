@@ -2529,9 +2529,42 @@ rejects_revoked_source_permission`. Общая S3-23 остаётся откры
 
 **S3-24 остаётся открытым.** S3-24a добавляет один compiler-issued 23-byte native artifact с тремя decoder-validated instructions: `MOV RDX,imm64; MOV [RBX],RAX; MOV RCX,imm64`. Один typed V3 arena entry выполняет все три в одном generated call, но при успешной записи в уже исполненный prefix synchronously sets an invocation-local dirty marker, commits store RIP/budget/retirement once, and returns `CodeInvalidated` before stale native tail. The owner applies the reserved backing version/notification after result decoding and before the active handle is released. A later dispatch executes the tail from current bytes; re-entry observes the changed prefix. An unrelated destination completes the full three-instruction artifact. The store instruction itself may not overlap.
 
-S3-24b narrowly permits one additional case: a committed qword store replaces exactly the immediate at artifact offsets `15..23` of the not-yet-executed `MOV RCX,imm64`. The complete 23-byte source lease is checked before entry; the target must resolve to the same backing and offset and one write-plan segment. The staged plan is marked dirty only after exact opcode, source identity, and destination checks pass. The generated call commits the store at RIP `entry+13` and returns `CodeInvalidated`; backing generation and notification are applied after return, invalidating direct and alias cache entries before a fresh dispatch decodes the new immediate. Tail opcodes, partial/shifted qwords, writes overlapping the store instruction, and split-mapping targets remain rejected.
+S3-24b permits an exact qword replacement of the immediate at artifact
+offsets `15..23` in the pending `MOV RCX,imm64`. The 23-byte source
+lease is checked before entry. The generated call commits the store
+at RIP `entry+13` and returns `CodeInvalidated`. The owner applies the
+backing generation and notification after return, so a fresh dispatch
+uses the changed immediate. The current fixture also accepts a
+destination split across two adjacent mappings that expose contiguous
+offsets of that same backing. It rejects noncontiguous offsets, a
+different backing in the split, changes to the tail opcode, partial or
+shifted writes and overlap with the executing store.
 
 Fault after the prefix preserves RIP at the store and the committed prefix; budget/STOP boundaries, STOP raised during a successful write, alias writes, and backend failure are covered. The future-tail case remains a fixture-only invalidation/redispatch demonstration, not a physical x86 SMC oracle. General multi-instruction compilation, production MMU/writers, and full S3-24 remain open. See [S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md) and [S3-24b report](../reports/STAGE_3_S3-24b_2026-10-29.md).
+
+#### S3-24c. Запись в отдельный блок по следующему RIP
+
+ARM64 gate `active_code_v3_republishes_immediate_of_following_block`
+прогревает блок по следующему RIP и его алиас. Нативный V3 store меняет
+immediate в их общем backing через прямой адрес или алиас. Активный
+трёхинструкционный блок завершается с оставшимся бюджетом 1. Уведомление
+удаляет две записи, освобождает два слота и сохраняет записи двух
+незатронутых блоков. Продолжение по прямому и алиасному адресу компилирует
+обновлённые байты и совпадает с полным состоянием интерпретатора.
+Гостевая запись выполняется один раз в каждом сценарии. Gate использует
+имеющийся tracked owner fixture и локальный selector этапа 3.
+
+В прогоне `stage3-20261119-053704-96e70bb3d6` прошли 359 из 359
+локальных шагов, включая 341 точный Rust gate и 157 самопроверок.
+Новый ARM64 gate прошёл 1/1. Ещё 46 шагов VMHost process остались
+`not_run`, а физические x86 и Mac mini проверки отложены.
+Отпечаток дерева с изменениями к `626e582` совпал до и после прогона
+(`56fc39b807148a46d06197c2fa161702f269f6404c3c0079e44c53b7f2561c99`).
+Summary SHA-256
+`e40c8e39334120909d276dae4f10e518dadd501498f228f9dc17db5058663dba`
+и input manifest SHA-256
+`b5561279f6f34ae34de8390e99ba2c2ad19abe9ed888af67f3eb653b2a20ed81`
+сохранены в `work/stage3-harness/` под ID прогона.
 
 ### S3-25. Реализовать eviction и безопасное освобождение
 
