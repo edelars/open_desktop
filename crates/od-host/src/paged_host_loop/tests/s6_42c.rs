@@ -477,6 +477,104 @@ fn s6_42d_a_pending_irq_waits_for_partial_rep_across_a_stop() {
 }
 
 #[test]
+fn s6_42d_partial_rep_resumes_before_irq_after_host_worker_restarts() {
+    let _guard = jit_guard();
+    const SOURCE: u64 = 0x5_0000;
+    const DEST: u64 = 0x5_1000;
+    const WORK_LIMIT: u64 = od_isa::execute::REP_ITERATION_WORK_LIMIT;
+    let mut board = board(1);
+    put(&mut board, CODE_0, &[0xF3, 0xA4, 0xF4]); // REP MOVSB; HLT
+    put(&mut board, SOURCE, &vec![0xA5; (WORK_LIMIT + 1) as usize]);
+    board
+        .bus_mut()
+        .write_mmio_shared(
+            0,
+            GuestPhysicalAddress::new(LOCAL_APIC + 0xF0),
+            AccessWidth::Dword,
+            0x1FF,
+        )
+        .unwrap();
+    let mut state = state(CODE_0, STACK_TOP_0);
+    state.gpr[Register::Rsi as usize] = SOURCE;
+    state.gpr[Register::Rdi as usize] = DEST;
+    state.gpr[Register::Rcx as usize] = WORK_LIMIT + 1;
+    assert!(host_install_vcpu(&mut board, 0, state));
+
+    let quantum = JitHostQuantum::new(vec![None], vec![config()], RFLAGS_DEFINED).with_cpl0_set();
+    let partial = AtomicBool::new(false);
+    let (first, ()) = run_accounted_host_threads(
+        &mut board,
+        host_config(false),
+        &quantum.nmi_paging(),
+        &|mut call| {
+            let mut stop_after_copy = || {
+                if (call.stop)() {
+                    return true;
+                }
+                let copied = call
+                    .bus
+                    .atomic_inline_memory()
+                    .load_u64(GuestPhysicalAddress::new(DEST))
+                    .unwrap()
+                    != 0;
+                if copied {
+                    partial.store(true, Ordering::Release);
+                }
+                copied
+            };
+            quantum.run_accounted(HostQuantumCall {
+                stop: &mut stop_after_copy,
+                board_irq: call.board_irq.reborrow(),
+                ..call
+            })
+        },
+        &|_| quantum.thread_exit(),
+        |control| {
+            assert!(control.wait_until(WAIT, || {
+                partial.load(Ordering::Acquire) && control.calls(0) >= 2
+            }));
+            control.stop_all(WAIT).unwrap();
+            let stopped = control.with_state(0, |state| state.clone()).unwrap();
+            assert_eq!(stopped.rip, CODE_0);
+            assert_eq!(stopped.gpr[Register::Rcx as usize], 1);
+            control
+                .lapic(0)
+                .unwrap()
+                .request_fixed_edge(VECTOR_IRQ)
+                .unwrap();
+            control.finish();
+        },
+    )
+    .unwrap();
+    assert_eq!(first.finished, HostParallelFinish::Stopped);
+    assert_eq!(first.retired[0], 0);
+    assert_eq!(first.threads_exited, 1);
+
+    let restarted = JitHostQuantum::new(vec![None], vec![config()], RFLAGS_DEFINED).with_cpl0_set();
+    let (second, ()) = run_accounted_host_threads(
+        &mut board,
+        HostParallelConfig {
+            quantum: 1,
+            budget: 1,
+            end_when_idle: false,
+        },
+        &restarted.nmi_paging(),
+        &|call| restarted.run_accounted(call),
+        &|_| restarted.thread_exit(),
+        |control| assert!(control.wait_finished(WAIT)),
+    )
+    .unwrap();
+    assert_eq!(second.finished, HostParallelFinish::BudgetExhausted);
+    assert_eq!(second.retired[0], 1);
+    assert_eq!(board.state().rip, CODE_0 + 2);
+    assert_eq!(board.state().gpr[Register::Rcx as usize], 0);
+    assert_eq!(
+        board.local_apic_of(0).unwrap().vector_state(VECTOR_IRQ),
+        (true, false)
+    );
+}
+
+#[test]
 fn s6_42d_the_pit_pic_source_wakes_the_bsp_and_cuts_guest_pit_writes_short() {
     let _guard = jit_guard();
     const VECTOR_PIT: u8 = 0x30;
@@ -938,6 +1036,7 @@ fn run_nvme_stop_case(case: NvmeStopCase, mut disk: impl od_machine::NvmeBackend
             }
             let stopped = quantum.run_accounted(HostQuantumCall {
                 state: &mut *call.state,
+                skip_first_boundary: &mut *call.skip_first_boundary,
                 consecutive_faults: &mut *call.consecutive_faults,
                 stop: &mut *call.stop,
                 board_irq: call.board_irq.reborrow(),

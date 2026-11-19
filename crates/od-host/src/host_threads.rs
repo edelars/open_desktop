@@ -75,8 +75,6 @@ struct ThreadVcpu {
     session: PagedFetchedLoadSession,
     control: PagedHostLoopControl,
     rflags_defined: u64,
-    /// The REP rule of the interrupt boundary, kept across calls (CPL0-set mode).
-    skip_first_boundary: bool,
 }
 
 thread_local! {
@@ -292,7 +290,6 @@ impl JitHostQuantum {
                     session,
                     control: PagedHostLoopControl::new(),
                     rflags_defined: self.rflags_defined,
-                    skip_first_boundary: false,
                 });
             }
             let thread = slot.as_mut().expect("the thread's vCPU was just set");
@@ -363,7 +360,7 @@ impl JitHostQuantum {
                         devices: call.devices,
                         gate: call.gate,
                         set: &set,
-                        skip_first_boundary: &mut thread.skip_first_boundary,
+                        skip_first_boundary: &mut *call.skip_first_boundary,
                     },
                 )
             } else {

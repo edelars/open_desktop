@@ -144,6 +144,9 @@ pub struct HostQuantumCall<'a> {
     pub cpu: usize,
     /// The CPU state of the vCPU; the thread owns it for the call.
     pub state: &'a mut LongModeState,
+    /// The vCPU's restart point inside a partial REP. The executor preserves it until it
+    /// resumes the instruction, including when the call stops without starting a step.
+    pub skip_first_boundary: &'a mut bool,
     /// The machine by shared reference: RAM without a lock, devices behind their one lock.
     pub bus: &'a MachineBus,
     /// At most this many instructions (the shared budget and the timer deadline cut it).
@@ -558,6 +561,7 @@ fn run_host_threads_inner<R>(
         let result = run(HostQuantumCall {
             cpu: call.cpu,
             state: &mut call.vcpu.state,
+            skip_first_boundary: &mut call.vcpu.skip_first_boundary,
             bus: call.env.bus,
             budget: call.budget,
             consecutive_faults: call.consecutive_faults,
@@ -577,7 +581,7 @@ fn run_host_threads_inner<R>(
             RunFailure::after(
                 Executed {
                     retired: failure.retired,
-                    partial_rep: false,
+                    partial_rep: call.vcpu.skip_first_boundary,
                     device_ns: failure.device_ns,
                 },
                 FirmwareBoardError::Config(failure.message),
@@ -585,7 +589,7 @@ fn run_host_threads_inner<R>(
         })?;
         let executed = Executed {
             retired: result.retired,
-            partial_rep: false,
+            partial_rep: call.vcpu.skip_first_boundary,
             device_ns: result.device_ns,
         };
         match result.exit {
@@ -702,6 +706,7 @@ pub fn host_install_vcpu(
         Some(vcpu) => {
             vcpu.state = state;
             vcpu.legacy = None;
+            vcpu.skip_first_boundary = false;
             true
         }
         None => false,

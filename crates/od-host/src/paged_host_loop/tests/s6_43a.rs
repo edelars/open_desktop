@@ -271,6 +271,7 @@ impl Stepper for Quantum<'_, '_> {
         let result = self.quantum.run_accounted(HostQuantumCall {
             cpu,
             state: &mut *self.call.state,
+            skip_first_boundary: &mut *self.call.skip_first_boundary,
             bus: self.call.bus,
             budget: 1,
             consecutive_faults: &mut *self.call.consecutive_faults,
