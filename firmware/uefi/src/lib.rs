@@ -12,6 +12,7 @@
 
 pub mod acpi;
 pub mod handoff;
+pub mod idt;
 pub mod image;
 pub mod mem;
 pub mod paging;

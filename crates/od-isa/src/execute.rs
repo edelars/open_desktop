@@ -20109,21 +20109,53 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
-        // S7-04: firmware installs its linked GDT while the old GDTR is unmodeled.
-        Operation::LoadGdtr { source }
+        // S7-04: the firmware can install descriptor tables for the first time.
+        Operation::LoadGdtr { source } | Operation::LoadIdtr { source }
             if firmware_boot_profile
                 && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes == Prefixes::default() =>
         {
-            state.gdtr =
+            let (base, limit) =
                 match read_pseudo_descriptor_qwords(state, memory, context, next_rip, source) {
-                    Ok((base, limit)) => Some(crate::state::Gdtr { base, limit }),
+                    Ok(descriptor) => descriptor,
                     Err(MemoryError::Architectural(fault)) => {
                         return result(PagedProbeExit::Fault(fault), 0);
                     }
                     Err(error) => return result(PagedProbeExit::Backend(error), 0),
                 };
+            if matches!(instruction.operation, Operation::LoadGdtr { .. }) {
+                state.gdtr = Some(crate::state::Gdtr { base, limit });
+            } else {
+                state.idtr = Some(crate::state::Idtr { base, limit });
+            }
             state.rip = next_rip;
+        }
+        Operation::WriteCr4
+            if firmware_boot_profile
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let value = state.gpr[Register::Rax as usize];
+            if value & Cr4Profile::BASE == 0 {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            }
+            if !Cr4Profile::FpInitLong64V1.accepts(value) {
+                return unsupported();
+            }
+            state.cr4 = Some(value);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
+            };
         }
         Operation::FarReturn
             if firmware_boot_profile
@@ -20684,9 +20716,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             )
                             | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
                     ),
-                    (OpcodeMap::Escape0f, Operation::Extend { .. }) => {
-                        instruction.opcode.byte == 0xb6
-                            && instruction.operand_size == OperandSize::Dword
+                    (OpcodeMap::Escape0f, Operation::Extend { src, .. }) => {
+                        instruction.operand_size == OperandSize::Dword
+                            && matches!(
+                                (instruction.opcode.byte, src),
+                                (0xb6, _) | (0xb7, Operand::Register(_))
+                            )
                     }
                     _ => false,
                 }

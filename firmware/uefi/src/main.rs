@@ -9,6 +9,7 @@ use core::panic::PanicInfo;
 
 use od_firmware::HANDOFF_GPA;
 use od_firmware::handoff::{BOOT_PAGE_TABLES_GPA, HANDOFF_WINDOW_SIZE, Handoff};
+use od_firmware::idt::Idt;
 use od_firmware::mem::map::{
     DESCRIPTOR_VERSION, MAX_INITIAL_DESCRIPTORS, MemoryDescriptor, MemoryMap, MemoryMapError,
     MemoryType,
@@ -18,14 +19,15 @@ use od_firmware::mem::pages::{
 };
 use od_firmware::paging::{BootPaging, PAGE_BYTES, PagingError, ShadowSections};
 use od_firmware::stop::{
-    STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR, STOP_PAGING,
-    STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
+    STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP, STOP_PAGE_ALLOCATOR,
+    STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex, format_stop_line,
 };
 
 unsafe extern "C" {
     static __shadow_read_only_start: u8;
     static __shadow_writable_start: u8;
     fn od_fw_install_gdt();
+    static od_fw_exception_stubs: u8;
 }
 
 const COM1_BASE: u16 = 0x3F8;
@@ -141,6 +143,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     // and the linked descriptor table is mapped in writable firmware RAM.
     unsafe { od_fw_install_gdt() };
     com1_write(b"OD-FW S7-04 GDT active\r\n");
+    install_idt();
+    enable_firmware_fp_controls();
+    com1_write(b"OD-FW S7-04 IDT and CR4 active\r\n");
     let parsed = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX);
     let handoff = match &parsed {
         Ok(handoff) => handoff,
@@ -180,6 +185,42 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     com1_write(&fixed_hex(key));
     com1_write(b"\r\n");
     halt_forever()
+}
+
+static mut EXCEPTION_IDT: Idt = Idt::EMPTY;
+
+fn install_idt() {
+    #[repr(C, packed)]
+    struct Idtr {
+        limit: u16,
+        base: u64,
+    }
+    let base = &raw mut EXCEPTION_IDT;
+    let stubs = (&raw const od_fw_exception_stubs) as u64;
+    // SAFETY: this runs once at boot with interrupts disabled. The table
+    // is in the firmware shadow's writable, NX section and is not aliased.
+    unsafe { (*base).fill(stubs) };
+    let pointer = Idtr {
+        base: base as u64,
+        limit: Idt::LIMIT,
+    };
+    // SAFETY: both the pseudo-descriptor and the installed gates remain
+    // readable under the active firmware CR3 at CPL0.
+    unsafe {
+        asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
+    }
+}
+
+fn enable_firmware_fp_controls() {
+    const CR4_FIRMWARE: u64 = (1 << 5) | (1 << 9) | (1 << 10);
+    // SAFETY: CPL0 with 4-level paging. Keep PAE and enable the FP control
+    // bits required at the later EFI entry point.
+    unsafe { asm!("mov cr4, rax", in("rax") CR4_FIRMWARE, options(nostack)) };
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn od_fw_exception_stop(vector: u64) -> ! {
+    stop(STOP_EXCEPTION, vector);
 }
 
 fn require_pages<T>(result: Result<T, PageError>) -> T {

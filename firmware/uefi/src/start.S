@@ -25,12 +25,22 @@ _start:
     movq    $0x100000, %rax             /* HANDOFF_GPA */
     cmpq    %rax, %rdi
     jne     .Lbad_handoff
-    movq    %rdi, %r8                   /* keep the handoff GPA across the rep stosb */
+    movq    %rdi, %r8                   /* keep the handoff GPA across BSS clearing */
     leaq    __bss_start(%rip), %rdi
-    leaq    __bss_end(%rip), %rcx
-    subq    %rdi, %rcx
+    leaq    __bss_end(%rip), %r10
+    subq    %rdi, %r10
+    shrq    $3, %r10                    /* the linker aligns both ends */
     xorl    %eax, %eax
-    rep stosb
+.Lzero_bss:
+    testq   %r10, %r10
+    jz      .Lbss_done
+    movl    $512, %ecx                  /* at most 4 KiB per REP */
+    cmpq    %rcx, %r10
+    cmovbq  %r10, %rcx
+    subq    %rcx, %r10
+    rep stosq
+    jmp     .Lzero_bss
+.Lbss_done:
     movq    %r8, %rdi                   /* first argument of od_fw_main (System V, internal) */
     call    od_fw_main
     /* od_fw_main never returns; stop if it does. */
@@ -148,3 +158,25 @@ od_fw_install_gdt:
     nop                               /* consumes the MOV SS interrupt shadow */
     retq
     .size od_fw_install_gdt, .-od_fw_install_gdt
+
+
+    .p2align 4
+    .globl od_fw_exception_stubs
+    .type od_fw_exception_stubs, @function
+od_fw_exception_stubs:
+    /* Each entry is ten bytes: MOV EDI,vector and JMP rel32. Using fixed
+       encodings keeps the Rust IDT encoder's vector stride invariant. */
+    .set .Lvector, 0
+    .rept 256
+    .byte 0xbf
+    .long .Lvector
+    .byte 0xe9
+    .long .Lexception_stop - . - 4
+    .set .Lvector, .Lvector + 1
+    .endr
+    .size od_fw_exception_stubs, .-od_fw_exception_stubs
+.Lexception_stop:
+    cld                               /* System V requires DF = 0 at Rust entry */
+    andq    $-16, %rsp
+    callq   od_fw_exception_stop
+    ud2

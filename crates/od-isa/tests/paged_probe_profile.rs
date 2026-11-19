@@ -51433,6 +51433,9 @@ fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
         (&[0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39),
         (&[0x49, 0xd1, 0xef][..], 0xd1),
         (&[0x0f, 0x01, 0x15, 0x19, 0x40, 0, 0][..], 0x01),
+        (&[0x0f, 0x01, 0x1d, 0x19, 0x40, 0, 0][..], 0x01),
+        (&[0x0f, 0x22, 0xe0][..], 0x22),
+        (&[0x44, 0x0f, 0xb7, 0xd2][..], 0xb7),
         (&[0x48, 0xcb][..], 0xcb),
         (&[0x8e, 0xd8][..], 0x8e),
         (&[0x40, 0xb5, 0x01][..], 0xb5),
@@ -51814,6 +51817,30 @@ fn firmware_boot_setcc_changes_only_the_decoded_byte_alias() {
         assert_eq!(cpu, expected, "{code:02x?}");
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
+}
+
+#[test]
+fn firmware_boot_movzx_word_register_clears_the_destination_upper_bits() {
+    let mut memory = Memory::new(&[0x44, 0x0f, 0xb7, 0xd2]);
+    let mut cpu = state();
+    cpu.gpr[Register::Rdx as usize] = 0xaabb_ccdd_eeff_8796;
+    cpu.gpr[Register::R10 as usize] = u64::MAX;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R10 as usize] = 0x8796;
+    expected.rip += 4;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
 }
 
 #[test]
@@ -52846,52 +52873,111 @@ fn firmware_boot_paging_alu_uses_operand_width_and_defined_flags() {
 }
 
 #[test]
-fn firmware_boot_loads_the_gdtr_without_a_previous_table() {
+fn firmware_boot_loads_descriptor_registers_without_a_previous_table() {
     let address = DATA + 0x20;
     let base = DATA + 0x80;
-    let mut code = vec![0x0f, 0x01, 0x15];
-    code.extend_from_slice(&((address - (RIP + 7)) as u32).to_le_bytes());
+    for (modrm, is_idt) in [(0x15, false), (0x1d, true)] {
+        let mut code = vec![0x0f, 0x01, modrm];
+        code.extend_from_slice(&((address - (RIP + 7)) as u32).to_le_bytes());
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address + 8),
+        };
+        for fail in [false, true] {
+            let mut memory = Memory::new(&code);
+            memory.bytes[DATA_PHYSICAL + 0x20..DATA_PHYSICAL + 0x22]
+                .copy_from_slice(&23u16.to_le_bytes());
+            memory.bytes[DATA_PHYSICAL + 0x22..DATA_PHYSICAL + 0x2a]
+                .copy_from_slice(&base.to_le_bytes());
+            if fail {
+                memory.fail_read_at =
+                    Some((address + 8, MemoryError::Architectural(fault.clone())));
+            }
+            let mut cpu = state();
+            let mut expected = cpu.clone();
+            if !fail {
+                if is_idt {
+                    expected.idtr = Some(od_isa::state::Idtr { base, limit: 23 });
+                } else {
+                    expected.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
+                }
+                expected.rip += 7;
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(
+                result.exit,
+                if fail {
+                    PagedProbeExit::Fault(fault.clone())
+                } else {
+                    PagedProbeExit::Retired
+                }
+            );
+            assert_eq!(result.instructions_executed, u64::from(!fail));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8), (address + 2, 8)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cr4_preserves_pae_and_allows_fetch_with_fp_controls() {
     let fault = od_isa::ArchitecturalFault {
-        vector: 14,
+        vector: 13,
         error_code: Some(0),
-        linear_address: Some(address + 8),
+        linear_address: None,
     };
-    for fail in [false, true] {
-        let mut memory = Memory::new(&code);
-        memory.bytes[DATA_PHYSICAL + 0x20..DATA_PHYSICAL + 0x22]
-            .copy_from_slice(&23u16.to_le_bytes());
-        memory.bytes[DATA_PHYSICAL + 0x22..DATA_PHYSICAL + 0x2a]
-            .copy_from_slice(&base.to_le_bytes());
-        if fail {
-            memory.fail_read_at = Some((address + 8, MemoryError::Architectural(fault.clone())));
-        }
+    for (value, exit) in [
+        (0x620, PagedProbeExit::Retired),
+        (0x600, PagedProbeExit::Fault(fault)),
+        (0x1620, PagedProbeExit::Unsupported { opcode: 0x22 }),
+    ] {
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xe0, 0x90]);
         let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = value;
         let mut expected = cpu.clone();
-        if !fail {
-            expected.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
-            expected.rip += 7;
+        let retired = exit == PagedProbeExit::Retired;
+        if retired {
+            expected.cr4 = Some(value);
+            expected.rip += 3;
         }
+        let mut pio = Pio::default();
         let result = execute::step_paged_firmware_probe(
             PagedCpl0FirmwareBootV1,
             &mut cpu,
             &mut memory,
-            &mut Pio::default(),
+            &mut pio,
             ring0(),
             DEFINED,
         );
-        assert_eq!(
-            result.exit,
-            if fail {
-                PagedProbeExit::Fault(fault.clone())
-            } else {
-                PagedProbeExit::Retired
-            }
-        );
-        assert_eq!(result.instructions_executed, u64::from(!fail));
-        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        let defined = if retired { DEFINED & !0x8d5 } else { DEFINED };
+        assert_eq!(result.rflags_defined, defined);
         assert_eq!(cpu, expected);
-        assert_eq!(memory.read_addresses, [(address, 8), (address + 2, 8)]);
-        assert_eq!(memory.writes, 0);
+        if retired {
+            let next = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                defined,
+            );
+            assert_eq!(next.exit, PagedProbeExit::Retired);
+            assert_eq!(cpu.cr4, Some(0x620));
+            assert_eq!(cpu.rip, RIP + 4);
+        }
+        assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
 

@@ -109,8 +109,9 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 `od_fw_main` по внутреннему System V ABI. Ошибка GPA останавливает прошивку
 со строкой `OD-FW STOP` через COM1. Rust-точка входа сверяет GPA и разбирает
 handoff block. Затем прошивка готовит собственные таблицы 4 KiB и резерв
-стека, переключает гостевые CR3 и RSP, загружает свою GDT и устанавливает
-селекторы. Затем прошивка печатает начальную карту EFI в COM1.
+стека, переключает гостевые CR3 и RSP, загружает свои GDT и IDT, устанавливает
+селекторы и включает `CR4.OSFXSR/OSXMMEXCPT`. Затем прошивка печатает
+начальную карту EFI в COM1.
 Вывод включает MapKey, версию, число дескрипторов и запись `OD-FW MEM`
 для каждого диапазона. Затем прошивка проверяет выделение, запись, чтение
 и возврат страниц во всех трёх режимах и для двух блоков pool. В COM1
@@ -126,10 +127,11 @@ handoff block. Затем прошивка готовит собственные
 | `src/acpi/aml/` | собственный AML-кодировщик (S7-12): `opcodes`, `names`, `encoder` (PkgLength, NameString, Integer, String), `resource` (ResourceTemplate), `builder` (Scope/Device/Name/Method/Package/Buffer, повтор имён), `validate`; без `alloc`, тесты в `aml/tests.rs`. Контракт и не сверенные места — [ACPI_SMBIOS_TABLES.md](../../docs/specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt) | нет |
 | `src/acpi/{manifest,table,dsdt}.rs` | `BoardManifest` (таблица устройств handoff block v1.0), заголовок SDT и контрольная сумма, DSDT из manifest (`\_SB.PCI0`, `\_SB.COM1`; только `PRESENT = 1`) и её валидатор. Остальные таблицы ACPI и SMBIOS — S7-13 | нет |
 | `src/image.rs` | заголовок образа v1, CRC-32, `validate_image` (чистая проверка образа в памяти; машинную проверку делает S7-03 в `od-machine`) | нет |
+| `src/idt.rs` | формирование 256 гостевых interrupt gates | нет |
 | `src/stop.rs` | форматирование строки останова `OD-FW STOP code=0xNN detail=0x...` без `core::fmt` | нет |
 | `src/mem/` | начальная карта EFI, внутренние аллокаторы страниц и pool, общий MapKey | нет |
 | `src/main.rs` | бинарь: COM1, panic handler, `od_fw_main` | порт ввода-вывода |
-| `src/start.S` | вход `_start`, проверка `RDI`, останов через COM1, зануление `.bss`, установка GDT и селекторов | CPU |
+| `src/start.S` | вход `_start`, проверка `RDI`, останов через COM1, зануление `.bss`, установка GDT и селекторов, stubs IDT | CPU |
 | `build.rs` | сборка `start.S` системным `clang` и ключи линковки (только для target `x86_64-unknown-none`) | host-инструмент |
 | `linker.ld` | собственный linker script | — |
 | `.cargo/config.toml` | `relocation-model=static` для target прошивки | — |
