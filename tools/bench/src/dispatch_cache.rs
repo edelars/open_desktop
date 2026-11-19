@@ -58,6 +58,7 @@ const BRANCH_HELPER_INPUTS: usize = 5;
 const BRANCH_HELPER_VISITS: usize = 5;
 const S3_17_INPUTS: usize = 1_010;
 const S3_17_VISITS: usize = 1_322;
+const RELOCATED_S3_17_CASE_LIST_MODE: &str = "relocated-s3-17-paths";
 const S3_14_GENERIC_SCOPE: &str =
     "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback";
 const WARM_DISPATCH_PHASE_MAX_RESTARTS: usize = 8;
@@ -643,6 +644,10 @@ struct ColdPipelineReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -1230,39 +1235,36 @@ fn validate_cold_corpus_digests(
     generic: bool,
     paths: ColdCaseListPaths,
 ) -> Result<(usize, usize), BenchError> {
-    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = match paths {
-        ColdCaseListPaths::RelocatedS3_17 => (
-            None,
-            FROZEN_TRACE_SHA256,
-            S3_17_INPUTS,
-            S3_17_VISITS,
-            "S3-17",
-        ),
-        ColdCaseListPaths::Frozen
-            if generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256 =>
+    if paths == ColdCaseListPaths::Frozen
+        && (generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256)
+    {
+        if case_list_sha256 != BRANCH_HELPER_CASE_LIST_SHA256
+            || trace_sha256 != BRANCH_HELPER_TRACE_SHA256
         {
-            (
-                Some(BRANCH_HELPER_CASE_LIST_SHA256),
-                BRANCH_HELPER_TRACE_SHA256,
-                BRANCH_HELPER_INPUTS,
-                BRANCH_HELPER_VISITS,
-                "S3-14 branch/helper",
-            )
+            return Err(err(
+                "case list or trace does not match the frozen S3-14 branch/helper corpus",
+            ));
         }
-        ColdCaseListPaths::Frozen => (
-            Some(FROZEN_CASE_LIST_SHA256),
-            FROZEN_TRACE_SHA256,
-            S3_17_INPUTS,
-            S3_17_VISITS,
-            "S3-17",
-        ),
-    };
-    if list_hash.is_some_and(|hash| case_list_sha256 != hash) || trace_sha256 != trace_hash {
-        return Err(err(format!(
-            "case list or trace does not match the frozen {label} corpus"
-        )));
+        return Ok((BRANCH_HELPER_INPUTS, BRANCH_HELPER_VISITS));
     }
-    Ok((expected_inputs, expected_visits))
+
+    validate_s3_17_corpus_digests(case_list_sha256, trace_sha256, paths)?;
+    Ok((S3_17_INPUTS, S3_17_VISITS))
+}
+
+fn validate_s3_17_corpus_digests(
+    case_list_sha256: &str,
+    trace_sha256: &str,
+    paths: ColdCaseListPaths,
+) -> Result<(), BenchError> {
+    if trace_sha256 != FROZEN_TRACE_SHA256
+        || (paths == ColdCaseListPaths::Frozen && case_list_sha256 != FROZEN_CASE_LIST_SHA256)
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    Ok(())
 }
 
 fn run_cold_first_profile(
@@ -1373,7 +1375,7 @@ fn run_cold_first_profile(
         schema: 2,
         process_run,
         case_list_sha256,
-        case_list_mode: relocated.then_some("relocated-s3-17-paths"),
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
         historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
         trace_sha256,
         capture_host: trace.capture_host.clone(),
@@ -1411,6 +1413,35 @@ pub fn run_cold_pipeline_attribution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_cold_pipeline_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Attribute the same cold FIFO16 phases with alternate fixture paths for the
+/// exact historical S3-17 trace.
+pub fn run_relocated_s3_17_cold_pipeline_attribution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_cold_pipeline_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+fn run_cold_pipeline_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    paths: ColdCaseListPaths,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cold-phases measurement requires a release build"));
     }
@@ -1420,22 +1451,18 @@ pub fn run_cold_pipeline_attribution(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
-    {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
-    }
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    validate_s3_17_corpus_digests(&case_list_sha256, &trace_sha256, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+    if trace.inputs.len() != S3_17_INPUTS
+        || trace.visits.len() != S3_17_VISITS
+        || trace.visits.len() > MAX_TOTAL_TRACE_VISITS
+    {
         return Err(err("frozen trace visit count mismatch"));
     }
     let cases = prepare_cases(&list, &trace, started)?;
-    if cases.len() != MAX_INPUTS {
-        return Err(err("cold-phases requires the complete frozen S3-17 corpus"));
-    }
 
     // Every case is checked against the independently prepared interpreter
     // oracle inside each sweep; the fresh ordinary/observed paths must also
@@ -1605,11 +1632,14 @@ pub fn run_cold_pipeline_attribution(
         observed_cache_misses: observed_preflight.counters.misses,
         phase_event_counts_match_cache_counters: true,
     };
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = ColdPipelineReport {
         schema: 1,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
+        trace_sha256,
         capture_host: trace.capture_host,
         measure_host: HostMetadata::current(),
         inputs: cases.len(),
@@ -4947,6 +4977,26 @@ mod tests {
             admit(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, true, Frozen),
             None
         );
+
+        assert!(
+            validate_s3_17_corpus_digests(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, Frozen)
+                .is_ok()
+        );
+        assert!(validate_s3_17_corpus_digests("relocated", FROZEN_TRACE_SHA256, Frozen).is_err());
+        assert!(
+            validate_s3_17_corpus_digests("relocated", FROZEN_TRACE_SHA256, RelocatedS3_17).is_ok()
+        );
+        for paths in [Frozen, RelocatedS3_17] {
+            assert!(validate_s3_17_corpus_digests("relocated", "altered", paths).is_err());
+            assert!(
+                validate_s3_17_corpus_digests(
+                    BRANCH_HELPER_CASE_LIST_SHA256,
+                    BRANCH_HELPER_TRACE_SHA256,
+                    paths,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -4980,15 +5030,18 @@ mod tests {
         paths.swap(0, 1);
 
         let mut bytes = std::fs::read(&paths[0]).unwrap();
-        bytes.push(b'\n');
         let modified = std::env::temp_dir().join(format!(
             "od-bench-{}-modified-fixture.json",
             std::process::id()
         ));
-        std::fs::write(&modified, bytes).unwrap();
+        std::fs::write(&modified, &bytes).unwrap();
         paths[0] = modified.clone();
+        let exact = prepare(&paths);
+        bytes.push(b'\n');
+        std::fs::write(&modified, bytes).unwrap();
         let result = prepare(&paths);
         std::fs::remove_file(modified).unwrap();
+        assert_eq!(exact.unwrap().len(), trace.inputs.len());
         let error = result.err().unwrap();
         assert_eq!(error.to_string(), "frozen trace mismatch at 0");
     }

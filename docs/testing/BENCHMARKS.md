@@ -695,7 +695,16 @@ admission and semantics were not established for this corpus.
 ### S3-35b: cold dispatcher pipeline attribution
 
 `od-bench cold-phases` uses the same frozen S3-17 case list and trace on the
-real FIFO16 dispatch/cache/compiler path. It reports distinct intervals for
+real FIFO16 dispatch/cache/compiler path. With
+`--relocated-s3-17-paths`, pass the recovered `relocated-cases.txt` and exact
+historical `dispatch-trace.json`. The trace SHA-256, 1,010 ordered fixture
+identities and raw hashes, and 1,322 visits remain binding. The report's
+`case_list_sha256` records the replacement list, alongside
+`historical_case_list_sha256` and `case_list_mode`. The original case list
+SHA-256 remains required by default.
+[S3-17 recovery bundle and hashes](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+
+The benchmark reports distinct intervals for
 block build/decode and admission, key/snapshot/lookup, IR lowering, allocation,
 emission plus byte encoding/finalization, publication, and host execution
 boundary. Normal lookup includes block build and key lookup. When the

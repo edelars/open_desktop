@@ -221,11 +221,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cold-phases requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value = od_bench::dispatch_cache::run_cold_pipeline_attribution(
-                    &case_list,
-                    &trace,
-                    process_run,
-                )?;
+                let value = if relocated_s3_17_paths {
+                    od_bench::dispatch_cache::run_relocated_s3_17_cold_pipeline_attribution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_cold_pipeline_attribution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -832,7 +840,7 @@ fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
 fn print_usage() {
     eprintln!(
         "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench translation-micro [--process-run 1..3] --output report.json\n  od-bench translation-hit-share [--process-run 1..3] --output report.json\n  od-bench stage6-host-memory --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register] [--relocated-s3-17-paths]\n\
-  od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
@@ -888,8 +896,8 @@ fn validate_mode_flags(
 }
 
 fn validate_relocated_s3_17_paths(mode: &str, relocated: bool) -> Result<(), &'static str> {
-    if relocated && mode != "cold-first-run" {
-        return Err("--relocated-s3-17-paths is only valid for cold-first-run");
+    if relocated && !matches!(mode, "cold-first-run" | "cold-phases") {
+        return Err("--relocated-s3-17-paths is only valid for cold-first-run or cold-phases");
     }
     Ok(())
 }
@@ -922,9 +930,17 @@ mod tests {
     }
 
     #[test]
-    fn relocated_s3_17_paths_are_cold_first_run_only() {
-        assert!(validate_relocated_s3_17_paths("cold-first-run", true).is_ok());
-        for mode in ["warm-first-run", "cold-phases", "record", "unknown"] {
+    fn relocated_s3_17_paths_are_limited_to_s3_17_cold_commands() {
+        for mode in ["cold-first-run", "cold-phases"] {
+            assert!(validate_relocated_s3_17_paths(mode, true).is_ok());
+            assert!(validate_relocated_s3_17_paths(mode, false).is_ok());
+        }
+        for mode in [
+            "warm-first-run",
+            "warm-dispatch-phases",
+            "record",
+            "unknown",
+        ] {
             assert!(
                 validate_relocated_s3_17_paths(mode, true).is_err(),
                 "{mode}"

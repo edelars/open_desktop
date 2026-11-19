@@ -3901,6 +3901,14 @@ retirement parity; paired observed/ordinary ratio median составил 1.0301
 Mini не запускался, Stage 2 не менялся. Этот результат не выбирает оптимизацию
 или default.
 
+`cold-phases --relocated-s3-17-paths` принимает восстановленный список путей
+при точном хеше исходной трассы S3-17. Проверяются порядок и байты всех
+1 010 фикстур и 1 322 посещения. Отчёт записывает хеши использованного и
+исторического списков. Три локальных теста проверили разбор флага, привязку
+трассы и отказ при перестановке или изменении фикстур. Замер фаз на M1 Pro
+остаётся впереди.
+[Команда и границы измерения](../testing/BENCHMARKS.md#s3-35b-cold-dispatcher-pipeline-attribution)
+
 #### S3-35c: cold direct-entry checked-memory profile
 
 Три release process run завершили opt-in `od-bench two-site-memory-cold` на
