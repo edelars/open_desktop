@@ -980,6 +980,37 @@ execution matches the interpreter at both addresses. The test covers
 one committed store, precise retirement and available arena slots.
 [S3-24c and run bindings](../plans/STAGE_3.md#s3-24c-запись-в-отдельный-блок-по-следующему-rip)
 
+### Full local selector after S3-31g, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite local` completed as
+`local_only`. All 359 selected steps passed, including the 157 harness
+self-tests, the Stage 1 local dispatcher child, the memory differential
+corpus and the local VMHost RESULT contract. The Stage 1 child checked 10
+manual and 1,000 generated fixtures twice, giving 2,020 results. The
+memory corpus checked 4,800 inputs twice. SHA-256 verification matched
+all 359 selected step logs and both Stage 1 child JSON files.
+
+| Run binding | Value |
+| --- | --- |
+| ID | `stage3-20261119-065023-2986c23515` |
+| Revision | `d99ce3b5f399b07202c3b3208a2d9ef8b83cbb58` |
+| Source fingerprint at start and end | `c0d4dc4739e33a8c15e827208523bf5efc1543bd50b835194ce56b279de5b86c` |
+| Input manifest SHA-256 | `ab93994816db24f9a5ef771b9d28f5197cc2542b1545c2e97903d0cdefa9a800` |
+| Summary SHA-256 | `2ab7728681732a32fc82ab0edc7886f27997f4cf106ac8978fe969fd04087078` |
+| Stage 1 child summary SHA-256 | `c32fabbf1793ef9b6cb42810af2c25e54b422de58d82d8b5f94d9bb548d88a6c` |
+| Stage 1 child manifest SHA-256 | `977b9a560b6d339cc7a88892c7de3cbca5cd0d8e945c5ed3de9c31d6bc4e9c7f` |
+
+The first attempt `stage3-20261119-064621-9c8ffb2c8d` ended at the
+fingerprint guard after all 157 self-tests returned successfully. An
+untracked scratch directory created during that attempt entered the
+fingerprint. The directory was ignored before this clean rerun.
+
+The 46 unselected steps retained `not_run`. The signed process
+selector from S3-31g is a separate run with its own bound source snapshot.
+Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
+remains open.
+[Signed VMHost run and S3-31g results](STAGE_3_S3-31g_2026-11-19.md#verification)
+
 ### Full VMHost process selector, 2026-11-18
 
 The initial process run at `30306ed` reproduced
