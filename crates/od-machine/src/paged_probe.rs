@@ -1,5 +1,8 @@
 //! Bounded mixed-instruction quantum through the tracked Long64 RAM walker.
 
+#[cfg(test)]
+mod firmware_tests;
+
 use crate::{
     GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
     TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
@@ -12,6 +15,7 @@ use od_isa::execute::{
     step_paged_cr3_probe, step_paged_firmware_probe_with_cr3, step_paged_probe,
     step_paged_probe_with_rdtsc, step_paged_stack_probe,
 };
+use od_isa::interrupt::{Cpl0Int3Delivery, Cpl0PageFaultDelivery, deliver_page_fault_cpl0_set};
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
 };
@@ -62,6 +66,13 @@ pub enum PagedProbeIntegrationError {
     },
     UnexpectedContextChange {
         effect: TranslationContextChange,
+    },
+    FirmwareBreakpointDelivery {
+        failure: Cpl0Int3Delivery,
+    },
+    FirmwarePageFaultDelivery {
+        failure: Cpl0PageFaultDelivery,
+        delivery_fault: Option<PageFaultRecord>,
     },
 }
 
@@ -160,8 +171,8 @@ pub fn run_paged_probe_with_rdtsc(
     )
 }
 
-/// Run the normal firmware boot quantum with its two handoff-only CPU forms.
-/// It shares the base profile's 4 KiB tracked walker and stop/budget behavior.
+/// Run the firmware instruction profile through the shared 4 KiB tracked walker.
+/// Firmware may switch its active CR3 and enter its installed exception handlers.
 pub(crate) fn run_paged_firmware_probe(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -429,6 +440,7 @@ fn run_paged_probe_inner(
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
     let mut translation_context_changes = Vec::new();
+    let mut page_fault_delivered_at = None;
     if !cpu_cr3_profile
         && !cpu_cr0_wp_profile
         && !firmware_boot_profile
@@ -658,8 +670,54 @@ fn run_paged_probe_inner(
                 );
             }
             CpuProbeExit::Fault(fault) => {
+                if firmware_boot_profile
+                    && state.idtr.is_some()
+                    && page_fault_delivered_at != Some(instructions_executed)
+                    && let Some(record) = page_fault.as_ref()
+                    && record.fault() == &fault
+                    && let ProbeBus::Exclusive(bus) = &mut bus
+                {
+                    let (physical_memory, _) = bus.split_for_pio_step();
+                    let mut delivery_memory = step.memory(physical_memory, &mut committed_write);
+                    match deliver_page_fault_cpl0_set(state, &mut delivery_memory, record, context)
+                    {
+                        Cpl0PageFaultDelivery::Delivered { .. } => {
+                            // The fault did not retire. Refuse another delivery
+                            // until the handler retires, so a faulting entry cannot spin.
+                            page_fault_delivered_at = Some(instructions_executed);
+                            continue;
+                        }
+                        failure => {
+                            return report(
+                                PagedProbeExit::IntegrationError(
+                                    PagedProbeIntegrationError::FirmwarePageFaultDelivery {
+                                        failure,
+                                        delivery_fault: delivery_memory.page_fault,
+                                    },
+                                ),
+                                instructions_executed,
+                                current_rflags_defined,
+                                page_fault,
+                                delivery_memory.memory_error,
+                                &translation_context_changes,
+                            );
+                        }
+                    }
+                }
                 return report(
                     PagedProbeExit::Fault(fault),
+                    instructions_executed,
+                    current_rflags_defined,
+                    page_fault,
+                    memory_error,
+                    &translation_context_changes,
+                );
+            }
+            CpuProbeExit::FirmwareBreakpointDelivery(failure) => {
+                return report(
+                    PagedProbeExit::IntegrationError(
+                        PagedProbeIntegrationError::FirmwareBreakpointDelivery { failure },
+                    ),
                     instructions_executed,
                     current_rflags_defined,
                     page_fault,
@@ -816,6 +874,23 @@ struct ProbeStep {
 }
 
 impl ProbeStep {
+    fn memory<'a>(
+        &self,
+        memory: &'a crate::PhysicalMemory,
+        committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedProbeMemory<'a> {
+        PagedProbeMemory {
+            memory,
+            paging: self.paging,
+            instruction_rip: self.instruction_rip,
+            large_ram_profile: self.large_ram_profile,
+            preserve_access_origin: self.firmware_boot_profile,
+            committed_write,
+            page_fault: None,
+            memory_error: None,
+        }
+    }
+
     fn run<P: od_isa::PortIo>(
         &self,
         state: &mut LongModeState,
@@ -828,15 +903,7 @@ impl ProbeStep {
         Option<PageFaultRecord>,
         Option<TrackedAccessError>,
     ) {
-        let mut memory = PagedProbeMemory {
-            memory,
-            paging: self.paging,
-            instruction_rip: self.instruction_rip,
-            large_ram_profile: self.large_ram_profile,
-            committed_write,
-            page_fault: None,
-            memory_error: None,
-        };
+        let mut memory = self.memory(memory, committed_write);
         let context = AccessContext {
             origin: AccessOrigin::Explicit,
             ..self.context
@@ -905,7 +972,6 @@ impl ProbeStep {
         (cpu, memory.page_fault, memory.memory_error)
     }
 }
-
 fn report(
     exit: PagedProbeExit,
     instructions_executed: u64,
@@ -929,6 +995,7 @@ struct PagedProbeMemory<'a> {
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     large_ram_profile: bool,
+    preserve_access_origin: bool,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -944,9 +1011,13 @@ impl PagedProbeMemory<'_> {
         let request = TrackedAccessRequest {
             instruction_rip: self.instruction_rip,
             address: GuestLinearAddress::new(address),
-            context: AccessContext {
-                origin: AccessOrigin::Explicit,
-                ..context
+            context: if self.preserve_access_origin {
+                context
+            } else {
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                }
             },
             operation,
         };

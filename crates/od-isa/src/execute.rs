@@ -2974,8 +2974,12 @@ pub enum PagedProbeExit<E> {
     Halted,
     Shutdown,
     TranslationContextChange(TranslationContextChange),
-    Unsupported { opcode: u8 },
+    Unsupported {
+        opcode: u8,
+    },
     Fault(ArchitecturalFault),
+    /// A firmware INT3 could not enter its guest handler.
+    FirmwareBreakpointDelivery(crate::interrupt::Cpl0Int3Delivery),
     Backend(MemoryError),
     PortIo(E),
     Rejected(PagedProbeRejection),
@@ -20155,6 +20159,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 exit: PagedProbeExit::Retired,
                 instructions_executed: 1,
                 rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
+            };
+        }
+        Operation::Int3
+            if firmware_boot_profile
+                && state.idtr.is_some()
+                && instruction.length == 1
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            use crate::interrupt::{Cpl0Int3Delivery, deliver_int3_cpl0_set};
+            return match deliver_int3_cpl0_set(state, memory, next_rip, context) {
+                Cpl0Int3Delivery::Delivered { .. } => result(PagedProbeExit::Retired, 1),
+                failure => result(PagedProbeExit::FirmwareBreakpointDelivery(failure), 0),
             };
         }
         Operation::FarReturn
