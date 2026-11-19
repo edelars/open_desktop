@@ -16,6 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "firmware"
 BUILDER = ROOT / "tools" / "build" / "build_firmware.py"
+DISK_PATTERN = ROOT / "tools" / "build" / "make_test_disk.py"
 DISPLAY_PATTERN = ROOT / "tools" / "build" / "display_pattern.py"
 DISPLAY_COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 
@@ -50,6 +51,13 @@ def run_case(
     ]
     if app := case["fv_app"]:
         args.extend(["--fv-app", app])
+    if case["fv_app"] == "blk":
+        disk = scratch / f"{name}.raw"
+        if not disk.exists():
+            build([sys.executable, DISK_PATTERN, "--damage", case["nvme_damage"], "--out", disk])
+            if hashlib.sha256(disk.read_bytes()).hexdigest() != case["nvme_image_sha256"]:
+                raise RuntimeError(f"{name} generated disk checksum differs from manifest")
+        args.extend(["--nvme-image", disk])
     guest_acpi = scratch / f"acpi-memory-{round_number}.bin"
     guest_frame = scratch / f"gop-frame-{round_number}.raw"
     if case["fv_app"] == "acpi":

@@ -20538,7 +20538,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..
                 } => matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0x0a, OperandSize::Byte) | (0x0b, OperandSize::Dword | OperandSize::Qword)
+                    (0x0a, OperandSize::Byte)
+                        | (
+                            0x0b,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
                 ),
                 Operation::Logic {
                     kind: LogicKind::Or,
@@ -20601,13 +20605,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 Operation::Logic {
                     kind: LogicKind::Not,
                     ..
-                } => {
-                    instruction.opcode.byte == 0xf7
-                        && matches!(
-                            instruction.operand_size,
-                            OperandSize::Dword | OperandSize::Qword
-                        )
-                }
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0xf6, OperandSize::Byte) | (0xf7, OperandSize::Dword | OperandSize::Qword)
+                ),
                 Operation::Logic {
                     kind: LogicKind::Xor,
                     src: Operand::Memory(_),
@@ -20686,7 +20687,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // Firmware expands memset bytes and computes timer and framebuffer sizes.
+        // Firmware expands memset bytes, computes framebuffer sizes, and scales NVMe CAP.TO.
         operation @ (Operation::Imul {
             dst: destination,
             src: source @ (Operand::Register(_) | Operand::Memory(_)),
@@ -20713,7 +20714,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             src: Operand::Register(_),
                             ..
                         } | Operation::ImulImmediate {
-                            immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29,
+                            immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29 | 0xc350,
                             ..
                         }
                     )))
@@ -21016,11 +21017,12 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         Operation::Arithmetic {
             kind:
                 kind @ (ArithmeticKind::Add
+                | ArithmeticKind::Adc
                 | ArithmeticKind::Sub
                 | ArithmeticKind::Inc
                 | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: source @ (Operand::Register(_) | Operand::Immediate(1 | 9)),
+            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 9)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match (kind, source, instruction.operand_size) {
@@ -21029,6 +21031,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     Operand::Register(_),
                     OperandSize::Dword | OperandSize::Qword,
                 ) => instruction.opcode.byte == 0x01,
+                (ArithmeticKind::Adc, Operand::Immediate(0), OperandSize::Qword) => {
+                    // Partition enumeration counts entries with a carry into a stack slot.
+                    instruction.opcode.byte == 0x83
+                }
                 (ArithmeticKind::Add, Operand::Immediate(9), OperandSize::Qword) => {
                     // Current firmware advances its default-variable iterator in a stack slot.
                     instruction.opcode.byte == 0x83

@@ -146,6 +146,8 @@ COM1 RX и выводит hex-значение одного доступного
 | `src/var/` | таблица переменных, политика UEFI и codec `ODVARSTR` | нет |
 | `src/rt/variable.rs` | EFIAPI для переменных и снимок в Runtime Services Data | нет |
 | `src/gop/` | Graphics Output Protocol на основном дисплее, Memory Mapped Device Path и четыре операции `Blt` ([профиль UEFI](../../docs/specs/UEFI_PROFILE.md#gop)) | MMIO и framebuffer |
+| `src/nvme/` | опрос фиксированного контроллера, admin- и I/O-очереди и передача данных через DMA ([контракт NVMe](../../docs/specs/NVME_DEVICE.md)) | MMIO и RAM |
+| `src/block/` | Block I/O, Disk I/O, проверка GPT, Device Path и Partition Info ([профиль хранения](../../docs/specs/UEFI_PROFILE.md#хранилище)) | драйвер NVMe |
 | `src/main.rs` | бинарь: начало загрузки, диагностика, panic handler | CPU |
 | `src/serial.rs` | инициализация COM1, bounded TX и RX polling | порт ввода-вывода |
 | `src/start.S` | вход `_start`, проверка `RDI`, останов через COM1, зануление `.bss`, установка GDT и селекторов, stubs IDT | CPU |

@@ -76,11 +76,15 @@ fn fv_app_rejects_invalid_selection_before_launch() {
     for (extra, error) in [
         (
             &["--fv-app", "other"][..],
-            "expected hello, ebs, vars, rt, acpi or gop",
+            "expected hello, ebs, vars, rt, acpi, gop or blk",
         ),
         (
             &["--fv-app", "hello", "--fv-app", "ebs"][..],
             "duplicate option --fv-app",
+        ),
+        (
+            &["--fv-app", "blk"][..],
+            "--fv-app blk requires --nvme-image",
         ),
     ] {
         let run = invoke_with_args(&legacy, "64", extra);
@@ -90,6 +94,55 @@ fn fv_app_rejects_invalid_selection_before_launch() {
         assert!(result["error"]["detail"].as_str().unwrap().contains(error));
         assert!(!run.com1.exists());
     }
+}
+
+#[test]
+fn blk_rejects_v1_10_rom_and_keeps_nvme_input_on_output_alias() {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("od-runner-disk-{}-{id}.raw", std::process::id()));
+    let sector = [0xa5; 512];
+    fs::write(&path, sector).unwrap();
+    let mut rom = image(&[0xf4]);
+    rom[0x2a..0x2c].copy_from_slice(&10u16.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let run = invoke_with_args(
+        &rom,
+        "64",
+        &["--fv-app", "blk", "--nvme-image", path.to_str().unwrap()],
+    );
+    assert_eq!(run.output.status.code(), Some(4));
+    assert_eq!(report(&run)["status"], "loader_error");
+    assert!(
+        report(&run)["error"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("handoff_minor_max")
+    );
+    assert!(!run.com1.exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .args([
+            "boot-firmware",
+            "--image",
+            "unused",
+            "--budget",
+            "64",
+            "--fv-app",
+            "blk",
+            "--nvme-image",
+        ])
+        .arg(&path)
+        .arg("--com1-out")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["error"]["kind"], "paths");
+    assert_eq!(fs::read(&path).unwrap(), sector);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

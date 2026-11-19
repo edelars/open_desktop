@@ -9,7 +9,7 @@ use core::{
 };
 
 use crate::{
-    device_path::{DEVICE_PATH_PROTOCOL_GUID, END_PATH_BYTES},
+    device_path::{DEVICE_PATH_PROTOCOL_GUID, END_PATH_BYTES, memory_mapped_node},
     handoff::Handoff,
     mem::map::MemoryType,
     uefi::{guid::Guid, status::Status, system_table::SystemTable, types::Handle},
@@ -263,10 +263,10 @@ unsafe extern "efiapi" fn blt(
 fn display_path() -> [u8; 28] {
     // Hardware, MemoryMapped, 24-byte node, inclusive register addresses.
     let mut path = [0; 28];
-    path[..4].copy_from_slice(&[1, 3, 24, 0]);
-    path[4..8].copy_from_slice(&MemoryType::MEMORY_MAPPED_IO.raw().to_le_bytes());
-    path[8..16].copy_from_slice(&REGISTERS_BASE.to_le_bytes());
-    path[16..24].copy_from_slice(&(REGISTERS_BASE + REGISTERS_BYTES - 1).to_le_bytes());
+    path[..24].copy_from_slice(&memory_mapped_node(
+        REGISTERS_BASE,
+        REGISTERS_BASE + REGISTERS_BYTES - 1,
+    ));
     path[24..].copy_from_slice(&END_PATH_BYTES);
     path
 }

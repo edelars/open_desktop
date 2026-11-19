@@ -177,6 +177,7 @@ const HANDOFF_MINOR_NVRAM: u16 = 7;
 const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
 const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
 const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
+const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -194,6 +195,7 @@ pub enum FirmwareFvApp {
     Rt = 4,
     Acpi = 5,
     Gop = 6,
+    Blk = 7,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -502,6 +504,13 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "gop FV application needs the primary display",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Blk)
+        && (config.nvme.is_none() || config.nvme_pci || config.linux_profile)
+    {
+        return Err(FirmwareBoardError::Config(
+            "blk FV application needs fixed NVMe MMIO",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
@@ -685,7 +694,9 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
 fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
-    if config.fv_app == Some(FirmwareFvApp::Gop) {
+    if config.fv_app == Some(FirmwareFvApp::Blk) {
+        HANDOFF_MINOR_FV_APP_BLK
+    } else if config.fv_app == Some(FirmwareFvApp::Gop) {
         HANDOFF_MINOR_FV_APP_GOP
     } else if config.fv_app == Some(FirmwareFvApp::Acpi) {
         HANDOFF_MINOR_FV_APP_ACPI
@@ -1280,6 +1291,7 @@ pub struct LoadedFirmwareBoard {
     uart: Uart16550Handle,
     display: DisplayHandle,
     display_mmio: Option<DisplayDevice>,
+    nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
     nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -2588,6 +2600,7 @@ impl LoadedFirmwareBoard {
                 FirmwareMmio {
                     nvram: self.nvram.as_ref(),
                     display: self.display_mmio.as_ref(),
+                    nvme: self.nvme_mmio.as_ref(),
                 },
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -3467,6 +3480,7 @@ pub(crate) struct AssembledBoard {
     uart: Uart16550Handle,
     display: DisplayHandle,
     display_mmio: Option<DisplayDevice>,
+    nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
     nvram: Option<NvramHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -3620,6 +3634,7 @@ pub(crate) fn assemble_board(
     };
     // The device exists on the bus only when the manifest entry is PRESENT.
     let mut nvme = None;
+    let mut nvme_mmio = None;
     if let Some(nvme_config) = &config.nvme
         && devices[DEV_NVME_TABLE].present()
     {
@@ -3631,7 +3646,12 @@ pub(crate) fn assemble_board(
                 .map_err(|_| FirmwareBoardError::Config("NVMe PCI slot is occupied"))?;
             (device, handle)
         } else {
-            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?
+            let (device, handle) = NvmeDevice::new_with_handle(nvme_config.clone())
+                .map_err(FirmwareBoardError::Nvme)?;
+            if !config.linux_profile {
+                nvme_mmio = Some(device.mmio_endpoint());
+            }
+            (device, handle)
         };
         let device_index = bus_devices.len();
         bus_devices.push(Box::new(device));
@@ -3754,6 +3774,7 @@ pub(crate) fn assemble_board(
         uart,
         display,
         display_mmio,
+        nvme_mmio,
         nvme,
         nvram,
         acpi_pm,
@@ -3800,6 +3821,7 @@ impl AssembledBoard {
             uart,
             display,
             display_mmio,
+            nvme_mmio,
             nvme,
             nvram,
             acpi_pm,
@@ -3856,6 +3878,7 @@ impl AssembledBoard {
             uart,
             display,
             display_mmio,
+            nvme_mmio,
             nvme,
             nvram,
             acpi_pm,
@@ -3931,6 +3954,7 @@ impl AssembledBoard {
             uart,
             display,
             display_mmio: None,
+            nvme_mmio: None,
             nvme,
             nvram,
             acpi_pm,
@@ -7752,6 +7776,88 @@ mod tests {
             5,
             1
         ));
+    }
+
+    #[test]
+    fn firmware_nvme_doorbells_complete_admin_and_read_dma_before_the_next_load() {
+        const ASQ: u64 = 0x0700_0000;
+        const IDENTIFY: u64 = 0x0700_2000;
+        const IO_SQ: u64 = 0x0700_3000;
+        const IO_CQ: u64 = 0x0700_4000;
+        const DATA: u64 = 0x0700_5000;
+        let code = [
+            0xb8, 0, 0x10, 0, 0xfc, // mov eax,0xfc001000 (NVMe MMIO)
+            0xb9, 3, 0, 3, 0, // mov ecx,0x00030003
+            0x89, 0x48, 0x24, // mov [rax+AQA],ecx
+            0xb9, 0, 0, 0, 7, // mov ecx,ASQ
+            0x89, 0x48, 0x28, // mov [rax+ASQ.low],ecx
+            0xb9, 0, 0x10, 0, 7, // mov ecx,ACQ
+            0x89, 0x48, 0x30, // mov [rax+ACQ.low],ecx
+            0xb9, 1, 0, 0x46, 0, // mov ecx,0x00460001
+            0x89, 0x48, 0x14, // mov [rax+CC],ecx
+            0x8b, 0x50, 0x1c, // mov edx,[rax+CSTS]
+            0xb9, 3, 0, 0, 0, // mov ecx,3
+            0x89, 0x88, 0, 0x10, 0, 0, // mov [rax+admin SQ tail],ecx
+            0xbe, 0, 0x10, 0, 7, // mov esi,ACQ
+            0x8b, 0x7e, 0x2c, // mov edi,[rsi+2*16+12] (last admin CQE)
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x89, 0x88, 8, 0x10, 0, 0, // mov [rax+I/O SQ tail],ecx
+            0xbe, 0, 0x40, 0, 7, // mov esi,IO_CQ
+            0x8b, 0x4e, 0x0c, // mov ecx,[rsi+12] (first I/O CQE)
+            0xf4,
+        ];
+        let config = FirmwareBoardConfig {
+            nvme: Some(NvmeConfig::default()),
+            ..FirmwareBoardConfig::default()
+        };
+        let image = test_image(&code, &[(0x2a, &1u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let sector: Vec<u8> = (0..512).map(|index| (index % 251) as u8).collect();
+        board
+            .nvme()
+            .unwrap()
+            .attach_backend(Box::new(
+                crate::nvme::InMemoryBackend::from_bytes(sector.clone()).unwrap(),
+            ))
+            .unwrap();
+        for (at, opcode, cid, nsid, prp, cdw10, cdw11) in [
+            (ASQ, 0x06, 0x10u16, 0u32, IDENTIFY, 1u32, 0u32),
+            (ASQ + 64, 0x05, 0x20, 0, IO_CQ, 0x0003_0001, 1),
+            (ASQ + 128, 0x01, 0x30, 0, IO_SQ, 0x0003_0001, 0x0001_0001),
+            (IO_SQ, 0x02, 0x40, 1, DATA, 0, 0),
+        ] {
+            let mut command = [0; 64];
+            command[0] = opcode;
+            command[2..4].copy_from_slice(&cid.to_le_bytes());
+            command[4..8].copy_from_slice(&nsid.to_le_bytes());
+            command[24..32].copy_from_slice(&prp.to_le_bytes());
+            command[40..44].copy_from_slice(&cdw10.to_le_bytes());
+            command[44..48].copy_from_slice(&cdw11.to_le_bytes());
+            board
+                .bus_mut()
+                .write_flat_bytes(GuestPhysicalAddress::new(at), &command, |_| {})
+                .unwrap();
+        }
+        let report = board.run_boot(32).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 19);
+        assert_eq!(report.quanta, 3, "both doorbells end the current quantum");
+        let regs = &board.state().gpr;
+        assert_eq!(regs[Register::Rdx as usize], 1);
+        assert_eq!(regs[Register::Rdi as usize], 0x0001_0030);
+        assert_eq!(regs[Register::Rcx as usize], 0x0001_0040);
+        let mut identify = [0; 4096];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(IDENTIFY), &mut identify)
+            .unwrap();
+        assert_eq!(identify[77], 8, "Identify Controller MDTS");
+        let mut data = [0; 512];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(DATA), &mut data)
+            .unwrap();
+        assert_eq!(data.as_slice(), sector);
     }
 
     #[test]

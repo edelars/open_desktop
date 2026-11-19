@@ -7,8 +7,8 @@
 
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
-    LoadedFirmwareBoard, MachineStopReason, NvramConfig, PagedProbeExit, firmware_handoff_block,
-    load_firmware_image,
+    InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NvramConfig, PagedProbeExit,
+    firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop] [--nvram-reboot-out <file>] \
-                    [--acpi-out <file>] [--framebuffer-out <file>]";
-const DUMP_USAGE: &str = "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop]";
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk] [--nvram-reboot-out <file>] \
+                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
+const DUMP_USAGE: &str =
+    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk]";
 
 struct Options {
     image: String,
@@ -30,6 +31,7 @@ struct Options {
     nvram_reboot_out: Option<String>,
     acpi_out: Option<String>,
     framebuffer_out: Option<String>,
+    nvme_image: Option<String>,
 }
 
 fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardConfig {
@@ -53,6 +55,7 @@ fn board_config(fv_app: Option<FirmwareFvApp>, reboot: bool) -> FirmwareBoardCon
             Vec::new()
         },
         nvram: (rt || reboot).then_some(NvramConfig::Empty),
+        nvme: (fv_app == Some(FirmwareFvApp::Blk)).then(Default::default),
         ..FirmwareBoardConfig::default()
     }
 }
@@ -65,8 +68,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "rt" => Ok(FirmwareFvApp::Rt),
         "acpi" => Ok(FirmwareFvApp::Acpi),
         "gop" => Ok(FirmwareFvApp::Gop),
+        "blk" => Ok(FirmwareFvApp::Blk),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi or gop"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop or blk"
         )),
     }
 }
@@ -118,6 +122,11 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
+    if let Some(path) = &options.nvme_image
+        && let Err(error) = validate_nvme_paths(path, &options)
+    {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
     let read = File::open(&options.image).and_then(|file| {
         file.take(FIRMWARE_IMAGE_BYTES as u64 + 1)
@@ -126,8 +135,18 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let config = board_config(options.fv_app, options.nvram_reboot_out.is_some());
-    let mut first = match boot(&image, &config, options.budget, &options.com1_out) {
+    let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some());
+    if options.nvme_image.is_some() {
+        config.nvme = Some(Default::default());
+    }
+    let nvme_image = options.nvme_image.as_deref();
+    let mut first = match boot(
+        &image,
+        &config,
+        options.budget,
+        &options.com1_out,
+        nvme_image,
+    ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
     };
@@ -223,7 +242,7 @@ pub fn run(args: &[String]) -> ExitCode {
         nvram: Some(NvramConfig::Snapshot(snapshot)),
         ..config
     };
-    let second = match boot(&image, &restored, options.budget, &reboot_out) {
+    let second = match boot(&image, &restored, options.budget, &reboot_out, nvme_image) {
         Ok(run) => run,
         Err((mut value, code)) => {
             value["initial_boot"] = first_report;
@@ -326,6 +345,27 @@ fn validate_framebuffer_paths(image: &str, com1: &str, framebuffer: &str) -> Res
     )
 }
 
+fn validate_nvme_paths(image: &str, options: &Options) -> Result<(), String> {
+    let input =
+        RebootPath::resolve(Path::new(image)).map_err(|error| format!("{image}: {error}"))?;
+    for output in [
+        Some(options.com1_out.as_str()),
+        options.nvram_reboot_out.as_deref(),
+        options.acpi_out.as_deref(),
+        options.framebuffer_out.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let target =
+            RebootPath::resolve(Path::new(output)).map_err(|error| format!("{output}: {error}"))?;
+        if input.aliases(&target) {
+            return Err("the NVMe input and all output paths must be distinct".to_owned());
+        }
+    }
+    Ok(())
+}
+
 fn validate_distinct_paths(
     image: &str,
     first: &str,
@@ -371,9 +411,30 @@ fn boot(
     config: &FirmwareBoardConfig,
     budget: u64,
     com1_out: &str,
+    nvme_image: Option<&str>,
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
+    if let Some(path) = nvme_image {
+        let bytes = fs::read(path)
+            .map_err(|error| (failure("invalid_input", "nvme_image", error.to_string()), 3))?;
+        let backend = InMemoryBackend::from_bytes(bytes).map_err(|error| {
+            (
+                failure("invalid_input", "nvme_image", format!("{error:?}")),
+                3,
+            )
+        })?;
+        board
+            .nvme()
+            .expect("runner enabled the NVMe controller")
+            .attach_backend(Box::new(backend))
+            .map_err(|error| {
+                (
+                    failure("loader_error", "nvme_attach", format!("{error:?}")),
+                    4,
+                )
+            })?;
+    }
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let report = match board.run_boot(budget) {
@@ -462,6 +523,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut nvram_reboot_out = None;
     let mut acpi_out = None;
     let mut framebuffer_out = None;
+    let mut nvme_image = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -472,6 +534,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--image" if image.is_none() => image = Some(value.clone()),
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
+            "--nvme-image" if nvme_image.is_none() => nvme_image = Some(value.clone()),
             "--framebuffer-out" if framebuffer_out.is_none() => {
                 framebuffer_out = Some(value.clone())
             }
@@ -502,6 +565,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) {
         return Err("--framebuffer-out requires --fv-app gop".to_owned());
     }
+    if fv_app == Some(FirmwareFvApp::Blk) && nvme_image.is_none() {
+        return Err("--fv-app blk requires --nvme-image".to_owned());
+    }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
     if let Some(reboot_out) = &nvram_reboot_out {
@@ -520,6 +586,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         nvram_reboot_out,
         acpi_out,
         framebuffer_out,
+        nvme_image,
     })
 }
 

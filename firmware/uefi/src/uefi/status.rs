@@ -9,14 +9,18 @@ impl Status {
     pub const LOAD_ERROR: Self = Self(Self::ERROR_BIT | 1);
     pub const INVALID_PARAMETER: Self = Self(Self::ERROR_BIT | 2);
     pub const UNSUPPORTED: Self = Self(Self::ERROR_BIT | 3);
+    pub const BAD_BUFFER_SIZE: Self = Self(Self::ERROR_BIT | 4);
     pub const BUFFER_TOO_SMALL: Self = Self(Self::ERROR_BIT | 5);
     pub const NOT_READY: Self = Self(Self::ERROR_BIT | 6);
     pub const DEVICE_ERROR: Self = Self(Self::ERROR_BIT | 7);
     pub const WRITE_PROTECTED: Self = Self(Self::ERROR_BIT | 8);
     pub const OUT_OF_RESOURCES: Self = Self(Self::ERROR_BIT | 9);
+    pub const NO_MEDIA: Self = Self(Self::ERROR_BIT | 12);
+    pub const MEDIA_CHANGED: Self = Self(Self::ERROR_BIT | 13);
     pub const NOT_FOUND: Self = Self(Self::ERROR_BIT | 14);
     pub const ACCESS_DENIED: Self = Self(Self::ERROR_BIT | 15);
     pub const NO_MAPPING: Self = Self(Self::ERROR_BIT | 17);
+    pub const TIMEOUT: Self = Self(Self::ERROR_BIT | 18);
     pub const ALREADY_STARTED: Self = Self(Self::ERROR_BIT | 20);
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);

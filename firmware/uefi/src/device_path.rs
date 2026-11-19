@@ -19,6 +19,19 @@ const END_ENTIRE: u8 = 0xff;
 const MAX_PATH_BYTES: usize = 64 * 1024;
 pub(crate) const END_PATH_BYTES: [u8; HEADER_SIZE] = [END_TYPE, END_ENTIRE, HEADER_SIZE as u8, 0];
 
+pub(crate) fn memory_mapped_node(base: u64, last: u64) -> [u8; 24] {
+    let mut node = [0; 24];
+    node[..4].copy_from_slice(&[1, 3, 24, 0]);
+    node[4..8].copy_from_slice(
+        &crate::mem::map::MemoryType::MEMORY_MAPPED_IO
+            .raw()
+            .to_le_bytes(),
+    );
+    node[8..16].copy_from_slice(&base.to_le_bytes());
+    node[16..].copy_from_slice(&last.to_le_bytes());
+    node
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum EndAt {
     FirstInstance,

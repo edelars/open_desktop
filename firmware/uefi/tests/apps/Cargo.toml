@@ -29,6 +29,13 @@ bench = false
 doc = false
 
 [[bin]]
+name = "blk"
+path = "blk/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "hello"
 path = "hello/main.rs"
 test = false

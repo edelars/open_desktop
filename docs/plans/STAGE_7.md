@@ -553,7 +553,7 @@
 
 ### S7-17. Реализовать драйвер NVMe прошивки, Block I/O, Disk I/O и GPT
 
-- [ ] Принято после ревью.
+- [x] Принято после независимых кодового ревью и проверки результатов `gpt-6.1-sol` (`high`) 2026-11-19. [Результаты](../reports/STAGE_7_REPORT.md#s7-17--nvme-и-gpt-в-uefi).
 - **Где:** `firmware/uefi/src/nvme/{driver,queue}.rs`, `firmware/uefi/src/block/{block_io,disk_io,partition_gpt}.rs`, Device Path для контроллера, NS и разделов (`HardDrive` media path с GPT GUID), `docs/specs/UEFI_PROFILE.md` (раздел «Хранилище»).
 - **Сделать:**
   1. Драйвер по `NVME_DEVICE.md`: инициализация (`CC.EN`, ожидание `CSTS.RDY` по таймауту через `Stall`), admin-очередь, `Identify`, одна пара I/O очередей, polling завершений (прерывания прошивке не нужны — записать), таймауты команд → `EFI_DEVICE_ERROR`/`EFI_TIMEOUT`.

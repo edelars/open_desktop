@@ -294,6 +294,10 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::gop::install(&handoff, system_pointer) } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 81);
     }
+    if unsafe { od_firmware::block::storage::install(&handoff, system_pointer) } != Status::SUCCESS
+    {
+        stop(STOP_BOOT_SERVICES, 82);
+    }
     let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app());
     verify_exit_boot_services(system_pointer, handoff.tsc_hz(), runtime_installed);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
@@ -1393,6 +1397,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
         Some(FirmwareFvApp::Rt) => "rt",
         Some(FirmwareFvApp::Acpi) => "acpi",
         Some(FirmwareFvApp::Gop) => "gop",
+        Some(FirmwareFvApp::Blk) => "blk",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];
@@ -1449,6 +1454,7 @@ fn boot_fv_image(system: *mut SystemTable, requested: Option<FirmwareFvApp>) -> 
                     Some(FirmwareFvApp::Vars) => b"OD-FW image vars: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Acpi) => b"OD-FW image acpi: EFI_SUCCESS\r\n",
                     Some(FirmwareFvApp::Gop) => b"OD-FW image gop: EFI_SUCCESS\r\n",
+                    Some(FirmwareFvApp::Blk) => b"OD-FW image blk: EFI_SUCCESS\r\n",
                     _ => b"OD-FW image hello: EFI_SUCCESS\r\n",
                 });
             }

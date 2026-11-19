@@ -4,12 +4,13 @@
 mod firmware_tests;
 
 use crate::display_device::{DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice};
+use crate::nvme::{NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeDevice};
 use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
 use crate::page_walk::MmioDispatchError;
 use crate::{
-    DeviceAccess, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, IoSpace,
-    Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
-    TrackedAccessRequest, VirtualClock,
+    DeviceAccess, DeviceError, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
+    IoSpace, Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError,
+    TrackedAccessOutcome, TrackedAccessRequest, VirtualClock,
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
@@ -188,17 +189,27 @@ pub fn run_paged_probe_with_rdtsc(
 pub(crate) struct FirmwareMmio<'a> {
     pub(crate) nvram: Option<&'a NvramHandle>,
     pub(crate) display: Option<&'a DisplayDevice>,
+    pub(crate) nvme: Option<&'a NvmeDevice>,
 }
 
 impl FirmwareMmio<'_> {
     fn windows(self) -> &'static [(u64, u64)] {
         const DISPLAY: (u64, u64) = (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES);
         const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
-        match (self.display.is_some(), self.nvram.is_some()) {
-            (true, true) => &[DISPLAY, NVRAM],
-            (true, false) => &[DISPLAY],
-            (false, true) => &[NVRAM],
-            (false, false) => &[],
+        const NVME: (u64, u64) = (NVME_MMIO_BASE, NVME_MMIO_BYTES);
+        match (
+            self.display.is_some(),
+            self.nvram.is_some(),
+            self.nvme.is_some(),
+        ) {
+            (true, true, true) => &[DISPLAY, NVRAM, NVME],
+            (true, true, false) => &[DISPLAY, NVRAM],
+            (true, false, true) => &[DISPLAY, NVME],
+            (true, false, false) => &[DISPLAY],
+            (false, true, true) => &[NVRAM, NVME],
+            (false, true, false) => &[NVRAM],
+            (false, false, true) => &[NVME],
+            (false, false, false) => &[],
         }
     }
 
@@ -211,12 +222,35 @@ impl FirmwareMmio<'_> {
             && (DISPLAY_REGISTERS_BASE..DISPLAY_REGISTERS_BASE + DISPLAY_REGISTERS_BYTES)
                 .contains(&address.get())
         {
-            return access_display(display, address, operation);
+            return access_device_registers(
+                "display",
+                address.get() - DISPLAY_REGISTERS_BASE,
+                operation,
+                |access| display.read_mmio(access),
+                |access, value| display.write_mmio(access, value),
+            );
         }
         if let Some(nvram) = self.nvram
             && (NVRAM_MMIO_BASE..NVRAM_MMIO_BASE + NVRAM_MMIO_BYTES).contains(&address.get())
         {
-            return access_nvram(nvram, address, operation);
+            return access_device_registers(
+                "NVRAM",
+                address.get() - NVRAM_MMIO_BASE,
+                operation,
+                |access| nvram.read(access),
+                |access, value| nvram.write(access, value),
+            );
+        }
+        if let Some(nvme) = self.nvme
+            && (NVME_MMIO_BASE..NVME_MMIO_BASE + NVME_MMIO_BYTES).contains(&address.get())
+        {
+            return access_device_registers(
+                "NVMe",
+                address.get() - NVME_MMIO_BASE,
+                operation,
+                |access| nvme.read_mmio(access),
+                |access, value| nvme.write_mmio(access, value),
+            );
         }
         Err(MmioDispatchError::Backend(
             "unbound firmware MMIO access".into(),
@@ -1235,65 +1269,30 @@ impl PagedProbeMemory<'_> {
     }
 }
 
-fn access_display(
-    display: &DisplayDevice,
-    address: GuestPhysicalAddress,
+// The tracked walker checks that the entire operand is inside the device aperture.
+fn access_device_registers(
+    name: &str,
+    offset: u64,
     operation: RamAccessOperation,
+    read: impl FnOnce(DeviceAccess) -> Result<u64, DeviceError>,
+    write: impl FnOnce(DeviceAccess, u64) -> Result<(), DeviceError>,
 ) -> Result<u64, MmioDispatchError> {
-    // The tracked walker checks that the whole operand is inside the register aperture.
-    let offset = address.get() - DISPLAY_REGISTERS_BASE;
     let access = |width| DeviceAccess {
         space: IoSpace::Mmio,
         offset,
         width,
     };
     let result = match operation {
-        RamAccessOperation::Read { width } => display.read_mmio(access(width)),
-        RamAccessOperation::Write { width, value } => {
-            display.write_mmio(access(width), value).map(|()| 0)
-        }
+        RamAccessOperation::Read { width } => read(access(width)),
+        RamAccessOperation::Write { width, value } => write(access(width), value).map(|()| 0),
         _ => {
-            return Err(MmioDispatchError::Backend(
-                "display accepts only plain data reads and writes".into(),
-            ));
+            return Err(MmioDispatchError::Backend(format!(
+                "{name} accepts only plain data reads and writes"
+            )));
         }
     };
     result.map_err(|error| {
-        MmioDispatchError::Backend(format!("display access at {offset:#x}: {error:?}"))
-    })
-}
-
-fn access_nvram(
-    nvram: &NvramHandle,
-    address: GuestPhysicalAddress,
-    operation: RamAccessOperation,
-) -> Result<u64, MmioDispatchError> {
-    // The page walker dispatches only operands wholly within the NVRAM window.
-    let offset = address.get() - NVRAM_MMIO_BASE;
-    let result = match operation {
-        RamAccessOperation::Read { width } => nvram.read(DeviceAccess {
-            space: IoSpace::Mmio,
-            offset,
-            width,
-        }),
-        RamAccessOperation::Write { width, value } => nvram
-            .write(
-                DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset,
-                    width,
-                },
-                value,
-            )
-            .map(|()| 0),
-        _ => {
-            return Err(MmioDispatchError::Backend(
-                "NVRAM accepts only plain data reads and writes".to_owned(),
-            ));
-        }
-    };
-    result.map_err(|error| {
-        MmioDispatchError::Backend(format!("NVRAM access at {offset:#x}: {error:?}"))
+        MmioDispatchError::Backend(format!("{name} access at {offset:#x}: {error:?}"))
     })
 }
 

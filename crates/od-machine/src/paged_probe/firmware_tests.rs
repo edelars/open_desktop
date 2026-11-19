@@ -205,7 +205,7 @@ fn nvram_dispatch_leaves_unserved_mmio_unwritten_and_clean() {
             firmware_boot_profile: true,
             mmio: FirmwareMmio {
                 nvram: handle,
-                display: None,
+                ..FirmwareMmio::default()
             },
             committed_write: &mut |_| {},
             page_fault: None,

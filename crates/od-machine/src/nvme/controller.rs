@@ -730,6 +730,12 @@ impl PciFunction for NvmePciFunction {
 }
 
 impl NvmeDevice {
+    pub(crate) fn mmio_endpoint(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+
     /// Creates a powered-off controller (`CSTS.RDY = 0`) and its handle.
     pub fn new_with_handle(config: NvmeConfig) -> Result<(Self, NvmeHandle), NvmeConfigError> {
         config.validate()?;
@@ -838,8 +844,8 @@ impl NvmeHandle {
     }
 }
 
-impl BusDevice for NvmeDevice {
-    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+impl NvmeDevice {
+    pub(crate) fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -858,7 +864,7 @@ impl BusDevice for NvmeDevice {
         state.read_register(access.offset, access.width)
     }
 
-    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+    pub(crate) fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -878,5 +884,15 @@ impl BusDevice for NvmeDevice {
         } else {
             state.write_register(access.offset, access.width, value)
         }
+    }
+}
+
+impl BusDevice for NvmeDevice {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read_mmio(access)
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.write_mmio(access, value)
     }
 }
