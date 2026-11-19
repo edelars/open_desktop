@@ -138,3 +138,44 @@ The input manifest SHA-256 is
 `2ff50a15ee39c50f46859be1b78bc36067643187444ea223129266cacab4b0dd`.
 The summary SHA-256 is
 `6731bfcbd8c218e2765af5a29e6f3b548e2d84ba4bc6ba0b8904a3a7fcf33f8f`.
+
+## INVALID_STATE admission batch closure, 2026-11-19 UTC
+
+The process harness builds and signs a dedicated VMHost artifact with a test
+admission bridge. It injects `INVALID_STATE` during creation for a single
+`ADD` and during begin for a two-`ADD` RUN. The begin case creates and
+destroys the owner through the real Rust ABI. Both cases use the product V1
+reactor and verify the injected call site through its fixture diagnostic.
+[Test admission bridge](../../tests/fixtures/control/v1_admission_failure_bridge.h)
+
+The client sends RUN 1 and STOP 77 together. Each failure must send exactly
+the scope-1 `ERROR/INVALID_STATE` for RUN 1, then close the socket without
+replying to STOP 77 and exit normally. A duplicate of the VMHost endpoint
+survives until process exit to verify that STOP 77 was read from the socket.
+The client checks EOF after releasing the duplicate. A diagnostic build
+that read one byte per call left STOP 77 in the socket and failed that
+check. Disposable Swift variants that
+replaced either batch break with a continue each produced an unexpected
+20-byte STOP ACK after ERROR. The focused fixture smoke passed with the
+unchanged reactor and rejected both variants.
+
+The manifest pins the alternate bridge, full Swift build command, signing and
+verification steps, and exact smoke marker. The process summary binds that
+marker to the signed artifact hash. The normal smoke and app-bundle use the
+standard bridge. The injected statuses verify reactor behavior on typed
+ABI rejection. Physical x86 and Mac mini checks remain deferred.
+
+The strengthened fixture smoke passed 30 consecutive runs. Eleven process
+harness self-tests passed. In `stage3-20261119-024905-ba581bf81f`,
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` completed as
+`vmhost_process_only` with 46 steps passed and 351 unselected steps at
+`not_run`. The admission-failures, normal framing and generated-fault gates
+passed. The run applied these changes to base revision
+`267f83da68e4d4276547b5f28c2f7fd958069cbb`. Its initial and final source
+fingerprint was `3d2b002c2210310a8ae3e552e93d88255f50a009ad70e62af8fd79ac3898598a`.
+The signed admission-failure artifact SHA-256 is
+`28ee616e2188d54a08e1c398641c94391688b88a7d4b2930435769ddd2b660b5`.
+The input manifest SHA-256 is
+`13b4889a9a928d692253f9c213fc5cd85b7e1793329a0c85e07ff3ed964a0722`.
+The summary SHA-256 is
+`88da852c655cc4c27d74df46d845acc6bdfa4b3b9897fec267f2c9841d6bdd74`.

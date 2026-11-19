@@ -1684,10 +1684,16 @@ PROCESS_SUITE_STEPS = (
     "process_verify_fault_helper",
     "process_fault_helper_signature",
     "process_fault_helper_entitlements",
+    "process_compile_v1_admission_failure_vmhost",
+    "process_sign_v1_admission_failure_vmhost",
+    "process_verify_v1_admission_failure_vmhost",
+    "process_v1_admission_failure_vmhost_signature",
+    "process_v1_admission_failure_vmhost_entitlements",
     "process_control_race",
     "process_control_v1_sessions",
     "process_control_v1_code_mismatch",
     "process_control_v1_frames",
+    "process_control_v1_admission_failures",
     "process_control_v1_stop_eof",
     "process_control_v1_run_stop_id",
     "process_control_v1_run_id_exhaustion",
@@ -1715,6 +1721,9 @@ PROCESS_SUCCESS_MARKERS = {
     "control_v1_frames": (
         "VMHost control V1 smoke passed: fragmented/coalesced frames, "
         "maximum RUN length, bounded EOF teardown, oversized length, backpressure, active completion"
+    ),
+    "control_v1_admission_failures": (
+        "VMHost control V1 smoke passed: create/begin INVALID_STATE closes the frame batch"
     ),
     "control_v1_stop_eof": (
         "VMHost control V1 smoke passed: STOP isolation and bounded active-run EOF teardown"
@@ -1771,10 +1780,16 @@ PROCESS_STEP_TIMEOUTS = {
     "process_verify_fault_helper": 120,
     "process_fault_helper_signature": 120,
     "process_fault_helper_entitlements": 120,
+    "process_compile_v1_admission_failure_vmhost": 900,
+    "process_sign_v1_admission_failure_vmhost": 120,
+    "process_verify_v1_admission_failure_vmhost": 120,
+    "process_v1_admission_failure_vmhost_signature": 120,
+    "process_v1_admission_failure_vmhost_entitlements": 120,
     "process_control_race": 900,
     "process_control_v1_sessions": 30,
     "process_control_v1_code_mismatch": 30,
     "process_control_v1_frames": 30,
+    "process_control_v1_admission_failures": 30,
     "process_control_v1_stop_eof": 30,
     "process_control_v1_run_stop_id": 30,
     "process_control_v1_run_id_exhaustion": 30,
@@ -1817,6 +1832,7 @@ PROCESS_SOURCE_PATHS = (
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
     "tests/fixtures/control/control_v0_scenarios.json",
+    "tests/fixtures/control/v1_admission_failure_bridge.h",
     "tests/system/vmhost_control_v1_same_code_smoke.py",
     "tests/system/vmhost_control_v1_code_mismatch_smoke.py",
     "tests/system/vmhost_control_v1_frames_smoke.py",
@@ -2386,6 +2402,7 @@ def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
         "vmhost": artifacts / "od-vmhost-smoke",
         "launcher": artifacts / "open-desktop-launcher-smoke",
         "fault_helper": artifacts / "od-vmhost-generated-fault-smoke",
+        "v1_admission_failure_vmhost": artifacts / "od-vmhost-v1-admission-failure-smoke",
         "app_bundle": artifacts / "OpenDesktop-Stage0-Smoke.app",
         "entitlements": ROOT / "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     }
@@ -2413,12 +2430,22 @@ def vmhost_process_commands(
         "-framework", "CoreServices",
         "-framework", "Foundation",
     ]
-    swift_common = [
+    swift_compile = [
         "xcrun", "swiftc", "-module-cache-path", str(paths["swift_modules"]),
         "-parse-as-library", "-O", "-import-objc-header",
-        "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h", "apps/macos/Sources/Shared/ControlFrame.swift",
     ]
+    control_frame = "apps/macos/Sources/Shared/ControlFrame.swift"
+    swift_common = [*swift_compile, "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h", control_frame]
     link_args = ["-ldl", "-lpthread", "-lm", *frameworks]
+    vmhost_inputs = [
+        "apps/macos/Sources/Shared/InputProtocol.swift", "apps/macos/Sources/Shared/InputQueue.swift",
+        "apps/macos/Sources/Shared/ControlV2.swift", "apps/vmhost/Sources/BundleLock.swift",
+        "apps/vmhost/Sources/Lifecycle.swift", "apps/vmhost/Sources/ControlV2Host.swift",
+        "apps/vmhost/Sources/InputChannel.swift", "apps/vmhost/Sources/FrameTransport.swift",
+        "apps/vmhost/Sources/VMHostMain.swift", VMHOST_LINUX_DIRECT_SOURCE,
+        str(paths["od_host_library"]), *link_args,
+    ]
+    admission_failure_vmhost = str(paths["v1_admission_failure_vmhost"])
     return {
         "process_sw_vers": ["sw_vers"],
         "process_uname": ["uname", "-a"],
@@ -2432,11 +2459,7 @@ def vmhost_process_commands(
             "--target-dir", str(paths["build_target"]),
         ],
         "process_compile_vmhost": [
-            *swift_common, "apps/macos/Sources/Shared/InputProtocol.swift", "apps/macos/Sources/Shared/InputQueue.swift",
-            "apps/macos/Sources/Shared/ControlV2.swift", "apps/vmhost/Sources/BundleLock.swift", "apps/vmhost/Sources/Lifecycle.swift", "apps/vmhost/Sources/ControlV2Host.swift",
-            "apps/vmhost/Sources/InputChannel.swift", "apps/vmhost/Sources/FrameTransport.swift", "apps/vmhost/Sources/VMHostMain.swift",
-            VMHOST_LINUX_DIRECT_SOURCE,
-            str(paths["od_host_library"]), *link_args, "-o", str(paths["vmhost"]),
+            *swift_common, *vmhost_inputs, "-o", str(paths["vmhost"]),
         ],
         "process_sign_vmhost": [
             codesign_path, "--force", "--sign", "-", "--options", "runtime",
@@ -2485,6 +2508,23 @@ def vmhost_process_commands(
         "process_fault_helper_entitlements": [
             codesign_path, "-d", "--entitlements", ":-", str(paths["fault_helper"]),
         ],
+        "process_compile_v1_admission_failure_vmhost": [
+            *swift_compile, "tests/fixtures/control/v1_admission_failure_bridge.h",
+            control_frame, *vmhost_inputs, "-o", admission_failure_vmhost,
+        ],
+        "process_sign_v1_admission_failure_vmhost": [
+            codesign_path, "--force", "--sign", "-", "--options", "runtime",
+            "--entitlements", str(paths["entitlements"]), admission_failure_vmhost,
+        ],
+        "process_verify_v1_admission_failure_vmhost": [
+            codesign_path, "--verify", "--strict", "--verbose=2", admission_failure_vmhost,
+        ],
+        "process_v1_admission_failure_vmhost_signature": [
+            codesign_path, "-d", "--verbose=4", admission_failure_vmhost,
+        ],
+        "process_v1_admission_failure_vmhost_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-", admission_failure_vmhost,
+        ],
         "process_control_race": [
             sys.executable, "tests/system/vmhost_control_race_smoke.py",
             str(paths["launcher"]), str(paths["vmhost"]), "--diagnostics-dir",
@@ -2501,6 +2541,10 @@ def vmhost_process_commands(
         "process_control_v1_frames": [
             sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
             str(paths["vmhost"]),
+        ],
+        "process_control_v1_admission_failures": [
+            sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
+            admission_failure_vmhost, "--admission-failures",
         ],
         "process_control_v1_stop_eof": [
             sys.executable, "tests/system/vmhost_control_v1_stop_eof_smoke.py",
@@ -3462,6 +3506,7 @@ def collect_vmhost_process_artifacts(run_root: Path) -> dict[str, object]:
         "vmhost": process_artifact_record(paths["vmhost"]),
         "launcher": process_artifact_record(paths["launcher"]),
         "fault_helper": process_artifact_record(paths["fault_helper"]),
+        "v1_admission_failure_vmhost": process_artifact_record(paths["v1_admission_failure_vmhost"]),
         "entitlements_source": process_artifact_record(paths["entitlements"]),
     }
     if paths["app_bundle"].exists():
@@ -3553,7 +3598,10 @@ def run_vmhost_process_suite(
                 raise HarnessError(
                     f"process command failed before semantic validation: {step.get('failure')}"
                 )
-            if step_name in {"process_control_race", "process_control_v1_sessions",
+            if step_name == "process_control_v1_admission_failures":
+                step["binary_inputs"] = process_binary_inputs(artifacts, "v1_admission_failure_vmhost")
+                require_process_marker(step, PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"], step_name)
+            elif step_name in {"process_control_race", "process_control_v1_sessions",
                              "process_control_v1_code_mismatch",
                              "process_control_v1_frames", "process_control_v1_stop_eof",
                              "process_control_v1_run_stop_id",
@@ -3620,12 +3668,14 @@ def run_vmhost_process_suite(
                     step["process_observation"] = observation
             elif step_name in {
                 "process_vmhost_signature", "process_fault_helper_signature",
+                "process_v1_admission_failure_vmhost_signature",
                 "process_bundle_signature", "process_bundle_vmhost_signature",
                 "process_bundle_launcher_signature",
             }:
                 process_signature_output(step, requires_jit=False, step_name=step_name)
             elif step_name in {
                 "process_vmhost_entitlements", "process_fault_helper_entitlements",
+                "process_v1_admission_failure_vmhost_entitlements",
                 "process_bundle_vmhost_entitlements",
             }:
                 process_entitlements_output(step, requires_jit=True, step_name=step_name)
@@ -4350,17 +4400,20 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         raise HarnessError("VMHost process artifact hashes differ from the current run outputs")
     if set(expected_artifacts) != {
         "od_host_library", "vmhost", "launcher", "fault_helper", "entitlements_source",
+        "v1_admission_failure_vmhost",
         "app_bundle", "bundle_vmhost", "bundle_launcher",
     }:
         raise HarnessError("VMHost process artifact set is incomplete")
 
     for name in ("process_vmhost_signature", "process_launcher_signature",
-                 "process_fault_helper_signature", "process_bundle_signature",
+                 "process_fault_helper_signature", "process_v1_admission_failure_vmhost_signature",
+                 "process_bundle_signature",
                  "process_bundle_vmhost_signature", "process_bundle_launcher_signature"):
         process_signature_output(
             steps[name], requires_jit=False, step_name=name
         )
     for name in ("process_vmhost_entitlements", "process_fault_helper_entitlements",
+                 "process_v1_admission_failure_vmhost_entitlements",
                  "process_bundle_vmhost_entitlements"):
         process_entitlements_output(
             steps[name], requires_jit=True, step_name=name
@@ -4391,6 +4444,11 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         steps["process_control_v1_frames"],
         PROCESS_SUCCESS_MARKERS["control_v1_frames"],
         "process_control_v1_frames",
+    )
+    require_process_marker(
+        steps["process_control_v1_admission_failures"],
+        PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"],
+        "process_control_v1_admission_failures",
     )
     require_process_marker(
         steps["process_control_v1_stop_eof"],
@@ -4427,6 +4485,9 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         "process_control_v1_sessions": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_code_mismatch": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_frames": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_admission_failures": process_binary_inputs(
+            expected_artifacts, "v1_admission_failure_vmhost"
+        ),
         "process_control_v1_stop_eof": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_stop_id": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_id_exhaustion": process_binary_inputs(expected_artifacts, "vmhost"),

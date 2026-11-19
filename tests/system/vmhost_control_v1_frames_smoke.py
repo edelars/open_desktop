@@ -17,6 +17,7 @@ import time
 MAGIC = b"ODCP"
 VERSION = 1
 HELLO, READY, RUN, RUN_ACK, STOP, STOP_ACK, RESULT, ERROR = 1, 2, 3, 4, 5, 6, 7, 255
+INVALID_STATE = 6
 INVALID_REQUEST_ID = 7
 NO_ACTIVE_RUN = 9
 STOP_REQUESTED = 2
@@ -74,7 +75,7 @@ def expect_frame(channel, expected, label):
         raise RuntimeError(f"{label}: expected {expected!r}, received {actual!r}")
 
 
-def launch_vmhost(path, *, backpressure=False):
+def launch_vmhost(path, *, backpressure=False, keep_peer=False, stderr=subprocess.DEVNULL):
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     peer = None
     try:
@@ -83,12 +84,13 @@ def launch_vmhost(path, *, backpressure=False):
             child.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BACKPRESSURE_INPUT_BUFFER_BYTES)
             child.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, BACKPRESSURE_OUTPUT_BUFFER_BYTES)
             parent.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BACKPRESSURE_OUTPUT_BUFFER_BYTES)
+        if backpressure or keep_peer:
             peer = child.dup()
         process = subprocess.Popen(
             [path, "--socket-fd", str(child.fileno())],
             pass_fds=(child.fileno(),),
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr,
         )
     except Exception:
         parent.close()
@@ -377,13 +379,50 @@ def active_run_completes_under_output_backpressure(vmhost):
             process.wait()
 
 
+def invalid_state_discards_batch(vmhost, site, code):
+    process, channel, peer = launch_vmhost(vmhost, keep_peer=True, stderr=subprocess.PIPE)
+    try:
+        with channel, process.stderr:
+            # Retain the host endpoint through exit to detect unread request bytes.
+            with peer:
+                channel.sendall(frame(HELLO, 0))
+                expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), f"{site} failure READY")
+                channel.sendall(frame(RUN, 1, run_payload(code)) + frame(STOP, 77))
+                expect_frame(
+                    channel,
+                    (ERROR, 1, struct.pack("<III", INVALID_STATE, 1, RUN)),
+                    f"{site} failure INVALID_STATE rejection",
+                )
+                finish_process(process, 0, f"exit after {site} INVALID_STATE")
+                if select.select([peer], [], [], 0)[0] and peer.recv(1, socket.MSG_PEEK):
+                    raise RuntimeError(f"{site} failure: unread request bytes after INVALID_STATE")
+            if channel.recv(1) != b"":
+                raise RuntimeError(f"{site} failure: unexpected output after INVALID_STATE")
+            diagnostic = process.stderr.read()
+            if diagnostic != f"fixture_invalid_state={site}\n".encode("ascii"):
+                raise RuntimeError(f"{site} failure: unexpected ABI fixture trace {diagnostic!r}")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
         help="path to the built VMHost binary (default: apps/.build/debug/od-vmhost)",
     )
+    parser.add_argument(
+        "--admission-failures", action="store_true",
+        help="check the dedicated VMHost build with the admission failure fixture bridge",
+    )
     args = parser.parse_args()
+    if args.admission_failures:
+        invalid_state_discards_batch(args.vmhost, "create", CODE[:3])
+        invalid_state_discards_batch(args.vmhost, "begin", CODE)
+        print("VMHost control V1 smoke passed: create/begin INVALID_STATE closes the frame batch")
+        return
     fragmented_hello_and_run(args.vmhost)
     coalesced_runs_are_decoded_and_admitted_in_order(args.vmhost)
     partial_frame_eof_tears_down(args.vmhost)

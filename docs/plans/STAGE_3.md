@@ -451,7 +451,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution was performed at the S3-38g integration revision; the later focused S3-38h process smoke passed. Broader V1 acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
 | [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Release od-host build, Swift VMHost compile, ad-hoc runtime signature/strict verification and `allow-jit` entitlement verification passed. The exact process smoke passed with two decoder-supported ADD RAX,RBX instructions, fresh state/budgets, increasing IDs, complete RESULT payloads, ACK/RESULT ordering and idle EOF teardown; manifest self-test passed. Current harness totals are 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 source pins. Full 39-step VMHost suite, C-client layout/link, pipe-failure, active STOP/EOF and framing acceptance remain open. Mini SSH timed out before remote tests; M1 deferred; Stage 3 partial. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Exact bounded smoke passed: STOP_ACK→RESULT ordering, stopped result, fresh same-code invocation, and clean teardown after active-run EOF. Descriptor/lease cleanup before exit, broader process suite, Mini/physical-x86 and full Stage 3 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
-| [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Signed VMHost tests cover maximum fragmented RUN, coalesced BUSY, truncated and oversized frames, 8192 ordered STOP ACKs after backpressure, and active completion before the client drains the socket. Decoder and response staging limits were audited and traced. Deterministic INVALID_STATE batch closure remains open. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
+| [pass] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Local signed suite passed 46/46. Covers maximum fragmented RUN, coalesced BUSY, truncated and oversized frames, output backpressure with active completion, and batch closure after injected create/begin INVALID_STATE. Decoder and response staging limits were audited and traced. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [pass] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Focused ARM64 process smoke and both manifest checks pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [pass] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Focused ARM64 process smoke and fail-closed manifest test pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [pass] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Focused ARM64 process smoke and fail-closed manifest test pass using decoder-supported ADD; physical Mini and full process-suite acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
@@ -4144,6 +4144,11 @@ Summary, manifest, logs and generated artifacts are preserved in
 Таймаут [ISSUE-044](../KNOWN_ISSUES.md#issue-044) в этом прогоне не встретился.
 Команда и границы прогона приведены в [отчёте этапа](../reports/STAGE_3_REPORT.md#full-vmhost-process-selector-2026-11-18).
 
+Повтор с S3-38j прошёл 46 из 46 шагов. Он включает отдельную подписанную
+сборку для проверки закрытия соединения после `INVALID_STATE` и предыдущие
+проверки control, process isolation и generated fault. Физические проверки
+отложены. См. [отчёт S3-38j](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md#invalid_state-admission-batch-closure-2026-11-19-utc).
+
 #### S3-38a. Register-only S0-09 integration through the existing V0 ABI
 
 The current `od_fragment_execute` C ABI routes immutable, create-time validated
@@ -4392,8 +4397,9 @@ The fragmented RUN carries 4096 code bytes. Its final byte is withheld before
 admission and controls the RIP of the last `JNZ` executed with budget one.
 The coalesced fixture uses two decoder-supported `ADD RAX,RBX` instructions
 and expects the second RUN to receive scope-1 BUSY while the first invocation
-finishes with its exact RESULT. Invalid-state admission closure within the
-same frame batch has no deterministic process-level trigger yet and remains open.
+finishes with its exact RESULT. A dedicated signed fixture injects scope-1
+`INVALID_STATE` at create and begin. It verifies that a following STOP was
+read with the RUN, receives no STOP ACK and checks EOF after the ERROR.
 
 V1 sets `O_NONBLOCK` after READY so output pressure leaves the reactor free
 to poll the completion descriptor. The process smoke pauses client reads
@@ -4416,9 +4422,9 @@ and checks scope-1 `CODE_MISMATCH`. It retries ID 2 and checks
 rejected; ID 4 with code A succeeds using fresh CPU state. The process harness
 pins the exact command, 30-second timeout, source fingerprint, marker, and
 VMHost binary hash. Independent Sol/high review passed. The focused smoke and
-both manifest tests passed locally on ARM64; Mini SSH timed out before remote
-commands. INVALID_STATE batch closure, full process-suite execution, and
-physical V1 acceptance remain open. See the
+both manifest tests passed locally on ARM64. The later signed 46-step S3-38j
+suite covered this gate and INVALID_STATE batch closure. Physical V1
+acceptance is deferred. See the
 [S3-38k report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md).
 
 #### S3-38l. Process-level active STOP and RUN-ID high-watermark
@@ -4430,9 +4436,9 @@ remains stale because BUSY consumed it. RUN ID 4 proves the session remains
 usable with fresh registers, flags, and budget. The process harness pins the
 command, 30-second timeout, source fingerprint, success marker, and VMHost
 binary hash. Two independent Sol/high static reviews passed. The focused smoke
-and manifest test passed locally on ARM64; Mini SSH timed out before remote
-commands. INVALID_STATE batch closure, full process-suite execution, and
-broader V1 acceptance remain open. See the
+and manifest test passed locally on ARM64. The later signed 46-step S3-38j
+suite covered this gate and INVALID_STATE batch closure. Physical V1
+acceptance is deferred. See the
 [S3-38l report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md).
 
 #### S3-38m. Process-level RUN-ID exhaustion and fresh helper

@@ -4909,6 +4909,26 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h",
                 commands["process_compile_vmhost"],
             )
+            fixture_bridge = "tests/fixtures/control/v1_admission_failure_bridge.h"
+            fixture_binary = str(run_root / "artifacts" / "od-vmhost-v1-admission-failure-smoke")
+            fixture_compile = commands["process_compile_vmhost"].copy()
+            fixture_compile[fixture_compile.index("-import-objc-header") + 1] = fixture_bridge
+            fixture_compile[-1] = fixture_binary
+            self.assertEqual(commands["process_compile_v1_admission_failure_vmhost"], fixture_compile)
+            fixture_gate = "process_control_v1_admission_failures"
+            self.assertEqual(commands[fixture_gate], [
+                sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
+                fixture_binary, "--admission-failures",
+            ])
+            self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[fixture_gate], 30)
+            self.assertEqual(
+                harness.PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"],
+                "VMHost control V1 smoke passed: create/begin INVALID_STATE closes the frame batch",
+            )
+            self.assertEqual(manifest_inputs.count({
+                "path": fixture_bridge,
+                "sha256": harness.sha256_file(harness.ROOT / fixture_bridge),
+            }), 1)
             linux_direct_source = "apps/vmhost/Sources/LinuxDirectRunner.swift"
             source_pin = {
                 "path": linux_direct_source,
