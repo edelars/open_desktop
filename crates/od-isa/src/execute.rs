@@ -20351,9 +20351,10 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Or,
                     src: Operand::Memory(_),
                     ..
-                } => {
-                    instruction.opcode.byte == 0x0a && instruction.operand_size == OperandSize::Byte
-                }
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x0a, OperandSize::Byte) | (0x0b, OperandSize::Qword)
+                ),
                 Operation::Logic {
                     kind: LogicKind::Or,
                     ..
@@ -20598,14 +20599,21 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: qword ADD to memory has write intent even on a fault before the read.
+        // Qword ADD and the firmware's RIP-relative counters have write
+        // intent even on a fault before the read.
         Operation::Arithmetic {
-            kind: ArithmeticKind::Add,
+            kind: kind @ (ArithmeticKind::Add | ArithmeticKind::Inc | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: Operand::Register(source),
+            src: source @ (Operand::Register(_) | Operand::Immediate(1)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0x01
+            && match (kind, source) {
+                (ArithmeticKind::Add, Operand::Register(_)) => instruction.opcode.byte == 0x01,
+                (ArithmeticKind::Inc | ArithmeticKind::Dec, Operand::Immediate(1)) => {
+                    instruction.opcode.byte == 0xff && destination.base == AddressBase::NextRip
+                }
+                _ => false,
+            }
             && instruction.operand_size == OperandSize::Qword
             && instruction.address_size == OperandSize::Qword
             && instruction.prefixes
@@ -20614,16 +20622,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     ..Prefixes::default()
                 }) =>
         {
-            let rhs = state.read(source);
+            let rhs = match source {
+                Operand::Register(source) => state.read(source),
+                Operand::Immediate(value) => value,
+                _ => unreachable!(),
+            };
             let arithmetic =
                 update_memory_operand(state, memory, context, next_rip, destination, |lhs| {
-                    arithmetic_result(
-                        destination.size,
-                        ArithmeticKind::Add,
-                        lhs,
-                        rhs,
-                        state.rflags,
-                    )
+                    arithmetic_result(destination.size, kind, lhs, rhs, state.rflags)
                 });
             state.rflags = match arithmetic {
                 Ok(flags) => flags,
@@ -21593,6 +21599,27 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 instructions_executed: 1,
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
+        }
+        Operation::ConditionalMove {
+            condition,
+            dst,
+            src: source @ Operand::Memory(_),
+        } if firmware_boot_profile
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            match conditional_move(state, memory, context, next_rip, condition, dst, source) {
+                Ok(()) => state.rip = next_rip,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
         }
         // Register dword and qword CMOVcc in firmware, or the existing exact dword forms.
         Operation::ConditionalMove {
@@ -60957,22 +60984,10 @@ fn step_configured(
             dst,
             src,
         } => {
-            // CMOVcc performs its source read even when the condition is false.
-            // Resolve/fault the operand before changing any architectural state.
-            let value = match read_operand(state, memory, context, next_rip, src) {
-                Ok(value) => value,
-                Err(MemoryError::Architectural(fault)) => {
-                    return Ok(StepOutcome::Fault(fault));
-                }
+            match conditional_move(state, memory, context, next_rip, condition, dst, src) {
+                Ok(()) => {}
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
                 Err(error) => return Err(error),
-            };
-            if condition.evaluate(state.rflags) {
-                state.write(dst, value);
-            } else if dst.size() == OperandSize::Dword {
-                // In 64-bit mode a 32-bit CMOV destination is zero-extended
-                // even on the false path (Intel SDM CMOVcc operation).
-                let old_low_dword = state.read(dst);
-                state.write(dst, old_low_dword);
             }
         }
         Operation::SignExtendAccumulator { double_width } => {
@@ -66655,6 +66670,26 @@ fn transfer(
         Operation::Nop => {}
         Operation::Mfence => memory.mfence(context)?,
         _ => unreachable!("only transfer-family operations call transfer"),
+    }
+    Ok(())
+}
+
+fn conditional_move(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    condition: ConditionCode,
+    destination: RegisterView,
+    source: Operand,
+) -> Result<(), MemoryError> {
+    // CMOVcc performs its source read even when the condition is false.
+    let value = read_operand(state, memory, context, next_rip, source)?;
+    if condition.evaluate(state.rflags) {
+        state.write(destination, value);
+    } else if destination.size() == OperandSize::Dword {
+        // A false dword CMOV still zero-extends the destination.
+        state.write(destination, state.read(destination));
     }
     Ok(())
 }

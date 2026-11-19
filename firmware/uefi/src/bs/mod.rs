@@ -1,5 +1,6 @@
 //! Firmware implementations of UEFI Boot Services.
 
+pub mod event;
 pub mod memory;
 pub mod misc;
 pub mod protocol;

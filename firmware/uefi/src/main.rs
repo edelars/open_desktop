@@ -13,6 +13,9 @@ use core::panic::PanicInfo;
 use serial::{init as com1_init, write as com1_write};
 
 use od_firmware::HANDOFF_GPA;
+use od_firmware::bs::event::{
+    EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, Event, TPL_APPLICATION, TPL_CALLBACK, TPL_NOTIFY,
+};
 use od_firmware::bs::memory::IdentityPoolMemory;
 use od_firmware::bs::protocol::{
     LOCATE_ALL_HANDLES, LOCATE_BY_PROTOCOL, OPEN_BY_DRIVER, OPEN_GET_PROTOCOL,
@@ -184,6 +187,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     verify_boot_services(&system);
     verify_memory_services(&system, key as usize);
     verify_protocol_services(&system);
+    verify_event_services(&system);
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
         asm!(
@@ -748,6 +752,170 @@ unsafe fn verify_protocol_batches(boot: *const BootServices) {
             stop(STOP_BOOT_SERVICES, 36);
         }
     }
+}
+
+struct EventProbe {
+    boot: *const BootServices,
+    target: Event,
+    count: usize,
+    trace: [u8; 8],
+}
+
+unsafe fn record_event(probe: *mut EventProbe, byte: u8) {
+    unsafe {
+        let count = ptr::addr_of!((*probe).count).read();
+        if count == 8 {
+            stop(STOP_BOOT_SERVICES, 38);
+        }
+        ptr::addr_of_mut!((*probe).trace)
+            .cast::<u8>()
+            .add(count)
+            .write(byte);
+        ptr::addr_of_mut!((*probe).count).write(count + 1);
+    }
+}
+
+unsafe extern "efiapi" fn notify_high(_: Event, context: *mut c_void) {
+    unsafe { record_event(context.cast(), b'H') };
+}
+
+unsafe extern "efiapi" fn notify_low(_: Event, context: *mut c_void) {
+    let probe = context.cast::<EventProbe>();
+    unsafe {
+        record_event(probe, b'L');
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let target = ptr::addr_of!((*probe).target).read();
+        let signal = ptr::addr_of!((*boot).signal_event).read_volatile();
+        if signal(target) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 38);
+        }
+        record_event(probe, b'l');
+    }
+}
+
+unsafe extern "efiapi" fn notify_wait(event: Event, context: *mut c_void) {
+    let probe = context.cast::<EventProbe>();
+    unsafe {
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let signal = ptr::addr_of!((*boot).signal_event).read_volatile();
+        if signal(event) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 39);
+        }
+        record_event(probe, b'W');
+    }
+}
+
+unsafe extern "efiapi" fn notify_group(event: Event, context: *mut c_void) {
+    let probe = context.cast::<EventProbe>();
+    unsafe {
+        let boot = ptr::addr_of!((*probe).boot).read();
+        let target = ptr::addr_of!((*probe).target).read();
+        let check = ptr::addr_of!((*boot).check_event).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+        if check(target) != Status::SUCCESS || close(event) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 40);
+        }
+        record_event(probe, b'G');
+    }
+}
+
+#[inline(never)]
+fn verify_event_services(system: &SystemTable) {
+    // SAFETY: the BSP owns the table and the context stays live through all
+    // callbacks and closes. Nested callbacks only use raw context fields.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let create = ptr::addr_of!((*boot).create_event).read_volatile();
+        let create_ex = ptr::addr_of!((*boot).create_event_ex).read_volatile();
+        let signal = ptr::addr_of!((*boot).signal_event).read_volatile();
+        let check = ptr::addr_of!((*boot).check_event).read_volatile();
+        let close = ptr::addr_of!((*boot).close_event).read_volatile();
+        let raise = ptr::addr_of!((*boot).raise_tpl).read_volatile();
+        let restore = ptr::addr_of!((*boot).restore_tpl).read_volatile();
+        let mut probe = EventProbe {
+            boot,
+            target: ptr::null_mut(),
+            count: 0,
+            trace: [0; 8],
+        };
+        let context = ptr::addr_of_mut!(probe).cast::<c_void>();
+        let mut low = ptr::null_mut();
+        let mut high = ptr::null_mut();
+        let mut wait = ptr::null_mut();
+        if create(
+            EVT_NOTIFY_SIGNAL,
+            TPL_CALLBACK,
+            Some(notify_low),
+            context,
+            &mut low,
+        ) != Status::SUCCESS
+            || create(
+                EVT_NOTIFY_SIGNAL,
+                TPL_NOTIFY,
+                Some(notify_high),
+                context,
+                &mut high,
+            ) != Status::SUCCESS
+            || create(
+                EVT_NOTIFY_WAIT,
+                TPL_CALLBACK,
+                Some(notify_wait),
+                context,
+                &mut wait,
+            ) != Status::SUCCESS
+            || check(high) != Status::INVALID_PARAMETER
+        {
+            stop(STOP_BOOT_SERVICES, 37);
+        }
+        ptr::addr_of_mut!(probe.target).write(high);
+        let old = raise(TPL_NOTIFY);
+        if old != TPL_APPLICATION
+            || signal(low) != Status::SUCCESS
+            || signal(low) != Status::SUCCESS
+            || ptr::addr_of!(probe.count).read() != 0
+        {
+            stop(STOP_BOOT_SERVICES, 38);
+        }
+        restore(old);
+        if ptr::addr_of!(probe.count).read() != 3 {
+            stop(STOP_BOOT_SERVICES, 38);
+        }
+        if check(wait) != Status::SUCCESS || ptr::addr_of!(probe.count).read() != 4 {
+            stop(STOP_BOOT_SERVICES, 39);
+        }
+
+        let mut plain = ptr::null_mut();
+        let mut grouped = ptr::null_mut();
+        let group = Guid {
+            data1: DIAGNOSTIC_PROTOCOL.data1 + 3,
+            ..DIAGNOSTIC_PROTOCOL
+        };
+        if create_ex(0, 0, None, ptr::null(), &group, &mut plain) != Status::SUCCESS
+            || create_ex(
+                EVT_NOTIFY_SIGNAL,
+                TPL_CALLBACK,
+                Some(notify_group),
+                context,
+                &group,
+                &mut grouped,
+            ) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 40);
+        }
+        ptr::addr_of_mut!(probe.target).write(plain);
+        if signal(plain) != Status::SUCCESS
+            || ptr::addr_of!(probe.count).read() != 5
+            || ptr::addr_of!(probe.trace).read() != *b"LHlWG\0\0\0"
+            || close(grouped) != Status::INVALID_PARAMETER
+            || close(plain) != Status::SUCCESS
+            || close(wait) != Status::SUCCESS
+            || close(high) != Status::SUCCESS
+            || close(low) != Status::SUCCESS
+        {
+            stop(STOP_BOOT_SERVICES, 40);
+        }
+    }
+    com1_write(b"OD-FW S7-05 event dispatch verified\r\n");
 }
 
 static mut EXCEPTION_IDT: Idt = Idt::EMPTY;

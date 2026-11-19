@@ -385,7 +385,7 @@
 ### S7-05. Реализовать System Table и ядро Boot Services
 
 - [ ] Принято после ревью.
-- **Текущий срез:** проверены протокольная база, поиск Device Path и пакетные операции через вариативные указатели диагностической Boot Services. [Проверка пакетов](../reports/STAGE_7_REPORT.md#s7-05--пакетные-операции-с-протоколами).
+- **Текущий срез:** диагностическая Boot Services поддерживает протокольную базу, поиск Device Path, пакетные операции и события с доставкой уведомлений по TPL. [Проверка событий](../reports/STAGE_7_REPORT.md#s7-05--события-и-tpl).
 - **Где:** `firmware/uefi/src/uefi/{types,guid,status}.rs` (типы и коды по UEFI 2.11 — собственные определения со ссылкой на разделы спецификации), `firmware/uefi/src/uefi/system_table.rs`, `firmware/uefi/src/bs/{memory,protocol,event,misc}.rs`, `firmware/uefi/src/bs/config_table.rs`, `docs/specs/UEFI_PROFILE.md` (разделы «Boot Services», «Нереализованные сервисы»).
 - **Сделать:**
   1. `EFI_SYSTEM_TABLE`, `EFI_BOOT_SERVICES`, `EFI_RUNTIME_SERVICES` с заголовками UEFI 2.11 (`Signature`, `Revision = (2 << 16) | 110`, `HeaderSize`, `CRC32`). В таблицах, передаваемых образам, каждый сервис вызывается через свою сигнатуру UEFI x64. Неподдержанные сервисы с результатом `EFI_STATUS` возвращают `EFI_UNSUPPORTED` там, где это разрешает спецификация. Сервисы без `EFI_STATUS` соблюдают собственный контракт. Зарезервированный слот Boot Services равен NULL.

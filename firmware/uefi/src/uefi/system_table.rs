@@ -4,6 +4,7 @@
 use super::guid::Guid;
 use super::status::Status;
 use super::types::{Char16, Handle, TableHeader};
+use crate::bs::event::{self, Event, EventNotify, Tpl};
 use crate::bs::{memory, misc, protocol};
 use crate::crc32::with_zeroed_word;
 use crate::device_path::DevicePathNode;
@@ -16,6 +17,19 @@ pub const SYSTEM_TABLE_SIGNATURE: u64 = 0x5453_5953_2049_4249;
 pub const BOOT_SERVICES_SIGNATURE: u64 = 0x5652_4553_544f_4f42;
 pub const RUNTIME_SERVICES_SIGNATURE: u64 = 0x5652_4553_544e_5552;
 
+type RaiseTpl = unsafe extern "efiapi" fn(Tpl) -> Tpl;
+type RestoreTpl = unsafe extern "efiapi" fn(Tpl);
+type CreateEvent =
+    unsafe extern "efiapi" fn(u32, Tpl, Option<EventNotify>, *mut c_void, *mut Event) -> Status;
+type CreateEventEx = unsafe extern "efiapi" fn(
+    u32,
+    Tpl,
+    Option<EventNotify>,
+    *const c_void,
+    *const Guid,
+    *mut Event,
+) -> Status;
+type EventOperation = unsafe extern "efiapi" fn(Event) -> Status;
 type AllocatePages = unsafe extern "efiapi" fn(u32, MemoryType, usize, *mut u64) -> Status;
 type FreePages = unsafe extern "efiapi" fn(u64, usize) -> Status;
 type GetMemoryMap = unsafe extern "efiapi" fn(
@@ -65,19 +79,19 @@ type SetMem = unsafe extern "efiapi" fn(*mut c_void, usize, u8);
 #[repr(C)]
 pub struct BootServices {
     pub header: TableHeader,
-    raise_tpl: *const c_void,
-    restore_tpl: *const c_void,
+    pub raise_tpl: RaiseTpl,
+    pub restore_tpl: RestoreTpl,
     pub allocate_pages: AllocatePages,
     pub free_pages: FreePages,
     pub get_memory_map: GetMemoryMap,
     pub allocate_pool: AllocatePool,
     pub free_pool: FreePool,
-    create_event: *const c_void,
+    pub create_event: CreateEvent,
     set_timer: *const c_void,
     wait_for_event: *const c_void,
-    signal_event: *const c_void,
-    close_event: *const c_void,
-    check_event: *const c_void,
+    pub signal_event: EventOperation,
+    pub close_event: EventOperation,
+    pub check_event: EventOperation,
     pub install_protocol_interface: InstallProtocolInterface,
     pub reinstall_protocol_interface: ReinstallProtocolInterface,
     pub uninstall_protocol_interface: UninstallProtocolInterface,
@@ -108,26 +122,26 @@ pub struct BootServices {
     pub calculate_crc32: CalculateCrc32,
     pub copy_mem: CopyMem,
     pub set_mem: SetMem,
-    create_event_ex: *const c_void,
+    pub create_event_ex: CreateEventEx,
 }
 
 impl BootServices {
     pub const fn diagnostic() -> Self {
         Self {
             header: TableHeader::new(BOOT_SERVICES_SIGNATURE, size_of::<Self>()),
-            raise_tpl: ptr::null(),
-            restore_tpl: ptr::null(),
+            raise_tpl: event::raise_tpl,
+            restore_tpl: event::restore_tpl,
             allocate_pages: memory::allocate_pages,
             free_pages: memory::free_pages,
             get_memory_map: memory::get_memory_map,
             allocate_pool: memory::allocate_pool,
             free_pool: memory::free_pool,
-            create_event: ptr::null(),
+            create_event: event::create_event,
             set_timer: ptr::null(),
             wait_for_event: ptr::null(),
-            signal_event: ptr::null(),
-            close_event: ptr::null(),
-            check_event: ptr::null(),
+            signal_event: event::signal_event,
+            close_event: event::close_event,
+            check_event: event::check_event,
             install_protocol_interface: protocol::install_protocol_interface,
             reinstall_protocol_interface: protocol::reinstall_protocol_interface,
             uninstall_protocol_interface: protocol::uninstall_protocol_interface,
@@ -158,7 +172,7 @@ impl BootServices {
             calculate_crc32: misc::calculate_crc32,
             copy_mem: misc::copy_mem,
             set_mem: misc::set_mem,
-            create_event_ex: ptr::null(),
+            create_event_ex: event::create_event_ex,
         }
     }
 
@@ -305,6 +319,12 @@ mod tests {
         assert_eq!(offset_of!(SystemTable, runtime_services), 88);
         assert_eq!(offset_of!(SystemTable, boot_services), 96);
         assert_eq!(offset_of!(SystemTable, configuration_table), 112);
+        assert_eq!(offset_of!(BootServices, raise_tpl), 24);
+        assert_eq!(offset_of!(BootServices, restore_tpl), 32);
+        assert_eq!(offset_of!(BootServices, create_event), 80);
+        assert_eq!(offset_of!(BootServices, signal_event), 104);
+        assert_eq!(offset_of!(BootServices, close_event), 112);
+        assert_eq!(offset_of!(BootServices, check_event), 120);
         assert_eq!(offset_of!(BootServices, allocate_pages), 40);
         assert_eq!(offset_of!(BootServices, free_pages), 48);
         assert_eq!(offset_of!(BootServices, get_memory_map), 56);
