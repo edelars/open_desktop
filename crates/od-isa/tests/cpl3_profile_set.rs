@@ -2092,6 +2092,48 @@ fn run3_data(
 const DATA: u64 = 0x0060_1000;
 
 #[test]
+fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
+    let mut initial = user_state();
+    initial.gpr[Register::Rsp as usize] = 0x0000_7fff_abcd_123f;
+    initial.gpr[Register::R12 as usize] = 0x0000_1234_5678_9aaf;
+    initial.rflags |= od_isa::INTEGER_FLAGS;
+    for (code, register) in [
+        ([0x48, 0x83, 0xe4, 0xf0], Register::Rsp),
+        ([0x49, 0x83, 0xe4, 0xf0], Register::R12),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(&code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !AF);
+        let mut expected = initial.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[register as usize] &= !0xf;
+        expected.rflags &= !(CF | OF | SF | ZF);
+        assert_eq!(state, expected);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+
+    for (code, opcode) in [
+        (&[0x83, 0xe4, 0xf0][..], 0x83),
+        (&[0x66, 0x83, 0xe4, 0xf0][..], 0x83),
+        (&[0x48, 0x83, 0x27, 0xf0][..], 0x83),
+        (&[0x48, 0x81, 0xe4, 0xf0, 0xff, 0xff, 0xff][..], 0x81),
+    ] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, initial);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
 fn cpl3_pop_register_reads_one_qword_and_commits_the_stack_pointer() {
     const VALUE: u64 = 0x0000_7fff_a1b2_c3d4;
     let mut initial = user_state();

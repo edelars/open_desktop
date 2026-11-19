@@ -1,0 +1,42 @@
+{
+  "commit": "9e80011",
+  "runner_sha256": "7986dac7924aa6c2acb089e3e0f38e79ba02513c6b973e6ac1716b113cbc90ec",
+  "report_sha256": "ba9a806590d3fd903dc7fa575fd45afb326142947afa8b3443f3446015632af9",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "9fc785549a0644840659a4a99f459f79508fd3f118214166684be66ff0675f9c",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "busybox_stop_file_offset": "0xc7c8d",
+  "previous_stop_rip": "0x4c7c89",
+  "nonce": "s6-compute-up20261119",
+  "seed": 24301,
+  "retired": 2394020545,
+  "retired_cpl3": 5,
+  "rip": "0x4c7c8d",
+  "rip_gpa": "0x7d92c8d",
+  "rip_bytes": "48 83 e4 f0 50 54 45 31 c0 31 c9 48 c7 c7 c8 10",
+  "exit_detail": "Unsupported { opcode: 131 }",
+  "compute_timing": {
+    "boundary": "com1_line_publication",
+    "status": "incomplete"
+  },
+  "guest_verifier": "expected one ordered compute result with matching nonce, source, blocks and checksum",
+  "previous_rsp": "0x7ffdc71c8b18",
+  "previous_rflags": "0x246",
+  "replay": {
+    "base_commit": "a2ddabe7e6b4075cf742daff4025a24b7877b922",
+    "runner_sha256": "223eed56f7a1fafdc49f9905634d5c5c61c56c15f01415aa447c9c4dfde22514",
+    "production_patch_sha256": "bda785e2ad90ed1d2b5e3a6947b87e4793988fa923d327afce8815b3ca41d54d",
+    "report_sha256": "d71ed3999614bd1cb9f695301c0cdc3d3ba37bc70d98fa63f10a7c9aaf5e9872",
+    "retired": 2394020546,
+    "retired_cpl3": 6,
+    "rip": "0x4c7c91",
+    "rip_gpa": "0x7d92c91",
+    "rip_bytes": "50 54 45 31 c0 31 c9 48 c7 c7 c8 10 52 00 67 e8",
+    "rsp": "0x7ffdc71c8b10",
+    "rflags": "0x202",
+    "busybox_stop_file_offset": "0xc7c91",
+    "exit_detail": "Unsupported { opcode: 80 }",
+    "guest_verifier": "expected one ordered compute result with matching nonce, source, blocks and checksum"
+  }
+}

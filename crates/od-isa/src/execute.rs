@@ -28779,6 +28779,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         (
             OpcodeMap::Primary,
+            0x83,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
             0x31,
             Operation::Logic {
                 kind: LogicKind::Xor,
