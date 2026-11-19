@@ -1,0 +1,127 @@
+{
+  "runner_sha256": "ddd15271278d80a74bc74fbfe4b88238da0f1acacd3149f0c9c895f5245166bd",
+  "source_base_commit": "d3fc5eb0cb778859685e887e5ea73dae61658849",
+  "production_patch_sha256": "3723d842e5ecca0463e02e0f005df9fff6ac99978de94ae037eff86b2a33fc55",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "smp_acpi_blob_sha256": "8275deed55da9ac541fc578eef5e86b8ee1ba40ea645aefca85b8a1e2e9bdabb",
+  "profile": "X8664V1Stage4AApic",
+  "ram_mib": 128,
+  "budget": 2500000000,
+  "nonce": "smpBoot20261119A",
+  "runs": [
+    {
+      "seed": 24301,
+      "report_sha256": "221e12f6d0c06d087a90c3229cee93c69b82d292e6abdddc105231e45aac1d2b",
+      "verifier_sha256": "cbc6a3e877539db823e2ee6b8f4439485ba972819c8edea90d6668951f17cd4f",
+      "elapsed_wall_s_from_output_timestamps": 1298.366,
+      "retired": 2500000000,
+      "cpl3_retired": 9003,
+      "quanta": 21164235,
+      "retired_by_vcpu": [
+        1901594999,
+        598405001
+      ],
+      "guest_online": "0-1",
+      "guest_ipi_counts": {
+        "RES": [
+          8,
+          27
+        ],
+        "CAL": [
+          231,
+          134
+        ],
+        "TLB": [
+          0,
+          0
+        ]
+      },
+      "guest_kernel_bringup": "[    1.746003] smp: Brought up 1 node, 2 CPUs",
+      "terminal_rip_by_vcpu": [
+        "0xffffffff8270bd60",
+        "0xffffffff81ce1f1d"
+      ]
+    },
+    {
+      "seed": 24301,
+      "report_sha256": "221e12f6d0c06d087a90c3229cee93c69b82d292e6abdddc105231e45aac1d2b",
+      "verifier_sha256": "cbc6a3e877539db823e2ee6b8f4439485ba972819c8edea90d6668951f17cd4f",
+      "elapsed_wall_s_from_output_timestamps": 1356.346,
+      "retired": 2500000000,
+      "cpl3_retired": 9003,
+      "quanta": 21164235,
+      "retired_by_vcpu": [
+        1901594999,
+        598405001
+      ],
+      "guest_online": "0-1",
+      "guest_ipi_counts": {
+        "RES": [
+          8,
+          27
+        ],
+        "CAL": [
+          231,
+          134
+        ],
+        "TLB": [
+          0,
+          0
+        ]
+      },
+      "guest_kernel_bringup": "[    1.746003] smp: Brought up 1 node, 2 CPUs",
+      "terminal_rip_by_vcpu": [
+        "0xffffffff8270bd60",
+        "0xffffffff81ce1f1d"
+      ]
+    },
+    {
+      "seed": 24302,
+      "report_sha256": "dc267c381bfbec37cf8b1af75430ad0d4f1d4230d5a999834b55fed0922f5009",
+      "verifier_sha256": "6fb661637b8e7b975a3d20c7200533c1b7452ee5ae698f142ca16dab85a5ee2c",
+      "elapsed_wall_s_from_output_timestamps": 1327.765,
+      "retired": 2500000000,
+      "cpl3_retired": 8963,
+      "quanta": 21154359,
+      "retired_by_vcpu": [
+        1910149287,
+        589850713
+      ],
+      "guest_online": "0-1",
+      "guest_ipi_counts": {
+        "RES": [
+          9,
+          26
+        ],
+        "CAL": [
+          224,
+          122
+        ],
+        "TLB": [
+          0,
+          0
+        ]
+      },
+      "guest_kernel_bringup": "[    1.745848] smp: Brought up 1 node, 2 CPUs",
+      "terminal_rip_by_vcpu": [
+        "0xffffffff82728f0b",
+        "0xffffffff814aea48"
+      ]
+    }
+  ],
+  "boot_interleaved_retired_per_second": [
+    1925497,
+    1843188,
+    1882863
+  ],
+  "single_vcpu_control": {
+    "profile": "stage4a-apic",
+    "seed": 24301,
+    "guest_online": "0",
+    "nonce": "SMPUpObservation20261119",
+    "report_sha256": "bd067e413f860cce0aa5e820ea78ecee6abc5293e5bf2a74d66ef7391d4115d0",
+    "reference_report_sha256": "bd067e413f860cce0aa5e820ea78ecee6abc5293e5bf2a74d66ef7391d4115d0",
+    "byte_identical": true
+  }
+}
