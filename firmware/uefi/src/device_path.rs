@@ -1,6 +1,7 @@
 //! Packed device path structure from UEFI 2.11 §10.
 
 use crate::uefi::guid::Guid;
+use core::slice;
 
 pub mod utilities;
 
@@ -11,11 +12,12 @@ pub const DEVICE_PATH_PROTOCOL_GUID: Guid = Guid {
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 
-const HEADER_SIZE: usize = 4;
+pub(crate) const HEADER_SIZE: usize = 4;
 const END_TYPE: u8 = 0x7f;
 const END_INSTANCE: u8 = 0x01;
 const END_ENTIRE: u8 = 0xff;
 const MAX_PATH_BYTES: usize = 64 * 1024;
+pub(crate) const END_PATH_BYTES: [u8; HEADER_SIZE] = [END_TYPE, END_ENTIRE, HEADER_SIZE as u8, 0];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum EndAt {
@@ -48,6 +50,16 @@ pub(crate) unsafe fn first_instance_extent(path: *const DevicePathNode) -> Optio
 /// subject to the profile's scan cap.
 pub(crate) unsafe fn complete_extent(path: *const DevicePathNode) -> Option<usize> {
     unsafe { raw_extent(path, EndAt::EntirePath) }.map(|offset| offset + HEADER_SIZE)
+}
+
+/// Borrow the complete path including End Entire.
+///
+/// # Safety
+/// For a non-null path, all described bytes must be readable and immutable
+/// for the returned borrow, subject to the profile's scan cap.
+pub(crate) unsafe fn path_bytes<'a>(path: *const DevicePathNode) -> Option<&'a [u8]> {
+    let length = unsafe { complete_extent(path) }?;
+    Some(unsafe { slice::from_raw_parts(path.cast(), length) })
 }
 
 unsafe fn raw_extent(path: *const DevicePathNode, end_at: EndAt) -> Option<usize> {

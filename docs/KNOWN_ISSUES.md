@@ -6374,3 +6374,11 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-19, программный backend RustCrypto SHA-2 и `PagedCpl0FirmwareBootV1`.
 - **Наблюдение.** После успешного парсинга в пробном ROM Authenticode входит в `sha2::sha256::compress256`. При 128 МиБ исполнение остановилось после 3 019 351 инструкций на `0f c8` (`bswap eax`, RIP `0x2164d7`) с `Unsupported { opcode: 200 }`. Тот же файл на host дал дайджест, совпавший с Python.
 - **Статус и проверка.** Решено 2026-11-19. Прошивочный профиль исполнил операции программного SHA-256. Межстраничное чтение проверено на несмежных read-only страницах и с отказом второй страницы. Тот же ROM напечатал `OD-FW Authenticode matches reference` после сравнения 32 байтов с расчётом Python и дошёл до `HLT`. [Отчёт](reports/STAGE_7_REPORT.md#s7-06--гостевой-дайджест-authenticode).
+
+<a id="issue-526"></a>
+
+### ISSUE-526 — SMP: единичный StaleSafePoint при снятии снимка
+
+- **Дата и компонент.** 2026-11-19, `od-machine`, параллельная остановка vCPU перед снимком.
+- **Наблюдение.** В первом полном `cargo test -p od-machine --offline` при проверке S7-06 тест `a_parallel_run_stopped_at_a_random_moment_is_reset_restored_and_finished_in_the_interleaved_mode` завершился `Scheduler("StaleSafePoint")` при seed 0 и quantum 7. Отказ произошёл до reset/restore на фоне параллельных тестов runner. Отдельный повтор того же теста прошёл. [Тест](../crates/od-machine/tests/stage6_smp_probe.rs), [контракт снимка](testing/SMP.md).
+- **Статус и следующий шаг.** Наблюдение открыто. Ревью подтвердило, что тест использует `Cpl0ProfileSet`, а новые формы S7-06 допускает отдельный прошивочный профиль. Для установления причины нужен повтор под сопоставимой нагрузкой с данными остановки, `StopAck` и состоянием vCPU.

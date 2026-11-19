@@ -1,7 +1,12 @@
 //! UEFI 2.11 §7.4 image services and the BSP's loaded-image records.
 
-use super::{misc::MEMORY_CHUNK, protocol, protocol::multiple::ProtocolPair, state};
-use crate::device_path::DevicePathNode;
+use super::{
+    misc::{MEMORY_CHUNK, copy_mem},
+    protocol,
+    protocol::multiple::ProtocolPair,
+    state,
+};
+use crate::device_path::{DevicePathNode, END_PATH_BYTES, path_bytes};
 use crate::mem::{map::MemoryType, pages::ImageMemoryRange};
 use crate::paging::PAGE_BYTES;
 use crate::pe::{self, MappedImage, PageLayout, PeImage, Subsystem};
@@ -17,12 +22,18 @@ use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, ptr, slice};
 
 #[cfg(target_os = "none")]
 mod invoke;
+mod path;
+
+#[cfg(target_os = "none")]
+pub use path::install_firmware_volume;
+pub use path::{LOAD_FILE_PROTOCOL_GUID, LoadFileProtocol, firmware_file_device_path};
 
 const MAX_IMAGES: usize = 64;
 
 struct ImageRecord {
     handle: Handle,
     mapped: MappedImage,
+    allocation_pages: u64,
     #[cfg(target_os = "none")]
     parent: Handle,
     #[cfg(target_os = "none")]
@@ -66,7 +77,9 @@ impl ImageRegistry {
 
 /// # Safety
 /// Call on the BSP. A non-null source must provide stable and readable file
-/// bytes. The output must be aligned, writable and outside private state.
+/// bytes. A non-null path must back its described bytes through End Entire,
+/// within the profile's scan cap. The output must be aligned, writable and
+/// outside private state and the input spans.
 pub unsafe extern "efiapi" fn load_image(
     _boot_policy: u8,
     parent: Handle,
@@ -78,31 +91,56 @@ pub unsafe extern "efiapi" fn load_image(
     if parent.is_null() || image.is_null() {
         return Status::INVALID_PARAMETER;
     }
-    if !device_path.is_null() {
-        return Status::UNSUPPORTED;
-    }
-    if source.is_null() {
+    if source.is_null() && device_path.is_null() {
         return Status::NOT_FOUND;
     }
-    let Some(source_end) = source.addr().checked_add(source_size) else {
-        return Status::INVALID_PARAMETER;
-    };
     let Some(out_end) = image.addr().checked_add(size_of::<Handle>()) else {
         return Status::INVALID_PARAMETER;
     };
-    if source_size == 0
-        || source_size > isize::MAX as usize
-        || (source.addr() < out_end && image.addr() < source_end)
-    {
-        return Status::INVALID_PARAMETER;
-    }
+    let buffer = if source.is_null() {
+        None
+    } else {
+        let Some(source_end) = source.addr().checked_add(source_size) else {
+            return Status::INVALID_PARAMETER;
+        };
+        if source_size == 0
+            || source_size > isize::MAX as usize
+            || (source.addr() < out_end && image.addr() < source_end)
+        {
+            return Status::INVALID_PARAMETER;
+        }
+        Some(unsafe { slice::from_raw_parts(source.cast::<u8>(), source_size) })
+    };
+    let full_path = if device_path.is_null() {
+        None
+    } else {
+        let Some(bytes) = (unsafe { path_bytes(device_path) }) else {
+            return Status::INVALID_PARAMETER;
+        };
+        if overlaps(bytes, image.addr(), out_end) {
+            return Status::INVALID_PARAMETER;
+        }
+        Some(bytes)
+    };
 
     unsafe {
         let status = state::with_map_mutation(|state| {
             if !state.protocols.known_handle(parent) {
                 return Status::INVALID_PARAMETER;
             }
-            let bytes = slice::from_raw_parts(source.cast::<u8>(), source_size);
+            let (bytes, location) = if let Some(buffer) = buffer {
+                let location =
+                    full_path.map(|full| path::ImagePath::for_buffer(state.protocols, full));
+                (buffer, location)
+            } else {
+                #[cfg(target_os = "none")]
+                match path::volume_source(state.protocols, full_path.unwrap()) {
+                    Ok((bytes, location)) => (bytes, Some(location)),
+                    Err(status) => return status,
+                }
+                #[cfg(not(target_os = "none"))]
+                return Status::UNSUPPORTED;
+            };
             let pe = match PeImage::parse(bytes) {
                 Ok(pe) => pe,
                 Err(
@@ -125,9 +163,9 @@ pub unsafe extern "efiapi" fn load_image(
                 pages: 0,
                 memory_type: data,
             };
-            let mut regions = [default; pe::MAX_REGIONS];
-            let regions = &mut regions[..layout.runs().len()];
-            for (region, run) in regions.iter_mut().zip(layout.runs()) {
+            let mut regions = [default; pe::MAX_REGIONS + 1];
+            let run_count = layout.runs().len();
+            for (region, run) in regions[..run_count].iter_mut().zip(layout.runs()) {
                 *region = ImageMemoryRange {
                     pages: u64::from(run.end - run.first),
                     memory_type: if run.permissions.executable() {
@@ -137,6 +175,15 @@ pub unsafe extern "efiapi" fn load_image(
                     },
                 };
             }
+            let metadata_pages = location
+                .as_ref()
+                .map_or(0, |path| (path.storage_len() as u64).div_ceil(PAGE_BYTES));
+            let region_count = if metadata_pages != 0 {
+                regions[run_count].pages = metadata_pages;
+                run_count + 1
+            } else {
+                run_count
+            };
 
             let (Some(system), Some(tables)) = (state.system_table, state.active_tables) else {
                 return Status::NOT_READY;
@@ -152,14 +199,15 @@ pub unsafe extern "efiapi" fn load_image(
                 pe.image_base(),
                 pe.base_relocations().is_some(),
                 alignment,
-                regions,
+                &regions[..region_count],
             ) else {
                 return Status::OUT_OF_RESOURCES;
             };
             let span = plan.span.clone();
             let start = span.start as usize;
             let end = span.end as usize;
-            if (start < source_end && source.addr() < end)
+            if overlaps(bytes, start, end)
+                || full_path.is_some_and(|path| overlaps(path, start, end))
                 || (start < out_end && image.addr() < end)
             {
                 return Status::INVALID_PARAMETER;
@@ -180,13 +228,34 @@ pub unsafe extern "efiapi" fn load_image(
             for chunk in destination[mapped.size as usize..].chunks_mut(MEMORY_CHUNK) {
                 chunk.fill(0);
             }
+            let metadata_base = span.end - metadata_pages * PAGE_BYTES;
+            let (device, file_path, image_path) = match location {
+                Some(path) => {
+                    let target = destination
+                        .as_mut_ptr()
+                        .add((metadata_base - span.start) as usize);
+                    copy_mem(target.cast(), path.full.as_ptr().cast(), path.full.len());
+                    let relative = path.relative.map_or(ptr::null_mut(), |relative| {
+                        let target = target.add(path.full.len());
+                        copy_mem(target.cast(), relative.as_ptr().cast(), relative.len());
+                        copy_mem(
+                            target.add(relative.len()).cast(),
+                            END_PATH_BYTES.as_ptr().cast(),
+                            END_PATH_BYTES.len(),
+                        );
+                        target.cast()
+                    });
+                    (path.device, relative, target.cast())
+                }
+                None => (ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
+            };
             let protocol = IMAGE_PROTOCOLS.0[index].get().cast::<LoadedImageProtocol>();
             protocol.write(LoadedImageProtocol {
                 revision: LOADED_IMAGE_PROTOCOL_REVISION,
                 parent_handle: parent,
                 system_table: system.as_ptr(),
-                device_handle: ptr::null_mut(),
-                file_path: ptr::null_mut(),
+                device_handle: device,
+                file_path,
                 reserved: ptr::null_mut(),
                 load_options_size: 0,
                 load_options: ptr::null_mut(),
@@ -203,7 +272,7 @@ pub unsafe extern "efiapi" fn load_image(
                 },
                 ProtocolPair {
                     protocol: LOADED_IMAGE_DEVICE_PATH_PROTOCOL_GUID,
-                    interface: ptr::null_mut(),
+                    interface: image_path,
                 },
             ];
             let handle = match state.protocols.install_bindings(ptr::null_mut(), &pairs) {
@@ -213,6 +282,7 @@ pub unsafe extern "efiapi" fn load_image(
             state.images.records[index] = Some(ImageRecord {
                 handle,
                 mapped,
+                allocation_pages: (span.end - span.start) / PAGE_BYTES,
                 #[cfg(target_os = "none")]
                 parent,
                 #[cfg(target_os = "none")]
@@ -231,6 +301,9 @@ pub unsafe extern "efiapi" fn load_image(
                     run.permissions.executable(),
                 );
             }
+            if metadata_pages != 0 {
+                tables.set(metadata_base..span.end, false, false);
+            }
             tables.flush();
 
             image.write(handle);
@@ -241,6 +314,11 @@ pub unsafe extern "efiapi" fn load_image(
         });
         protocol::dispatch_after_install(status)
     }
+}
+
+fn overlaps(input: &[u8], start: usize, end: usize) -> bool {
+    let address = input.as_ptr().addr();
+    address < end && start < address + input.len()
 }
 
 fn image_types(subsystem: Subsystem) -> (MemoryType, MemoryType) {
@@ -328,7 +406,7 @@ unsafe fn release_record(state: &mut state::ServiceState<'_>, index: usize) -> S
     if invoke::has_unfinished_child(state.images, image) {
         return Status::ACCESS_DENIED;
     }
-    let pages = u64::from(mapped.size).div_ceil(PAGE_BYTES);
+    let pages = record.allocation_pages;
     let span = mapped.base..mapped.base + pages * PAGE_BYTES;
     if !state.protocols.can_remove_image(image) {
         return Status::ACCESS_DENIED;

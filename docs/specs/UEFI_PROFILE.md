@@ -26,13 +26,34 @@ Table загруженному EFI-образу проверяет S7-06.
 
 | Boot Service | Поддержанный профиль |
 |---|---|
-| `LoadImage` | Загружает PE32+ из буфера при NULL Device Path и известном parent handle. Отсутствие источника и пути даёт `EFI_NOT_FOUND`, повреждённый формат даёт `EFI_LOAD_ERROR`, неподдержанный тип или заданный Device Path дают `EFI_UNSUPPORTED`. При ошибке сохраняет выход. |
+| `LoadImage` | Загружает PE32+ из буфера или по Device Path встроенного FV с известным parent handle. При наличии буфера использует его байты, а путь служит источником метаданных. Отсутствие источника и пути либо файла FV даёт `EFI_NOT_FOUND`. Повреждённый путь даёт `EFI_INVALID_PARAMETER`, повреждённый PE даёт `EFI_LOAD_ERROR`, неподдержанный тип даёт `EFI_UNSUPPORTED`. При ошибке сохраняет выход. |
 | `StartImage` | Один раз вызывает точку входа загруженного образа при `TPL_APPLICATION`. До возврата вызывает `ConnectController` с `Recursive=TRUE` для новых и изменённых handles, оставшихся в базе. Возвращает статус точки входа или `Exit` и передаёт запрошенный `ExitData`. Ошибочный handle, повторный запуск или неверный TPL дают `EFI_INVALID_PARAMETER`. |
 | `Exit` | Для текущего запущенного образа передаёт управление в `StartImage`. Для незапущенного образа освобождает его через `UnloadImage`. При ошибочном handle возвращает `EFI_INVALID_PARAMETER`. |
 | `UnloadImage` | При TPL до `TPL_CALLBACK` освобождает страницы незапущенного или завершённого выгружаемого образа, возвращает RW/NX и снимает регистрацию. Для резидентного драйвера вызывает текущий `LoadedImage.Unload` на отдельном стеке, освобождает образ при `EFI_SUCCESS` и передаёт другие статусы с сохранением образа. NULL callback даёт `EFI_UNSUPPORTED`. При удержании протокола другим драйвером или повторной выгрузке активного образа возвращает `EFI_ACCESS_DENIED`. |
 | `GetNextMonotonicCount` | NULL выход даёт `EFI_INVALID_PARAMETER`. Без энергонезависимой старшей части счётчика сервис возвращает `EFI_DEVICE_ERROR` и сохраняет выход. |
 
 [UEFI 2.11, §§7.4 и 7.5.5](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#image-services).
+
+Loaded Image Device Path содержит собственную копию всего входного пути.
+`LoadedImage.DeviceHandle` указывает на устройство совпавшего
+экземпляра, а `FilePath` хранит независимую копию его оставшихся узлов
+с маркером `End Entire`. При загрузке из буфера без совпавшего
+устройства эти два поля равны NULL. NULL входного пути даёт NULL
+интерфейс Loaded Image Device Path. Поля пути лежат на RO/NX страницах
+после округлённого конца PE. `ImageSize` содержит размер PE, а частная
+запись хранит полный размер выделения для выгрузки.
+[UEFI 2.11, §9](https://uefi.org/specs/UEFI/2.11/09_Protocols_EFI_Loaded_Image.html).
+
+Встроенный FV публикует Device Path и `EFI_LOAD_FILE_PROTOCOL` на
+одном handle. Путь устройства содержит Media Vendor с GUID
+`369ec96f-b0dd-4a8e-bbcb-a60a59915839`. Один Media File Path задаёт
+точное имя файла архива в UTF-16LE с начальным `\` и завершающим NUL.
+Оба значения BootPolicy используют один поиск по точному имени.
+`LoadFile` сообщает требуемый размер при NULL или коротком буфере
+через `EFI_BUFFER_TOO_SMALL` без копирования. При загрузке без буфера
+прошивка пробует экземпляры пути по порядку и читает содержимое через
+общий поиск собственного провайдера FV.
+[UEFI 2.11, §13.1](https://uefi.org/specs/UEFI/2.11/13_Protocols_Media_Access.html#load-file-protocol).
 
 ### Формат образов PE32+
 

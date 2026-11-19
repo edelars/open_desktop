@@ -8,7 +8,7 @@ const HEADER_SIZE: usize = 24;
 const CRC_OFFSET: usize = 20;
 const RECORD_HEADER_SIZE: usize = 8;
 const MIN_RECORD_SIZE: usize = RECORD_HEADER_SIZE + 2;
-const MAX_NAME_SIZE: usize = 63;
+pub(crate) const MAX_NAME_SIZE: usize = 63;
 
 #[cfg(target_os = "none")]
 #[used]
@@ -82,9 +82,13 @@ impl<'a> Archive<'a> {
     }
 
     pub fn get(&self, name: &str) -> Option<&'a [u8]> {
+        self.get_bytes(name.as_bytes())
+    }
+
+    pub(crate) fn get_bytes(&self, name: &[u8]) -> Option<&'a [u8]> {
         let mut rest = self.records;
         while let Some((record, remaining)) = read_record(rest) {
-            if name.as_bytes() == record.name {
+            if name == record.name {
                 return Some(record.data);
             }
             rest = remaining;
@@ -113,7 +117,7 @@ fn read_record(bytes: &[u8]) -> Option<(Record<'_>, &[u8])> {
     ))
 }
 
-fn valid_name(name: &[u8]) -> bool {
+pub(crate) fn valid_name(name: &[u8]) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_SIZE
         && name != b"."

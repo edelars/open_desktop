@@ -309,7 +309,11 @@ pub unsafe extern "efiapi" fn locate_device_path(
 impl ProtocolRegistry {
     /// Installed interfaces with the Device Path GUID must point to readable
     /// path storage. The input ends at a validated node boundary.
-    unsafe fn closest_device_path(&self, protocol: Guid, input: &[u8]) -> Option<(Handle, usize)> {
+    pub(in crate::bs) unsafe fn closest_device_path(
+        &self,
+        protocol: Guid,
+        input: &[u8],
+    ) -> Option<(Handle, usize)> {
         let mut best = None;
         for binding in self.bindings.iter().flatten() {
             if binding.protocol != DEVICE_PATH_PROTOCOL_GUID

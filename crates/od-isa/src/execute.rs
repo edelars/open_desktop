@@ -21098,9 +21098,20 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         },
                     ) => match (instruction.opcode.byte, instruction.operand_size) {
                         (0x88, OperandSize::Byte) => {
-                            destination == RegisterView::low(Register::Rax, OperandSize::Byte)
+                            let original = destination
+                                == RegisterView::low(Register::Rax, OperandSize::Byte)
                                 && source == RegisterView::low(Register::Rbx, OperandSize::Byte)
-                                && instruction.prefixes == Prefixes::default()
+                                && instruction.prefixes == Prefixes::default();
+                            // Byte transfer emitted by the FV file-path decoder.
+                            let fv_path = destination
+                                == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                                && source == RegisterView::low(Register::R8, OperandSize::Byte)
+                                && instruction.prefixes
+                                    == (Prefixes {
+                                        rex: Some(0x44),
+                                        ..Prefixes::default()
+                                    });
+                            original || fv_path
                         }
                         (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword) => true,
                         _ => false,
@@ -23070,30 +23081,34 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
-        // S7-04: exact `40 84 6C 24 07` tests memory at [RSP+7] against BPL.
-        // Read through the tracked operand path, update logical flags only,
-        // and leave memory and every GPR untouched.
+        // Exact byte TEST forms in the base boot probe and FV image loader.
+        // Read through the tracked operand path and update logical flags only.
         Operation::Logic {
             kind: LogicKind::Test,
             dst: Operand::Memory(destination),
             src: Operand::Register(source),
-        } if base_profile
-            && instruction.opcode.map == OpcodeMap::Primary
+        } if instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x84
-            && instruction.length == 5
             && instruction.operand_size == OperandSize::Byte
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x40),
-                    ..Prefixes::default()
-                })
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
-            && destination.displacement == 7
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Byte
-            && source == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+            && ((base_profile
+                && instruction.length == 5
+                && destination.displacement == 7
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x40),
+                        ..Prefixes::default()
+                    })
+                && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
+                || (firmware_boot_profile
+                    && instruction.length == 7
+                    && destination.displacement == 0x14c
+                    && instruction.prefixes == Prefixes::default()
+                    && source == RegisterView::low(Register::Rax, OperandSize::Byte))) =>
         {
             let lhs = match read_operand(
                 state,

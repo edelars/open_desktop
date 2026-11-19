@@ -234,6 +234,10 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::device_path::utilities::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 67);
     }
+    if unsafe { od_firmware::bs::image::install_firmware_volume() } != Status::SUCCESS {
+        stop(STOP_BOOT_SERVICES, 68);
+    }
+    verify_embedded_image(&system);
     verify_exit_boot_services(system_pointer, handoff.tsc_hz());
     // Keep the full wire representations inspectable in RAM at the diagnostic halt.
     unsafe {
@@ -1288,6 +1292,50 @@ fn verify_service_boundaries(system: &SystemTable) {
         }
     }
     com1_write(b"OD-FW S7-05 service ABI boundaries verified\r\n");
+}
+
+#[inline(never)]
+fn verify_embedded_image(system: &SystemTable) {
+    let Ok(archive) = od_firmware::fv::embedded() else {
+        stop(STOP_BOOT_SERVICES, 69);
+    };
+    if archive.get("hello").is_none() {
+        return;
+    }
+    let mut path_buffer = [0; 64];
+    let Some(path) = od_firmware::bs::image::firmware_file_device_path("hello", &mut path_buffer)
+    else {
+        stop(STOP_INTERNAL, 70);
+    };
+    // SAFETY: the table is active and the encoded path and scalar buffers
+    // remain live through their Boot Services calls.
+    unsafe {
+        let boot = ptr::addr_of!(system.boot_services).read_volatile();
+        let install = ptr::addr_of!((*boot).install_protocol_interface).read_volatile();
+        let uninstall = ptr::addr_of!((*boot).uninstall_protocol_interface).read_volatile();
+        let load = ptr::addr_of!((*boot).load_image).read_volatile();
+        let start = ptr::addr_of!((*boot).start_image).read_volatile();
+        let mut parent = ptr::null_mut();
+        if install(&mut parent, &DIAGNOSTIC_PROTOCOL, 0, ptr::null_mut()) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 71);
+        }
+        let mut image = ptr::null_mut();
+        match load(0, parent, path.as_ptr().cast(), ptr::null(), 0, &mut image) {
+            Status::SUCCESS => {
+                if start(image, ptr::null_mut(), ptr::null_mut()) != Status::SUCCESS {
+                    stop(STOP_BOOT_SERVICES, 72);
+                }
+                com1_write(b"OD-FW image hello: EFI_SUCCESS\r\n");
+            }
+            Status::LOAD_ERROR if image.is_null() => {
+                com1_write(b"OD-FW image hello: EFI_LOAD_ERROR\r\n");
+            }
+            status => stop(STOP_BOOT_SERVICES, status.raw() as u64),
+        }
+        if uninstall(parent, &DIAGNOSTIC_PROTOCOL, ptr::null_mut()) != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, 73);
+        }
+    }
 }
 
 #[inline(never)]

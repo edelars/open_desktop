@@ -1,8 +1,8 @@
 //! UEFI 2.11 §10.5 device path utilities and their boot-pool ownership.
 
 use super::{
-    DevicePathNode, END_ENTIRE, END_INSTANCE, END_TYPE, HEADER_SIZE, MAX_PATH_BYTES,
-    complete_extent, first_instance_extent,
+    DevicePathNode, END_ENTIRE, END_INSTANCE, END_PATH_BYTES, END_TYPE, HEADER_SIZE,
+    MAX_PATH_BYTES, complete_extent, first_instance_extent, path_bytes,
 };
 use crate::bs::{
     memory::allocate_pool,
@@ -54,7 +54,6 @@ static UTILITIES: DevicePathUtilitiesProtocol = DevicePathUtilitiesProtocol {
     create_device_node,
 };
 
-const END_PATH_BYTES: [u8; HEADER_SIZE] = [END_TYPE, END_ENTIRE, HEADER_SIZE as u8, 0];
 const END_INSTANCE_BYTES: [u8; HEADER_SIZE] = [END_TYPE, END_INSTANCE, HEADER_SIZE as u8, 0];
 
 /// Publish the stateless utilities on their own handle.
@@ -216,11 +215,6 @@ unsafe extern "efiapi" fn create_device_node(
         }
     }
     node
-}
-
-unsafe fn path_bytes<'a>(path: *const DevicePathNode) -> Option<&'a [u8]> {
-    let length = unsafe { complete_extent(path) }?;
-    Some(unsafe { slice::from_raw_parts(path.cast(), length) })
 }
 
 unsafe fn path_or_end<'a>(path: *const DevicePathNode) -> Option<&'a [u8]> {
