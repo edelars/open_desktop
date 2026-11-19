@@ -26448,7 +26448,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
-        // S7-04: tracked byte and qword immediate stores initialize firmware state. The base
+        // S7-04: tracked immediate stores initialize firmware state. The base
         // probe also accepts its exact `42 C6 44 04 08 01` stack form.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
@@ -26460,11 +26460,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && ((firmware_boot_profile
                 && matches!(
                     (instruction.opcode.byte, instruction.operand_size),
-                    (0xc6, OperandSize::Byte) | (0xc7, OperandSize::Qword)
+                    (0xc6, OperandSize::Byte)
+                        | (
+                            0xc7,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
                 )
                 && instruction.prefixes
                     == (Prefixes {
                         rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
                         ..Prefixes::default()
                     }))
                 || (instruction.opcode.byte == 0xc6
@@ -26784,7 +26789,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: compare a parser byte with the decoded immediate. The base
+        // S7-04: compare a parser field with the decoded immediate. The base
         // probe retains its exact indexed and unindexed stack forms.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
@@ -26792,17 +26797,26 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             src: Operand::Immediate(immediate),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0x80
-            && instruction.operand_size == OperandSize::Byte
             && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Byte
+            && destination.size == instruction.operand_size
             && ((firmware_boot_profile
+                && matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x80, OperandSize::Byte)
+                        | (
+                            0x81 | 0x83,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
+                )
                 && instruction.prefixes
                     == (Prefixes {
                         rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
                         ..Prefixes::default()
                     }))
-                || (destination.base == AddressBase::Register(Register::Rsp)
+                || (instruction.opcode.byte == 0x80
+                    && instruction.operand_size == OperandSize::Byte
+                    && destination.base == AddressBase::Register(Register::Rsp)
                     && destination.scale == 1
                     && ((instruction.length == 6
                         && instruction.prefixes
@@ -26841,7 +26855,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
             let (_, flags) = arithmetic_result(
-                OperandSize::Byte,
+                instruction.operand_size,
                 ArithmeticKind::Cmp,
                 lhs,
                 immediate,
