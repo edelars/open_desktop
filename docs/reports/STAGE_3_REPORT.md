@@ -1336,11 +1336,37 @@ client observed `INVALID_STATE` with unchanged output, destroyed the failed
 session and acquired a fresh one. With one available FD, both builds returned
 `ALLOCATION_FAILED`, retained the request ID high-water mark and recovered
 with a greater ID. Failure injection at pipe `fcntl` setup remains open.
+The signed cases reproduced on both local macOS 26.7.1 and the M1 Pro
+with macOS 14.6.1.
 [Native C smoke and reproduction](STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
+### M1 Pro checks after S3-40ah
+
+Both selectors used clean `de1f446` on the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4, and Rust and Cargo 1.99.0. Both start
+and end fingerprints were
+`847ff4b4c613ae59d2717455c1292220f3624493b399c1fad6a06e5ecd596071`.
+The input manifest SHA-256 was
+`edcf3516f85aca2020b771a6ea334db380b4beb19b51a9f2a9c261cecfe7f332`.
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `vmhost-process` | `stage3-20261119-204828-0ada889e9c` | 46/46 | 0 |
+| `local` | `stage3-20261119-205026-e90da94c3d` | 359/359 | 0 |
+
+The process selector recorded SIGSEGV and an empty group for
+`process_generated_fault`. The local selector passed the signed VMHost
+RESULT check, both repeats of the 1,010 Stage 1 inputs, and both
+repeats of the 4,800 memory inputs. The final summaries passed the
+validator on the original run directories. The archived SHA-256
+checks match all 405 selected step logs, 58 child logs and the
+local Stage 1 child summary and manifest.
+
+- The local archive contains 415 files, SHA-256 `4435276ee46ca326c548edf2f87de6ae3a344e2f2154eb0c8ed688c01d7f2e1e`. [Local archive](data/stage3/s3-41-m1pro-de1f446-20261119/local.json.gz)
+- The process archive contains 174 files, SHA-256 `c8e56dee3e71b0ae487196d77a3958ed6dbc10f17ef5c754d845b241a1271175`. [VMHost process archive](data/stage3/s3-41-m1pro-de1f446-20261119/vmhost-process.json.gz)
 ### Hardware acceptance
 
-The M1 Pro passed both ARM64 selectors on `5bc5ec6` and passed the
-separate launcher regression on the signed process-suite binary.
+The M1 Pro passed both ARM64 selectors on `de1f446` and passed the
+signed native C ABI cases for lost notification and pipe creation failure.
 The Mac mini configuration, native execution on physical x86 and
 final S3-41 acceptance remain open.
 

@@ -123,3 +123,18 @@ A greater ID completes with normal notification and state. Both the
 A separate signed probe showed that `F_SETFD` and `F_SETNOSIGPIPE` on an
 existing pipe still succeed with a full descriptor table. Failure injection
 for those setup calls remains open.
+
+### Confirmation on M1 Pro
+
+Apple M1 Pro, macOS 14.6.1 (23G93), Xcode 15.4 and Rust 1.99.0 ran the
+same four signed native client cases. The baseline linked the `ef44df6`
+library. The fixed variant used the same source export with the session
+notification change from `69e8b57`. Both C fixture versions verified
+normal notification before injecting reader loss. The baseline exited by
+SIGPIPE and the fixed variant exited 0 with either fixture. With the fixture
+from `3179068`, both builds also passed the earlier `EMFILE` recovery
+checks. The archive includes both hosts’ receipts, source and executable
+hashes, and the three local Rust lifecycle results.
+
+Archive SHA-256 `a7e142844bf84c23b6aebdf03215d3e5392f2e066120fefe2de688931b3a9b53`.
+[Native session ABI evidence](data/stage3/s3-41-m1pro-de1f446-20261119/native-session-abi.json.gz)

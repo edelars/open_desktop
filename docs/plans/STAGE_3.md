@@ -447,7 +447,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact macOS/ARM64 local lifecycle gates passed 1/1 each; the pinned harness self-test exited 0. Full Stage 3 harness and physical x86/Mini acceptance remain open; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
-| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Three exact macOS/ARM64 Rust lifecycle gates and the pinned harness self-test passed. The signed C client verified linking/layout, normal delivery, injected reader loss and pipe creation failure with `EMFILE`. Injection of a failing pipe `fcntl` call, broader race ordering, Mac mini, physical x86 and full S3-38 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
+| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Three exact macOS/ARM64 Rust lifecycle gates and the pinned harness self-test passed. The signed C client verified linking/layout, normal delivery, injected reader loss and pipe creation failure with `EMFILE` locally and on M1 Pro. Broader race ordering, Mac mini, physical x86 and full S3-38 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution was performed at the S3-38g integration revision; the later focused S3-38h process smoke passed. Broader V1 acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
 | [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Release od-host build, Swift VMHost compile, ad-hoc runtime signature/strict verification and `allow-jit` entitlement verification passed. The exact process smoke passed with two decoder-supported ADD RAX,RBX instructions, fresh state/budgets, increasing IDs, complete RESULT payloads, ACK/RESULT ordering and idle EOF teardown; manifest self-test passed. Current harness totals are 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 source pins. Full 39-step VMHost suite, C-client layout/link, pipe-failure, active STOP/EOF and framing acceptance remain open. Mini SSH timed out before remote tests; M1 deferred; Stage 3 partial. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Exact bounded smoke passed: STOP_ACK→RESULT ordering, stopped result, fresh same-code invocation, and clean teardown after active-run EOF. Descriptor/lease cleanup before exit, broader process suite, Mini/physical-x86 and full Stage 3 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
@@ -4581,9 +4581,9 @@ self-check exited 0. The signed native C smoke checks public layout, linking,
 normal notification and a deliberately lost notification reader. The owner
 returns `INVALID_STATE` and the client can destroy the failed session and
 acquire a fresh one. Descriptor exhaustion verifies `ALLOCATION_FAILED`
-during pipe creation and recovery at a greater request ID. Failure injection
-for pipe `fcntl` setup, the Mac mini, physical x86 and full S3-38 acceptance
-remain open. See the
+during pipe creation and recovery at a greater request ID. Both native
+scenarios were repeated on M1 Pro. The Mac mini, physical x86 and full
+S3-38 acceptance remain open. See the
 [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
 
 #### S3-38g. VMHost control V1 repeated same-code RUN transport
@@ -5386,6 +5386,15 @@ launcher. `process_generated_fault` зарегистрировал SIGSEGV и
 и входной манифест совпали. Физические критерии и итоговая приёмка
 S3-41 остаются открытыми.
 [Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-the-launcher-fix)
+
+**Повтор на M1 Pro после S3-40ah.** На чистом `de1f446` прошли все
+359 локальных шагов и 46 шагов подписанного набора VMHost. Отпечаток
+исходников и манифест входов совпали. Проверены журналы, включая SIGSEGV
+и очистку группы в `process_generated_fault`. Отдельный подписанный
+C-клиент проверил layout, обработку потери читателя и восстановление
+после `EMFILE`. Физические критерии и итоговая приёмка S3-41 остаются
+открытыми.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-s3-40ah)
 
 ## 10. Матрица приёмки
 
