@@ -440,3 +440,11 @@
 ### Дополнение 2026-11-20: S9-26 (локальный срез UEFI)
 
 Кодек участника UEFI поверх контейнера (inline, `kind` назначен в `nvram_device.rs`): строгая проверка снимка `ODNVBANK` v1/v2 с активной generation, холодный restore с различимыми ошибками (нет секции, reference вместо inline, чужой `schema_id`, повреждение, несовпадение версии, legacy там, где ждали защищённый формат), round-trip через секцию. Проверки: `cargo test -p od-machine --offline --lib nvram` — 24 passed; `cargo test -p od-host --offline --test stage9_uefi_participant` — 11 passed. Ревью Opus high: принять с исправлениями (таблица отката переписана: обнуление слота новейшего банка с пересчитанным CRC принимается как старый банк и не обнаруживается; эвристика понижения generation не реализована; требование к S9-30 — restore обязан идти через `cold_restore_uefi_section`). Повторное ревью — см. коммит. Не сделано: захват generation под общим cut (S9-28), anti-rollback и MAC (S9-27, S9-29), живой restore (ISSUE-600).
+
+### Итоговые проверки 2026-11-20 (коммит после S9-26)
+
+- `cargo check --workspace --all-targets --offline` — код 0 (предупреждения в `od-machine`, `od-host` существуют и не относятся к срезам этой сессии).
+- `cargo test -p od-machine --offline -- --test-threads=1` — код 0 (полный набор, один раз на финальном коде).
+- `cargo test -p od-runner --offline` — код 0 (полный набор).
+- cargo fmt --all -- --check: чисто.
+- `python3 tools/check_layout.py`: 49 ошибок «Broken local link», все в существующих ссылках на `work/` (каталог игнорируется в этом worktree) и в `STAGE_6_REPORT.md`; новых ошибок из-за правок этой сессии нет.
