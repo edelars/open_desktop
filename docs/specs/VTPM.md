@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Все 65 кодов текущего dispatcher входят в список команд, 36 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Все 66 кодов текущего dispatcher входят в список команд, 35 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -36,7 +36,6 @@ measured boot и журнала событий относится к S7-22. Гр
 |---|---|
 | Инициализация и PCR | `IncrementalSelfTest`, `PCR_Allocate` |
 | Credential activation и объекты | `ActivateCredential`, `MakeCredential`, `ObjectChangeAuth`, `Duplicate`, `Import` |
-| Хеширование | `HMAC_Start` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicySigned`, `PolicyTicket`, `PolicyLocality`, `PolicyNV`, `PolicyCounterTimer`, `PolicyCpHash`, `PolicyNameHash`, `PolicyDuplicationSelect`, `PolicyAuthorize`, `PolicyPassword`, `PolicyNvWritten`, `PolicyTemplate`, `PolicyAuthorizeNV`, `PolicyParameters` |
 | Управление и NV | `SetPrimaryPolicy`, `ClockSet`, `ClockRateAdjust`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth`, `NV_Certify` |
@@ -56,6 +55,12 @@ Errata 1.1 уточняет применимость ECC для `Encapsulate`/`D
 `TPM_ST_SESSIONS` требует `authorizationSize` не менее девяти байтов. Пустая, усечённая или переполненная область даёт `TPM_RC_AUTHSIZE`. `Startup`, `FlushContext`, `ContextSave` и `ContextLoad` со сессиями дают `TPM_RC_AUTH_CONTEXT`. Дополнительная парольная, trial-сессия или сессия без применимого назначения даёт `TPM_RC_ATTRIBUTES`. При неверном HMAC дополнительной сессии TPM возвращает `TPM_RC_BAD_AUTH` с её номером. [TPM Library v185, Part 3 §5.5](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 В `ECDH_KeyGen` шифруется содержимое первой `TPM2B_ECC_POINT` (`zPoint`). Размер `zPoint` и вся `pubPoint` остаются открытыми. В `StartAuthSession` защищаются `nonceCaller` и `nonceTPM`, в `GetTestResult` — содержимое `outData`. [TPM Library v185, Part 3 Tables 12–15, 48–49](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+
+### Потоковое вычисление HMAC
+
+`TPM2_HMAC_Start` (`0x15B`) по авторизации keyed-hash ключа создаёт transient-объект со своим `authValue`. Для открытого по схеме ключа требуется указать SHA-256. Для ключа с HMAC-SHA-256 допустим также `TPM_ALG_NULL`. Команда принимает шифрование первого параметра `auth`. Состояние HMAC хранится в существующих трёх sequence-слотах. Оно продолжает работать после выгрузки исходного ключа.
+
+`SequenceUpdate` добавляет фрагменты без накопления сообщения в памяти. `SequenceComplete` принимает последний фрагмент, возвращает HMAC и NULL Hashcheck ticket и освобождает слот. Код ошибки при неверном `authValue` или вызове `EventSequenceComplete` сохраняет состояние sequence. SHA-256 и буфер HMAC очищаются при освобождении объекта. Контекстное сохранение sequence остаётся в ISSUE-529. [TPM Library v185, Part 3 §17.2](https://trustedcomputinggroup.org/resource/tpm-library-specification/).
 
 ### Аттестация создания объекта
 

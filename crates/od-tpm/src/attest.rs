@@ -1,17 +1,4 @@
-//! `TPM2_HMAC`, `TPM2_Quote` and `TPM2_Certify` (slice C2 of phase B, S7-23).
-//!
-//! **`TPM2_HMAC`** (Part 3 v184, clause 15.5) computes HMAC-SHA-256 with the key of an unrestricted
-//! keyed-hash object that has `sign` SET (`TPM_RC_KEY` without `sign`, `TPM_RC_TYPE` for another
-//! object type, `TPM_RC_ATTRIBUTES` for a restricted key). The key is created by `TPM2_Create` or
-//! `TPM2_CreatePrimary` from a `KEYEDHASH` template with `sign` and scheme HMAC (SHA-256) or NULL
-//! (`object.rs`): the key bytes come from `inSensitive.data` (at most 128 octets; `sensitiveDataOrigin`
-//! CLEAR) or the TPM generates 32 octets (data empty, `sensitiveDataOrigin` SET). `hashAlg` is the
-//! hash of the key's scheme or NULL, or SHA-256 for a key with a NULL scheme (`TPM_RC_VALUE`, hash
-//! selection matrix of Part 3, Table 75); another algorithm is `TPM_RC_HASH`. The TPM may
-//! implement `TPM2_HMAC` or `TPM2_MAC`, not both (same command code): this TPM implements
-//! `TPM2_HMAC`. The Windows requirement for `TPM2_HMAC` is T-03 of
-//! `docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md` (by Microsoft documentation; use is a hypothesis
-//! until the S7-32 trace).
+//! TPM attestation commands (Part 3, clause 18).
 //!
 //! **Attestation** (Part 3, clauses 18.1, 18.2 and 18.4; Part 2, clauses 10.12.2-10.12.13). The TPM
 //! builds a `TPMS_ATTEST` (`magic` = `TPM_GENERATED_VALUE`, `type`, `qualifiedSigner` = Qualified
@@ -49,16 +36,13 @@
 //! No authorization value exists for `TPM_RH_NULL`: the session is checked
 //! against the empty authValue like for every other use of this handle (`dispatch.rs`).
 //!
-//! Not implemented: `TPM2_CertifyCreation`, `TPM2_GetSessionAuditDigest`,
-//! `TPM2_GetCommandAuditDigest`, `TPM2_NV_Certify`, `TPM2_CertifyX509`, ECDAA and other schemes
-//! (a valid signing scheme other than RSASSA, ECDSA is `TPM_RC_SCHEME`), a non-NULL `TPM2_Sign`
-//! of HMAC keys.
+//! GetCommandAuditDigest, NV_Certify and CertifyX509 remain open. RSASSA and ECDSA
+//! are the currently supported attestation signing schemes.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the codes
 //! `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` with a handle number for `x509sign` and non-signing keys of
 //! attestation commands, `TPM_RC_SCHEME` (parameter 2) for a scheme that does not fit the key
-//! type, `TPM_RC_SIZE` for a `qualifyingData` above `TPM2B_DATA`, `TPM_RC_VALUE` (parameter 2,
-//! `TPM2_HMAC`) for the hash selection, `TPM_RC_HASH` for other hash algorithms; the value of
+//! type, `TPM_RC_SIZE` for a `qualifyingData` above `TPM2B_DATA`; the value of
 //! `firmwareVersion` (`TPM_PT_FIRMWARE_VERSION_1 << 32 | _2`); the obfuscation layout; the
 //! `pcrDigest` of an empty PCR selection (SHA-256 of the empty string). Slice C3: that
 //! a NULL signer's `qualifiedSigner` is the 4 octets of `TPM_RH_NULL` and the obfuscation uses
@@ -75,7 +59,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
-use crate::crypto::{ecc_sign, hmac_sha256, kdfa_sha256, rsa_sign};
+use crate::crypto::{ecc_sign, kdfa_sha256, rsa_sign};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
@@ -393,46 +377,5 @@ impl Tpm {
             &attested.buf,
         );
         self.attest_response(inv.handles[1], signing.map(|(_, s)| s), attest)
-    }
-
-    /// `TPM2_HMAC` (Part 3, clause 15.5).
-    pub(crate) fn cmd_hmac(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
-        p.set_param(1);
-        let buffer = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
-        p.set_param(2);
-        let hash_alg = p.u16()?;
-        p.finish()?;
-        let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        if !o.has(object_attr::SIGN) {
-            return Err(Rc::KEY.in_handle(1));
-        }
-        let PublicParams::KeyedHash { scheme } = &o.public.params else {
-            return Err(Rc::TYPE.in_handle(1));
-        };
-        if o.has(object_attr::RESTRICTED) {
-            return Err(Rc::ATTRIBUTES.in_handle(1));
-        }
-        if hash_alg != alg::SHA256 && hash_alg != alg::NULL {
-            return Err(Rc::HASH.in_param(2));
-        }
-        // Hash selection (Part 3, Table 75): the key's default, or the caller's for a NULL scheme.
-        let ok = if scheme.alg != alg::NULL {
-            hash_alg == alg::NULL || hash_alg == scheme.hash
-        } else {
-            hash_alg == alg::SHA256
-        };
-        if !ok {
-            return Err(Rc::VALUE.in_param(2));
-        }
-        let Some(Secret::Data(key)) = o.sensitive.as_ref().map(|s| &s.secret) else {
-            return Err(Rc::AUTH_UNAVAILABLE);
-        };
-        let mac = hmac_sha256(key, &[buffer]);
-        let mut w = Writer::new();
-        w.tpm2b(&mac);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
     }
 }

@@ -23,6 +23,7 @@ pub mod cc {
     pub const NV_EXTEND: u32 = 0x0000_0136;
     pub const POLICY_SECRET: u32 = 0x0000_0151;
     pub const HMAC: u32 = 0x0000_0155;
+    pub const HMAC_START: u32 = 0x0000_015B;
     pub const QUOTE: u32 = 0x0000_0158;
     pub const CONTEXT_LOAD: u32 = 0x0000_0161;
     pub const CONTEXT_SAVE: u32 = 0x0000_0162;

@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 65] = [
+pub(crate) static COMMANDS: [CommandSpec; 66] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -146,6 +146,7 @@ pub(crate) static COMMANDS: [CommandSpec; 65] = [
     spec(cc::LOAD, 1, 1, true, false, false),
     spec(cc::QUOTE, 1, 1, false, false, false),
     spec(cc::RSA_DECRYPT, 1, 1, false, false, false),
+    spec(cc::HMAC_START, 1, 1, true, false, false),
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
     spec(cc::SIGN, 1, 1, false, false, false),
     spec(cc::UNSEAL, 1, 1, false, false, false),
@@ -725,6 +726,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::CONTEXT_SAVE => tpm.cmd_context_save(&inv, &mut p)?,
         cc::CONTEXT_LOAD => tpm.cmd_context_load(&mut p)?,
         cc::HMAC => tpm.cmd_hmac(&inv, &mut p)?,
+        cc::HMAC_START => tpm.cmd_hmac_start(&inv, &mut p)?,
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
         cc::CERTIFY_CREATION => tpm.cmd_certify_creation(&inv, &mut p)?,
@@ -882,7 +884,8 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::RSA_DECRYPT
         | cc::ECDH_KEY_GEN
         | cc::ECDH_Z_GEN
-        | cc::HMAC => tpm.check_object_handle(handles[0], 0, false)?,
+        | cc::HMAC
+        | cc::HMAC_START => tpm.check_object_handle(handles[0], 0, false)?,
         // `signHandle` may be `TPM_RH_NULL` (Part 3, clause 18.1: `TPMI_DH_OBJECT+`).
         cc::QUOTE => check_sign_handle(tpm, handles[0], 0)?,
         cc::CERTIFY => {
@@ -997,6 +1000,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 65);
+        assert_eq!(COMMANDS.len(), 66);
     }
 }

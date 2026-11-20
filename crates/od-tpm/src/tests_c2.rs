@@ -1114,6 +1114,102 @@ fn hmac_out(resp: &[u8]) -> Vec<u8> {
     d
 }
 
+fn hmac_start(t: &mut Tpm, key: u32, pw: &[u8], auth: &[u8], hash: u16) -> Vec<u8> {
+    run(
+        t,
+        with_pw(
+            cc::HMAC_START,
+            &[key],
+            &[pw],
+            &cat(&[&tpm2b(auth), &u16b(hash)]),
+        ),
+    )
+}
+
+#[test]
+fn hmac_start_streams_across_chunks_and_releases_on_success() {
+    let (mut t, parent) = with_ecc_parent();
+    let secret: Vec<u8> = (1..=128).collect();
+    let (key, _, _) = make_child(
+        &mut t,
+        parent,
+        &hmac_key(HMAC_SHA256, false),
+        b"key",
+        &secret,
+    );
+    let r = hmac_start(&mut t, key, b"key", b"sequence", alg::NULL);
+    let sequence = u32::from_be_bytes(r[10..14].try_into().unwrap());
+    let (parameters, acks) = split_response(&r, 1);
+    assert!(parameters.is_empty());
+    assert_eq!(acks, vec![(Vec::new(), 1, Vec::new())]);
+    ok(&flush(&mut t, key));
+    err(
+        &seq_update(&mut t, sequence, b"key", b"bad"),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    ok(&seq_update(&mut t, sequence, b"sequence", &[0xa5; 1024]));
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::EVENT_SEQUENCE_COMPLETE,
+                &[8, sequence],
+                &[b"", b"sequence"],
+                &tpm2b(b"bad"),
+            ),
+        ),
+        Rc::MODE.in_handle(2),
+    );
+    ok(&seq_update(&mut t, sequence, b"sequence", &[0x5a; 1024]));
+    let complete = seq_complete(&mut t, sequence, b"sequence", b"tail", OWNER);
+    let (digest, ticket) = digest_and_ticket(&complete);
+    // Python hmac with key 01..80 and message A5×1024 || 5A×1024 || "tail".
+    assert_eq!(
+        digest,
+        hex("e0544081cb513ab12e4a18bddb78ff8e66af37d9fff0d1e6ac3c13975c018bde")
+    );
+    assert_eq!((ticket.hierarchy, ticket.digest), (NULL, Vec::new()));
+    err(
+        &seq_update(&mut t, sequence, b"sequence", b""),
+        Rc::reference_handle(0),
+    );
+}
+
+#[test]
+fn hmac_start_uses_the_shared_key_rules_and_sequence_capacity() {
+    let (mut t, parent) = with_ecc_parent();
+    let (key, _, _) = make_child(
+        &mut t,
+        parent,
+        &hmac_key(Scheme::NULL, false),
+        b"key",
+        b"secret",
+    );
+    err(
+        &hmac_start(&mut t, key, b"key", b"", alg::NULL),
+        Rc::VALUE.in_param(2),
+    );
+    err(
+        &hmac_start(&mut t, key, b"bad", b"", alg::SHA256),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    for slot in 0..3 {
+        let r = hmac_start(&mut t, key, b"key", b"", alg::SHA256);
+        ok(&r);
+        assert_eq!(&r[10..14], &(0x8000_0000u32 + slot).to_be_bytes());
+    }
+    err(&start_seq(&mut t, b"", alg::SHA256), Rc::OBJECT_MEMORY);
+    err(
+        &hmac_start(&mut t, key, b"key", b"", alg::SHA256),
+        Rc::OBJECT_MEMORY,
+    );
+    ok(&flush(&mut t, 0x8000_0001));
+    assert_eq!(
+        seq_handle(&start_seq(&mut t, b"", alg::SHA256)),
+        0x8000_0001
+    );
+}
+
 #[test]
 fn hmac_matches_the_rfc_4231_vectors_for_keyed_hash_objects() {
     let (mut t, parent) = with_ecc_parent();

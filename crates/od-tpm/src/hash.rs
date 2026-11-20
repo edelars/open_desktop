@@ -1,8 +1,20 @@
-//! `TPM2_Hash` and hash/event sequences (`HashSequenceStart`, `SequenceUpdate`,
-//! `SequenceComplete`, `EventSequenceComplete`), SHA-256 only (HASH_COUNT = 1).
+//! SHA-256 hashing, HMAC, and hash, HMAC and event sequences.
 //!
 //! Sequence objects are transient objects (handle type `TPM_HT_TRANSIENT`), at most
 //! [`MAX_SEQUENCES`] at a time; `TPM_RC_OBJECT_MEMORY` when no slot is free.
+//!
+//! **`TPM2_HMAC`** (Part 3 v184, clause 15.5) computes HMAC-SHA-256 with the key of an unrestricted
+//! keyed-hash object that has `sign` SET (`TPM_RC_KEY` without `sign`, `TPM_RC_TYPE` for another
+//! object type, `TPM_RC_ATTRIBUTES` for a restricted key). The key is created by `TPM2_Create` or
+//! `TPM2_CreatePrimary` from a `KEYEDHASH` template with `sign` and scheme HMAC (SHA-256) or NULL
+//! (`object.rs`): the key bytes come from `inSensitive.data` (at most 128 octets; `sensitiveDataOrigin`
+//! CLEAR) or the TPM generates 32 octets (data empty, `sensitiveDataOrigin` SET). `hashAlg` is the
+//! hash of the key's scheme or NULL, or SHA-256 for a key with a NULL scheme (`TPM_RC_VALUE`, hash
+//! selection matrix of Part 3, Table 75); another algorithm is `TPM_RC_HASH`. The TPM may
+//! implement `TPM2_HMAC` or `TPM2_MAC`, not both (same command code): this TPM implements
+//! `TPM2_HMAC`. The Windows requirement for `TPM2_HMAC` is T-03 of
+//! `docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md` (by Microsoft documentation; use is a hypothesis
+//! until the S7-32 trace).
 //!
 //! Limitations recorded in `docs/specs/VTPM.md`:
 //! - the `validation` ticket is always the NULL ticket (`TPMT_TK_HASHCHECK` with `TPM_RH_NULL`
@@ -11,12 +23,17 @@
 //!   carries the handle number here; whether sequence objects are exempt from dictionary attack
 //!   protection (a wrong password is answered `TPM_RC_BAD_AUTH`, there is no DA in phase A).
 
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::codes::{alg, handle};
+use crate::codes::{alg, handle, object_attr};
+use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_state};
 use crate::dispatch::Invocation;
-use crate::marshal::{Reader, TpmlDigestValues, TpmtHa, TpmtTkHashcheck, Writer, limits};
+use crate::marshal::{
+    PublicParams, Reader, TpmlDigestValues, TpmtHa, TpmtTkHashcheck, Writer, limits,
+};
+use crate::object::Secret;
 use crate::pcr::resolve_pcr_handle;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -106,15 +123,15 @@ pub(crate) fn password_matches(given: &[u8], auth: &[u8]) -> bool {
     diff == 0
 }
 
-#[derive(Clone)]
 pub(crate) enum SequenceKind {
     /// Hash sequence of one algorithm (SHA-256).
     Hash(Sha256),
+    /// Incremental HMAC-SHA-256 state, independent of the original key handle.
+    Hmac(Hmac<Sha256>),
     /// Event sequence: one hash context per PCR bank (a single bank).
     Event(Sha256),
 }
 
-#[derive(Clone)]
 pub(crate) struct Sequence {
     pub kind: SequenceKind,
     pub auth: AuthValue,
@@ -149,10 +166,17 @@ impl Sequences {
         }
     }
 
-    fn insert(&mut self, s: Sequence) -> Option<usize> {
-        let i = self.slots.iter().position(|s| s.is_none())?;
-        self.slots[i] = Some(s);
-        Some(i)
+    fn start(&mut self, kind: SequenceKind, auth: AuthValue) -> Result<Output, Rc> {
+        let slot = self
+            .slots
+            .iter()
+            .position(|s| s.is_none())
+            .ok_or(Rc::OBJECT_MEMORY)?;
+        self.slots[slot] = Some(Sequence { kind, auth });
+        Ok(Output {
+            handles: seq_handle(slot).to_be_bytes().to_vec(),
+            params: Vec::new(),
+        })
     }
 }
 
@@ -225,17 +249,72 @@ impl Tpm {
             _ => return Err(p.err(Rc::HASH)),
         };
         p.finish()?;
-        let slot = self
-            .sequences
-            .insert(Sequence { kind, auth })
-            .ok_or(Rc::OBJECT_MEMORY)?;
+        self.sequences.start(kind, auth)
+    }
+
+    /// The key and hash selection rules shared by HMAC and HMAC_Start (Part 3, Tables 75 and 79).
+    fn hmac_key_for_hash(&self, handle: u32, hash_alg: u16) -> Result<&[u8], Rc> {
+        let object = self.object(handle).ok_or(Rc::reference_handle(0))?;
+        if !object.has(object_attr::SIGN) {
+            return Err(Rc::KEY.in_handle(1));
+        }
+        let PublicParams::KeyedHash { scheme } = &object.public.params else {
+            return Err(Rc::TYPE.in_handle(1));
+        };
+        if object.has(object_attr::RESTRICTED) {
+            return Err(Rc::ATTRIBUTES.in_handle(1));
+        }
+        if !matches!(hash_alg, alg::SHA256 | alg::NULL) {
+            return Err(Rc::HASH.in_param(2));
+        }
+        let valid_hash = if scheme.alg != alg::NULL {
+            hash_alg == alg::NULL || hash_alg == scheme.hash
+        } else {
+            hash_alg == alg::SHA256
+        };
+        if !valid_hash {
+            return Err(Rc::VALUE.in_param(2));
+        }
+        let Some(Secret::Data(key)) = object.sensitive.as_ref().map(|s| &s.secret) else {
+            return Err(Rc::AUTH_UNAVAILABLE);
+        };
+        Ok(key)
+    }
+
+    /// `TPM2_HMAC` (Part 3, clause 15.5).
+    pub(crate) fn cmd_hmac(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
+        p.set_param(1);
+        let buffer = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
+        p.set_param(2);
+        let hash_alg = p.u16()?;
+        p.finish()?;
+        let key = self.hmac_key_for_hash(inv.handles[0], hash_alg)?;
+        let mut w = Writer::new();
+        w.tpm2b(&hmac_sha256(key, &[buffer]));
         Ok(Output {
-            handles: seq_handle(slot).to_be_bytes().to_vec(),
-            params: Vec::new(),
+            handles: Vec::new(),
+            params: w.finish(),
         })
     }
 
-    /// `TPM2_SequenceUpdate` (Part 3, clause 17.5): works on hash and event sequences.
+    /// `TPM2_HMAC_Start` (Part 3, clause 17.2).
+    pub(crate) fn cmd_hmac_start(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let auth = AuthValue::from_slice(p.tpm2b(limits::MAX_DIGEST_SIZE)?)
+            .ok_or_else(|| p.err(Rc::SIZE))?;
+        p.set_param(2);
+        let hash_alg = p.u16()?;
+        p.finish()?;
+        let key = self.hmac_key_for_hash(inv.handles[0], hash_alg)?;
+        let kind = SequenceKind::Hmac(hmac_sha256_state(key));
+        self.sequences.start(kind, auth)
+    }
+
+    /// `TPM2_SequenceUpdate` (Part 3, clause 17.5).
     pub(crate) fn cmd_sequence_update(
         &mut self,
         inv: &Invocation,
@@ -245,17 +324,16 @@ impl Tpm {
         p.set_param(1);
         let data = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
         p.finish()?;
-        if let Some(Sequence {
-            kind: SequenceKind::Hash(h) | SequenceKind::Event(h),
-            ..
-        }) = self.sequences.slots[slot].as_mut()
-        {
-            h.update(data);
+        if let Some(sequence) = self.sequences.slots[slot].as_mut() {
+            match &mut sequence.kind {
+                SequenceKind::Hash(hash) | SequenceKind::Event(hash) => hash.update(data),
+                SequenceKind::Hmac(mac) => mac.update(data),
+            }
         }
         Ok(Output::default())
     }
 
-    /// `TPM2_SequenceComplete` (Part 3, clause 17.6): hash sequences only (`TPM_RC_MODE` for an
+    /// `TPM2_SequenceComplete` (Part 3, clause 17.6): hash and HMAC sequences (`TPM_RC_MODE` for an
     /// event sequence); flushes the sequence on success.
     pub(crate) fn cmd_sequence_complete(
         &mut self,
@@ -269,17 +347,23 @@ impl Tpm {
         let hierarchy = p.u32()?;
         check_hierarchy(p, hierarchy)?;
         p.finish()?;
-        let Some(Sequence {
-            kind: SequenceKind::Hash(h),
-            ..
-        }) = self.sequences.slots[slot].as_ref()
-        else {
-            return Err(Rc::MODE.in_handle(1));
+        let sequence = self.sequences.slots[slot]
+            .take()
+            .expect("the sequence slot was validated");
+        let digest: [u8; DIGEST] = match sequence.kind {
+            SequenceKind::Hash(mut hash) => {
+                hash.update(data);
+                hash.finalize().into()
+            }
+            SequenceKind::Hmac(mut mac) => {
+                mac.update(data);
+                mac.finalize().into_bytes().into()
+            }
+            SequenceKind::Event(_) => {
+                self.sequences.slots[slot] = Some(sequence);
+                return Err(Rc::MODE.in_handle(1));
+            }
         };
-        let mut h = h.clone();
-        h.update(data);
-        let digest = h.finalize();
-        self.sequences.slots[slot] = None;
         let mut w = Writer::new();
         w.tpm2b(&digest);
         null_ticket().marshal(&mut w);

@@ -31,7 +31,7 @@ pub(crate) const DIGEST: usize = 32;
 /// Block size of SHA-256 in octets (the HMAC key block).
 const BLOCK: usize = 64;
 
-fn mac(key: &[u8], parts: &[&[u8]]) -> Hmac<Sha256> {
+pub(crate) fn hmac_sha256_state(key: &[u8]) -> Hmac<Sha256> {
     // RFC 2104 key preparation done here so that the infallible fixed-size `KeyInit::new` is used
     // instead of the fallible `new_from_slice`: a key longer than the 64-octet block is replaced
     // by its SHA-256 digest, then the key is zero-padded to the block size. The result is the same
@@ -42,7 +42,11 @@ fn mac(key: &[u8], parts: &[&[u8]]) -> Hmac<Sha256> {
     } else {
         block[..key.len()].copy_from_slice(key);
     }
-    let mut m = <Hmac<Sha256> as KeyInit>::new(&(*block).into());
+    <Hmac<Sha256> as KeyInit>::new(&(*block).into())
+}
+
+fn mac(key: &[u8], parts: &[&[u8]]) -> Hmac<Sha256> {
+    let mut m = hmac_sha256_state(key);
     for p in parts {
         m.update(p);
     }

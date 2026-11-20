@@ -121,6 +121,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::RSA_DECRYPT
             | cc::ECDH_Z_GEN
             | cc::HMAC
+            | cc::HMAC_START
             | cc::QUOTE
             | cc::CERTIFY
             | cc::CERTIFY_CREATION
