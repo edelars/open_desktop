@@ -124,7 +124,9 @@ pub use bus::{
 };
 pub use nvram_device::{
     NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_SNAPSHOT_BYTES, NVRAM_STORE_BYTES, NvramConfig,
-    NvramContentsError, NvramDevice, SecureBootKeys,
+    NvramContentsError, NvramDevice, NvramSnapshotFormat, NvramSnapshotInfo, SecureBootKeys,
+    UEFI_SCHEMA_ID, UEFI_VARIABLES_INSTANCE, UEFI_VARIABLES_KIND, UefiRestoreError, UefiSection,
+    cold_restore_uefi_section, verify_nvram_snapshot,
 };
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
