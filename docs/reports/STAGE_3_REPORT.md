@@ -1535,7 +1535,7 @@ paired median and 0.953405 on the pressure fixture. The paired compile
 ratio was 1.005805.
 [S3-30e M1 Pro timings](STAGE_3_S3-30e_2026-11-20.md)
 
-S3-30f keeps fixed homes for the measured eager NativeRegisterV1 scope.
+S3-30f keeps fixed homes for the five measured eager S3-14 branch/helper cases.
 The 60 warm FIFO16 pairs gave a strict/fixed median of 0.998434 and a
 range of 0.981343–1.018863 across the five cases. Both sides used their
 ordinary dispatcher, with matching cache work and full-state preflight.
@@ -1887,6 +1887,15 @@ The user-selected third round includes a 79.0% idle exception, and
 the separate series that passed the automatic floor supports the same
 choice. ISSUE-520 remains open.
 [Attribution, selection records and archive](STAGE_3_S3-31m_2026-11-20.md)
+
+S3-40al records the decisions for the measured NativeRegisterV1,
+S0-09 register and S3-14 branch/helper profiles. Keep eager flags,
+fixed homes, dispatcher transitions with memo and the current IR
+lowering. The report ties
+each choice to its paired evidence and records the separate cold,
+warm and churn results for FIFO16. Stage acceptance is recorded in
+the S3-41 plan.
+[Measurement decisions and boundaries](STAGE_3_S3-40al_2026-11-20.md)
 
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite

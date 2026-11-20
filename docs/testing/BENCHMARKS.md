@@ -4,6 +4,18 @@
 
 Для ограниченного CPU-среза [`od-runner --benchmark`](../../tools/runner/README.md#reproducible-cpu-benchmark) собирает decode, translation/lowering, executable publication, повторный interpreter и повторный JIT с чередованием порядка и 20 samples по умолчанию. Каждая серия калибруется отдельно до batch не короче 200 ms; raw samples включают объём работы и elapsed time. Это не покрывает cold process/VMHost launch, ABI/IPC и resource measurements.
 
+## S3-40al. Решения и измеренные профили
+
+Итог по проверенным профилям связывает выбор флагов,
+аллокатора, переходов и lowering с условиями замеров. Сохраняйте
+раздельные границы таймера для первого вызова, прогретого
+диспетчера и проверки ресурсов. Для фаз публикуйте отношение
+инструментированного времени к штатному и доли от собственного
+времени инструментированного вызова. Фиксируйте эффективный
+nice −5 бенчмарка и реального пользователя процесса. Отдельно
+отмечайте исключения из автоматического порога простоя CPU.
+[Решения и исходные отчёты S3-40al](../reports/STAGE_3_S3-40al_2026-11-20.md)
+
 ## S3-29f: single-block eager/demand-flags comparison
 
 `od-bench flags-compare` is an opt-in Apple Silicon macOS release measurement

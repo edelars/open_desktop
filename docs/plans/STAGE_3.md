@@ -324,11 +324,11 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [x] | S3-28c | Сводная матрица STOP/event по путям, граница задержки, общий budget блоков и interpreter | S3-28a, S3-28b |
 | [x] | S3-28d | Локальный замер wall-time задержки STOP на busy-пути (не Mini, без обещания миллисекунд) | S3-28c |
-| [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
+| [partial] | S3-29 | Eager выбран для измеренных профилей NativeRegisterV1 | S3-01, S3-27, S3-28. [S3-29l](../reports/STAGE_3_S3-29l_2026-11-20.md) |
 | [x] | S3-29g | Cached NativeRegisterV1 eager/candidate full-dispatch comparison | S3-29f, S3-38b/c |
 | [partial] | S3-30 | Ограниченное allocator comparison; выбор по более широким workloads открыт | S3-01, S3-29 |
 | [partial] | S3-31 | Штатный диспетчер с memo выбран для измеренных регистровых профилей S0-09 | S3-25, S3-28, S3-30. [S3-31m](../reports/STAGE_3_S3-31m_2026-11-20.md) |
-| [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
+| [partial] | S3-32 | Текущий lowering сохранён для измеренных eager-профилей с фиксированными слотами | S3-03, S3-27, S3-30. [S3-32b](../reports/STAGE_3_S3-32b_2026-11-20.md) |
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
 | [partial] | S3-33n | Composed uncached `NativeRegisterV1` admission/lowering for committed S3-33a–m forms | Bounded implementation, independent review, and local evidence recorded; 33 local cases `not_run`; broader Stage 3 acceptance remains open |
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
@@ -442,9 +442,9 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dr | Exact local harness gates for retained Load→Load S3-18f | Pins the two JIT profile/entry-boundary gates and one od-host retained load-pair regression with exact local acceptance identities; adds a fail-closed source/gate/evidence self-test. Totals 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-test names, and 18 Rust source pins. Sol/high review PASS; the new self-test and all three exact Rust gates passed 1/1. Full unittest run exceeded 180s and was killed without a final result (not classified as failure). Mini has not run; M1 remains deferred. См. [implementation report](../reports/STAGE_3_S3-34dr_2026-11-03.md) and [JIT testing reference](../testing/JIT.md#s3-34dr-exact-harness-gates-for-the-s3-18f-loadload-profile) |
 | [partial] | S3-34ds | Generated mixed S3-55 register corpus | 1,200 unique inputs from three seeds run twice in the interpreter and on the real ARM64 arena for each flags mode. The integration test is now required by the local selector. The selected Rust gate and all 158 harness self-tests passed on local ARM64. Stage-wide and physical gates remain open. [Report](../reports/STAGE_3_S3-34ds_2026-11-19.md) |
 | [partial] | S3-34dt | Reduce a generated NativeRegisterV1 cache-trace GPR mismatch | Exact ordered-prefix replay and register-only reduction preserve the mismatch class and record all three backend observations. Four signed ARM64 gates passed, including a controlled observation mismatch and ordinary rejection of an unreproduced artifact. Broader S3-34.2 remains open. [Report](../reports/STAGE_3_S3-34dt_2026-11-19.md) |
-| [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
-| [partial] | S3-36 | Измерить прогретое исполнение | S3-35, локальные замеры S3-36a–g |
-| [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
+| [partial] | S3-35 | Холодный запуск 1 010 восстановленных входов S3-17 измерен на M1 Pro | S3-01, S3-34. [S3-35i](../reports/STAGE_3_S3-35i_2026-11-19.md), [S3-35j](../reports/STAGE_3_S3-35j_2026-11-19.md) |
+| [partial] | S3-36 | Прогретый FIFO16 на пяти branch/helper сценариях измерен на M1 Pro | S3-35. [S3-36l](../reports/STAGE_3_S3-36l_2026-11-19.md) |
+| [partial] | S3-37 | Churn и RSS на восстановленном S3-17 измерены на M1 Pro | S3-25, S3-34. [S3-37j](../reports/STAGE_3_S3-37j_2026-11-19.md) |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
@@ -460,7 +460,7 @@ Host PC map нужен для диагностики и восстановлен
 | [pass] | S3-38n | V1 process isolation after a helper SIGSEGV | Focused two-helper smoke passed: both admitted `JNZ -2` RUNs were active, SIGSEGV terminated only helper A, helper B returned exact-ID STOP_ACK before its full unchanged-state RESULT, then completed same-code fresh-state RUN and idle EOF. Exact process gate and fail-closed manifest self-check passed against a locally rebuilt and signed VMHost. The full process suite, physical Mini, and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md) |
 | [x] | S3-38o | Production host loop одного vCPU для `PagedFetchedLoadSession` — принято с ограничениями (gate-ревью Claude Opus, high, 2026-11-18) (внешний STOP, протокол STOP-байта S6-40 в однопоточной форме, общий бюджет, общий интерпретатор для не-JIT форм) | S3-25 (S3-25c), S3-28 (S3-28c), S4-15, S4-16; не зависит от S3-34 и S3-38f–n; блокер S6-42; закрытие не закрывает S3-38. Оценка 2–3 дня-агента |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
-| [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
+| [partial] | S3-40 | Решения зафиксированы для измеренных профилей NativeRegisterV1, S0-09 и S3-14 | S3-35–S3-39. [S3-40al](../reports/STAGE_3_S3-40al_2026-11-20.md) |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
 
@@ -2997,7 +2997,7 @@ ADD в helper и продолжение от STOP-RIP до Jcc на новом �
 
 #### S3-30f. Выбрать аллокатор по обычному прогретому FIFO16
 
-**Выбор для измеренного eager NativeRegisterV1 — fixed homes.** На M1 Pro
+**Выбор для пяти eager branch/helper сценариев S3-14 — fixed homes.** На M1 Pro
 в 60 принятых парах обычного прогретого FIFO16 медиана strict/fixed
 составила 0,998434 с диапазоном 0,981343–1,018863. Для сценария с давлением
 на регистры медиана 0,996204 с диапазоном 0,976183–1,023936. На всех
@@ -5492,6 +5492,15 @@ MOV-последовательностях. При бюджете 2 разниц
 прошли проверку состояния и памяти на 2 400 MOV-входах.
 ISSUE-521 остаётся открытой.
 [Парный замер и архив](../reports/STAGE_3_S3-40ak_2026-11-19.md)
+
+#### S3-40al. Решения для проверенных путей по замерам M1 Pro
+
+По S3-29l–S3-32b сохранены eager flags, фиксированные слоты,
+переходы через диспетчер с memo и текущий lowering в проверенных
+профилях. Для FIFO16 зафиксированы раздельные холодные, прогретые
+и ресурсные результаты S3-35i/j, S3-36l и S3-37j. Сохранены границы
+применимости и статусы ISSUE-520, ISSUE-521 и итоговой приёмки.
+[Сводка решений и источники замеров](../reports/STAGE_3_S3-40al_2026-11-20.md)
 
 ### S3-41. Оформить приёмку этапа
 
