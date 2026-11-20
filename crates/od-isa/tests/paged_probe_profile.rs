@@ -52986,6 +52986,16 @@ fn firmware_boot_memory_arithmetic_commits_only_after_write() {
             0x613,
         ),
         (
+            &[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..],
+            Register::Rax,
+            0,
+            8,
+            0xc8,
+            0xff,
+            1,
+            0x613,
+        ),
+        (
             &[0x48, 0x01, 0x44, 0x24, 0x30][..],
             Register::Rax,
             1,
@@ -53068,6 +53078,45 @@ fn firmware_boot_memory_arithmetic_commits_only_after_write() {
                 expected_memory[..width + 2]
             );
         }
+    }
+}
+
+#[test]
+fn load_image_region_addition_requires_the_firmware_profile_and_exact_form() {
+    for (code, firmware) in [
+        (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], false),
+        (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 3][..], true),
+        (&[0x48, 0x83, 0x84, 0x24, 0xd0, 0, 0, 0, 2][..], true),
+        (&[0x67, 0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], true),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = if firmware {
+            execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        } else {
+            execute::step_paged_probe(
+                PagedCpl0ProbeV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        };
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
 

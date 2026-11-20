@@ -270,7 +270,7 @@ fn identify_signer<'a>(
     let mut signer = None;
     for (index, candidate) in certificates.iter().enumerate() {
         let tbs = candidate.certificate.tbs_certificate();
-        if tbs.serial_number().as_bytes() == signed.serial
+        if same_signer_serial(tbs.serial_number().as_bytes(), signed.serial)
             && tbs
                 .issuer()
                 .to_der()
@@ -287,6 +287,16 @@ fn identify_signer<'a>(
         certificates,
         signer,
     })
+}
+
+fn same_signer_serial(certificate: &[u8], unsigned_signer: &[u8]) -> bool {
+    // X.509 preserves the DER INTEGER sign octet. SignerInfo uses a UintRef
+    // and exposes the unsigned magnitude.
+    match certificate {
+        [0, magnitude @ ..] if !magnitude.is_empty() => magnitude == unsigned_signer,
+        [first, ..] if first & 0x80 == 0 => certificate == unsigned_signer,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -383,6 +393,14 @@ mod tests {
         0xaa, 0x75, 0xfc, 0xac, 0x58, 0x96, 0x54, 0x02, 0x91, 0xc7, 0xdd, 0xc0, 0x5d, 0x54, 0x2d,
         0x66, 0x03,
     ];
+
+    #[test]
+    fn signer_serial_compares_positive_magnitudes_without_der_sign_padding() {
+        assert!(same_signer_serial(&[0, 0x80, 0x32], &[0x80, 0x32]));
+        assert!(same_signer_serial(&[0x7f, 0x32], &[0x7f, 0x32]));
+        assert!(!same_signer_serial(&[0, 0x80, 0x32], &[0x80, 0x33]));
+        assert!(!same_signer_serial(&[0x80, 0x32], &[0x80, 0x32]));
+    }
 
     #[test]
     fn verifies_authenticode_with_enrolled_leaf_or_external_ca() {

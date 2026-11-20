@@ -19,16 +19,18 @@ BUILD = ROOT / "tools" / "build"
 APPS = ROOT / "firmware" / "uefi" / "tests" / "apps"
 sys.path.insert(0, str(BUILD))
 from make_test_disk import write_fat32
-from sign_test_app import sign_image
+from sign_test_app import pe_digest, sign_image
 
 HELLO = b"OD-UEFI hello 0.1.0\r\n"
 BEFORE = b"OD-UEFI Secure Boot SetupMode=1 SecureBoot=0\r\n"
 AFTER = b"OD-UEFI Secure Boot enrolled PK KEK db SetupMode=0 SecureBoot=1\r\n"
 FALLBACK = b"OD-UEFI ESP BootOrder, BootCurrent and LoadOptions verified\r\n"
+REVOKED = b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\n"
 STOP = b"OD-FW no bootable option\r\nOD-FW STOP code=0x21 detail=0x0000000000000001\r\n"
 GLOBAL = UUID("8be4df61-93ca-11d2-aa0d-00e098032b8c").bytes_le
 DATABASE = UUID("d719b2cb-3d3a-4596-a3bc-dad00e67656f").bytes_le
 X509 = UUID("a5c059a1-94e4-4aa7-87b5-ab155c2bf072").bytes_le
+SHA256 = UUID("c1c41626-504c-4092-aca9-41f936934328").bytes_le
 PKCS7 = UUID("4aafd29d-68df-49ee-8aa9-347d375665a7").bytes_le
 OWNER = UUID("407ca603-5d60-42cf-9614-3c99d9abd16e").bytes_le
 CERTIFICATE_CONFIG = """[req]
@@ -66,49 +68,70 @@ def build_inputs(work):
     return runner, rom, target / "x86_64-unknown-uefi/release"
 
 
-def signature_list(cert):
-    return X509 + struct.pack("<III", 44 + len(cert), 0, 16 + len(cert)) + OWNER + cert
+def signature_list(kind, value):
+    return kind + struct.pack("<III", 44 + len(value), 0, 16 + len(value)) + OWNER + value
 
 
-def setup_auth2(value):
-    time = struct.pack("<HBBBBBBIhBB", 2026, 11, 19, 22, 43, 1, 0, 0, 0, 0, 0)
-    return time + struct.pack("<IHH", 24, 0x0200, 0x0ef1) + PKCS7 + value
+def auth2_time(second):
+    return struct.pack("<HBBBBBBIhBB", 2026, 11, 19, 22, 43, second, 0, 0, 0, 0, 0)
+
+
+def auth2(time, value, signature=b""):
+    return (time + struct.pack("<IHH", 24 + len(signature), 0x0200, 0x0ef1)
+            + PKCS7 + signature + value)
+
+
+def dbx_update(secret, value):
+    time = auth2_time(2)
+    message = "dbx".encode("utf-16le") + DATABASE + struct.pack("<I", 0x27) + time + value
+    signature = call(["openssl", "smime", "-sign", "-binary", "-noattr", "-md", "sha256",
+                      "-signer", secret / "KEK.crt", "-inkey", secret / "KEK.key",
+                      "-outform", "DER"], input=message, capture_output=True).stdout
+    return auth2(time, value, signature)
 
 
 def make_disks(work, apps):
     hello = (apps / "hello.efi").read_bytes()
     enrollment = (apps / "enroll.efi").read_bytes()
     fallback = (apps / "esp-boot-probe.efi").read_bytes()
+    revoked_hash, _ = pe_digest(hello + bytes(-len(hello) % 8))
+    dbx = signature_list(SHA256, revoked_hash)
     esls = {}
     # Keep private keys in a separate private directory, even if --work is retained.
     with TemporaryDirectory(prefix="od-s725-keys-") as directory:
         secret = Path(directory)
         config = secret / "openssl.cnf"
         config.write_text(CERTIFICATE_CONFIG, encoding="ascii")
-        for name in ("PK", "KEK", "db"):
+        for serial, name in enumerate(("PK", "KEK", "db"), start=0x80):
             cert = secret / f"{name}.crt"
             key = secret / f"{name}.key"
             call(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-config", config,
-                  "-days", "1", "-keyout", key, "-out", cert], capture_output=True)
+                  "-days", "1", "-set_serial", str(serial), "-keyout", key, "-out", cert],
+                 capture_output=True)
             der = call(["openssl", "x509", "-in", cert, "-outform", "DER"],
                        capture_output=True).stdout
-            esls[name] = signature_list(der)
+            esls[name] = signature_list(X509, der)
         signed = sign_image(hello, secret / "db.crt", secret / "db.key")
         signed_fallback = sign_image(fallback, secret / "db.crt", secret / "db.key")
+        signed_updater = sign_image(enrollment, secret / "db.crt", secret / "db.key")
+        revoke = dbx_update(secret, dbx)
     write_fat32(work / "unsigned.raw", "none", ((b"BOOTX64 EFI", hello),))
     write_fat32(work / "signed.raw", "none", ((b"BOOTX64 EFI", signed),))
     write_fat32(work / "fallback.raw", "none", ((b"BOOTX64 EFI", hello), (b"CHECK   EFI", signed_fallback)))
+    write_fat32(work / "revoke.raw", "none", ((b"BOOTX64 EFI", signed_updater),
+               (b"TARGET  EFI", signed), (b"UNSIGN  EFI", hello), (b"DBX     AUT", revoke)))
     files = tuple(zip((b"PK      AUT", b"KEK     AUT", b"DB      AUT"),
-                      (setup_auth2(esls[name]) for name in ("PK", "KEK", "db")), strict=True))
+                      (auth2(auth2_time(1), esls[name]) for name in ("PK", "KEK", "db")), strict=True))
     boot_options = (
         (b"BOOT000AOPT", load_option(file_node("BOOTX64.EFI"))),
         (b"BOOT000BOPT", load_option(file_node("CHECK.EFI"), b"order")),
     )
     write_fat32(work / "enroll.raw", "none", ((b"BOOTX64 EFI", enrollment), *files, *boot_options))
-    return {(GLOBAL, "PK"): esls["PK"], (GLOBAL, "KEK"): esls["KEK"], (DATABASE, "db"): esls["db"]}
+    enrolled = {(GLOBAL, "PK"): esls["PK"], (GLOBAL, "KEK"): esls["KEK"], (DATABASE, "db"): esls["db"]}
+    return enrolled, {**enrolled, (DATABASE, "dbx"): dbx}
 
 
-def policy_snapshot(path):
+def read_snapshot(path):
     raw = path.read_bytes()
     bank_bytes = 16 + 256 * 1024
     require(len(raw) == 16 + 2 * bank_bytes
@@ -128,6 +151,7 @@ def policy_snapshot(path):
     require((magic, version, offset, size) == (b"ODVARSTR", 2, 24, len(active))
             and zlib.crc32(active[:16] + bytes(4) + active[20:24]) == checksum, "store header")
     values = {}
+    boot_order = None
     while offset < size:
         length, complement, live, flags, units, attributes, value_length = struct.unpack_from(
             "<IIBBHII", active, offset)
@@ -135,13 +159,18 @@ def policy_snapshot(path):
         require(length == name_end + (16 if flags else 0) + value_length
                 and length ^ 0xffff_ffff == complement and offset + length <= size, "record size")
         record = active[offset:offset + length]
-        if flags and live == 1:
+        if live == 1:
             namespace = record[20:36]
             name = record[40:name_end].decode("utf-16le")
-            require(attributes == 0x27 and (namespace, name) not in values, "protected EFI variable")
-            values[namespace, name] = record[name_end + 16:]
+            if flags:
+                require(attributes == 0x27 and (namespace, name) not in values, "protected EFI variable")
+                values[namespace, name] = record[name_end + 16:]
+            elif (namespace, name) == (GLOBAL, "BootOrder"):
+                require(attributes == 7 and boot_order is None and value_length % 2 == 0,
+                        "BootOrder EFI variable")
+                boot_order = record[name_end:]
         offset += length
-    return values
+    return values, boot_order
 
 
 def boot(runner, rom, work, name, disk, snapshot, expected, snapshot_out=None):
@@ -160,29 +189,35 @@ def boot(runner, rom, work, name, disk, snapshot, expected, snapshot_out=None):
     serial = trace.read_bytes()
     require(serial.endswith(b"".join(expected) + STOP)
             and all(serial.count(marker) == expected.count(marker)
-                    for marker in (HELLO, BEFORE, AFTER, FALLBACK)),
+                    for marker in (HELLO, BEFORE, AFTER, FALLBACK, REVOKED)),
             f"{name}: unexpected COM1 {serial[-400:]!r}")
     print(f"{name}: {report['retired']} instructions, {report['quanta']} quanta", flush=True)
 
 
 def run(runner, rom, apps, work, repetitions):
-    expected = make_disks(work, apps)
+    expected, expected_revoked = make_disks(work, apps)
     for index in range(1, repetitions + 1):
         setup = work / f"setup-{index}.nv"
         enrolled = work / f"enrolled-{index}.nv"
+        revoked = work / f"revoked-{index}.nv"
         defaults = work / f"defaults-{index}.nv"
         call([runner, "prepare-secure-boot-nvram", "setup", "--out", setup], capture_output=True)
-        require(policy_snapshot(setup) == {}, "SetupMode begins without enrolled keys")
+        require(read_snapshot(setup) == ({}, None), "SetupMode begins with empty policy and BootOrder")
         boot(runner, rom, work, f"setup-{index}", "unsigned.raw", setup, [HELLO])
         boot(runner, rom, work, f"enroll-{index}", "enroll.raw", setup, [BEFORE, AFTER], enrolled)
-        require(policy_snapshot(enrolled) == expected, "enrolled PK, KEK and db match public fixtures")
+        order = struct.pack("<HH", 10, 11)
+        require(read_snapshot(enrolled) == (expected, order), "guest enrolled keys and BootOrder")
         boot(runner, rom, work, f"signed-{index}", "signed.raw", enrolled, [HELLO])
         boot(runner, rom, work, f"unsigned-{index}", "unsigned.raw", enrolled, [])
         boot(runner, rom, work, f"fallback-{index}", "fallback.raw", enrolled, [FALLBACK])
+        boot(runner, rom, work, f"revoke-{index}", "revoke.raw", enrolled, [REVOKED], revoked)
+        require(read_snapshot(revoked) == (expected_revoked, order), "authenticated dbx is retained")
+        boot(runner, rom, work, f"revoked-{index}", "signed.raw", revoked, [])
         call([runner, "prepare-secure-boot-nvram", "defaults", "--out", defaults], capture_output=True)
-        require(set(policy_snapshot(defaults)) == {(GLOBAL, "PK"), (GLOBAL, "KEK"),
-                                                   (DATABASE, "db"), (DATABASE, "dbx")},
-                "default PK, KEK, db and dbx")
+        default_policy, default_order = read_snapshot(defaults)
+        require(set(default_policy) == {(GLOBAL, "PK"), (GLOBAL, "KEK"),
+                                        (DATABASE, "db"), (DATABASE, "dbx")} and default_order is None,
+                "default policy with empty BootOrder")
         boot(runner, rom, work, f"foreign-{index}", "signed.raw", defaults, [])
 
 

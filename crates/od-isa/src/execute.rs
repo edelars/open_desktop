@@ -21157,7 +21157,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 | ArithmeticKind::Inc
                 | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 9 | 0x20)),
+            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 2 | 9 | 0x20)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match (kind, source, instruction.operand_size) {
@@ -21179,6 +21179,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && destination.index.is_none()
                         && destination.scale == 1
                         && matches!(destination.displacement, 0x10 | 0x38)
+                }
+                (ArithmeticKind::Add, Operand::Immediate(2), OperandSize::Qword) => {
+                    // LoadImage counts the fixup and protected source regions for a caller buffer.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 9
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && destination.displacement == 0xc8
                 }
                 (ArithmeticKind::Add, Operand::Immediate(0x20), size) => {
                     // FAT directory traversal updates the sector and logical cursors in place.
