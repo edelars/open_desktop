@@ -6,6 +6,8 @@ use der::{
 };
 
 mod authenticode;
+#[cfg(feature = "verify")]
+pub(crate) mod timestamp;
 pub use authenticode::AuthenticodeSignedData;
 #[cfg(feature = "verify")]
 pub(crate) use authenticode::SPC_INDIRECT_DATA;
@@ -62,7 +64,7 @@ impl<'a> DetachedSignedData<'a> {
         if bytes.len() > MAX_SIGNED_DATA_BYTES {
             return Err(Error::TooLarge);
         }
-        let (mut fields, _) = signed_data_header(bytes)?;
+        let (mut fields, _) = signed_data_header(bytes, 1)?;
         let mut contents = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
         if contents.decode::<ObjectIdentifier>()? != ID_DATA || !contents.is_finished() {
             return Err(Error::UnsupportedProfile);
@@ -85,8 +87,10 @@ pub struct MessageSignedData<'a> {
     signer: Signer<'a>,
     embedded: Option<&'a [u8]>,
     certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
-    authenticated: Option<AuthenticatedAttributes>,
+    authenticated: Option<AuthenticatedAttributes<'a>>,
     content_type: ObjectIdentifier,
+    #[cfg(feature = "verify")]
+    unsigned_attributes: Option<&'a [u8]>,
 }
 
 impl<'a> MessageSignedData<'a> {
@@ -94,7 +98,7 @@ impl<'a> MessageSignedData<'a> {
         if bytes.len() > MAX_MESSAGE_SIGNATURE_BYTES {
             return Err(Error::TooLarge);
         }
-        let (mut fields, wrapped) = signed_data_header(bytes)?;
+        let (mut fields, wrapped) = signed_data_header(bytes, 1)?;
         let mut content = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
         let content_type = content.decode::<ObjectIdentifier>()?;
         let embedded = if content.is_finished() {
@@ -119,6 +123,8 @@ impl<'a> MessageSignedData<'a> {
             certificates: signed.certificates,
             authenticated: signed.info.authenticated,
             content_type,
+            #[cfg(feature = "verify")]
+            unsigned_attributes: signed.info.unsigned_attributes,
         })
     }
 
@@ -149,7 +155,7 @@ impl<'a> MessageSignedData<'a> {
     }
 }
 
-fn signed_data_header(bytes: &[u8]) -> Result<(SliceReader<'_>, bool), Error> {
+fn signed_data_header(bytes: &[u8], version: u8) -> Result<(SliceReader<'_>, bool), Error> {
     let mut fields = sequence(bytes)?;
     let wrapped = Tag::peek(&fields)? == Tag::ObjectIdentifier;
     if wrapped {
@@ -161,7 +167,7 @@ fn signed_data_header(bytes: &[u8]) -> Result<(SliceReader<'_>, bool), Error> {
         fields.finish()?;
         fields = sequence(signed_data)?;
     }
-    if fields.decode::<u8>()? != 1 {
+    if fields.decode::<u8>()? != version {
         return Err(Error::UnsupportedProfile);
     }
     let mut digests = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
@@ -179,14 +185,20 @@ struct SignedDataTail<'a> {
 
 struct SignerInfo<'a> {
     signer: Signer<'a>,
-    authenticated: Option<AuthenticatedAttributes>,
+    authenticated: Option<AuthenticatedAttributes<'a>>,
     nested_signatures: Option<&'a [u8]>,
+    #[cfg(feature = "verify")]
+    unsigned_attributes: Option<&'a [u8]>,
 }
 
 #[derive(Debug)]
-struct AuthenticatedAttributes {
+struct AuthenticatedAttributes<'a> {
     content_digest: [u8; 32],
     signature_digest: [u8; 32],
+    #[cfg(feature = "verify")]
+    entries: &'a [u8],
+    #[cfg(not(feature = "verify"))]
+    _entries: core::marker::PhantomData<&'a [u8]>,
 }
 
 #[derive(Clone, Copy)]
@@ -266,14 +278,18 @@ fn parse_signer<'a>(
     let signature = require_tag(fields, Tag::OctetString)?
         .try_into()
         .map_err(|_| Error::UnsupportedProfile)?;
-    let nested_signatures = if !fields.is_finished() && !matches!(attributes, Attributes::Forbidden)
-    {
-        authenticode::unauthenticated_attributes(
-            fields,
+    let unsigned_attributes =
+        if !fields.is_finished() && !matches!(attributes, Attributes::Forbidden) {
+            Some(require_tag(fields, CONTEXT_ONE)?)
+        } else {
+            None
+        };
+    let nested_signatures = match unsigned_attributes {
+        Some(entries) => authenticode::unauthenticated_attributes(
+            entries,
             matches!(attributes, Attributes::Authenticode(_)),
-        )?
-    } else {
-        None
+        )?,
+        None => None,
     };
     if !fields.is_finished() {
         return Err(Error::UnsupportedProfile);
@@ -286,6 +302,8 @@ fn parse_signer<'a>(
         },
         authenticated,
         nested_signatures,
+        #[cfg(feature = "verify")]
+        unsigned_attributes,
     })
 }
 

@@ -1,6 +1,7 @@
 //! Verification of detached Auth2 signatures with the enrolled platform and exchange keys.
 
 use alloc::{vec, vec::Vec};
+use core::time::Duration;
 
 use der::{Decode, Encode, asn1::ObjectIdentifier, oid::AssociatedOid};
 use rsa::{Pkcs1v15Sign, PublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
@@ -21,11 +22,14 @@ pub use image_policy::{
     ImageAuthority, ImagePolicyError, ImagePolicyFailure, authorize_image,
     authorize_image_with_evidence,
 };
-pub use message::{MessageSource, MessageVerificationError, verify_message};
+pub use message::{
+    MessageSource, MessageVerificationError, verify_message, verify_message_with_timestamps,
+};
 
 const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");
 const ANY_EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37.0");
+const TIMESTAMPING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.8");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -90,6 +94,7 @@ enum CertificatePurpose {
     CodeSigning,
     SignedMessage,
     AuthenticodeMessage,
+    Timestamp,
 }
 
 impl<'a> Candidate<'a> {
@@ -120,11 +125,21 @@ impl<'a> Candidate<'a> {
             .map_err(malformed)?
             .map(|(_, usage)| usage);
         let extended = tbs.get_extension::<ExtendedKeyUsage>().map_err(malformed)?;
-        let purpose_allowed = extended.is_none_or(|(_, usage)| {
+        let purpose_allowed = extended.as_ref().is_none_or(|(_, usage)| {
             usage.0.contains(&ANY_EXTENDED_KEY_USAGE)
-                || (!matches!(purpose, CertificatePurpose::SignedMessage)
-                    && usage.0.contains(&CODE_SIGNING))
+                || match purpose {
+                    CertificatePurpose::CodeSigning | CertificatePurpose::AuthenticodeMessage => {
+                        usage.0.contains(&CODE_SIGNING)
+                    }
+                    CertificatePurpose::Timestamp => usage.0.contains(&TIMESTAMPING),
+                    CertificatePurpose::SignedMessage => false,
+                }
         });
+        let signer_allowed = match purpose {
+            CertificatePurpose::Timestamp => extended
+                .is_some_and(|(critical, usage)| critical && usage.0.as_slice() == [TIMESTAMPING]),
+            _ => purpose_allowed,
+        };
         let constraints = tbs.get_extension::<BasicConstraints>().map_err(malformed)?;
         let issuer_max_path = constraints
             .filter(|(_, constraints)| {
@@ -142,8 +157,12 @@ impl<'a> Candidate<'a> {
             tbs_hash: certificate_tbs_hash(der)?,
             certificate,
             key,
-            digital_signature: purpose_allowed
-                && usage.is_none_or(|usage| usage.digital_signature()),
+            digital_signature: signer_allowed
+                && usage.is_none_or(|usage| {
+                    usage.digital_signature()
+                        || (matches!(purpose, CertificatePurpose::Timestamp)
+                            && usage.non_repudiation())
+                }),
             issuer_max_path,
         })
     }
@@ -184,6 +203,13 @@ impl<'a> Candidate<'a> {
     fn is_self_issued(&self) -> bool {
         let tbs = self.certificate.tbs_certificate();
         tbs.issuer() == tbs.subject()
+    }
+
+    fn valid_at(&self, time: Duration) -> bool {
+        let validity = self.certificate.tbs_certificate().validity();
+        (validity.not_before.to_date_time().unix_duration()
+            ..=validity.not_after.to_date_time().unix_duration())
+            .contains(&time)
     }
 }
 
@@ -337,6 +363,7 @@ fn same_signer_serial(certificate: &[u8], unsigned_signer: &[u8]) -> bool {
 #[derive(Clone, Copy)]
 enum IssuerPath {
     Authorized,
+    AuthorizedAt(Duration),
     Revocation,
 }
 
@@ -390,6 +417,9 @@ impl SignerChain<'_> {
                     && intermediates < path_len[parent_index]
                     && match path {
                         IssuerPath::Authorized => parent.can_issue(child, intermediates),
+                        IssuerPath::AuthorizedAt(time) => {
+                            parent.valid_at(time) && parent.can_issue(child, intermediates)
+                        }
                         IssuerPath::Revocation => child.is_signed_by(parent),
                     }
                 {

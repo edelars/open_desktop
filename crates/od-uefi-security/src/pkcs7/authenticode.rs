@@ -11,9 +11,9 @@ use der::{
 use sha2::{Digest, Sha256};
 
 use super::{
-    Attributes, AuthenticatedAttributes, CONTEXT_ONE, CONTEXT_ZERO, Error, MAX_CERTIFICATES,
-    SHA256, Signer, algorithm, ordered_sequence, raw_sequence, require_tag, sequence,
-    signed_data_header, signed_data_tail,
+    Attributes, AuthenticatedAttributes, CONTEXT_ZERO, Error, MAX_CERTIFICATES, SHA256, Signer,
+    algorithm, ordered_sequence, raw_sequence, require_tag, sequence, signed_data_header,
+    signed_data_tail,
 };
 
 pub(crate) const SPC_INDIRECT_DATA: ObjectIdentifier =
@@ -52,7 +52,7 @@ impl<'a> AuthenticodeSignedData<'a> {
             return Err(Error::Malformed);
         }
 
-        let (mut fields, wrapped) = signed_data_header(encoded)?;
+        let (mut fields, wrapped) = signed_data_header(encoded, 1)?;
         if !wrapped {
             return Err(Error::UnsupportedProfile);
         }
@@ -145,17 +145,18 @@ fn indirect_data(encoded: &[u8]) -> Result<([u8; 32], [u8; 32]), Error> {
     Ok((digest, Sha256::digest(content.value()).into()))
 }
 
-pub(super) fn authenticated_attributes(
-    fields: &mut SliceReader<'_>,
+pub(super) fn authenticated_attributes<'a>(
+    fields: &mut SliceReader<'a>,
     content_type: ObjectIdentifier,
     check_primitives: bool,
-) -> Result<AuthenticatedAttributes, Error> {
+) -> Result<AuthenticatedAttributes<'a>, Error> {
     let encoded = fields.tlv_bytes()?;
     let attributes = AnyRef::from_der(encoded)?;
     if attributes.tag() != CONTEXT_ZERO {
         return Err(Error::UnsupportedProfile);
     }
-    let mut attributes = SliceReader::new(attributes.value())?;
+    let entries = attributes.value();
+    let mut attributes = SliceReader::new(entries)?;
     let mut previous = None;
     let mut have_content_type = false;
     let mut content_digest = None;
@@ -195,14 +196,18 @@ pub(super) fn authenticated_attributes(
     Ok(AuthenticatedAttributes {
         content_digest: content_digest.ok_or(Error::Malformed)?,
         signature_digest,
+        #[cfg(feature = "verify")]
+        entries,
+        #[cfg(not(feature = "verify"))]
+        _entries: core::marker::PhantomData,
     })
 }
 
 pub(super) fn unauthenticated_attributes<'a>(
-    fields: &mut SliceReader<'a>,
+    data: &'a [u8],
     read_nested: bool,
 ) -> Result<Option<&'a [u8]>, Error> {
-    let mut entries = SliceReader::new(require_tag(fields, CONTEXT_ONE)?)?;
+    let mut entries = SliceReader::new(data)?;
     if entries.is_finished() {
         return Err(Error::Malformed);
     }
@@ -225,7 +230,7 @@ pub(super) fn unauthenticated_attributes<'a>(
     Ok(nested)
 }
 
-fn attribute(encoded: &[u8]) -> Result<(ObjectIdentifier, &[u8]), Error> {
+pub(super) fn attribute(encoded: &[u8]) -> Result<(ObjectIdentifier, &[u8]), Error> {
     let mut fields = sequence(encoded)?;
     let oid = fields.decode()?;
     let values = require_tag(&mut fields, Tag::Set)?;

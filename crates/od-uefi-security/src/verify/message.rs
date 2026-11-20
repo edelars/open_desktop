@@ -1,14 +1,21 @@
 //! Trust policy for the UEFI PKCS7 Verify Protocol. All authority is caller supplied.
 
 use alloc::vec::Vec;
+use core::time::Duration;
+use der::{DateTime, Encode};
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use super::{
-    Candidate, CertificatePurpose, Error, IssuerPath, certificate_tbs, identify_signer_for,
+    Candidate, CertificatePurpose, Error, IssuerPath, SignerChain, certificate_tbs,
+    identify_signer_for, same_signer_serial,
 };
 use crate::{
     authvar::Timestamp,
-    pkcs7::{MessageSignedData, SPC_INDIRECT_DATA},
+    pkcs7::{
+        MessageSignedData, SPC_INDIRECT_DATA,
+        timestamp::{self, CertificateHash, TimestampToken},
+    },
     siglist::{ListError, SignatureType, signature_lists_with},
 };
 
@@ -84,8 +91,21 @@ fn entry_type(guid: &[u8], entry_size: usize) -> Result<Entry, ListError> {
 #[derive(Default)]
 struct Revocations<'a> {
     certificates: Vec<Candidate<'a>>,
-    tbs_hashes: Vec<&'a [u8]>,
+    tbs_hashes: Vec<CertificateRevocation<'a>>,
     message: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Revocation {
+    Always,
+    After(Duration),
+    Clear,
+}
+
+#[derive(Clone, Copy)]
+struct CertificateRevocation<'a> {
+    digest: &'a [u8],
+    revocation: Revocation,
 }
 
 impl<'a> Revocations<'a> {
@@ -107,8 +127,6 @@ impl<'a> Revocations<'a> {
                     Entry::ContentHash(32) => revoked.message |= data == digest,
                     Entry::ContentHash(_) => return Err(MessageVerificationError::InvalidDatabase),
                     Entry::CertificateHash(size) => {
-                        // A certificate hash remains revoked until a trusted timestamp can prove
-                        // the message was signed before TimeOfRevocation.
                         revoked.tbs_hashes.push(certificate_hash_entry(data, size)?);
                     }
                 }
@@ -117,7 +135,7 @@ impl<'a> Revocations<'a> {
         Ok(revoked)
     }
 
-    fn contains(&self, certificate: &Candidate<'_>) -> bool {
+    fn find(&self, certificate: &Candidate<'_>) -> Revocation {
         if self.certificates.iter().any(|other| {
             certificate.tbs_hash == other.tbs_hash
                 && certificate.certificate.tbs_certificate().issuer()
@@ -125,52 +143,95 @@ impl<'a> Revocations<'a> {
                 && certificate.certificate.tbs_certificate().serial_number()
                     == other.certificate.tbs_certificate().serial_number()
         }) {
-            return true;
+            return Revocation::Always;
         }
         let mut sha384 = None;
         let mut sha512 = None;
-        self.tbs_hashes.iter().any(|entry| match entry.len() {
-            32 => *entry == certificate.tbs_hash,
-            48 => sha384
-                .get_or_insert_with(|| certificate_tbs(certificate.der).map(Sha384::digest))
-                .as_ref()
-                .is_ok_and(|hash| *entry == hash.as_slice()),
-            64 => sha512
-                .get_or_insert_with(|| certificate_tbs(certificate.der).map(Sha512::digest))
-                .as_ref()
-                .is_ok_and(|hash| *entry == hash.as_slice()),
-            _ => false,
-        })
+        self.tbs_hashes
+            .iter()
+            .filter(|entry| match entry.digest.len() {
+                32 => entry.digest == certificate.tbs_hash,
+                48 => sha384
+                    .get_or_insert_with(|| certificate_tbs(certificate.der).map(Sha384::digest))
+                    .as_ref()
+                    .is_ok_and(|hash| entry.digest == hash.as_slice()),
+                64 => sha512
+                    .get_or_insert_with(|| certificate_tbs(certificate.der).map(Sha512::digest))
+                    .as_ref()
+                    .is_ok_and(|hash| entry.digest == hash.as_slice()),
+                _ => false,
+            })
+            .map(|entry| entry.revocation)
+            .min()
+            .unwrap_or(Revocation::Clear)
+    }
+
+    fn find_chain<'cert>(
+        &'cert self,
+        chain: &'cert SignerChain<'cert>,
+        anchors: &'cert [Candidate<'cert>],
+    ) -> Revocation {
+        let mut revocation = Revocation::Clear;
+        chain.find_with_issuers(
+            anchors.iter().chain(&self.certificates),
+            IssuerPath::Revocation,
+            |candidate, _| {
+                revocation = revocation.min(self.find(candidate));
+                (revocation == Revocation::Always).then_some(())
+            },
+        );
+        revocation
     }
 }
 
 fn certificate_hash_entry(
     data: &[u8],
     digest_size: usize,
-) -> Result<&[u8], MessageVerificationError> {
-    let (digest, time) = data.split_at(digest_size);
+) -> Result<CertificateRevocation<'_>, MessageVerificationError> {
+    let (digest, time) = data
+        .split_at_checked(digest_size)
+        .ok_or(MessageVerificationError::InvalidDatabase)?;
     let time = time
         .try_into()
         .map_err(|_| MessageVerificationError::InvalidDatabase)?;
-    valid_revocation_time(time)
-        .then_some(digest)
-        .ok_or(MessageVerificationError::InvalidDatabase)
+    let revocation = revocation_time(time).ok_or(MessageVerificationError::InvalidDatabase)?;
+    Ok(CertificateRevocation { digest, revocation })
 }
 
-fn valid_revocation_time(time: &[u8; TIME_BYTES]) -> bool {
+fn revocation_time(time: &[u8; TIME_BYTES]) -> Option<Revocation> {
     if *time == [0; TIME_BYTES] {
-        return true;
+        return Some(Revocation::Always);
     }
     let mut calendar = [0; TIME_BYTES];
     calendar[..7].copy_from_slice(&time[..7]);
     let nanos = u32::from_le_bytes(time[8..12].try_into().unwrap());
     let zone = i16::from_le_bytes([time[12], time[13]]);
-    Timestamp::from_bytes(&calendar).is_some()
-        && time[7] == 0
-        && time[15] == 0
-        && nanos < 1_000_000_000
-        && ((-1440..=1440).contains(&zone) || zone == 2047)
-        && time[14] & !3 == 0
+    Timestamp::from_bytes(&calendar)?;
+    if time[7] != 0
+        || time[15] != 0
+        || nanos >= 1_000_000_000
+        || (!(-1440..=1440).contains(&zone) && zone != 2047)
+        || time[14] & !3 != 0
+    {
+        return None;
+    }
+    // An unspecified time zone cannot establish a UTC deadline. Advisory daylight rules
+    // are outside the rescue profile and leave the entry effective unconditionally.
+    if zone == 2047 || time[14] != 0 {
+        return Some(Revocation::Always);
+    }
+    let year = u16::from_le_bytes([time[0], time[1]]);
+    let Ok(date) = DateTime::new(year, time[2], time[3], time[4], time[5], time[6]) else {
+        return Some(Revocation::Always);
+    };
+    let local = Duration::new(date.unix_duration().as_secs(), nanos);
+    let offset = Duration::from_secs(u64::from(zone.unsigned_abs()) * 60);
+    let utc = if zone < 0 {
+        local.checked_sub(offset)
+    } else {
+        local.checked_add(offset)
+    };
+    Some(utc.map_or(Revocation::Always, Revocation::After))
 }
 
 fn check_size(database: &[u8]) -> Result<(), MessageVerificationError> {
@@ -205,6 +266,11 @@ fn read_anchors(
     let mut anchors = Vec::new();
     for list in signature_lists_with(database, entry_type) {
         let list = list.map_err(|_| MessageVerificationError::InvalidDatabase)?;
+        if matches!(purpose, CertificatePurpose::Timestamp)
+            && !matches!(list.kind, Entry::Certificate)
+        {
+            return Err(MessageVerificationError::InvalidDatabase);
+        }
         for entry in list.signatures() {
             match list.kind {
                 Entry::Certificate => push_certificate(&mut anchors, entry.data(), purpose)?,
@@ -226,6 +292,17 @@ pub fn verify_message<'a>(
     source: MessageSource,
     allowed_db: &[u8],
     revoked_db: &[u8],
+) -> Result<Option<&'a [u8]>, MessageVerificationError> {
+    verify_message_with_timestamps(encoded, source, allowed_db, revoked_db, &[])
+}
+
+/// Verifies the message with caller-supplied RFC 3161 timestamp authorities.
+pub fn verify_message_with_timestamps<'a>(
+    encoded: &'a [u8],
+    source: MessageSource,
+    allowed_db: &[u8],
+    revoked_db: &[u8],
+    timestamp_db: &[u8],
 ) -> Result<Option<&'a [u8]>, MessageVerificationError> {
     use MessageVerificationError as Failure;
     let message = MessageSignedData::decode(encoded).map_err(|_| Failure::UnsupportedSignature)?;
@@ -265,15 +342,8 @@ pub fn verify_message<'a>(
 
     let allowed = read_anchors(allowed_db, purpose)?;
     let revoked = Revocations::read(revoked_db, &digest, purpose)?;
-    if revoked.message
-        || chain
-            .find_with_issuers(
-                allowed.iter().chain(&revoked.certificates),
-                IssuerPath::Revocation,
-                |candidate, _| revoked.contains(candidate).then_some(()),
-            )
-            .is_some()
-    {
+    let timestamps = read_anchors(timestamp_db, CertificatePurpose::Timestamp)?;
+    if revoked.message {
         return Err(Failure::Unauthorized);
     }
     chain
@@ -281,9 +351,85 @@ pub fn verify_message<'a>(
             allowed
                 .iter()
                 .any(|anchor| anchor.der == candidate.der)
-                .then_some(embedded)
+                .then_some(())
         })
-        .ok_or(Failure::Unauthorized)
+        .ok_or(Failure::Unauthorized)?;
+    match revoked.find_chain(&chain, &allowed) {
+        Revocation::Clear => Ok(embedded),
+        Revocation::After(cutoff)
+            if !timestamps.is_empty()
+                && timestamp::tokens(&message).is_ok_and(|tokens| {
+                    tokens.into_iter().any(|token| {
+                        trusted_timestamp(
+                            token,
+                            message.signer().signature,
+                            cutoff,
+                            &timestamps,
+                            &revoked,
+                        )
+                    })
+                }) =>
+        {
+            Ok(embedded)
+        }
+        _ => Err(Failure::Unauthorized),
+    }
+}
+
+fn trusted_timestamp(
+    encoded: &[u8],
+    signature: &[u8],
+    cutoff: Duration,
+    anchors: &[Candidate<'_>],
+    revoked: &Revocations<'_>,
+) -> bool {
+    let Ok(token) = TimestampToken::decode(encoded, signature) else {
+        return false;
+    };
+    if token.latest_time >= cutoff {
+        return false;
+    }
+    let Ok(chain) = identify_signer_for(
+        token.signer,
+        token.certificates(),
+        CertificatePurpose::Timestamp,
+    ) else {
+        return false;
+    };
+    let signer = &chain.certificates[chain.signer];
+    let tbs = signer.certificate.tbs_certificate();
+    let matches_hash = match token.certificate_hash {
+        CertificateHash::Sha1(hash) => hash == Sha1::digest(signer.der).as_slice(),
+        CertificateHash::Sha256(hash) => hash == Sha256::digest(signer.der).as_slice(),
+    };
+    matches_hash
+        && token.issuer_serial.is_none_or(|identifier| {
+            same_signer_serial(tbs.serial_number().as_bytes(), identifier.serial)
+                && tbs
+                    .issuer()
+                    .to_der()
+                    .is_ok_and(|bytes| bytes == identifier.issuer)
+        })
+        && token
+            .tsa_name
+            .is_none_or(|name| tbs.subject().to_der().is_ok_and(|bytes| bytes == name))
+        && signer.valid_at(token.time)
+        && chain
+            .check_signature(token.signer.signature, &token.signature_digest)
+            .is_ok()
+        && revoked.find_chain(&chain, anchors) == Revocation::Clear
+        && chain
+            .find_with_issuers(
+                anchors.iter(),
+                IssuerPath::AuthorizedAt(token.time),
+                |candidate, _| {
+                    anchors
+                        .iter()
+                        .any(|anchor| anchor.der == candidate.der)
+                        .then_some(())
+                },
+            )
+            .is_some()
 }
 
 #[cfg(test)]
@@ -293,6 +439,29 @@ mod tests {
     use crate::verify::tests::{TEST_AUTHENTICODE, TEST_IMAGE_CA};
     use alloc::vec;
     use der::SliceReader;
+
+    #[test]
+    fn revocation_times_normalize_efi_offset_and_preserve_nanoseconds() {
+        let mut time = [0; 16];
+        time[..2].copy_from_slice(&1970u16.to_le_bytes());
+        time[2..7].copy_from_slice(&[1, 1, 1, 2, 3]);
+        time[8..12].copy_from_slice(&123u32.to_le_bytes());
+        time[12..14].copy_from_slice(&(-60i16).to_le_bytes());
+        assert_eq!(
+            revocation_time(&time),
+            Some(Revocation::After(Duration::new(123, 123)))
+        );
+        time[12..14].copy_from_slice(&60i16.to_le_bytes());
+        assert_eq!(
+            revocation_time(&time),
+            Some(Revocation::After(Duration::new(7323, 123)))
+        );
+        time[12..14].copy_from_slice(&2047i16.to_le_bytes());
+        assert_eq!(revocation_time(&time), Some(Revocation::Always));
+        time[15] = 1;
+        assert_eq!(revocation_time(&time), None);
+        assert_eq!(revocation_time(&[0; 16]), Some(Revocation::Always));
+    }
 
     fn list(guid: [u8; 16], data: &[u8]) -> Vec<u8> {
         let entry_size = OWNER_BYTES + data.len();

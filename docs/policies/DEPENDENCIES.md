@@ -69,7 +69,7 @@
 
 | Crate | Версия | Features (host / прошивка, как в ADR) | Лицензия | `no_std` / `alloc` (по ADR) | Где |
 |---|---|---|---|---|---|
-| `sha1` | `=0.11.0` | `default-features = false` / `default-features = false` | MIT OR Apache-2.0 | да / нет; проверено чтением `src/lib.rs`, сборка не выполнялась | `od-tpm`, `firmware/uefi/` (S7-22) |
+| `sha1` | `=0.11.0` | `default-features = false` / `default-features = false` | MIT OR Apache-2.0 | да / нет. Host-сборка и сверка ESSCertID с OpenSSL прошли в S7-24 | `od-uefi-security`, только host-feature `verify` для отпечатка сертификата TSA в ESSCertID. Транзитивные зависимости `cfg-if`, `cpufeatures`, `digest` уже входят в workspace. [RustCrypto SHA-1](https://crates.io/crates/sha1/0.11.0) |
 | `sha2` | `=0.11.1` | `default-features = false` / `default-features = false` | MIT OR Apache-2.0 | да / нет; прошла locked-сборка `x86_64-unknown-none` | `od-tpm`, `firmware/uefi/` (S7-06, затем S7-22 и S7-24) |
 | `hmac` | `=0.13.0` | `zeroize` / в прошивке только транзитивно | MIT OR Apache-2.0 | да / нет; проверено чтением `src/lib.rs`, сборка не выполнялась | `od-tpm` |
 | `aes` | `=0.9.4` | по умолчанию (`hazmat` не нужен; `Aes128`) / используется в S7-23, срез B (AES-128-CFB `outPrivate`) | MIT OR Apache-2.0 | да / нет; собран и протестирован в S7-23, срез B (векторы NIST SP 800-38A) | `od-tpm` |
