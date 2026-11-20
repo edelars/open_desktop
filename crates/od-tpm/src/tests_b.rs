@@ -1352,7 +1352,7 @@ fn hmac_session_authorization_rules() {
     for (bits, expect) in [
         (session_attr::DECRYPT, Rc::SYMMETRIC.in_session(1)),
         (session_attr::ENCRYPT, Rc::SYMMETRIC.in_session(1)),
-        (session_attr::AUDIT, Rc::ATTRIBUTES.in_session(1)),
+        // `audit` itself is allowed on an HMAC session that authorizes (tests_session_audit).
         (session_attr::AUDIT_EXCLUSIVE, Rc::ATTRIBUTES.in_session(1)),
         (session_attr::AUDIT_RESET, Rc::ATTRIBUTES.in_session(1)),
         (0x08, Rc::ATTRIBUTES.in_session(1)),

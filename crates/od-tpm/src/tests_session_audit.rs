@@ -5,7 +5,10 @@ use super::tests_b::{
     start_session,
 };
 use super::tests_c2::{FIRMWARE, attest_bytes, h256, parse_attestation, qualified};
-use super::tests_obj::{create_primary, ecc_sign, parse_primary, rsa_sign, verify};
+use super::tests_c3::{AES_SYM, crypt, start_sym};
+use super::tests_obj::{
+    Primary, create_primary, ecc_sig_scheme, ecc_sign, parse_primary, rsa_sign, sign_params, verify,
+};
 use super::*;
 use crate::codes::{se, session_attr};
 
@@ -16,6 +19,9 @@ const ENDORSEMENT: u32 = handle::RH_ENDORSEMENT;
 const NULL: u32 = handle::RH_NULL;
 const OWNER: u32 = handle::RH_OWNER;
 const PLATFORM: u32 = handle::RH_PLATFORM;
+const KEY_AUTH: &[u8] = b"signing key auth";
+const OWNER_AUTH: &[u8] = b"owner auth";
+const MESSAGE_DIGEST: [u8; 32] = [0x5a; 32];
 
 fn command(code: u32, handles: &[u32], params: &[u8], attrs: u8) -> Hc {
     Hc {
@@ -274,4 +280,467 @@ fn session_audit_attestation_signs_with_ecc_and_rsa() {
             &signature,
         ));
     }
+}
+
+// ---------------------------------------------------------------------- audit and authorization
+
+/// Digest of one Sign by a P-256 key that the audit session itself authorizes, with every input
+/// hashed outside the TPM implementation (Python hashlib):
+/// `SHA256(zero digest || SHA256(0000015D || Name || sign parameters) || SHA256(00000000 ||
+/// 0000015D || response parameters))`. The key comes from CreatePrimary in the Owner hierarchy
+/// with the default seed of the test TPM and the template `ecc_sign()`, the digest is
+/// `MESSAGE_DIGEST`. If the key derivation changes, regenerate the Name and the response bytes
+/// and recompute the constant.
+const SIGN_AUDIT_DIGEST: &str = "1e17f55e2aa1a497bfa9f76feea298201a6a35ae98de99304cbdd5f8d0050b6b";
+
+fn signing(key: &Primary, auth: &[u8], params: Vec<u8>, attrs: u8) -> Hc {
+    Hc {
+        code: cc::SIGN,
+        handles: vec![key.handle],
+        names: vec![key.name.clone()],
+        params,
+        entity: (key.handle, auth.to_vec()),
+        attrs,
+        nonce_caller: vec![0x33; 16],
+        entity_after: auth.to_vec(),
+    }
+}
+
+fn plain_sign(key: &Primary, auth: &[u8], attrs: u8) -> Hc {
+    signing(
+        key,
+        auth,
+        sign_params(&MESSAGE_DIGEST, &ecc_sig_scheme()),
+        attrs,
+    )
+}
+
+fn signing_key(t: &mut Tpm) -> Primary {
+    parse_primary(&create_primary(t, OWNER, KEY_AUTH, &ecc_sign()))
+}
+
+/// `cpHash` and `rpHash` of a command as they travel, from the bytes on the wire.
+fn wire_hashes(c: &Hc, response: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let cp = h256(&[&c.code.to_be_bytes(), &c.names.concat(), &c.params]);
+    let rp = h256(&[&0u32.to_be_bytes(), &c.code.to_be_bytes(), response]);
+    (cp, rp)
+}
+
+fn extend(old: &[u8], cp: &[u8], rp: &[u8]) -> Vec<u8> {
+    h256(&[old, cp, rp])
+}
+
+/// ECDSA signature of a Sign response, checked by the `p256` crate against the public point of
+/// the key (the TPM code path is not involved).
+fn check_p256_signature(key: &Primary, digest: &[u8], response: &[u8]) {
+    use p256::ecdsa::signature::hazmat::PrehashVerifier;
+    let mut r = Reader::new(response);
+    assert_eq!(r.u16().unwrap(), alg::ECDSA);
+    assert_eq!(r.u16().unwrap(), alg::SHA256);
+    let (sr, ss) = (r.tpm2b(32).unwrap(), r.tpm2b(32).unwrap());
+    r.finish().unwrap();
+    let tail = &key.public[key.public.len() - 68..];
+    assert_eq!(&tail[..2], &[0, 32]);
+    assert_eq!(&tail[34..36], &[0, 32]);
+    let sec1 = cat(&[&[4], &tail[2..34], &tail[36..]]);
+    let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).unwrap();
+    let signature = p256::ecdsa::Signature::from_scalars(
+        <[u8; 32]>::try_from(sr).unwrap(),
+        <[u8; 32]>::try_from(ss).unwrap(),
+    )
+    .unwrap();
+    verifying.verify_prehash(digest, &signature).unwrap();
+}
+
+/// Nonce, audit digest, binding and exclusivity of a loaded session.
+type AuditState = (Vec<u8>, Option<[u8; 32]>, bool, Option<usize>);
+
+fn audit_state(t: &Tpm, session: u32) -> AuditState {
+    let slot = t.sessions.slot_of(session).unwrap();
+    let s = t.sessions.get(slot).unwrap();
+    (
+        s.nonce_tpm.clone(),
+        s.audit_digest,
+        s.bound.is_some(),
+        t.sessions.exclusive_audit,
+    )
+}
+
+#[test]
+fn session_audit_session_authorizes_signing_key_and_audits_the_command() {
+    let mut t = started();
+    let key = signing_key(&mut t);
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x61; 16]);
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let signed = audited(&mut t, c, &[], &mut s, AUDIT | EXCLUSIVE);
+    check_p256_signature(&key, &MESSAGE_DIGEST, &signed);
+
+    // The first audited use starts the sequence from the zero digest.
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let (cp, rp) = wire_hashes(&c, &signed);
+    let digest = extend(&[0; 32], &cp, &rp);
+    assert_eq!(digest, hex(SIGN_AUDIT_DIGEST));
+    let slot = t.sessions.slot_of(s.handle).unwrap();
+    assert_eq!(
+        t.sessions.get(slot).unwrap().audit_digest.unwrap().to_vec(),
+        digest
+    );
+    assert_eq!(t.sessions.exclusive_audit, Some(slot));
+
+    let c = retrieve(s.handle, AUDIT | EXCLUSIVE);
+    let report = audited(&mut t, c, &[b"", b""], &mut s, AUDIT | EXCLUSIVE);
+    check_attestation(&report, true, &digest);
+
+    // The second audited Sign of the same session extends the digest.
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let second = audited(&mut t, c, &[], &mut s, AUDIT | EXCLUSIVE);
+    check_p256_signature(&key, &MESSAGE_DIGEST, &second);
+    // VerifySignature without the session is outside the audit and ends the exclusive sequence.
+    ok(&verify(&mut t, key.handle, &MESSAGE_DIGEST, &signed));
+    assert_eq!(t.sessions.exclusive_audit, None);
+}
+
+#[test]
+fn session_audit_bound_session_authorizes_owner_then_includes_the_auth_value() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_AUTH));
+    let mut s = start_hmac(&mut t, OWNER, OWNER_AUTH, &[0x62; 16]);
+    assert!(!s.key.is_empty());
+    let clock = |time: u64, attrs: u8| Hc {
+        code: cc::CLOCK_SET,
+        handles: vec![OWNER],
+        names: vec![OWNER.to_be_bytes().to_vec()],
+        params: time.to_be_bytes().to_vec(),
+        entity: (OWNER, OWNER_AUTH.to_vec()),
+        attrs,
+        nonce_caller: vec![0x33; 16],
+        entity_after: OWNER_AUTH.to_vec(),
+    };
+
+    // A client that adds the authValue to the key of the bound entity is refused.
+    let unbound = Hs {
+        handle: s.handle,
+        key: s.key.clone(),
+        nonce_tpm: s.nonce_tpm.clone(),
+        bound: None,
+    };
+    let before = audit_state(&t, s.handle);
+    err(
+        &run(
+            &mut t,
+            packet(&clock(1_000_000_000, AUDIT), &[], &[(&unbound, false)]),
+        ),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+
+    // First audited use: the authorization of the bound entity uses the session key alone, and
+    // so does the response HMAC (check_hmac_ack applies the same rule on the client side).
+    let first = clock(1_000_000_000, AUDIT);
+    assert!(audited(&mut t, first, &[], &mut s, AUDIT | EXCLUSIVE).is_empty());
+    let slot = t.sessions.slot_of(s.handle).unwrap();
+    assert!(t.sessions.get(slot).unwrap().bound.is_none());
+    assert_eq!(t.sessions.exclusive_audit, Some(slot));
+
+    // Next command: the binding is gone, the key is sessionKey || authValue. The old key is refused.
+    let second = clock(1_000_000_100, AUDIT);
+    let before = audit_state(&t, s.handle);
+    err(
+        &run(&mut t, packet(&second, &[], &[(&s, false)])),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+    s.bound = None;
+    assert!(audited(&mut t, second, &[], &mut s, AUDIT | EXCLUSIVE).is_empty());
+
+    // The digest holds both commands, chained from the zero digest.
+    let mut expected = vec![0u8; 32];
+    for time in [1_000_000_000u64, 1_000_000_100] {
+        let c = clock(time, AUDIT);
+        let (cp, rp) = wire_hashes(&c, &[]);
+        expected = extend(&expected, &cp, &rp);
+    }
+    let c = retrieve(s.handle, AUDIT | EXCLUSIVE);
+    let report = audited(&mut t, c, &[b"", b""], &mut s, AUDIT | EXCLUSIVE);
+    check_attestation(&report, true, &expected);
+}
+
+#[test]
+fn session_audit_authorizing_errors_leave_nonce_digest_and_exclusivity_unchanged() {
+    let mut t = started();
+    let key = signing_key(&mut t);
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x63; 16]);
+    let other = start_hmac(&mut t, NULL, b"", &[0x64; 16]);
+    let policy = start_session(&mut t, se::POLICY, NULL, b"", &[0x65; 16]);
+    let trial = start_session(&mut t, se::TRIAL, NULL, b"", &[0x66; 16]);
+    audited(
+        &mut t,
+        plain_sign(&key, KEY_AUTH, AUDIT),
+        &[],
+        &mut s,
+        AUDIT | EXCLUSIVE,
+    );
+    let before = audit_state(&t, s.handle);
+    let policy_before = audit_state(&t, policy.handle);
+    let tries = t.persistent.da.failed_tries;
+
+    // A policy or trial session cannot audit, even when it would authorize the key.
+    for refused in [&policy, &trial] {
+        err(
+            &run(
+                &mut t,
+                packet(&plain_sign(&key, KEY_AUTH, AUDIT), &[], &[(refused, false)]),
+            ),
+            Rc::ATTRIBUTES.in_session(1),
+        );
+    }
+    // A second audit session in one command, whichever authorizes.
+    err(
+        &run(
+            &mut t,
+            packet(
+                &plain_sign(&key, KEY_AUTH, AUDIT),
+                &[],
+                &[(&s, false), (&other, false)],
+            ),
+        ),
+        Rc::ATTRIBUTES.in_session(2),
+    );
+    err(
+        &run(
+            &mut t,
+            packet(
+                &plain_sign(&key, KEY_AUTH, AUDIT),
+                &[],
+                &[(&other, false), (&s, false)],
+            ),
+        ),
+        Rc::ATTRIBUTES.in_session(2),
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+    assert_eq!(audit_state(&t, policy.handle), policy_before);
+    assert_eq!(t.persistent.da.failed_tries, tries);
+
+    // auditExclusive without exclusivity: a command outside the audit ends the sequence.
+    ok(&run(&mut t, plain(cc::READ_CLOCK, &[], &[])));
+    let after_gap = audit_state(&t, s.handle);
+    assert_eq!(after_gap.3, None);
+    assert_eq!(after_gap.1, before.1);
+    err(
+        &run(
+            &mut t,
+            packet(
+                &plain_sign(&key, KEY_AUTH, AUDIT | EXCLUSIVE),
+                &[],
+                &[(&s, false)],
+            ),
+        ),
+        Rc::EXCLUSIVE,
+    );
+    assert_eq!(audit_state(&t, s.handle), after_gap);
+    assert_eq!(t.persistent.da.failed_tries, tries);
+
+    // The session is intact: the unchanged nonce still authorizes, and the digest has two entries.
+    audited(
+        &mut t,
+        plain_sign(&key, KEY_AUTH, AUDIT),
+        &[],
+        &mut s,
+        AUDIT,
+    );
+    let digest = audit_state(&t, s.handle).1.unwrap();
+    assert_ne!(Some(digest), before.1);
+}
+
+#[test]
+fn session_audit_authorization_failure_keeps_digest_and_counts_a_failed_try() {
+    let mut t = started();
+    let key = signing_key(&mut t);
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x67; 16]);
+    audited(
+        &mut t,
+        plain_sign(&key, KEY_AUTH, AUDIT),
+        &[],
+        &mut s,
+        AUDIT | EXCLUSIVE,
+    );
+    let before = audit_state(&t, s.handle);
+    let tries = t.persistent.da.failed_tries;
+    err(
+        &run(
+            &mut t,
+            packet(&plain_sign(&key, b"wrong auth", AUDIT), &[], &[(&s, false)]),
+        ),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+    assert_eq!(t.persistent.da.failed_tries, tries + 1);
+
+    // A corrupted HMAC with the right authValue fails the same way.
+    err(
+        &run(
+            &mut t,
+            packet(&plain_sign(&key, KEY_AUTH, AUDIT), &[], &[(&s, true)]),
+        ),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+    assert_eq!(t.persistent.da.failed_tries, tries + 2);
+
+    // The session still authorizes and extends the same sequence.
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let response = audited(&mut t, c, &[], &mut s, AUDIT | EXCLUSIVE);
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let (cp, rp) = wire_hashes(&c, &response);
+    let expected = extend(&before.1.unwrap(), &cp, &rp);
+    assert_eq!(audit_state(&t, s.handle).1.unwrap().to_vec(), expected);
+}
+
+#[test]
+fn session_audit_dictionary_attack_lockout_does_not_extend_the_digest() {
+    let mut t = started();
+    let key = signing_key(&mut t);
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x68; 16]);
+    audited(
+        &mut t,
+        plain_sign(&key, KEY_AUTH, AUDIT),
+        &[],
+        &mut s,
+        AUDIT | EXCLUSIVE,
+    );
+    let before = audit_state(&t, s.handle);
+    let max = t.persistent.da.max_tries;
+    for _ in 0..max {
+        err(
+            &run(
+                &mut t,
+                packet(&plain_sign(&key, b"wrong auth", AUDIT), &[], &[(&s, false)]),
+            ),
+            Rc::AUTH_FAIL.in_session(1),
+        );
+    }
+    assert_eq!(t.persistent.da.failed_tries, max);
+    // The right authValue is refused while the TPM is in lockout, and nothing is audited.
+    err(
+        &run(
+            &mut t,
+            packet(&plain_sign(&key, KEY_AUTH, AUDIT), &[], &[(&s, false)]),
+        ),
+        Rc::LOCKOUT,
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+    let c = retrieve(s.handle, AUDIT | EXCLUSIVE);
+    let report = audited(&mut t, c, &[b"", b""], &mut s, AUDIT | EXCLUSIVE);
+    let digest = before.1.unwrap();
+    check_attestation(&report, true, &digest);
+
+    // lockoutAuth audited by the session that authorizes it: a wrong HMAC puts lockoutAuth in a
+    // lockout and the audit sequence stays as it was.
+    let mut t = started();
+    ok(&set_auth(&mut t, LOCKOUT, b"", b"secret"));
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x69; 16]);
+    audited(&mut t, parms(AUDIT), &[], &mut s, AUDIT | EXCLUSIVE);
+    let before = audit_state(&t, s.handle);
+    let reset = |attrs: u8| Hc {
+        code: cc::DICTIONARY_ATTACK_LOCK_RESET,
+        handles: vec![LOCKOUT],
+        names: vec![LOCKOUT.to_be_bytes().to_vec()],
+        params: Vec::new(),
+        entity: (LOCKOUT, b"secret".to_vec()),
+        attrs,
+        nonce_caller: vec![0x33; 16],
+        entity_after: b"secret".to_vec(),
+    };
+    err(
+        &run(&mut t, packet(&reset(AUDIT), &[], &[(&s, true)])),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert!(!t.persistent.da.lockout_auth_enabled);
+    assert_eq!(audit_state(&t, s.handle), before);
+    err(
+        &run(&mut t, packet(&reset(AUDIT), &[], &[(&s, false)])),
+        Rc::LOCKOUT,
+    );
+    assert_eq!(audit_state(&t, s.handle), before);
+}
+
+#[test]
+fn session_audit_decrypt_session_audits_wire_bytes_and_survives_a_context_round_trip() {
+    let mut t = started();
+    let key = signing_key(&mut t);
+    let mut s = start_sym(&mut t, NULL, b"", &AES_SYM);
+    let attrs = AUDIT | session_attr::DECRYPT;
+    let nonce_caller = vec![0x33; 16];
+    let encrypted = crypt(
+        &AES_SYM,
+        &s,
+        KEY_AUTH,
+        &nonce_caller,
+        &s.nonce_tpm,
+        &MESSAGE_DIGEST,
+        true,
+    );
+    assert_ne!(encrypted, MESSAGE_DIGEST);
+    let params = signing_params_with(&encrypted);
+    let c = signing(&key, KEY_AUTH, params.clone(), attrs);
+    let response = audited(&mut t, c, &[], &mut s, attrs | EXCLUSIVE);
+    // The TPM signed the decrypted digest.
+    check_p256_signature(&key, &MESSAGE_DIGEST, &response);
+
+    // cpHash covers the ciphertext on the wire, rpHash the response parameters.
+    let c = signing(&key, KEY_AUTH, params, attrs);
+    let (cp, rp) = wire_hashes(&c, &response);
+    let plain_cp = h256(&[
+        &cc::SIGN.to_be_bytes(),
+        &key.name,
+        &plain_sign(&key, KEY_AUTH, 0).params,
+    ]);
+    assert_ne!(cp, plain_cp);
+    let first = extend(&[0; 32], &cp, &rp);
+    assert_eq!(audit_state(&t, s.handle).1.unwrap().to_vec(), first);
+
+    // ContextSave and ContextLoad keep the digest; the next command extends the same sequence.
+    let saved = run(&mut t, plain(cc::CONTEXT_SAVE, &[s.handle], &[]));
+    ok(&saved);
+    ok(&run(&mut t, plain(cc::CONTEXT_LOAD, &[], &saved[10..])));
+    assert_eq!(audit_state(&t, s.handle).1.unwrap().to_vec(), first);
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let second = audited(&mut t, c, &[], &mut s, AUDIT | EXCLUSIVE);
+    check_p256_signature(&key, &MESSAGE_DIGEST, &second);
+    let c = plain_sign(&key, KEY_AUTH, AUDIT);
+    let (cp, rp) = wire_hashes(&c, &second);
+    let expected = extend(&first, &cp, &rp);
+    let c = retrieve(s.handle, AUDIT | EXCLUSIVE);
+    let report = audited(&mut t, c, &[b"", b""], &mut s, AUDIT | EXCLUSIVE);
+    check_attestation(&report, true, &expected);
+}
+
+#[test]
+fn session_audit_auth_change_is_answered_with_the_new_auth_value() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_AUTH));
+    let mut s = start_hmac(&mut t, NULL, b"", &[0x6a; 16]);
+    let c = Hc {
+        code: cc::HIERARCHY_CHANGE_AUTH,
+        handles: vec![OWNER],
+        names: vec![OWNER.to_be_bytes().to_vec()],
+        params: tpm2b(b"new owner auth"),
+        entity: (OWNER, OWNER_AUTH.to_vec()),
+        attrs: AUDIT,
+        nonce_caller: vec![0x33; 16],
+        entity_after: b"new owner auth".to_vec(),
+    };
+    let (cp, rp) = wire_hashes(&c, &[]);
+    // The command HMAC uses the old authValue, the response HMAC the new one.
+    assert!(audited(&mut t, c, &[], &mut s, AUDIT | EXCLUSIVE).is_empty());
+    let slot = t.sessions.slot_of(s.handle).unwrap();
+    assert_eq!(
+        t.sessions.get(slot).unwrap().audit_digest.unwrap().to_vec(),
+        extend(&[0; 32], &cp, &rp)
+    );
+    ok(&set_auth(&mut t, OWNER, b"new owner auth", b""));
+}
+
+fn signing_params_with(digest: &[u8]) -> Vec<u8> {
+    sign_params(digest, &ecc_sig_scheme())
 }

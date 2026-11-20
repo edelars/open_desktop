@@ -13,7 +13,9 @@
 //! - `authHash` SHA-256; `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
 //!   `paramenc.rs`: the attributes `decrypt`/`encrypt` need a symmetric algorithm, otherwise
 //!   `TPM_RC_SYMMETRIC`).
-//! - An additional HMAC session may audit successful commands (Part 1 v185, clause 17).
+//! - An HMAC session may audit successful commands, either as an additional session or while it
+//!   authorizes a handle (Part 1 rev 01.83, clauses 19.6.1 and 20.1); the first audited use of a
+//!   bound session drops the binding (`Sessions::extend_audit`), the authValue then joins the key.
 //!
 //! Authorization HMAC (clause 17.6.5, Equation 17): `authHMAC = HMAC(sessionKey || authValue,
 //! pHash || nonceNewer || nonceOlder || sessionAttributes)` with `pHash` = cpHash for a command

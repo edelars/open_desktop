@@ -21,7 +21,9 @@
 //! Additional sessions can protect parameters without authorizing a handle (Part 3 v185 §5.5).
 //! The first command parameter is decrypted after checking the HMAC over the ciphertext.
 //! The first response parameter is encrypted before computing the rpHash (`paramenc.rs`).
-//! Session auditing remains unsupported. `TPM2_FlushContext` takes no sessions.
+//! An HMAC session may audit the command and authorize a handle at once (Part 1 rev 01.83,
+//! clauses 18.6.4, 19.6.1 and 20.1, see `classify_sessions`); policy and trial sessions cannot
+//! audit. `TPM2_FlushContext` takes no sessions.
 //! NOT VERIFIED against TPM 2.0 Library v185/v184: the Name of a sequence object in a cpHash is
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
@@ -421,6 +423,24 @@ enum SessionUse {
 }
 
 /// Format checks of the sessions (before any authValue is looked at).
+///
+/// Session audit rules, checked against TCG TPM 2.0 Library Part 1 rev 01.83 (2024-01-25):
+/// - clause 18.6.1, Table 6, notes 1, 2 and 5: a password authorization cannot audit; an HMAC
+///   authorization session can also audit; a policy session cannot audit. The position of the
+///   audit session is free, so the first (authorizing) session may be the audit session;
+/// - clause 18.6.4: `audit` is not allowed in a policy or trial policy session, only one session
+///   of a command can have it SET; `auditExclusive` needs `audit` and an exclusive session at the
+///   start of the command (`TPM_RC_EXCLUSIVE`); `auditReset` needs `audit`;
+/// - clause 19.6.1: "An HMAC session used to authorize can be used as an audit session";
+/// - clause 20.1: a session that was bound loses the bind value when it is first used for audit,
+///   so later authorizations include the authValue in the HMAC key (Equation 21 instead of 22);
+/// - Errata v1.5, item 2.15: a bound session first used for audit and authorization is a case the
+///   reference code got wrong in the response HMAC of the later authorizations.
+///
+/// NOT VERIFIED: the numbering of these clauses in v185 and Part 2 Table 38 (not read); the key of
+/// the response HMAC of the first audited use of a bound session. The code keeps the key of the
+/// command HMAC (clause 19.6.10 gives one key for a command and its response), the bind is
+/// dropped after the response is built.
 fn classify_sessions(
     tpm: &Tpm,
     spec: &CommandSpec,
@@ -471,7 +491,10 @@ fn classify_sessions(
         let num = n as u8;
         let auditing = s.attributes & session_attr::AUDIT != 0;
         if auditing {
-            if !additional || session.kind != SessionKind::Hmac || audit_index.is_some() {
+            // An HMAC session may audit and authorize a handle in the same command. A policy or
+            // trial session (Part 1 rev 01.83, clause 18.6.1, Table 6 note 5; clause 18.6.4,
+            // `audit`) and a second audit session are `TPM_RC_ATTRIBUTES`.
+            if session.kind != SessionKind::Hmac || audit_index.is_some() {
                 return Err(Rc::ATTRIBUTES.in_session(num));
             }
             if s.attributes & session_attr::AUDIT_EXCLUSIVE != 0
@@ -934,6 +957,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 if audit_index == Some(i) && tpm.sessions.exclusive_audit == Some(*slot) {
                     attributes |= session_attr::AUDIT_EXCLUSIVE;
                 }
+                // `used_auth` is the key of the command HMAC (bound entity: sessionKey alone).
+                // The audit of this command has already dropped the binding in `session.bound`,
+                // so the response must not look at it again (Part 1 rev 01.83, clause 19.6.10).
                 let hmac = match tpm.sessions.get(*slot) {
                     // An empty command HMAC is answered with an empty one (clause 17.6.15).
                     Some(session) if !s.hmac.is_empty() => {

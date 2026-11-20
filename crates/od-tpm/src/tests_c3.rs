@@ -1470,9 +1470,9 @@ fn a_null_sign_handle_with_an_hmac_session() {
 
 // -------------------------------------------------------------------- parameter encryption
 
-const AES_SYM: [u8; 6] = [0x00, 0x06, 0x00, 128, 0x00, 0x43];
+pub(super) const AES_SYM: [u8; 6] = [0x00, 0x06, 0x00, 128, 0x00, 0x43];
 const AES256_SYM: [u8; 6] = [0x00, 0x06, 0x01, 0x00, 0x00, 0x43];
-const XOR_SYM: [u8; 4] = [0x00, 0x0A, 0x00, 0x0B];
+pub(super) const XOR_SYM: [u8; 4] = [0x00, 0x0A, 0x00, 0x0B];
 
 /// KDFa for any size (`bits` in the input; the Part 1 counter-mode construction).
 fn kdfa_bits(key: &[u8], label: &[u8], u: &[u8], v: &[u8], bits: u32) -> Vec<u8> {
@@ -1488,7 +1488,7 @@ fn kdfa_bits(key: &[u8], label: &[u8], u: &[u8], v: &[u8], bits: u32) -> Vec<u8>
 }
 
 /// The client side of clause 19: `sessionValue = sessionKey || authValue`.
-fn crypt(
+pub(super) fn crypt(
     sym: &[u8],
     s: &Hs,
     entity_auth: &[u8],
@@ -1511,7 +1511,7 @@ fn crypt(
 }
 
 /// Starts a session with the given `symmetric` (the start helper of `tests_b` uses NULL).
-fn start_sym(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8]) -> Hs {
+pub(super) fn start_sym(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8]) -> Hs {
     start_sym_kind(t, bind, bind_auth, sym, se::HMAC)
 }
 
