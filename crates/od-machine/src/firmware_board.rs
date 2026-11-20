@@ -4120,6 +4120,9 @@ fn load_firmware_image_inner(
 }
 
 #[cfg(test)]
+mod secure_boot_pcr7_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

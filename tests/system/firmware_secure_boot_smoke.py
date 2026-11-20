@@ -127,6 +127,8 @@ def make_disks(work, apps):
         (b"BOOT000BOPT", load_option(file_node("CHECK.EFI"), b"order")),
     )
     write_fat32(work / "enroll.raw", "none", ((b"BOOTX64 EFI", enrollment), *files, *boot_options))
+    for name, esl in {**esls, "dbx": dbx}.items():
+        (work / f"{name}.esl").write_bytes(esl)
     enrolled = {(GLOBAL, "PK"): esls["PK"], (GLOBAL, "KEK"): esls["KEK"], (DATABASE, "db"): esls["db"]}
     return enrolled, {**enrolled, (DATABASE, "dbx"): dbx}
 

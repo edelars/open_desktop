@@ -258,6 +258,25 @@ OD_TPM_FAILURE_ROM="$od_tpm_failure/firmware.bin" OD_TPM_FAILURE_ESP="$od_tpm_fa
 
 Тестовая сборка `od-machine` подставляет ответ CRB для Startup. Гостевое приложение из ESP проверяет отсутствие протокола и таблицы событий. Host-тест сверяет COM1, ACPI и освобождение locality с возвратом CRB в idle.
 
+### Проверка PCR7 и отказов Secure Boot
+
+```sh
+od_sb_pcr7=$(mktemp -d)
+python3 tests/system/firmware_secure_boot_smoke.py --work "$od_sb_pcr7"
+OD_SB_PCR7_ROM="$od_sb_pcr7/firmware.bin" OD_SB_PCR7_FIXTURES="$od_sb_pcr7" \
+  cargo test --offline --release -p od-machine --lib \
+  firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation -- --ignored --nocapture
+```
+
+Второй тест запускает три платы с действующим TPM. Он извлекает журнал Event03 из гостевой RAM, самостоятельно вычисляет SHA-256 для каждого события PCR7 и сверяет replay с `TPM2_PCR_Read` через CRB. Зачисленные и отозванные записи сверяются побайтно с исходными ESL, сохранёнными системным скриптом. PCR7 различается в SetupMode, после зачисления и после отзыва.
+
+| Сценарий | Наблюдаемый результат |
+|---|---|
+| `TPM2_Startup` возвращает `TPM_RC_FAILURE` | COM1 фиксирует причину, загрузка доходит до ESP. TCG2, финальные события и объявление TPM в ACPI отсутствуют. |
+| Неподписанный PE в UserMode | `LoadImage` возвращает `EFI_SECURITY_VIOLATION`. Загрузчик переходит к следующей опции. |
+| Auth2 добавляет хеш подписанного PE в `dbx` | `StartImage` возвращает `EFI_SECURITY_VIOLATION` для уже загруженного PE. После холодного старта загрузчик снова отказывает этому PE. |
+| Пустой исходный `BootOrder`, отказ образу по штатной политике | COM1 печатает `OD-FW no bootable option`. Машина выполняет `HLT` с кодом `0x21` и деталью `1`. |
+
 ## Что проверяет S7-12 (AML и DSDT)
 
 - `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` (77 тестов; из них AML 46, DSDT 13, manifest 4, таблица 3): эталонные байты ≥ 30 конструктов (PkgLength 1–4 байта и границы, NameString, Integer, String, EISAID, Name/Scope/Device/Method/Package/Buffer, дескрипторы ResourceTemplate), вычисленные вручную по спецификации и записанные в тесте с выкладкой; три побайтных эталона DSDT (PCI0 + COM1; только COM2 с level/active-low; без устройств), сгенерированные независимой Python-программой по ACPI 6.4 (скрипт не сохранён); отрицательные случаи — переполнение PkgLength, недопустимое имя, ссылка на неопределённое имя, повтор имени в одном Scope (при построении и в готовых байтах), порча контрольной суммы/длины/сигнатуры, неописуемые записи manifest. Это проверка формата на host: DSDT не загружалась в машину или ОС. Разбор `iasl -d` не выполнялся (`iasl` отсутствует).
