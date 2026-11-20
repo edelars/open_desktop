@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 92] = [
+pub(crate) static COMMANDS: [CommandSpec; 93] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -197,6 +197,7 @@ pub(crate) static COMMANDS: [CommandSpec; 92] = [
     spec(cc::NV_CERTIFY, 3, 2, false, false, false),
     spec(cc::EVENT_SEQUENCE_COMPLETE, 2, 2, false, true, true),
     spec(cc::HASH_SEQUENCE_START, 0, 0, true, false, false),
+    spec(cc::POLICY_DUPLICATION_SELECT, 1, 0, false, false, false),
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
     spec(cc::TEST_PARMS, 0, 0, false, false, false),
     spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
@@ -830,6 +831,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             tpm.cmd_policy_auth_value(&inv, &mut p, spec.code == cc::POLICY_PASSWORD)?
         }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
+        cc::POLICY_DUPLICATION_SELECT => tpm.cmd_policy_duplication_select(&inv, &mut p)?,
         cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
         cc::POLICY_NV => tpm.cmd_policy_nv(&inv, &mut p)?,
         cc::POLICY_AUTHORIZE_NV => tpm.cmd_policy_authorize_nv(&inv, &mut p)?,
@@ -1071,6 +1073,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_AUTH_VALUE
         | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
+        | cc::POLICY_DUPLICATION_SELECT
         | cc::POLICY_COUNTER_TIMER
         | cc::POLICY_NV_WRITTEN
         | cc::POLICY_CP_HASH
@@ -1176,6 +1179,6 @@ mod tests {
         for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 92);
+        assert_eq!(COMMANDS.len(), 93);
     }
 }

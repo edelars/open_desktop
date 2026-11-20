@@ -583,6 +583,49 @@ impl Tpm {
         Ok(Output::default())
     }
 
+    /// `TPM2_PolicyDuplicationSelect` (Part 3 v185 §23.15).
+    pub(crate) fn cmd_policy_duplication_select(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        // The Names can describe another TPM when calculating a trial policy.
+        const MAX_NAME_SIZE: usize = 2 + limits::MAX_PCR_DIGEST_SIZE;
+        p.set_param(1);
+        let object_name = p.tpm2b(MAX_NAME_SIZE)?;
+        p.set_param(2);
+        let parent_name = p.tpm2b(MAX_NAME_SIZE)?;
+        p.set_param(3);
+        let include = p.u8()?;
+        if include > 1 {
+            return Err(Rc::VALUE.in_param(3));
+        }
+        p.finish()?;
+        let slot = self.policy_slot(inv.handles[0])?;
+        let (state, kind) = self.policy_mut(slot)?;
+        if kind == SessionKind::Policy {
+            if state.hash_restriction.is_some() {
+                return Err(Rc::CPHASH);
+            }
+            if state.command_code.is_some_and(|code| code != cc::DUPLICATE) {
+                return Err(Rc::POLICY_CC);
+            }
+            let mut hash = Sha256::new();
+            hash.update(object_name);
+            hash.update(parent_name);
+            state.hash_restriction = Some(PolicyHashRestriction::NameHash(hash.finalize().into()));
+            state.command_code = Some(cc::DUPLICATE);
+        }
+        let selected_object = if include == 1 { object_name } else { &[] };
+        state.extend(&[
+            &cc::POLICY_DUPLICATION_SELECT.to_be_bytes(),
+            selected_object,
+            parent_name,
+            &[include],
+        ]);
+        Ok(Output::default())
+    }
+
     /// Deferred assertions over command Names, a creation template or parameters
     /// (Part 3 §§23.14, 23.21, 23.24).
     pub(crate) fn cmd_policy_hash_restriction(

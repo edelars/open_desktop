@@ -46,6 +46,7 @@ pub mod cc {
     pub const POLICY_RESTART: u32 = 0x0000_0180;
     pub const NV_CERTIFY: u32 = 0x0000_0184;
     pub const POLICY_GET_DIGEST: u32 = 0x0000_0189;
+    pub const POLICY_DUPLICATION_SELECT: u32 = 0x0000_0188;
     pub const POLICY_PASSWORD: u32 = 0x0000_018C;
     pub const POLICY_NV_WRITTEN: u32 = 0x0000_018F;
     pub const POLICY_TEMPLATE: u32 = 0x0000_0190;

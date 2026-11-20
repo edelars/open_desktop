@@ -552,6 +552,73 @@ fn duplicate_requires_a_real_policy_with_the_duplicate_command_code() {
     assert_eq!(secret_of(&t, key), b"duplication");
 }
 
+#[test]
+fn duplication_policy_binds_both_names_when_the_digest_includes_only_the_parent() {
+    let (mut t, parent) = with_ecc_parent();
+    let mut template = sealed();
+    template.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+    let code = u32b(cc::POLICY_DUPLICATION_SELECT);
+    let null_parent = u32b(NULL);
+    template.auth_policy = h256(&[&[0; 32], &code, &null_parent, &[0]]);
+    let (key, name, _) = make_child(&mut t, parent, &template, b"child", b"duplication");
+    let select = |t: &mut Tpm, s: &Hs, object: &[u8], parent: &[u8], include| {
+        pol(
+            t,
+            cc::POLICY_DUPLICATION_SELECT,
+            s,
+            &cat(&[&tpm2b(object), &tpm2b(parent), &[include]]),
+        )
+    };
+    let parameters = cat(&[&tpm2b(b""), &u16b(alg::NULL)]);
+    let mut command = hc(cc::DUPLICATE, &[key, NULL], parameters, (key, b"child"));
+    command.names[0] = name.clone();
+    let mut real = policy_session(&mut t, se::POLICY);
+    ok(&select(&mut t, &real, &[7; 34], &null_parent, 0));
+    assert_eq!(digest(&mut t, &real), template.auth_policy);
+    err(
+        &use_session(&mut t, &mut real, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    err(&select(&mut t, &real, &name, &null_parent, 0), Rc::CPHASH);
+    assert_eq!(digest(&mut t, &real), template.auth_policy);
+
+    ok(&pol(&mut t, cc::POLICY_RESTART, &real, &[]));
+    ok(&pol_cc(&mut t, &real, cc::SIGN));
+    let previous = digest(&mut t, &real);
+    err(
+        &select(&mut t, &real, &name, &null_parent, 0),
+        Rc::POLICY_CC,
+    );
+    assert_eq!(digest(&mut t, &real), previous);
+    ok(&pol(&mut t, cc::POLICY_RESTART, &real, &[]));
+    ok(&select(&mut t, &real, &name, &null_parent, 0));
+    let mut other_parent = hc(
+        cc::DUPLICATE,
+        &[key, parent],
+        command.params.clone(),
+        (key, b"child"),
+    );
+    other_parent.names[0] = name.clone();
+    other_parent.names[1] = t.object_name(parent).unwrap();
+    err(
+        &use_session(&mut t, &mut real, &other_parent, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&use_session(&mut t, &mut real, &command, 0, true, false));
+
+    let trial = policy_session(&mut t, se::TRIAL);
+    // A trial policy may use SHA-384 Names for another TPM.
+    let cross_profile = cat(&[&u16b(alg::SHA384), &[3; 48]]);
+    ok(&select(&mut t, &trial, &name, &cross_profile, 1));
+    let expected = h256(&[&[0; 32], &code, &name, &cross_profile, &[1]]);
+    assert_eq!(digest(&mut t, &trial), expected);
+    ok(&select(&mut t, &trial, &name, &null_parent, 0));
+    assert_eq!(
+        digest(&mut t, &trial),
+        h256(&[&expected, &code, &null_parent, &[0]])
+    );
+}
+
 fn policy_key(auth_policy: &[u8]) -> TpmtPublic {
     let mut p = ecc_sign();
     p.attributes &= !oa::USER_WITH_AUTH;
