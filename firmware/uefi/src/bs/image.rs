@@ -22,11 +22,15 @@ use crate::uefi::{
 use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, ptr, slice};
 
 #[cfg(any(target_os = "none", test))]
+mod execution_info;
+#[cfg(any(target_os = "none", test))]
 mod filesystem;
 #[cfg(target_os = "none")]
 mod invoke;
 mod path;
 
+#[cfg(target_os = "none")]
+pub use execution_info::install as install_execution_info;
 #[cfg(target_os = "none")]
 pub use path::install_firmware_volume;
 pub use path::{LOAD_FILE_PROTOCOL_GUID, LoadFileProtocol, firmware_file_device_path};
@@ -49,6 +53,7 @@ struct ImageRecord {
 struct ExternalSource {
     base: u64,
     length: usize,
+    metadata_pages: u16,
     denied: bool,
 }
 
@@ -67,8 +72,35 @@ impl ExternalSource {
             )
         };
         let nvram = unsafe { crate::var::nvram::Nvram::at(mmio as usize) };
-        crate::tpm::secure_boot::authorize(nvram, bytes)
+        let path = if self.metadata_pages == 0 {
+            ptr::null()
+        } else {
+            // The immutable full path starts at the beginning of the
+            // metadata range immediately below the original image bytes.
+            let address = self.base - u64::from(self.metadata_pages) * PAGE_BYTES;
+            ptr::with_exposed_provenance(address as usize)
+        };
+        if unsafe { authorize_external(nvram, bytes, path) }? {
+            return Err(Status::SECURITY_VIOLATION);
+        }
+        Ok(())
     }
+}
+
+#[cfg(target_os = "none")]
+#[inline(never)]
+unsafe fn authorize_external(
+    nvram: crate::var::nvram::Nvram,
+    bytes: &[u8],
+    path: *const DevicePathNode,
+) -> Result<bool, Status> {
+    if let crate::var::nvram::ImageCheck::Rejected(rejected) =
+        crate::tpm::secure_boot::authorize(nvram, bytes)?
+    {
+        unsafe { execution_info::append(rejected, path_bytes(path)) }?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 // Published interfaces can be held by an EFI caller across service calls.
@@ -399,17 +431,19 @@ unsafe fn load(
                         );
                         target.cast()
                     });
-                    (path.device, relative, target.cast())
+                    (path.device, relative, target.cast::<c_void>())
                 }
                 None => (ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
             };
             #[cfg(target_os = "none")]
             let external_source = if let Some(mmio) = active_policy {
                 let nvram = crate::var::nvram::Nvram::at(mmio as usize);
-                let denied = match crate::tpm::secure_boot::authorize(nvram, bytes) {
-                    Ok(()) => false,
-                    Err(Status::SECURITY_VIOLATION) => true,
-                    Err(status) => return status,
+                let denied = match authorize_external(nvram, bytes, image_path.cast()) {
+                    Ok(denied) => denied,
+                    Err(status) => {
+                        image.write(ptr::null_mut());
+                        return status;
+                    }
                 };
                 copy_mem(
                     destination
@@ -422,6 +456,7 @@ unsafe fn load(
                 Some(ExternalSource {
                     base: raw_base,
                     length: bytes.len(),
+                    metadata_pages: metadata_pages as u16,
                     denied,
                 })
             } else {

@@ -3,6 +3,8 @@
 use super::codec::MAX_STORE_BYTES;
 use crate::uefi::status::Status;
 use core::ptr;
+#[cfg(target_os = "none")]
+use od_uefi_security::image_execution::{RejectedImage, RejectedImageAction};
 
 const ADDR: usize = MAX_STORE_BYTES;
 const LEN: usize = MAX_STORE_BYTES + 4;
@@ -15,6 +17,14 @@ const POLICY_EPOCH_LOW: usize = MAX_STORE_BYTES + 20;
 const POLICY_EPOCH_HIGH: usize = MAX_STORE_BYTES + 24;
 #[cfg(target_os = "none")]
 pub(crate) const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(target_os = "none")]
+#[derive(Clone, Copy)]
+pub(crate) enum ImageCheck {
+    Disabled,
+    Authorized(usize),
+    Rejected(RejectedImage),
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct Nvram {
@@ -81,15 +91,14 @@ impl Nvram {
         Ok(u64::from(high) << 32 | u64::from(low))
     }
 
-    /// Submits one complete file. `None` means the active protected store is in SetupMode
-    /// or the host disabled Secure Boot. If provided, `authority` receives the enrolled
-    /// EFI_SIGNATURE_DATA before another MMIO command can replace the reply.
+    /// Submits one complete file. Disabled means SetupMode or the host's explicit bypass.
+    /// If provided, `authority` receives the exact enrolled EFI_SIGNATURE_DATA at success.
     #[cfg(target_os = "none")]
     pub(crate) fn authorize_image(
         self,
         file: &[u8],
         authority: Option<&mut [u8]>,
-    ) -> Result<Option<usize>, Status> {
+    ) -> Result<ImageCheck, Status> {
         if !(1..=MAX_IMAGE_BYTES).contains(&file.len()) {
             return Err(Status::ACCESS_DENIED);
         }
@@ -119,18 +128,35 @@ impl Nvram {
                     let out = authority
                         .get_mut(..length)
                         .ok_or(Status::BUFFER_TOO_SMALL)?;
-                    for (offset, byte) in out.iter_mut().enumerate() {
-                        *byte = unsafe {
-                            ptr::with_exposed_provenance::<u8>(self.base + offset).read_volatile()
-                        };
-                    }
+                    self.read_image_reply(out);
                 }
-                Ok(Some(length))
+                Ok(ImageCheck::Authorized(length))
             }
-            6 => Ok(None),
-            0x8000_0005 => Err(Status::SECURITY_VIOLATION),
+            6 => Ok(ImageCheck::Disabled),
+            0x8000_0005 => {
+                let action = RejectedImageAction::from_raw(self.read_register(LEN))
+                    .ok_or(Status::DEVICE_ERROR)?;
+                let digest = match self.read_register(ADDR) {
+                    0 => None,
+                    32 => {
+                        let mut digest = [0; 32];
+                        self.read_image_reply(&mut digest);
+                        Some(digest)
+                    }
+                    _ => return Err(Status::DEVICE_ERROR),
+                };
+                Ok(ImageCheck::Rejected(RejectedImage { action, digest }))
+            }
             0x8000_0007 => Err(Status::OUT_OF_RESOURCES),
             _ => Err(Status::DEVICE_ERROR),
+        }
+    }
+
+    #[cfg(target_os = "none")]
+    fn read_image_reply(self, out: &mut [u8]) {
+        for (offset, byte) in out.iter_mut().enumerate() {
+            *byte =
+                unsafe { ptr::with_exposed_provenance::<u8>(self.base + offset).read_volatile() };
         }
     }
 

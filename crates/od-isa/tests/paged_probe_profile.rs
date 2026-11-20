@@ -52986,6 +52986,16 @@ fn firmware_boot_memory_arithmetic_commits_only_after_write() {
             0x613,
         ),
         (
+            &[0x48, 0x83, 0x84, 0x24, 0xc0, 0, 0, 0, 2][..],
+            Register::Rax,
+            0,
+            8,
+            0xc0,
+            0xff,
+            1,
+            0x613,
+        ),
+        (
             &[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..],
             Register::Rax,
             0,
@@ -53085,6 +53095,7 @@ fn firmware_boot_memory_arithmetic_commits_only_after_write() {
 fn load_image_region_addition_requires_the_firmware_profile_and_exact_form() {
     for (code, firmware) in [
         (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], false),
+        (&[0x48, 0x83, 0x84, 0x24, 0xc0, 0, 0, 0, 2][..], false),
         (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 3][..], true),
         (&[0x48, 0x83, 0x84, 0x24, 0xd0, 0, 0, 0, 2][..], true),
         (&[0x67, 0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], true),
@@ -53894,6 +53905,7 @@ fn firmware_boot_byte_test_from_memory_reads_once_and_commits_after_read() {
         (&[0x84, 0x84, 0x24, 0x87, 0, 0, 0][..], 0x87, Rsp, Rax),
         (&[0x84, 0x84, 0x24, 0xa8, 0, 0, 0][..], 0xa8, Rsp, Rax),
         (&[0x84, 0x84, 0x24, 0xd4, 0, 0, 0][..], 0xd4, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0x20, 1, 0, 0][..], 0x120, Rsp, Rax),
         (&[0x84, 0x84, 0x24, 0x4c, 1, 0, 0][..], 0x14c, Rsp, Rax),
         (&[0x84, 0x84, 0x24, 0x5c, 1, 0, 0][..], 0x15c, Rsp, Rax),
         (&[0x44, 0x84, 0xa6, 0x18, 0, 4, 0][..], 0x40018, Rsi, R12),
@@ -56530,6 +56542,7 @@ fn firmware_pe_permission_or_commits_only_after_the_stack_store() {
     for (code, displacement) in [
         ([0x09, 0x84, 0x24, 0xb8, 0, 0, 0].as_slice(), 0xb8u64),
         ([0x09, 0x84, 0x24, 0xd8, 0, 0, 0].as_slice(), 0xd8),
+        ([0x09, 0x84, 0x24, 0xe0, 0, 0, 0].as_slice(), 0xe0),
         ([0x09, 0x44, 0x24, 0x78].as_slice(), 0x78),
     ] {
         let address = DATA + displacement;
@@ -57525,6 +57538,7 @@ fn firmware_boot_shifts_image_loader_qword_spill_transactionally() {
         ([0x48, 0xd1, 0x6c, 0x24, 0x68].as_slice(), 0x68u8),
         ([0x48, 0xd1, 0x6c, 0x24, 0x78].as_slice(), 0x78),
         ([0x48, 0xd1, 0xac, 0x24, 0xa0, 0, 0, 0].as_slice(), 0xa0),
+        ([0x48, 0xd1, 0xac, 0x24, 0xa8, 0, 0, 0].as_slice(), 0xa8),
     ] {
         let address = DATA + u64::from(displacement);
         let position = DATA_PHYSICAL + usize::from(displacement);

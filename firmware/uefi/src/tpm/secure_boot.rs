@@ -1,7 +1,11 @@
 //! PFP 1.06 r52, §3.3.4.8. Measure the committed policy and enrolled image authority.
 
 use super::{event_log::SECURE_BOOT_CAPACITY, tcg2};
-use crate::{bs::memory::BootPool, uefi::status::Status, var::nvram::Nvram};
+use crate::{
+    bs::memory::BootPool,
+    uefi::status::Status,
+    var::nvram::{ImageCheck, Nvram},
+};
 use core::{ptr, slice};
 use od_uefi_security::Guid;
 use od_uefi_security::protected::{
@@ -68,9 +72,9 @@ pub unsafe extern "efiapi" fn variables_updated() {
 }
 
 /// Verifies a complete image, recording its enrolled authority on first use.
-pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<(), Status> {
+pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<ImageCheck, Status> {
     let Some(state) = (unsafe { &mut *ptr::addr_of_mut!(MEASUREMENTS) }).as_mut() else {
-        return nvram.authorize_image(bytes, None).map(|_| ());
+        return nvram.authorize_image(bytes, None);
     };
     state.ensure_config(nvram)?;
     let scratch = unsafe { slice::from_raw_parts_mut(state.scratch.as_ptr(), SCRATCH_BYTES) };
@@ -80,8 +84,9 @@ pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<(), Status> {
         state.failed = Some(Status::DEVICE_ERROR);
         return Err(Status::DEVICE_ERROR);
     }
-    let Some(length) = verified? else {
-        return Ok(());
+    let verified = verified?;
+    let ImageCheck::Authorized(length) = verified else {
+        return Ok(verified);
     };
     let payload = &data[..length];
     let header = event_header(IMAGE_SECURITY_DATABASE, DB, length);
@@ -92,7 +97,7 @@ pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<(), Status> {
         .chunks_exact(digest.len())
         .any(|old| old == digest)
     {
-        return Ok(());
+        return Ok(verified);
     }
     let slot = authorities
         .get_mut(used..used + digest.len())
@@ -104,7 +109,7 @@ pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<(), Status> {
     }
     slot.copy_from_slice(&digest);
     state.authorities += 1;
-    Ok(())
+    Ok(verified)
 }
 
 impl Measurements {

@@ -25,7 +25,8 @@ HELLO = b"OD-UEFI hello 0.1.0\r\n"
 BEFORE = b"OD-UEFI Secure Boot SetupMode=1 SecureBoot=0\r\n"
 AFTER = b"OD-UEFI Secure Boot enrolled PK KEK db SetupMode=0 SecureBoot=1\r\n"
 FALLBACK = b"OD-UEFI ESP BootOrder, BootCurrent and LoadOptions verified\r\n"
-REVOKED = b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\n"
+REVOKED = (b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\n"
+           b"OD-UEFI image execution table verified\r\n")
 STOP = b"OD-FW no bootable option\r\nOD-FW STOP code=0x21 detail=0x0000000000000001\r\n"
 GLOBAL = UUID("8be4df61-93ca-11d2-aa0d-00e098032b8c").bytes_le
 DATABASE = UUID("d719b2cb-3d3a-4596-a3bc-dad00e67656f").bytes_le

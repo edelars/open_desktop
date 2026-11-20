@@ -244,6 +244,7 @@ enum Transfer {
     Write { length: usize, written: usize },
     ImageUpload(image::Upload),
     ImageAuthority(Vec<u8>),
+    RejectedImageDigest([u8; 32]),
 }
 
 struct State {
@@ -264,6 +265,7 @@ impl State {
             let (data, start, end) = match &self.transfer {
                 Transfer::Read { start, end } => (self.banks.current().data(), *start, *end),
                 Transfer::ImageAuthority(bytes) => (&bytes[..], 0, bytes.len()),
+                Transfer::RejectedImageDigest(bytes) => (&bytes[..], 0, bytes.len()),
                 _ => return Err(DeviceError::Busy),
             };
             let offset = offset as usize;

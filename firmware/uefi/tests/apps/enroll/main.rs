@@ -4,6 +4,7 @@
 
 use core::{mem::MaybeUninit, ptr, ptr::NonNull, slice};
 use od_firmware::{
+    device_path::DevicePathNode,
     fs::simple_fs::{FileProtocol, SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, SimpleFileSystem},
     uefi::{
         guid::Guid,
@@ -15,6 +16,8 @@ use od_firmware::{
     var::services::GLOBAL_VARIABLE,
 };
 use od_firmware_test_apps::{ascii_to_char16, output};
+
+mod execution_info;
 
 const SETUP_MODE: [Char16; 10] = ascii_to_char16(b"SetupMode\0");
 const SECURE_BOOT: [Char16; 11] = ascii_to_char16(b"SecureBoot\0");
@@ -43,8 +46,7 @@ const FIRST_OPTION_FILE: [Char16; 23] = ascii_to_char16(b"\\EFI\\BOOT\\BOOT000A.
 const NEXT_OPTION_FILE: [Char16; 23] = ascii_to_char16(b"\\EFI\\BOOT\\BOOT000B.OPT\0");
 const BEFORE: &[u8] = b"OD-UEFI Secure Boot SetupMode=1 SecureBoot=0\r\n\0";
 const AFTER: &[u8] = b"OD-UEFI Secure Boot enrolled PK KEK db SetupMode=0 SecureBoot=1\r\n\0";
-const REVOKED: &[u8] =
-    b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\n\0";
+const REVOKED: &[u8] = b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\nOD-UEFI image execution table verified\r\n\0";
 static BEFORE_LINE: [Char16; BEFORE.len()] = ascii_to_char16(BEFORE);
 static AFTER_LINE: [Char16; AFTER.len()] = ascii_to_char16(AFTER);
 static REVOKED_LINE: [Char16; REVOKED.len()] = ascii_to_char16(REVOKED);
@@ -92,9 +94,18 @@ struct LoadedChild<'a> {
     handle: Handle,
 }
 
+impl LoadedChild<'_> {
+    fn unload(mut self) -> Result<(), Status> {
+        let handle = core::mem::replace(&mut self.handle, ptr::null_mut());
+        check(unsafe { (self.boot.unload_image)(handle) })
+    }
+}
+
 impl Drop for LoadedChild<'_> {
     fn drop(&mut self) {
-        unsafe { (self.boot.unload_image)(self.handle) };
+        if !self.handle.is_null() {
+            unsafe { (self.boot.unload_image)(self.handle) };
+        }
     }
 }
 
@@ -181,6 +192,7 @@ unsafe fn load_child<'a>(
     parent: Handle,
     root: &OpenFile,
     path: &[Char16],
+    device_path: *const DevicePathNode,
     expected: Status,
 ) -> Result<LoadedChild<'a>, Status> {
     let source = unsafe { root.open(path) }?;
@@ -191,7 +203,7 @@ unsafe fn load_child<'a>(
         (boot.load_image)(
             0,
             parent,
-            ptr::null(),
+            device_path,
             bytes.as_ptr().cast(),
             bytes.len(),
             &mut image,
@@ -217,17 +229,31 @@ unsafe fn revoke(
     system: *mut SystemTable,
     root: &OpenFile,
 ) -> Result<(), Status> {
+    let table = unsafe { execution_info::table(system) }?;
+    unsafe { execution_info::count(system, table, 0) }?;
+    let boot_path = unsafe { execution_info::boot_path(boot, parent) }?;
     let unsigned = unsafe {
         load_child(
             boot,
             parent,
             root,
             &UNSIGNED_FILE,
+            boot_path.as_ptr().cast(),
             Status::SECURITY_VIOLATION,
         )
     }?;
-    drop(unsigned);
-    let target = unsafe { load_child(boot, parent, root, &TARGET_FILE, Status::SUCCESS) }?;
+    unsigned.unload()?;
+    unsafe { execution_info::count(system, table, 1) }?;
+    let target = unsafe {
+        load_child(
+            boot,
+            parent,
+            root,
+            &TARGET_FILE,
+            ptr::null(),
+            Status::SUCCESS,
+        )
+    }?;
     let update = unsafe { root.open(&DBX_FILE) }?;
     unsafe {
         set_variable_from_file(
@@ -244,6 +270,23 @@ unsafe fn revoke(
     {
         return Err(Status::LOAD_ERROR);
     }
+    target.unload()?;
+    unsafe { execution_info::count(system, table, 2) }?;
+    let mut dbx = [0; 76];
+    let mut length = dbx.len();
+    check(unsafe {
+        (runtime.get_variable)(
+            DBX.as_ptr(),
+            &IMAGE_SECURITY_DATABASE,
+            ptr::null_mut(),
+            &mut length,
+            dbx.as_mut_ptr().cast(),
+        )
+    })?;
+    if length != dbx.len() {
+        return Err(Status::LOAD_ERROR);
+    }
+    unsafe { execution_info::verify_records(table, boot_path, &dbx[44..]) }?;
     check(unsafe { output(system, REVOKED_LINE.as_ptr()) })
 }
 

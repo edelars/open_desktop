@@ -52,6 +52,12 @@ pub struct ImageAuthority<'a> {
     pub signature: Signature<'a>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImagePolicyFailure {
+    pub error: ImagePolicyError,
+    pub digest: Option<[u8; 32]>,
+}
+
 /// Authorizes an external PE32+ image using UEFI 2.11 §32.5.3.3 and ADR-0011.
 ///
 /// All signatures are inventoried before an authority is returned. A signature envelope outside
@@ -62,11 +68,35 @@ pub fn authorize_image<'db>(
     db: &'db [u8],
     dbx: &[u8],
 ) -> Result<ImageAuthority<'db>, ImagePolicyError> {
-    let image = PeImage::parse(file).map_err(|_| ImagePolicyError::InvalidImage)?;
-    let digest = authenticode_digest(&image, DigestAlgorithm::Sha256)
-        .map_err(|_| ImagePolicyError::InvalidImage)?;
-    let revocations = Revocations::read(dbx, &digest)?;
-    let mut policy = ImagePolicy::read(db, &digest, &revocations)?;
+    authorize_image_with_evidence(file, db, dbx).map_err(|failure| failure.error)
+}
+
+/// Returns the Authenticode digest already used by the policy check on a rejection.
+pub fn authorize_image_with_evidence<'db>(
+    file: &[u8],
+    db: &'db [u8],
+    dbx: &[u8],
+) -> Result<ImageAuthority<'db>, ImagePolicyFailure> {
+    let invalid_image = ImagePolicyFailure {
+        error: ImagePolicyError::InvalidImage,
+        digest: None,
+    };
+    let image = PeImage::parse(file).map_err(|_| invalid_image)?;
+    let digest = authenticode_digest(&image, DigestAlgorithm::Sha256).map_err(|_| invalid_image)?;
+    authorize_parsed_image(&image, &digest, db, dbx).map_err(|error| ImagePolicyFailure {
+        error,
+        digest: Some(digest),
+    })
+}
+
+fn authorize_parsed_image<'db>(
+    image: &PeImage<'_>,
+    digest: &[u8; 32],
+    db: &'db [u8],
+    dbx: &[u8],
+) -> Result<ImageAuthority<'db>, ImagePolicyError> {
+    let revocations = Revocations::read(dbx, digest)?;
+    let mut policy = ImagePolicy::read(db, digest, &revocations)?;
     let signed = image.certificate_file_range().is_some();
     if revocations.image {
         // An execution record reports a found signature only after validating

@@ -5,9 +5,9 @@ use super::{
 };
 use crate::bus::DeviceError;
 use od_uefi_security::{
-    image_execution::RejectedImageAction,
+    image_execution::RejectedImage,
     protected::PolicyVariable,
-    verify::{ImageAuthority, authorize_image},
+    verify::{ImageAuthority, authorize_image_with_evidence},
 };
 
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -86,8 +86,12 @@ impl State {
         let authority = match self.image_authority(bytes) {
             Ok(Some(authority)) => authority,
             Ok(None) => return Status::ImagePolicyDisabled,
-            Err(action) => {
-                self.length = action as u32;
+            Err(rejected) => {
+                self.length = rejected.action as u32;
+                if let Some(digest) = rejected.digest {
+                    self.address = digest.len() as u32;
+                    self.transfer = Transfer::RejectedImageDigest(digest);
+                }
                 return Status::PolicyRejected;
             }
         };
@@ -102,15 +106,12 @@ impl State {
         Status::ImageAuthorized
     }
 
-    fn image_authority(
-        &self,
-        bytes: &[u8],
-    ) -> Result<Option<ImageAuthority<'_>>, RejectedImageAction> {
-        let image = Image::new(self.banks.current().data())
-            .map_err(|_| RejectedImageAction::PolicyFailed)?;
+    fn image_authority(&self, bytes: &[u8]) -> Result<Option<ImageAuthority<'_>>, RejectedImage> {
+        let image =
+            Image::new(self.banks.current().data()).map_err(|_| RejectedImage::POLICY_FAILURE)?;
         let (mut pk, mut db, mut dbx) = (false, &[][..], &[][..]);
         for decoded in image.records() {
-            let (record, _) = decoded.map_err(|_| RejectedImageAction::PolicyFailed)?;
+            let (record, _) = decoded.map_err(|_| RejectedImage::POLICY_FAILURE)?;
             match record.policy_variable() {
                 Some(PolicyVariable::Pk) => pk = !record.value.is_empty(),
                 Some(PolicyVariable::Db) => db = record.value,
@@ -121,8 +122,11 @@ impl State {
         if image.flags.secure_boot_disabled || !pk {
             return Ok(None);
         }
-        authorize_image(bytes, db, dbx)
+        authorize_image_with_evidence(bytes, db, dbx)
             .map(Some)
-            .map_err(|error| error.execution_action())
+            .map_err(|failure| RejectedImage {
+                action: failure.error.execution_action(),
+                digest: failure.digest,
+            })
     }
 }

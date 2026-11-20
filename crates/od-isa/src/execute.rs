@@ -20965,7 +20965,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && (operand.displacement == 0x78
                             || matches!(
                                 (instruction.length, operand.displacement),
-                                (5, 0x68) | (8, 0xa0)
+                                (5, 0x68) | (8, 0xa0 | 0xa8)
                             ))
                 }
                 _ => false,
@@ -21188,7 +21188,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && destination.base == AddressBase::Register(Register::Rsp)
                         && destination.index.is_none()
                         && destination.scale == 1
-                        && destination.displacement == 0xc8
+                        && matches!(destination.displacement, 0xc0 | 0xc8)
                 }
                 (ArithmeticKind::Add, Operand::Immediate(0x20), size) => {
                     // FAT directory traversal updates the sector and logical cursors in place.
@@ -21253,7 +21253,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && instruction.opcode.byte == 0x09
             && matches!(
                 (instruction.length, destination.displacement),
-                (4, 0x78) | (7, 0xb8 | 0xd8)
+                (4, 0x78) | (7, 0xb8 | 0xd8 | 0xe0)
             )
             && instruction.prefixes == Prefixes::default()
             && destination.address_size == OperandSize::Qword
@@ -23587,7 +23587,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && instruction.length == 7
                         && matches!(
                             destination.displacement,
-                            0x87 | 0xa8 | 0xd4 | 0x14c | 0x15c
+                            0x87 | 0xa8 | 0xd4 | 0x120 | 0x14c | 0x15c
                         )
                         && instruction.prefixes == Prefixes::default()
                         && source == RegisterView::low(Register::Rax, OperandSize::Byte))))

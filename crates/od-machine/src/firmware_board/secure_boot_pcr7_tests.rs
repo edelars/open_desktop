@@ -37,11 +37,10 @@ fn firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation() {
         (setup_log, setup_pcr),
         (enroll_log, enroll_pcr),
         (revoke_log, revoke_pcr),
-    ] =
-        std::thread::scope(|scope| {
-            let rom = rom.as_slice();
-            let fixtures = fixtures.as_path();
-            [
+    ] = std::thread::scope(|scope| {
+        let rom = rom.as_slice();
+        let fixtures = fixtures.as_path();
+        [
             ("setup-1.nv", "unsigned.raw", b"OD-UEFI hello 0.1.0\r\n".as_slice()),
             (
                 "setup-1.nv", "enroll.raw",
@@ -49,14 +48,14 @@ fn firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation() {
             ),
             (
                 "enrolled-1.nv", "revoke.raw",
-                b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\n",
+                b"OD-UEFI Secure Boot rejected unsigned at LoadImage and revoked at StartImage\r\nOD-UEFI image execution table verified\r\n",
             ),
         ]
         .map(|(snapshot, disk, expected)| {
             scope.spawn(move || run(rom, fixtures, snapshot, disk, expected))
         })
         .map(|run| run.join().unwrap())
-        });
+    });
     assert_ne!(setup_pcr, enroll_pcr);
     assert_ne!(enroll_pcr, revoke_pcr);
     assert_ne!(setup_pcr, revoke_pcr);

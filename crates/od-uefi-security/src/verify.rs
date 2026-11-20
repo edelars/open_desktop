@@ -11,12 +11,15 @@ use x509_cert::{
 };
 
 use crate::pkcs7::{
-    AuthenticodeSignedData, DetachedSignedData, MAX_CERTIFICATES, RSA_2048_SIGNATURE_BYTES, Signer,
-    raw_sequence, sequence,
+    AuthenticodeSignedData, DetachedSignedData, RSA_2048_SIGNATURE_BYTES, Signer, raw_sequence,
+    sequence,
 };
 
 mod image_policy;
-pub use image_policy::{ImageAuthority, ImagePolicyError, authorize_image};
+pub use image_policy::{
+    ImageAuthority, ImagePolicyError, ImagePolicyFailure, authorize_image,
+    authorize_image_with_evidence,
+};
 
 const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");

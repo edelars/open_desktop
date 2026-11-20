@@ -312,6 +312,12 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::bs::image::install_firmware_volume() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 68);
     }
+    if handoff.enforces_secure_boot() {
+        let status = unsafe { od_firmware::bs::image::install_execution_info() };
+        if status != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, status.raw() as u64);
+        }
+    }
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }
