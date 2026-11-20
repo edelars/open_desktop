@@ -7,6 +7,8 @@ use der::{
 
 mod authenticode;
 pub use authenticode::AuthenticodeSignedData;
+#[cfg(feature = "verify")]
+pub(crate) use authenticode::SPC_INDIRECT_DATA;
 
 const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const ID_SIGNED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
@@ -84,6 +86,7 @@ pub struct MessageSignedData<'a> {
     embedded: Option<&'a [u8]>,
     certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
     authenticated: Option<AuthenticatedAttributes>,
+    content_type: ObjectIdentifier,
 }
 
 impl<'a> MessageSignedData<'a> {
@@ -115,6 +118,7 @@ impl<'a> MessageSignedData<'a> {
             embedded,
             certificates: signed.certificates,
             authenticated: signed.info.authenticated,
+            content_type,
         })
     }
 
@@ -128,6 +132,10 @@ impl<'a> MessageSignedData<'a> {
 
     pub fn embedded(&self) -> Option<&'a [u8]> {
         self.embedded
+    }
+
+    pub fn content_type(&self) -> ObjectIdentifier {
+        self.content_type
     }
 
     /// Returns the digest used by the RSA signature if it covers the supplied message hash.

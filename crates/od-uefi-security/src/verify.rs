@@ -16,10 +16,12 @@ use crate::pkcs7::{
 };
 
 mod image_policy;
+mod message;
 pub use image_policy::{
     ImageAuthority, ImagePolicyError, ImagePolicyFailure, authorize_image,
     authorize_image_with_evidence,
 };
+pub use message::{MessageSource, MessageVerificationError, verify_message};
 
 const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");
@@ -83,11 +85,27 @@ struct Candidate<'a> {
     issuer_max_path: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
+enum CertificatePurpose {
+    CodeSigning,
+    SignedMessage,
+    AuthenticodeMessage,
+}
+
 impl<'a> Candidate<'a> {
     fn parse(der: &'a [u8]) -> Result<Self, Error> {
+        Self::parse_for(der, CertificatePurpose::CodeSigning)
+    }
+
+    fn parse_for(der: &'a [u8], purpose: CertificatePurpose) -> Result<Self, Error> {
         let malformed = |_| Error::InvalidCertificate;
         let certificate = Certificate::from_der(der).map_err(malformed)?;
         let tbs = certificate.tbs_certificate();
+        if !matches!(purpose, CertificatePurpose::CodeSigning)
+            && tbs.validity().not_before.to_date_time() > tbs.validity().not_after.to_date_time()
+        {
+            return Err(Error::InvalidCertificate);
+        }
 
         for extension in tbs.extensions().into_iter().flatten() {
             if extension.critical
@@ -102,13 +120,15 @@ impl<'a> Candidate<'a> {
             .map_err(malformed)?
             .map(|(_, usage)| usage);
         let extended = tbs.get_extension::<ExtendedKeyUsage>().map_err(malformed)?;
-        let code_signing = extended.is_none_or(|(_, usage)| {
-            usage.0.contains(&CODE_SIGNING) || usage.0.contains(&ANY_EXTENDED_KEY_USAGE)
+        let purpose_allowed = extended.is_none_or(|(_, usage)| {
+            usage.0.contains(&ANY_EXTENDED_KEY_USAGE)
+                || (!matches!(purpose, CertificatePurpose::SignedMessage)
+                    && usage.0.contains(&CODE_SIGNING))
         });
         let constraints = tbs.get_extension::<BasicConstraints>().map_err(malformed)?;
         let issuer_max_path = constraints
             .filter(|(_, constraints)| {
-                constraints.ca && code_signing && usage.is_none_or(|usage| usage.key_cert_sign())
+                constraints.ca && purpose_allowed && usage.is_none_or(|usage| usage.key_cert_sign())
             })
             .map(|(_, constraints)| {
                 constraints
@@ -122,7 +142,8 @@ impl<'a> Candidate<'a> {
             tbs_hash: certificate_tbs_hash(der)?,
             certificate,
             key,
-            digital_signature: code_signing && usage.is_none_or(|usage| usage.digital_signature()),
+            digital_signature: purpose_allowed
+                && usage.is_none_or(|usage| usage.digital_signature()),
             issuer_max_path,
         })
     }
@@ -167,10 +188,13 @@ impl<'a> Candidate<'a> {
 }
 
 fn certificate_tbs_hash(der: &[u8]) -> Result<[u8; 32], Error> {
-    let tbs = sequence(der)
+    Ok(Sha256::digest(certificate_tbs(der)?).into())
+}
+
+fn certificate_tbs(der: &[u8]) -> Result<&[u8], Error> {
+    sequence(der)
         .and_then(|mut fields| raw_sequence(&mut fields))
-        .map_err(|_| Error::InvalidCertificate)?;
-    Ok(Sha256::digest(tbs).into())
+        .map_err(|_| Error::InvalidCertificate)
 }
 
 fn public_key(certificate: &Certificate) -> Result<PublicKey, Error> {
@@ -267,8 +291,16 @@ fn identify_signer<'a>(
     signed: Signer<'a>,
     certificates: impl Iterator<Item = &'a [u8]>,
 ) -> Result<SignerChain<'a>, Error> {
+    identify_signer_for(signed, certificates, CertificatePurpose::CodeSigning)
+}
+
+fn identify_signer_for<'a>(
+    signed: Signer<'a>,
+    certificates: impl Iterator<Item = &'a [u8]>,
+    purpose: CertificatePurpose,
+) -> Result<SignerChain<'a>, Error> {
     let certificates = certificates
-        .map(Candidate::parse)
+        .map(|der| Candidate::parse_for(der, purpose))
         .collect::<Result<Vec<_>, _>>()?;
     let mut signer = None;
     for (index, candidate) in certificates.iter().enumerate() {
@@ -304,7 +336,7 @@ fn same_signer_serial(certificate: &[u8], unsigned_signer: &[u8]) -> bool {
 
 #[derive(Clone, Copy)]
 enum IssuerPath {
-    CodeSigning,
+    Authorized,
     Revocation,
 }
 
@@ -327,7 +359,7 @@ impl SignerChain<'_> {
         &self,
         authorize: impl FnMut(&Candidate<'_>, usize) -> Option<T>,
     ) -> Option<T> {
-        self.find_with_issuers(core::iter::empty(), IssuerPath::CodeSigning, authorize)
+        self.find_with_issuers(core::iter::empty(), IssuerPath::Authorized, authorize)
     }
 
     fn find_with_issuers<'a, T>(
@@ -357,7 +389,7 @@ impl SignerChain<'_> {
                 if !visited[parent_index]
                     && intermediates < path_len[parent_index]
                     && match path {
-                        IssuerPath::CodeSigning => parent.can_issue(child, intermediates),
+                        IssuerPath::Authorized => parent.can_issue(child, intermediates),
                         IssuerPath::Revocation => child.is_signed_by(parent),
                     }
                 {

@@ -16,7 +16,8 @@ use super::{
     signed_data_header, signed_data_tail,
 };
 
-const SPC_INDIRECT_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.4");
+pub(crate) const SPC_INDIRECT_DATA: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.4");
 const SPC_PE_IMAGE_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.15");
 const CONTENT_TYPE: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.3");
 const MESSAGE_DIGEST: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4");

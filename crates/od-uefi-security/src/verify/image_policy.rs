@@ -311,7 +311,7 @@ impl<'db, 'check> ImagePolicy<'db, 'check> {
                 self.failed_signature = true;
             } else {
                 self.authority =
-                    chain.find_with_issuers(enrolled, IssuerPath::CodeSigning, |candidate, _| {
+                    chain.find_with_issuers(enrolled, IssuerPath::Authorized, |candidate, _| {
                         self.certificates
                             .iter()
                             .find(|trusted| trusted.certificate.der == candidate.der)

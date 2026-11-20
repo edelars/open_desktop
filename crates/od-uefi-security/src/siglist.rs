@@ -66,28 +66,30 @@ impl<'a> Signature<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SignatureList<'a> {
-    pub kind: SignatureType,
+pub struct SignatureList<'a, T = SignatureType> {
+    pub kind: T,
     data: &'a [u8],
     entry_size: usize,
 }
 
-impl<'a> SignatureList<'a> {
+impl<'a, T> SignatureList<'a, T> {
     pub fn signatures(self) -> impl Iterator<Item = Signature<'a>> {
         self.data
             .chunks_exact(self.entry_size)
             .map(|bytes| Signature { bytes })
     }
 
-    fn decode(input: &'a [u8]) -> Result<(Self, &'a [u8]), ListError> {
+    fn decode(
+        input: &'a [u8],
+        mut classify: impl FnMut(&[u8], usize) -> Result<T, ListError>,
+    ) -> Result<(Self, &'a [u8]), ListError> {
         let header: &[u8; LIST_HEADER_BYTES] =
             input.first_chunk().ok_or(ListError::InvalidLayout)?;
-        let kind =
-            SignatureType::from_guid(&header[..GUID_BYTES]).ok_or(ListError::UnsupportedType)?;
         let list_size = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
         let header_size = u32::from_le_bytes(header[20..24].try_into().unwrap());
         let entry_size = u32::from_le_bytes(header[24..28].try_into().unwrap()) as usize;
-        if header_size != 0 || !kind.valid_entry_size(entry_size) {
+        let kind = classify(&header[..GUID_BYTES], entry_size)?;
+        if header_size != 0 || entry_size <= GUID_BYTES {
             return Err(ListError::InvalidLayout);
         }
         let (list, remaining) = input
@@ -110,14 +112,25 @@ impl<'a> SignatureList<'a> {
     }
 }
 
-pub fn signature_lists(
+pub fn signature_lists(input: &[u8]) -> impl Iterator<Item = Result<SignatureList<'_>, ListError>> {
+    signature_lists_with(input, |guid, entry_size| {
+        let kind = SignatureType::from_guid(guid).ok_or(ListError::UnsupportedType)?;
+        if !kind.valid_entry_size(entry_size) {
+            return Err(ListError::InvalidLayout);
+        }
+        Ok(kind)
+    })
+}
+
+pub(crate) fn signature_lists_with<T>(
     mut input: &[u8],
-) -> impl Iterator<Item = Result<SignatureList<'_>, ListError>> {
+    mut classify: impl FnMut(&[u8], usize) -> Result<T, ListError>,
+) -> impl Iterator<Item = Result<SignatureList<'_, T>, ListError>> {
     core::iter::from_fn(move || {
         if input.is_empty() {
             return None;
         }
-        match SignatureList::decode(input) {
+        match SignatureList::decode(input, &mut classify) {
             Ok((list, remaining)) => {
                 input = remaining;
                 Some(Ok(list))
