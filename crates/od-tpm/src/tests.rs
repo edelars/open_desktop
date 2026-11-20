@@ -615,10 +615,10 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         // HierarchyControl, NV_UndefineSpace, Clear, ClearControl, HierarchyChangeAuth,
         // NV_DefineSpace, NV_Write, NV_WriteLock. The rest is phase A, slice A (NV_Read,
         // NV_ReadLock, FlushContext, NV_ReadPublic, StartAuthSession).
-        0x120, 0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x131, 0x137, 0x138, 0x139, 0x13A, 0x13C,
-        0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x154, 0x157, 0x159, 0x15C,
-        0x15D, 0x15E, 0x165, 0x167, 0x169, 0x173, 0x174, 0x176, 0x177, 0x17A, 0x17B, 0x17C, 0x17D,
-        0x17E, 0x181, 0x182, 0x185, 0x186,
+        0x11F, 0x120, 0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x131, 0x137, 0x138, 0x139, 0x13A,
+        0x13C, 0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x154, 0x157, 0x159,
+        0x15C, 0x15D, 0x15E, 0x165, 0x167, 0x169, 0x173, 0x174, 0x176, 0x177, 0x17A, 0x17B, 0x17C,
+        0x17D, 0x17E, 0x181, 0x182, 0x185, 0x186,
         // Slice C2: Certify, PolicySecret, HMAC, Quote, ContextLoad/Save, PolicyAuthValue,
         // PolicyCommandCode, PolicyOR, PolicyPCR, PolicyRestart, PolicyGetDigest.
         0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
@@ -629,7 +629,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 84);
+    assert_eq!(expected.len(), 85);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -679,6 +679,8 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(body, 0x0200_019Cu32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x12E, 1));
     assert_eq!(body, 0x0240_012Eu32.to_be_bytes());
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x11F, 1));
+    assert_eq!(body, 0x0440_011Fu32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x13B, 1));
     assert_eq!(body, 0x0240_013Bu32.to_be_bytes());
     // TPM_PT_TOTAL_COMMANDS agrees with the list.
@@ -687,7 +689,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(84)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(85)[..]].concat()
     );
 }
 

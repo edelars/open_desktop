@@ -2078,6 +2078,135 @@ fn nv_change_auth_can_clear_the_secret_on_an_unwritten_locked_index() {
 }
 
 #[test]
+fn nv_undefine_space_special_requires_both_roles_and_preserves_counter_state() {
+    let mut t = started();
+    let digest = h256(&[&[0; 32], &u32b(0x16c), &u32b(0x11f)]);
+    let flags = nv_attr::PPREAD
+        | nv_attr::PPWRITE
+        | nv_attr::PLATFORMCREATE
+        | nv_attr::READ_STCLEAR
+        | nv_attr::WRITE_STCLEAR
+        | (1 << 4);
+    let attrs = flags | nv_attr::POLICY_DELETE;
+    let public = nv_public(NV0, alg::SHA256, attrs, &digest, 8);
+    err(
+        &define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            b"",
+            &nv_public(
+                NV0,
+                alg::SHA256,
+                nv_attr::OWNERREAD | nv_attr::OWNERWRITE | nv_attr::POLICY_DELETE,
+                &digest,
+                8,
+            ),
+        ),
+        Rc::ATTRIBUTES.in_param(2),
+    );
+    ok(&define_raw(&mut t, PLATFORM, b"", b"", &public));
+    ok(&define_raw(
+        &mut t,
+        PLATFORM,
+        b"",
+        b"",
+        &nv_public(NV0 + 1, alg::SHA256, flags, &digest, 8),
+    ));
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_INCREMENT,
+        &[PLATFORM, NV0],
+        b"",
+        &[],
+    ));
+    assert_eq!(t.persistent.nv.counter_max(), 1);
+    err(
+        &pw_cmd(&mut t, cc::NV_UNDEFINE_SPACE, &[OWNER, NV0], b"", &[]),
+        Rc::NV_AUTHORIZATION,
+    );
+    err(
+        &pw_cmd(&mut t, cc::NV_UNDEFINE_SPACE, &[PLATFORM, NV0], b"", &[]),
+        Rc::ATTRIBUTES,
+    );
+    ok(&pw_cmd(&mut t, cc::CLEAR, &[LOCKOUT], b"", &[]));
+    shutdown(&mut t, su::CLEAR);
+    let mut t = Tpm::restore(&t.persistent_snapshot(), &[6; 48]).unwrap();
+    startup(&mut t, su::CLEAR);
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_READ_LOCK,
+        &[PLATFORM, NV0],
+        b"",
+        &[],
+    ));
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_WRITE_LOCK,
+        &[PLATFORM, NV0],
+        b"",
+        &[],
+    ));
+    let policy = policy_session(&mut t, se::POLICY);
+    let remove = |index, platform, password: &[u8]| {
+        let platform_auth = auth_area(&[password]);
+        let first = cat(&[&u32b(policy.handle), &tpm2b(&[0x71; 16]), &[1], &tpm2b(&[])]);
+        let area = cat(&[&first, &platform_auth[4..]]);
+        frame(
+            st::SESSIONS,
+            cc::NV_UNDEFINE_SPACE_SPECIAL,
+            &[index, platform],
+            &cat(&[&u32b(area.len() as u32), &area]),
+            &[],
+        )
+    };
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::NV_UNDEFINE_SPACE_SPECIAL,
+                &[NV0, PLATFORM],
+                &[b"", b""],
+                &[],
+            ),
+        ),
+        Rc::AUTH_TYPE,
+    );
+    err(
+        &run(&mut t, remove(NV0, OWNER, b"")),
+        Rc::VALUE.in_handle(2),
+    );
+    err(
+        &run(&mut t, remove(NV0, PLATFORM, b"")),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&pol_cc(&mut t, &policy, cc::NV_UNDEFINE_SPACE_SPECIAL));
+    err(
+        &run(&mut t, remove(NV0, PLATFORM, b"wrong")),
+        Rc::BAD_AUTH.in_session(2),
+    );
+    err(&run(&mut t, remove(NV0 + 1, PLATFORM, b"")), Rc::ATTRIBUTES);
+    assert_eq!(self::digest(&mut t, &policy), digest);
+    ok(&run(&mut t, remove(NV0, PLATFORM, b"")));
+    assert_eq!(self::digest(&mut t, &policy), [0; 32]);
+    err(
+        &run(&mut t, plain(cc::NV_READ_PUBLIC, &[NV0], &[])),
+        Rc::HANDLE.in_handle(1),
+    );
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_INCREMENT,
+        &[PLATFORM, NV0 + 1],
+        b"",
+        &[],
+    ));
+    assert_eq!(
+        nv_read_data(&nv_read(&mut t, PLATFORM, NV0 + 1, b"", 8, 0)),
+        2u64.to_be_bytes()
+    );
+}
+
+#[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
     let mut s = policy_session(&mut t, se::POLICY);

@@ -11,8 +11,8 @@
 //! clause 31.3.1: "if the implementation does not support ... the TPM shall return
 //! TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
 //! Attributes that need machinery the implementation lacks are refused the same way:
-//! `POLICY_DELETE` (`TPM2_NV_UndefineSpaceSpecial`), `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`),
-//! `ORDERLY` and `CLEAR_STCLEAR` (PTP 1.07, Table 12). `TPMA_NV_NO_DA` exempts the index's
+//! `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`), `ORDERLY` and `CLEAR_STCLEAR` (PTP 1.07, Table 12).
+//! `TPMA_NV_NO_DA` exempts the index's
 //! authorization value from dictionary-attack protection.
 //!
 //! **Sizes by type** (Part 3, clause 31.3.1): a counter or bit field has `dataSize` 8, an extend
@@ -132,8 +132,7 @@ pub(crate) const EXTEND_SIZE: usize = 32;
 
 /// Highest `TPMA_NV` attribute bits that this implementation can honour, as a mask of those it
 /// refuses.
-const UNSUPPORTED: u32 =
-    attr::POLICY_DELETE | attr::GLOBALLOCK | attr::ORDERLY | attr::CLEAR_STCLEAR;
+const UNSUPPORTED: u32 = attr::GLOBALLOCK | attr::ORDERLY | attr::CLEAR_STCLEAR;
 const READ_ACCESS: u32 = attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD | attr::POLICYREAD;
 const WRITE_ACCESS: u32 = attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE | attr::POLICYWRITE;
 
@@ -179,6 +178,7 @@ impl NvIndex {
             && size_ok
             && a & READ_ACCESS != 0
             && a & WRITE_ACCESS != 0
+            && (a & attr::POLICY_DELETE == 0 || a & attr::PLATFORMCREATE != 0)
             && (a & attr::WRITTEN != 0 || self.data.iter().all(|b| *b == 0))
     }
 
@@ -390,6 +390,12 @@ impl Tpm {
                 provision_handle(handles[0])?;
                 self.nv_index_at(handles[1], 2)?;
             }
+            cc::NV_UNDEFINE_SPACE_SPECIAL => {
+                self.nv_index_at(handles[0], 1)?;
+                if handles[1] != h::RH_PLATFORM {
+                    return Err(Rc::VALUE.in_handle(2));
+                }
+            }
             cc::NV_READ_PUBLIC | cc::NV_CHANGE_AUTH => {
                 self.nv_index_at(handles[0], 1)?;
             }
@@ -566,6 +572,7 @@ impl Tpm {
             || attributes & WRITE_ACCESS == 0
             // `PLATFORMCREATE` must say who defined the index (clause 31.3.1).
             || (attributes & attr::PLATFORMCREATE != 0) != platform
+            || (attributes & attr::POLICY_DELETE != 0 && !platform)
         {
             return Err(Rc::ATTRIBUTES.in_param(2));
         }
@@ -596,8 +603,8 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_NV_UndefineSpace` (clause 31.4): the platform deletes any index, the owner only an
-    /// index without `TPMA_NV_PLATFORMCREATE` (`TPM_RC_NV_AUTHORIZATION` otherwise).
+    /// `TPM2_NV_UndefineSpace` (clause 31.4). Platform-created indices need Platform authorization,
+    /// and policy-delete indices require the dedicated ADMIN command.
     pub(crate) fn cmd_nv_undefine_space(
         &mut self,
         inv: &Invocation,
@@ -614,7 +621,26 @@ impl Tpm {
         if attributes & attr::PLATFORMCREATE != 0 && inv.handles[0] != h::RH_PLATFORM {
             return Err(Rc::NV_AUTHORIZATION);
         }
+        if attributes & attr::POLICY_DELETE != 0 {
+            return Err(Rc::ATTRIBUTES);
+        }
         self.persistent.nv.remove(index);
+        Ok(Output::default())
+    }
+    /// `TPM2_NV_UndefineSpaceSpecial` (Part 3 v185, §31.5), authorized by the index and Platform.
+    pub(crate) fn cmd_nv_undefine_space_special(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.finish()?;
+        let handle = inv.handles[0];
+        let attributes = self.nv_index_at(handle, 1)?.attributes;
+        let required = attr::PLATFORMCREATE | attr::POLICY_DELETE;
+        if attributes & required != required {
+            return Err(Rc::ATTRIBUTES);
+        }
+        self.persistent.nv.remove(handle);
         Ok(Output::default())
     }
 

@@ -111,7 +111,8 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 84] = [
+pub(crate) static COMMANDS: [CommandSpec; 85] = [
+    spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -268,7 +269,11 @@ fn admin_role(code: u32, i: usize) -> bool {
     i == 0
         && matches!(
             code,
-            cc::CERTIFY | cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH | cc::NV_CHANGE_AUTH
+            cc::CERTIFY
+                | cc::ACTIVATE_CREDENTIAL
+                | cc::OBJECT_CHANGE_AUTH
+                | cc::NV_CHANGE_AUTH
+                | cc::NV_UNDEFINE_SPACE_SPECIAL
         )
 }
 
@@ -780,6 +785,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::NV_DEFINE_SPACE => tpm.cmd_nv_define_space(&inv, &mut p)?,
         cc::NV_CHANGE_AUTH => tpm.cmd_nv_change_auth(&inv, &mut p)?,
         cc::NV_UNDEFINE_SPACE => tpm.cmd_nv_undefine_space(&inv, &mut p)?,
+        cc::NV_UNDEFINE_SPACE_SPECIAL => tpm.cmd_nv_undefine_space_special(&inv, &mut p)?,
         cc::NV_READ_PUBLIC => tpm.cmd_nv_read_public(&inv, &mut p)?,
         cc::NV_WRITE => tpm.cmd_nv_write(&inv, &mut p)?,
         cc::NV_READ => tpm.cmd_nv_read(&inv, &mut p)?,
@@ -1070,6 +1076,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         cc::NV_DEFINE_SPACE
         | cc::NV_CHANGE_AUTH
         | cc::NV_UNDEFINE_SPACE
+        | cc::NV_UNDEFINE_SPACE_SPECIAL
         | cc::NV_READ_PUBLIC
         | cc::NV_WRITE
         | cc::NV_WRITE_LOCK
@@ -1137,6 +1144,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 84);
+        assert_eq!(COMMANDS.len(), 85);
     }
 }

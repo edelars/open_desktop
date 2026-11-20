@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 84 кода из списка, 17 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 85 кодов из списка, 16 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -38,7 +38,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicySigned`, `PolicyTicket`, `PolicyDuplicationSelect` |
-| Управление и NV | `ClockRateAdjust`, `NV_UndefineSpaceSpecial` |
+| Управление и NV | `ClockRateAdjust` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -261,8 +261,8 @@ Platform используют свои флаги доступа. Правило
 доказательства знания `authValue`. Policy-сессия доказывает знание
 через флаг `PolicyAuthValue` или `PolicyPassword`. Индекс может
 оставаться незаписанным. Отключение иерархии, создавшей индекс,
-возвращает ошибку handle. `POLICY_DELETE` по-прежнему отклоняется при
-определении индекса.
+возвращает ошибку handle. Для индексов Platform доступно
+удаление по политике. [Удаление по политике](#удаление-nv-индекса-по-политике).
 [TPM Library v185 Part 3 §§5.6, 23.4, 31.1 и 31.3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Состояние записи NV в политике
@@ -329,6 +329,27 @@ HMAC ответа с `PolicyAuthValue` использует новый секр�
 сессии. Чистая policy-сессия также защищает HMAC ключом сессии, при
 этом шифрование входа авторизующей сессии использует старый секрет.
 [TPM Library v185 Part 3 §31.15](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=369).
+
+### Удаление NV-индекса по политике
+
+`NV_DefineSpace` принимает `POLICY_DELETE` только для индекса,
+созданного Platform с `PLATFORMCREATE`. Обычная `NV_UndefineSpace`
+возвращает `TPM_RC_ATTRIBUTES` для такого индекса после авторизации
+Platform. `Clear` сохраняет индексы Platform. При восстановлении
+снимка проверяется сочетание `POLICY_DELETE` с `PLATFORMCREATE`.
+
+`TPM2_NV_UndefineSpaceSpecial` (`0x11F`) требует в первом слоте
+ADMIN-политику индекса с `PolicyCommandCode(NV_UndefineSpaceSpecial)`,
+а во втором авторизацию Platform. Отдельная сессия может аудировать
+команду. Удаление допустимо и для заблокированного или незаписанного
+индекса. При определении допустим пустой `authPolicy`, который делает
+удаление недоступным. Максимум счётчиков сохраняется при удалении индекса.
+
+Первый HMAC запроса использует прежний `authValue` индекса, если
+политика его требует. После удаления этот слот использует пустой
+`authValue` в HMAC ответа. Слот Platform использует секрет Platform.
+Оба слота соблюдают свои `continueSession`.
+[TPM Library v185 Part 3 §§31.3–31.5](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=349).
 
 ### Политики иерархий
 

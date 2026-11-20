@@ -12,6 +12,7 @@
 
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
+    pub const NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011F;
     /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
