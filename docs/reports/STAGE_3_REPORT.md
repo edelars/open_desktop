@@ -1496,6 +1496,12 @@ ADD prefix and interpreter ADC or SBB. Both carry values start from the
 opposite incoming CF and are checked against full interpreter state.
 [S3-29i host regression](STAGE_3_S3-29i_2026-11-19.md)
 
+S3-29j bound the signed split-window driver to the same M1 Pro corpus.
+Two cold attempts stopped at preflight. Two completed the structural
+timing checks under ordinary UID at nice −5 and were rejected below the
+80% idle threshold. All eight stock and split dispositions replayed.
+[S3-29j M1 flags receipts](STAGE_3_S3-29j_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
