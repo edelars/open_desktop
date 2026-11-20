@@ -1,0 +1,127 @@
+{
+  "base_commit": "1580936ee9e9d71c31eade00dad59125aedb3e32",
+  "previous_run_evidence": "s6-22-busybox-cmov-replay.json",
+  "runner_production_patch_sha256": "c6f0d836a5c31489f4ada708719304f695f8d7d793fc7609ae33e0139e5f08a8",
+  "run_execute_rs_sha256": "53576be1d181398a7d2a3972782f29d04aa308c057615cb8d246fcbf80630050",
+  "main_execute_rs_sha256": "c311072d5f38e8cd7694f52566d0b41bc25755f49edbcb7c927e73616f3caa97",
+  "execute_rs_parity": "Only comments and blank lines may differ.",
+  "run_long_decode_rs_sha256": "e31378d682bca0c1c31962b4a36d0f08fb7d81a1f57225ec049bf515b29c816a",
+  "main_long_decode_rs_sha256": "78eac8702bd54dc9bb065ec4ac5b303fc403c6cbc3aace46902ce7cc2010ac2d",
+  "long_decode_rs_parity": "Only comments and blank lines may differ.",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "raw_namespace_sectors": 4194304,
+  "ram_mib": 128,
+  "seed": 24301,
+  "vcpus": 2,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "guest_kernel_markers": [
+    "[    1.745883] smpboot: Total of 2 processors activated (4002.55 BogoMIPS)",
+    "[    2.535573] Run /s6-smp-init as init process"
+  ],
+  "before": {
+    "report_sha256": "f5e33b1ad766abbf3a431589d84431a09ec14b6acd734a261ed7dacb21841fdc",
+    "runner_sha256": "45e684579343c3e0bf005d337553d1683ecc55cb410b6f8350df547fb71e4724",
+    "retired": 2400093061,
+    "retired_by_vcpu": [
+      1998575361,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 1642,
+    "rip": "0x4755cd",
+    "rip_gpa": "0x79635cd",
+    "rip_bytes": "f3 0f 7e 05 73 4c 1a 00 31 d2 f3 0f 7e 0d 11 e6",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 126 }",
+    "busybox_elf_file_offset": "0x755cd"
+  },
+  "after": {
+    "report_sha256": "574625f7eaf49c9b6e46869e425c61eeb31987879f9e4fa0cb9036f25a24c8a8",
+    "runner_sha256": "861162ba59d627941653628309bf6dd663aad3934d85dbe413bf6fe3cd97975e",
+    "retired": 2400165714,
+    "retired_by_vcpu": [
+      1998648014,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 2788,
+    "rip": "0x4c8559",
+    "rip_gpa": "0x4a76559",
+    "rip_bytes": "81 c1 40 09 00 00 c1 e9 03 f3 48 ab 48 8d 05 e4",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 129 }",
+    "busybox_elf_file_offset": "0xc8559"
+  },
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "diagnostic_tls": {
+    "report_sha256": "150aabffa91f0a624f63f99efc117dbed5d928a96637a067c79d0896f2fd5371",
+    "first_rip": "0x476295",
+    "next_rip": "0x4f4127",
+    "retired": 2605,
+    "exit_detail": "Unsupported { opcode: 5 }",
+    "scope": "Pinned ELF and read-only data with recorded registers, reconstructed stack, synthetic HOME, TERM and auxiliary vector, and the same CPUID profile and guest CR0/CR4 with initial FP state."
+  },
+  "width_refusal": {
+    "report_sha256": "e031d8369e9221513272fed59cb0904753f52d1a17ccaea0c9364c88cee4a38b",
+    "runner_sha256": "1bfe02ff77e4863a50351097b2ab5df0985de8a321dac1a30846886df19ce4bc",
+    "retired": 2400141007,
+    "error": {
+      "code": "run_failed",
+      "detail": "Host(VcpuQuantum { cpu: 0, detail: \"Run(MemoryError(Backend(\\\"paged MOV profile does not support write width\\\")))\" })",
+      "stage": "run"
+    }
+  },
+  "paged_vector_patch_sha256": "ba4eb7c37f657e7fb032fa4b59b1443ff01fbb56f09fa2f7ab47b0ef316fe380",
+  "replayed_syscall_journal": {
+    "capacity": 32,
+    "entered": 2,
+    "entries": [
+      {
+        "nr": 12,
+        "rax_return": "0x3529a000",
+        "rip": "0x4f4129"
+      },
+      {
+        "nr": 12,
+        "rax_return": "0x3529ad80",
+        "rip": "0x4f4137"
+      }
+    ],
+    "returned": 2
+  },
+  "run_machine_sources": {
+    "crates/od-machine/src/paged_memory_adapter.rs": {
+      "run_sha256": "47145820561490854c1bb9a8d1b28953e1b7191469cea65607fb64cbde259399",
+      "main_sha256": "552984f8a26c95fdbdcf4272b0e9e1085b406ce2e8bc68265c9fef1431a5c78d",
+      "parity": "The adapter moves an existing doc comment and adds unit tests."
+    },
+    "crates/od-machine/src/page_walk.rs": {
+      "run_sha256": "908b2e6dfa10a72a6c4be146a923ef8fd482d90298d6fc92a447c0f382bbf6a5",
+      "main_sha256": "908b2e6dfa10a72a6c4be146a923ef8fd482d90298d6fc92a447c0f382bbf6a5",
+      "parity": "Identical source."
+    }
+  },
+  "post_review_replay": {
+    "report_sha256": "b5f337733fe43b3a866aff80e5a4135742fbedd802e619b656700ddae62f3e45",
+    "runner_sha256": "1a80f71b63a3cc2e80065baafbd827472b74e9fd4e747188e186d56063b6f94c",
+    "production_diff_sha256": "3ff9396917be7f39499623ce2ee63d008f717ba604b84c069efb86bcad200dc1",
+    "sources_sha256": {
+      "crates/od-isa/src/execute.rs": "36ad5872ac517bbf4dc0b069544490377d8f2ead661d0c7fe6fb6883d89d9c0a",
+      "crates/od-isa/src/long_decode.rs": "1f9075728fa2ec54ae2bf9a2f903ad633210d4718c1bbc9f5361753db40d548d",
+      "crates/od-machine/src/paged_memory_adapter.rs": "552984f8a26c95fdbdcf4272b0e9e1085b406ce2e8bc68265c9fef1431a5c78d",
+      "crates/od-machine/src/page_walk.rs": "908b2e6dfa10a72a6c4be146a923ef8fd482d90298d6fc92a447c0f382bbf6a5"
+    },
+    "result": "Same retired counts, stop PC and bytes, COM1, syscall journal and workload verifier as the initial vector replay. MOVDQU is now kept outside the legacy MOVUPS executor and fixture profile."
+  }
+}

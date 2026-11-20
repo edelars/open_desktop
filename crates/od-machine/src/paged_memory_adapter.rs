@@ -21,7 +21,8 @@ use crate::fetch_translation_cache::{
 use crate::irq_source::IrqBoundaryHook;
 use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
 use crate::page_walk::{
-    translate_long64_2m_ram_read_only_with_tables, translate_long64_2m_ram_read_only_with_trace,
+    VectorRamAccess, access_long64_2m_ram_vector, translate_long64_2m_ram_read_only_with_tables,
+    translate_long64_2m_ram_read_only_with_trace,
 };
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
@@ -4903,6 +4904,57 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         self.access_with(address, context, operation, true)
     }
 
+    fn supports_cpl3_vector(&self, context: AccessContext) -> bool {
+        self.large_ram_profile
+            && self.cpl0_set_cross_page_read
+            && self.cpl0_set_cross_page_store
+            && !self.capture_effects
+            && context.privilege == PrivilegeLevel::Ring3
+            && context.origin == AccessOrigin::Explicit
+    }
+
+    fn access_vector(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        access: VectorRamAccess<'_>,
+    ) -> Result<(), MemoryError> {
+        let memory = match &self.bus {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => *memory,
+            AdapterBus::Machine(bus, _) => bus.physical_memory(),
+            AdapterBus::Shared(bus, _) => bus.physical_memory(),
+        };
+        let mut trace = None;
+        let result = access_long64_2m_ram_vector(
+            memory,
+            &self.paging,
+            self.instruction_rip,
+            GuestLinearAddress::new(address),
+            context,
+            access,
+            &mut *self.committed_write,
+            |kind| {
+                if let Some(walks) = self.walks {
+                    match kind {
+                        AccessKind::Write => walks.note_write(),
+                        _ => walks.note_read(),
+                    }
+                }
+            },
+            &mut trace,
+        );
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = match (trace, &result) {
+                (Some(trace), Err(error)) => faulting_page_walk_context(error, trace),
+                _ => None,
+            };
+        }
+        result.map_err(|error| {
+            self.access_error = Some(error.clone());
+            self.map_access_error(error)
+        })
+    }
+
     /// One byte of an access that is split at a page boundary: never served by a device
     /// (S4-38L9s), so a split access that touches MMIO is the typed error it was before.
     fn access_split_byte(
@@ -5507,6 +5559,11 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
+        if let Ok(vector) = <&mut [u8; 16]>::try_from(&mut *destination)
+            && self.supports_cpl3_vector(context)
+        {
+            return self.access_vector(address, context, VectorRamAccess::Read(vector));
+        }
         let width = match destination.len() {
             1 if self.cpl0_set_byte_read => crate::AccessWidth::Byte,
             2 if self.word_read_profile || self.cpl0_set_word_read => crate::AccessWidth::Word,
@@ -5597,6 +5654,11 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     ) -> Result<(), MemoryError> {
         if self.read_only_qword {
             return Err(Self::unsupported("write"));
+        }
+        if let Ok(vector) = <&[u8; 16]>::try_from(source)
+            && self.supports_cpl3_vector(context)
+        {
+            return self.access_vector(address, context, VectorRamAccess::Write(vector));
         }
         // The two store profiles are exclusive: a narrow-capable adapter never keeps the
         // dword-only store width (S4-38L3).
@@ -6753,6 +6815,208 @@ mod tests {
         assert_eq!(
             operand, [0x11; 4],
             "failed preflight stores no operand bytes"
+        );
+    }
+
+    fn cpl3_vector_test_memory(ram_len: u64, entries: [(u64, u64); 2]) -> crate::PhysicalMemory {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_len).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let physical = crate::PhysicalMemory::new(&map, RamLimits::new(RAM_LEN)).unwrap();
+        for (address, value) in [(0x1000, 0x2007), (0x2000, 0x3007), (0x3020, 0x5007)]
+            .into_iter()
+            .chain(entries)
+        {
+            physical
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        physical
+    }
+
+    #[test]
+    fn cpl3_vector_transfers_cover_exact_bytes_in_nonadjacent_frames() {
+        let physical = cpl3_vector_test_memory(RAM_LEN, [(0x5000, 0x7007), (0x5008, 0x9007)]);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let mut writes = Vec::new();
+        let mut committed = |range| writes.push(range);
+        let mut memory = set_loop_adapter(
+            &physical,
+            None,
+            paging,
+            0x400000,
+            &mut committed,
+            None,
+            None,
+        );
+
+        for address in [DATA_LINEAR + 0x80, DATA_LINEAR + 0xff8] {
+            GuestMemory::write(&mut memory, address, user, &bytes).unwrap();
+            let mut read = [0xff; 16];
+            GuestMemory::read(&mut memory, address, user, &mut read).unwrap();
+            assert_eq!(read, bytes);
+        }
+        drop(memory);
+        for (address, length) in [(0x7080, 16), (0x7ff8, 8), (0x9000, 8)] {
+            assert!(writes.contains(
+                &GuestPhysicalRange::new(GuestPhysicalAddress::new(address), length).unwrap()
+            ));
+            assert_eq!(
+                physical
+                    .load_u8(GuestPhysicalAddress::new(address - 1))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                physical
+                    .load_u8(GuestPhysicalAddress::new(address + length))
+                    .unwrap(),
+                0
+            );
+        }
+        for entry in [0x5000, 0x5008] {
+            assert_eq!(
+                physical.load_u64(GuestPhysicalAddress::new(entry)).unwrap() & 0x60,
+                0x60
+            );
+        }
+    }
+
+    #[test]
+    fn cpl3_vector_checks_both_pages_before_operand_commit() {
+        let physical = cpl3_vector_test_memory(RAM_LEN, [(0x5000, 0x7007), (0x5008, 0x9003)]);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let mut committed = |_| {};
+        let mut memory = set_loop_adapter(
+            &physical,
+            None,
+            paging,
+            0x400000,
+            &mut committed,
+            None,
+            None,
+        );
+        let address = DATA_LINEAR + 0xff8;
+        let mut read = [0x55; 16];
+        let load = GuestMemory::read(&mut memory, address, user, &mut read);
+        let store = GuestMemory::write(&mut memory, address, user, &[0xaa; 16]);
+        for (result, error_code) in [(load, 5), (store, 7)] {
+            assert_eq!(
+                result,
+                Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(error_code),
+                    linear_address: Some(DATA_LINEAR + 0x1000),
+                }))
+            );
+        }
+        assert_eq!(read, [0x55; 16]);
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x7ff8))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x9000))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x5000))
+                .unwrap()
+                & 0x60,
+            0x20
+        );
+
+        GuestMemory::write(&mut memory, DATA_LINEAR + 0x80, user, &[0xa5; 16]).unwrap();
+        GuestMemory::read(&mut memory, DATA_LINEAR + 0x80, user, &mut read).unwrap();
+        assert_eq!(read, [0xa5; 16]);
+    }
+
+    #[test]
+    fn cpl3_vector_store_checks_entire_second_physical_span() {
+        let physical = cpl3_vector_test_memory(0x9004, [(0x5000, 0x7007), (0x5008, 0x9007)]);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let mut committed = |_| {};
+        let mut memory = set_loop_adapter(
+            &physical,
+            None,
+            paging,
+            0x400000,
+            &mut committed,
+            None,
+            None,
+        );
+        let store = GuestMemory::write(&mut memory, DATA_LINEAR + 0xff8, user, &[0xaa; 16]);
+        assert!(matches!(store, Err(MemoryError::Backend(_))));
+        let address = GuestPhysicalAddress::new(0x9000);
+        let span = GuestPhysicalRange::new(address, 8).unwrap();
+        assert_eq!(
+            memory.access_error,
+            Some(TrackedAccessError::OperandPhysical {
+                address,
+                source: crate::MemoryAccessError::AccessCrossesRegion(span),
+            })
+        );
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x7ff8))
+                .unwrap(),
+            0
+        );
+        assert_eq!(physical.load_u32(address).unwrap(), 0);
+    }
+
+    #[test]
+    fn cpl3_vector_store_retains_translations_when_operand_aliases_page_table() {
+        let physical = cpl3_vector_test_memory(RAM_LEN, [(0x5ff0, 0x5007), (0x5ff8, 0x9007)]);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let user = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+        let mut committed = |_| {};
+        let mut memory = set_loop_adapter(
+            &physical,
+            None,
+            paging,
+            0x400000,
+            &mut committed,
+            None,
+            None,
+        );
+        let mut bytes = [0x5a; 16];
+        bytes[..8].fill(0);
+
+        GuestMemory::write(&mut memory, DATA_LINEAR + 0x1feff8, user, &bytes).unwrap();
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x5ff8))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            physical
+                .load_u64(GuestPhysicalAddress::new(0x9000))
+                .unwrap(),
+            u64::from_le_bytes([0x5a; 8])
         );
     }
 

@@ -28747,10 +28747,26 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     }
     if matches!(
         instruction.operation,
-        Operation::MovdToXmm { .. }
+        Operation::MoveIntegerToXmm { .. }
             | Operation::MovqFromXmm { .. }
             | Operation::PunpckldqRegister { .. }
+            | Operation::PandRegister { .. }
+            | Operation::PunpcklqdqRegister { .. }
+            | Operation::MovupsStoreMemory { .. }
+            | Operation::MovupsLoadMemory { .. }
+            | Operation::MovdquLoadMemory { .. }
     ) {
+        return true;
+    }
+    if instruction.operation == Operation::Nop
+        && instruction.opcode.byte == 0x90
+        && instruction.length == 2
+        && prefixes
+            == (Prefixes {
+                operand_override: true,
+                ..Prefixes::default()
+            })
+    {
         return true;
     }
     if prefixes.address_override {
@@ -28803,7 +28819,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OpcodeMap::Primary,
             0x81 | 0x83,
             Operation::Logic {
-                kind: LogicKind::Or,
+                kind: LogicKind::Or | LogicKind::And,
                 dst: Operand::Memory(dst),
                 src: Operand::Immediate(_),
             },
@@ -28944,6 +28960,123 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x25,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectCall {
+                operand: Operand::Memory(source),
+            },
+        ) => source.size == OperandSize::Qword && source.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x6b,
+            Operation::ImulImmediate {
+                src: Operand::Memory(src),
+                ..
+            },
+        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x03,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Register(_),
+                src: Operand::Memory(src),
+            },
+        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x80,
+            Operation::Logic {
+                kind: LogicKind::Or,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Logic {
+                kind: LogicKind::Xor,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. })
+            if instruction.operand_size == OperandSize::Dword =>
+        {
+            src.address_size == OperandSize::Qword
+        }
+        (
+            OpcodeMap::Primary,
+            0xc1,
+            Operation::Shift {
+                kind: ShiftKind::Shl,
+                dst: Operand::Register(_),
+                source: None,
+                count: Operand::Immediate(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0x98,
+            Operation::SignExtendAccumulator {
+                double_width: false,
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0xf7,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Neg,
+                dst: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0xf7,
+            Operation::Divide {
+                signed: false,
+                divisor: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x21,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x39,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) if instruction.operand_size == OperandSize::Dword => true,
+        (
+            OpcodeMap::Escape0f,
+            0x40..=0x4f,
+            Operation::ConditionalMove {
+                src: Operand::Register(_),
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Dword => true,
         (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xc9, Operation::Leave)
         | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
@@ -42315,9 +42448,14 @@ fn step_configured(
         && context.privilege == PrivilegeLevel::Ring3
         && matches!(
             instruction.operation,
-            Operation::MovdToXmm { .. }
+            Operation::MoveIntegerToXmm { .. }
                 | Operation::MovqFromXmm { .. }
                 | Operation::PunpckldqRegister { .. }
+                | Operation::PandRegister { .. }
+                | Operation::PunpcklqdqRegister { .. }
+                | Operation::MovupsStoreMemory { .. }
+                | Operation::MovupsLoadMemory { .. }
+                | Operation::MovdquLoadMemory { .. }
         )
     {
         return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
@@ -46796,7 +46934,9 @@ fn step_configured(
         Operation::RepneScasWdqAddr32 { .. } => false,
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
-        Operation::MovdToXmm { .. } | Operation::MovqFromXmm { .. } => false,
+        Operation::MoveIntegerToXmm { .. }
+        | Operation::MovqFromXmm { .. }
+        | Operation::MovdquLoadMemory { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -58289,7 +58429,9 @@ fn step_configured(
         Operation::MovupsLoadMemory { .. } => unreachable!("MOVUPS load commits before dispatch"),
         Operation::MovupdLoadMemory { .. } => unreachable!("MOVUPD load commits before dispatch"),
         Operation::MovupdStoreMemory { .. } => unreachable!("MOVUPD store commits before dispatch"),
-        Operation::MovdToXmm { .. } | Operation::MovqFromXmm { .. } => {
+        Operation::MoveIntegerToXmm { .. }
+        | Operation::MovqFromXmm { .. }
+        | Operation::MovdquLoadMemory { .. } => {
             return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
         }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
@@ -64389,7 +64531,7 @@ fn step_cpl3_xmm(
         }));
     }
     match instruction.operation {
-        Operation::MovdToXmm {
+        Operation::MoveIntegerToXmm {
             destination,
             source,
         } => {
@@ -64398,7 +64540,7 @@ fn step_cpl3_xmm(
                 Err(error) => return report_memory_error(error),
             };
             let mut result = [0; 16];
-            result[..4].copy_from_slice(&(value as u32).to_le_bytes());
+            result[..8].copy_from_slice(&value.to_le_bytes());
             fp.borrow_mut().sse.xmm[usize::from(destination)] = result;
         }
         Operation::MovqFromXmm {
@@ -64429,6 +64571,56 @@ fn step_cpl3_xmm(
             target[4..8].copy_from_slice(&source[..4]);
             target[8..12].copy_from_slice(&previous[4..8]);
             target[12..16].copy_from_slice(&source[4..8]);
+        }
+        Operation::PandRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            let target = &mut fp.sse.xmm[usize::from(destination)];
+            for (byte, mask) in target.iter_mut().zip(rhs) {
+                *byte &= mask;
+            }
+        }
+        Operation::PunpcklqdqRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            fp.sse.xmm[usize::from(destination)][8..].copy_from_slice(&rhs[..8]);
+        }
+        Operation::MovupsStoreMemory {
+            destination,
+            source,
+        } => {
+            let address = match destination.access_range_address_48(state, next_rip, 16) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let value = fp.borrow().sse.xmm[usize::from(source)];
+            if let Err(error) = memory.write(address, context, &value) {
+                return report_memory_error(error);
+            }
+        }
+        Operation::MovupsLoadMemory {
+            destination,
+            source,
+        }
+        | Operation::MovdquLoadMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.access_range_address_48(state, next_rip, 16) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut value = [0; 16];
+            if let Err(error) = memory.read(address, context, &mut value) {
+                return report_memory_error(error);
+            }
+            fp.borrow_mut().sse.xmm[usize::from(destination)] = value;
         }
         _ => unreachable!(),
     }
@@ -155045,6 +155237,33 @@ mod tests {
                 assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x29 }));
             }
         }
+    }
+
+    #[test]
+    fn movdqu_memory_load_stays_outside_the_bare_movups_profile() {
+        let mut memory = Memory::new(&[0xf3, 0x0f, 0x6f, 0x00]);
+        let mut state = LongModeState::default();
+        state.gpr[Register::Rax as usize] = 0x1001;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x6f }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

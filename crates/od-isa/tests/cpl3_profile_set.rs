@@ -587,8 +587,12 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("ds-hint je rel8", &[0x3e, 0x74, 0x00], 0x74),
         ("lock je rel8", &[0xf0, 0x74, 0x00], 0x74),
         // CPL3 `REX.W 39 /r` requires the default address size and no legacy prefix.
-        ("cmp ebx, r13d (REX.R 39 /r)", &[0x44, 0x39, 0xeb], 0x39),
-        ("cmp ebx, ecx (39 /r)", &[0x39, 0xcb], 0x39),
+        (
+            "cmp bx, r13w (66 REX.R 39 /r)",
+            &[0x66, 0x44, 0x39, 0xeb],
+            0x39,
+        ),
+        ("cmp bx, cx (66 39 /r)", &[0x66, 0x39, 0xcb], 0x39),
         (
             "addr32 cmp [ebx], rcx (67 REX.W 39 /r)",
             &[0x67, 0x48, 0x39, 0x0b],
@@ -626,7 +630,7 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             0xb8,
         ),
         ("mov ax, imm16", &[0x66, 0xb8, 1, 0], 0xb8),
-        ("lea eax, [rbx]", &[0x8d, 0x03], 0x8d),
+        ("lea ax, [rbx]", &[0x66, 0x8d, 0x03], 0x8d),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = user_state();
@@ -709,8 +713,8 @@ fn lea_variants_outside_the_allowed_form_stop_without_change() {
     let disp = [0x10, 0x00, 0x00, 0x00];
     let forms: &[(&str, Vec<u8>)] = &[
         (
-            "lea edi, [rip+0x10] (no REX.W)",
-            [&[0x8d, 0x3d][..], &disp].concat(),
+            "lea di, [rip+0x10] (66 8D)",
+            [&[0x66, 0x8d, 0x3d][..], &disp].concat(),
         ),
         (
             "address-size prefix",
@@ -963,11 +967,7 @@ fn lea_with_a_register_operand_is_invalid_opcode_without_change() {
 fn lea_sib_variants_outside_the_allowed_form_stop_without_change() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let forms: &[(&str, &[u8])] = &[
-        (
-            "no REX.W (lea edi, [r14+rbx] needs REX.B only)",
-            &[0x41, 0x8d, 0x3c, 0x1e],
-        ),
-        ("no REX at all", &[0x8d, 0x3c, 0x1e]),
+        ("word lea di, [r14+rbx]", &[0x66, 0x41, 0x8d, 0x3c, 0x1e]),
         ("operand-size prefix", &[0x66, 0x49, 0x8d, 0x3c, 0x1e]),
         ("address-size prefix", &[0x67, 0x49, 0x8d, 0x3c, 0x1e]),
         ("lock prefix", &[0xf0, 0x49, 0x8d, 0x3c, 0x1e]),
@@ -979,11 +979,7 @@ fn lea_sib_variants_outside_the_allowed_form_stop_without_change() {
         ("ds segment prefix", &[0x3e, 0x49, 0x8d, 0x3c, 0x1e]),
         ("es segment prefix", &[0x26, 0x49, 0x8d, 0x3c, 0x1e]),
         ("ss segment prefix", &[0x36, 0x49, 0x8d, 0x3c, 0x1e]),
-        ("dword register-base LEA", &[0x8d, 0x03]),
-        (
-            "dword register-base LEA with displacement",
-            &[0x8d, 0x43, 0x08],
-        ),
+        ("addr32 register-base LEA", &[0x67, 0x8d, 0x03]),
     ];
     for (name, bytes) in forms {
         let mut state = user_state();
@@ -4578,7 +4574,10 @@ fn cmpb_imm8_refusals_stop_as_unsupported_80_without_change() {
     let forms: &[(&str, &[u8])] = &[
         ("67 41 80 f8 20 addr32 cmp", &[0x67, 0x41, 0x80, 0xf8, 0x20]),
         ("80 03 05 addb $5, (%rbx) (/0)", &[0x80, 0x03, 0x05]),
-        ("80 0b 05 orb $5, (%rbx) (/1)", &[0x80, 0x0b, 0x05]),
+        (
+            "67 80 0b 05 addr32 orb $5, (%ebx)",
+            &[0x67, 0x80, 0x0b, 0x05],
+        ),
         ("80 13 05 adcb $5, (%rbx) (/2)", &[0x80, 0x13, 0x05]),
         ("80 1b 05 sbbb $5, (%rbx) (/3)", &[0x80, 0x1b, 0x05]),
         ("80 23 05 andb $5, (%rbx) (/4)", &[0x80, 0x23, 0x05]),
@@ -7039,7 +7038,7 @@ fn cpl3_glibc_xmm_controls_fault_before_touching_guest_memory() {
 fn cpl3_glibc_xmm_keeps_neighbouring_encodings_refused() {
     for (code, opcode) in [
         (&[0x0f, 0x6e, 0xc0][..], 0x6e),
-        (&[0x66, 0x48, 0x0f, 0x6e, 0xc0][..], 0x6e),
+        (&[0xf2, 0x66, 0x48, 0x0f, 0x6e, 0xc0][..], 0x6e),
         (&[0x67, 0x66, 0x0f, 0x6e, 0x07][..], 0x6e),
         (&[0x66, 0x0f, 0xd6, 0xc0][..], 0xd6),
     ] {
@@ -7113,4 +7112,153 @@ fn cpl3_cmove_false_condition_still_checks_user_page_permissions() {
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, expected);
     assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_glibc_tls_packed_transfers_preserve_lane_order_and_width() {
+    let code = [
+        0xf3, 0x0f, 0x7e, 0x06, // movq xmm0, [rsi]
+        0x66, 0x48, 0x0f, 0x6e, 0xc8, // movq xmm1, rax
+        0x66, 0x0f, 0xdb, 0xc1, // pand xmm0, xmm1
+        0x66, 0x0f, 0x6c, 0xc0, // punpcklqdq xmm0, xmm0
+        0x0f, 0x11, 0x07, // movups [rdi], xmm0
+        0xf3, 0x0f, 0x6f, 0x17, // movdqu xmm2, [rdi]
+    ];
+    let mut state = user_state();
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.rflags |= ARITH;
+    state.gpr[Register::Rsi as usize] = DATA;
+    state.gpr[Register::Rdi as usize] = DATA + 0x40;
+    let source = 0xfedc_ba98_7654_3210u64;
+    let mask = 0x0f0f_f0f0_55aa_55aau64;
+    state.gpr[Register::Rax as usize] = mask;
+    let mut expected = state.clone();
+    expected.rip += code.len() as u64;
+
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[0] = [0xaa; 16];
+    initial_fp.sse.xmm[1] = [0xbb; 16];
+    let fp = std::cell::RefCell::new(initial_fp.clone());
+    let mut expected_fp = initial_fp;
+    let lane = (source & mask).to_le_bytes();
+    for register in [0, 2] {
+        expected_fp.sse.xmm[register][..8].copy_from_slice(&lane);
+        expected_fp.sse.xmm[register][8..].copy_from_slice(&lane);
+    }
+    expected_fp.sse.xmm[1][..8].copy_from_slice(&mask.to_le_bytes());
+    expected_fp.sse.xmm[1][8..].fill(0);
+
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in source.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + offset as u64, byte);
+    }
+    for address in DATA + 0x40..DATA + 0x50 {
+        memory = memory.with_user(address, 0xee);
+    }
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 6);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 6);
+    assert_eq!(state, expected);
+    assert_eq!(*fp.borrow(), expected_fp);
+    assert_eq!(memory.reads, 2);
+    assert_eq!(
+        memory.writes,
+        (DATA + 0x40..DATA + 0x50)
+            .zip(expected_fp.sse.xmm[0])
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cpl3_glibc_tls_vector_fault_checks_the_full_sixteen_byte_range() {
+    let address = ((DATA + 0x1000) & !0xfff) - 8;
+    for (code, error_code) in [
+        (&[0xf3, 0x0f, 0x6f, 0x07][..], 5),
+        (&[0x0f, 0x11, 0x07][..], 7),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rdi as usize] = address;
+        let expected = state.clone();
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[0] = [0xa5; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory
+                .with_user(address + offset, 0x11)
+                .with_supervisor(address + 8 + offset, 0x22);
+        }
+
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(error_code),
+                linear_address: Some(address + 8),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, expected);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_indirect_call_checks_user_memory_before_pushing_return_address() {
+    let code = [0x41, 0xff, 0x57, 0x10];
+    let stack = DATA + 0x30;
+    let mut initial = user_state();
+    initial.gpr[Register::R15 as usize] = DATA - 0x10;
+    initial.gpr[Register::Rsp as usize] = stack + 8;
+    let target = 0x0000_1234_5678_9000u64;
+
+    for supervisor in [false, true] {
+        let mut state = initial.clone();
+        let mut memory = DataMemory::new(&code);
+        for (offset, byte) in target.to_le_bytes().into_iter().enumerate() {
+            let address = DATA + offset as u64;
+            memory = if supervisor {
+                memory.with_supervisor(address, byte)
+            } else {
+                memory.with_user(address, byte)
+            };
+        }
+        for address in stack..stack + 8 {
+            memory = memory.with_user(address, 0);
+        }
+
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        if supervisor {
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(5),
+                    linear_address: Some(DATA),
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, initial);
+            assert!(memory.writes.is_empty());
+        } else {
+            assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, 1);
+            let mut expected = initial.clone();
+            expected.rip = target;
+            expected.gpr[Register::Rsp as usize] = stack;
+            assert_eq!(state, expected);
+            assert_eq!(memory.reads, 1);
+            assert_eq!(
+                memory.writes,
+                (stack..stack + 8)
+                    .zip((RIP + 4).to_le_bytes())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }

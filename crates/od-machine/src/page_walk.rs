@@ -1444,6 +1444,142 @@ pub(crate) fn translate_long64_2m_ram_write_check_with_fault_trace(
     }
 }
 
+pub(crate) enum VectorRamAccess<'a> {
+    Read(&'a mut [u8; 16]),
+    Write(&'a [u8; 16]),
+}
+
+/// A vector operand can touch two guest pages that need not be physically adjacent.
+/// Retain both validated translations through the data transfer, including when the
+/// operand aliases a page table. Commit dirty bits before the first operand byte.
+pub(crate) fn access_long64_2m_ram_vector(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: VectorRamAccess<'_>,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    mut note_walk: impl FnMut(AccessKind),
+    fault_trace: &mut Option<WalkTrace>,
+) -> Result<(), TrackedAccessError> {
+    let kind = match access {
+        VectorRamAccess::Read(_) => AccessKind::Read,
+        VectorRamAccess::Write(_) => AccessKind::Write,
+    };
+    let first = (4096 - (address.get() as usize & 0xfff)).min(16);
+    let mut spans = [None, None];
+    for (slot, range) in spans.iter_mut().zip([0..first, first..16]) {
+        if range.is_empty() {
+            break;
+        }
+        note_walk(kind);
+        let walk = walk_long64_4k_with_writer(
+            memory,
+            paging,
+            instruction_rip,
+            GuestLinearAddress::new(address.get().wrapping_add(range.start as u64)),
+            context,
+            kind,
+            committed_write,
+            &mut compare_replace_table_entry,
+            true,
+        );
+        let translation = match walk.translation {
+            Ok(translation) => translation,
+            Err(error) => {
+                retain_page_fault_trace(Some(fault_trace), &error, walk.trace);
+                return Err(error);
+            }
+        };
+        let physical = translation.physical;
+        let region = memory
+            .locate_region_kind(physical, range.len() as u64)
+            .map_err(|source| TrackedAccessError::OperandPhysical {
+                address: physical,
+                source,
+            })?;
+        match region {
+            MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer => {}
+            MemoryRegionKind::Mmio if kind == AccessKind::Write => {
+                return Err(TrackedAccessError::DeviceUnavailable { address: physical });
+            }
+            region => {
+                return Err(TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: if kind == AccessKind::Write {
+                        MemoryAccessError::ReadOnlyRegion(region)
+                    } else {
+                        MemoryAccessError::UnreadableRegion(region)
+                    },
+                });
+            }
+        }
+        *slot = Some((translation, range, region));
+    }
+
+    match access {
+        VectorRamAccess::Read(destination) => {
+            let mut bytes = [0; 16];
+            for (translation, range, _) in spans.into_iter().flatten() {
+                let physical = translation.physical;
+                memory
+                    .load_bytes(physical, &mut bytes[range])
+                    .map_err(|source| TrackedAccessError::OperandPhysical {
+                        address: physical,
+                        source,
+                    })?;
+            }
+            *destination = bytes;
+        }
+        VectorRamAccess::Write(source) => {
+            for (translation, _, _) in spans.iter().flatten() {
+                commit_leaf_dirty(
+                    memory,
+                    &mut compare_replace_table_entry,
+                    committed_write,
+                    translation.leaf_level,
+                    translation.leaf_address,
+                    translation.leaf_value,
+                )?;
+            }
+            for (translation, _, region) in spans.iter().flatten() {
+                if *region != MemoryRegionKind::Ram {
+                    continue;
+                }
+                let physical = translation.physical;
+                let writes = spans
+                    .iter()
+                    .flatten()
+                    .filter(|(target, _, _)| target.physical.get() >> 12 == physical.get() >> 12)
+                    .count() as u64;
+                let generation = memory.code_page_generation(physical).map_err(|source| {
+                    TrackedAccessError::OperandPhysical {
+                        address: physical,
+                        source,
+                    }
+                })?;
+                if generation.checked_add(writes).is_none() {
+                    return Err(TrackedAccessError::OperandPhysical {
+                        address: physical,
+                        source: MemoryAccessError::CodeGenerationExhausted,
+                    });
+                }
+            }
+            for (translation, range, _) in spans.into_iter().flatten() {
+                let physical = translation.physical;
+                memory
+                    .store_bytes(physical, &source[range], &mut *committed_write)
+                    .map_err(|source| TrackedAccessError::OperandPhysical {
+                        address: physical,
+                        source,
+                    })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn retain_page_fault_trace(
     fault_trace: Option<&mut Option<WalkTrace>>,
     error: &TrackedAccessError,

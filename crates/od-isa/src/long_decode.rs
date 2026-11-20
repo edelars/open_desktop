@@ -1940,8 +1940,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
-    /// Legacy MOVD from a dword register or memory into an XMM register.
-    MovdToXmm {
+    /// Legacy MOVD from r/m32 or MOVQ from r/m64 into an XMM register.
+    MoveIntegerToXmm {
         destination: u8,
         source: Operand,
     },
@@ -1972,6 +1972,11 @@ pub enum Operation {
     },
     /// Local-only legacy memory MOVUPS using the shared ModR/M base+displacement operand.
     MovupsLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Legacy MOVDQU from unaligned m128 into XMM in the live CPL3 profile.
+    MovdquLoadMemory {
         destination: u8,
         source: MemoryOperand,
     },
@@ -3514,7 +3519,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -5867,6 +5872,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     ..Prefixes::default()
                 })
             && self.length == 2;
+        let f3_xmm_load = opcode.map == OpcodeMap::Escape0f
+            && matches!(opcode.byte, 0x6f | 0x7e)
+            && prefixes.group1 == Some(0xf3)
+            && prefix_bytes[0] == 0xf3
+            && (prefix_count == 1
+                || prefix_count == 2
+                    && prefixes.rex == Some(prefix_bytes[1])
+                    && prefix_bytes[1] & 8 == 0)
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.segment.is_none();
         if !known
             || (prefixes.group1.is_some()
                 && !pause
@@ -5881,6 +5897,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !repne_cmpsb_addr32
                 && !repne_cmps_wdq_addr32
                 && !rep_cmps
+                && !f3_xmm_load
                 && !movss_register
                 && !rsqrtss_register
                 && !rcpss_register
@@ -5951,13 +5968,36 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut size = prefixes.operand_size();
         let rex = prefixes.rex.unwrap_or(0);
         let operation = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Escape0f, 0x6f) if f3_xmm_load => {
+                let modrm = self.byte()?;
+                size = OperandSize::Qword;
+                let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                Operation::MovdquLoadMemory {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source,
+                }
+            }
+            (OpcodeMap::Escape0f, 0x7e) if f3_xmm_load => {
+                let modrm = self.byte()?;
+                size = OperandSize::Qword;
+                let source = self.rm_operand(modrm, prefixes, size)?;
+                if !matches!(source, Operand::Memory(_)) {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::MoveIntegerToXmm {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source,
+                }
+            }
             (OpcodeMap::Escape0f, 0x6e | 0xd6) => {
                 if prefix_bytes[0] != 0x66
                     || !(prefix_count == 1
                         || prefix_count == 2
                             && prefixes.rex.is_some()
                             && prefix_bytes[1] == rex
-                            && rex & 8 == 0)
+                            && (opcode.byte == 0x6e || rex & 8 == 0))
                     || prefixes.group1.is_some()
                     || prefixes.segment.is_some()
                     || prefixes.address_override
@@ -5967,8 +6007,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let xmm = ((modrm >> 3) & 7) | ((rex & 4) << 1);
                 if opcode.byte == 0x6e {
-                    size = OperandSize::Dword;
-                    Operation::MovdToXmm {
+                    size = if rex & 8 != 0 {
+                        OperandSize::Qword
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::MoveIntegerToXmm {
                         destination: xmm,
                         source: self.rm_operand(modrm, prefixes, size)?,
                     }
