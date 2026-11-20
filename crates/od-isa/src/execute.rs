@@ -29038,6 +29038,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
+            0x05,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => dst.size() == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
             0xff,
             Operation::IndirectCall {
                 operand: Operand::Memory(source),
@@ -29062,9 +29071,31 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
+            0x2b,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Sub,
+                dst: Operand::Register(dst),
+                src: Operand::Memory(src),
+            },
+        ) => {
+            dst.size() == OperandSize::Qword
+                && src.size == OperandSize::Qword
+                && src.address_size == OperandSize::Qword
+        }
+        (
+            OpcodeMap::Primary,
             0x80,
             Operation::Logic {
                 kind: LogicKind::Or,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x80,
+            Operation::Logic {
+                kind: LogicKind::And,
                 dst: Operand::Memory(dst),
                 src: Operand::Immediate(_),
             },
@@ -29157,6 +29188,41 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Sub,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
+        (
+            OpcodeMap::Primary,
+            0x30,
+            Operation::Logic {
+                kind: LogicKind::Xor,
+                dst: Operand::Register(dst),
+                src: Operand::Register(src),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Byte
+                && dst.size() == OperandSize::Byte
+                && src.size() == OperandSize::Byte
+        }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectJump {
+                operand: Operand::Memory(source),
+            },
+        ) => {
+            prefixes.rex.is_none()
+                && source.size == OperandSize::Qword
+                && source.address_size == OperandSize::Qword
+                && source.base == AddressBase::NextRip
+                && source.index.is_none()
+        }
         (
             OpcodeMap::Escape0f,
             0x40..=0x4f,
@@ -29501,14 +29567,29 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
             && memory.address_size == OperandSize::Qword
             && memory.size == size
     };
+    let qword_register_base = |memory: MemoryOperand| {
+        memory.address_size == OperandSize::Qword
+            && memory.size == OperandSize::Qword
+            && memory.index.is_none()
+            && memory.scale == 1
+            && matches!(memory.base, AddressBase::Register(_))
+    };
+    let observed_rex_w_only = prefixes.rex == Some(0x48);
     matches!(
         (instruction.opcode.byte, instruction.operation),
-        (0x03, Operation::AddFsLoad { dst, src })
+        (0x8b, Operation::MovFsLoad { dst, src })
             if dst.size() == OperandSize::Qword
-                && absolute(src, OperandSize::Qword)
+                && observed_rex_w_only
+                && qword_register_base(src)
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0x8b, Operation::MovFsLoadQ { dst, src })
+            if dst.size() == OperandSize::Qword
+                && (absolute(src, OperandSize::Qword)
+                    || observed_rex_w_only && qword_register_base(src))
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x03, Operation::AddFsLoad { dst, src })
             if dst.size() == OperandSize::Qword
                 && absolute(src, OperandSize::Qword)
     ) || matches!(
@@ -29520,7 +29601,8 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
         (instruction.opcode.byte, instruction.operation),
         (0x89, Operation::MovFsStore { dst, src })
             if src.size() == OperandSize::Qword
-                && absolute(dst, OperandSize::Qword)
+                && (absolute(dst, OperandSize::Qword)
+                    || observed_rex_w_only && qword_register_base(dst))
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0xc7, Operation::MovFsMemImm { dst, .. })
@@ -60775,8 +60857,11 @@ fn step_configured(
         Operation::Arithmetic { kind, dst, src } => {
             let arithmetic = (|| {
                 let lhs = match (kind, dst, src) {
-                    (ArithmeticKind::Add, Operand::Memory(mem), Operand::Immediate(_))
-                        if control_policy.is_some()
+                    (
+                        ArithmeticKind::Add | ArithmeticKind::Sub,
+                        Operand::Memory(mem),
+                        Operand::Immediate(_),
+                    ) if control_policy.is_some()
                             && context.privilege == PrivilegeLevel::Ring3
                             && instruction.opcode.map == OpcodeMap::Primary
                             && instruction.opcode.byte == 0x83
@@ -60807,7 +60892,20 @@ fn step_configured(
         }
         Operation::Logic { kind, dst, src } => {
             let logic = (|| {
-                let lhs = read_operand(state, memory, context, next_rip, dst)?;
+                let lhs = match (kind, dst, src) {
+                    (LogicKind::And, Operand::Memory(mem), Operand::Immediate(_))
+                        if control_policy.is_some()
+                            && context.privilege == PrivilegeLevel::Ring3
+                            && instruction.opcode.map == OpcodeMap::Primary
+                            && instruction.opcode.byte == 0x80
+                            && mem.size == OperandSize::Byte
+                            && mem.address_size == OperandSize::Qword =>
+                    {
+                        let address = mem.access_address_48(state, next_rip)?;
+                        memory.read_integer_for_write(address, context, mem.size)?
+                    }
+                    _ => read_operand(state, memory, context, next_rip, dst)?,
+                };
                 let rhs = read_operand(state, memory, context, next_rip, src)?;
                 let (result, flags) =
                     logic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);

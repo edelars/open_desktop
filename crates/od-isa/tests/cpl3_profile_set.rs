@@ -398,7 +398,6 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ),
         ("xor ax, ax (0x66)", &[0x66, 0x31, 0xc0], 0x31),
         ("lock xor [rax], eax", &[0xf0, 0x31, 0x00], 0x31),
-        ("xor al, bl (30 /r)", &[0x30, 0xd8], 0x30),
         ("xor eax, ebx (33 /r)", &[0x33, 0xc3], 0x33),
         ("xor eax, imm32 (35)", &[0x35, 1, 0, 0, 0], 0x35),
         ("xor eax, imm8 (83 /6)", &[0x83, 0xf0, 0x01], 0x83),
@@ -4635,7 +4634,6 @@ fn cmpb_imm8_refusals_stop_as_unsupported_80_without_change() {
         ),
         ("80 13 05 adcb $5, (%rbx) (/2)", &[0x80, 0x13, 0x05]),
         ("80 1b 05 sbbb $5, (%rbx) (/3)", &[0x80, 0x1b, 0x05]),
-        ("80 23 05 andb $5, (%rbx) (/4)", &[0x80, 0x23, 0x05]),
         ("80 2b 05 subb $5, (%rbx) (/5)", &[0x80, 0x2b, 0x05]),
         ("80 33 05 xorb $5, (%rbx) (/6)", &[0x80, 0x33, 0x05]),
         ("80 c0 05 addb $5, %al (/0 mod = 11)", &[0x80, 0xc0, 0x05]),
@@ -8264,4 +8262,318 @@ fn cpl3_issue571_cmp_dword_memory_fault_preserves_flags_and_rip() {
     assert_eq!(memory.reads, 1);
     assert_eq!(memory.read_widths, [(DATA + 8, 4)]);
     assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_issue573_observed_scalar_forms_use_expected_operands_and_widths() {
+    let code = [
+        0x48, 0x2b, 0x4f, 0x08, // sub rcx, qword [rdi+8]
+        0x80, 0x67, 0x10, 0x0f, // and byte [rdi+0x10], 0x0f
+        0x83, 0x6f, 0x14, 0x01, // sub dword [rdi+0x14], 1
+        0x30, 0xd8, // xor al, bl
+    ];
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.gpr[Register::Rcx as usize] = 0x20;
+    state.gpr[Register::Rax as usize] = 0x1122_3344_5566_0077;
+    state.gpr[Register::Rbx as usize] = 0x5a;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in 0x12u64.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + 8 + offset as u64, byte);
+    }
+    memory = memory.with_user(DATA + 0x10, 0xf3);
+    for (offset, byte) in 0x1000u32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + 0x14 + offset as u64, byte);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x0e);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_002d);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x5a);
+    assert_eq!(
+        memory.read_widths,
+        [(DATA + 8, 8), (DATA + 0x10, 1), (DATA + 0x14, 4)]
+    );
+    assert_eq!(
+        memory.writes,
+        [
+            (DATA + 0x10, 0x03),
+            (DATA + 0x14, 0xff),
+            (DATA + 0x15, 0x0f),
+            (DATA + 0x16, 0),
+            (DATA + 0x17, 0)
+        ]
+    );
+}
+
+#[test]
+fn cpl3_issue573_memory_updates_validate_write_before_read() {
+    for (code, offset, width) in [
+        (&[0x80, 0x67, 0x10, 0x0f][..], 0x10, 1),
+        (&[0x83, 0x6f, 0x14, 0x01][..], 0x14, 4),
+    ] {
+        let address = DATA + offset;
+        let mut state = user_state();
+        state.gpr[Register::Rdi as usize] = DATA;
+        state.rflags |= ARITH;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for byte in address..address + width {
+            memory = memory.with_supervisor(byte, 0x55);
+        }
+
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(7),
+                linear_address: Some(address),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.read_widths, [(address, width as usize)]);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_issue573_tls_tail_adds_imm32_to_qword_accumulator() {
+    // Pinned BusyBox at 0x4f68f9, between the FS load and final FS store.
+    let code = [0x48, 0x05, 0x00, 0x02, 0x00, 0x00];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = u64::MAX - 0x1ff;
+    state.rflags |= ARITH;
+    let mut memory = DataMemory::new(&code);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.gpr[Register::Rax as usize], 0);
+    assert_eq!(state.rflags & ARITH, CF | PF | ZF);
+    assert!(memory.read_widths.is_empty());
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_issue573_indirect_jump_reads_rip_relative_target_before_rip_commit() {
+    let target = 0x0040_1234u64;
+    let next_rip = RIP + 6;
+    let displacement = (DATA as i64 - next_rip as i64) as i32;
+    let mut code = vec![0xff, 0x25]; // jmp qword [rip+disp32]
+    code.extend_from_slice(&displacement.to_le_bytes());
+    let mut state = user_state();
+    let flags = state.rflags | ARITH;
+    state.rflags = flags;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in target.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + offset as u64, byte);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, target);
+    assert_eq!(state.rflags, flags);
+    assert_eq!(memory.read_widths, [(DATA, 8)]);
+    assert!(memory.writes.is_empty());
+
+    let mut fault_state = user_state();
+    fault_state.rflags |= ARITH;
+    let before = fault_state.clone();
+    let mut fault_memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        fault_memory = fault_memory.with_supervisor(DATA + offset, 0x55);
+    }
+    let result = run3_data(&mut fault_state, &mut fault_memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(DATA)
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(fault_state, before);
+    assert_eq!(fault_memory.read_widths, [(DATA, 8)]);
+    assert!(fault_memory.writes.is_empty());
+
+    let mut bad_target_state = user_state();
+    let before_bad_target = bad_target_state.clone();
+    let mut bad_target_memory = DataMemory::new(&code);
+    for (offset, byte) in 0x0000_8000_0000_0000u64
+        .to_le_bytes()
+        .into_iter()
+        .enumerate()
+    {
+        bad_target_memory = bad_target_memory.with_user(DATA + offset as u64, byte);
+    }
+    let result = run3_data(&mut bad_target_state, &mut bad_target_memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(bad_target_state, before_bad_target);
+    assert_eq!(bad_target_memory.read_widths, [(DATA, 8)]);
+    assert!(bad_target_memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_issue573_fs_qword_base_load_and_stores_use_live_base() {
+    let code = [
+        0x64, 0x48, 0x8b, 0x00, // mov rax, fs:[rax]
+        0x64, 0x48, 0x89, 0x11, // mov fs:[rcx], rdx
+        0x64, 0x48, 0x89, 0x02, // mov fs:[rdx], rax
+    ];
+    let fs = DATA + 0x1000;
+    let loaded = 0x8877_6655_4433_2211u64;
+    let stored_rdx = 0x0000_3040_5060_7080u64;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.rflags |= ARITH;
+    let flags = state.rflags;
+    state.gpr[Register::Rax as usize] = 0x20;
+    state.gpr[Register::Rcx as usize] = 0x80;
+    state.gpr[Register::Rdx as usize] = stored_rdx;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in loaded.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(fs + 0x20 + offset as u64, byte);
+    }
+    for offset in 0..8 {
+        memory = memory.with_user(fs + 0x80 + offset, 0);
+    }
+    for offset in 0..8 {
+        memory = memory.with_user(fs + stored_rdx + offset, 0);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.gpr[Register::Rax as usize], loaded);
+    assert_eq!(state.fs_base, fs);
+    assert_eq!(state.rflags, flags);
+    assert_eq!(memory.read_widths, [(fs + 0x20, 8)]);
+    assert_eq!(memory.writes.len(), 16);
+    assert_eq!(
+        &memory.writes[..8],
+        &(0..8)
+            .map(|i| (fs + 0x80 + i, (stored_rdx >> (i * 8)) as u8))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        &memory.writes[8..],
+        &(0..8)
+            .map(|i| (fs + stored_rdx + i, (loaded >> (i * 8)) as u8))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cpl3_issue573_fs_faults_and_neighboring_forms_stay_outside() {
+    let code = [0x64, 0x48, 0x8b, 0x00];
+    let fs = DATA + 0x1000;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::Rax as usize] = 0x20;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        memory = memory.with_supervisor(fs + 0x20 + offset, 0x55);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(fs + 0x20)
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+
+    // A failed qword store through FS checks user write permission before any byte is committed.
+    let store_code = [0x64, 0x48, 0x89, 0x11]; // mov fs:[rcx], rdx
+    let mut store_state = user_state();
+    store_state.fs_base = fs;
+    store_state.gpr[Register::Rcx as usize] = 0x80;
+    store_state.gpr[Register::Rdx as usize] = 0x1122_3344_5566_7788;
+    let store_before = store_state.clone();
+    let mut store_memory = DataMemory::new(&store_code);
+    for offset in 0..8 {
+        store_memory = store_memory.with_supervisor(fs + 0x80 + offset, 0);
+    }
+    let result = run3_data(&mut store_state, &mut store_memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7),
+            linear_address: Some(fs + 0x80)
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(store_state, store_before);
+    assert!(store_memory.writes.is_empty());
+
+    // A non-canonical FS-adjusted store address faults before the backend sees any write.
+    let mut canonical_state = user_state();
+    canonical_state.fs_base = 0x0000_7fff_ffff_fff0;
+    canonical_state.gpr[Register::Rcx as usize] = 0x20;
+    let canonical_before = canonical_state.clone();
+    let mut canonical_memory = DataMemory::new(&store_code);
+    let result = run3_data(&mut canonical_state, &mut canonical_memory, 1).unwrap();
+    assert!(matches!(
+        exit(&result),
+        RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            ..
+        })
+    ));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(canonical_state, canonical_before);
+    assert!(canonical_memory.writes.is_empty());
+
+    for code in [
+        &[0x65, 0x48, 0x8b, 0x00][..],             // GS is not added
+        &[0x64, 0x48, 0x8b, 0x04, 0x08][..],       // indexed FS load is out of scope
+        &[0x64, 0x48, 0x89, 0x0c, 0x08][..],       // indexed FS store is out of scope
+        &[0x64, 0x48, 0xff, 0x25, 0, 0, 0, 0][..], // FS indirect jump stays refused
+        &[0x48, 0xff, 0xe0][..],                   // register indirect jump stays refused
+    ] {
+        let mut state = user_state();
+        state.fs_base = fs;
+        state.gpr[Register::Rax as usize] = DATA;
+        state.gpr[Register::Rcx as usize] = 0x40;
+        state.gpr[Register::Rdx as usize] = 0x60;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..16 {
+            memory = memory.with_user(DATA + offset, 0);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "code={code:02x?} exit={:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
 }
