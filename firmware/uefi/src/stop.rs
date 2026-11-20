@@ -32,6 +32,8 @@ pub const STOP_HANDOFF_FV_APP: u8 = 0x0D;
 pub const STOP_EXCEPTION: u8 = 0x10;
 /// The selected application returned and no further boot option is available.
 pub const STOP_NO_BOOT_OPTIONS: u8 = 0x21;
+/// ResetSystem could not stop the machine using the advertised hardware.
+pub const STOP_RESET_UNAVAILABLE: u8 = 0x22;
 /// Internal firmware error (panic handler).
 pub const STOP_INTERNAL: u8 = 0x30;
 /// Firmware-owned page tables could not be prepared.

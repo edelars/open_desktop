@@ -198,7 +198,11 @@ runtime-памяти текущей загрузки. RTC отсутствует
 запрос. Cold, Warm и PlatformSpecific используют ACPI reset-регистр.
 Плата применяет Cold для Warm и для любого PlatformSpecific GUID,
 поскольку собственных GUID сброса у неё нет. Shutdown пишет тип S5 и
-`SLP_EN` в PM1a_CNT.
+`SLP_EN` в PM1a_CNT. Если описание PM-блока содержит нулевые reset
+register и reset value, FADT скрывает возможность reset, а `ResetSystem`
+использует S5. При отсутствии PM-блока или возврате из аппаратного
+действия сервис печатает причину и код 0x22 на COM1, затем останавливается
+в HLT. [Коды останова прошивки](FIRMWARE_BOOT.md#12-останов-коды-состояния-и-сброс).
 
 `GetNextHighMonotonicCount` увеличивает старшее слово счётчика после
 `ExitBootServices`. Прошивка также увеличивает его при загрузке и

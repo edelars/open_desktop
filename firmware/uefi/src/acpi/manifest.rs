@@ -360,12 +360,17 @@ impl AcpiPmEntry {
         let cnt = ((entry.param0 >> 16) & 0xFFFF) as u32;
         let tmr = ((entry.param0 >> 32) & 0xFFFF) as u32;
         let reset = ((entry.param0 >> 48) & 0xFFFF) as u32;
+        let reset_value = (entry.param1 & 0xFF) as u8;
         let (start, end) = (entry.base as u32, (entry.base + entry.length) as u32);
         if evt < start
             || evt + PM1_EVT_LEN > cnt
             || cnt + PM1_CNT_LEN > tmr
-            || tmr + PM_TMR_LEN > reset
-            || reset + RESET_REG_LEN > end
+            || tmr + PM_TMR_LEN > end
+            || if reset == 0 {
+                reset_value != 0
+            } else {
+                tmr + PM_TMR_LEN > reset || reset + RESET_REG_LEN > end
+            }
         {
             return Err(ManifestError::BadAcpiPm(
                 "registers must lie in the block in the order EVT, CNT, TMR, RESET",
@@ -378,7 +383,7 @@ impl AcpiPmEntry {
             pm1a_cnt_blk: cnt as u16,
             pm_tmr_blk: tmr as u16,
             reset_reg: reset as u16,
-            reset_value: (entry.param1 & 0xFF) as u8,
+            reset_value,
             slp_typ_s5: ((entry.param1 >> 8) & 0xFF) as u8,
             sci_gsi: entry.gsi,
             sci_level: entry.irq_flags & IRQ_LEVEL != 0,
@@ -543,6 +548,20 @@ mod tests {
             param1: 0x0506,
         });
         assert_eq!(PM, Ok(pm));
+    }
+
+    #[test]
+    fn acpi_pm_can_expose_s5_without_a_reset_register() {
+        let mut raw = PM_ENTRY_RAW;
+        raw[0x26..0x29].fill(0);
+        let pm = AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).unwrap();
+        assert_eq!((pm.reset_reg, pm.reset_value, pm.slp_typ_s5), (0, 0, 5));
+        assert_eq!((pm.pm1a_cnt_blk, pm.pm_tmr_blk), (0x604, 0x608));
+        raw[0x28] = 1;
+        assert!(AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).is_err());
+        raw[0x28] = 0;
+        raw[0x10] = 0x0b;
+        assert!(AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).is_err());
     }
 
     #[test]

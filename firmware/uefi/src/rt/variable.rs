@@ -39,6 +39,7 @@ pub struct RuntimeVariables {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NvramRestoreReport {
     pub invalid_header: bool,
+    pub missing_committed_bank: bool,
     pub discarded_records: u32,
     pub missing_defaults: u32,
 }
@@ -68,7 +69,14 @@ impl RuntimeVariables {
             }
             let nvram = unsafe { Nvram::at(state.nvram_base) };
             let length = nvram.read(&mut state.nv_image)?;
-            let mut report = restore_nv(&mut state.store, &state.nv_image[..length]);
+            let mut report = if length == 0 {
+                NvramRestoreReport {
+                    missing_committed_bank: true,
+                    ..NvramRestoreReport::default()
+                }
+            } else {
+                restore_nv(&mut state.store, &state.nv_image[..length])
+            };
             report.missing_defaults =
                 seed_defaults(&mut state.store, console_path, BootDefaults::NonVolatile);
             Some(report)
@@ -79,6 +87,10 @@ impl RuntimeVariables {
             None
         };
         state.refresh_image();
+        if report.is_some_and(|report| report.missing_committed_bank) {
+            // Commit a fresh store so the recovered snapshot can be reopened by strict callers.
+            unsafe { Nvram::at(state.nvram_base) }.write(state.nv_image())?;
+        }
         Ok(report)
     }
 

@@ -15,7 +15,7 @@ use crate::uefi::{
 };
 
 use super::{
-    reset::{self, ResetCommand},
+    reset,
     time::{Cmos, Rtc},
     variable::RuntimeVariables,
     virt::{MAX_IMAGES, OPTIONAL_POINTER, VirtualMap},
@@ -382,23 +382,8 @@ unsafe extern "efiapi" fn reset_system(
     _: usize,
     _: *const c_void,
 ) {
-    let storage = root();
-    if !storage.is_null()
-        && let Some(hardware) = unsafe { (*storage).fixed_hardware }
-    {
-        match reset::command(hardware, reset_type) {
-            ResetCommand::Reset { port, value } => unsafe { out_byte(port, value) },
-            ResetCommand::Shutdown { port, sleep_bits } => unsafe {
-                let previous: u16;
-                asm!("in ax, dx", in("dx") port, out("ax") previous, options(nostack, preserves_flags));
-                let value = (previous & !(0b111 << 10)) | sleep_bits;
-                asm!("out dx, ax", in("dx") port, in("ax") value, options(nostack, preserves_flags));
-            },
-        }
-    }
-    // ResetSystem is non-returning. On boards with the advertised hardware
-    // the stop is latched by the I/O bus before execution reaches this loop.
-    unsafe { asm!("cli", "2:", "hlt", "jmp 2b", options(noreturn, nostack)) };
+    let hardware = unsafe { root().as_ref() }.and_then(|storage| storage.fixed_hardware);
+    reset::perform(hardware, reset_type)
 }
 
 unsafe fn in_byte(port: u16) -> u8 {

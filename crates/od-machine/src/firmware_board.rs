@@ -3580,7 +3580,7 @@ impl FirmwareLayout {
             None => None,
             Some(NvramConfig::Empty) => Some(NvramDevice::new()),
             Some(NvramConfig::Snapshot(bytes)) => {
-                Some(NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?)
+                Some(NvramDevice::for_firmware_boot(bytes).map_err(FirmwareBoardError::Nvram)?)
             }
         };
         let minor = if nvram
@@ -4121,6 +4121,9 @@ fn load_firmware_image_inner(
 
 #[cfg(test)]
 mod secure_boot_pcr7_tests;
+
+#[cfg(test)]
+mod failure_smoke_tests;
 
 #[cfg(test)]
 mod tests {

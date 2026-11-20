@@ -40,8 +40,11 @@ impl Nvram {
 
     pub(crate) fn read(self, out: &mut [u8]) -> Result<usize, Status> {
         let length = self.read_register(ACTIVE_LEN) as usize;
-        if length == 0 || length > out.len() || length > MAX_STORE_BYTES {
+        if length > out.len() || length > MAX_STORE_BYTES {
             return Err(Status::DEVICE_ERROR);
+        }
+        if length == 0 {
+            return Ok(0);
         }
         self.begin_transfer(1, 1, length)?;
         for (index, byte) in out[..length].iter_mut().enumerate() {

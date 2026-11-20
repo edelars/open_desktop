@@ -43,7 +43,7 @@ use od_firmware::stop::{
     format_stop_line,
 };
 use od_firmware::uefi::guid::Guid;
-use od_firmware::uefi::runtime::{RESET_COLD, RESET_WARM, ResetType};
+use od_firmware::uefi::runtime::ResetType;
 use od_firmware::uefi::status::Status;
 use od_firmware::uefi::system_table::{BootServices, RuntimeServicesStorage, SystemTable};
 use od_firmware::uefi::types::Handle;
@@ -243,6 +243,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         stop(STOP_BOOT_SERVICES, 76)
     };
     if let Some(report) = restore {
+        if report.missing_committed_bank {
+            com1_write(b"OD-FW S7-10 NVRAM discarded both invalid banks\r\n");
+        }
         if report.invalid_header {
             com1_write(b"OD-FW S7-10 NVRAM ignored invalid store header\r\n");
         }
@@ -277,7 +280,8 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
         });
         od_firmware::bs::attach_image_paging(&paging);
     }
-    if let Some(pm) = fixed_hardware {
+    let watchdog_hardware = fixed_hardware.filter(|pm| pm.reset_reg != 0);
+    if let Some(pm) = watchdog_hardware {
         // SAFETY: the ACPI manifest validated the reset target from the handoff.
         unsafe {
             od_firmware::bs::attach_watchdog(pm.reset_reg, pm.reset_value, reset_for_watchdog)
@@ -302,7 +306,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     verify_configuration_services(system_pointer);
     unsafe {
-        verify_watchdog_services(&*system_pointer, fixed_hardware.is_some());
+        verify_watchdog_services(&*system_pointer, watchdog_hardware.is_some());
         verify_service_boundaries(&*system_pointer);
     }
     // SAFETY: the BSP owns the initialized Boot Services registry.
@@ -372,6 +376,9 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     let storage_boot = handoff.fv_app().is_none()
         && unsafe { od_firmware::bootmgr::storage_present(system_pointer) };
+    if handoff.fv_app().is_none() && !storage_boot {
+        com1_write(b"OD-FW no storage boot devices\r\n");
+    }
     let runtime_installed = boot_fv_image(system_pointer, handoff.fv_app(), !storage_boot);
     if storage_boot {
         if unsafe { od_firmware::bootmgr::run(system_pointer) }.is_err() {
@@ -1358,13 +1365,10 @@ unsafe extern "efiapi" fn diagnostic_reset_system(
     com1_write(&fixed_hex(status.raw() as u64));
     com1_write(b"\r\n");
 
-    if matches!(reset_type, RESET_COLD | RESET_WARM)
-        && let Ok(handoff) = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX)
-        && let Ok(Some(pm)) = handoff.acpi_fixed_hardware()
-    {
-        request_reset(pm.reset_reg, pm.reset_value);
-    }
-    halt_forever()
+    let hardware = Handoff::parse_for_boot(boot_handoff_bytes(), HANDOFF_MINOR_MAX)
+        .ok()
+        .and_then(|handoff| handoff.acpi_fixed_hardware().ok().flatten());
+    od_firmware::rt::reset::perform(hardware, reset_type)
 }
 
 #[inline(never)]

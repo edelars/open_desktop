@@ -1,6 +1,6 @@
 //! UEFI text console over the board's COM1 port.
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", target_os = "uefi"))]
 pub mod serial_term;
 pub mod text_in;
 pub mod text_out;

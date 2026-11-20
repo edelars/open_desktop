@@ -49,6 +49,23 @@ fn build(pm: &AcpiPmEntry, addresses: &FadtAddresses, fill: u8) -> Vec<u8> {
     out[..len].to_vec()
 }
 
+#[test]
+fn fadt_with_s5_only_clears_the_reset_capability_and_fields() {
+    let table = build(
+        &AcpiPmEntry {
+            reset_reg: 0,
+            reset_value: 0,
+            ..board_pm()
+        },
+        &ADDRESSES,
+        0xa5,
+    );
+    assert_eq!(le32(&table, 112) & (1 << 10), 0);
+    assert_eq!(&table[116..129], &[0; 13]);
+    assert_eq!(le32(&table, 64), 0x604); // PM1a_CNT_BLK.
+    assert_eq!(validate_fadt(&table), Ok(()));
+}
+
 fn board_fadt() -> Vec<u8> {
     build(&board_pm(), &ADDRESSES, 0)
 }

@@ -22645,8 +22645,14 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         destination.displacement
                     ),
                     (ConditionCode::Equal, 0x94, 4, 0x04, 0)
-                        | (ConditionCode::Equal, 0x94, 5, 0x44, 0x20)
-                        | (ConditionCode::NotEqual, 0x95, 5, 0x44, 0x20 | 0x68)
+                        | (ConditionCode::Equal, 0x94, 5, 0x44, 0x20 | 0x3c)
+                        | (
+                            ConditionCode::NotEqual,
+                            0x95,
+                            5,
+                            0x44,
+                            0x18 | 0x20 | 0x68 | 0x70
+                        )
                 )))
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.operand_size == OperandSize::Byte

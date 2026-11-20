@@ -105,6 +105,13 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "failure-probe"
+path = "failure-probe/main.rs"
+test = false
+bench = false
+doc = false
+
 [profile.dev]
 panic = "abort"
 

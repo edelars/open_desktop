@@ -147,6 +147,24 @@ impl NvramDevice {
         Ok(Self::from_banks(Banks::with_contents(bytes)?))
     }
 
+    /// Boot may start a legacy store afresh after both committed banks are lost.
+    /// Protected snapshots and invalid envelopes still go through strict validation.
+    pub(crate) fn for_firmware_boot(bytes: &[u8]) -> Result<Self, NvramContentsError> {
+        match Banks::with_contents(bytes) {
+            Ok(banks) => Ok(Self::from_banks(banks)),
+            Err(NvramContentsError::NoValidBank)
+                if bytes.get(8..12) == Some(&(SnapshotFormat::Legacy as u32).to_le_bytes()) =>
+            {
+                Ok(Self::from_banks(Banks {
+                    format: SnapshotFormat::Legacy,
+                    banks: [Bank::invalid(), Bank::invalid()],
+                    active: 0,
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn nvram_snapshot(&self) -> Vec<u8> {
         lock(&self.state).banks.snapshot()
     }
@@ -1404,6 +1422,36 @@ mod tests {
         assert!(matches!(
             NvramDevice::with_contents(&bytes),
             Err(NvramContentsError::NoValidBank)
+        ));
+    }
+
+    #[test]
+    fn firmware_boot_repairs_only_legacy_snapshots_without_a_committed_bank() {
+        let mut original = NvramDevice::new();
+        replace(&mut original, b"last write");
+        let mut snapshot = original.nvram_snapshot();
+        for offset in [SNAPSHOT_HEADER_BYTES, SNAPSHOT_HEADER_BYTES + BANK_BYTES] {
+            snapshot[offset + 12] ^= 1;
+        }
+        assert!(matches!(
+            NvramDevice::with_contents(&snapshot),
+            Err(NvramContentsError::NoValidBank)
+        ));
+        let mut recovered = NvramDevice::for_firmware_boot(&snapshot).unwrap();
+        assert_eq!(reg(&mut recovered, ACTIVE_LEN), 0);
+        replace(&mut recovered, EMPTY_STORE);
+        let mut reopened = NvramDevice::with_contents(&recovered.nvram_snapshot()).unwrap();
+        assert_eq!(read_active(&mut reopened), EMPTY_STORE);
+
+        snapshot[8..12].copy_from_slice(&(SnapshotFormat::Protected as u32).to_le_bytes());
+        assert!(matches!(
+            NvramDevice::for_firmware_boot(&snapshot),
+            Err(NvramContentsError::InvalidProtectedStore)
+        ));
+        snapshot[12] = 1;
+        assert!(matches!(
+            NvramDevice::for_firmware_boot(&snapshot),
+            Err(NvramContentsError::InvalidHeader)
         ));
     }
 
