@@ -1,0 +1,11 @@
+
+running 7 tests
+test tests::demand_flags_candidate_defers_replaced_writers_and_survives_clobbers_and_spills ... ok
+test tests::demand_flags_candidate_handles_alias_inputs_and_cmp_add_replacement ... ok
+test tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov ... ok
+test tests::demand_flags_candidate_materializes_carry_before_interpreter_adc_and_sbb ... ok
+test tests::demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits ... ok
+test tests::demand_flags_candidate_returns_canonical_state_at_bare_nop_fallback_boundary ... ok
+test tests::native_nop_fallback_demand_flags_candidate_dispatches_uncached_blocks ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 483 filtered out; finished in 0.04s

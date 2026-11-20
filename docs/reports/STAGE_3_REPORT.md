@@ -1491,6 +1491,11 @@ the stock per-case counters and verified a four-case resident FIFO16
 profile. All four M1 timing attempts were rejected by the load gate.
 [S3-29h preflight results](STAGE_3_S3-29h_2026-11-19.md)
 
+S3-29i covers canonical carry at the boundary between a published native
+ADD prefix and interpreter ADC or SBB. Both carry values start from the
+opposite incoming CF and are checked against full interpreter state.
+[S3-29i host regression](STAGE_3_S3-29i_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.

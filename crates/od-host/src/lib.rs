@@ -70947,6 +70947,92 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn demand_flags_candidate_materializes_carry_before_interpreter_adc_and_sbb() {
+        use od_isa::execute::{RunConfig, RunExit, run};
+        use od_jit::block_compile::compile_block_demand_flags_candidate;
+        use od_jit::statepoints::{GuestRipBoundary, SnapshotAdmissibility, StatePhase};
+
+        let _guard = jit_test_lock();
+        const CF: u64 = 1;
+        const BUDGET: u64 = 2;
+        for (consumer_modrm, expected_rdx) in [(0xD2, [0x30, 0x31]), (0xDA, [0x10, 0x0F])] {
+            // ADD RAX, RCX; ADC or SBB RDX, 0x10.
+            let bytes = [0x48, 0x03, 0xC1, 0x48, 0x83, consumer_modrm, 0x10];
+            let consumer_rip = 3;
+            let view = CodeView::new(0, &bytes).unwrap();
+            let compiled = [
+                (
+                    compile_block(view, 0).unwrap(),
+                    SnapshotAdmissibility::CanonicalBoundary,
+                ),
+                (
+                    compile_block_demand_flags_candidate(view, 0).unwrap(),
+                    SnapshotAdmissibility::InadmissiblePendingFlags,
+                ),
+            ];
+            let stop = AtomicU8::new(0);
+            let interpret = |state: &mut od_isa::LongModeState, instruction_budget| {
+                let result = run(
+                    state,
+                    &mut FetchedWindow(&bytes),
+                    RunConfig {
+                        instruction_budget,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+                result.instructions_executed
+            };
+
+            for (block, snapshot) in compiled {
+                let BlockCompileOutcome::Compiled(block) = block else {
+                    panic!("native ADD prefix before the carry consumer should compile");
+                };
+                assert!(block.emitted().pc_map().boundaries().iter().any(|point| {
+                    point.rip == GuestRipBoundary::Fixed(consumer_rip)
+                        && point.committed_instructions == 1
+                        && point.phase == StatePhase::Committed
+                        && point.snapshot == snapshot
+                }));
+                let published = PublishedCode::publish_block(block.emitted()).unwrap();
+                for (rax, carry) in [(u64::MAX, CF), (7, 0)] {
+                    let mut initial = od_isa::LongModeState {
+                        rflags: 0x202 | (carry ^ CF),
+                        ..Default::default()
+                    };
+                    initial.gpr[0] = rax;
+                    initial.gpr[1] = 1;
+                    initial.gpr[2] = 0x20;
+                    let mut oracle_prefix = initial.clone();
+                    assert_eq!(interpret(&mut oracle_prefix, 1), 1);
+                    let mut oracle_full = initial.clone();
+                    assert_eq!(interpret(&mut oracle_full, BUDGET), BUDGET);
+                    assert_eq!(oracle_full.gpr[2], expected_rdx[carry as usize]);
+
+                    let mut actual = initial;
+                    let native = published
+                        .execute_block(&mut actual, BUDGET, None, &stop)
+                        .unwrap();
+                    assert_eq!(native.exit, RuntimeExitTag::Unsupported);
+                    assert_eq!(native.retired_instructions, 1);
+                    assert_eq!(native.remaining_budget, 1);
+                    assert_eq!(actual.rip, consumer_rip);
+                    assert_eq!(actual.rflags & CF, carry);
+                    assert_eq!(actual, oracle_prefix);
+
+                    let interpreted = interpret(&mut actual, native.remaining_budget);
+                    assert_eq!(interpreted, 1);
+                    assert_eq!(native.retired_instructions + interpreted, BUDGET);
+                    assert_eq!(actual.rip, bytes.len() as u64);
+                    assert_eq!(actual, oracle_full);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn runtime_samples_stop_set_by_successful_helper_after_commit() {
         let _guard = jit_test_lock();
         let base_rip = 0x7800;
