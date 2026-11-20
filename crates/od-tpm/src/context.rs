@@ -72,7 +72,7 @@ use crate::paramenc::SessionSym;
 use crate::policy::{PolicyHashRestriction, PolicyState};
 use crate::response::{Output, Rc};
 use crate::session::{BoundEntity, Session, SessionKind, session_handle};
-use crate::state::Tpm;
+use crate::state::{TimePoint, Tpm};
 
 /// Largest `contextBlob` accepted by `TPM2_ContextLoad` (an RSA object context is under 1 KiB).
 const MAX_CONTEXT_BLOB: usize = 2048;
@@ -319,6 +319,18 @@ fn decode_object(body: &[u8]) -> Result<Object, Rc> {
     })
 }
 
+fn write_time_point(w: &mut Writer, point: TimePoint) {
+    w.bytes(&point.epoch);
+    w.u64(point.ms);
+}
+
+fn read_time_point(r: &mut Reader<'_>) -> Result<TimePoint, Rc> {
+    Ok(TimePoint {
+        epoch: r.bytes(16)?.try_into().map_err(|_| Rc::SIZE)?,
+        ms: r.u64()?,
+    })
+}
+
 fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     let mut w = Writer {
         buf: Vec::with_capacity(256),
@@ -371,6 +383,14 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     if let Some(digest) = s.audit_digest {
         w.u8(1); // Version of the optional audit tail.
         w.bytes(&digest);
+    } else if let Some(nonce_time) = s.nonce_time {
+        w.u8(3); // Policy locality, nonce time and optional deadline.
+        w.u8(p.command_locality);
+        write_time_point(&mut w, nonce_time);
+        w.u8(u8::from(p.deadline.is_some()));
+        if let Some(deadline) = p.deadline {
+            write_time_point(&mut w, deadline);
+        }
     } else if p.command_locality != 0 {
         w.u8(2); // Optional locality tail for policy sessions.
         w.u8(p.command_locality);
@@ -445,6 +465,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     policy.password_needed = flags & 2 != 0;
     let symmetric = SessionSym::from_octet(r.u8()?).ok_or(Rc::VALUE)?;
     let mut audit_digest = None;
+    let mut nonce_time = None;
     if r.remaining() != 0 {
         match r.u8()? {
             1 if kind == SessionKind::Hmac && bound.is_none() => {
@@ -456,12 +477,22 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
                     return Err(Rc::VALUE);
                 }
             }
+            3 if kind == SessionKind::Policy => {
+                policy.command_locality = r.u8()?;
+                nonce_time = Some(read_time_point(&mut r)?);
+                policy.deadline = match r.u8()? {
+                    0 => None,
+                    1 => Some(read_time_point(&mut r)?),
+                    _ => return Err(Rc::VALUE),
+                };
+            }
             _ => return Err(Rc::VALUE),
         }
     }
     r.finish()?;
     Ok(Session {
         nonce_tpm,
+        nonce_time,
         key,
         bound,
         bind_da,

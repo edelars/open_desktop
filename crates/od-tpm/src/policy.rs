@@ -60,7 +60,7 @@ use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::SessionKind;
-use crate::state::Tpm;
+use crate::state::{TimePoint, Tpm};
 
 /// The policy context of a session (Part 1, clause 17.7.8) for the SHA-256 session hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -71,6 +71,7 @@ pub(crate) struct PolicyState {
     /// Zero for unrestricted, 1..=31 for the locality mask, 32..=255 for an extended locality.
     pub command_locality: u8,
     pub pcr_update_counter: Option<u32>,
+    pub deadline: Option<TimePoint>,
     pub auth_value_needed: bool,
     pub password_needed: bool,
 }
@@ -84,6 +85,64 @@ pub(crate) enum PolicyHashRestriction {
     ParametersHash([u8; DIGEST]),
 }
 
+/// TPM_EO operations on same-width, big-endian inputs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Comparison {
+    Eq,
+    Ne,
+    SignedGt,
+    UnsignedGt,
+    SignedLt,
+    UnsignedLt,
+    SignedGe,
+    UnsignedGe,
+    SignedLe,
+    UnsignedLe,
+    BitSet,
+    BitClear,
+}
+
+impl Comparison {
+    fn from_wire(operation: u16, param: u8) -> Result<Self, Rc> {
+        match operation {
+            0 => Ok(Self::Eq),
+            1 => Ok(Self::Ne),
+            2 => Ok(Self::SignedGt),
+            3 => Ok(Self::UnsignedGt),
+            4 => Ok(Self::SignedLt),
+            5 => Ok(Self::UnsignedLt),
+            6 => Ok(Self::SignedGe),
+            7 => Ok(Self::UnsignedGe),
+            8 => Ok(Self::SignedLe),
+            9 => Ok(Self::UnsignedLe),
+            10 => Ok(Self::BitSet),
+            11 => Ok(Self::BitClear),
+            _ => Err(Rc::VALUE.in_param(param)),
+        }
+    }
+
+    fn holds(self, a: &[u8], b: &[u8]) -> bool {
+        let signed = || {
+            let negative = |bytes: &[u8]| bytes.first().is_some_and(|byte| byte & 0x80 != 0);
+            negative(b).cmp(&negative(a)).then_with(|| a.cmp(b))
+        };
+        match self {
+            Self::Eq => a == b,
+            Self::Ne => a != b,
+            Self::SignedGt => signed().is_gt(),
+            Self::UnsignedGt => a > b,
+            Self::SignedLt => signed().is_lt(),
+            Self::UnsignedLt => a < b,
+            Self::SignedGe => !signed().is_lt(),
+            Self::UnsignedGe => a >= b,
+            Self::SignedLe => !signed().is_gt(),
+            Self::UnsignedLe => a <= b,
+            Self::BitSet => a.iter().zip(b).all(|(a, b)| a & b == *b),
+            Self::BitClear => a.iter().zip(b).all(|(a, b)| a & b == 0),
+        }
+    }
+}
+
 impl PolicyState {
     /// The initial state: a Zero Digest and no restriction.
     pub(crate) fn new() -> PolicyState {
@@ -93,6 +152,7 @@ impl PolicyState {
             hash_restriction: None,
             command_locality: 0,
             pcr_update_counter: None,
+            deadline: None,
             auth_value_needed: false,
             password_needed: false,
         }
@@ -168,6 +228,70 @@ impl Tpm {
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, _) = self.policy_mut(slot)?;
         *state = PolicyState::new();
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyCounterTimer` (Part 3 v185, §23.10).
+    pub(crate) fn cmd_policy_counter_timer(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let operand = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(2);
+        let offset = p.u16()?;
+        p.set_param(3);
+        let operation = p.u16()?;
+        let comparison = Comparison::from_wire(operation, 3)?;
+        p.finish()?;
+
+        let slot = self.policy_slot(inv.handles[0])?;
+        let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
+        let mut deadline = session.policy.deadline;
+        if session.kind != SessionKind::Trial {
+            if comparison == Comparison::UnsignedLt
+                && offset == 0
+                && let Ok(seconds) = <[u8; 8]>::try_from(operand)
+            {
+                let seconds = u64::from_be_bytes(seconds);
+                if seconds > i32::MAX as u64 {
+                    return Err(Rc::VALUE.in_param(1));
+                }
+                let start = session.nonce_time.ok_or(Rc::EXPIRED)?;
+                let limit = TimePoint {
+                    epoch: start.epoch,
+                    ms: start.ms.saturating_add(seconds * 1000),
+                };
+                if limit.has_passed(self.time_point()) {
+                    return Err(Rc::EXPIRED);
+                }
+                // An older epoch stays expired even if an auxiliary session use rolled the nonce.
+                if deadline.is_none_or(|old| old.epoch == limit.epoch && old.ms > limit.ms) {
+                    deadline = Some(limit);
+                }
+            } else {
+                let mut time = Writer::new();
+                self.time_info().marshal(&mut time);
+                let at_offset = time
+                    .buf
+                    .get(usize::from(offset)..)
+                    .ok_or(Rc::VALUE.in_param(2))?;
+                let value = at_offset
+                    .get(..operand.len())
+                    .ok_or(Rc::RANGE.in_param(1))?;
+                if !comparison.holds(value, operand) {
+                    return Err(Rc::POLICY);
+                }
+            }
+        }
+        let mut args = Sha256::new();
+        args.update(operand);
+        args.update(offset.to_be_bytes());
+        args.update(operation.to_be_bytes());
+        let (state, _) = self.policy_mut(slot)?;
+        state.deadline = deadline;
+        state.extend(&[&cc::POLICY_COUNTER_TIMER.to_be_bytes(), &args.finalize()]);
         Ok(Output::default())
     }
 
@@ -499,9 +623,15 @@ impl Tpm {
             return Err(Rc::ATTRIBUTES.in_session(n));
         }
         let st = &session.policy;
-        // ADMIN needs `TPM2_PolicyCommandCode` in the policy (step 6).
+        // ADMIN needs `TPM2_PolicyCommandCode` before the step 8 policy checks.
         if admin && st.command_code.is_none() {
             return Err(Rc::POLICY_FAIL.in_session(n));
+        }
+        if st
+            .deadline
+            .is_some_and(|end| end.has_passed(self.time_point()))
+        {
+            return Err(Rc::EXPIRED.in_session(n));
         }
         if let Some(hash) = st.hash_restriction
             && !matches!(hash, PolicyHashRestriction::TemplateHash(_))

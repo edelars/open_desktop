@@ -1192,9 +1192,10 @@ fn flush_context_flushes_sessions_and_sequence_objects_and_refuses_the_rest() {
 }
 
 /// The whole exchange pinned against values computed independently with Python `hmac`/`hashlib`
-/// (SP 800-90A HMAC_DRBG as in `random.rs`, KDFa and Equations 17, 18, 20-22 of Part 1 v184):
-/// owner password, an unbound session that changes ownerAuth (response HMAC under the NEW value),
-/// then a session bound to the owner that changes it again with the session key alone.
+/// (SP 800-90A HMAC_DRBG as in `random.rs`, KDFa and Equations 17, 18, 20-22 of Part 1 v184).
+/// The first nonce follows four hierarchy seed requests and the 16-byte Time epoch request.
+/// An unbound session changes ownerAuth and the response HMAC uses the new value. A session
+/// bound to the owner changes ownerAuth again with the session key alone.
 #[test]
 fn hmac_session_exchange_matches_independent_python_values() {
     let mut t = started();
@@ -1215,12 +1216,12 @@ fn hmac_session_exchange_matches_independent_python_values() {
     );
     assert_eq!(
         &resp[14..],
-        &tpm2b(&hex("a6780a72c7f12919629982405d094398"))[..]
+        &tpm2b(&hex("3f64e53032fbb062370276a9b143893b"))[..]
     );
     let s = Hs {
         handle: 0x0200_0000,
         key: Vec::new(),
-        nonce_tpm: hex("a6780a72c7f12919629982405d094398"),
+        nonce_tpm: hex("3f64e53032fbb062370276a9b143893b"),
         bound: None,
     };
     let mut c = hc(
@@ -1233,16 +1234,16 @@ fn hmac_session_exchange_matches_independent_python_values() {
     c.entity_after = b"second".to_vec();
     let cmd = hmac_command(&s, &c, false, false);
     // The HMAC inside the command is the independent value.
-    let tag = hex("d06a7a1617be4e6ee38c9497284f72cc251529818df82aff1dd01ff2c102fb26");
+    let tag = hex("facb1af9e427f22b7ecf483769688b8fcd5a4dd60168588839a57790c443735a");
     assert!(cmd.windows(32).any(|w| w == &tag[..]));
     let resp = run(&mut t, cmd);
     let (params, acks) = split_response(&resp, 0);
     assert!(params.is_empty());
-    assert_eq!(acks[0].0, hex("3f64e53032fbb062370276a9b143893b"));
+    assert_eq!(acks[0].0, hex("40dfabbb2ce0a1e4be5ea5e06355c692"));
     assert_eq!(acks[0].1, 1);
     assert_eq!(
         acks[0].2,
-        hex("da7f61439dc667a5ac5148a4943460d72528db2cc1a87f5dc59fdc8f8dfed1c3")
+        hex("9393404381cfbbff174ff4161c2e7ea06bbb5f8f514c2e67f73efc9728a9fd8d")
     );
 
     // Session bound to the owner (authValue "second").
@@ -1256,13 +1257,13 @@ fn hmac_session_exchange_matches_independent_python_values() {
     );
     assert_eq!(
         &resp[14..],
-        &tpm2b(&hex("40dfabbb2ce0a1e4be5ea5e06355c692"))[..]
+        &tpm2b(&hex("7b3c1bf8fd90bc408f7cd7822ce5562d"))[..]
     );
-    let key = hex("3902877e4f28822bf73899081c62b8b1eb03bdc7776e8cb60760b18897abe5f4");
+    let key = hex("7fe11abce9a6bb58c4379ef135fe108f250196352f91869391561b3e580baf45");
     let s = Hs {
         handle: 0x0200_0001,
         key: key.clone(),
-        nonce_tpm: hex("40dfabbb2ce0a1e4be5ea5e06355c692"),
+        nonce_tpm: hex("7b3c1bf8fd90bc408f7cd7822ce5562d"),
         bound: Some((OWNER, b"second".to_vec())),
     };
     // The client model derives the same session key as the independent computation.
@@ -1276,15 +1277,15 @@ fn hmac_session_exchange_matches_independent_python_values() {
     c.nonce_caller = vec![0x0d; 16];
     c.entity_after = b"third".to_vec();
     let cmd = hmac_command(&s, &c, false, false);
-    let tag = hex("990ad4ac5e075386c8401b03314d93f1eedc1ac58bf5dd88e819efb01b116675");
+    let tag = hex("8b528c713cd421eaf86b5994ca99fa64356886cb430566633d18c346e18f8903");
     assert!(cmd.windows(32).any(|w| w == &tag[..]));
     let resp = run(&mut t, cmd);
     let (_, acks) = split_response(&resp, 0);
-    assert_eq!(acks[0].0, hex("7b3c1bf8fd90bc408f7cd7822ce5562d"));
+    assert_eq!(acks[0].0, hex("37590366375cea7b6973867acb3652dd"));
     // Bound to the entity: the response HMAC key is the session key alone, also after the change.
     assert_eq!(
         acks[0].2,
-        hex("fd4358d5230aec5cb0178adbfa16462970315de2a7d636e4ffe70946a01ed8cc")
+        hex("e0e47c9dd83555d0a5df82de018936c82f0b6bed0fc2d732c0419d7a88ee006f")
     );
     ok(&set_auth(&mut t, OWNER, b"third", b""));
 }
@@ -2349,8 +2350,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 79 commands less EvictControl (0x120).
-    assert_eq!(count, 78);
+    // From 0x121 on: 80 commands less EvictControl (0x120).
+    assert_eq!(count, 79);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))

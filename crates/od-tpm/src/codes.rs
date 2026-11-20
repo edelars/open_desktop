@@ -30,6 +30,7 @@ pub mod cc {
     pub const POLICY_AUTHORIZE: u32 = 0x0000_016A;
     pub const POLICY_AUTH_VALUE: u32 = 0x0000_016B;
     pub const POLICY_COMMAND_CODE: u32 = 0x0000_016C;
+    pub const POLICY_COUNTER_TIMER: u32 = 0x0000_016D;
     pub const POLICY_CP_HASH: u32 = 0x0000_016E;
     pub const POLICY_LOCALITY: u32 = 0x0000_016F;
     pub const POLICY_NAME_HASH: u32 = 0x0000_0170;

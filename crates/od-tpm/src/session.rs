@@ -57,7 +57,7 @@ use crate::marshal::{Reader, Writer, limits};
 use crate::paramenc::SessionSym;
 use crate::policy::PolicyState;
 use crate::response::{Output, Rc};
-use crate::state::Tpm;
+use crate::state::{TimePoint, Tpm};
 
 /// Loaded and active HMAC sessions at once (`TPM_PT_HR_LOADED_MIN` and `TPM_PT_ACTIVE_SESSIONS_MAX`;
 /// PTP 1.07, Table 2: at least 3 loaded and 64 active).
@@ -101,6 +101,8 @@ impl SessionKind {
 pub(crate) struct Session {
     /// `nonceTPM` of the last response; its size is the session nonce size.
     pub nonce_tpm: Vec<u8>,
+    /// Time when this nonce was generated, absent in older saved policy contexts.
+    pub nonce_time: Option<TimePoint>,
     /// `sessionKey`: empty (unbound, unsalted) or one digest.
     pub key: AuthValue,
     pub bound: Option<BoundEntity>,
@@ -380,6 +382,7 @@ impl Tpm {
             .insert(
                 Session {
                     nonce_tpm: nonce_tpm.clone(),
+                    nonce_time: (kind == SessionKind::Policy).then(|| self.time_point()),
                     key,
                     // A policy session is not bound: `bind` only feeds the session key
                     // (Part 3, clause 11.1.1: "the session is not bound").

@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 79] = [
+pub(crate) static COMMANDS: [CommandSpec; 80] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -165,6 +165,7 @@ pub(crate) static COMMANDS: [CommandSpec; 79] = [
     spec(cc::POLICY_AUTHORIZE, 1, 0, false, false, false),
     spec(cc::POLICY_AUTH_VALUE, 1, 0, false, false, false),
     spec(cc::POLICY_COMMAND_CODE, 1, 0, false, false, false),
+    spec(cc::POLICY_COUNTER_TIMER, 1, 0, false, false, false),
     spec(cc::POLICY_CP_HASH, 1, 0, false, false, false),
     spec(cc::POLICY_LOCALITY, 1, 0, false, false, false),
     spec(cc::POLICY_NAME_HASH, 1, 0, false, false, false),
@@ -811,6 +812,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             tpm.cmd_policy_auth_value(&inv, &mut p, spec.code == cc::POLICY_PASSWORD)?
         }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
+        cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
         cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
             tpm.cmd_policy_hash_restriction(&inv, &mut p, spec.code)?
@@ -881,6 +883,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         tpm.sessions.exclusive_audit = None;
     }
     let mut acks: Vec<SessionAck> = Vec::with_capacity(sessions.len());
+    let nonce_time = tpm.time_point();
     for (i, s) in sessions.iter().enumerate() {
         match &uses[i] {
             SessionUse::Password => acks.push(SessionAck::password(s.attributes)),
@@ -912,8 +915,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     session.nonce_tpm = nonce.clone();
                     // An authorizing policy session starts a fresh policy after its response is
                     // protected (Part 1 v185 §16.7). Encryption alone preserves the policy.
-                    if i < needed && session.kind == SessionKind::Policy {
-                        session.policy = PolicyState::new();
+                    if session.kind == SessionKind::Policy {
+                        session.nonce_time = Some(nonce_time);
+                        if i < needed {
+                            session.policy = PolicyState::new();
+                        }
                     }
                 }
                 acks.push(SessionAck {
@@ -1028,6 +1034,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_AUTH_VALUE
         | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
+        | cc::POLICY_COUNTER_TIMER
         | cc::POLICY_CP_HASH
         | cc::POLICY_NAME_HASH
         | cc::POLICY_TEMPLATE
@@ -1118,6 +1125,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 79);
+        assert_eq!(COMMANDS.len(), 80);
     }
 }

@@ -151,6 +151,8 @@ pub struct Tpm {
     pub(crate) hv: HierarchyVolatile,
     /// Latest `now_ms` the owner passed: milliseconds since `_TPM_Init` (power-on).
     pub(crate) power_ms: u64,
+    /// Fresh nonce for each uninterrupted measurement of `Time` (Part 1, §16.7.12).
+    pub(crate) time_epoch: [u8; 16],
     /// `TPMS_CLOCK_INFO.safe` for the current power cycle.
     pub(crate) clock_safe: bool,
     /// `power_ms` when `Clock` last took its current persistent base.
@@ -211,6 +213,7 @@ impl Tpm {
             objects: Objects::default(),
             hv: HierarchyVolatile::default(),
             power_ms: 0,
+            time_epoch: [0; 16],
             clock_safe: false,
             clock_epoch_ms: 0,
             da_v: DaVolatile::default(),
@@ -326,6 +329,13 @@ impl Tpm {
         }
     }
 
+    pub(crate) fn time_point(&self) -> TimePoint {
+        TimePoint {
+            epoch: self.time_epoch,
+            ms: self.power_ms,
+        }
+    }
+
     /// `TPM2_ReadClock` (Part 3, clause 29.1): `TPMS_TIME_INFO`.
     pub(crate) fn cmd_read_clock(
         &mut self,
@@ -356,6 +366,19 @@ impl Tpm {
         self.persistent.clock_base_ms = new_time;
         self.clock_epoch_ms = self.power_ms;
         Ok(Output::default())
+    }
+}
+
+/// A session's nonce creation time or a deadline in the TPM `Time` domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TimePoint {
+    pub epoch: [u8; 16],
+    pub ms: u64,
+}
+
+impl TimePoint {
+    pub(crate) fn has_passed(self, now: Self) -> bool {
+        self.epoch != now.epoch || self.ms < now.ms
     }
 }
 

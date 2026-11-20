@@ -77,12 +77,15 @@ impl Tpm {
             _ => return Err(Rc::VALUE.in_param(1)),
         };
         self.self_test_now()?;
-        // The only fallible step after the tests goes before any state change.
+        // Generate all startup nonces before installing the new state.
         let null_seed = if startup_type == su::CLEAR && !restart {
             Some(self.drbg.generate_array().ok_or(Rc::FAILURE)?)
         } else {
             None
         };
+        let mut time_epoch = [0; 16];
+        self.drbg.generate(&mut time_epoch).ok_or(Rc::FAILURE)?;
+        self.time_epoch = time_epoch;
         let saved = self.saved.take();
         self.sequences.clear();
         self.sessions.clear();

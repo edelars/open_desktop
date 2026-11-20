@@ -1193,6 +1193,175 @@ fn policy_locality_intersects_masks_and_gates_real_authorization_after_restore()
     assert_eq!(digest(&mut t, &trial), first);
 }
 
+fn counter_timer(
+    t: &mut Tpm,
+    session: &Hs,
+    operand: &[u8],
+    offset: u16,
+    operation: u16,
+) -> Vec<u8> {
+    pol(
+        t,
+        cc::POLICY_COUNTER_TIMER,
+        session,
+        &cat(&[&tpm2b(operand), &u16b(offset), &u16b(operation)]),
+    )
+}
+
+#[test]
+fn counter_timer_compares_canonical_time_and_trial_skips_runtime_checks() {
+    let mut t = started();
+    let policy = policy_session(&mut t, se::POLICY);
+    ok(&counter_timer(&mut t, &policy, &[1], 24, 0));
+    // Independent SHA256(SHA256(01 || 0018 || 0000)) policy input vector.
+    assert_eq!(
+        digest(&mut t, &policy),
+        hex("310a0eb2a2c3ebd96c39d954d2865a80c7925ab8996c5d73d0bb723756ec42bf")
+    );
+    t.advance_power_time(0x8135);
+    ok(&counter_timer(&mut t, &policy, &[0x81, 0x35, 0], 6, 0));
+    for (operation, operand) in [
+        (0, 0x81),
+        (1, 0x80),
+        (2, 0x80),
+        (3, 0x80),
+        (4, 0x00),
+        (5, 0x82),
+        (6, 0x81),
+        (7, 0x81),
+        (8, 0x82),
+        (9, 0x82),
+        (10, 0x81),
+        (11, 0x7e),
+    ] {
+        ok(&counter_timer(&mut t, &policy, &[operand], 6, operation));
+    }
+    ok(&counter_timer(&mut t, &policy, &[], 25, 0));
+    let before = digest(&mut t, &policy);
+    err(&counter_timer(&mut t, &policy, &[0x82], 6, 2), Rc::POLICY);
+    err(
+        &counter_timer(&mut t, &policy, &[1, 0], 24, 0),
+        Rc::RANGE.in_param(1),
+    );
+    err(
+        &counter_timer(&mut t, &policy, &[], 26, 0),
+        Rc::VALUE.in_param(2),
+    );
+    assert_eq!(digest(&mut t, &policy), before);
+
+    let trial = policy_session(&mut t, se::TRIAL);
+    ok(&counter_timer(&mut t, &trial, &[0; 32], 65535, 2));
+    err(
+        &counter_timer(&mut t, &trial, &[0; 33], 65535, 2),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &counter_timer(&mut t, &trial, &[], 65535, 12),
+        Rc::VALUE.in_param(3),
+    );
+}
+
+#[test]
+fn counter_timer_deadline_uses_nonce_time_and_keeps_the_earliest_limit() {
+    let mut t = started();
+    t.advance_power_time(2000);
+    let mut at_limit = policy_session(&mut t, se::POLICY);
+    let mut after_limit = policy_session(&mut t, se::POLICY);
+    for policy in [&at_limit, &after_limit] {
+        for seconds in [8u64, 5, 9] {
+            ok(&counter_timer(&mut t, policy, &seconds.to_be_bytes(), 0, 5));
+        }
+    }
+    let authorized = digest(&mut t, &at_limit);
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &authorized,
+        alg::SHA256,
+    ));
+    let saved = params(&save(&mut t, after_limit.handle), 0).to_vec();
+    let clock = hc(
+        cc::CLOCK_SET,
+        &[OWNER],
+        1_000_000_000u64.to_be_bytes().to_vec(),
+        (OWNER, b""),
+    );
+    t.advance_power_time(7000);
+    ok(&use_session(&mut t, &mut at_limit, &clock, 0, true, false));
+    assert_eq!(digest(&mut t, &at_limit), [0; 32]);
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), after_limit.handle);
+    t.advance_power_time(7001);
+    err(
+        &use_session(&mut t, &mut after_limit, &clock, 0, true, false),
+        Rc::EXPIRED.in_session(1),
+    );
+    let slot = t.sessions.slot_of(after_limit.handle).unwrap();
+    assert_eq!(
+        t.policy_use_check(slot, cc::CERTIFY, |_| true, &authorized, true, 1),
+        Err(Rc::POLICY_FAIL.in_session(1))
+    );
+    err(
+        &counter_timer(&mut t, &after_limit, &5u64.to_be_bytes(), 0, 5),
+        Rc::EXPIRED,
+    );
+    assert_eq!(digest(&mut t, &after_limit), authorized);
+    ok(&pol(&mut t, cc::POLICY_RESTART, &after_limit, &[]));
+    err(
+        &counter_timer(&mut t, &after_limit, &5u64.to_be_bytes(), 0, 5),
+        Rc::EXPIRED,
+    );
+    ok(&counter_timer(
+        &mut t,
+        &after_limit,
+        &6u64.to_be_bytes(),
+        0,
+        5,
+    ));
+    // The successful authorization rolled the first session's nonce at 7000 ms.
+    ok(&counter_timer(&mut t, &at_limit, &1u64.to_be_bytes(), 0, 5));
+}
+
+#[test]
+fn counter_timer_context_cannot_revive_a_deadline_after_restart_or_resume() {
+    for startup_type in [su::CLEAR, su::STATE] {
+        let mut t = started();
+        t.advance_power_time(1000);
+        let mut policy = policy_session(&mut t, se::POLICY);
+        ok(&counter_timer(&mut t, &policy, &60u64.to_be_bytes(), 0, 5));
+        let authorized = digest(&mut t, &policy);
+        ok(&set_primary_policy(
+            &mut t,
+            OWNER,
+            b"",
+            &authorized,
+            alg::SHA256,
+        ));
+        let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+        shutdown(&mut t, su::STATE);
+        t.init();
+        startup(&mut t, startup_type);
+        assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+        let clock = hc(
+            cc::CLOCK_SET,
+            &[OWNER],
+            2_000u64.to_be_bytes().to_vec(),
+            (OWNER, b""),
+        );
+        err(
+            &use_session(&mut t, &mut policy, &clock, 0, true, false),
+            Rc::EXPIRED.in_session(1),
+        );
+        assert_eq!(digest(&mut t, &policy), authorized);
+        ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+        err(
+            &counter_timer(&mut t, &policy, &60u64.to_be_bytes(), 0, 5),
+            Rc::EXPIRED,
+        );
+        ok(&counter_timer(&mut t, &policy, &[1], 24, 0));
+    }
+}
+
 #[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
