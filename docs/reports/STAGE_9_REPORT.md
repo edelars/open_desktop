@@ -248,8 +248,8 @@
 | S9-23 | локальный кодек контейнера и manifest v1 реализован (2026-11-20); участники `blocked` | [STORAGE_FORMAT.md §13](../specs/STORAGE_FORMAT.md), `vm_container.rs`; полный checkpoint нужен S9-24…27 и ISSUE-056 |
 | S9-24 | `blocked` | Нет единого владельца CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); нужны компоненты этапа 4 |
 | S9-25 | `blocked` | Нужны реальные устройства, время и I/O state из этапов 5–8 |
-| S9-26 | `blocked` | Нет UEFI variables store; владелец — этап 7 (S7-09, S7-10, S7-33; [план](../plans/STAGE_7.md)); исправлено по [ISSUE-086](../KNOWN_ISSUES.md#issue-086-s9-26-wrong-uefi-stage-reference) |
-| S9-27 | `blocked` | vTPM отсутствует |
+| S9-26 | локальный срез реализован (2026-11-20); захват под общим cut и anti-rollback `blocked` | [NVRAM_DEVICE.md](../specs/NVRAM_DEVICE.md) (подраздел про контейнер), `tests/system/stage9_uefi_participant.rs`; см. §11
+| S9-27 | `blocked` | Состояние TPM кодируется `ODTPMSTA` v8 ([этап 7](../plans/STAGE_7.md), `od-tpm`); защита ключей host, политика отката и MAC не реализованы; anchor — S9-29 |
 | S9-28…S9-35 | `blocked` | Требуют компонентов этапов 4–8 и результатов S9-13, S9-24…27 |
 | S9-37 | срез в объёме storage реализован (2026-11-20); VMHost-часть `blocked` | [STORAGE_RECOVERY.md §4.3](../testing/STORAGE_RECOVERY.md#43-s9-37-срез-storage-2026-11-20), `tests/system/stage9_storage_concurrency.rs`; ISSUE-607, ISSUE-608 |
 | S9-36 | `blocked` | Цепочка от S9-35 |
@@ -436,3 +436,7 @@
 - S9-34 отмечен как исключённый из первого профиля; это решение уже было принято в S9-42.
 
 Не сделано и остаётся `blocked`: S9-04 (интеграция с VMHost), S9-24…S9-36 (CPU, устройства, UEFI, vTPM, полный checkpoint, restore, clone, lifecycle, Linux/Windows), гостевой драйвер для S9-13, сочетания S9-37 с VMHost и restore, замеры checkpoint в S9-40, итоговое ревью полной VM в S9-43, приёмка этапа в S9-44.
+
+### Дополнение 2026-11-20: S9-26 (локальный срез UEFI)
+
+Кодек участника UEFI поверх контейнера (inline, `kind` назначен в `nvram_device.rs`): строгая проверка снимка `ODNVBANK` v1/v2 с активной generation, холодный restore с различимыми ошибками (нет секции, reference вместо inline, чужой `schema_id`, повреждение, несовпадение версии, legacy там, где ждали защищённый формат), round-trip через секцию. Проверки: `cargo test -p od-machine --offline --lib nvram` — 24 passed; `cargo test -p od-host --offline --test stage9_uefi_participant` — 11 passed. Ревью Opus high: принять с исправлениями (таблица отката переписана: обнуление слота новейшего банка с пересчитанным CRC принимается как старый банк и не обнаруживается; эвристика понижения generation не реализована; требование к S9-30 — restore обязан идти через `cold_restore_uefi_section`). Повторное ревью — см. коммит. Не сделано: захват generation под общим cut (S9-28), anti-rollback и MAC (S9-27, S9-29), живой restore (ISSUE-600).

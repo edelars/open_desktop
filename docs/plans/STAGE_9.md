@@ -398,6 +398,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-26. Включить UEFI variables как отдельного участника
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-20):** локальный срез: кодек участника UEFI в контейнере (inline, kind назначен), холодный restore через `cold_restore_uefi_section`, политика отката — [NVRAM_DEVICE.md](../specs/NVRAM_DEVICE.md) (подраздел про контейнер), тесты `tests/system/stage9_uefi_participant.rs` (11). Захват generation под общим cut (S9-28) и anti-rollback (S9-27, S9-29) не сделаны. Задача не принята.
 - **Контракт этапа 7 доступен для текущей реализации.** Снимок `ODNVBANK` v1/v2, API выдачи и приёма байтов, создание и холодный сброс защищённых ключей описаны в [контракте NVRAM](../specs/NVRAM_DEVICE.md#host-api). Завершение S7-24 и S7-33 отмечается в плане этапа 7.
 - **Где:** firmware state contract в `firmware/uefi/src/`, host persistence/container в `od-storage`, coordination `od-machine`.
 - **Сделать:** versioned variable store, attributes, authenticated-update metadata и trust policy согласно поддержанному профилю; capture immutable generation во время общего cut. Firmware остаётся отдельной guest-target сборкой.
