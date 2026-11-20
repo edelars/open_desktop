@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut corpus_path = None::<PathBuf>;
     let mut case_list = None::<PathBuf>;
     let mut trace_path = None::<PathBuf>;
+    let mut accepted_archive = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut calibration = None::<PathBuf>;
     let mut epochs = None::<usize>;
@@ -45,6 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let path: PathBuf = args.next().ok_or("--trace requires a path")?.into();
                 trace_path = Some(path.clone());
                 input = Some(path);
+            }
+            "--accepted-archive" => {
+                accepted_archive = Some(
+                    args.next()
+                        .ok_or("--accepted-archive requires a path")?
+                        .into(),
+                );
             }
             "--corpus" => {
                 corpus_path = Some(args.next().ok_or("--corpus requires a path")?.into());
@@ -287,6 +295,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = (case_list, trace, output);
                 return Err(
                     "warm-branch-helper requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
+        "allocator-census-s3-36l" => {
+            let case_list = case_list.ok_or("allocator-census-s3-36l requires --case-list PATH")?;
+            let trace = trace_path.ok_or("allocator-census-s3-36l requires --trace PATH")?;
+            let archive = accepted_archive
+                .ok_or("allocator-census-s3-36l requires --accepted-archive PATH")?;
+            let output = output.ok_or("allocator-census-s3-36l requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value =
+                    od_bench::dispatch_cache::run_allocator_census(&case_list, &trace, &archive)?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, archive, output);
+                return Err(
+                    "allocator-census-s3-36l requires native Apple Silicon macOS execution".into(),
                 );
             }
         }
@@ -806,7 +834,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, page-walk-compare, translation-micro, translation-hit-share, stage6-host-memory, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
+                "expected record, measure, synthetic, page-walk-compare, translation-micro, translation-hit-share, stage6-host-memory, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, allocator-census-s3-36l, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -850,6 +878,7 @@ fn print_usage() {
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench allocator-census-s3-36l --case-list PATH --trace PATH --accepted-archive PATH --output census.json\n\
   od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\

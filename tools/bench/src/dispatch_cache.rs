@@ -1739,6 +1739,359 @@ pub fn run_warm_branch_helper(
     )
 }
 
+/// Untimed profile-first allocator census for the frozen S3-14 FIFO16 corpus.
+/// The ordinary warm sweep establishes runtime correctness and FIFO residency;
+/// emitted instruction observations are then attributed to allocator frame
+/// slots by matching SP offsets against the exact allocation used to emit them.
+pub fn run_allocator_census(
+    case_list: &Path,
+    trace_path: &Path,
+    accepted_archive_path: &Path,
+) -> Result<serde_json::Value, BenchError> {
+    use od_jit::allocator::{AllocatorConfig, HelperBoundaryPosition, ValueLocation};
+    use od_jit::block::{BlockLimits, BuildOutcome, build_block};
+    use od_jit::block_compile::{
+        BlockCompileOutcome, RUNTIME_FRAME_PREFIX_BYTES, allocate_lowered_block,
+        compile_block_for_dispatch, lower_dispatch_block_for_observation,
+    };
+    use od_jit::block_emitter::emit_runtime_block;
+    use od_jit::lowering::LoweringOutcome;
+
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    let accepted_archive = read_bounded(
+        accepted_archive_path,
+        crate::MAX_LOGICAL_BYTES,
+        "accepted S3-36l archive",
+    )?;
+    if od_testkit::sha256_hex(&list) != BRANCH_HELPER_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != BRANCH_HELPER_TRACE_SHA256
+        || od_testkit::sha256_hex(&accepted_archive)
+            != "a66c599f81f3e759b8a35c106ddc0489eff8d26c7d46b5af42880c575d59af68"
+    {
+        return Err(err(
+            "case list, trace, or accepted archive does not match the frozen S3-36l profile",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.inputs.len() != BRANCH_HELPER_INPUTS
+        || trace.visits.len() != BRANCH_HELPER_VISITS
+        || trace.visits.len() != 5
+        || trace.visits.iter().any(|visit| visit.input_index >= 5)
+    {
+        return Err(err(
+            "frozen S3-14 census trace count or input index mismatch",
+        ));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    let expected_ids = [
+        "s3_14_jz_to_end_skips_tail",
+        "s3_14_jnz_to_end_skips_tail",
+        "s3_14_jz_not_taken_backward_target",
+        "s3_14_jnz_not_taken_backward_target",
+        "s3_14_live_through_helpers",
+    ];
+    if cases.len() != expected_ids.len()
+        || cases
+            .iter()
+            .zip(expected_ids)
+            .any(|(case, id)| case.id != id)
+    {
+        return Err(err("S3-14 census case order or identity mismatch"));
+    }
+
+    // This is the same normal FIFO16 cached dispatcher and correctness oracle
+    // used by the warm profile. The result also pins the aggregate execution
+    // totals against the accepted five-case trace.
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let sweep = warm_fifo_sweep(&mut engine, &cases, started)?;
+    let counters = sweep.counters;
+    if sweep.calls != 5
+        || sweep.retired != 14
+        || sweep.native_blocks != 5
+        || counters.misses != 5
+        || counters.compiles != 5
+        || counters.publications != 5
+        || counters.evictions != 0
+    {
+        return Err(err(
+            "ordinary FIFO16 census warm sweep did not match accepted totals",
+        ));
+    }
+
+    let mut blocks = Vec::new();
+    let mut trace_weighted_transfer_sites = 0u64;
+    for (input_index, case) in cases.iter().enumerate() {
+        let visits = trace
+            .visits
+            .iter()
+            .filter(|visit| visit.input_index == input_index)
+            .collect::<Vec<_>>();
+        if visits.len() != 1 {
+            return Err(err(format!(
+                "expected one accepted S3-14 trace visit for {}",
+                case.id
+            )));
+        }
+        let entry_rip = visits[0].entry_rip;
+        let code = CodeView::new(0, &case.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+        let built = build_block(
+            code,
+            entry_rip,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .map_err(|e| err(format!("block build: {e:?}")))?;
+        let BuildOutcome::Block(built_block) = &built else {
+            return Err(err(format!(
+                "trace entry produced no block for {}",
+                case.id
+            )));
+        };
+        let lowered = match lower_dispatch_block_for_observation(code, entry_rip, &case.admission)
+            .map_err(|e| err(format!("dispatch lowering: {e:?}")))?
+        {
+            LoweringOutcome::Program(lowered) => lowered,
+            LoweringOutcome::NoNativePrefix { .. } => {
+                return Err(err(format!(
+                    "trace entry has no native prefix for {}",
+                    case.id
+                )));
+            }
+        };
+        let allocation = allocate_lowered_block(
+            &lowered,
+            AllocatorConfig {
+                register_homes: 4,
+                reserved_prefix_bytes: RUNTIME_FRAME_PREFIX_BYTES,
+            },
+        )
+        .map_err(|e| err(format!("allocation: {e:?}")))?;
+        let emitted = emit_runtime_block(&lowered.program, &allocation)
+            .map_err(|e| err(format!("emission: {e:?}")))?;
+        let normal = match compile_block_for_dispatch(code, entry_rip, &case.admission)
+            .map_err(|e| err(format!("normal dispatch compilation: {e:?}")))?
+        {
+            BlockCompileOutcome::Compiled(block) => block,
+            BlockCompileOutcome::NoNativePrefix { .. } => {
+                return Err(err(format!(
+                    "normal FIFO compile had no native prefix for {}",
+                    case.id
+                )));
+            }
+        };
+        if emitted
+            .to_le_bytes()
+            .map_err(|e| err(format!("census encoding: {e:?}")))?
+            != normal
+                .emitted()
+                .to_le_bytes()
+                .map_err(|e| err(format!("runtime encoding: {e:?}")))?
+        {
+            return Err(err(format!(
+                "census emission differs from normal dispatch artifact for {}",
+                case.id
+            )));
+        }
+
+        let mut spill_offsets = std::collections::BTreeSet::new();
+        let mut helper_slots = std::collections::BTreeSet::new();
+        let mut helper_pairs = Vec::new();
+        let mut seen_temps = std::collections::BTreeSet::new();
+        for operation in &lowered.program.operations {
+            let dst = match operation {
+                od_jit::ir::Operation::Constant { dst, .. }
+                | od_jit::ir::Operation::ReadGpr { dst, .. }
+                | od_jit::ir::Operation::CheckedLoad { dst, .. } => Some(*dst),
+                od_jit::ir::Operation::Integer { result, .. } => *result,
+                _ => None,
+            };
+            if let Some(temp) = dst.filter(|temp| seen_temps.insert(*temp)) {
+                if let ValueLocation::Spill(slot) = allocation
+                    .location(temp)
+                    .map_err(|e| err(format!("allocation location: {e:?}")))?
+                {
+                    spill_offsets.insert(slot.byte_offset());
+                }
+            }
+        }
+        for (index, operation) in lowered.program.operations.iter().enumerate() {
+            if matches!(
+                operation,
+                od_jit::ir::Operation::Integer { .. }
+                    | od_jit::ir::Operation::CheckedLoad { .. }
+                    | od_jit::ir::Operation::CheckedStore { .. }
+            ) {
+                let boundary = allocation
+                    .helper_boundary(HelperBoundaryPosition::BeforeOperation(index))
+                    .map_err(|e| err(format!("helper boundary: {e:?}")))?;
+                for capture in &boundary.captures {
+                    helper_slots.insert(capture.slot.byte_offset());
+                    helper_pairs.push((capture.home.number(), capture.slot.byte_offset()));
+                }
+            }
+        }
+
+        let mut transfers = Vec::new();
+        for (word_index, word) in emitted.code().words().iter().copied().enumerate() {
+            let direction = if word & 0xffc0_03e0 == 0xf940_03e0 {
+                "load"
+            } else if word & 0xffc0_03e0 == 0xf900_03e0 {
+                "store"
+            } else {
+                continue;
+            };
+            let offset = ((word >> 10) & 0xfff) * 8;
+            let register = (word & 0x1f) as u8;
+            let helper_save = direction == "store" && helper_pairs.contains(&(register, offset));
+            let helper_restore = direction == "load" && helper_pairs.contains(&(register, offset));
+            let allocator_owned_slot =
+                spill_offsets.contains(&offset) || helper_slots.contains(&offset);
+            let kind = if helper_save || helper_restore {
+                if helper_save {
+                    "helper_save"
+                } else {
+                    "helper_restore"
+                }
+            } else if spill_offsets.contains(&offset) {
+                if direction == "load" {
+                    "spill_reload"
+                } else {
+                    "spill_store"
+                }
+            } else if helper_slots.contains(&offset) {
+                "helper_slot_other_transfer"
+            } else if offset < RUNTIME_FRAME_PREFIX_BYTES {
+                "runtime_frame"
+            } else {
+                "unmatched_above_allocator_prefix"
+            };
+            let code_offset =
+                u32::try_from(word_index * 4).map_err(|_| err("emitted word offset overflow"))?;
+            let state_point = normal
+                .emitted()
+                .pc_map()
+                .lookup(code_offset)
+                .ok_or_else(|| err("emitted transfer has no PC-map statepoint"))?;
+            transfers.push(serde_json::json!({
+                "word_index": word_index,
+                "word_hex": format!("{word:08x}"),
+                "direction": direction,
+                "register": register,
+                "sp_offset": offset,
+                "allocator_owned_slot": allocator_owned_slot,
+                "kind": kind,
+                "statepoint": {
+                    "guest_rip_source": format!("{:?}", state_point.guest_rip),
+                    "instruction_index": state_point.instruction_index,
+                    "phase": format!("{:?}", state_point.phase),
+                    "snapshot": format!("{:?}", state_point.snapshot),
+                },
+            }));
+        }
+        let planned = allocation.counters();
+        let static_transfer_sites = transfers
+            .iter()
+            .filter(|transfer| transfer["allocator_owned_slot"] == true)
+            .count() as u64;
+        trace_weighted_transfer_sites = trace_weighted_transfer_sites
+            .checked_add(static_transfer_sites)
+            .ok_or_else(|| err("trace weighted transfer-site count overflow"))?;
+        let locations = seen_temps
+            .iter()
+            .map(|temp| {
+                let location = allocation
+                    .location(*temp)
+                    .map_err(|e| err(format!("allocation location: {e:?}")))?;
+                Ok(match location {
+                    ValueLocation::Register(register) => serde_json::json!({
+                        "temp": temp.0,
+                        "location": "register",
+                        "register": register.number(),
+                    }),
+                    ValueLocation::Spill(slot) => serde_json::json!({
+                        "temp": temp.0,
+                        "location": "spill",
+                        "slot": slot.index(),
+                        "sp_offset": slot.byte_offset(),
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, BenchError>>()?;
+        let helper_boundaries = (0..lowered.program.operations.len())
+            .filter_map(|index| {
+                allocation
+                    .helper_boundary(HelperBoundaryPosition::BeforeOperation(index))
+                    .ok()
+                    .map(|boundary| serde_json::json!({
+                        "operation_index": index,
+                        "live_through": boundary.live_through.iter().map(|temp| temp.0).collect::<Vec<_>>(),
+                        "captures": boundary.captures.iter().map(|capture| serde_json::json!({
+                            "temp": capture.temp.0,
+                            "home_register": capture.home.number(),
+                            "slot": capture.slot.index(),
+                            "sp_offset": capture.slot.byte_offset(),
+                        })).collect::<Vec<_>>(),
+                    }))
+            })
+            .collect::<Vec<_>>();
+        blocks.push(serde_json::json!({
+            "case_id": case.id,
+            "input_index": input_index,
+            "program_sha256": trace.inputs[input_index].program_sha256,
+            "entry_rip": entry_rip,
+            "trace_visits": visits.len(),
+            "guest_instructions_in_built_block": built_block.instructions.len(),
+            "compiled_code_bytes": normal.emitted().to_le_bytes().map_err(|e| err(format!("runtime encoding: {e:?}")))?.len(),
+            "frame": {
+                "reserved_prefix_bytes": allocation.frame().reserved_prefix_bytes,
+                "allocator_bytes": allocation.frame().allocator_bytes,
+                "frame_bytes": allocation.frame().frame_bytes,
+            },
+            "locations": locations,
+            "helper_boundaries": helper_boundaries,
+            "planned_counts": {
+                "register_homes": allocation.location_counts().register_homes,
+                "spill_values": allocation.location_counts().spill_values,
+                "value_spill_slots": planned.value_spill_slots,
+                "value_spill_loads": planned.value_spill_loads,
+                "value_spill_stores": planned.value_spill_stores,
+                "helper_capture_slots": planned.helper_capture_slots,
+                "helper_saves": planned.helper_saves,
+                "helper_reloads": planned.helper_reloads,
+                "planned_transfer_words": planned.planned_transfer_words,
+                "planned_transfer_bytes": planned.planned_transfer_bytes,
+            },
+            "emitted_transfer_observations": transfers,
+            "trace_weighted_static_allocator_transfer_sites": static_transfer_sites,
+        }));
+    }
+    Ok(serde_json::json!({
+        "schema": 1,
+        "profile": "s3-14-branch-helper-fifo16-allocator-census",
+        "timing": "untimed; allocator/build/emission census is excluded from warm profile timings",
+        "case_list_sha256": BRANCH_HELPER_CASE_LIST_SHA256,
+        "trace_sha256": BRANCH_HELPER_TRACE_SHA256,
+        "accepted_measurement_archive_sha256": od_testkit::sha256_hex(&accepted_archive),
+        "normal_fifo_sweep": {
+            "case_calls": sweep.calls,
+            "retired_guest_instructions": sweep.retired,
+            "native_blocks": sweep.native_blocks,
+            "compiles": counters.compiles,
+            "hits": counters.hits,
+            "misses": counters.misses,
+        },
+        "trace_visit_count": trace.visits.len(),
+        "trace_weighted_static_allocator_transfer_sites": trace_weighted_transfer_sites,
+        "dynamic_transfer_counts": null,
+        "dynamic_transfer_count_limit": "the committed trace records block entry RIPs, not per-instruction host-PC execution; transfer observations are emitted sites matched to allocation slots and weighted by block visits only",
+        "blocks": blocks,
+        "elapsed_preparation_ns": started.elapsed().as_nanos(),
+    }))
+}
+
 /// Compares ordinary and phase-observed dispatch calls on two explicitly
 /// selected warmed strata from the accepted frozen S3-17 trace.
 pub fn run_warm_dispatch_phases(

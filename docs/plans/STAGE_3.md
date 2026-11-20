@@ -2960,6 +2960,16 @@ Focused host test прошёл 1/1; `cargo fmt --all -- --check`, `git diff --ch
 
 Это только bounded budget4-versus-budget0 configuration-cost evidence на одном Jcc-terminated block: admitted fallthrough `MOV RBX,imm64`, dispatcher и последующие блоки не входят в timing. Это не marginal spill cost, не сравнение allocator algorithms и не основание выбирать winner/default; runtime working-tree status каждого прогона остался неизвестным (`null` после Git metadata timeout). S3-30 остаётся открытым для более широких workload correctness/performance evidence. Детали протокола — в [BENCHMARKS S3-30b](../testing/BENCHMARKS.md#s3-30b-bounded-distinct-branch-allocator-configuration-profile); итоговые сырые пары, run/log/calibration fingerprints и pooled summaries — в [S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md) и [suite manifest](../reports/data/stage3/s3-30b/suite-manifest.json).
 
+#### S3-30c. Проверить spill/reload и helper transfers на профиле S3-36l
+
+Untimed census прошёл на подписанной локальной ARM64-сборке. Все пять
+артефактов побайтно совпали с обычной компиляцией dispatch, а FIFO16
+повторил состояния интерпретатора и 14 guest retirements. Из 49
+статических allocator sites, взвешенных по проходам trace, 33 относятся
+к `s3_14_live_through_helpers`. Точная частота выполненных transfer
+инструкций и стоимость варианта аллокатора требуют дополнительных
+данных. [S3-30c и проверяемый архив](../reports/STAGE_3_S3-30c_2026-11-20.md)
+
 ### S3-31. Оценить прямые связи блоков
 
 1. Сначала измерить долю dispatcher/lookup в representative multi-block workload. Переходы через dispatcher уже должны корректно работать.

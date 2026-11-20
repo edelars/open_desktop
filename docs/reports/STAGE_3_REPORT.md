@@ -1514,6 +1514,12 @@ were 1.02479 and 1.02166. The measured latency and footprint support
 eager as the default for the checked NativeRegisterV1 scope.
 [S3-29l flags decision and composed evidence](STAGE_3_S3-29l_2026-11-20.md)
 
+S3-30c matched all five allocator census artifacts to the normal
+dispatch emission on signed ARM64. The live-through-helper case
+accounts for 33 of the profile's 49 visit-weighted static allocator
+transfer sites. The next comparison will measure the allocator cost.
+[S3-30c allocator census](STAGE_3_S3-30c_2026-11-20.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
