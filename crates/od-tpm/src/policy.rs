@@ -216,19 +216,20 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_PolicyAuthValue` (Part 3, clause 23.17): the authValue of the authorized entity must
-    /// be proven by an HMAC when the session is used.
+    /// `TPM2_PolicyAuthValue` and `TPM2_PolicyPassword` (Part 3, clauses 23.17–18).
+    /// They extend the same digest, with the last assertion selecting HMAC or password.
     pub(crate) fn cmd_policy_auth_value(
         &mut self,
         inv: &Invocation,
         p: &mut Reader<'_>,
+        password: bool,
     ) -> Result<Output, Rc> {
         p.finish()?;
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, _) = self.policy_mut(slot)?;
         state.extend(&[&cc::POLICY_AUTH_VALUE.to_be_bytes()]);
-        state.auth_value_needed = true;
-        state.password_needed = false;
+        state.auth_value_needed = !password;
+        state.password_needed = password;
         Ok(Output::default())
     }
 

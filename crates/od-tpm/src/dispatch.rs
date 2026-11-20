@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 68] = [
+pub(crate) static COMMANDS: [CommandSpec; 69] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -179,6 +179,7 @@ pub(crate) static COMMANDS: [CommandSpec; 68] = [
     spec(cc::HASH_SEQUENCE_START, 0, 0, true, false, false),
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
     spec(cc::TEST_PARMS, 0, 0, false, false, false),
+    spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
 ];
 
 pub(crate) type CommandHandles = [u32; 3];
@@ -578,6 +579,8 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         if !password_matches(&s.hmac, auth.as_slice()) {
                             return Err(tpm.da_auth_failed(class, n));
                         }
+                        // PolicyPassword proves authValue directly. A nonempty password
+                        // still receives an HMAC, keyed by sessionKey alone (§16.6.16).
                         *used_auth = false;
                     } else if need_auth {
                         tpm.da_check(class)?;
@@ -721,7 +724,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::POLICY_RESTART => tpm.cmd_policy_restart(&inv, &mut p)?,
         cc::POLICY_PCR => tpm.cmd_policy_pcr(&inv, &mut p)?,
         cc::POLICY_OR => tpm.cmd_policy_or(&inv, &mut p)?,
-        cc::POLICY_AUTH_VALUE => tpm.cmd_policy_auth_value(&inv, &mut p)?,
+        cc::POLICY_AUTH_VALUE | cc::POLICY_PASSWORD => {
+            tpm.cmd_policy_auth_value(&inv, &mut p, spec.code == cc::POLICY_PASSWORD)?
+        }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
         cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
@@ -919,6 +924,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_PCR
         | cc::POLICY_OR
         | cc::POLICY_AUTH_VALUE
+        | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
         | cc::POLICY_CP_HASH
         | cc::POLICY_LOCALITY
@@ -1006,6 +1012,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 68);
+        assert_eq!(COMMANDS.len(), 69);
     }
 }

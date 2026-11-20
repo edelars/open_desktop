@@ -272,6 +272,12 @@ fn policy_digests_match_the_independent_extend_vectors() {
     let s = policy_session(&mut t, se::POLICY);
     ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &s, &[]));
     assert_eq!(digest(&mut t, &s), hex(V_AUTH_VALUE));
+    let trial = policy_session(&mut t, se::TRIAL);
+    err(&pol(&mut t, cc::POLICY_PASSWORD, &trial, &[0]), Rc::SIZE);
+    assert_eq!(digest(&mut t, &trial), [0; 32]);
+    ok(&pol(&mut t, cc::POLICY_PASSWORD, &trial, &[]));
+    assert_eq!(digest(&mut t, &trial), hex(V_AUTH_VALUE));
+    ok(&flush(&mut t, trial.handle));
     // PolicyCommandCode(Sign), also on a trial session.
     let s = policy_session(&mut t, se::POLICY);
     ok(&pol_cc(&mut t, &s, cc::SIGN));
@@ -866,12 +872,90 @@ fn a_policy_with_authvalue_needs_the_hmac_and_a_policy_failure_is_not_a_da_failu
         Rc::POLICY_FAIL.in_session(1),
     );
     assert_eq!(tries(&mut t), 2, "a policy failure does not count");
-    // PolicyPassword's way: the authValue in clear needs PolicyPassword (not implemented), so
-    // a password session cannot satisfy the policy.
+    // The reserved TPM_RS_PW cannot satisfy the policy of this key.
     err(
         &sign(&mut t, key, b"kpw", &[7u8; 32], &ecc_sig_scheme()),
         Rc::POLICY_FAIL.in_session(1),
     );
+}
+
+#[test]
+fn policy_password_switches_authorization_and_survives_context_save() {
+    let (mut t, parent) = with_ecc_parent();
+    let digest_twice = h256(&[&hex(V_AUTH_VALUE), &u32b(cc::POLICY_AUTH_VALUE)]);
+    let (key, name, _) = make_child(&mut t, parent, &policy_key(&digest_twice), b"kpw", b"");
+    let command = sign_command(key, &name, b"kpw");
+    let password_command = |session: &Hs, password: &[u8]| {
+        let entry = cat(&[
+            &u32b(session.handle),
+            &tpm2b(&command.nonce_caller),
+            &[command.attrs],
+            &tpm2b(password),
+        ]);
+        frame(
+            st::SESSIONS,
+            command.code,
+            &command.handles,
+            &cat(&[&u32b(entry.len() as u32), &entry]),
+            &command.params,
+        )
+    };
+
+    ok(&set_auth(&mut t, OWNER, b"", b"binding"));
+    let mut session = start_session(&mut t, se::POLICY, OWNER, b"binding", &[0x53; 16]);
+    ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &session, &[]));
+    ok(&pol(&mut t, cc::POLICY_PASSWORD, &session, &[]));
+    assert_eq!(digest(&mut t, &session), digest_twice);
+    let context = save(&mut t, session.handle);
+    session.handle = loaded(&load_ctx(&mut t, params(&context, 0)));
+
+    err(
+        &run(&mut t, password_command(&session, b"bad")),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &session), digest_twice);
+    let response = run(&mut t, password_command(&session, b"kpw\0"));
+    let (parameters, acks) = split_response(&response, 0);
+    let [(nonce, attributes, hmac)] = acks.as_slice() else {
+        panic!("expected a single policy-session acknowledgement");
+    };
+    assert_eq!(*attributes, command.attrs);
+    assert_ne!(nonce, &session.nonce_tpm);
+    let rp_hash = h256(&[&[0; 4], &u32b(cc::SIGN), &parameters]);
+    let expected = crate::crypto::hmac_sha256(
+        &session.key,
+        &[&rp_hash, nonce, &command.nonce_caller, &[*attributes]],
+    );
+    assert_eq!(hmac.as_slice(), expected);
+    ok(&verify(&mut t, key, &[7; 32], &parameters));
+    assert_eq!(digest(&mut t, &session), [0; 32]);
+    session.nonce_tpm = nonce.clone();
+
+    ok(&pol(&mut t, cc::POLICY_PASSWORD, &session, &[]));
+    ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &session, &[]));
+    assert_eq!(digest(&mut t, &session), digest_twice);
+    err(
+        &run(&mut t, password_command(&session, b"kpw")),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    ok(&run_hmac(&mut t, &mut session, &command));
+}
+
+#[test]
+fn policy_password_with_empty_auth_has_an_empty_response_hmac() {
+    let (mut t, parent) = with_ecc_parent();
+    let (key, name, _) = make_child(&mut t, parent, &policy_key(&hex(V_AUTH_VALUE)), b"", b"");
+    let session = policy_session(&mut t, se::POLICY);
+    ok(&pol(&mut t, cc::POLICY_PASSWORD, &session, &[]));
+    let response = run(
+        &mut t,
+        hmac_command(&session, &sign_command(key, &name, b""), true, false),
+    );
+    let (parameters, acks) = split_response(&response, 0);
+    assert_eq!(acks.len(), 1);
+    assert!(!acks[0].0.is_empty());
+    assert!(acks[0].2.is_empty());
+    ok(&verify(&mut t, key, &[7; 32], &parameters));
 }
 
 #[test]
@@ -2626,6 +2710,7 @@ fn malformed_slice_c2_commands_never_panic() {
         cc::CONTEXT_LOAD,
         cc::CONTEXT_SAVE,
         cc::POLICY_AUTH_VALUE,
+        cc::POLICY_PASSWORD,
         cc::POLICY_COMMAND_CODE,
         cc::POLICY_CP_HASH,
         cc::POLICY_LOCALITY,
