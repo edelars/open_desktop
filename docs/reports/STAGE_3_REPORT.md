@@ -1521,6 +1521,12 @@ visit-weighted static allocator transfer sites. The next comparison
 will measure the allocator cost.
 [S3-30c allocator census](STAGE_3_S3-30c_2026-11-20.md)
 
+S3-30d checked strict dead-home reuse on the same five fixtures with
+signed M3 Max and M1 Pro releases. In the live-through-helper case the
+candidate emitted 20 static allocator transfer sites and used a
+256-byte frame, compared with 33 sites and 288 bytes for fixed homes.
+[S3-30d signed preflight](STAGE_3_S3-30d_2026-11-20.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
