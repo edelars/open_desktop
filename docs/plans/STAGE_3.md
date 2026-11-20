@@ -2757,6 +2757,10 @@ delivery, owner/MMU integration, Mini, performance, or complete S3-27. See the
 
 ### S3-29. Вычислять flags по потребности
 
+**Статус измерений и выбора.** Для измеренных путей NativeRegisterV1
+выбран eager. Приняты cold, repeat-dispatch и resident FIFO16 на M1 Pro.
+Физическая сверка x86 отложена. [S3-29l и обоснование](../reports/STAGE_3_S3-29l_2026-11-20.md)
+
 1. На ограниченном integer subset представить pending flags с width, operation и достаточными исходными values. Не терять значения после перезаписи host registers.
 2. Материализовать нужные bits при Jcc/ADC/SBB и все наблюдаемые определённые bits перед exit/helper/fallback/snapshot. Учитывать операции, которые изменяют только часть flags.
 3. Проверить цепочки arithmetic → partial flag writer → consumer, spills, branch exits, fault и STOP. Сравнить с eager reference path и физическим x86.
@@ -2911,6 +2915,15 @@ RIP, retirement и остаток бюджета сверяются с инте�
 байт логических метаданных, eager 5 880 и 13 540 байт. S3-29 остаётся
 открыт до принятых замеров составного корпуса.
 [S3-29k и raw evidence](../reports/STAGE_3_S3-29k_2026-11-20.md)
+
+#### S3-29l. Измерить составной корпус и выбрать стратегию флагов
+
+На M1 Pro приняты по 60 пар для cold и repeat-dispatch по точным
+1 200 входам. Медианные парные отношения demand/eager составили
+1,02479 и 1,02166. Demand опубликовал на 14,27% и 13,07% больше кода.
+Три медианы процесса в каждом режиме и отдельный прогретый FIFO16
+поддерживают выбор eager для проверенного пути. Физическая сверка
+x86 отложена. [S3-29l и raw evidence](../reports/STAGE_3_S3-29l_2026-11-20.md)
 
 ### S3-30. Выбрать register allocator
 
