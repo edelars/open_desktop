@@ -68,6 +68,7 @@ use crate::crypto::{
     rsa_generate, rsa_modulus, rsa_primes, rsa_verify, supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
+use crate::kem::{self, KemPrivate};
 use crate::marshal::{
     MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, SymDef, TpmsSensitiveCreate,
     TpmtPublic, TpmtSignature, Unique, Writer, limits,
@@ -102,6 +103,7 @@ fn object_slot(h: u32) -> Option<usize> {
 pub(crate) enum Secret {
     Rsa(Box<RsaPrivate>),
     Ecc(EccPrivate),
+    MlKem(Box<KemPrivate>),
     /// Sealed data.
     Data(Zeroizing<Vec<u8>>),
 }
@@ -428,6 +430,13 @@ pub(crate) fn check_public(
                 return Err(bad(Rc::SCHEME));
             }
         }
+        PublicParams::MlKem { symmetric, .. } => {
+            // This profile creates unrestricted ML-KEM decryption objects.
+            if sign || !decrypt || restricted || public.attributes & object_attr::X509_SIGN != 0 {
+                return Err(bad(Rc::ATTRIBUTES));
+            }
+            check_symmetric(public, *symmetric)?;
+        }
     }
     Ok(())
 }
@@ -540,6 +549,15 @@ pub(crate) fn derive_object(
             let (x, y) = ecc_public(&key).ok_or(Rc::FAILURE)?;
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }
+        PublicParams::MlKem { .. } => {
+            let key = kem::generated_key(rng)?;
+            let unique = Unique::MlKem(kem::public_bytes(&key));
+            (
+                Secret::MlKem(Box::new(key)),
+                unique,
+                Zeroizing::new(Vec::new()),
+            )
+        }
         PublicParams::KeyedHash { .. } => {
             let seed = new_seed(rng)?;
             // An HMAC key without caller data is generated: one digest of random octets.
@@ -603,6 +621,7 @@ fn sensitive_with_auth(
     let secret: Zeroizing<Vec<u8>> = match &s.secret {
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
         Secret::Ecc(k) => ecc_scalar(k),
+        Secret::MlKem(k) => kem::private_seed(k)?,
         Secret::Data(d) => d.clone(),
     };
     // Reserved up front so that the secret is never copied by a reallocation.
@@ -721,6 +740,16 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
                 return Err(Rc::BINDING);
             }
             Secret::Ecc(key)
+        }
+        PublicParams::MlKem { .. } => {
+            let Unique::MlKem(public_key) = &public.unique else {
+                return Err(Rc::BINDING);
+            };
+            let key = kem::private_from_seed(&secret).map_err(|_| Rc::KEY_SIZE)?;
+            if kem::public_bytes(&key) != *public_key {
+                return Err(Rc::BINDING);
+            }
+            Secret::MlKem(Box::new(key))
         }
         PublicParams::KeyedHash { .. } => {
             if secret.len() > MAX_SYM_DATA {
@@ -861,6 +890,11 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
         (PublicParams::Ecc { .. }, Unique::Ecc { x, y }) => {
             if !ecc_point_valid(x, y) {
                 return Err(bad(Rc::ECC_POINT));
+            }
+        }
+        (PublicParams::MlKem { .. }, Unique::MlKem(key)) => {
+            if !kem::public_encoding_is_valid(key) {
+                return Err(bad(Rc::KEY));
             }
         }
         // Sealed data without its private part is of no use; keep the object model simple.

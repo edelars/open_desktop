@@ -89,7 +89,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 14] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 15] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -119,6 +119,10 @@ pub(crate) const ALGORITHMS: [(u16, u32); 14] = [
     (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
     (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
+    (
+        alg::MLKEM,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT,
+    ),
 ];
 
 impl Tpm {
@@ -164,6 +168,7 @@ impl Tpm {
             (pt::VENDOR_COMMANDS, 0),
             (pt::NV_BUFFER_MAX, NV_BUFFER_MAX as u32),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
+            (pt::ML_PARAMETER_SETS, 1 << 1), // TPMA_ML_PARAMETER_SET.mlKem_768.
             (pt::PERMANENT, self.permanent_attributes()),
             (pt::STARTUP_CLEAR, self.startup_clear_attributes()),
             (pt::HR_NV_INDEX, self.persistent.nv.count() as u32),
@@ -205,6 +210,11 @@ impl Tpm {
             && !supported_rsa_exponent(exponent)
         {
             return Err(p.err(Rc::RANGE));
+        }
+        if let PublicParams::MlKem { symmetric, .. } = params
+            && symmetric != crate::marshal::SymDef::Null
+        {
+            return Err(p.err(Rc::SYMMETRIC));
         }
         Ok(Output::default())
     }

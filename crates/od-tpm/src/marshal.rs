@@ -601,6 +601,9 @@ impl TpmaCc {
 pub const MAX_RSA_BYTES: usize = 256;
 /// Largest `TPM2B_ECC_PARAMETER` (P-256 only, `MAX_ECC_KEY_BYTES`).
 pub const MAX_ECC_BYTES: usize = 32;
+/// ML-KEM-768 sizes and selector (Part 2 v185, Table 219).
+pub(crate) const MLKEM_768: u16 = 2;
+pub(crate) const MAX_MLKEM_PUBLIC_BYTES: usize = 1184;
 /// Largest `TPM2B_SENSITIVE_DATA` payload of a sealed object (`MAX_SYM_DATA`; Part 3, 12.7.2 limits
 /// `outData` of `TPM2_Unseal` to 128 octets).
 pub const MAX_SYM_DATA: usize = 128;
@@ -731,6 +734,11 @@ pub enum PublicParams {
         scheme: Scheme,
         curve: u16,
     },
+    /// `TPMS_MLKEM_PARMS` (Part 2 v185, Table 232).
+    MlKem {
+        symmetric: SymDef,
+        parameter_set: u16,
+    },
     /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is `TPM_ALG_NULL` (sealed data, or an HMAC
     /// key without a default hash) or `TPM_ALG_HMAC` with SHA-256 (an HMAC key, slice C2).
     KeyedHash { scheme: Scheme },
@@ -740,7 +748,7 @@ impl PublicParams {
     pub(crate) fn unmarshal_type(r: &mut Reader<'_>) -> Result<u16, Rc> {
         let type_alg = r.u16()?;
         match type_alg {
-            alg::RSA | alg::ECC | alg::KEYEDHASH => Ok(type_alg),
+            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM => Ok(type_alg),
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -782,6 +790,17 @@ impl PublicParams {
             alg::KEYEDHASH => Ok(Self::KeyedHash {
                 scheme: Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?,
             }),
+            alg::MLKEM => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let parameter_set = r.u16()?;
+                if parameter_set != MLKEM_768 {
+                    return Err(r.err(Rc::PARMS));
+                }
+                Ok(Self::MlKem {
+                    symmetric,
+                    parameter_set,
+                })
+            }
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -792,10 +811,11 @@ impl PublicParams {
 pub enum Unique {
     Rsa(Vec<u8>),
     Ecc { x: Vec<u8>, y: Vec<u8> },
+    MlKem(Vec<u8>),
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` (Table 219) of an RSA-2048, ECC P-256 or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -813,6 +833,7 @@ impl TpmtPublic {
             PublicParams::Rsa { .. } => alg::RSA,
             PublicParams::Ecc { .. } => alg::ECC,
             PublicParams::KeyedHash { .. } => alg::KEYEDHASH,
+            PublicParams::MlKem { .. } => alg::MLKEM,
         }
     }
 
@@ -845,9 +866,16 @@ impl TpmtPublic {
                 w.u16(alg::NULL);
             }
             PublicParams::KeyedHash { scheme } => scheme.marshal(w),
+            PublicParams::MlKem {
+                symmetric,
+                parameter_set,
+            } => {
+                symmetric.marshal(w);
+                w.u16(*parameter_set);
+            }
         }
         match &self.unique {
-            Unique::Rsa(n) => w.tpm2b(n),
+            Unique::Rsa(n) | Unique::MlKem(n) => w.tpm2b(n),
             Unique::Ecc { x, y } => {
                 w.tpm2b(x);
                 w.tpm2b(y);
@@ -863,8 +891,8 @@ impl TpmtPublic {
         w.finish()
     }
 
-    /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an object type other than RSA, ECC
-    /// and keyed hash (Table 211), `TPM_RC_HASH` for a `nameAlg` other than SHA-256/NULL
+    /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an unsupported object type,
+    /// `TPM_RC_PARMS` for an unsupported ML-KEM parameter set, `TPM_RC_HASH` for a `nameAlg` other than SHA-256/NULL
     /// (Table 78), `TPM_RC_RESERVED_BITS` for reserved `TPMA_OBJECT` bits, `TPM_RC_SIZE` for an
     /// oversized `authPolicy` or `unique`, `TPM_RC_VALUE` for an RSA key size other than 2048 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
@@ -892,6 +920,7 @@ impl TpmtPublic {
             PublicParams::KeyedHash { .. } => {
                 Unique::Digest(r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec())
             }
+            PublicParams::MlKem { .. } => Unique::MlKem(r.tpm2b(MAX_MLKEM_PUBLIC_BYTES)?.to_vec()),
         };
         Ok(TpmtPublic {
             name_alg,

@@ -238,7 +238,7 @@ pub(super) fn parse_primary(resp: &[u8]) -> Primary {
     let handle = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
     let p = params(resp, 1);
     let mut r = Reader::new(p);
-    let public = r.tpm2b(1024).unwrap().to_vec();
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
     let creation = r.tpm2b(1024).unwrap().to_vec();
     let hash = r.tpm2b(64).unwrap().to_vec();
     let ticket = read_ticket(&mut r);
@@ -266,7 +266,7 @@ pub(super) fn parse_child(resp: &[u8]) -> Child {
     let p = params(resp, 0);
     let mut r = Reader::new(p);
     let private = r.tpm2b(1024).unwrap().to_vec();
-    let public = r.tpm2b(1024).unwrap().to_vec();
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
     let creation = r.tpm2b(1024).unwrap().to_vec();
     let hash = r.tpm2b(64).unwrap().to_vec();
     let ticket = read_ticket(&mut r);
@@ -306,6 +306,7 @@ pub(super) fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
     match &t.object(h).unwrap().sensitive.as_ref().unwrap().secret {
         Secret::Rsa(k) => crate::crypto::rsa_primes(k).unwrap().to_vec(),
         Secret::Ecc(k) => crate::crypto::ecc_scalar(k).to_vec(),
+        Secret::MlKem(k) => crate::kem::private_seed(k).unwrap().to_vec(),
         Secret::Data(d) => d.to_vec(),
     }
 }
@@ -1398,6 +1399,53 @@ fn ecdsa_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
 
 fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256), &tpm2b(sig)])
+}
+
+#[test]
+fn mlkem_encapsulates_with_a_public_only_key_and_decapsulates_with_the_private_key() {
+    let mut t = started();
+    let template = TpmtPublic {
+        name_alg: alg::SHA256,
+        attributes: base() | oa::DECRYPT,
+        auth_policy: vec![],
+        params: PublicParams::MlKem {
+            symmetric: SymDef::Null,
+            parameter_set: 2,
+        },
+        unique: Unique::MlKem(vec![]),
+    };
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"kem key", &template));
+    let mut public = TpmtPublic::unmarshal(&mut Reader::new(&key.public)).unwrap();
+    public.attributes = 0; // Encapsulate needs the public key and no authenticated attributes.
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let encapsulated = run(&mut t, plain(cc::ENCAPSULATE, &[external], &[]));
+    let mut r = Reader::new(params(&encapsulated, 0));
+    let shared = r.tpm2b(32).unwrap();
+    let ciphertext = r.tpm2b(1088).unwrap();
+    assert_eq!((shared.len(), ciphertext.len()), (32, 1088));
+    r.finish().unwrap();
+
+    let decapsulate = |t: &mut Tpm, ciphertext: &[u8], password: &[u8]| {
+        run(
+            t,
+            with_pw(
+                cc::DECAPSULATE,
+                &[key.handle],
+                &[password],
+                &tpm2b(ciphertext),
+            ),
+        )
+    };
+    let reply = decapsulate(&mut t, ciphertext, b"kem key");
+    assert_eq!(params(&reply, 0), tpm2b(shared));
+    err(
+        &decapsulate(&mut t, ciphertext, b"wrong"),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    err(
+        &decapsulate(&mut t, &ciphertext[..1087], b"kem key"),
+        Rc::SIZE.in_param(1),
+    );
 }
 
 #[test]

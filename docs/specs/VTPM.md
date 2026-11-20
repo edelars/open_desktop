@@ -25,16 +25,10 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 99 кодов из списка, 2 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_Init` и `_TPM_Hash_Start/Data/End` доступны платформенной стороне, включая измерение PCR17 и сохранение establishment. Гостевой D-RTM требует доверенного производителя этих сигналов. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены все 101 кодов из списка. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_Init` и `_TPM_Hash_Start/Data/End` доступны платформенной стороне, включая измерение PCR17 и сохранение establishment. Гостевой D-RTM требует доверенного производителя этих сигналов. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
-
-Текущие отсутствующие коды `M` по `crates/od-tpm/src/dispatch.rs`. Имена приведены без префикса `TPM2_`.
-
-| Срез | Команды |
-|---|---|
-| KEM | `Encapsulate`, `Decapsulate` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -69,6 +63,36 @@ D-RTM из гостевой ОС нужен доверенный источни�
 [TPM Library v185 Part 1 §§31.1–31.3, 33.5](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [Part 3 §§22.9–22.11](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
 [PC Client PTP 1.07 §§5.3.1 и 6.5.3.5](https://www.trustedcomputinggroup.org/resources/documents/pc-client-platform-tpm-profile-ptp-specification).
+
+### ML-KEM-768 и команды KEM
+
+`TPM_ALG_MLKEM` имеет тип `0x00A0`. `TPM_PT_ML_PARAMETER_SETS` объявляет
+ML-KEM-768 с идентификатором `0x0002`. В `TPMS_MLKEM_PARMS` идут
+симметричные параметры и набор. Для создаваемых unrestricted decrypt
+ключей симметричные параметры равны NULL. В открытой части хранится
+канонический 1184-байтовый ключ, в чувствительной части `d || z`
+длиной 64 байта. `Import` и восстановление проверяют соответствие
+открытого ключа seed. `CreatePrimary` использует все 64 байта Primary Seed.
+Обычный `Create` использует DRBG текущего TPM. Закрытый контейнер,
+ContextSave и snapshot v8 сохраняют канонический seed.
+
+`Encapsulate` (`0x1A7`) принимает загруженный открытый ключ и возвращает
+32-байтовый секрет, затем 1088-байтовый шифротекст. Атрибуты ключа
+для этого публичного вызова не требуются. `Decapsulate` (`0x1A8`)
+использует роль USER для unrestricted ключа с `decrypt`. Шифротекст
+должен иметь длину 1088 байт. Вариант с изменённым шифротекстом допустимой
+длины возвращает секрет implicit rejection согласно FIPS 203. Ответы
+обеих команд поддерживают шифрование секрета. `Decapsulate` также
+принимает шифрование входного шифротекста.
+
+Номенклатура `TestParms` ограничена набором ML-KEM-768 и симметричным
+алгоритмом NULL. Ключ может быть объектом `Certify` с классическим
+ключом подписи. Этот срез покрывает работу под RSA/ECC Storage key.
+ML-KEM Storage parent, labeled KEM для salt и credential, выпуск
+производственного EK и PQC-подписи остаются в ISSUE-529.
+[TPM Library v185 Part 2 §§11.2.6, 12.2.3.8](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
+[Part 3 §§14.10–14.11](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
+[FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
 
 ### Проверка параметров объектов
 
@@ -1115,8 +1139,8 @@ host через отдельный HMAC_DRBG с собственной стро�
 длины между повторными открытиями начинается после сохранения v8.
 Текущие шаблоны Primary, иерархические proof и старые контексты по-прежнему
 опираются на исходные префиксы. Старый поток `GetRandom` воспроизводится
-при той же входной энтропии и последовательности команд. Использование
-полной длины в новых профилях ключей входит в ISSUE-529.
+при той же входной энтропии и последовательности команд. ML-KEM-768
+использует полный seed при создании Primary.
 [TPM Library v185 Part 1 §§11.4–11.5, 24.6](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf).
 
 `restore` принимает v3–v8. Для всех версий проверяются магия, нулевые

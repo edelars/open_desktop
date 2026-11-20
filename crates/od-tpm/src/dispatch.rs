@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of TPM Library Part 3.
-pub(crate) static COMMANDS: [CommandSpec; 99] = [
+pub(crate) static COMMANDS: [CommandSpec; 101] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -208,6 +208,8 @@ pub(crate) static COMMANDS: [CommandSpec; 99] = [
     spec(cc::SIGN_SEQUENCE_COMPLETE, 2, 2, false, false, true),
     spec(cc::VERIFY_DIGEST_SIGNATURE, 1, 0, false, false, false),
     spec(cc::SIGN_DIGEST, 1, 1, false, false, false),
+    spec(cc::ENCAPSULATE, 1, 0, false, false, false),
+    spec(cc::DECAPSULATE, 1, 1, false, false, false),
     spec(cc::VERIFY_SEQUENCE_START, 1, 0, true, false, false),
     spec(cc::SIGN_SEQUENCE_START, 1, 0, true, false, false),
 ];
@@ -826,6 +828,8 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
         cc::SIGN => tpm.cmd_sign(&inv, &mut p)?,
         cc::SIGN_DIGEST => tpm.cmd_sign_digest(&inv, &mut p)?,
+        cc::ENCAPSULATE => tpm.cmd_encapsulate(&inv, &mut p)?,
+        cc::DECAPSULATE => tpm.cmd_decapsulate(&inv, &mut p)?,
         cc::VERIFY_SIGNATURE => tpm.cmd_verify_signature(&inv, &mut p)?,
         cc::VERIFY_DIGEST_SIGNATURE => tpm.cmd_verify_digest_signature(&inv, &mut p)?,
         cc::RSA_ENCRYPT => tpm.cmd_rsa_encrypt(&inv, &mut p)?,
@@ -1035,6 +1039,8 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::UNSEAL
         | cc::SIGN
         | cc::SIGN_DIGEST
+        | cc::ENCAPSULATE
+        | cc::DECAPSULATE
         | cc::SIGN_SEQUENCE_START
         | cc::VERIFY_SEQUENCE_START
         | cc::VERIFY_SIGNATURE
@@ -1198,6 +1204,6 @@ mod tests {
         for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 99);
+        assert_eq!(COMMANDS.len(), 101);
     }
 }

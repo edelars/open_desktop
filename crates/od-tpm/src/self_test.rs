@@ -1,4 +1,4 @@
-//! Synchronous known-answer tests for the advertised hash, RSA-2048 and P-256 profile.
+//! Synchronous known-answer tests for the advertised TPM algorithms.
 //! The test material is public. Randomized operations use separate fixture DRBGs.
 
 use sha2::{Digest, Sha384};
@@ -24,6 +24,40 @@ pub(crate) fn known_answers() -> bool {
         && credential::self_test()
         && ecc_known_answers().is_some()
         && rsa_known_answers().is_some()
+        && mlkem_known_answers().is_some()
+}
+
+// NIST ACVP ML-KEM-encapDecap-FIPS203-tr1, revision 975de31eb83d87039ec88934fdc47d8c312b892d.
+// ML-KEM-768 groups 2/6, cases 26/96. Keys and answers are public test material.
+fn mlkem_known_answers() -> Option<()> {
+    use ml_kem::ml_kem_768::EncapsulationKey;
+    use ml_kem::{Decapsulate, TryKeyInit};
+
+    const SEED: [u8; 64] = hex(
+        "2f9325677156319738d9512406f4135275ddceeb7025c273c230c5aa3598f06e95ae7b26b8b6985de3e83441745d6a8424b273dd58b16aabb9dd1d0ab4157f6d",
+    );
+    const PUBLIC_SHA256: [u8; 32] =
+        hex("0b43cfd80fa7cb6eb5896444e3dd171322e0355400388eaff81b9c0146fab8d6");
+    const DECAPSULATED: [u8; 32] =
+        hex("0039695f071cbe88d820bf4483d060c2d217ed1b7b6f48616ea21368fa2f76cb");
+    const M: [u8; 32] = hex("de00df8311d05e830c71b568da4cf0f0c7f458d94139de92d3c5f21c3ca48ad8");
+    const CIPHERTEXT_SHA256: [u8; 32] =
+        hex("9c55953bc189c554e9307e83243a960b479161acd06c183f238d3bba3666459a");
+    const ENCAPSULATED: [u8; 32] =
+        hex("2ef8de64bfbfeb974ec48e8fb839fa16ed5b848d573429ad906493818481f075");
+
+    let private = crate::kem::private_from_seed(&SEED).ok()?;
+    let decapsulated = private
+        .decapsulate_slice(include_bytes!("kat/mlkem768-acvp96-ct.bin"))
+        .ok()?;
+    let public =
+        EncapsulationKey::new_from_slice(include_bytes!("kat/mlkem768-acvp26-ek.bin")).ok()?;
+    let (ciphertext, encapsulated) = public.encapsulate_deterministic(&M.into());
+    (sha256(&crate::kem::public_bytes(&private)) == PUBLIC_SHA256
+        && decapsulated.as_slice() == DECAPSULATED
+        && sha256(ciphertext.as_slice()) == CIPHERTEXT_SHA256
+        && encapsulated.as_slice() == ENCAPSULATED)
+        .then_some(())
 }
 
 // Fixture DRBG stream independently computed from SP 800-90A using Python hashlib/HMAC.

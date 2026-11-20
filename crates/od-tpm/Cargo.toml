@@ -23,6 +23,7 @@ rsa = { version = "=0.10.0", default-features = false, features = ["pkcs1v15", "
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 aes = { version = "=0.9.4", default-features = false }
 cfb-mode = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+ml-kem = { version = "=0.3.3", default-features = false, features = ["zeroize", "hazmat"] }
 
 [lints]
 workspace = true

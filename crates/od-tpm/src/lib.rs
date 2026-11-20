@@ -37,6 +37,7 @@ mod duplicate;
 pub mod ek;
 pub mod hash;
 pub mod hierarchy;
+mod kem;
 pub mod marshal;
 pub mod nv;
 pub mod object;

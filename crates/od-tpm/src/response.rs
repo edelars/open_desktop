@@ -73,6 +73,7 @@ impl Rc {
     pub const EXPIRED: Rc = Rc(RC_FMT1 + 0x023);
     pub const POLICY_CC: Rc = Rc(RC_FMT1 + 0x024);
     pub const BINDING: Rc = Rc(RC_FMT1 + 0x025);
+    pub const PARMS: Rc = Rc(RC_FMT1 + 0x02A);
     pub const SIGN_CONTEXT_KEY: Rc = Rc(RC_FMT1 + 0x02D);
     pub const CURVE: Rc = Rc(RC_FMT1 + 0x026);
     pub const ECC_POINT: Rc = Rc(RC_FMT1 + 0x027);

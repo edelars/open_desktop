@@ -610,9 +610,9 @@ fn incremental_self_test_reports_completion_and_validates_the_algorithm_list() {
     let command = |params: &[u8]| plain(cc::INCREMENTAL_SELF_TEST, &[], params);
     err(&run(&mut t, command(&u32b(0))), Rc::INITIALIZE);
     ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
-    let mut all = u32b(13).to_vec();
+    let mut all = u32b(15).to_vec();
     for algorithm in [
-        0x01, 0x05, 0x06, 0x08, 0x0a, 0x0b, 0x14, 0x15, 0x17, 0x18, 0x19, 0x23, 0x43,
+        0x01, 0x05, 0x06, 0x08, 0x0a, 0x0b, 0x0c, 0x14, 0x15, 0x17, 0x18, 0x19, 0x23, 0x43, 0x00a0,
     ] {
         all.extend_from_slice(&u16b(algorithm));
     }
@@ -763,11 +763,12 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
         0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F, 0x192, 0x13B, 0x130, 0x172,
-        0x160, 0x142, 0x12B, 0x156, 0x14B, 0x188, 0x1A5, 0x1A6, 0x1A4, 0x1AA, 0x1A3, 0x1A9,
+        0x160, 0x142, 0x12B, 0x156, 0x14B, 0x188, 0x1A5, 0x1A6, 0x1A4, 0x1AA, 0x1A3, 0x1A9, 0x1A7,
+        0x1A8,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 99);
+    assert_eq!(expected.len(), 101);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -835,7 +836,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(99)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(101)[..]].concat()
     );
 }
 
@@ -847,7 +848,7 @@ fn capability_commands_paging_and_more_data() {
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
     let expected = [
         0x17E, 0x17F, 0x180, 0x181, 0x182, 0x184, 0x185, 0x186, 0x188, 0x189, 0x18A, 0x18C, 0x18F,
-        0x190, 0x192, 0x19C, 0x1A3, 0x1A4, 0x1A5, 0x1A6, 0x1A9, 0x1AA,
+        0x190, 0x192, 0x19C, 0x1A3, 0x1A4, 0x1A5, 0x1A6, 0x1A7, 0x1A8, 0x1A9, 0x1AA,
     ];
     assert!(!more);
     assert_eq!(count as usize, expected.len());
@@ -919,7 +920,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 14);
+    assert!(!more && c == cap::ALGS && count == 15);
     // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
@@ -943,13 +944,18 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x19, 0, 0, 4, 1],
             &[0x00, 0x23, 0, 0, 0, 9],
             &[0x00, 0x43, 0, 0, 2, 0],
+            &[0x00, 0xA0, 0, 0, 0, 9],
         ]
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 8);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 1);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 0);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 9);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 2);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);
+    let (_, _, sets, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x131, 1));
+    assert_eq!(count, 1);
+    assert_eq!(sets, hex("0000013100000002"));
 
     let r = get_cap(&mut t, cap::PCRS, 0, 100);
     let p = params(&r, 0);

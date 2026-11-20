@@ -98,7 +98,9 @@ fn attest_scheme(
     }
     let key_scheme = match &o.public.params {
         PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-        PublicParams::KeyedHash { .. } => return Err(Rc::KEY.in_handle(handle_no)),
+        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => {
+            return Err(Rc::KEY.in_handle(handle_no));
+        }
     };
     let scheme = if key_scheme.alg != alg::NULL {
         if in_scheme.alg != alg::NULL && in_scheme.alg != key_scheme.alg {
@@ -139,7 +141,7 @@ fn sign_digest(
                 s,
             })
         }
-        Secret::Data(_) => Err(Rc::KEY.in_handle(1)),
+        Secret::Data(_) | Secret::MlKem(_) => Err(Rc::KEY.in_handle(1)),
     }
 }
 

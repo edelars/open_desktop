@@ -126,6 +126,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::DUPLICATE
             | cc::SIGN
             | cc::SIGN_DIGEST
+            | cc::DECAPSULATE
             | cc::VERIFY_SIGNATURE
             | cc::VERIFY_DIGEST_SIGNATURE
             | cc::RSA_ENCRYPT
@@ -161,6 +162,8 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
     matches!(
         code,
         cc::GET_RANDOM
+            | cc::ENCAPSULATE
+            | cc::DECAPSULATE
             | cc::GET_TEST_RESULT
             | cc::START_AUTH_SESSION
             | cc::HASH

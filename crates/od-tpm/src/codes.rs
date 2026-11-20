@@ -93,6 +93,8 @@ pub mod cc {
     pub const SIGN_SEQUENCE_COMPLETE: u32 = 0x0000_01A4;
     pub const SIGN_DIGEST: u32 = 0x0000_01A6;
     pub const SIGN_SEQUENCE_START: u32 = 0x0000_01AA;
+    pub const ENCAPSULATE: u32 = 0x0000_01A7;
+    pub const DECAPSULATE: u32 = 0x0000_01A8;
     pub const UNSEAL: u32 = 0x0000_015E;
     pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
     pub const LOAD_EXTERNAL: u32 = 0x0000_0167;
@@ -192,6 +194,7 @@ pub mod pt {
     pub const VENDOR_COMMANDS: u32 = FIXED + 43;
     pub const NV_BUFFER_MAX: u32 = FIXED + 44;
     pub const MAX_CAP_BUFFER: u32 = FIXED + 46;
+    pub const ML_PARAMETER_SETS: u32 = FIXED + 49;
     pub const PERMANENT: u32 = VAR;
     pub const STARTUP_CLEAR: u32 = VAR + 1;
     pub const HR_NV_INDEX: u32 = VAR + 2;
@@ -228,6 +231,7 @@ pub mod alg {
     pub const ECDH: u16 = 0x0019;
     pub const KDF1_SP800_56A: u16 = 0x0020;
     pub const ECC: u16 = 0x0023;
+    pub const MLKEM: u16 = 0x00A0;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;
     pub const CFB: u16 = 0x0043;

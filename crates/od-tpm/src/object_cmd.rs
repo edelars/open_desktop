@@ -110,7 +110,7 @@ pub(crate) fn sign_digest_output(
                 s,
             }
         }
-        Secret::Data(_) => return Err(Rc::KEY.in_handle(1)),
+        Secret::Data(_) | Secret::MlKem(_) => return Err(Rc::KEY.in_handle(1)),
     };
     let mut w = Writer::new();
     signature.marshal(&mut w);
@@ -314,15 +314,20 @@ impl Tpm {
             .and_then(|o| o.sensitive.as_ref().map(|s| s.auth.clone()))
     }
 
-    /// The original seed portion for the legacy primary derivation.
-    fn hierarchy_seed(&self, hierarchy: u32) -> Zeroizing<Vec<u8>> {
+    /// Selects primary derivation material while retaining the legacy templates' identities.
+    fn hierarchy_seed(&self, hierarchy: u32, params: &PublicParams) -> &[u8] {
         let seed: &[u8] = match hierarchy {
             handle::RH_PLATFORM => &self.persistent.platform_seed[..],
             handle::RH_OWNER => &self.persistent.owner_seed[..],
             handle::RH_ENDORSEMENT => &self.persistent.endorsement_seed[..],
             _ => &self.hv.null_seed[..],
         };
-        Zeroizing::new(seed[..LEGACY_SEED_BYTES].to_vec())
+        match params {
+            PublicParams::MlKem { .. } => seed,
+            PublicParams::Rsa { .. }
+            | PublicParams::Ecc { .. }
+            | PublicParams::KeyedHash { .. } => &seed[..LEGACY_SEED_BYTES],
+        }
     }
 
     /// The proof value of a permanent object hierarchy. Part 3, clause 24.6 allows deriving
@@ -506,8 +511,8 @@ impl Tpm {
         if self.objects.free_slots() == 0 {
             return Err(Rc::OBJECT_MEMORY);
         }
-        let seed = self.hierarchy_seed(hierarchy);
-        let mut drbg = primary_drbg(&seed, &template, &sens.data)?;
+        let seed = self.hierarchy_seed(hierarchy, &template.params);
+        let mut drbg = primary_drbg(seed, &template, &sens.data)?;
         let d = derive_object(&template, &sens.user_auth, &sens.data, &mut drbg)?;
         let hierarchy_handle = hierarchy.to_be_bytes();
         let obj = Object::new(d.public, Some(d.sensitive), hierarchy, &hierarchy_handle);
@@ -840,7 +845,9 @@ impl Tpm {
         }
         let key_scheme = match &o.public.params {
             PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-            PublicParams::KeyedHash { .. } => return Err(Rc::KEY.in_handle(1)),
+            PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => {
+                return Err(Rc::KEY.in_handle(1));
+            }
         };
         // The key's scheme wins; inScheme must repeat it or be NULL. A key with a NULL scheme
         // signs with inScheme.

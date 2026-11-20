@@ -91,6 +91,16 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 
 **Лицензии транзитивных пакетов**, отличные от «MIT OR Apache-2.0»: `subtle` — BSD-3-Clause; `flagset` — Apache-2.0; `ff`, `group` — «MIT/Apache-2.0»; `unicode-ident` — «(MIT OR Apache-2.0) AND Unicode-3.0» (proc-macro, в runtime не входит). Политика [DEPENDENCIES.md](../policies/DEPENDENCIES.md) разрешает BSD-3-Clause и Apache-2.0; D9-лицензионный вопрос 5 закрыт 2026-11-18.
 
+### ML-KEM-768 для host S7-23
+
+Для примитива FIPS 203 выбран RustCrypto `ml-kem =0.3.3` из crates.io
+с `default-features = false`, `zeroize` и `hazmat`. TPM получает свежие
+`d`, `z` и `m` собственным HMAC_DRBG. Явная передача `m` позволяет
+обработать исчерпание DRBG как ошибку TPM и воспроизвести ACVP-векторы.
+Форматы объектов TPM, авторизация, транспорты и сохранение остаются здесь.
+Лицензия Apache-2.0 OR MIT. [Пакет и функции](https://docs.rs/crate/ml-kem/0.3.3),
+[FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
+
 ### Условие D9 о constant-time `rsa`
 
 По состоянию на 2026-11-18 RustSec RUSTSEC-2023-0071 указывает `Patched >=0.10.0` (advisory modified 2026-11-08). RustCrypto RSA v0.10.0 release notes от 2026-11-08 сообщают переход на `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations по опубликованному guidance и constant-time validation harness. Это upstream evidence; compatibility-тесты проекта и их ограничения зафиксированы ниже, но они не являются полной constant-time security certification.

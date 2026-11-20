@@ -2351,8 +2351,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 99 commands less NV_UndefineSpaceSpecial and EvictControl.
-    assert_eq!(count, 97);
+    // From 0x121 on: 101 commands less NV_UndefineSpaceSpecial and EvictControl.
+    assert_eq!(count, 99);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
@@ -2381,6 +2381,8 @@ fn capability_commands_report_the_extensive_and_nv_attributes() {
     assert_eq!(of(0x1AA), 0x1200_01AA);
     assert_eq!(of(0x1A3), 0x0500_01A3);
     assert_eq!(of(0x1A9), 0x1200_01A9);
+    assert_eq!(of(0x1A7), 0x0200_01A7);
+    assert_eq!(of(0x1A8), 0x0200_01A8);
 }
 
 #[test]
