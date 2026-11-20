@@ -9244,6 +9244,26 @@ credential. Дополнительно подтверждены свежие о�
 HMAC ответа. Объявлены 72 из 101 обязательного кода.
 [Контракт](../specs/VTPM.md#подготовка-credential).
 
+## S7-23 — ActivateCredential
+
+Команда авторизует первый объект в роли ADMIN, затем Storage key в роли
+USER. В `certInfo` возвращается credential после проверки HMAC от
+шифротекста и Name первого объекта. Применяются RSA-2048/OAEP-SHA-256
+или ECDH P-256 и общий с MakeCredential контейнер AES-128-CFB.
+
+Проверка через CRB приняла контейнеры, которые клиент сформировал с помощью
+Python и OpenSSL, включая 16-байтовый RSA seed, пустой credential и
+полноразмерные координаты P-256. Проверены отказы при неверном Name,
+изменённом HMAC или шифротексте, повреждённом внутреннем размере, слишком
+длинном RSA seed и некорректной точке. Дополнительная сессия проверила
+XOR для обоих направлений и HMAC ответа с аудитом.
+
+Sol High одобрил код после сверки ролей, контейнера, восстановления seed
+и параметров команды с TPM Library v185. Прошли 304 теста `od-tpm` и
+`cargo check --workspace --all-targets --offline`. Объявлены 73 из 101
+обязательного кода.
+[Контракт](../specs/VTPM.md#подготовка-credential).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

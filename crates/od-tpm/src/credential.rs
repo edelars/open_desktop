@@ -1,15 +1,18 @@
-//! TPM credential protection (Library v185 Part 1 §§21.4–5; Part 3 §12.6).
+//! TPM credential protection (Library v185 Part 1 §21.4; Part 3 §§12.5–6).
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::crypto::{
     DIGEST, RsaPadding, ecc_ecdh, ecc_generate_extra_random_bits, ecc_public, hmac_sha256,
-    kdfa_sha256, rsa_encrypt_public,
+    hmac_sha256_verify, kdfa_sha256, rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
-use crate::marshal::{MAX_DATA, PublicParams, Reader, Scheme, SymDef, Unique, Writer, limits};
-use crate::object::{aes128_cfb, find_object};
+use crate::marshal::{
+    MAX_DATA, MAX_ECC_BYTES, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, Unique, Writer,
+    limits,
+};
+use crate::object::{Object, Secret, aes128_cfb, find_object};
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -30,26 +33,7 @@ impl Tpm {
 
         let key = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        if !key.is_storage() {
-            return Err(Rc::TYPE.in_handle(1));
-        }
-        let (symmetric, scheme) = match key.public.params {
-            PublicParams::Rsa {
-                symmetric, scheme, ..
-            }
-            | PublicParams::Ecc {
-                symmetric, scheme, ..
-            } => (symmetric, scheme),
-            _ => return Err(Rc::TYPE.in_handle(1)),
-        };
-        // LoadExternal admits public keys for several uses. A Storage key
-        // requires a NULL asymmetric scheme and a supported symmetric cipher.
-        if scheme != Scheme::NULL {
-            return Err(Rc::VALUE.in_handle(1));
-        }
-        if symmetric != SymDef::Aes128Cfb {
-            return Err(Rc::TYPE.in_handle(1));
-        }
+        check_storage_key(key, 1)?;
         let (seed, secret) = make_seed(&key.public.unique, &mut self.drbg).ok_or(Rc::FAILURE)?;
         let blob = protect(&seed[..], object_name, credential);
         let mut output = Writer::new();
@@ -59,6 +43,99 @@ impl Tpm {
             handles: Vec::new(),
             params: output.finish(),
         })
+    }
+
+    pub(crate) fn cmd_activate_credential(
+        &mut self,
+        inv: &Invocation,
+        reader: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        reader.set_param(1);
+        let blob = reader.tpm2b(4 + 2 * DIGEST)?;
+        reader.set_param(2);
+        let secret = reader.tpm2b(MAX_RSA_BYTES)?;
+        reader.finish()?;
+
+        let activated = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
+            .ok_or(Rc::reference_handle(0))?;
+        let key = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
+            .ok_or(Rc::reference_handle(1))?;
+        check_storage_key(key, 2)?;
+        let mut id = Reader::new(blob);
+        id.set_param(1);
+        let tag = id.tpm2b(DIGEST)?;
+        let encrypted = id.bytes(id.remaining())?;
+        let seed = recover_seed(key, secret, &mut self.drbg)?;
+        if !hmac_sha256_verify(&integrity_key(&seed), &[encrypted, &activated.name], tag) {
+            return Err(Rc::INTEGRITY.in_param(1));
+        }
+
+        let clear = crypt_identity(&seed, &activated.name, encrypted, false);
+        let mut value = Reader::new(&clear);
+        let credential = value
+            .tpm2b(DIGEST)
+            .and_then(|credential| value.finish().map(|()| credential))
+            .map_err(|_| Rc::SIZE.in_param(1))?;
+        let mut output = Writer::new();
+        output.tpm2b(credential);
+        Ok(Output {
+            handles: Vec::new(),
+            params: output.finish(),
+        })
+    }
+}
+
+fn check_storage_key(key: &Object, position: u8) -> Result<(), Rc> {
+    if !key.is_storage() {
+        return Err(Rc::TYPE.in_handle(position));
+    }
+    let (symmetric, scheme) = match key.public.params {
+        PublicParams::Rsa {
+            symmetric, scheme, ..
+        }
+        | PublicParams::Ecc {
+            symmetric, scheme, ..
+        } => (symmetric, scheme),
+        _ => return Err(Rc::TYPE.in_handle(position)),
+    };
+    // LoadExternal admits public keys for several uses. A Storage key
+    // requires a NULL asymmetric scheme and a supported symmetric cipher.
+    if scheme != Scheme::NULL {
+        return Err(Rc::VALUE.in_handle(position));
+    }
+    if symmetric != SymDef::Aes128Cfb {
+        return Err(Rc::TYPE.in_handle(position));
+    }
+    Ok(())
+}
+
+fn recover_seed(key: &Object, encrypted: &[u8], rng: &mut Drbg) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    let sensitive = key.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+    match (&sensitive.secret, &key.public.unique) {
+        (Secret::Rsa(rsa), Unique::Rsa(modulus)) => {
+            let error = Rc::VALUE.in_param(2);
+            if encrypted.len() != modulus.len() {
+                return Err(error);
+            }
+            rsa_decrypt_private(rsa, RsaPadding::Oaep, IDENTITY_LABEL, encrypted, rng)
+                .filter(|seed| seed.len() <= DIGEST)
+                .ok_or(error)
+        }
+        (Secret::Ecc(ecc), Unique::Ecc { x: receiver_x, .. }) => {
+            let error = Rc::ECC_POINT.in_param(2);
+            let mut point = Reader::new(encrypted);
+            let x = point.tpm2b(MAX_ECC_BYTES).map_err(|_| error)?;
+            let y = point.tpm2b(MAX_ECC_BYTES).map_err(|_| error)?;
+            point.finish().map_err(|_| error)?;
+            if x.len() != MAX_ECC_BYTES || y.len() != MAX_ECC_BYTES {
+                return Err(error);
+            }
+            let (shared_x, _) = ecc_ecdh(ecc, x, y).ok_or(error)?;
+            Ok(Zeroizing::new(
+                identity_kdfe(&shared_x, x, receiver_x).to_vec(),
+            ))
+        }
+        _ => Err(Rc::TYPE.in_handle(2)),
     }
 }
 
@@ -102,18 +179,25 @@ fn identity_kdfe(
 }
 
 fn protect(seed: &[u8], name: &[u8], credential: &[u8]) -> Vec<u8> {
-    let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    let hmac_key = kdfa_sha256(seed, b"INTEGRITY", &[], &[], (DIGEST * 8) as u32);
     let mut clear = Zeroizing::new(Vec::with_capacity(2 + credential.len()));
     clear.extend_from_slice(&(credential.len() as u16).to_be_bytes());
     clear.extend_from_slice(credential);
-    let encrypted = aes128_cfb(&sym_key, &[0; 16], &clear, true);
-    let integrity = hmac_sha256(&hmac_key, &[&encrypted, name]);
+    let encrypted = crypt_identity(seed, name, &clear, true);
+    let integrity = hmac_sha256(&integrity_key(seed), &[&encrypted, name]);
     let mut blob = Writer::new();
     blob.tpm2b(&integrity);
     // The inner length of the credential is encrypted with its contents.
     blob.bytes(&encrypted);
     blob.finish()
+}
+
+fn integrity_key(seed: &[u8]) -> Zeroizing<Vec<u8>> {
+    kdfa_sha256(seed, b"INTEGRITY", &[], &[], (DIGEST * 8) as u32)
+}
+
+fn crypt_identity(seed: &[u8], name: &[u8], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
+    let key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
+    aes128_cfb(&key, &[0; 16], data, encrypt)
 }
 
 #[cfg(test)]

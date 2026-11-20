@@ -116,6 +116,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::LOAD
             | cc::LOAD_EXTERNAL
             | cc::MAKE_CREDENTIAL
+            | cc::ACTIVATE_CREDENTIAL
             | cc::SIGN
             | cc::VERIFY_SIGNATURE
             | cc::RSA_ENCRYPT
@@ -159,6 +160,7 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
             | cc::LOAD
             | cc::LOAD_EXTERNAL
             | cc::MAKE_CREDENTIAL
+            | cc::ACTIVATE_CREDENTIAL
             | cc::QUOTE
             | cc::CERTIFY
             | cc::CERTIFY_CREATION

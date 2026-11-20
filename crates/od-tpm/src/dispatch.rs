@@ -29,14 +29,15 @@
 //! Slice C1: dictionary-attack protection wraps the authorization check (`da.rs`).
 //! Slice C2: a policy session in the authorization area (handle type `0x03`) is checked by
 //! `policy.rs` (`policy_use_check`) before the HMAC or password of the session is looked at; the
-//! role of the handle (USER, or ADMIN for `objectHandle` of `TPM2_Certify`) decides which object
+//! role of the handle (USER, or ADMIN for the first handle of `Certify` and `ActivateCredential`)
+//! decides which object
 //! attribute gates a password or HMAC (Part 3, clause 5.6, steps 5-7): `userWithAuth` CLEAR is
 //! `TPM_RC_POLICY_FAIL` for the USER role, `adminWithPolicy` SET is `TPM_RC_AUTH_TYPE` for the
 //! ADMIN role. The context commands refuse any session (`TPM_RC_AUTH_CONTEXT`).
 //! Slice B of phase B: the Name of a transient or persistent object in a cpHash is its Name
 //! (`nameAlg || H(TPMT_PUBLIC)`), and an object is authorized with its authValue only while it has
-//! a private part (`TPM_RC_AUTH_UNAVAILABLE` otherwise; NOT VERIFIED against TPM 2.0 Library
-//! v185/v184: this code for that case, see `object.rs`). With `userWithAuth` CLEAR a password or
+//! a private part (`TPM_RC_AUTH_UNAVAILABLE` otherwise, as required by Library v185 Part 3
+//! §12.5 for `ActivateCredential`). With `userWithAuth` CLEAR a password or
 //! HMAC for the USER role is `TPM_RC_POLICY_FAIL` (slice C2, above).
 
 use sha2::{Digest, Sha256};
@@ -110,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 72] = [
+pub(crate) static COMMANDS: [CommandSpec; 73] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -134,6 +135,7 @@ pub(crate) static COMMANDS: [CommandSpec; 72] = [
     spec(cc::STARTUP, 0, 0, false, true, false),
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
+    spec(cc::ACTIVATE_CREDENTIAL, 2, 2, false, false, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
     spec(cc::CERTIFY_CREATION, 2, 1, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
@@ -258,10 +260,10 @@ fn handle_auth(
     }
 }
 
-/// The role of handle number `i` of a command: ADMIN for `objectHandle` of `TPM2_Certify`, USER
-/// for every other authorized handle of the implemented commands.
+/// Certify and ActivateCredential use ADMIN for their first handle. Other authorized handles
+/// use USER in the implemented commands.
 fn admin_role(code: u32, i: usize) -> bool {
-    code == cc::CERTIFY && i == 0
+    i == 0 && matches!(code, cc::CERTIFY | cc::ACTIVATE_CREDENTIAL)
 }
 
 /// The `authPolicy` of the entity behind handle number `i`: that of an object, the Empty Buffer
@@ -714,6 +716,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::LOAD => tpm.cmd_load(&inv, &mut p)?,
         cc::LOAD_EXTERNAL => tpm.cmd_load_external(&mut p)?,
         cc::MAKE_CREDENTIAL => tpm.cmd_make_credential(&inv, &mut p)?,
+        cc::ACTIVATE_CREDENTIAL => tpm.cmd_activate_credential(&inv, &mut p)?,
         cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
         cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
@@ -913,6 +916,10 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             check_sign_handle(tpm, handles[0], 0)?;
             tpm.check_nv_certify_handles(handles)?;
         }
+        cc::ACTIVATE_CREDENTIAL => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            tpm.check_object_handle(handles[1], 1, false)?;
+        }
         cc::CERTIFY => {
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
@@ -1028,6 +1035,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 72);
+        assert_eq!(COMMANDS.len(), 73);
     }
 }

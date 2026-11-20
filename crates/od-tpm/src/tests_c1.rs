@@ -728,6 +728,147 @@ fn make_credential_refuses_external_keys_without_storage_parameters() {
 }
 
 #[test]
+fn activate_credential_requires_two_private_objects_and_the_bound_name() {
+    for (template, bad_secret) in [
+        (rsa_storage(), Rc::VALUE.in_param(2)),
+        (ecc_storage(), Rc::ECC_POINT.in_param(2)),
+    ] {
+        let mut t = started();
+        let key = parse_primary(&create_primary(&mut t, OWNER, b"key", &template));
+        let activated_template = ecc(base() | oa::SIGN | oa::NO_DA, SymDef::Null, ECDSA);
+        let activated = parse_primary(&create_primary(
+            &mut t,
+            OWNER,
+            b"object",
+            &activated_template,
+        ));
+        let invoke = |t: &mut Tpm, handles: &[u32], passwords: &[&[u8]], parameters: &[u8]| {
+            run(
+                t,
+                with_pw(cc::ACTIVATE_CREDENTIAL, handles, passwords, parameters),
+            )
+        };
+        let handles = [activated.handle, key.handle];
+        let passwords = [b"object".as_slice(), b"key".as_slice()];
+        let before = t.persistent_snapshot();
+        for credential in [b"".as_slice(), &[0x5a; 32]] {
+            let response = run(
+                &mut t,
+                plain(
+                    cc::MAKE_CREDENTIAL,
+                    &[key.handle],
+                    &cat(&[&tpm2b(credential), &tpm2b(&activated.name)]),
+                ),
+            );
+            let wrapped = params(&response, 0);
+            assert_eq!(
+                params(&invoke(&mut t, &handles, &passwords, wrapped), 0),
+                tpm2b(credential)
+            );
+            for offset in [4, 36] {
+                let mut tampered = wrapped.to_vec();
+                tampered[offset] ^= 1;
+                err(
+                    &invoke(&mut t, &handles, &passwords, &tampered),
+                    Rc::INTEGRITY.in_param(1),
+                );
+            }
+            err(
+                &invoke(&mut t, &[key.handle; 2], &[b"key", b"key"], wrapped),
+                Rc::INTEGRITY.in_param(1),
+            );
+            err(
+                &invoke(
+                    &mut t,
+                    &[activated.handle; 2],
+                    &[b"object", b"object"],
+                    wrapped,
+                ),
+                Rc::TYPE.in_handle(2),
+            );
+            err(
+                &invoke(&mut t, &handles, &[b"wrong", b"key"], wrapped),
+                Rc::BAD_AUTH.in_session(1),
+            );
+            let mut input = Reader::new(wrapped);
+            let blob = input.tpm2b(68).unwrap();
+            err(
+                &invoke(
+                    &mut t,
+                    &handles,
+                    &passwords,
+                    &cat(&[&tpm2b(blob), &tpm2b(&[])]),
+                ),
+                bad_secret,
+            );
+        }
+        assert_eq!(t.persistent_snapshot(), before);
+
+        ok(&flush(&mut t, activated.handle));
+        let mut public = unmarshal_public(&activated.public);
+        public.attributes = oa::SIGN;
+        let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+        for handles in [[external, key.handle], [key.handle, external]] {
+            err(
+                &invoke(&mut t, &handles, &[b"key", b"key"], &[0; 4]),
+                Rc::AUTH_UNAVAILABLE,
+            );
+        }
+    }
+}
+
+#[test]
+fn activate_credential_addresses_admin_then_user_authorization() {
+    let mut t = started();
+    let mut storage = ecc_storage();
+    storage.attributes |= oa::ADMIN_WITH_POLICY | oa::NO_DA;
+    storage.auth_policy = vec![1; 32];
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"key", &storage));
+    let mut admin_object = ecc_sign();
+    admin_object.attributes |= oa::ADMIN_WITH_POLICY;
+    admin_object.auth_policy = vec![1; 32];
+    let activated = parse_primary(&create_primary(&mut t, OWNER, b"object", &admin_object));
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"key"],
+                &[0; 4],
+            ),
+        ),
+        Rc::AUTH_TYPE,
+    );
+    ok(&flush(&mut t, activated.handle));
+    let activated = parse_primary(&create_primary(&mut t, OWNER, b"object", &ecc_sign()));
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"wrong"],
+                &[0; 4],
+            ),
+        ),
+        Rc::BAD_AUTH.in_session(2),
+    );
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"key"],
+                &[0; 4],
+            ),
+        ),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+}
+
+#[test]
 fn ecdh_key_gen_uses_a_public_only_ecc_key_and_returns_fresh_ephemeral_points() {
     let mut t = started();
     let key = parse_primary(&create_primary(

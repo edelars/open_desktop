@@ -63,6 +63,7 @@ pub mod cc {
     pub const STARTUP: u32 = 0x0000_0144;
     pub const SHUTDOWN: u32 = 0x0000_0145;
     pub const STIR_RANDOM: u32 = 0x0000_0146;
+    pub const ACTIVATE_CREDENTIAL: u32 = 0x0000_0147;
     pub const NV_READ: u32 = 0x0000_014E;
     pub const NV_READ_LOCK: u32 = 0x0000_014F;
     pub const CREATE: u32 = 0x0000_0153;
