@@ -1479,6 +1479,12 @@ for the interpreter. All 60 paired intervals favored the interpreter.
 Each timed FIFO sweep recorded five hits and zero publications or evictions.
 [S3-36l warm measurements and evidence](STAGE_3_S3-36l_2026-11-19.md)
 
+S3-37j checked 384 FIFO16 sweeps on the recovered S3-17 corpus on M1
+Pro. Each process recorded 168,960 publications and 168,944 evictions,
+with a high water of 16 entries. All nine process RSS snapshots were
+available. The post-drop observation fell by 32 KiB in each process.
+[S3-37j cache counts and process RSS](STAGE_3_S3-37j_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
