@@ -63,6 +63,7 @@ pub mod cc {
     pub const CLOCK_SET: u32 = 0x0000_0128;
     pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
     pub const SET_PRIMARY_POLICY: u32 = 0x0000_012E;
+    pub const CLOCK_RATE_ADJUST: u32 = 0x0000_0130;
     pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
     pub const NV_WRITE: u32 = 0x0000_0137;

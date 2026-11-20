@@ -886,6 +886,132 @@ fn clock_set_is_monotonic_authorized_and_survives_a_power_cycle() {
     }
 }
 
+#[test]
+fn clock_rate_adjust_calibrates_both_clocks_and_snapshots_the_elapsed_time() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", b"owner"));
+    ok(&set_auth(&mut t, PLATFORM, b"", b"platform"));
+    t.advance_power_time(1000);
+    let original = clock_now(&mut t).0;
+    for (authorization, password, input, error) in [
+        (ENDORSEMENT, b"".as_slice(), vec![3], Rc::VALUE.in_handle(1)),
+        (
+            OWNER,
+            b"wrong".as_slice(),
+            vec![3],
+            Rc::BAD_AUTH.in_session(1),
+        ),
+        (OWNER, b"owner".as_slice(), vec![4], Rc::VALUE.in_param(1)),
+        (
+            OWNER,
+            b"owner".as_slice(),
+            Vec::new(),
+            Rc::INSUFFICIENT.in_param(1),
+        ),
+        (OWNER, b"owner".as_slice(), vec![0, 0], Rc::SIZE),
+    ] {
+        err(
+            &pw_cmd(
+                &mut t,
+                cc::CLOCK_RATE_ADJUST,
+                &[authorization],
+                password,
+                &input,
+            ),
+            error,
+        );
+    }
+    ok(&pw_cmd(
+        &mut t,
+        cc::CLOCK_RATE_ADJUST,
+        &[PLATFORM],
+        b"platform",
+        &[3],
+    ));
+    assert_eq!(clock_now(&mut t).0, original);
+    t.advance_power_time(101_000);
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(&info[..8], &102_000u64.to_be_bytes());
+    assert_eq!(clock.0, 102_000);
+
+    ok(&pw_cmd(
+        &mut t,
+        cc::CLOCK_SET,
+        &[OWNER],
+        b"owner",
+        &800_000u64.to_be_bytes(),
+    ));
+    assert_eq!(clock_now(&mut t).1.0, 800_000);
+    t.advance_power_time(201_000);
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(&info[..8], &203_000u64.to_be_bytes());
+    assert_eq!(clock.0, 901_000);
+    ok(&pw_cmd(&mut t, cc::CLEAR, &[PLATFORM], b"platform", &[]));
+    assert_eq!(
+        &clock_now(&mut t).0[..16],
+        &cat(&[&203_000u64.to_be_bytes(), &[0; 8]])
+    );
+
+    t.advance_power_time(301_000);
+    let snapshot = t.persistent_snapshot();
+    t.init();
+    let mut restored = Tpm::restore(&snapshot, &[8; 48]).unwrap();
+    for t in [&mut t, &mut restored] {
+        startup(t, crate::codes::su::CLEAR);
+        t.advance_power_time(1_000);
+        let read = run(t, plain(cc::READ_CLOCK, &[], &[]));
+        assert_eq!(
+            &params(&read, 0)[..16],
+            &cat(&[&1_000u64.to_be_bytes(), &102_000u64.to_be_bytes()])
+        );
+    }
+}
+
+#[test]
+fn clock_rate_adjust_accumulates_fractional_time_and_rejects_out_of_range_calibration() {
+    let adjust = |t: &mut Tpm, step: i8| {
+        pw_cmd(t, cc::CLOCK_RATE_ADJUST, &[OWNER], b"", &step.to_be_bytes())
+    };
+    let mut long = started();
+    let mut split = started();
+    ok(&adjust(&mut long, 1));
+    ok(&adjust(&mut split, 1));
+    long.advance_power_time(1_000_000);
+    for elapsed in (1_000..=1_000_000).step_by(1_000) {
+        split.advance_power_time(elapsed);
+    }
+    assert_eq!(clock_now(&mut long).0, clock_now(&mut split).0);
+    assert_eq!(clock_now(&mut long).1.0, 1_000_001);
+    split.advance_power_time(999_950);
+    assert_eq!(clock_now(&mut split).1.0, 1_000_001);
+
+    let mut switched = started();
+    ok(&adjust(&mut switched, 1));
+    switched.advance_power_time(999_999);
+    ok(&adjust(&mut switched, 1));
+    switched.advance_power_time(1_000_000);
+    assert_eq!(clock_now(&mut switched).1.0, 1_000_001);
+
+    for (sign, adjusted_elapsed) in [(1, 115_000), (-1, 85_000)] {
+        let mut t = started();
+        ok(&adjust(&mut t, 2 * sign));
+        ok(&adjust(&mut t, -2 * sign));
+        for _ in 0..15 {
+            ok(&adjust(&mut t, 3 * sign));
+        }
+        err(&adjust(&mut t, sign), Rc::VALUE.in_param(1));
+        ok(&adjust(&mut t, 0));
+        t.advance_power_time(100_000);
+        assert_eq!(clock_now(&mut t).1.0, adjusted_elapsed);
+        ok(&adjust(&mut t, -3 * sign));
+        t.advance_power_time(200_000);
+        assert_eq!(
+            clock_now(&mut t).1.0,
+            adjusted_elapsed + (100_000i32 + 14_000 * i32::from(sign)) as u64
+        );
+    }
+}
+
 const TIME_X: &str = "ef7f114d6b36e22e25103e3ea3f22a7598ed7bf9baca96df4214ca22589601b4";
 const TIME_Y: &str = "cb94108076eeef988e6d73698714edef104caf5576928bcf409c688ade13cf5c";
 const TIME_R: &str = "da696a2c6d384de20bc676e7601f5f644c86f1a95c4f2086899826fe59056e8a";

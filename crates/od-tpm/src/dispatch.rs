@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 85] = [
+pub(crate) static COMMANDS: [CommandSpec; 86] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -122,6 +122,7 @@ pub(crate) static COMMANDS: [CommandSpec; 85] = [
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
     spec(cc::SET_PRIMARY_POLICY, 1, 1, false, true, false),
+    spec(cc::CLOCK_RATE_ADJUST, 1, 1, false, false, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
     spec(cc::NV_INCREMENT, 2, 1, false, true, false),
     spec(cc::NV_SET_BITS, 2, 1, false, true, false),
@@ -775,6 +776,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::EVENT_SEQUENCE_COMPLETE => tpm.cmd_event_sequence_complete(&inv, &mut p)?,
         cc::READ_CLOCK => tpm.cmd_read_clock(&mut p)?,
         cc::CLOCK_SET => tpm.cmd_clock_set(&mut p)?,
+        cc::CLOCK_RATE_ADJUST => tpm.cmd_clock_rate_adjust(&mut p)?,
         cc::HIERARCHY_CONTROL => tpm.cmd_hierarchy_control(&inv, &mut p)?,
         cc::HIERARCHY_CHANGE_AUTH => tpm.cmd_hierarchy_change_auth(&inv, &mut p)?,
         cc::SET_PRIMARY_POLICY => tpm.cmd_set_primary_policy(&inv, &mut p)?,
@@ -972,7 +974,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
-        cc::CLOCK_SET => {
+        cc::CLOCK_SET | cc::CLOCK_RATE_ADJUST => {
             if !matches!(handles[0], handle::RH_OWNER | handle::RH_PLATFORM) {
                 return Err(Rc::VALUE.in_handle(1));
             }
@@ -1144,6 +1146,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 85);
+        assert_eq!(COMMANDS.len(), 86);
     }
 }

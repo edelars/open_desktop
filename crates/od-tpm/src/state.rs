@@ -149,8 +149,9 @@ pub struct Tpm {
     pub(crate) objects: Objects,
     /// Volatile hierarchy state: `platformAuth`, enables, Null seed.
     pub(crate) hv: HierarchyVolatile,
-    /// Latest `now_ms` the owner passed: milliseconds since `_TPM_Init` (power-on).
+    /// TPM `Time`: calibrated elapsed milliseconds since `_TPM_Init` (power-on).
     pub(crate) power_ms: u64,
+    time_calibration: TimeCalibration,
     /// Fresh nonce for each uninterrupted measurement of `Time` (Part 1, §16.7.12).
     pub(crate) time_epoch: [u8; 16],
     /// `TPMS_CLOCK_INFO.safe` for the current power cycle.
@@ -213,6 +214,7 @@ impl Tpm {
             objects: Objects::default(),
             hv: HierarchyVolatile::default(),
             power_ms: 0,
+            time_calibration: TimeCalibration::default(),
             time_epoch: [0; 16],
             clock_safe: false,
             clock_epoch_ms: 0,
@@ -233,6 +235,7 @@ impl Tpm {
     pub fn init(&mut self) {
         self.persistent.clock_base_ms = self.clock_ms();
         self.power_ms = 0;
+        self.time_calibration = TimeCalibration::default();
         self.clock_epoch_ms = 0;
         self.started = false;
         self.failed = false;
@@ -246,9 +249,9 @@ impl Tpm {
         self.da_v = DaVolatile::default();
     }
 
-    /// Runs one command: `command` is the complete command buffer, `locality` the locality of the
-    /// caller (only 0 is served, ADR-0009), `now_ms` the milliseconds since `_TPM_Init` as seen
-    /// by the owner (non-decreasing; a smaller value is ignored). Returns the complete response.
+    /// Runs one command. `command` is the complete command buffer, `locality` the locality of the
+    /// caller (only 0 is served, ADR-0009), and `now_ms` the owner's uncalibrated milliseconds since
+    /// `_TPM_Init` (non-decreasing; a smaller value is ignored). Returns the complete response.
     /// Every error of the guest command is a response with a `TPM_RC`, never a host error.
     pub fn execute(&mut self, locality: u8, command: &[u8], now_ms: u64) -> Vec<u8> {
         self.advance_power_time(now_ms);
@@ -258,7 +261,9 @@ impl Tpm {
     /// Updates the absolute time on this power cycle, including powered idle
     /// time before the owning host takes a persistent snapshot.
     pub fn advance_power_time(&mut self, now_ms: u64) {
-        self.power_ms = self.power_ms.max(now_ms);
+        self.power_ms = self
+            .power_ms
+            .saturating_add(self.time_calibration.elapsed(now_ms));
         self.da_tick();
     }
 
@@ -366,6 +371,55 @@ impl Tpm {
         self.persistent.clock_base_ms = new_time;
         self.clock_epoch_ms = self.power_ms;
         Ok(Output::default())
+    }
+
+    /// `TPM2_ClockRateAdjust` (Part 3 v185, §29.3) calibrates the rate shared by Clock and Time.
+    pub(crate) fn cmd_clock_rate_adjust(
+        &mut self,
+        p: &mut crate::marshal::Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let step_ppm = match i8::from_be_bytes([p.u8()?]) {
+            -3 => -10_000,
+            -2 => -1_000,
+            -1 => -1,
+            0 => 0,
+            1 => 1,
+            2 => 1_000,
+            3 => 10_000,
+            _ => return Err(Rc::VALUE.in_param(1)),
+        };
+        p.finish()?;
+        const MAX_ADJUSTMENT_PPM: i32 = 150_000;
+        let adjusted = self.time_calibration.adjustment_ppm + step_ppm;
+        if !(-MAX_ADJUSTMENT_PPM..=MAX_ADJUSTMENT_PPM).contains(&adjusted) {
+            return Err(Rc::VALUE.in_param(1));
+        }
+        self.time_calibration.adjustment_ppm = adjusted;
+        Ok(Output::default())
+    }
+}
+
+/// Volatile calibration of the owner's unadjusted power clock.
+#[derive(Default)]
+struct TimeCalibration {
+    reference_ms: u64,
+    adjustment_ppm: i32,
+    fractional: u32,
+}
+
+impl TimeCalibration {
+    fn elapsed(&mut self, now_ms: u64) -> u64 {
+        let delta = now_ms.saturating_sub(self.reference_ms);
+        if delta == 0 {
+            return 0;
+        }
+        self.reference_ms = now_ms;
+        const PARTS_PER_MILLION: i32 = 1_000_000;
+        let scale = (PARTS_PER_MILLION + self.adjustment_ppm) as u128;
+        let adjusted = u128::from(delta) * scale + u128::from(self.fractional);
+        self.fractional = (adjusted % PARTS_PER_MILLION as u128) as u32;
+        u64::try_from(adjusted / PARTS_PER_MILLION as u128).unwrap_or(u64::MAX)
     }
 }
 
