@@ -3820,7 +3820,6 @@ fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
     let forms: &[(&str, &[u8], u8)] = &[
         ("3a 03 cmpb (%rbx), %al", &[0x3a, 0x03], 0x3a),
         ("3b 03 cmpl (%rbx), %eax", &[0x3b, 0x03], 0x3b),
-        ("3d 00 00 00 00 cmpl $0, %eax", &[0x3d, 0, 0, 0, 0], 0x3d),
         (
             "81 3b 00 00 00 00 cmpl $0, (%rbx)",
             &[0x81, 0x3b, 0, 0, 0, 0],
@@ -4289,13 +4288,10 @@ fn jmp_forms_other_than_unprefixed_relative_are_refused_without_change() {
 
 #[test]
 fn jmp_rel8_then_an_outside_form_stops_at_that_form() {
-    // Synthetic block modelled on the `/init` loop tail: `eb 01` jumps over one `hlt` to a
-    // `3d 20 00 00 00` (cmpl $0x20, %eax), which is outside (`84 c0` joined in S4-39f17 and
-    // `3c 20` in S4-39f18); the test checks the fetch after a jump, not the real next boundary of
-    // `/init`.
+    // An operand-size-prefixed `cmp ax, imm16` remains outside the CPL3 allowlist.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
-    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x3d, 0x20, 0x00, 0x00, 0x00]);
+    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x66, 0x3d, 0x20, 0x00]);
     let result = run3(&mut state, &mut memory, &set, 4).unwrap();
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3d });
     assert_eq!(result.instructions_executed, 1);
@@ -5767,11 +5763,6 @@ fn cmp_r64_imm32_outside_the_register_form_stays_refused() {
         ),
         // Neighbouring opcodes.
         ("66 83 f9 80 cmp cx, imm8", &[0x66, 0x83, 0xf9, 0x80], 0x83),
-        (
-            "3d 80 00 00 00 cmpl $0x80, %eax",
-            &[0x3d, 0x80, 0, 0, 0],
-            0x3d,
-        ),
         ("66 3d 80 00 cmp ax, imm16", &[0x66, 0x3d, 0x80, 0], 0x3d),
     ];
     for (name, bytes, opcode) in forms {
@@ -5887,11 +5878,6 @@ fn cmp_al_imm8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
             "66 40 3c 20 prefix before REX",
             &[0x66, 0x40, 0x3c, 0x20],
             0x3c,
-        ),
-        (
-            "3d 20 00 00 00 cmp eax, imm32",
-            &[0x3d, 0x20, 0, 0, 0],
-            0x3d,
         ),
         ("66 3d 20 00 cmp ax, imm16", &[0x66, 0x3d, 0x20, 0], 0x3d),
         ("3a c0 cmp al, al (3A)", &[0x3a, 0xc0], 0x3a),
@@ -6776,6 +6762,84 @@ fn cpl3_tunables_cmp_dil_defines_flags_without_a_store() {
     assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state, expected);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_rseq_cmp_eax_imm32_preserves_full_rax_and_sets_sub_flags() {
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0x1234_5678_0000_0000;
+    state.rflags |= ARITH;
+    let mut expected = state.clone();
+    expected.rip += 5;
+    expected.rflags = (expected.rflags & !ARITH) | CF | PF;
+    let mut memory = DataMemory::new(&[0x3d, 0x00, 0xf0, 0xff, 0xff]);
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_rseq_cmp_eax_imm32_drives_unsigned_ja_error_check() {
+    let code = [
+        0x3d, 0x00, 0xf0, 0xff, 0xff, // cmp eax, 0xfffff000
+        0x77, 0x05, // ja error
+        0xb8, 0x01, 0x00, 0x00, 0x00, // success continuation (not executed)
+    ];
+    for (rax, branch_taken) in [
+        (0x7654_3210_0000_0000u64, false),
+        (0x7654_3210_ffff_fff2u64, true),
+    ] {
+        let mut state = user_state();
+        state.gpr[Register::Rax as usize] = rax;
+        let mut memory = DataMemory::new(&code);
+
+        let result = run3_data(&mut state, &mut memory, 2).unwrap();
+
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(state.gpr[Register::Rax as usize], rax);
+        assert_eq!(state.rip, RIP + if branch_taken { 12 } else { 7 });
+        assert_eq!(state.rflags & ZF, 0);
+        assert_eq!(state.rflags & CF, if branch_taken { 0 } else { CF });
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_rseq_cmp_word_form_stays_refused_and_qword_form_is_preserved() {
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0xfeed_face_1234_5678;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0x66, 0x3d, 0x00, 0xf0]);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 0);
+    assert!(matches!(
+        exit(&result),
+        RunExit::Unsupported { opcode: 0x3d }
+    ));
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0xfeed_face_1234_5678;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&[0x48, 0x3d, 0x00, 0xf0, 0xff, 0xff]);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.gpr[Register::Rax as usize],
+        before.gpr[Register::Rax as usize]
+    );
+    assert_eq!(state.rip, RIP + 6);
     assert_eq!(memory.reads, 0);
     assert!(memory.writes.is_empty());
 }

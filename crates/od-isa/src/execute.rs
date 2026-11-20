@@ -28851,6 +28851,20 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) if dst.size() == OperandSize::Dword => true,
         (
             OpcodeMap::Primary,
+            0x3d,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if instruction.operand_size == OperandSize::Dword
+            && prefixes.rex.is_none()
+            && dst == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
             0xc1,
             Operation::Shift {
                 kind: ShiftKind::Shr,
