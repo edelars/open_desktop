@@ -72,6 +72,7 @@ pub mod cc {
     pub const UNSEAL: u32 = 0x0000_015E;
     pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
     pub const LOAD_EXTERNAL: u32 = 0x0000_0167;
+    pub const MAKE_CREDENTIAL: u32 = 0x0000_0168;
     pub const NV_READ_PUBLIC: u32 = 0x0000_0169;
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const START_AUTH_SESSION: u32 = 0x0000_0176;

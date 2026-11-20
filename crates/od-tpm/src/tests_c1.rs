@@ -628,6 +628,106 @@ fn ecc_parameters_reports_the_p256_registry_values_and_rejects_unsupported_curve
 }
 
 #[test]
+fn make_credential_accepts_a_public_only_storage_key_and_opaque_name() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_storage()));
+    let mut public = unmarshal_public(&key.public);
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let before = t.persistent_snapshot();
+    let invoke = |t: &mut Tpm, handle, credential: &[u8], name: &[u8]| {
+        run(
+            t,
+            plain(
+                cc::MAKE_CREDENTIAL,
+                &[handle],
+                &cat(&[&tpm2b(credential), &tpm2b(name)]),
+            ),
+        )
+    };
+    let mut previous_secret = Vec::new();
+    for (credential, name) in [(b"".as_slice(), b"".as_slice()), (&[0x3c; 32], &[0x42; 34])] {
+        let response = invoke(&mut t, external, credential, name);
+        let mut outer = Reader::new(params(&response, 0));
+        let blob = outer.tpm2b(68).unwrap();
+        let secret = outer.tpm2b(68).unwrap();
+        outer.finish().unwrap();
+        assert_eq!(&blob[..2], &[0, 32]);
+        assert_eq!(blob.len(), 34 + 2 + credential.len());
+        assert_eq!(secret.len(), 68);
+        let mut point = Reader::new(secret);
+        let x = point.tpm2b(32).unwrap();
+        let y = point.tpm2b(32).unwrap();
+        point.finish().unwrap();
+        assert!(crate::crypto::ecc_point_valid(x, y));
+        assert_ne!(previous_secret, secret);
+        previous_secret = secret.to_vec();
+    }
+    assert_eq!(t.persistent_snapshot(), before);
+    err(&invoke(&mut t, NULL, b"", b""), Rc::VALUE.in_handle(1));
+    err(
+        &invoke(&mut t, external, &[0; 33], b""),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &invoke(&mut t, external, b"", &[0; 35]),
+        Rc::SIZE.in_param(2),
+    );
+    err(
+        &run(&mut t, plain(cc::MAKE_CREDENTIAL, &[external], &[0])),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+    let signing = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_sign()));
+    err(
+        &invoke(&mut t, signing.handle, b"", b""),
+        Rc::TYPE.in_handle(1),
+    );
+}
+
+#[test]
+fn make_credential_refuses_external_keys_without_storage_parameters() {
+    let mut t = started();
+    let mut public = ext_rsa_encryption_key();
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    for (symmetric, scheme, expected) in [
+        (SymDef::Null, Scheme::NULL, Rc::TYPE.in_handle(1)),
+        (
+            SymDef::Aes128Cfb,
+            Scheme {
+                alg: alg::RSAES,
+                hash: alg::NULL,
+            },
+            Rc::VALUE.in_handle(1),
+        ),
+        (
+            SymDef::Aes128Cfb,
+            Scheme {
+                alg: alg::RSASSA,
+                hash: alg::SHA256,
+            },
+            Rc::VALUE.in_handle(1),
+        ),
+    ] {
+        let PublicParams::Rsa {
+            symmetric: stored_symmetric,
+            scheme: stored_scheme,
+            ..
+        } = &mut public.params
+        else {
+            unreachable!()
+        };
+        *stored_symmetric = symmetric;
+        *stored_scheme = scheme;
+        let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+        err(
+            &run(&mut t, plain(cc::MAKE_CREDENTIAL, &[external], &[0; 4])),
+            expected,
+        );
+        ok(&flush(&mut t, external));
+    }
+}
+
+#[test]
 fn ecdh_key_gen_uses_a_public_only_ecc_key_and_returns_fresh_ephemeral_points() {
     let mut t = started();
     let key = parse_primary(&create_primary(

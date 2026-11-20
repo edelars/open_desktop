@@ -29,6 +29,7 @@ pub mod capability;
 pub mod codes;
 pub mod command;
 mod context;
+mod credential;
 pub mod crypto;
 mod da;
 pub mod dispatch;

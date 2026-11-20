@@ -319,6 +319,22 @@ pub(crate) fn ecc_generate(rng: &mut Drbg) -> Option<EccPrivate> {
     None
 }
 
+/// P-256 key generation with extra random bits (Part 1 v185 §44.6).
+/// Reduce 320 uniform bits modulo the group order minus one, then add one.
+pub(crate) fn ecc_generate_extra_random_bits(rng: &mut Drbg) -> Option<EccPrivate> {
+    use p256::elliptic_curve::bigint::{NonZero, U256, U320};
+
+    const ORDER_MINUS_ONE: U256 =
+        U256::from_be_hex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550");
+    let modulus = NonZero::new(ORDER_MINUS_ONE).expect("P-256 order minus one is nonzero");
+    let mut bytes = Zeroizing::new([0u8; 40]);
+    rng.generate(&mut bytes[..])?;
+    let random = Zeroizing::new(U320::from_be_slice(&bytes[..]));
+    let scalar = Zeroizing::new(random.rem(&modulus).wrapping_add(&U256::ONE));
+    let encoded = Zeroizing::new(scalar.to_be_bytes());
+    ecc_from_scalar(encoded.as_ref())
+}
+
 /// The private scalar, 32 octets; wiped on drop.
 pub(crate) fn ecc_scalar(key: &EccPrivate) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(key.to_bytes().to_vec())

@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 71] = [
+pub(crate) static COMMANDS: [CommandSpec; 72] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -156,6 +156,7 @@ pub(crate) static COMMANDS: [CommandSpec; 71] = [
     spec(cc::ECDH_KEY_GEN, 1, 0, false, false, false),
     spec(cc::FLUSH_CONTEXT, 0, 0, false, false, false),
     spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
+    spec(cc::MAKE_CREDENTIAL, 1, 0, false, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::POLICY_AUTH_VALUE, 1, 0, false, false, false),
     spec(cc::POLICY_COMMAND_CODE, 1, 0, false, false, false),
@@ -712,6 +713,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::CREATE => tpm.cmd_create(&inv, &mut p)?,
         cc::LOAD => tpm.cmd_load(&inv, &mut p)?,
         cc::LOAD_EXTERNAL => tpm.cmd_load_external(&mut p)?,
+        cc::MAKE_CREDENTIAL => tpm.cmd_make_credential(&inv, &mut p)?,
         cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
         cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
@@ -895,6 +897,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         cc::CREATE
         | cc::LOAD
         | cc::READ_PUBLIC
+        | cc::MAKE_CREDENTIAL
         | cc::UNSEAL
         | cc::SIGN
         | cc::VERIFY_SIGNATURE
@@ -1025,6 +1028,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 71);
+        assert_eq!(COMMANDS.len(), 72);
     }
 }
