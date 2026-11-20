@@ -3754,7 +3754,7 @@ pub(super) fn parse_attestation(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 // ------------------------------------------------------------------------------------- HMAC
 
-fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
+pub(super) fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
     TpmtPublic {
         name_alg: alg::SHA256,
         attributes: oa::FIXED_TPM
@@ -3768,7 +3768,7 @@ fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
     }
 }
 
-const HMAC_SHA256: Scheme = Scheme {
+pub(super) const HMAC_SHA256: Scheme = Scheme {
     alg: alg::HMAC,
     hash: alg::SHA256,
 };
@@ -3792,7 +3792,7 @@ fn hmac_out(resp: &[u8]) -> Vec<u8> {
     d
 }
 
-fn hmac_start(t: &mut Tpm, key: u32, pw: &[u8], auth: &[u8], hash: u16) -> Vec<u8> {
+pub(super) fn hmac_start(t: &mut Tpm, key: u32, pw: &[u8], auth: &[u8], hash: u16) -> Vec<u8> {
     run(
         t,
         with_pw(
@@ -5157,14 +5157,15 @@ fn session_contexts_save_once_and_load_once() {
 fn context_commands_check_their_handles_and_take_no_session() {
     let (mut t, parent) = with_ecc_parent();
     // What cannot be saved: persistent objects, NV indices, permanent handles, PCR, unloaded
-    // objects and sessions, sequence objects.
+    // objects and sessions, and the sequence objects that are not saved (a hash, sign or verify
+    // sequence is saved since slice 8; an event sequence is not).
     let seq = {
         let r = run(
             &mut t,
             plain(
                 cc::HASH_SEQUENCE_START,
                 &[],
-                &cat(&[&tpm2b(b""), &u16b(alg::SHA256)]),
+                &cat(&[&tpm2b(b""), &u16b(alg::NULL)]),
             ),
         );
         ok(&r);

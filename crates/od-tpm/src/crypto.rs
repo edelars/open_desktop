@@ -205,6 +205,80 @@ pub(crate) fn hmac_sha256_state(key: &[u8]) -> Hmac<Sha256> {
     <Hmac<Sha256> as KeyInit>::new(&(*block).into())
 }
 
+/// An incremental HMAC-SHA-256 whose state can be saved and restored (the ticket accumulators of a
+/// verify sequence, `TPM2_ContextSave`): the prepared key block and the inner hash (the key block
+/// XOR `ipad`, then the data so far). `hmac::Hmac` keeps the same two values in private fields, so it
+/// cannot be written out. The tag is the same as `hmac_sha256` and `hmac_sha256_state` give.
+#[derive(Clone)]
+pub(crate) struct HmacSha256Stream {
+    key_block: Zeroizing<[u8; BLOCK]>,
+    inner: Sha256,
+}
+
+impl HmacSha256Stream {
+    pub(crate) fn new(key: &[u8]) -> Self {
+        // RFC 2104 key preparation, as in `hmac_sha256_state`.
+        let mut block = Zeroizing::new([0u8; BLOCK]);
+        if key.len() > BLOCK {
+            block[..DIGEST].copy_from_slice(&Sha256::digest(key));
+        } else {
+            block[..key.len()].copy_from_slice(key);
+        }
+        Self::from_parts(block, Sha256::new(), true)
+    }
+
+    /// The stream of a restored inner hash under `key` (key preparation as in [`HmacSha256Stream::new`]).
+    pub(crate) fn restored(key: &[u8], inner: Sha256) -> Self {
+        let mut block = Zeroizing::new([0u8; BLOCK]);
+        if key.len() > BLOCK {
+            block[..DIGEST].copy_from_slice(&Sha256::digest(key));
+        } else {
+            block[..key.len()].copy_from_slice(key);
+        }
+        Self::from_parts(block, inner, false)
+    }
+
+    /// The stream of a saved state. `fresh` is `true` for a new stream (the inner hash is still empty
+    /// and takes the key block XOR `ipad` first), `false` for the restored inner hash.
+    pub(crate) fn from_parts(
+        key_block: Zeroizing<[u8; BLOCK]>,
+        mut inner: Sha256,
+        fresh: bool,
+    ) -> Self {
+        if fresh {
+            let mut ipad = Zeroizing::new(*key_block);
+            ipad.iter_mut().for_each(|b| *b ^= 0x36);
+            inner.update(&ipad[..]);
+        }
+        Self { key_block, inner }
+    }
+
+    pub(crate) fn update(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
+
+    /// The tag of the data so far; the stream goes on unchanged.
+    pub(crate) fn finalize(&self) -> [u8; DIGEST] {
+        let inner_hash = self.inner.clone().finalize();
+        let mut opad = Zeroizing::new(*self.key_block);
+        opad.iter_mut().for_each(|b| *b ^= 0x5c);
+        let mut outer = Sha256::new();
+        outer.update(&opad[..]);
+        outer.update(inner_hash);
+        outer.finalize().into()
+    }
+
+    /// The prepared key block (a test of the saved state only: it is never written to a context).
+    #[cfg(test)]
+    pub(crate) fn key_block(&self) -> &[u8; BLOCK] {
+        &self.key_block
+    }
+
+    pub(crate) fn inner(&self) -> &Sha256 {
+        &self.inner
+    }
+}
+
 /// `HMAC-SHA-256(key, parts[0] || parts[1] || ...)`; `key` may have any length.
 pub(crate) fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; DIGEST] {
     let mut out = [0u8; DIGEST];

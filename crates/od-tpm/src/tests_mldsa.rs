@@ -148,20 +148,22 @@ fn sha256_golden_unchanged() {
 const TPM_SEED: &str = "9422a64d0ce736a1a1fedacc058781b8d19d90b682c34f136132e30023f64896";
 const TPM_PK_SHA256: &str = "ae5653b53bb857237d2799c3a8cc47ea3b650b8af90090817b8bd5d92e9e33f3";
 const TPM_NAME: &str = "000b1f4eed7c8cc1ec151605aff71c4930db11de2ce48a6c26a699a3681bf0d55fac";
-const MESSAGE: &[u8] = b"ML-DSA-65 TPM message";
+pub(super) const MESSAGE: &[u8] = b"ML-DSA-65 TPM message";
 const MU: &str = "be5c584910f9ddaae2b7e6c21e46640c8258c0c0349979545b572548d89c1281962edc36857354036b92b52caea9cc0b370617d6c5435ac0b48f7a3ecfb1b382";
 const SIG_SHA256: &str = "7bdbbd1ce8dddd55e4811c5834971a1d7cecf3402eb81e31bef60fc35921eb26";
 const SIG_EMPTY_SHA256: &str = "7773a09a03ab77fd8330d305000acfa5d19c584308c6826d454f26c9fef92265";
-const SIG_CTX_SHA256: &str = "c59b96971980a58e4fc79d8ba830f3a9532b27e9c6fedcb9f35c2dd4d3e3d53a";
+pub(super) const SIG_CTX_SHA256: &str =
+    "c59b96971980a58e4fc79d8ba830f3a9532b27e9c6fedcb9f35c2dd4d3e3d53a";
 const SIG_LONG_SHA256: &str = "916882d00ae8481a47ed1260875282a5bf0db030a383dcfcf26473b1da94f054";
 const SIG_POLICY_SHA256: &str = "5ad424d8bf57bc0c31256e2c43170fa80a6a48c24a1881634ef58a6a379ba670";
 const LONG_SHA256: &str = "0f1a2812a0c0154ac66d3a7535245d24b36eb2c24b01ea1f1f05e4874a86e3c7";
 // The external key, loaded with attributes {sign}, allowExternalMu YES, nameAlg SHA-256.
-const EXT_NAME: &str = "000bdd83e0cb4633179ed0da23e7297cfa1b98b12b21e031d3ac6e22734dfec1d67f";
-const EXT_MESSAGE: &[u8] = b"ML-DSA-65 external message";
+pub(super) const EXT_NAME: &str =
+    "000bdd83e0cb4633179ed0da23e7297cfa1b98b12b21e031d3ac6e22734dfec1d67f";
+pub(super) const EXT_MESSAGE: &[u8] = b"ML-DSA-65 external message";
 const EXT_MU: &str = "c0557cfd19b5543e7104d122b81eeb9655ea63721b6ee8a3fcd13864387767763cc1dcdab907fc33406692013bbbb510596e5b52666a224051ca28ce63785198";
 const EXT_PUBLIC: &[u8] = include_bytes!("kat/mldsa65-openssl-pub.bin");
-const EXT_SIG_MSG: &[u8] = include_bytes!("kat/mldsa65-openssl-sig-msg.bin");
+pub(super) const EXT_SIG_MSG: &[u8] = include_bytes!("kat/mldsa65-openssl-sig-msg.bin");
 const EXT_SIG_MU: &[u8] = include_bytes!("kat/mldsa65-openssl-sig-mu.bin");
 const EXT_SIG_POLICY: &[u8] = include_bytes!("kat/mldsa65-openssl-sig-policy.bin");
 // The attestation of test "mldsa65_quote_or_certify_verifies" and its TPMT_SIGNATURE; the signature
@@ -177,7 +179,7 @@ fn hex_of(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hex_of(&Sha256::digest(bytes))
 }
 
@@ -209,7 +211,7 @@ fn external_public(external_mu: bool) -> TpmtPublic {
 }
 
 /// A TPM with the key of the fixtures above.
-fn tpm_key() -> (Tpm, Primary) {
+pub(super) fn tpm_key() -> (Tpm, Primary) {
     let mut t = started();
     let created = create_primary(
         &mut t,
@@ -229,7 +231,7 @@ fn handle_of(resp: &[u8]) -> u32 {
 
 /// The 3309 octets of a successful `TPMT_SIGNATURE` of an ML-DSA key: `sigAlg` and the size are
 /// checked and cut off.
-fn sig_octets(resp: &[u8]) -> Vec<u8> {
+pub(super) fn sig_octets(resp: &[u8]) -> Vec<u8> {
     ok(resp);
     let p = params(resp, 0);
     assert_eq!(p[..4], [0x00, 0xA1, 0x0C, 0xED], "TPM_ALG_MLDSA, 3309");
@@ -237,7 +239,7 @@ fn sig_octets(resp: &[u8]) -> Vec<u8> {
     p[4..].to_vec()
 }
 
-fn signature_bytes(octets: &[u8]) -> Vec<u8> {
+pub(super) fn signature_bytes(octets: &[u8]) -> Vec<u8> {
     cat(&[&u16b(alg::MLDSA), &tpm2b(octets)])
 }
 
@@ -317,7 +319,7 @@ fn verify_digest(t: &mut Tpm, key: u32, digest: &[u8], signature: &[u8]) -> Vec<
     run(t, plain(cc::VERIFY_DIGEST_SIGNATURE, &[key], &params))
 }
 
-fn load_external_key(t: &mut Tpm, external_mu: bool) -> (u32, Vec<u8>) {
+pub(super) fn load_external_key(t: &mut Tpm, external_mu: bool) -> (u32, Vec<u8>) {
     parse_loaded(&load_external(t, &external_public(external_mu), NULL))
 }
 

@@ -47,9 +47,28 @@
 //! **Failure mode** (Part 2, clause 14.5): if the integrity is valid but the decrypted sequence
 //! differs from the parameter, the TPM enters failure mode (`TPM_RC_FAILURE`).
 //!
-//! Not implemented: saving sequence objects (`savedHandle` `0x80000001`), `TPM_RC_CONTEXT_GAP`
-//! (the counter is 64 bits and never rolls over), saved sessions in the snapshot (sessions are
-//! volatile; only `Shutdown(STATE)` keeps the record).
+//! **Sequences (slice 8).** A hash sequence (SHA-256, SHA-384, SHA-512), a sign sequence and a verify
+//! sequence (RSA, ECC and ML-DSA keys) are saved with `savedHandle` `0x80000001`, the hierarchy
+//! `TPM_RH_NULL` (a sequence has none: the proof is `nullProof`, so a TPM Reset ends the context) and
+//! the sequence of the object counter. The body (ours) holds the authValue, the running hash as a
+//! serialized SHA-2 state (`SerializableState`) or the buffered ML-DSA message, the Name of the key, the
+//! scheme, the ML-DSA context string, the first-buffer flag and the first four octets of the message
+//! (the `TPM_GENERATED` prefix check); for a verify sequence also the three message-ticket
+//! accumulators (`HmacSha256Stream`: key block and inner hash state). Like an object the saved sequence
+//! stays loaded and a context loads any number of times, each load taking a free sequence slot
+//! (`TPM_RC_OBJECT_MEMORY` without one): a stale context returns the sequence to the saved state. The
+//! HMAC, event and platform sequences are not saved (`TPM_RC_VALUE`, handle 1); a sequence whose
+//! context would pass the largest `contextBlob` (an ML-DSA message of about 3.9 KiB and more) is
+//! `TPM_RC_SIZE`, handle 1.
+//!
+//! **Context gap (slice 8).** `TPM_RC_CONTEXT_GAP` (a warning, no handle or parameter number) bounds
+//! the `contextID`s of session contexts by [`CONTEXT_GAP_MAX`]: a session whose save would put its
+//! `contextID` more than that past the oldest saved session is refused and stays loaded. The gap is
+//! reported only at save; a session context that is not among the saved ones is `TPM_RC_HANDLE`
+//! (parameter 1) at load, however old it is. The counter and the saved records live in [`ContextState`], so they follow
+//! `Shutdown(STATE)` (Restart, Resume) and end with a Reset; they are not in the persistent snapshot.
+//! Not implemented: saved sessions in the snapshot (sessions are volatile; only `Shutdown(STATE)` keeps
+//! the record).
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available; Part 1 and Part 2 were
 //! read for the construction): the labels `ODTPM-NULLPROOF` and `ODTPM-CTXRESET` (both internal,
@@ -61,15 +80,18 @@
 //! session that is not saved or whose sequence is not the last one, `TPM_RC_VALUE` (parameter 1)
 //! for a sequence beyond the counters and for an unknown `savedHandle` or hierarchy,
 //! `TPM_RC_HIERARCHY` (parameter 1) for a disabled hierarchy, `TPM_RC_SIZE` for a context blob
-//! that does not split into integrity and ciphertext, `TPM_RC_OBJECT_MEMORY` without a free slot.
+//! that does not split into integrity and ciphertext, `TPM_RC_OBJECT_MEMORY` without a free slot;
+//! slice 8: the window `CONTEXT_GAP_MAX` = 0xFFFF, `TPM_RC_CONTEXT_GAP` at save only (at load the stale
+//! context of a session is `TPM_RC_HANDLE`, parameter 1, as for a session that is not saved), `TPM_RC_SIZE` for a sequence over the blob limit, failure mode for a sequence body with valid
+//! integrity that does not decode, the choice that a sequence context may load many times.
 
 use zeroize::Zeroizing;
 
 use crate::codes::{handle, object_attr};
-use crate::crypto::{HashAlg, TpmDigest, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::crypto::{DIGEST, HashAlg, TpmDigest, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
 use crate::da::DaClass;
 use crate::dispatch::Invocation;
-use crate::hash::AuthValue;
+use crate::hash::{AuthValue, Sequence, seq_handle};
 use crate::marshal::{Reader, TpmtPublic, Writer, limits};
 use crate::object::{
     Object, Sensitive, aes_cfb, name_of, sensitive_from_bytes, sensitive_to_bytes,
@@ -83,7 +105,7 @@ use crate::state::{TimePoint, Tpm};
 /// Largest `contextBlob` accepted by `TPM2_ContextLoad`. An RSA-3072 object context is under 1.5 KiB;
 /// an ML-DSA-65 object context holds the public key of 1952 octets, the seed and the wrapper, about
 /// 2.1 KiB (it was 2048 before ML-DSA, which does not fit).
-const MAX_CONTEXT_BLOB: usize = 4096;
+pub(crate) const MAX_CONTEXT_BLOB: usize = 4096;
 
 /// The largest `TPMS_CONTEXT` that `TPM2_ContextLoad` takes: `sequence` (8), `savedHandle` (4),
 /// `hierarchy` (4) and the `TPM2B` `contextBlob` (2 + [`MAX_CONTEXT_BLOB`]). Reported as
@@ -94,6 +116,16 @@ pub(crate) const MAX_CONTEXT_SIZE: usize = 8 + 4 + 4 + 2 + MAX_CONTEXT_BLOB;
 const SAVED_ST_CLEAR: u32 = 0x8000_0002;
 /// `savedHandle` of an ordinary transient object.
 const SAVED_OBJECT: u32 = 0x8000_0000;
+/// `savedHandle` of a sequence object (Part 2, `TPMI_DH_SAVED`).
+const SAVED_SEQUENCE: u32 = 0x8000_0001;
+
+/// `TPM_PT_CONTEXT_GAP_MAX`: the largest distance between the `contextID` of the oldest saved session
+/// context and a new one. `TPM2_ContextSave` of a session whose context would be farther than this
+/// from the oldest saved one is `TPM_RC_CONTEXT_GAP` until that session is loaded or flushed; a stale
+/// session context at `TPM2_ContextLoad` is `TPM_RC_HANDLE` (parameter 1). 0xFFFF is the window of 16-bit context slots that the
+/// reference implementation keeps (NOT VERIFIED: Part 4 is not available). Only session contexts
+/// have a `contextID` that is tracked; object and sequence contexts carry the object counter.
+pub(crate) const CONTEXT_GAP_MAX: u32 = 0xFFFF;
 
 /// Volatile state of the context protection; it travels with `Shutdown(STATE)` (`state.rs`).
 #[derive(Clone, Default)]
@@ -133,6 +165,23 @@ impl ContextState {
             .iter()
             .map(|(s, _)| session_handle(SessionKind::Hmac, *s))
             .collect()
+    }
+
+    /// Whether saving one more session context now would put it more than [`CONTEXT_GAP_MAX`]
+    /// `contextID`s past the oldest saved session context.
+    fn save_exceeds_gap(&self) -> bool {
+        let next = self.session_counter.wrapping_add(1);
+        self.saved_sessions
+            .iter()
+            .map(|(_, sequence)| *sequence)
+            .min()
+            .is_some_and(|oldest| next.saturating_sub(oldest) > u64::from(CONTEXT_GAP_MAX))
+    }
+
+    /// The context counter of sessions, set for a test of the gap (the window is 0xFFFF contexts).
+    #[cfg(test)]
+    pub(crate) fn set_session_counter(&mut self, counter: u64) {
+        self.session_counter = counter;
     }
 
     /// Forgets the saved session in `slot` (`TPM2_FlushContext`); `false` if none is saved there.
@@ -290,7 +339,7 @@ fn open_context(
 
 fn encode_object(o: &Object) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let mut w = Writer {
-        buf: Vec::with_capacity(1024),
+        buf: Vec::with_capacity(MAX_CONTEXT_BLOB),
     };
     w.u8(u8::from(o.sensitive.is_some()));
     w.tpm2b(&o.public.to_bytes());
@@ -589,6 +638,19 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     })
 }
 
+/// The `TPMS_CONTEXT` of a `TPM2_ContextSave` response.
+fn context_output(sequence: u64, saved_handle: u32, hierarchy: u32, blob: &[u8]) -> Output {
+    let mut w = Writer::new();
+    w.u64(sequence);
+    w.u32(saved_handle);
+    w.u32(hierarchy);
+    w.tpm2b(blob);
+    Output {
+        handles: Vec::new(),
+        params: w.finish(),
+    }
+}
+
 impl Tpm {
     /// Reset-bound material for the encryption root and the context integrity tag.
     fn context_reset_value(&self) -> Zeroizing<Vec<u8>> {
@@ -618,12 +680,38 @@ impl Tpm {
         let (saved_handle, hierarchy, sequence, body, st_clear) = match handle::handle_type(h) {
             handle::HT_TRANSIENT => {
                 let Some(o) = self.objects.get(h) else {
-                    // A sequence object cannot be saved; an unloaded handle is not loaded.
-                    return Err(if self.seq_slot(h, 0).is_ok() {
-                        Rc::VALUE.in_handle(1)
-                    } else {
-                        Rc::reference_handle(0)
-                    });
+                    // An unloaded handle is not loaded; a sequence object is saved with the
+                    // object counter, and stays loaded like an object.
+                    let slot = self.seq_slot(h, 0).map_err(|_| Rc::reference_handle(0))?;
+                    let body = self
+                        .sequences
+                        .get(slot)
+                        .and_then(Sequence::context_body)
+                        // The HMAC, event and platform sequences are not saved.
+                        .ok_or(Rc::VALUE.in_handle(1))?;
+                    // The context must load again: a message buffer that does not fit the
+                    // largest `contextBlob` is refused here (integrity TPM2B, ciphertext with its
+                    // size and inner sequence).
+                    if 2 + DIGEST + 2 + 8 + body.len() > MAX_CONTEXT_BLOB {
+                        return Err(Rc::SIZE.in_handle(1));
+                    }
+                    self.context.object_seq = self.context.object_seq.wrapping_add(1);
+                    let sequence = self.context.object_seq;
+                    let proof = self.context_proof(handle::RH_NULL);
+                    let blob = context_blob(
+                        &proof,
+                        &self.context_reset_value(),
+                        None,
+                        sequence,
+                        SAVED_SEQUENCE,
+                        &body,
+                    );
+                    return Ok(context_output(
+                        sequence,
+                        SAVED_SEQUENCE,
+                        handle::RH_NULL,
+                        &blob,
+                    ));
                 };
                 let st_clear = o.has(object_attr::ST_CLEAR);
                 let saved = if st_clear {
@@ -639,6 +727,10 @@ impl Tpm {
             handle::HT_HMAC_SESSION | handle::HT_POLICY_SESSION => {
                 let slot = self.sessions.slot_of(h).ok_or(Rc::HANDLE.in_handle(1))?;
                 let body = encode_session(self.sessions.get(slot).ok_or(Rc::HANDLE.in_handle(1))?);
+                // The oldest saved session context is too far behind: nothing changes.
+                if self.context.save_exceeds_gap() {
+                    return Err(Rc::CONTEXT_GAP);
+                }
                 self.context.session_counter = self.context.session_counter.wrapping_add(1);
                 let sequence = self.context.session_counter;
                 self.sessions.park(slot);
@@ -657,15 +749,7 @@ impl Tpm {
             saved_handle,
             &body,
         );
-        let mut w = Writer::new();
-        w.u64(sequence);
-        w.u32(saved_handle);
-        w.u32(hierarchy);
-        w.tpm2b(&blob);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
+        Ok(context_output(sequence, saved_handle, hierarchy, &blob))
     }
 
     /// `TPM2_ContextLoad` (Part 3, clause 28.3).
@@ -680,11 +764,16 @@ impl Tpm {
             handle::handle_type(saved_handle),
             handle::HT_HMAC_SESSION | handle::HT_POLICY_SESSION
         );
-        if !session && saved_handle != SAVED_OBJECT && saved_handle != SAVED_ST_CLEAR {
+        let sequence_context = saved_handle == SAVED_SEQUENCE;
+        if !session
+            && !sequence_context
+            && saved_handle != SAVED_OBJECT
+            && saved_handle != SAVED_ST_CLEAR
+        {
             return Err(Rc::VALUE.in_param(1));
         }
         if !crate::object::is_object_hierarchy(hierarchy)
-            || (session && hierarchy != handle::RH_NULL)
+            || ((session || sequence_context) && hierarchy != handle::RH_NULL)
         {
             return Err(Rc::VALUE.in_param(1));
         }
@@ -706,6 +795,10 @@ impl Tpm {
             }
         } else if sequence > self.context.object_seq {
             return Err(Rc::VALUE.in_param(1));
+        } else if sequence_context {
+            if self.sequences.free_slots() == 0 {
+                return Err(Rc::OBJECT_MEMORY);
+            }
         } else if self.objects.free_slots() == 0 {
             return Err(Rc::OBJECT_MEMORY);
         }
@@ -744,6 +837,25 @@ impl Tpm {
             }
             let mut handles = Writer::new();
             handles.u32(saved_handle);
+            return Ok(Output {
+                handles: handles.finish(),
+                params: Vec::new(),
+            });
+        }
+        if sequence_context {
+            let s = match Sequence::from_context_body(&body, |h| self.proof(h)) {
+                Ok(s) => s,
+                // The proof of a hierarchy was rotated since the save: the context is stale, the
+                // TPM is sound.
+                Err(Rc::INTEGRITY) => return Err(Rc::INTEGRITY.in_param(1)),
+                Err(_) => {
+                    self.failed = true;
+                    return Err(Rc::FAILURE);
+                }
+            };
+            let slot = self.sequences.insert(s).ok_or(Rc::OBJECT_MEMORY)?;
+            let mut handles = Writer::new();
+            handles.u32(seq_handle(slot));
             return Ok(Output {
                 handles: handles.finish(),
                 params: Vec::new(),

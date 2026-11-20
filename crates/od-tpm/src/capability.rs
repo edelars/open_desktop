@@ -13,9 +13,9 @@
 //! `NV_COUNTERS_AVAIL` (counters that can still be defined, limited by the index slots and the data
 //! pool), `ORDERLY_COUNT` (`nv.rs`: `MAX_ORDERLY_COUNT`), `CONTEXT_HASH` (SHA-256), `CONTEXT_SYM` (AES)
 //! and `CONTEXT_SYM_SIZE` (128), `MAX_OBJECT_CONTEXT` and `MAX_SESSION_CONTEXT` (the largest context
-//! `TPM2_ContextLoad` takes), `LOADED_CURVES` (2: NIST P-256 and NIST P-384). Reported as 0 because the feature is
-//! absent or has no TPM-side interval (recorded deviations): `CONTEXT_GAP_MAX` (no context gap is
-//! tracked, `TPM_RC_CONTEXT_GAP` does not exist), `CLOCK_UPDATE` (`Clock` reaches NV only with the
+//! `TPM2_ContextLoad` takes), `CONTEXT_GAP_MAX` (the window of session `contextID`s of `context.rs`,
+//! slice 8), `LOADED_CURVES` (2: NIST P-256 and NIST P-384). Reported as 0 because the feature is
+//! absent or has no TPM-side interval (recorded deviations): `CLOCK_UPDATE` (`Clock` reaches NV only with the
 //! snapshot the host writes), `SPLIT_MAX` (no `TPM2_Commit`), `MODES` (no FIPS mode),
 //! `NV_WRITE_RECOVERY` (no NV wear model) and `AUDIT_COUNTER_0/1` (no
 //! `TPM2_SetCommandCodeAuditStatus`: no command audit). NOT VERIFIED against Part 2, Table 23 and
@@ -181,8 +181,8 @@ impl Tpm {
             (pt::ACTIVE_SESSIONS_MAX, MAX_SESSIONS as u32),
             (pt::PCR_COUNT, limits::PCR_COUNT as u32),
             (pt::PCR_SELECT_MIN, limits::PCR_SELECT_SIZE as u32),
-            // No context gap is tracked (`context.rs`): 0, a recorded deviation.
-            (pt::CONTEXT_GAP_MAX, 0),
+            // The window of session contextIDs (`context.rs`, `TPM_RC_CONTEXT_GAP`).
+            (pt::CONTEXT_GAP_MAX, crate::context::CONTEXT_GAP_MAX),
             (pt::NV_COUNTERS_MAX, MAX_NV_COUNTERS as u32),
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
             // `Clock` reaches NV only with the snapshot, which the host writes: no interval (0).

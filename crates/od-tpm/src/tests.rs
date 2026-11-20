@@ -19,6 +19,8 @@ mod tests_c1;
 mod tests_c2;
 #[path = "tests_c3.rs"]
 mod tests_c3;
+#[path = "tests_context_seq.rs"]
+mod tests_context_seq;
 #[path = "tests_ek.rs"]
 mod tests_ek;
 #[path = "tests_mldsa.rs"]

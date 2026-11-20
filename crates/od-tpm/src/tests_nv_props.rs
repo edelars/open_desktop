@@ -471,7 +471,8 @@ fn properties_from(t: &mut Tpm, first: u32, count: u32) -> Vec<(u32, u32)> {
 fn capability_table2_properties_match_behaviour() {
     let mut t = started();
     let expected_fixed = [
-        (pt::CONTEXT_GAP_MAX, 0),
+        // Slice 8: the context gap is tracked (window of 0xFFFF session contextIDs), not 0.
+        (pt::CONTEXT_GAP_MAX, 0xFFFF),
         (pt::NV_COUNTERS_MAX, 128),
         (pt::CLOCK_UPDATE, 0),
         (pt::CONTEXT_HASH, u32::from(alg::SHA256)),
@@ -534,7 +535,7 @@ fn capability_table2_properties_match_behaviour() {
     let session_context = params(&saved, 0).len() as u32;
     assert!(object_context <= property(&mut t, pt::MAX_OBJECT_CONTEXT).unwrap());
     assert!(session_context <= property(&mut t, pt::MAX_SESSION_CONTEXT).unwrap());
-    // The context counter is not bounded by a gap (CONTEXT_GAP_MAX is 0, a recorded deviation):
+    // The gap bounds the contextIDs of saved sessions (CONTEXT_GAP_MAX); the object counter has none:
     // many saves of one object all succeed.
     for _ in 0..40 {
         ok(&run(

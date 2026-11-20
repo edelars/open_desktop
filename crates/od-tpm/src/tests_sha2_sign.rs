@@ -369,7 +369,7 @@ const VECTORS: [Vector; 4] = [
     },
 ];
 
-const MESSAGE: &[u8] = b"slice 1b: hash agility signing";
+pub(super) const MESSAGE: &[u8] = b"slice 1b: hash agility signing";
 /// Python hashlib: sha384(MESSAGE), sha512(MESSAGE), and the digests of 40 octets 0x5c (the NV data).
 const MESSAGE_SHA384: &str = "012d2fbb824b2484ad3977ea449de6d24640143dfc18b25fc33a6f25c17353e093f7a266ba85a93cbac50da349d3d262";
 const MESSAGE_SHA512: &str = "fdff692bc78e1a7378665b7d775e317b67ef644a91ef2eb00193e53934da8c5a6743302b5ed3db31b046ab3c881bd4feca322bc45850c8e55d6e94eca5e7c9b0";
@@ -422,6 +422,17 @@ fn vector_key(t: &mut Tpm, v: &Vector) -> Primary {
     };
     assert_eq!(public, v.public);
     key
+}
+
+/// The pinned, OpenSSL-verified TPMT_SIGNATURE (hex) of SignDigest(H(MESSAGE)) for a key kind and
+/// hash (used by the context tests of the sequences).
+pub(super) fn pinned_signature(rsa_key: bool, hash: u16) -> &'static str {
+    vector(rsa_key, hash).signature
+}
+
+/// The owner primary key of the pinned vector of a key kind and hash (auth "pw").
+pub(super) fn pinned_key(t: &mut Tpm, rsa_key: bool, hash: u16) -> Primary {
+    vector_key(t, vector(rsa_key, hash))
 }
 
 /// The same signature structure relabelled with another hash.
