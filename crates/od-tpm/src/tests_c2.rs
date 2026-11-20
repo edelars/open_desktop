@@ -13,13 +13,15 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, LOCKOUT, hc, hmac_command, pw_cmd, run_hmac, set_auth, shutdown, split_response,
-    start_hmac, start_session, startup,
+    Hc, Hs, LOCKOUT, NV0, define, define_raw, hc, hmac_command, nv_public, nv_read_public,
+    nv_write, pw_cmd, run_hmac, set_auth, shutdown, split_response, start_hmac, start_session,
+    startup,
 };
 use super::tests_obj::*;
 use super::*;
 use crate::codes::{object_attr as oa, se, su};
 use crate::marshal::{PublicParams, Scheme, TpmtPublic, Unique};
+use crate::nv::attr as nv_attr;
 use crate::policy::PolicyHashRestriction;
 
 // ------------------------------------------------------------------------------- vectors
@@ -1360,6 +1362,184 @@ fn counter_timer_context_cannot_revive_a_deadline_after_restart_or_resume() {
         );
         ok(&counter_timer(&mut t, &policy, &[1], 24, 0));
     }
+}
+
+fn policy_nv_args(operand: &[u8], offset: u16, operation: u16) -> Vec<u8> {
+    cat(&[&tpm2b(operand), &u16b(offset), &u16b(operation)])
+}
+
+#[test]
+fn policy_nv_requires_read_authorization_for_trial_and_checks_data_only_for_real_sessions() {
+    let mut t = started();
+    let index = NV0;
+    let attrs = nv_attr::AUTHREAD | nv_attr::AUTHWRITE | nv_attr::READ_STCLEAR;
+    let public = nv_public(index, alg::SHA256, attrs, b"", 3);
+    ok(&define_raw(&mut t, OWNER, b"", b"nv-pw", &public));
+    let policy = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    let p = policy_nv_args(b"b", 1, 0);
+    let real_handles = [index, index, policy.handle];
+    let trial_handles = [index, index, trial.handle];
+    err(
+        &pw_cmd(&mut t, cc::POLICY_NV, &real_handles, b"bad", &p),
+        Rc::NV_UNINITIALIZED,
+    );
+    assert_eq!(t.persistent.da.failed_tries, 0);
+    err(
+        &pw_cmd(&mut t, cc::POLICY_NV, &trial_handles, b"bad", &p),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert_eq!(t.persistent.da.failed_tries, 1);
+    let (_, unwritten_name) = nv_read_public(&mut t, index);
+    let outside = policy_nv_args(b"b", 400, 0);
+    ok(&pw_cmd(
+        &mut t,
+        cc::POLICY_NV,
+        &trial_handles,
+        b"nv-pw",
+        &outside,
+    ));
+    let arguments = h256(&[b"b", &u16b(400), &u16b(0)]);
+    let trial_digest = h256(&[&[0; 32], &u32b(0x149), &arguments, &unwritten_name]);
+    assert_eq!(digest(&mut t, &trial), trial_digest);
+
+    ok(&nv_write(&mut t, index, index, b"nv-pw", b"abc", 0));
+    let (_, name) = nv_read_public(&mut t, index);
+    assert_ne!(name, unwritten_name);
+    err(
+        &pw_cmd(
+            &mut t,
+            cc::POLICY_NV,
+            &[OWNER, index, policy.handle],
+            b"",
+            &p,
+        ),
+        Rc::AUTH_TYPE,
+    );
+    err(
+        &pw_cmd(&mut t, cc::POLICY_NV, &real_handles, b"nv-pw", &outside),
+        Rc::NV_RANGE,
+    );
+    err(
+        &pw_cmd(
+            &mut t,
+            cc::POLICY_NV,
+            &real_handles,
+            b"nv-pw",
+            &policy_nv_args(b"c", 1, 0),
+        ),
+        Rc::POLICY,
+    );
+    assert_eq!(digest(&mut t, &policy), [0; 32]);
+
+    let mut authorizer = start_hmac(&mut t, NULL, b"", &[0x67; 16]);
+    let mut compare = hc(cc::POLICY_NV, &real_handles, p, (index, b"nv-pw"));
+    compare.names = vec![name.clone(), name.clone(), u32b(policy.handle).to_vec()];
+    ok(&run_hmac(&mut t, &mut authorizer, &compare));
+    let arguments = h256(&[b"b", &u16b(1), &u16b(0)]);
+    let expected = h256(&[&[0; 32], &u32b(0x149), &arguments, &name]);
+    assert_eq!(digest(&mut t, &policy), expected);
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_READ_LOCK,
+        &[index, index],
+        b"nv-pw",
+        &[],
+    ));
+    err(
+        &pw_cmd(
+            &mut t,
+            cc::POLICY_NV,
+            &real_handles,
+            b"nv-pw",
+            &compare.params,
+        ),
+        Rc::NV_LOCKED,
+    );
+    ok(&pw_cmd(
+        &mut t,
+        cc::POLICY_NV,
+        &trial_handles,
+        b"nv-pw",
+        &outside,
+    ));
+    let (_, locked_name) = nv_read_public(&mut t, index);
+    let arguments = h256(&[b"b", &u16b(400), &u16b(0)]);
+    assert_eq!(
+        digest(&mut t, &trial),
+        h256(&[&trial_digest, &u32b(0x149), &arguments, &locked_name])
+    );
+    assert_eq!(digest(&mut t, &policy), expected);
+}
+
+#[test]
+fn policy_nv_checks_typed_values_and_does_not_recheck_nv_at_authorization() {
+    let mut t = started();
+    let mut policy = policy_session(&mut t, se::POLICY);
+    let attrs = nv_attr::OWNERREAD | nv_attr::OWNERWRITE;
+    let counter = NV0;
+    let bits = NV0 + 1;
+    let extend = NV0 + 2;
+    for (index, ty, size, code, parameters) in [
+        (counter, 1, 8, cc::NV_INCREMENT, Vec::new()),
+        (bits, 2, 8, cc::NV_SET_BITS, 0x81u64.to_be_bytes().to_vec()),
+        (extend, 4, 32, cc::NV_EXTEND, tpm2b(b"hello")),
+    ] {
+        ok(&define(&mut t, OWNER, index, attrs | (ty << 4), size));
+        ok(&pw_cmd(&mut t, code, &[OWNER, index], b"", &parameters));
+    }
+    let mut expected = vec![0; 32];
+    let extended = h256(&[&[0; 32], b"hello"]);
+    for (index, operand, offset, op) in [
+        (counter, 2u64.to_be_bytes().to_vec(), 0, 5),
+        (bits, vec![0x80], 7, 10),
+        (extend, extended[16..].to_vec(), 16, 0),
+    ] {
+        let handles = [OWNER, index, policy.handle];
+        ok(&pw_cmd(
+            &mut t,
+            cc::POLICY_NV,
+            &handles,
+            b"",
+            &policy_nv_args(&operand, offset, op),
+        ));
+        let (_, name) = nv_read_public(&mut t, index);
+        let arguments = h256(&[&operand, &u16b(offset), &u16b(op)]);
+        expected = h256(&[&expected, &u32b(0x149), &arguments, &name]);
+        assert_eq!(digest(&mut t, &policy), expected);
+    }
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &expected,
+        alg::SHA256,
+    ));
+    let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+    // The counter is now 2, so the original unsigned less-than comparison would fail.
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_INCREMENT,
+        &[OWNER, counter],
+        b"",
+        &[],
+    ));
+    ok(&pw_cmd(
+        &mut t,
+        cc::NV_UNDEFINE_SPACE,
+        &[OWNER, extend],
+        b"",
+        &[],
+    ));
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+    let clock = hc(
+        cc::CLOCK_SET,
+        &[OWNER],
+        23u64.to_be_bytes().to_vec(),
+        (OWNER, b""),
+    );
+    ok(&use_session(&mut t, &mut policy, &clock, 0, true, false));
+    assert_eq!(digest(&mut t, &policy), [0; 32]);
 }
 
 #[test]

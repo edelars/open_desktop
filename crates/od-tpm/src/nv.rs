@@ -74,6 +74,7 @@ use crate::dispatch::{CommandHandles, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, Writer, limits};
 use crate::response::{Output, Rc};
+use crate::session::SessionKind;
 use crate::state::Tpm;
 
 /// Defined NV indices at once.
@@ -391,6 +392,16 @@ impl Tpm {
     pub(crate) fn check_nv_certify_handles(&self, handles: &CommandHandles) -> Result<(), Rc> {
         let index = self.check_nv_authorization(handles[1], handles[2], 2, Access::Read)?;
         if index.attributes & attr::WRITTEN == 0 {
+            return Err(Rc::NV_UNINITIALIZED);
+        }
+        Ok(())
+    }
+    /// PolicyNV uses an independent policy handle. A trial still needs read authorization.
+    pub(crate) fn check_policy_nv_handles(&self, handles: &CommandHandles) -> Result<(), Rc> {
+        let index = self.check_nv_authorization(handles[0], handles[1], 1, Access::Read)?;
+        let (_, kind) = self.check_policy_session(handles[2], 2)?;
+        // The real assertion checks WRITTEN before comparing the NV index authValue (clause 31.1).
+        if kind != SessionKind::Trial && index.attributes & attr::WRITTEN == 0 {
             return Err(Rc::NV_UNINITIALIZED);
         }
         Ok(())

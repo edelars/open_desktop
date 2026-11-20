@@ -15,6 +15,7 @@ pub mod cc {
     /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
+    pub const POLICY_NV: u32 = 0x0000_0149;
     pub const CERTIFY_CREATION: u32 = 0x0000_014A;
     pub const GET_TIME: u32 = 0x0000_014C;
     pub const GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014D;

@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 80] = [
+pub(crate) static COMMANDS: [CommandSpec; 81] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -138,6 +138,7 @@ pub(crate) static COMMANDS: [CommandSpec; 80] = [
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
     spec(cc::ACTIVATE_CREDENTIAL, 2, 2, false, false, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
+    spec(cc::POLICY_NV, 3, 1, false, false, false),
     spec(cc::CERTIFY_CREATION, 2, 1, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
     spec(cc::GET_SESSION_AUDIT_DIGEST, 3, 2, false, false, false),
@@ -813,6 +814,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
+        cc::POLICY_NV => tpm.cmd_policy_nv(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
         cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
             tpm.cmd_policy_hash_restriction(&inv, &mut p, spec.code)?
@@ -1001,6 +1003,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             check_sign_handle(tpm, handles[0], 0)?;
             tpm.check_nv_certify_handles(handles)?;
         }
+        cc::POLICY_NV => tpm.check_policy_nv_handles(handles)?,
         cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH => {
             tpm.check_object_handle(handles[0], 0, false)?;
             tpm.check_object_handle(handles[1], 1, false)?;
@@ -1041,8 +1044,12 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_PARAMETERS
         | cc::POLICY_AUTHORIZE
         | cc::POLICY_LOCALITY
-        | cc::POLICY_GET_DIGEST => tpm.check_policy_session(handles[0], 0)?,
-        cc::POLICY_SECRET => tpm.check_policy_session(handles[1], 1)?,
+        | cc::POLICY_GET_DIGEST => {
+            tpm.check_policy_session(handles[0], 0)?;
+        }
+        cc::POLICY_SECRET => {
+            tpm.check_policy_session(handles[1], 1)?;
+        }
         cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {
             // `TPMI_RH_LOCKOUT` (Part 3, Tables 193 and 195): `TPM_RH_LOCKOUT` only.
             if handles[0] != handle::RH_LOCKOUT {
@@ -1125,6 +1132,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 80);
+        assert_eq!(COMMANDS.len(), 81);
     }
 }

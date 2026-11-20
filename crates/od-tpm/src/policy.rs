@@ -56,6 +56,7 @@ use crate::codes::{alg, cc, handle, st};
 use crate::crypto::DIGEST;
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{MAX_DATA, Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
+use crate::nv::attr as nv_attr;
 use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
@@ -143,6 +144,41 @@ impl Comparison {
     }
 }
 
+/// Shared wire parameters and argument digest of the immediate comparison assertions.
+struct ComparisonArgs<'a> {
+    operand: &'a [u8],
+    offset: u16,
+    operation: u16,
+    comparison: Comparison,
+}
+
+impl<'a> ComparisonArgs<'a> {
+    fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
+        p.set_param(1);
+        let operand = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(2);
+        let offset = p.u16()?;
+        p.set_param(3);
+        let operation = p.u16()?;
+        let comparison = Comparison::from_wire(operation, 3)?;
+        p.finish()?;
+        Ok(Self {
+            operand,
+            offset,
+            operation,
+            comparison,
+        })
+    }
+
+    fn digest(&self) -> [u8; DIGEST] {
+        let mut args = Sha256::new();
+        args.update(self.operand);
+        args.update(self.offset.to_be_bytes());
+        args.update(self.operation.to_be_bytes());
+        args.finalize().into()
+    }
+}
+
 impl PolicyState {
     /// The initial state: a Zero Digest and no restriction.
     pub(crate) fn new() -> PolicyState {
@@ -197,14 +233,18 @@ pub(crate) fn pcr_selection_digest(pcrs: &Pcrs, selection: &TpmlPcrSelection) ->
 impl Tpm {
     /// `TPMI_SH_POLICY` validity of handle number `idx` (zero-based) of a command: a loaded policy
     /// or trial session.
-    pub(crate) fn check_policy_session(&self, h: u32, idx: usize) -> Result<(), Rc> {
+    pub(crate) fn check_policy_session(
+        &self,
+        h: u32,
+        idx: usize,
+    ) -> Result<(usize, SessionKind), Rc> {
         let n = (idx + 1) as u8;
         if handle::handle_type(h) != handle::HT_POLICY_SESSION {
             return Err(Rc::VALUE.in_handle(n));
         }
         self.sessions
             .slot_of(h)
-            .map(|_| ())
+            .and_then(|slot| self.sessions.get(slot).map(|session| (slot, session.kind)))
             .ok_or(Rc::reference_handle(idx))
     }
 
@@ -237,22 +277,15 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        p.set_param(1);
-        let operand = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        p.set_param(2);
-        let offset = p.u16()?;
-        p.set_param(3);
-        let operation = p.u16()?;
-        let comparison = Comparison::from_wire(operation, 3)?;
-        p.finish()?;
+        let args = ComparisonArgs::unmarshal(p)?;
 
         let slot = self.policy_slot(inv.handles[0])?;
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
         let mut deadline = session.policy.deadline;
         if session.kind != SessionKind::Trial {
-            if comparison == Comparison::UnsignedLt
-                && offset == 0
-                && let Ok(seconds) = <[u8; 8]>::try_from(operand)
+            if args.comparison == Comparison::UnsignedLt
+                && args.offset == 0
+                && let Ok(seconds) = <[u8; 8]>::try_from(args.operand)
             {
                 let seconds = u64::from_be_bytes(seconds);
                 if seconds > i32::MAX as u64 {
@@ -275,23 +308,51 @@ impl Tpm {
                 self.time_info().marshal(&mut time);
                 let at_offset = time
                     .buf
-                    .get(usize::from(offset)..)
+                    .get(usize::from(args.offset)..)
                     .ok_or(Rc::VALUE.in_param(2))?;
                 let value = at_offset
-                    .get(..operand.len())
+                    .get(..args.operand.len())
                     .ok_or(Rc::RANGE.in_param(1))?;
-                if !comparison.holds(value, operand) {
+                if !args.comparison.holds(value, args.operand) {
                     return Err(Rc::POLICY);
                 }
             }
         }
-        let mut args = Sha256::new();
-        args.update(operand);
-        args.update(offset.to_be_bytes());
-        args.update(operation.to_be_bytes());
         let (state, _) = self.policy_mut(slot)?;
         state.deadline = deadline;
-        state.extend(&[&cc::POLICY_COUNTER_TIMER.to_be_bytes(), &args.finalize()]);
+        state.extend(&[&cc::POLICY_COUNTER_TIMER.to_be_bytes(), &args.digest()]);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyNV` (Part 3 v185, §23.9). The read and comparison are immediate.
+    pub(crate) fn cmd_policy_nv(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        let args = ComparisonArgs::unmarshal(p)?;
+        let (slot, kind) = self.check_policy_session(inv.handles[2], 2)?;
+        let index = self
+            .persistent
+            .nv
+            .get(inv.handles[1])
+            .ok_or(Rc::HANDLE.in_handle(2))?;
+        if kind != SessionKind::Trial {
+            if index.attributes & nv_attr::READLOCKED != 0 {
+                return Err(Rc::NV_LOCKED);
+            }
+            let offset = usize::from(args.offset);
+            let value = index
+                .data
+                .get(offset..offset + args.operand.len())
+                .ok_or(Rc::NV_RANGE)?;
+            if !args.comparison.holds(value, args.operand) {
+                return Err(Rc::POLICY);
+            }
+        }
+        let name = index.name();
+        let (state, _) = self.policy_mut(slot)?;
+        state.extend(&[&cc::POLICY_NV.to_be_bytes(), &args.digest(), &name]);
         Ok(Output::default())
     }
 
