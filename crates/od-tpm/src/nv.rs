@@ -390,7 +390,7 @@ impl Tpm {
                 provision_handle(handles[0])?;
                 self.nv_index_at(handles[1], 2)?;
             }
-            cc::NV_READ_PUBLIC => {
+            cc::NV_READ_PUBLIC | cc::NV_CHANGE_AUTH => {
                 self.nv_index_at(handles[0], 1)?;
             }
             _ => {
@@ -466,9 +466,18 @@ impl Tpm {
         code: u32,
         handle: u32,
         position: u8,
+        admin: bool,
         policy: bool,
     ) -> Result<AuthValue, Rc> {
         let index = self.nv_index_at(handle, position)?;
+        if admin {
+            // NV ADMIN requires policy and has no USER read/write attribute check (§5.6).
+            return if policy {
+                Ok(index.auth.clone())
+            } else {
+                Err(Rc::AUTH_TYPE)
+            };
+        }
         let needed = if code == cc::POLICY_SECRET {
             // PolicySecret proves the index's authValue even with a policy session (§23.4).
             attr::AUTHREAD
@@ -491,6 +500,24 @@ impl Tpm {
     /// Name of an NV index (`nameAlg || H(public)`), `None` if it is not defined.
     pub(crate) fn nv_name(&self, handle: u32) -> Option<Vec<u8>> {
         self.persistent.nv.get(handle).map(NvIndex::name)
+    }
+    /// `TPM2_NV_ChangeAuth` (Part 3 v185, §31.15). The response uses the new authValue.
+    pub(crate) fn cmd_nv_change_auth(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let new_auth = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+        let auth = AuthValue::from_slice_trimmed(new_auth).ok_or(Rc::SIZE.in_param(1))?;
+        let index = self
+            .persistent
+            .nv
+            .get_mut(inv.handles[0])
+            .ok_or(Rc::HANDLE.in_handle(1))?;
+        index.auth = auth;
+        Ok(Output::default())
     }
 
     /// `TPM2_NV_DefineSpace` (clause 31.3).

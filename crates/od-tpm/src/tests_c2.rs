@@ -1959,6 +1959,125 @@ fn policy_authorize_nv_validates_a_raw_tagged_digest_only_for_real_sessions() {
 }
 
 #[test]
+fn nv_change_auth_checks_admin_policy_and_updates_the_proof_without_changing_the_name() {
+    let mut t = started();
+    let old = b"old secret";
+    let new = b"new secret";
+    let attrs = nv_attr::AUTHREAD | nv_attr::AUTHWRITE;
+    let command = h256(&[&[0; 32], &u32b(0x16c), &u32b(0x13b)]);
+    let approval = h256(&[&command, &u32b(0x16b)]);
+    ok(&define_raw(
+        &mut t,
+        OWNER,
+        b"",
+        old,
+        &nv_public(NV0, alg::SHA256, attrs, &approval, 3),
+    ));
+    ok(&nv_write(&mut t, NV0, NV0, old, b"abc", 0));
+    let (public, name) = nv_read_public(&mut t, NV0);
+    let parameters = tpm2b(&cat(&[new, &[0; 2]]));
+    let change = |parameters: Vec<u8>| {
+        let mut c = hc(cc::NV_CHANGE_AUTH, &[NV0], parameters, (NV0, old));
+        c.names = vec![name.clone()];
+        c.entity_after = new.to_vec();
+        c
+    };
+    err(
+        &pw_cmd(&mut t, cc::NV_CHANGE_AUTH, &[NV0], old, &parameters),
+        Rc::AUTH_TYPE,
+    );
+    let hmac = start_hmac(&mut t, NULL, b"", &[0x38; 16]);
+    err(
+        &run(
+            &mut t,
+            hmac_command(&hmac, &change(parameters.clone()), false, false),
+        ),
+        Rc::AUTH_TYPE,
+    );
+    let mut policy = policy_session(&mut t, se::POLICY);
+    err(
+        &use_session(
+            &mut t,
+            &mut policy,
+            &change(parameters.clone()),
+            0,
+            true,
+            false,
+        ),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&pol_cc(&mut t, &policy, cc::NV_WRITE));
+    err(
+        &use_session(
+            &mut t,
+            &mut policy,
+            &change(parameters.clone()),
+            0,
+            true,
+            false,
+        ),
+        Rc::POLICY_CC.in_session(1),
+    );
+    ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+    ok(&pol_cc(&mut t, &policy, cc::NV_CHANGE_AUTH));
+    ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &policy, &[]));
+    assert_eq!(digest(&mut t, &policy), approval);
+    err(
+        &run_hmac(&mut t, &mut policy, &change(tpm2b(&[0; 33]))),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &run_hmac(&mut t, &mut policy, &change(cat(&[&parameters, &[0]]))),
+        Rc::SIZE,
+    );
+    assert_eq!(digest(&mut t, &policy), approval);
+    assert_eq!(nv_read_data(&nv_read(&mut t, NV0, NV0, old, 3, 0)), b"abc");
+    ok(&run_hmac(&mut t, &mut policy, &change(parameters)));
+    assert_eq!(digest(&mut t, &policy), [0; 32]);
+    assert_eq!(nv_read_public(&mut t, NV0), (public, name));
+    err(
+        &nv_read(&mut t, NV0, NV0, old, 3, 0),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+
+    shutdown(&mut t, su::CLEAR);
+    let mut restored = Tpm::restore(&t.persistent_snapshot(), &[4; 48]).unwrap();
+    startup(&mut restored, su::CLEAR);
+    assert_eq!(
+        nv_read_data(&nv_read(&mut restored, NV0, NV0, new, 3, 0)),
+        b"abc"
+    );
+}
+
+#[test]
+fn nv_change_auth_can_clear_the_secret_on_an_unwritten_locked_index() {
+    let mut t = started();
+    let approval = h256(&[&[0; 32], &u32b(0x16c), &u32b(0x13b)]);
+    let auth = b"counter secret";
+    let attrs = nv_attr::AUTHREAD
+        | nv_attr::AUTHWRITE
+        | nv_attr::READ_STCLEAR
+        | nv_attr::WRITE_STCLEAR
+        | (1 << 4);
+    ok(&define_raw(
+        &mut t,
+        OWNER,
+        b"",
+        auth,
+        &nv_public(NV0, alg::SHA256, attrs, &approval, 8),
+    ));
+    ok(&pw_cmd(&mut t, cc::NV_READ_LOCK, &[NV0, NV0], auth, &[]));
+    ok(&pw_cmd(&mut t, cc::NV_WRITE_LOCK, &[NV0, NV0], auth, &[]));
+    let public = nv_read_public(&mut t, NV0);
+    let mut policy = policy_session(&mut t, se::POLICY);
+    ok(&pol_cc(&mut t, &policy, cc::NV_CHANGE_AUTH));
+    let change = hc(cc::NV_CHANGE_AUTH, &[NV0], tpm2b(&[0; 32]), (NV0, b""));
+    ok(&use_session(&mut t, &mut policy, &change, 0, true, false));
+    assert_eq!(nv_read_public(&mut t, NV0), public);
+    assert_eq!(t.nv_auth(NV0).unwrap().as_slice(), b"");
+}
+
+#[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
     let mut s = policy_session(&mut t, se::POLICY);

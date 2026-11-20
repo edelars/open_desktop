@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 83] = [
+pub(crate) static COMMANDS: [CommandSpec; 84] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -129,6 +129,7 @@ pub(crate) static COMMANDS: [CommandSpec; 83] = [
     spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
     spec(cc::DICTIONARY_ATTACK_LOCK_RESET, 1, 1, false, true, false),
     spec(cc::DICTIONARY_ATTACK_PARAMETERS, 1, 1, false, true, false),
+    spec(cc::NV_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
     spec(cc::PCR_RESET, 1, 1, false, true, false),
     spec(cc::SEQUENCE_COMPLETE, 1, 1, false, false, true),
@@ -253,7 +254,7 @@ fn handle_auth(
             }
             tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
         }
-        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, policy),
+        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, admin, policy),
         _ => {
             let slot = tpm.seq_slot(h, i)?;
             // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
@@ -267,7 +268,7 @@ fn admin_role(code: u32, i: usize) -> bool {
     i == 0
         && matches!(
             code,
-            cc::CERTIFY | cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH
+            cc::CERTIFY | cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH | cc::NV_CHANGE_AUTH
         )
 }
 
@@ -777,6 +778,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::START_AUTH_SESSION => tpm.cmd_start_auth_session(&inv, &mut p)?,
         cc::FLUSH_CONTEXT => tpm.cmd_flush_context(&mut p)?,
         cc::NV_DEFINE_SPACE => tpm.cmd_nv_define_space(&inv, &mut p)?,
+        cc::NV_CHANGE_AUTH => tpm.cmd_nv_change_auth(&inv, &mut p)?,
         cc::NV_UNDEFINE_SPACE => tpm.cmd_nv_undefine_space(&inv, &mut p)?,
         cc::NV_READ_PUBLIC => tpm.cmd_nv_read_public(&inv, &mut p)?,
         cc::NV_WRITE => tpm.cmd_nv_write(&inv, &mut p)?,
@@ -1066,6 +1068,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             tpm.check_object_handle(handles[1], 1, true)?;
         }
         cc::NV_DEFINE_SPACE
+        | cc::NV_CHANGE_AUTH
         | cc::NV_UNDEFINE_SPACE
         | cc::NV_READ_PUBLIC
         | cc::NV_WRITE
@@ -1134,6 +1137,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 83);
+        assert_eq!(COMMANDS.len(), 84);
     }
 }

@@ -22,6 +22,7 @@ pub mod cc {
     pub const NV_INCREMENT: u32 = 0x0000_0134;
     pub const NV_SET_BITS: u32 = 0x0000_0135;
     pub const NV_EXTEND: u32 = 0x0000_0136;
+    pub const NV_CHANGE_AUTH: u32 = 0x0000_013B;
     pub const POLICY_SECRET: u32 = 0x0000_0151;
     pub const HMAC: u32 = 0x0000_0155;
     pub const HMAC_START: u32 = 0x0000_015B;

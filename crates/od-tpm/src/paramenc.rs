@@ -130,6 +130,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::CERTIFY
             | cc::CERTIFY_CREATION
             | cc::NV_CERTIFY
+            | cc::NV_CHANGE_AUTH
             | cc::GET_TIME
             | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_PCR
