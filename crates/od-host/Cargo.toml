@@ -39,5 +39,13 @@ path = "../../tests/system/stage4_exception_delivery.rs"
 name = "stage9_storage_kill"
 path = "../../tests/system/stage9_storage_kill.rs"
 
+[[test]]
+name = "stage9_storage_concurrency"
+path = "../../tests/system/stage9_storage_concurrency.rs"
+
+[[test]]
+name = "stage9_uefi_participant"
+path = "../../tests/system/stage9_uefi_participant.rs"
+
 [lints]
 workspace = true

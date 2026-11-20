@@ -141,6 +141,14 @@ run_case od_host_persistent_nvme "cargo test -p od-host --lib persistent_nvme" "
 run_case od_host_stage9_storage_kill "cargo test -p od-host --test stage9_storage_kill" \
   "[ \"\$(uname -s)\" = Darwin ]" -- \
   cargo test -p od-host --test stage9_storage_kill
+run_case od_host_s9_13 "cargo test -p od-host --lib s9_13" "cargo --version" -- \
+  cargo test -p od-host --offline --lib s9_13
+run_case od_storage_vm_container "cargo test -p od-storage vm_container" "cargo --version" -- \
+  cargo test -p od-storage --offline vm_container
+run_case od_host_stage9_storage_concurrency "cargo test -p od-host --test stage9_storage_concurrency" "cargo --version" -- \
+  cargo test -p od-host --offline --test stage9_storage_concurrency -- --test-threads=1
+run_case od_host_stage9_uefi_participant "cargo test -p od-host --test stage9_uefi_participant" "cargo --version" -- \
+  cargo test -p od-host --offline --test stage9_uefi_participant
 run_case od_image_tool "cargo test -p od-image-tool" "cargo --version" -- \
   cargo test -p od-image-tool
 run_case workspace_check "cargo check --workspace --all-targets --offline" "cargo --version" -- \

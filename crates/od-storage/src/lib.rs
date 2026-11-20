@@ -44,6 +44,11 @@ pub mod cow_export;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_salvage;
 
+/// Versioned full-VM checkpoint container codec (S9-23). Pure byte codec: the
+/// participants' bytes come from the caller. Not normative yet.
+#[cfg(any(test, feature = "test-support"))]
+pub mod vm_container;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
@@ -73,3 +78,5 @@ mod cow_soak_tests;
 mod cow_tx_tests;
 #[cfg(test)]
 mod io_tests;
+#[cfg(test)]
+mod vm_container_tests;

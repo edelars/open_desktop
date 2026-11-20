@@ -34,6 +34,10 @@ tools/stage9/run_checks.sh
 | `od_host_raw_file_tests` | `cargo test -p od-host --lib raw_file_tests` | 9 passed |
 | `od_host_persistent_nvme` | `cargo test -p od-host --lib persistent_nvme` | 19 passed (в т. ч. S9-04: два процесса, SIGKILL); тесты с файлами сериализованы `process_spawn_guard` ([ISSUE-518](../KNOWN_ISSUES.md#issue-518-s5-persistent-nvme-reopen-test-flaky-in-parallel), закрыто) |
 | `od_host_stage9_storage_kill` | `cargo test -p od-host --test stage9_storage_kill` | 2 passed, 1 ignored (дочерний режим, запускается родителем): kill процесса на реальных файлах для 9 операций (S9-38 уровень 1, [STORAGE_RECOVERY.md §4.2](STORAGE_RECOVERY.md#42-матрица-s9-38-на-уровне-1-kill-процесса-на-реальных-файлах-2026-11-18)) и порядок вызовов commit на host-файле (S9-06). Только macOS, иначе `not_run` |
+| `od_host_s9_13` | `cargo test -p od-host --lib s9_13` | 3 passed (узкий прогон 2026-11-20, не входил в последний полный запуск `20261118-s9-38c`): сквозные тесты NVMe → persistent backend, без гостевого драйвера ([NVME_DEVICE.md §14.5](../specs/NVME_DEVICE.md)) |
+| `od_storage_vm_container` | `cargo test -p od-storage vm_container` | 33 passed (узкий прогон 2026-11-20): кодек контейнера VM v1 с непрозрачными секциями ([STORAGE_FORMAT.md §13](../specs/STORAGE_FORMAT.md)); участников нет |
+| `od_host_stage9_storage_concurrency` | `cargo test -p od-host --test stage9_storage_concurrency -- --test-threads=1` | 12 passed, 1 ignored (узкий прогон 2026-11-20): конкурирующие операции между процессами, lease на файл ([STORAGE_RECOVERY.md §4.3](STORAGE_RECOVERY.md#43-s9-37-срез-storage-2026-11-20)) |
+| `od_host_stage9_uefi_participant` | `cargo test -p od-host --test stage9_uefi_participant` | 11 passed (узкий прогон 2026-11-20): UEFI-участник в контейнере, холодный restore, политика отката ([NVRAM_DEVICE.md](../specs/NVRAM_DEVICE.md)) |
 | `od_image_tool` | `cargo test -p od-image-tool` | 21 passed (`tests/cli.rs`, в т. ч. `import`) |
 | `workspace_check` | `cargo check --workspace --all-targets --offline` | код 0 |
 | `git_diff_check` | `git diff --check` | код 0; проверяет только отслеживаемые изменения |

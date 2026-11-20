@@ -62,11 +62,21 @@ pub enum SecureBootKeys<'a> {
     SetupMode,
 }
 
+/// Payload version of an `ODNVBANK` snapshot; the number is the header `version`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 #[repr(u32)]
-enum SnapshotFormat {
+pub enum NvramSnapshotFormat {
     Legacy = 1,
     Protected = 2,
+}
+
+impl NvramSnapshotFormat {
+    /// Version stored in the `ODNVBANK` header; also the `schema_version` of the
+    /// VM container section that carries the snapshot.
+    pub const fn schema_version(self) -> u32 {
+        self as u32
+    }
 }
 
 /// Initial bytes for a new board instance. Every board gets its own banks.
@@ -79,7 +89,7 @@ pub enum NvramConfig {
 impl NvramConfig {
     pub(crate) fn is_protected(&self) -> bool {
         matches!(self, Self::Snapshot(bytes) if bytes.starts_with(SNAPSHOT_MAGIC)
-            && bytes.get(8..12) == Some(&(SnapshotFormat::Protected as u32).to_le_bytes()))
+            && bytes.get(8..12) == Some(&(NvramSnapshotFormat::Protected as u32).to_le_bytes()))
     }
 }
 
@@ -103,6 +113,141 @@ impl fmt::Display for NvramContentsError {
 
 impl std::error::Error for NvramContentsError {}
 
+/// Container section kind of the UEFI variable participant (S9-26). The value
+/// is the ASCII tag `UEFI` read as little-endian u32, not a table index.
+pub const UEFI_VARIABLES_KIND: u32 = u32::from_le_bytes(*b"UEFI");
+/// The only instance of the UEFI section: one variable store per VM.
+pub const UEFI_VARIABLES_INSTANCE: u32 = 0;
+/// `schema_id` of the section payload: an `ODNVBANK` snapshot stored inline
+/// (ASCII `NVBK`). `schema_version` is the snapshot version, see
+/// [`NvramSnapshotFormat::schema_version`].
+pub const UEFI_SCHEMA_ID: u32 = u32::from_le_bytes(*b"NVBK");
+
+/// What a strictly verified snapshot says about itself. It is an observation of
+/// the bytes, not a claim about the history that produced them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NvramSnapshotInfo {
+    pub format: NvramSnapshotFormat,
+    /// Generation of the bank that the device would use after opening.
+    pub active_generation: u64,
+}
+
+/// Strictly verifies an `ODNVBANK` snapshot (the same checks as
+/// [`NvramDevice::with_contents`]) and reports its format and active generation.
+/// A legacy v1 snapshot with one damaged bank passes by design (the other
+/// committed bank is used); v2 refuses any non-zero damage of a bank; an all-zero slot is accepted as an
+/// unwritten bank (see the rollback table in NVRAM_DEVICE.md).
+pub fn verify_nvram_snapshot(bytes: &[u8]) -> Result<NvramSnapshotInfo, NvramContentsError> {
+    Banks::with_contents(bytes).map(|banks| banks.info())
+}
+
+/// The UEFI participant's section as the host container layer found it. The
+/// machine crate does not know the container codec; the host maps its section
+/// to this view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UefiSection<'a> {
+    /// The container has no UEFI section.
+    Missing,
+    /// The section is a reference record; this participant is inline only.
+    Reference,
+    Inline {
+        schema_id: u32,
+        schema_version: u32,
+        bytes: &'a [u8],
+    },
+}
+
+/// Why a UEFI section was refused on restore. None of them is turned into an
+/// empty store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UefiRestoreError {
+    MissingSection,
+    ReferenceSection,
+    UnknownSchemaId {
+        found: u32,
+    },
+    /// The `ODNVBANK` bytes failed strict verification.
+    Corrupt(NvramContentsError),
+    /// Section `schema_version` differs from the snapshot header version.
+    VersionMismatch {
+        section: u32,
+        snapshot: u32,
+    },
+    /// A legacy v1 snapshot where the protected format is required.
+    LegacyWhereProtectedExpected,
+    /// A protected v2 snapshot where the legacy format is required.
+    ProtectedWhereLegacyExpected,
+}
+
+impl fmt::Display for UefiRestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSection => f.write_str("UEFI section is missing"),
+            Self::ReferenceSection => f.write_str("UEFI section is a reference, inline required"),
+            Self::UnknownSchemaId { found } => {
+                write!(f, "UEFI section has unknown schema id {found:#010x}")
+            }
+            Self::Corrupt(error) => write!(f, "UEFI snapshot failed verification: {error:?}"),
+            Self::VersionMismatch { section, snapshot } => write!(
+                f,
+                "UEFI section schema version {section} differs from snapshot version {snapshot}"
+            ),
+            Self::LegacyWhereProtectedExpected => {
+                f.write_str("legacy v1 UEFI snapshot where the protected format is required")
+            }
+            Self::ProtectedWhereLegacyExpected => {
+                f.write_str("protected v2 UEFI snapshot where the legacy format is required")
+            }
+        }
+    }
+}
+
+impl std::error::Error for UefiRestoreError {}
+
+/// Cold restore of the UEFI participant from its container section.
+///
+/// Returns a new device: registers, staging and the volatile `POLICY_EPOCH` start
+/// from zero, as after any reopen. A live restore of running firmware is not
+/// supported because the policy epoch is not saved (ISSUE-600). An absent
+/// store is never replaced by an empty one and a v2 snapshot is never accepted
+/// as v1 or the other way round: `expected` is the format the VM profile
+/// requires. The caller (host) has already verified the container's CRCs,
+/// identity and epoch; this function adds the participant's own checks.
+pub fn cold_restore_uefi_section(
+    section: UefiSection<'_>,
+    expected: NvramSnapshotFormat,
+) -> Result<(NvramDevice, NvramSnapshotInfo), UefiRestoreError> {
+    let (schema_id, schema_version, bytes) = match section {
+        UefiSection::Missing => return Err(UefiRestoreError::MissingSection),
+        UefiSection::Reference => return Err(UefiRestoreError::ReferenceSection),
+        UefiSection::Inline {
+            schema_id,
+            schema_version,
+            bytes,
+        } => (schema_id, schema_version, bytes),
+    };
+    if schema_id != UEFI_SCHEMA_ID {
+        return Err(UefiRestoreError::UnknownSchemaId { found: schema_id });
+    }
+    let banks = Banks::with_contents(bytes).map_err(UefiRestoreError::Corrupt)?;
+    let info = banks.info();
+    if schema_version != info.format.schema_version() {
+        return Err(UefiRestoreError::VersionMismatch {
+            section: schema_version,
+            snapshot: info.format.schema_version(),
+        });
+    }
+    match (expected, info.format) {
+        (NvramSnapshotFormat::Protected, NvramSnapshotFormat::Legacy) => {
+            Err(UefiRestoreError::LegacyWhereProtectedExpected)
+        }
+        (NvramSnapshotFormat::Legacy, NvramSnapshotFormat::Protected) => {
+            Err(UefiRestoreError::ProtectedWhereLegacyExpected)
+        }
+        _ => Ok((NvramDevice::from_banks(banks), info)),
+    }
+}
+
 /// Device for the 256 KiB data aperture and its command register page.
 pub struct NvramDevice {
     state: Arc<Mutex<State>>,
@@ -115,14 +260,14 @@ pub(crate) struct NvramHandle {
 
 impl NvramDevice {
     pub fn new() -> Self {
-        Self::from_banks(Banks::new(EMPTY_STORE, SnapshotFormat::Legacy))
+        Self::from_banks(Banks::new(EMPTY_STORE, NvramSnapshotFormat::Legacy))
     }
     /// Initializes a new protected device with an image provided by the trusted host.
     pub fn with_protected_store(image: &[u8]) -> Result<Self, NvramContentsError> {
         validate_protected(image)?;
         Ok(Self::from_banks(Banks::new(
             image,
-            SnapshotFormat::Protected,
+            NvramSnapshotFormat::Protected,
         )))
     }
 
@@ -137,7 +282,7 @@ impl NvramDevice {
         keys: SecureBootKeys<'_>,
     ) -> Result<Self, NvramContentsError> {
         let banks = Banks::with_contents(bytes)?;
-        if banks.format != SnapshotFormat::Protected {
+        if banks.format != NvramSnapshotFormat::Protected {
             return Err(NvramContentsError::InvalidProtectedStore);
         }
         Self::with_protected_store(&provision::new_image(keys, Some(banks.current().data()))?)
@@ -154,10 +299,11 @@ impl NvramDevice {
         match Banks::with_contents(bytes) {
             Ok(banks) => Ok(Self::from_banks(banks)),
             Err(NvramContentsError::NoValidBank)
-                if bytes.get(8..12) == Some(&(SnapshotFormat::Legacy as u32).to_le_bytes()) =>
+                if bytes.get(8..12)
+                    == Some(&(NvramSnapshotFormat::Legacy as u32).to_le_bytes()) =>
             {
                 Ok(Self::from_banks(Banks {
-                    format: SnapshotFormat::Legacy,
+                    format: NvramSnapshotFormat::Legacy,
                     banks: [Bank::invalid(), Bank::invalid()],
                     active: 0,
                 }))
@@ -170,11 +316,11 @@ impl NvramDevice {
         lock(&self.state).banks.snapshot()
     }
     pub(crate) fn has_protected_store(&self) -> bool {
-        lock(&self.state).banks.format == SnapshotFormat::Protected
+        lock(&self.state).banks.format == NvramSnapshotFormat::Protected
     }
     pub(crate) fn secure_boot_disabled(&self) -> bool {
         let state = lock(&self.state);
-        state.banks.format == SnapshotFormat::Protected
+        state.banks.format == NvramSnapshotFormat::Protected
             && Image::new(state.banks.current().data())
                 .is_ok_and(|image| image.flags.secure_boot_disabled)
     }
@@ -186,7 +332,7 @@ impl NvramDevice {
     }
 
     fn from_banks(banks: Banks) -> Self {
-        let staging = (banks.format == SnapshotFormat::Protected)
+        let staging = (banks.format == NvramSnapshotFormat::Protected)
             .then(|| vec![0; NVRAM_STORE_BYTES].into_boxed_slice());
         Self {
             state: Arc::new(Mutex::new(State {
@@ -565,13 +711,13 @@ fn bank_checksum(generation: u64, bytes: &[u8]) -> u32 {
 }
 
 struct Banks {
-    format: SnapshotFormat,
+    format: NvramSnapshotFormat,
     banks: [Bank; 2],
     active: usize,
 }
 
 impl Banks {
-    fn new(image: &[u8], format: SnapshotFormat) -> Self {
+    fn new(image: &[u8], format: NvramSnapshotFormat) -> Self {
         let mut first = Bank::invalid();
         first.data[..image.len()].copy_from_slice(image);
         first.seal(1, image.len());
@@ -590,8 +736,8 @@ impl Banks {
             return Err(NvramContentsError::InvalidHeader);
         }
         let format = match u32::from_le_bytes(bytes[8..12].try_into().unwrap()) {
-            1 => SnapshotFormat::Legacy,
-            2 => SnapshotFormat::Protected,
+            1 => NvramSnapshotFormat::Legacy,
+            2 => NvramSnapshotFormat::Protected,
             _ => return Err(NvramContentsError::InvalidHeader),
         };
         let middle = SNAPSHOT_HEADER_BYTES + BANK_BYTES;
@@ -599,7 +745,7 @@ impl Banks {
         let second_slot = &bytes[middle..];
         let first = Bank::decode(first_slot);
         let second = Bank::decode(second_slot);
-        if format == SnapshotFormat::Protected {
+        if format == NvramSnapshotFormat::Protected {
             for (slot, bank) in [(first_slot, &first), (second_slot, &second)] {
                 let padding = if bank.generation != 0 {
                     validate_protected(bank.data())?;
@@ -639,6 +785,13 @@ impl Banks {
 
     fn current(&self) -> &Bank {
         &self.banks[self.active]
+    }
+
+    fn info(&self) -> NvramSnapshotInfo {
+        NvramSnapshotInfo {
+            format: self.format,
+            active_generation: self.current().generation,
+        }
     }
 
     fn inactive(&mut self) -> &mut Bank {
@@ -745,6 +898,99 @@ mod tests {
         image.truncate(length);
         Image::write_header(&mut image, flags).unwrap();
         image
+    }
+
+    #[test]
+    fn uefi_section_constants_and_snapshot_info() {
+        assert_eq!(UEFI_VARIABLES_KIND.to_le_bytes(), *b"UEFI");
+        assert_eq!(UEFI_SCHEMA_ID.to_le_bytes(), *b"NVBK");
+        assert_eq!(UEFI_VARIABLES_KIND, 0x4946_4555);
+        assert_eq!(UEFI_SCHEMA_ID, 0x4b42_564e);
+        let mut legacy = NvramDevice::new();
+        let info = verify_nvram_snapshot(&legacy.nvram_snapshot()).unwrap();
+        assert_eq!(info.format, NvramSnapshotFormat::Legacy);
+        assert_eq!(info.active_generation, 1);
+        replace(&mut legacy, EMPTY_STORE);
+        let info = verify_nvram_snapshot(&legacy.nvram_snapshot()).unwrap();
+        assert_eq!(info.active_generation, 2);
+
+        let image = protected_image(DEFAULT_FLAGS, &[]);
+        let mut protected = NvramDevice::with_protected_store(&image).unwrap();
+        let info = verify_nvram_snapshot(&protected.nvram_snapshot()).unwrap();
+        assert_eq!(info.format, NvramSnapshotFormat::Protected);
+        assert_eq!(info.format.schema_version(), 2);
+        assert_eq!(info.active_generation, 1);
+        replace(&mut protected, &image);
+        let info = verify_nvram_snapshot(&protected.nvram_snapshot()).unwrap();
+        assert_eq!(info.active_generation, 2);
+
+        let mut bytes = protected.nvram_snapshot();
+        bytes[0] ^= 1;
+        assert_eq!(
+            verify_nvram_snapshot(&bytes),
+            Err(NvramContentsError::InvalidHeader)
+        );
+    }
+
+    #[test]
+    fn cold_restore_refuses_each_bad_section_distinctly() {
+        let legacy = NvramDevice::new().nvram_snapshot();
+        let image = protected_image(DEFAULT_FLAGS, &[]);
+        let protected = NvramDevice::with_protected_store(&image)
+            .unwrap()
+            .nvram_snapshot();
+        let inline = |schema_id, schema_version, bytes| UefiSection::Inline {
+            schema_id,
+            schema_version,
+            bytes,
+        };
+        let want = NvramSnapshotFormat::Protected;
+
+        let (device, info) =
+            cold_restore_uefi_section(inline(UEFI_SCHEMA_ID, 2, &protected), want).unwrap();
+        assert_eq!(info.active_generation, 1);
+        assert!(device.has_protected_store());
+        assert_eq!(
+            cold_restore_uefi_section(UefiSection::Missing, want).err(),
+            Some(UefiRestoreError::MissingSection)
+        );
+        assert_eq!(
+            cold_restore_uefi_section(UefiSection::Reference, want).err(),
+            Some(UefiRestoreError::ReferenceSection)
+        );
+        assert_eq!(
+            cold_restore_uefi_section(inline(UEFI_SCHEMA_ID + 1, 2, &protected), want).err(),
+            Some(UefiRestoreError::UnknownSchemaId {
+                found: UEFI_SCHEMA_ID + 1
+            })
+        );
+        assert_eq!(
+            cold_restore_uefi_section(inline(UEFI_SCHEMA_ID, 1, &protected), want).err(),
+            Some(UefiRestoreError::VersionMismatch {
+                section: 1,
+                snapshot: 2
+            })
+        );
+        assert_eq!(
+            cold_restore_uefi_section(inline(UEFI_SCHEMA_ID, 1, &legacy), want).err(),
+            Some(UefiRestoreError::LegacyWhereProtectedExpected)
+        );
+        assert_eq!(
+            cold_restore_uefi_section(
+                inline(UEFI_SCHEMA_ID, 2, &protected),
+                NvramSnapshotFormat::Legacy
+            )
+            .err(),
+            Some(UefiRestoreError::ProtectedWhereLegacyExpected)
+        );
+        let mut damaged = protected.clone();
+        damaged[SNAPSHOT_HEADER_BYTES + BANK_HEADER_BYTES] ^= 1;
+        assert_eq!(
+            cold_restore_uefi_section(inline(UEFI_SCHEMA_ID, 2, &damaged), want).err(),
+            Some(UefiRestoreError::Corrupt(
+                NvramContentsError::InvalidProtectedStore
+            ))
+        );
     }
 
     #[test]
@@ -1030,7 +1276,7 @@ mod tests {
         );
 
         // Even a valid bank envelope cannot turn a non-protected image into protected state.
-        let v1_in_v2 = Banks::new(EMPTY_STORE, SnapshotFormat::Protected).snapshot();
+        let v1_in_v2 = Banks::new(EMPTY_STORE, NvramSnapshotFormat::Protected).snapshot();
         assert_eq!(
             NvramDevice::with_contents(&v1_in_v2).err(),
             Some(NvramContentsError::InvalidProtectedStore)
@@ -1542,7 +1788,7 @@ mod tests {
         let mut reopened = NvramDevice::with_contents(&recovered.nvram_snapshot()).unwrap();
         assert_eq!(read_active(&mut reopened), EMPTY_STORE);
 
-        snapshot[8..12].copy_from_slice(&(SnapshotFormat::Protected as u32).to_le_bytes());
+        snapshot[8..12].copy_from_slice(&(NvramSnapshotFormat::Protected as u32).to_le_bytes());
         assert!(matches!(
             NvramDevice::for_firmware_boot(&snapshot),
             Err(NvramContentsError::InvalidProtectedStore)
@@ -1597,7 +1843,7 @@ mod tests {
 
     #[test]
     fn range_and_generation_errors_leave_active_data_intact() {
-        let mut banks = Banks::new(EMPTY_STORE, SnapshotFormat::Legacy);
+        let mut banks = Banks::new(EMPTY_STORE, NvramSnapshotFormat::Legacy);
         banks.banks[0].seal(u64::MAX, EMPTY_STORE.len());
         let mut device = NvramDevice::with_contents(&banks.snapshot()).unwrap();
         start(&mut device, READ, u32::MAX, 8);
@@ -1611,7 +1857,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_unversioned_and_ambiguous_host_snapshots() {
-        let mut banks = Banks::new(EMPTY_STORE, SnapshotFormat::Legacy);
+        let mut banks = Banks::new(EMPTY_STORE, NvramSnapshotFormat::Legacy);
         let mut snapshot = banks.snapshot();
         assert!(matches!(
             NvramDevice::with_contents(&snapshot[..15]),
