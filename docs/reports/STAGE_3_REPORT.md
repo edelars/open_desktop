@@ -11,6 +11,17 @@
 | Physical hardware gate | On Mini (192.168.1.39), the S3-14 register-only gate passed (13 one-block fixtures × 2 repeats) and the S3-15 `jit-dispatch` physical corpus gate passed (10 manual + 1,000 generated fixtures × 2 repeats); all preflights passed 613/613 tests and every pairwise/repeat comparison had zero differences. S3-14 is complete and S3-15 remains partial; the final S3-21 memory/hardware gate, production owner/MMU integration, performance acceptance, and broader Stage 3 conditions remain open. M1 Pro remains deferred. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
 
+S3-56 completed the generic-register comparison on the five-case S3-14
+corpus and both historical comparisons. Warm uses the five S3-36b inputs.
+Cold uses the original S3-35a trace and all 1,010 byte-verified fixtures.
+On the latter, the generic/FIFO ratios of paired JIT/interpreter medians
+were 1.101, 1.094 and 1.085 across three rounds. This evidence covers the
+native-register workload. The Core line passed S3-57 on `11cbe6b`.
+Final Stage 3 acceptance remains open in S3-41.
+[Cold evidence](STAGE_3_S3-56_S3-17_2026-11-19.md)
+[Matched cold and warm evidence](STAGE_3_S3-56_MATCHED_2026-11-19.md)
+[Core review and final-state repeat](STAGE_3_CORE_REPORT.md#10-s3-57--финальное-независимое-ревью-линии)
+
 S3-26f source support and unrun evidence were added for the exact uncached
 `48 89 03 48 89 02` two-store pair. Source/site binding, ordered typed IR,
 second helper operation index 4, host metadata, explicit cached rejection,
@@ -579,7 +590,7 @@ repair. See [ISSUE-050](../KNOWN_ISSUES.md#issue-050).
 | S3-40f allocator decision addendum | Синтезированы отдельно S3-30a same-target и S3-30b distinct-target budget4-vs-budget0 configuration-cost evidence, плюс bounded correctness S3-30p3/p4. Текущий homes4 baseline/default остаётся: evidence недостаточно для смены allocator/default. Следующий gate — representative hot workload и мотивированная альтернатива, сравнённые на одинаковых условиях. Это не algorithm comparison или finding, что diagnostic budget0 лучше; fixtures и timed boundaries не объединяются. Полный S3-30/S3-40 остаётся открыт; production owner/MMU, broader workloads и Mini/physical gates не закрыты. См. [S3-40f](STAGE_3_S3-40f_2026-11-01.md). |
 | S3-40g aliased ADD allocator diagnostic | Один frozen 27-byte W64 `ADD RAX,RAX` fixture: три sequential release processes, 60 pooled pairs на set, все 360 timed sides прошли 200 ms floor. Все pooled median ratios ниже 1, но диапазоны пересекают parity; fixture-only evidence не подтверждает speedup, allocator winner или default. S3-32 и S3-40 остаются открыты. См. [S3-40g](STAGE_3_S3-40g_2026-11-01.md) и [S3-32a report](STAGE_3_S3-32a_2026-11-01.md). |
 | S3-40j S3-31c report validator | Profile-specific offline audit recomputed candidate/baseline and candidate/interpreter ratio summaries from raw elapsed samples; validated six strata × 60 pairs, schedule/workload/source consistency, and untimed preflight metadata. The saved audit returned `passed`; focused suite reported 16 tests OK and independent code review passed. | Audit of S3-31c evidence only; no new benchmark, full S3-40 decision or Stage 3 completion. See [S3-31c report audit](STAGE_3_S3-31c_2026-11-01.md#bounded-s3-40-audit-of-the-s3-31c-reports) and [validator audit JSON](data/stage3/s3-31c-20261101/validator-audit.json). |
-| Полные cold/warm measurements, resource/lifecycle gates и решения о default (S3-35…37, S3-40) | Не выполнены. S3-35b дал bounded cold register-only pipeline attribution, S3-35c — узкий direct-entry checked-memory cold profile; S3-36c и S3-36d — отдельные native-plus-NOP budget-exit и resident warm direct-entry checked-memory срезы; S3-36e добавил cached checked-memory full-call, а S3-36f — cached register recurrence full-call. S3-31b отдельно атрибутировал три неперекрывающиеся фазы на тех же шести synthetic kernels, но не устанавливает total dispatcher/lookup cost на representative guest workloads; эта широкая gate остаётся открытой. Timed boundaries остаются отдельными; из них нельзя вычислить общую cache cost или break-even. На обеих bounded S3-36e/f нагрузках native/interpreter ratios выше 1, поэтому useful target scenario пока не доказан. S3-37d добавил три v5 sustained FIFO16 lifecycle/counter runs. General memory/fallback warm workloads, production teardown/independent-instance evidence, SMC stress, broader RSS attribution и выбор default остаются открытыми; bounded результаты не переносятся на другие workloads. |
+| Полные cold/warm measurements, resource/lifecycle gates и решения о default (S3-35…37, S3-40) | Не выполнены. S3-35b дал bounded cold register-only pipeline attribution, S3-35c — узкий direct-entry checked-memory cold profile; S3-36c и S3-36d — отдельные native-plus-NOP budget-exit и resident warm direct-entry checked-memory срезы; S3-36e добавил cached checked-memory full-call, а S3-36f — cached register recurrence full-call. S3-31b отдельно атрибутировал три неперекрывающиеся фазы на тех же шести synthetic kernels, но не устанавливает total dispatcher/lookup cost на representative guest workloads; эта широкая gate остаётся открытой. Timed boundaries остаются отдельными; из них нельзя вычислить общую cache cost или break-even. В профилях S3-36e/f native/interpreter ratios выше 1. В новых S0-09 countdown профилях JIT быстрее для 64 и 4096 итераций с одним RIP в обеих фазах. Короткие cold и оба two-RIP профиля быстрее на интерпретаторе. Сравнения и решение о сохранении изменений приведены в [S3-40k](../plans/STAGE_3.md#s3-40k-повторные-входы-в-s0-09-dispatcher). S3-37d добавил три v5 sustained FIFO16 lifecycle/counter runs. S3-37f проверил 64 обхода заполненного кеша штатного Session, STOP и восстановление аренды после clear и drop. См. [S3-37f](../plans/STAGE_3.md#s3-37f-давление-на-кеш-штатного-s0-09-session). General memory/fallback warm workloads, production teardown/independent-instance evidence, SMC stress, broader RSS attribution и выбор default остаются открытыми; bounded результаты не переносятся на другие workloads. |
 | Production RAM/backing/mapping/MMU owner и committed-writer integration | Не входит в текущий local fixture scope; не реализован этим отчётом и не засчитывается как локальное доказательство. |
 | ISSUE-044 | Открыта: прежний timeout не локализован; три диагностических наблюдения не установили причину или исправление. Не повторять suite без нового основания. |
 | M1 Pro (S3-39) | Ограниченный ARM64 smoke завершён на MacBookPro18,3 / macOS 14.6.1 для arithmetic, taken multi-block branch, accepted S3-14 helper, cooperative STOP и same-handle C ABI publication lifecycle. Это не широкая гарантия host support и не заменяет physical x86 oracle. См. [S3-39 report](STAGE_3_S3-39_M1PRO_2026-10-31.md). |
@@ -870,11 +881,248 @@ broader Stage 3 acceptance remain open. Stage 3 remains partial; see the
 
 ### Layout acceptance
 
-The linked-worktree `.git` pointer fix in `tools/check_layout.py` is present in
-`f1670fc` and passed independent static Sol/high review. The exact layout
-checker has not been run after the fix. ISSUE-042 remains **OPEN** until the
-existing `python3 tools/check_layout.py` command passes at Stage 3 end; the
-historical S3-00 checker result predates the fix and is not post-fix acceptance.
+The linked-worktree `.git` pointer fix in `f1670fc` passed independent static
+Sol High review. On 2026-11-18, the `codex` linked worktree at `3476780` had
+45 broken links to local evidence and no Git metadata error. The original
+artifacts were restored from the main checkout under the same ignored
+`work/` paths. This restored 22 Stage 3 report links to 21 files, plus 23
+links to existing Stage 2 evidence used by the repository-wide check.
+After restoration, `python3 tools/check_layout.py` exited 0 with
+`Layout OK: 54 required directories, 7 crate scaffolds, 14 instruction scopes.`
+
+This verifies [ISSUE-042](../KNOWN_ISSUES.md#issue-042) and the layout check
+on this checkout. [ISSUE-053](../KNOWN_ISSUES.md#issue-053) describes how the
+ignored artifacts affect reproducibility in a fresh checkout. Rerun the
+checker for the final S3-41 revision.
+
+### Full local selector, 2026-11-18
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only` on macOS 26.7.1 ARM64 with Rust 1.99.0. All 344 selected steps
+passed; 40 unselected steps retained `not_run`. Source revision:
+`6cd0c8ebfaaee96f846734ec17414ef9950dc672`. Both S3-01 documentation drafts
+(`BENCHMARKS.md` and the baseline report) were present for the entire run.
+The tree fingerprint was identical at start and finish:
+`25a252b2a6d1b63c4325c1e15fbc692421b253e4a46d9a191253a9456463ac65`.
+
+- 152 required harness self-tests and 326 exact Rust gates passed.
+- The local dispatcher oracle compared 10 manual and 1,000 generated
+  inputs twice, producing 2,020 comparison results.
+- The memory corpus checked 4,800 unique inputs with two replays per input.
+- All 14 VMHost RESULT steps passed, including release build, signed
+  executables, fixed budgets and both STOP scenarios.
+
+The saved run is `stage3-20261118-223445-2770f791c4` under
+`work/stage3-harness/`. Its input manifest SHA-256 is
+`8cbbe0da0af178eadd13b2a2a17a4503121b786e1676f9671eb35c5e40266d4b`.
+The summary SHA-256 is
+`ceb0a2db4ed270893cff4f2409024dfe05269c0ad5adf7dfc7f70b2363cc975d`.
+The full VMHost process selector, physical x86, Mac mini, performance,
+owner-backed and Stage 2 suites have status `not_run` in this summary.
+Final S3-41 acceptance remains open.
+
+### Local fault boundary regression run, 2026-11-18
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only` on macOS 26.7.1 ARM64. All 348 selected steps passed, and 40
+unselected steps retained `not_run`. This includes 154 harness self-tests,
+330 exact Rust gates and all 14 local VMHost RESULT steps. The three S3-27
+fault-boundary gates and the S3-29e coordinator regression each ran once
+and passed. The harness self-test step took 115.067 seconds against its
+600-second timeout. A prior full local run took 124.931 seconds in the same
+step, beyond the former 120-second limit. Both runs preserved their source
+fingerprints. [ISSUE-050](../KNOWN_ISSUES.md#issue-050) is closed.
+
+The saved run is `stage3-20261118-235652-df63ad5f87` under
+`work/stage3-harness/`, at source revision
+`899e1decc80a7ff7902669ef5e30436bb7c2a293`.
+The tree fingerprint at start and finish was
+`fc9a37057387ad37eecf6d07d661d9e8a5f3264aa24e7d6b485f6c10ef6485b6`.
+The input manifest SHA-256 is
+`c6566f8daf0c569ecd517345f41530b77020b1e32e2e28aaa42fc80da42aafde`.
+The summary SHA-256 is
+`1a07d43f085b3cee67c24de4df716777cd34e0a614efddeb2f151dbc120c9685`.
+Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
+remains open.
+
+### Local tracked source and reducer run, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite local` finished with
+`local_only`. All 351 selected steps passed and 40 unselected steps retained
+`not_run`. The run includes 155 harness self-tests, 333 exact Rust gates
+and all 14 local VMHost RESULT steps. Both S3-23 tracked source revocation
+gates and the S3-34do controlled mismatch replay and reduction gate passed
+under their exact test identities. The preceding `od-host` library run
+passed 486 tests and reported one ignored test.
+
+The saved run is `stage3-20261119-002751-6155f78b83` under
+`work/stage3-harness/`, at source revision
+`c0b1fdd2a6e5ade30bfade318663be20386ee1f7`. The source fingerprint was
+`17d2246f9fad84d3c17ef2c41b5aab4d99a52767a4d2f814d232836c8d625b66`
+at start and finish. The input manifest SHA-256 is
+`64a2cc24096b2111ef65802db791746c8f6bf1ec858e5c86b0a77878fb81cbca`.
+The summary SHA-256 is
+`ddfdd63108894f040b060077dd2ac872e01b28594f8a4bb1d9bccedb6e6ce223`.
+Physical x86 and Mac mini checks remain deferred. S3-41 acceptance remains
+open.
+
+### Local prepared-key dispatch run, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite local` completed with
+`local_only`. All 351 selected steps passed, including 155 harness self-tests,
+333 exact Rust gates and 14 local VMHost RESULT steps. The 40 unselected
+steps retained `not_run`.
+
+The saved run is `stage3-20261119-020430-2fad681d44` at source revision
+`1204eb52305285a55ba233e81a5358c68c262408`. The source fingerprint was
+`ee5eccb91bbdb13c421a9b70ccf7ec3be0daff427c41618e939a60f8ec507f6e`
+at start and finish. The input manifest SHA-256 is
+`0aaca3395cd4fef52d6a46d2dc125fd2af5bb9eeea63e791b447a2f0609f62a0`.
+The summary SHA-256 is
+`a0905ea2d2cc349a6c034693301324d416f754e6cc27ceed72cbc34bb8573159`.
+
+### Unsupported 0F C2 decode boundary, 2026-11-19 UTC
+
+The Stage 3 MOV comparison exposed a baseline host panic when a REX
+prefix reached the general `0F C2` opcode match without satisfying any
+CMP profile guard. The decoder now returns its typed `Unsupported`
+at that boundary. The exact regression covers seven unadmitted REX
+prefixes, including a fault injected at the opcode and one at the
+first unconsumed byte. The complete `od-isa` library suite passed
+2,607 tests. Physical x86 and Mac mini checks remain deferred.
+[ISSUE-522](../KNOWN_ISSUES.md#issue-522)
+
+### Local next-block SMC regression, 2026-11-19 UTC
+
+Run `stage3-20261119-053704-96e70bb3d6` passed all 359 selected local
+steps. The new S3-24c gate writes the immediate of the block at the
+following RIP through direct and alias addresses. The V3 writer
+finishes, both stale successor entries are removed, and fresh
+execution matches the interpreter at both addresses. The test covers
+one committed store, precise retirement and available arena slots.
+[S3-24c and run bindings](../plans/STAGE_3.md#s3-24c-запись-в-отдельный-блок-по-следующему-rip)
+
+### Full local selector after S3-31g, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite local` completed as
+`local_only`. All 359 selected steps passed, including the 157 harness
+self-tests, the Stage 1 local dispatcher child, the memory differential
+corpus and the local VMHost RESULT contract. The Stage 1 child checked 10
+manual and 1,000 generated fixtures twice, giving 2,020 results. The
+memory corpus checked 4,800 inputs twice. SHA-256 verification matched
+all 359 selected step logs and both Stage 1 child JSON files.
+
+| Run binding | Value |
+| --- | --- |
+| ID | `stage3-20261119-065023-2986c23515` |
+| Revision | `d99ce3b5f399b07202c3b3208a2d9ef8b83cbb58` |
+| Source fingerprint at start and end | `c0d4dc4739e33a8c15e827208523bf5efc1543bd50b835194ce56b279de5b86c` |
+| Input manifest SHA-256 | `ab93994816db24f9a5ef771b9d28f5197cc2542b1545c2e97903d0cdefa9a800` |
+| Summary SHA-256 | `2ab7728681732a32fc82ab0edc7886f27997f4cf106ac8978fe969fd04087078` |
+| Stage 1 child summary SHA-256 | `c32fabbf1793ef9b6cb42810af2c25e54b422de58d82d8b5f94d9bb548d88a6c` |
+| Stage 1 child manifest SHA-256 | `977b9a560b6d339cc7a88892c7de3cbca5cd0d8e945c5ed3de9c31d6bc4e9c7f` |
+
+The first attempt `stage3-20261119-064621-9c8ffb2c8d` ended at the
+fingerprint guard after all 157 self-tests returned successfully. An
+untracked scratch directory created during that attempt entered the
+fingerprint. The directory was ignored before this clean rerun.
+
+The 46 unselected steps retained `not_run`. The signed process
+selector from S3-31g is a separate run with its own bound source snapshot.
+Physical x86 and Mac mini checks remain deferred. Final S3-41 acceptance
+remains open.
+[Signed VMHost run and S3-31g results](STAGE_3_S3-31g_2026-11-19.md#verification)
+
+### Local and VMHost selectors after the MOV decoder change, 2026-11-19 UTC
+
+Both selectors used the clean `e31c105` tree after S3-40o
+and its performance reports. `python3 tests/cpu/stage3_harness.py --suite local`
+returned `local_only`. All 359 selected steps passed, including 157
+harness self-tests, 2,020 dispatcher child results and 4,800 memory
+inputs with two runs per input. The local VMHost RESULT contract passed.
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` returned
+`vmhost_process_only`. All 46 selected steps passed, including control races,
+independent VMHost processes, invalid-state connection closure and the
+generated-code fault probe.
+
+| Binding | Local | VMHost process |
+|---|---|---|
+| Run ID | `stage3-20261119-093244-0384d8b398` | `stage3-20261119-100818-3d90f786cc` |
+| Selected steps passed | 359 | 46 |
+| Unselected steps | 46 | 359 |
+| Input manifest SHA-256 | `e8e301511a4857937e2c1e9f4e867695fedf1106a8cdd6236a41c36e566af211` | `e8e301511a4857937e2c1e9f4e867695fedf1106a8cdd6236a41c36e566af211` |
+| Summary SHA-256 | `2955e673b2e648345b75e07569975b3e9793951f0338d8b3235facd2b7ae1382` | `0e76cae843ba0249edff389cfcf817db7ffa898d3bcc03b66d49ef69ab4b8d2f` |
+
+Both runs recorded revision `e31c105ee88f66ccfc5f83e3aa40fd756c693d90` and the same source
+fingerprint `82530645720cc00b959e1b96402884b38294a7f882d7fb67c378661aa202c374` at start and end.
+An independent audit compared all 405 selected step logs with their saved
+SHA-256 values. The dispatcher child's summary
+`ea0b6d2874ee58837dfc1dbe8866fd6866b255b41e4a4b2d9e78324c4e0a35fa` and manifest
+`b5d181fbd6b11aa36b7e0dd9deeb2aecefdcb425fe479ac67f4b77498c451eca` also matched.
+Raw run directories are under `work/stage3-harness/`.
+Physical x86 and Mac mini stayed `not_run` in both selectors.
+Final S3-41 acceptance remains open.
+
+#### Historical x87 baseline checks
+
+All five tests named in [ISSUE-040](../KNOWN_ISSUES.md#issue-040)
+passed in the 2,608-test `od-isa` library run for `b7c9c92`.
+`cargo test --offline -p od-isa --lib` produced the log SHA-256
+`2a5ecab29a6b6fed2eea2fc68eb2459196b37e65e732b2d089ea63ce804aa19a`.
+Comparing the tests with the `9a1376b` baseline shows earlier updates
+to the FABS/FCHS status masks, FST/FSTP special-value negatives and
+the FCOMI/FNINIT neighboring encodings as admitted FCMOV forms and
+decode errors changed. This resolves the old library-suite blocker
+for the five recorded failures.
+
+### Signed VMHost selector after interpreter specialization, 2026-11-19 UTC
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` returned
+`vmhost_process_only`. All 46 selected steps passed on the source tree
+containing S3-40t, including the generated-code fault probe, control
+races, process isolation and invalid-state connection closure.
+The 359 unselected local steps retained `not_run`. Physical x86 and Mac
+mini suites also retained `not_run`. A separate audit verified all 46
+step logs and the input manifest.
+
+| Binding | Value |
+|---|---|
+| Run ID | `stage3-20261119-110128-bed10f404f` |
+| Revision | `9a6e4e9f12b9299c20e8f338654e414f837bbf7b` |
+| Source fingerprint at start and end | `33b21ff8347ace127feee75433f21bef390ad5151f653992cd81c76ed15e827c` |
+| Input manifest SHA-256 | `6ff5202189414872a28acef549025cecd577c4d073d1fe279d50243d0d6cf28d` |
+| Summary SHA-256 | `6ee113625e4b80b2d66e69c1c031ae4eca6ebf5bebddea9953f9fdd1cfcf4460` |
+
+The full 359-step local run above pertains to the post-MOV source
+snapshot. S3-40t has its own [ISA and host checks](STAGE_3_S3-40t_2026-11-19.md#проверки-рабочего-дерева).
+Final S3-41 acceptance remains open.
+
+### Full VMHost process selector, 2026-11-18
+
+The initial process run at `30306ed` reproduced
+[ISSUE-058](../KNOWN_ISSUES.md#issue-058). It stopped at
+`process_control_race` after 23 passing steps. The negative HELLO fixture
+used version 1, which VMHost supports during the initial handshake. The
+fixture now sends version 65,535. The signed baseline binary passed the
+control smoke with the corrected fixture. The Stage 3 process manifest
+records the SHA-256 of that input.
+
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process` then passed
+40 of 40 selected steps in `stage3-20261118-225053-e0017f44c9`. The
+`vmhost_process_only` result includes signed V0/V1 control, independent
+processes, app-bundle verification and generated-fault smoke. The other
+344 steps retained `not_run`. [ISSUE-044](../KNOWN_ISSUES.md#issue-044)
+remains open after this successful fault-smoke observation.
+
+The run used `30306ed` with the harness/fixture fix and the two S3-01
+documentation drafts. The worktree fingerprint was unchanged throughout
+(`9de3d442a51c3ab03b089193ba94036f081c703aa550bbd49a4681a7976104d6`).
+The input manifest digest is
+`0c074efab92952cd2b68786ee1e6f862715488cfc3410b97f26f9bd535ea5008`.
+The summary digest is
+`51971a6c12b831191dd9970341687116a34560c4e2875d0267dd25262dcc2c36`.
+Both files are under the run ID in `work/stage3-harness/`.
 
 ### Optional real-artifact replay or reduction
 
@@ -888,17 +1136,766 @@ in the [S3-34dn](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-val
 and [S3-34do](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact)
 JIT sections.
 
+### Local and signed VMHost selectors after S3-40v
+
+On 19 November 2026, both selectors completed on
+`d9ecaa241c02a2f9b14134224bbc23bb1bc7e340`. The `local` selector
+passed all 359 selected steps, including 157 harness self-tests, 2,020
+dispatcher results from 1,010 inputs, 4,800 memory inputs replayed twice,
+and the signed VMHost RESULT-state contract. The separate
+`vmhost-process` selector passed all 46 selected steps, including the
+control races, process isolation and the expected launcher report of
+`SIGSEGV` during the generated-code fault smoke. ISSUE-044 remains open.
+
+Both commands use `python3 tests/cpu/stage3_harness.py --suite` with the
+selection named above. The common source fingerprint at the start and
+end of both runs is
+`59ba9accfcf1d49f621e1be5edb6faf2220f8e73188e2b34d470d897b222bd15`.
+The common input manifest SHA-256 is
+`a543fbec6dbe8259b9d426c22426f7d3ba131b99b3a06f010a58b31b6e6269e0`.
+
+| Selection | Run ID | Summary SHA-256 |
+| --- | --- | --- |
+| Local | `stage3-20261119-124109-ee27a7b780` | `530669c5468bafbf74529d7086ede28a51d2485cc76c63e31108d42ae82b415b` |
+| VMHost process | `stage3-20261119-125558-5d9aa79440` | `7a8d330345acb6b38c1ecbd05a1b4ae2d04e75a691e6e6a93b603469388e87d9` |
+
+The harness validator passed again for both summaries. SHA-256 and source
+fingerprints matched all 405 selected step records. Both archives retain
+the exact summaries, manifests and logs, including subprocess logs. The local
+archive also retains the Stage 1 child summary and oracle manifest. Their
+SHA-256 values are bound by the parent summary. Signed executable and
+larger generated artifact identities remain in the recorded evidence.
+
+- [Local archive, 415 files](data/stage3/s3-41-d9ecaa2-20261119/local.json.gz) has SHA-256 `85f4a32eadb3a661516b299a0e57461b675f39e45c755f16cf2b103196a1b272`.
+- [VMHost process archive, 174 files](data/stage3/s3-41-d9ecaa2-20261119/vmhost-process.json.gz) has SHA-256 `e8333a942fc0d4d30100fb1f936a603312faa9f4e05405df90cbf1cd458de14d`.
+
+The archives expose each UTF-8 member under `files` and its digest under
+`file_sha256`. Both results cover this local macOS ARM64 snapshot.
+Final S3-41 acceptance remains open, including the deferred hardware checks.
+
+### Local and signed VMHost selectors after S3-40x
+
+On 19 November 2026, both selectors passed on
+`5275d67d6e136c43e9dbb3658586f139342eb74c`. The `local` selector
+passed all 359 selected steps, including 157 harness self-tests,
+2,020 dispatcher results from 1,010 inputs, 4,800 memory inputs replayed
+twice, and the signed VMHost RESULT-state contract. The separate
+`vmhost-process` selector passed all 46 selected steps, including
+process isolation, control races and the expected launcher report of
+`SIGSEGV` in the generated-code fault smoke. ISSUE-044 remains open.
+
+Both runs use `python3 tests/cpu/stage3_harness.py --suite` followed by
+the corresponding selector. Their common start and end fingerprint is
+`20afdb1c48beefddc60a4501bc7d2215d4797e33eeded2adb0a9503d2c532059`.
+Their input manifest SHA-256 is
+`38fec7a5104c5dae3ebf18cb107a56d98b666ea221dbccfe5c495ec05360fa61`.
+
+| Selection | Run ID | Summary SHA-256 |
+| --- | --- | --- |
+| Local | `stage3-20261119-140632-8c6a8a224c` | `e36bf34dcbfd7be07552ca31454eb5a44529eefb53822398f0adc88ec89ea843` |
+| VMHost process | `stage3-20261119-140933-e835171c13` | `c5a1f5f61f8e8e60d302c00e8108a8d0045a970de1ec646d50d20dfb65edaeaa` |
+
+The official validator passed again for both summaries. The selected
+step logs matched all 405 recorded SHA-256 values and source fingerprints.
+The local archive includes the Stage 1 child summary and oracle manifest
+with the hashes recorded by its parent.
+
+- [Local archive, 415 files](data/stage3/s3-41-5275d67-20261119/local.json.gz) has SHA-256 `6a3045381717880de57164c144a3f0d3b798881e595f275018eeeaca572e179f`.
+- [VMHost process archive, 174 files](data/stage3/s3-41-5275d67-20261119/vmhost-process.json.gz) has SHA-256 `79170817b52221a07be10d6279f92b4686db414ffbd09d7bcd68d5b0bea56b79`.
+
+Both results cover the same local macOS ARM64 snapshot. Final S3-41
+acceptance remains open, including the deferred hardware checks.
+
+### Full local and VMHost process checks on M1 Pro after the Swift fix
+
+Both selectors ran from clean `f6b5214` on MacBookPro18,3, Apple M1 Pro,
+macOS 14.6.1 (23G93), Xcode 15.4 / Swift 5.10, and rustc and Cargo 1.99.0.
+The first attempt on `06f0875` passed 348 local steps before Swift failed
+to type-check `NotificationQueue.bufferedBytes`. The process selector
+stopped at the same compiler error. `f6b5214` splits the byte count into
+typed sums and preserves the queue behavior.
+[Swift build fix and exact compiler replay](STAGE_3_S3-38d-local_2026-11-01.md#vmhost-build-on-swift-510-2026-11-19)
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `local` | `stage3-20261119-165435-b3d334ca7f` | 359/359 | 0 |
+| `vmhost-process` | `stage3-20261119-170237-5e58d2ae65` | 46/46 | 0 |
+
+The local selector passed 157 harness self-tests, both repeats of the
+1,010 Stage 1 inputs, both repeats of the 4,800 memory inputs, and the
+signed VMHost RESULT check. The process selector passed the signed helper,
+launcher, lifecycle, isolation and generated-code fault checks. The
+validators accepted both summaries on the original run directories.
+All 405 distinct selected steps matched their raw log digests after
+transfer. The Stage 1 child summary and input manifest also matched their
+recorded digests.
+
+Both runs retained source fingerprint
+`1d2b69641f72256f603e0fb7f9658fd82efb94011b78dd8c65163a8ec8216086`
+and input manifest SHA-256
+`301d452726359564f312308e7c868ab3d6a58192838c5c9556e89472e104f2d1`.
+Run the same selectors in a clean `f6b5214` checkout with the given tools
+and macOS deployment target 14.0.
+
+```sh
+export MACOSX_DEPLOYMENT_TARGET=14.0
+unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS
+unset CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS
+python3 tests/cpu/stage3_harness.py --suite local
+python3 tests/cpu/stage3_harness.py --suite vmhost-process
+```
+
+- The local archive contains 415 files and has SHA-256 `f41e2a67af238c5128d8383e1b847b15931b4ca8d06c9146b29eb312303d5c14`. [Local archive](data/stage3/s3-41-m1pro-f6b5214-20261119/local.json.gz)
+- The process archive contains 174 files and has SHA-256 `bcce08310ae84e9168dbcb920cd4e8a683dbc3a11108799f4aa7026cc5152782`. [VMHost process archive](data/stage3/s3-41-m1pro-f6b5214-20261119/vmhost-process.json.gz)
+
+### M1 Pro checks at 8c159c8
+
+Both selectors used clean `8c159c8` on the same M1 Pro and toolchain.
+The path and content hash matched the local checkout across all 12,202
+tracked files. Both runs reported the same start and end fingerprint
+`8e21f03f807dbe20363d2659b3e5a289cf212cf02f027e1f39446538be06c34f`
+and the input manifest SHA-256
+`e02811d871baf271a973003f119d306f0c221cd00db4daa83a05eb938d5b346b`.
+
+| Selector | Run | Passed | Failed | Exit |
+| --- | --- | ---: | ---: | ---: |
+| `local` | `stage3-20261119-191048-c8b76d5691` | 359 | 0 | 0 |
+| `vmhost-process` | `stage3-20261119-192202-3e0efe50b1` | 45 | 1 | 1 |
+
+The local run passed the live final-summary validator. The process
+run stopped at `process_generated_fault`. The launcher reported a
+closed channel during a frame. The required diagnostic names SIGSEGV.
+Process-group cleanup confirmed an empty group. Twelve diagnostic
+repeats with the exact signed launcher and helper plus phase tracing
+recorded the same transport error followed by a child wait status of 11.
+The original failure and the traced repeats are retained. The next
+check isolates the order of channel close and wait status.
+[ISSUE-523](../KNOWN_ISSUES.md#issue-523)
+
+The transferred evidence was checked against all 405 selected step logs,
+58 VMHost child logs, the input manifests, and the local Stage 1 child
+summary and manifest.
+
+- The local archive contains 415 files, SHA-256 `7ceb2f32bce3b0e07cad3b5f5b0e4a15c310232cbcee2f5070212130dbc15129`. [Local archive](data/stage3/s3-41-m1pro-8c159c8-20261119/local.json.gz)
+- The rejected process run and traced repeats contain 210 files, SHA-256 `ef288ad76a53a74358d7f5624e6507a020be8834c5f0bf9cad7d91d1f1f1f942`. [VMHost diagnostic archive](data/stage3/s3-41-m1pro-8c159c8-20261119/vmhost-process.json.gz)
+
+### Launcher exit reporting after a truncated frame
+
+A test helper completed HELLO/READY and RUN/RUN_ACK, closed the
+control socket, and then terminated by SIGSEGV. The signed pre-fix
+launcher reported a truncated frame in this sequence. When a frame
+is truncated, the launcher now waits up to 200 ms for the actual
+child status. SIGSEGV and ordinary nonzero exit use that status.
+A clean exit retains the transport diagnostic. A live child goes
+through the existing bounded TERM/KILL cleanup. `ECHILD` ends
+child handling without signalling the PID.
+
+`python3 -B tests/system/vmhost_launcher_eof_smoke.py LAUNCHER`
+passed five scenarios on the signed ARM64 launcher and on a launcher
+linked against a separately compiled `ODShared` module. The signed
+generated-code fault helper passed without phase tracing. The
+RESULT/STOP and external SIGSEGV smokes also passed.
+[ISSUE-523](../KNOWN_ISSUES.md#issue-523)
+
+### M1 Pro checks after the launcher fix
+
+Both selectors used clean `5bc5ec6` on the Apple M1 Pro, macOS
+14.6.1 (23G93), Xcode 15.4, Swift 5.10, and Rust and Cargo 1.99.0.
+The source fingerprint at the start and end of both runs was
+`51751612572dab828ab86c7c87f967d70ec6139e9f07ce92d24f3fc9c6b04d97`.
+The common input manifest SHA-256 was
+`3957c327264db12bd7452f44172fd5a6dce5d61293b58024246986b0bd224455`.
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `vmhost-process` | `stage3-20261119-195349-0e67093787` | 46/46 | 0 |
+| `local` | `stage3-20261119-195544-278191cd8c` | 359/359 | 0 |
+
+`process_generated_fault` reported SIGSEGV and left an empty process
+group. The same signed launcher passed the five separate EOF regression
+scenarios. Its SHA-256 was
+`1650568528a8db04925cdd9fb566d54dabcf8b68d02d91c921292c54424284d4`.
+The local selector passed the signed VMHost RESULT check, both
+repeats of the 1,010 Stage 1 inputs, and both repeats of the 4,800
+memory inputs.
+
+Both final summaries passed the validator on the original run
+directories. Offline verification matched all 405 selected step logs,
+58 child logs, both input manifests, and the local Stage 1 child
+summary and manifest. The process archive also contains stdout and
+exit status from the separate launcher regression.
+
+- The local archive contains 415 files, SHA-256 `79aa524d27424073346408addef7ffd155db2f7aff3ee7256847f08e4244137b`. [Local archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/local.json.gz)
+- The process archive contains 176 files, SHA-256 `0b519b6b3c0ab1f66b0b6aeef3763b2f01578ffcb89a2dd1270c82647e9e0738`. [VMHost process archive](data/stage3/s3-41-m1pro-5bc5ec6-20261119/vmhost-process.json.gz)
+
+### Native session ABI V1 notification failure
+The signed native ARM64 C client verified public ABI layout and normal
+notification delivery. With the default `SIGPIPE` disposition and an injected
+reader loss before STOP, the `ef44df6` client exited by signal 13. The fixed
+client observed `INVALID_STATE` with unchanged output, destroyed the failed
+session and acquired a fresh one. With one available FD, both builds returned
+`ALLOCATION_FAILED`, retained the request ID high-water mark and recovered
+with a greater ID. Failure injection at pipe `fcntl` setup remains open.
+The signed cases reproduced on both local macOS 26.7.1 and the M1 Pro
+with macOS 14.6.1.
+[Native C smoke and reproduction](STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
+
+The signed local V1 C client also exercised two waiters on one
+active invocation. The first returned `BUSY` before STOP and left
+its output intact. The second consumed the sole result and the
+client read one completion byte followed by EOF.
+[Concurrent wait and follow-up RUN](STAGE_3_S3-38f_session_proxy_2026-11-03.md#concurrent-wait-on-one-active-run)
+
+### Local mixed-register arena corpus
+
+S3-34ds validated 1,200 distinct mixed S3-55 inputs from three fixed
+seeds. The exact signed ARM64 test ran two interpreter passes and
+two arena passes per flags mode for each input. It covered full
+state, DF, budget, STOP and distinct native and helper retirements.
+The cache repeats recorded 6,556 warm hits.
+The local selector now requires this gate. The exact gate ran through
+the harness on local ARM64 and all 158 harness self-tests passed.
+[Corpus result and reproduction](STAGE_3_S3-34ds_2026-11-19.md)
+
+### Generated cache-trace GPR reduction
+
+S3-34dt records the reduced input and interpreter, uncached and cached
+observations for a reproduced GPR-only mismatch in a generated
+NativeRegisterV1 cache trace. Four signed ARM64 gates passed. The controlled
+test replayed the actual cache prefix and a deliberately changed observation.
+The ordinary invocation refused to reduce the unreproduced mismatch.
+[Reducer and signed evidence](STAGE_3_S3-34dt_2026-11-19.md)
+
+### M1 Pro checks after S3-40ah
+
+Both selectors used clean `de1f446` on the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4, and Rust and Cargo 1.99.0. Both start
+and end fingerprints were
+`847ff4b4c613ae59d2717455c1292220f3624493b399c1fad6a06e5ecd596071`.
+The input manifest SHA-256 was
+`edcf3516f85aca2020b771a6ea334db380b4beb19b51a9f2a9c261cecfe7f332`.
+
+| Selector | Run | Passed | Exit |
+| --- | --- | ---: | ---: |
+| `vmhost-process` | `stage3-20261119-204828-0ada889e9c` | 46/46 | 0 |
+| `local` | `stage3-20261119-205026-e90da94c3d` | 359/359 | 0 |
+
+The process selector recorded SIGSEGV and an empty group for
+`process_generated_fault`. The local selector passed the signed VMHost
+RESULT check, both repeats of the 1,010 Stage 1 inputs, and both
+repeats of the 4,800 memory inputs. The final summaries passed the
+validator on the original run directories. The archived SHA-256
+checks match all 405 selected step logs, 58 child logs and the
+local Stage 1 child summary and manifest.
+
+- The local archive contains 415 files, SHA-256 `4435276ee46ca326c548edf2f87de6ae3a344e2f2154eb0c8ed688c01d7f2e1e`. [Local archive](data/stage3/s3-41-m1pro-de1f446-20261119/local.json.gz)
+- The process archive contains 174 files, SHA-256 `c8e56dee3e71b0ae487196d77a3958ed6dbc10f17ef5c754d845b241a1271175`. [VMHost process archive](data/stage3/s3-41-m1pro-de1f446-20261119/vmhost-process.json.gz)
+
+### M1 Pro checks after S3-40aj
+
+Both selectors used clean `d48eef9` on the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4 and Rust and Cargo 1.99.0. Both start and
+end source fingerprints were
+`0bcd3d9f5ebe801f68e4af8ed959f28407152c1d18715614f9eb343b44c1dcea`.
+Both pinned the input manifest SHA-256
+`c578c8c302ceaaf808535d2148adffa39b3c557fe83981c327a9fc77da434833`.
+
+| Selector | Run | Passed |
+| --- | --- | ---: |
+| `vmhost-process` | `stage3-20261119-222004-8658d550f4` | 46/46 |
+| `local` | `stage3-20261119-222205-b5496534af` | 359/359 |
+
+The process selector passed the generated fault case and recorded
+SIGSEGV. The original local process finished after the SSH connection
+interrupted. The completed archives were independently revalidated
+after retrieval, including 405 selected step logs and 58 child logs.
+The local result predates the addition of S3-34ds to the selector.
+
+- The local archive contains 415 files, SHA-256 `6f544ac33c406a1312101e447d5527c1fbb0fde6170b0c30ab8656eb6cc5aedf`. [Local archive](data/stage3/s3-41-m1pro-d48eef9-20261119/local.json.gz)
+- The process archive contains 174 files, SHA-256 `f9f5eab5fbcae4252026ebedec512d4491e55fbe3f777294a2e331a665ec3480`. [VMHost process archive](data/stage3/s3-41-m1pro-d48eef9-20261119/vmhost-process.json.gz)
+
+The separate ARM64 C smoke used the concurrent waiter fixture from
+`f88df16` with the exact `libod_host.a` from the signed VMHost build.
+The library SHA-256 was
+`209211df35697b5e819e720b9cf746e8abb3b83a3817d0e6dcbef31adc2739e5`.
+The smoke passed the competing `BUSY` wait, the sole STOP result,
+one byte followed by EOF, and a fresh RUN with a greater invocation ID.
+The same executable passed the pipe `EMFILE` and lost-reader cases.
+[Native observation](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-observation.json)
+[Build and signature provenance](data/stage3/s3-41-m1pro-d48eef9-20261119/native-waiter-provenance.txt)
+
+### Expanded local and VMHost selectors on M1 Pro
+
+Both selectors passed on clean `2e9b601` using the Apple M1 Pro with macOS
+14.6.1 (23G93), Xcode 15.4 and Rust and Cargo 1.99.0. Both runs recorded
+the same start and end source fingerprint
+`cff2d326879a8c51215665664cf5fc9b26c37e276449c8072f4b6c3b20d7b69e`
+and input manifest SHA-256
+`a50fabd672192219814115b17d4f54f3e66854728187c6bb648680d747e64fb0`.
+[Toolchain receipt](data/stage3/s3-41-m1pro-2e9b601-20261119/host.log)
+
+| Selector | Run | Passed |
+| --- | --- | ---: |
+| `local` | `stage3-20261119-230848-3c79fbb7c8` | 360/360 |
+| `vmhost-process` | `stage3-20261119-232128-871eaad8e2` | 46/46 |
+
+The local selector passed the new mixed-register corpus and the reducer
+self-check. The process selector passed the generated-fault case. Archive
+verification checked all 406 selected step logs and 58 child logs against
+their recorded hashes.
+
+- Local archive with 416 files, SHA-256 `58ff6d481de3ef16ad47b3f922266112c8ca8a8ca10411fbf3aa8f4bcbf12f31`. [Local archive](data/stage3/s3-41-m1pro-2e9b601-20261119/local-360.json.gz)
+- VMHost archive with 174 files, SHA-256 `2df8f440f66c0e5f6a19506100280bf5f76bbb565b2348e7afee856e93b41cad`. [VMHost archive](data/stage3/s3-41-m1pro-2e9b601-20261119/vmhost-process.json.gz)
+
 ### Hardware acceptance
 
-Mac mini/physical-x86 acceptance remains deferred to the end of Stage 3. Local
-ARM64 fixture and harness evidence does not replace that gate.
+The M1 Pro passed both ARM64 selectors on `2e9b601`. The separate signed
+native C ABI cases for concurrent wait, lost notification and pipe creation
+failure passed against `d48eef9`.
+The Mac mini configuration, native execution on physical x86 and
+final S3-41 acceptance remain open.
 
 ### Performance measurements
 
-Performance remains a separate acceptance area; no performance result for
-`f5d2b70` is claimed. Use the existing cold/warm measurement procedures in
-[BENCHMARKS.md](../testing/BENCHMARKS.md); this update introduces no new
-benchmark command or manifest.
+Performance results apply to the measured revisions, workloads and timer
+boundaries. The earlier `f5d2b70` update recorded correctness evidence.
+[Benchmark procedures](../testing/BENCHMARKS.md)
+
+S3-35i measured first execution on all 1,010 recovered S3-17 inputs
+on the M1 Pro. The interpreter took about 0.659 ms per sweep. FIFO
+took 8.301–8.318 ms by the three process medians. All 60 scored
+pairs favored the interpreter. Each round passed its own idle gate.
+[S3-35i results and evidence](STAGE_3_S3-35i_2026-11-19.md)
+
+S3-35j measured seven cold dispatch phases on the same recovered inputs.
+The median per sweep was 8.371 ms for ordinary dispatch and 8.633 ms
+with observation. The paired median ratio was 1.0315. Emission and
+finalization took 2.303 µs per event by the median sample mean.
+[S3-35j phase timings and evidence](STAGE_3_S3-35j_2026-11-19.md)
+
+S3-36l measured the warmed FIFO on the five S3-14 branch/helper
+inputs on the M1 Pro. The medians were 5.675 µs for FIFO and 3.089 µs
+for the interpreter. All 60 paired intervals favored the interpreter.
+Each timed FIFO sweep recorded five hits and zero publications or evictions.
+[S3-36l warm measurements and evidence](STAGE_3_S3-36l_2026-11-19.md)
+
+S3-37j checked 384 FIFO16 sweeps on the recovered S3-17 corpus on M1
+Pro. Each process recorded 168,960 publications and 168,944 evictions,
+with a high water of 16 entries. All nine process RSS snapshots were
+available. The post-drop observation fell by 32 KiB in each process.
+[S3-37j cache counts and process RSS](STAGE_3_S3-37j_2026-11-19.md)
+
+S3-29h validated both flags strategies against the interpreter on all
+1,200 composed inputs on M1 Pro. Signed local ARM64 preflights matched
+the stock per-case counters and verified a four-case resident FIFO16
+profile. All four M1 timing attempts were rejected by the load gate.
+[S3-29h preflight results](STAGE_3_S3-29h_2026-11-19.md)
+
+S3-29i covers canonical carry at the boundary between a published native
+ADD prefix and interpreter ADC or SBB. Both carry values start from the
+opposite incoming CF and are checked against full interpreter state.
+[S3-29i host regression](STAGE_3_S3-29i_2026-11-19.md)
+
+S3-29j bound the signed split-window driver to the same M1 Pro corpus.
+Two cold attempts stopped at preflight. Two completed the structural
+timing checks under ordinary UID at nice −5 and were rejected below the
+80% idle threshold. All eight stock and split dispositions replayed.
+[S3-29j M1 flags receipts](STAGE_3_S3-29j_2026-11-19.md)
+
+S3-29k accepted 60 pairs on the four retained FIFO16 flags cases on
+M1 Pro, with 4.2095 µs per call for eager and 4.2277 µs for demand by
+the pooled medians. The paired median ratio was 1.00437. Every sweep
+had 19 hits and zero new compilations, publications or evictions.
+[S3-29k resident flags timings](STAGE_3_S3-29k_2026-11-20.md)
+
+S3-29l accepted 60 cold and 60 repeat dispatch pairs on the frozen
+1,200-input M1 Pro corpus. The pooled paired demand/eager medians
+were 1.02479 and 1.02166. The measured latency and footprint support
+eager as the default for the checked NativeRegisterV1 scope.
+[S3-29l flags decision and composed evidence](STAGE_3_S3-29l_2026-11-20.md)
+
+S3-30c matched all five allocator census artifacts to the normal
+dispatch emission on signed M3 Max and M1 Pro releases. The
+live-through-helper case accounts for 33 of the profile's 49
+visit-weighted static allocator transfer sites. The next comparison
+will measure the allocator cost.
+[S3-30c allocator census](STAGE_3_S3-30c_2026-11-20.md)
+
+S3-30d checked strict dead-home reuse on the same five fixtures with
+signed M3 Max and M1 Pro releases. In the live-through-helper case the
+candidate emitted 20 static allocator transfer sites and used a
+256-byte frame, compared with 33 sites and 288 bytes for fixed homes.
+A separate native test on both hosts verified pending flags through
+JZ/JNZ after register reuse and continuation past STOP-RIP.
+[S3-30d signed preflight](STAGE_3_S3-30d_2026-11-20.md)
+
+S3-30e accepted 60 compile pairs and 60 warm direct-entry pairs on M1 Pro.
+Strict reuse took 0.982805 of fixed-home warm direct-entry time by the
+paired median and 0.953405 on the pressure fixture. The paired compile
+ratio was 1.005805.
+[S3-30e M1 Pro timings](STAGE_3_S3-30e_2026-11-20.md)
+
+S3-30f keeps fixed homes for the five measured eager S3-14 branch/helper cases.
+The 60 warm FIFO16 pairs gave a strict/fixed median of 0.998434 and a
+range of 0.981343–1.018863 across the five cases. Both sides used their
+ordinary dispatcher, with matching cache work and full-state preflight.
+[S3-30f allocator decision](STAGE_3_S3-30f_2026-11-20.md)
+
+On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
+compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
+higher times through the first native return, including fresh publication.
+The baseline remains in use for the measured fixture.
+[Paired S3-32a results and raw evidence](STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
+
+S3-32b retains the existing lowering for the two measured eager,
+fixed-home register strata. The census found three eligible W64
+duplicate-read pairs in the helper-pressure FIFO16 fixture and none
+in 1,702 admitted records from the composed corpus. The census counts
+actual compilations and block visits separately.
+[S3-32b census and scoped decision](STAGE_3_S3-32b_2026-11-20.md)
+
+S3-36g measured the retained S0-09 `Session::run` on matched warm inputs.
+At 64 and 4096 iterations with one RIP, the dispatcher took 7.6% and 5.6%
+of the previous JIT time by the median absolute comparison. The one-pass
+case cost 3.75% more. The two-RIP controls showed 2.22–3.47% median normalized
+overhead. The signed process suite passed 46/46 with the timed dispatcher
+patch. Broader workload acceptance remains open.
+[S3-36g report and raw evidence](STAGE_3_S3-36g_2026-11-19.md)
+
+S3-35e measured session initialization and first RUN with an empty code
+cache on the same six inputs. At 64 and 4096 iterations with one RIP, the
+current JIT beat the interpreter in all scored pairs. The median times
+were 10.6 µs versus 27.5 µs and 163 µs versus 1752 µs respectively. Short
+and alternating-RIP inputs still favored the interpreter. The broader cold
+matrix and fine-grained compiler phases remain open.
+[S3-35e report and raw evidence](STAGE_3_S3-35e_2026-11-19.md)
+
+S3-36h measured the dispatcher with one normal-hit search and same-RIP
+continuation selection. Median absolute one-pass time fell 3.73% relative
+to `06bb39a`. The normalized medians fell 2.82% and 3.02% for the two-RIP
+loops. Those loops still favored the interpreter. The signed process suite
+passed 46/46 with the measured patch.
+[S3-36h report and raw evidence](STAGE_3_S3-36h_2026-11-19.md)
+
+S3-35f repeated the cold measurement on the dispatcher revision used in
+S3-36h. The JIT still beat the interpreter on the 64- and 4096-iteration
+one-RIP profiles in every pair. Relative to the previous dispatcher, the
+normalized ratios stayed below 1 in each of four rounds for the long
+one-RIP profile and the two-RIP controls. The other three ranges crossed
+parity. Both two-RIP profiles remained slower than the interpreter.
+[S3-35f report and raw evidence](STAGE_3_S3-35f_2026-11-19.md)
+
+S3-35g and S3-36i measured four mixed register profiles containing
+actual CLD/STD handoffs. The cold and warm runs used the same signed
+release executable and four balanced rounds. All 512 timed sides
+matched interpreter-visible state and retirement. The interpreter
+was faster in every pair. Warm JIT/interpreter medians on the two
+mixed loops were 2.102 and 2.101. Native retirement, helper steps and
+cache activity were checked separately.
+[S3-35g/S3-36i report and raw evidence](STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
+S3-36j used the post-touch index in NativeRegisterV1 dispatch and
+removed the second cache search on a hit. Both warm straight-line
+mixed FIFO profiles improved in each raw and normalized round. The
+normalized medians fell by 1.86% and 2.58%. The warm loop ranges
+crossed parity, and the interpreter was faster in every pair. Warm and
+cold used signed matched builds with full-state parity and identical
+cache accounting.
+[S3-36j report and raw evidence](STAGE_3_S3-36j_2026-11-19.md)
+
+S3-35h and S3-36k compare cold and resident calls to the same
+`MemoryPairCache::run` on both frozen S3-34a sequences. The current
+build had a median cold call around 7.89 µs and a median resident
+call around 0.30 µs. The interpreter took about 0.50 µs. The older
+build replay still favoured the interpreter in every warm pair.
+The estimated crossover for the current build is 34–44 calls
+under unchanged residency.
+[Matched report and replay](STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
+S3-40m measured two ordinary interpreter steps and two decodes
+on the same S3-34a inputs used for the whole-call slowdown. The
+current/historical ratio stayed above four for each control.
+A current-build probe bound to empty execution profiles reduced
+the paired run time by about 26%. The decoder and remaining
+execution cost still require localization.
+[Interpreter controls and ISSUE-521 evidence](STAGE_3_S3-40m_2026-11-19.md)
+
+S3-40n compared the ordinary decoder with two MOV-only clones on
+the same checked-memory inputs. Decoder medians went from 185–276 ns
+to 95–136 ns with the original MOV arm and to 36–47 ns when the clone
+also omitted general predispatch checks. The combined execution
+probe took 212–316 ns with full state and memory-event parity.
+The result is scoped to the two fixed instruction streams.
+[MOV decoder controls and raw evidence](STAGE_3_S3-40n_2026-11-19.md)
+
+S3-40o added a short route for primary `89` and `8B` with exactly one
+REX.W. Four decoder builds agreed on 943,170 results and ordered fetch
+traces. The selected inlined operand parser gave a 0.211 median paired
+time ratio on the target group and 1.009–1.016 on the three controls.
+The separate-process full-call results were inconclusive.
+[Decoder change, measurements and reproduction](STAGE_3_S3-40o_2026-11-19.md)
+
+S3-40p compared complete interpreter calls with the two decoder paths
+in the same signed binary on the 2,400 S3-34a inputs. Candidate/reference
+median paired ratios were 0.663 and 0.666 across 32 pairs on each
+sequence. The harness checked complete state, RAM, ordered accesses,
+retirement, budgets and STOP behavior. The remaining historical
+gap and current JIT/interpreter ratios require separate measurements.
+[Full-call measurements and reproduction](STAGE_3_S3-40p_2026-11-19.md)
+
+S3-40q repeated the S3-34a cold/warm JIT and interpreter comparison
+on `b7c9c92` and `d24865d` with common sweep counts. On the current build,
+warm native/interpreter ratios were 0.901 and 0.908. Cold ratios were
+21.738 and 21.772. The interpreter still takes about 2.8 times the
+historical time on these streams. The throughput benefit is bounded
+to repeated hits on the two checked-memory streams.
+[Matched cold, warm and historical measurements](STAGE_3_S3-40q_2026-11-19.md)
+
+S3-40r paired ordinary interpreter calls with a diagnostic clone
+specialized for empty execution profiles on the S3-34a corpus.
+Candidate/reference medians were 0.629 and 0.628. All 64 pairs showed
+a lower time, with state, RAM, ordered effects, STOP and budget checks.
+The measured gain includes the specialized code layout and call route.
+[Full-call diagnostic and source bindings](STAGE_3_S3-40r_2026-11-19.md)
+
+S3-40s compared two shared-source interpreter prototypes with the
+original call route in each signed binary. Derived `Default` gave
+paired ratios of 1.063 and 1.060, and its call remained in the
+specialized step. An associated constant gave 0.700 and 0.699.
+Both choices retained state, RAM, STOP and budget parity on S3-34a.
+[Prototype evidence and reproduction](STAGE_3_S3-40s_2026-11-19.md)
+
+S3-40t adopted the statically empty profile route for ordinary
+`execute::run`. The standalone builds agreed across four groups of
+2,400 inputs. Ordinary-run groups improved in all matched process
+rounds. The configured XORPD range straddled parity. The benchmark
+`__text` grew by 150,528 bytes and signed VMHost `__text` shrank
+by 45,760 bytes. Current JIT and historical comparisons remain to be measured.
+[Control measurements and binary sizes](STAGE_3_S3-40t_2026-11-19.md)
+
+S3-40u repeated the same checked-memory comparison after S3-40t.
+On `e74f721`, warm native/interpreter medians were 1.125 and 1.128,
+and cold medians were 28.160 and 28.019. The interpreter still took
+2.226 and 2.250 times the historical duration on the frozen corpus.
+The one-cold/repeated-warm model found no crossover in 47 of 48
+current observations. S3-40q remains specific to its earlier build.
+[Post-specialization performance measurements](STAGE_3_S3-40u_2026-11-19.md)
+
+S3-40v reuses the validated capacity-one cache key on an exact match.
+Across six matched rounds, median candidate/baseline warm ratios were
+0.714 and 0.713. The candidate beat the interpreter in 35/36 store-load
+and 36/36 load-store warm pairs, with medians of 0.799 and 0.802.
+Cold/interpreter stayed near 27. Evidence covers the two local ARM64
+fixtures and one retained key.
+[Exact-key measurements and reproduction](STAGE_3_S3-40v_2026-11-19.md)
+
+S3-40w compared `d9ecaa2` with `d24865d` in six matched process
+rounds, using ordinary interpreter RUN, two public STEP calls and two
+long-mode decodes as separate controls. The current RUN ratios were
+2.073 and 2.107, STEP ratios were 2.794 and 2.872, and decode ratios
+were 0.740 and 0.730. The two measured profiles retain an interpreter
+gap. ISSUE-521 remains open.
+[Interpreter measurements and reproduction](STAGE_3_S3-40w_2026-11-19.md)
+
+S3-40x reuses the statically empty-profile executor for ordinary
+STEP. The two S3-34a STEP-pair ratios were 0.747 and 0.743, with
+a gain in every matched round. RUN and decode ranges crossed
+parity. The signed benchmark text section fell by 184,192 bytes.
+The differential test covers MOV access, a data fault and REP STOP.
+The historical RUN gap remains open.
+[STEP measurements and reproduction](STAGE_3_S3-40x_2026-11-19.md)
+
+S3-40y rechecked the two S3-34a sequences on Apple M1 Pro. The warm
+`5275d67` JIT took 0.8094 and 0.8205 of its paired interpreter time, and
+cold took roughly 31 times interpreter time. Every between-build JIT
+range for `5275d67` versus `d9ecaa2` crossed parity.
+[M1 Pro checked-memory measurements](STAGE_3_S3-40y_2026-11-19.md)
+
+S3-40z compared `5275d67` and `d24865d` on M1 Pro at RUN budgets 0, 1
+and 2. Current/historical median ratios were about 1.285 for budget 0,
+2.056–2.075 for budget 1 and 2.140–2.143 for budget 2. The absolute gap
+grew from about 5 ns at budget 0 to about 158 ns at budget 2. ISSUE-521
+remains open for phase attribution and resolution.
+[M1 Pro RUN timing and reproduction](STAGE_3_S3-40z_2026-11-19.md)
+
+S3-40aa retained the gap on M1 Pro when the experimental RUN path
+used instructions decoded before timing. The pooled current-minus-
+historical gap was 162.2–163.0 ns for public RUN and 176.5–176.8 ns
+for predecoded RUN. The measured paths matched architectural and data
+access outcomes, and the predecoded path made zero FETCH callbacks.
+[Decode boundary controls and raw evidence](STAGE_3_S3-40aa_2026-11-19.md)
+
+S3-40ab compared predecoded RUN, RUN using an out-of-line tracked STEP,
+and a direct pair of calls to the same STEP. On both sequences the
+current-minus-historical gap remained at 170.3–170.5 ns in the direct
+pair. Disassembly verified the shared call destination and the untimed
+checks verified ordered memory effects, two retirements and zero FETCH.
+[RUN loop controls and raw evidence](STAGE_3_S3-40ab_2026-11-19.md)
+
+S3-40ac compared the original pair and two variants of one STEP path
+with a common decoder call. Bypassing the selected entry checks changed
+the current pooled medians by less than 1 ns and left a 167.4–168.0 ns
+gap with the historical revision. The exact input prefixes and data
+accesses matched. The remaining postdecode MOV path is tracked in
+ISSUE-521. [STEP entry checks and raw evidence](STAGE_3_S3-40ac_2026-11-19.md)
+
+S3-40ad kept the existing STEP admission and called the same MOV
+transfer helper through a narrow branch before the final dispatch.
+The direct path took 1.0080 and 1.0147 of the ordinary dispatch time in
+the current build and retained a 170.3–170.7 ns gap with the historical
+revision. The exact instruction prefixes and ordered memory accesses
+matched across all 2,400 inputs.
+[Final MOV dispatch and raw evidence](STAGE_3_S3-40ad_2026-11-19.md)
+
+S3-40ae changed six unit-variant predicates identified in the M1 Pro
+profile. The signed measured STEP went from 99 to 93 static
+`Operation::eq` call sites. Ordinary RUN took 5.62–6.74% less time at
+budgets 1 and 2 across the two MOV sequences by paired medians. All
+six rounds improved at both nonzero budgets. The zero-budget ranges
+included 1.0. The bounded MOV and x87 correctness checks passed.
+[RUN comparison and profiles](STAGE_3_S3-40ae_2026-11-19.md)
+
+S3-40af grouped four adjacent x87 checks with the same admission
+helper. The signed STEP went from 93 to 90 static `Operation::eq`
+call sites. On M1 Pro ordinary RUN took 2.58–3.28% less time at
+budgets 1 and 2 on the two MOV sequences. All six rounds improved.
+The MOV checks and focused x87 cases passed.
+[RUN comparison and evidence](STAGE_3_S3-40af_2026-11-19.md)
+
+S3-40ag directly compared `5bc5ec6` with `d24865d` after both x87
+guard changes. The paired ratios at budget 2 were 1.9716 and
+1.9770 on the two MOV sequences. The pooled differences were
+134.2 and 134.7 ns. The difference at budget 0 was 5.3 ns.
+The remaining interpreter gap is tracked in ISSUE-521.
+[Historical comparison and evidence](STAGE_3_S3-40ag_2026-11-19.md)
+
+S3-40ah replaced the RDTSC, CPUID, SYSCALL and SYSRET variant
+comparisons with `matches!` after attributing four direct equality
+calls in the profiled M1 Pro STEP. Those calls disappeared in the
+replacement build. The paired median RUN times fell by 5.91–6.70%
+for the two MOV sequences at budgets 1 and 2. The budget-zero
+ranges included unity. Both builds passed the MOV state and
+access checks and all 6,007 `od-isa` tests.
+[Profiles, RUN timings and verification](STAGE_3_S3-40ah_2026-11-19.md)
+
+S3-40ai directly compared `de1f446` with `d24865d` on M1 Pro after
+the system instruction guard change. The budget-two ratios were
+1.8436 and 1.8499 on the two MOV sequences. The pooled gaps were
+117.6 and 118.0 ns at budget two and 4.7 ns at budget zero.
+ISSUE-521 remains open for the historical interpreter gap.
+[Matched comparison and evidence](STAGE_3_S3-40ai_2026-11-19.md)
+
+S3-40aj used fresh S3-40ai samples to locate HLT, INT3 and CLI
+comparison calls. The candidate replaces four outer predicates
+including the adjacent STI check. The signed STEP has 81 static
+`Operation::eq` calls, down from 86. On M1 Pro its paired RUN
+medians fell by 3.39–3.86% at budgets 1 and 2. The budget-zero
+ranges include unity. Both builds passed focused guard and MOV
+correctness checks.
+[RUN timings, samples and verification](STAGE_3_S3-40aj_2026-11-19.md)
+
+S3-40ak directly compared `d48eef9` with `d24865d` on M1 Pro.
+At budget two the ratios are 1.7952 and 1.7957 for the two MOV
+sequences. The pooled gap is 109.8 ns on both sequences. At budget
+zero the gap is 5.3 ns. The accepted series used a fresh idle
+preflight on the same signed builds. ISSUE-521 remains open.
+[Matched comparison and evidence](STAGE_3_S3-40ak_2026-11-19.md)
+
+S3-37g timed between-call backing invalidation and redispatch separately.
+Deleting the oldest pair took median 0.221 µs at two resident entries
+and 0.364 µs at sixteen. Both first calls on the new backing version
+took about 5.25 µs together, including recompilation and publication.
+All 33.19 million scored epochs recovered two slots before publication
+and restored the resident footprint after the two calls.
+[S3-37g report and raw evidence](STAGE_3_S3-37g_2026-11-19.md)
+
+S3-37h measured actual native V3 stores into the current artifact's
+pending tail. Across 4.20 million epochs, the complete active-write
+interval including the invalidation callback took median 0.454 µs
+for direct stores and 0.459 µs through an alias. Both first tail
+dispatches took about 5.5 µs together, about four times their paired
+warm interval. Each epoch verified one committed store, rejection
+of the stale active handle and restoration of resident accounting.
+[S3-37h report and raw evidence](STAGE_3_S3-37h_2026-11-19.md)
+
+S3-37i ran the retained S0-09 Session in two independent signed
+processes. Each completed 64 pressure and lifecycle checkpoints over
+at least 660 seconds. Together they verified 335,331,840
+publications and 335,327,744 evictions. Full occupancy held
+at 16 entries per process. Checkpoints verified STOP before RUN, typed
+entry refusal, exclusive lease enforcement, clear, refill and destroy.
+The report keeps process RSS snapshots separate from per-Session code
+and logical metadata accounting.
+[S3-37i report and raw evidence](STAGE_3_S3-37i_2026-11-19.md)
+
+S3-31g added invocation-local reuse of the previous resident S0-09 entry.
+For the two alternating-RIP inputs, normalized warm time was 9.05% and
+7.36% of the prior dispatcher. Normalized cold time was 20.36% and 7.52%.
+All 32 JIT/interpreter pairs for each two-RIP profile and timing mode
+favoured the JIT. The 64- and 4096-iteration warm one-RIP controls were
+2.30% and 4.16% slower after normalization. Direct linking and broader
+workloads remain open.
+[S3-31g report, verification and raw evidence](STAGE_3_S3-31g_2026-11-19.md)
+
+S3-31h measured the current and pre-memo S0-09 routes on `5968160`,
+with `nice -5` verified at the start of each measuring process. The
+same-process run found a 1.9–2.6% penalty on the long one-RIP profiles.
+Moving index rebasing to the transition path recovered about 1% there.
+With separate binaries, the prototype had higher normalized
+JIT/interpreter ratios on two RIPs. The current implementation is
+retained. On this build, JIT won every measured cold and warm pair at
+64 and 4,096 iterations for one and two RIPs.
+[Current register-loop timings and decision](STAGE_3_S3-31h_2026-11-19.md)
+
+S3-31i ran the same seven warm S0-09 profiles on M1 Pro from `5c92bf7`.
+The current build added 2.01% and 2.82% to raw JIT time on the two
+long one-RIP loops. Both six-round ranges were above the ranges of
+the repeated-current control. With two RIPs, current took 8.23%
+and 6.70% of the original JIT time. The dispatcher is retained and
+the one-RIP regression remains open in ISSUE-520.
+[M1 Pro warm results and evidence](STAGE_3_S3-31i_2026-11-19.md)
+
+S3-31j measured a candidate that skips rewriting the previous RIP and
+index on the same-RIP branch. The signed assembly confirmed the
+skipped payload store. The two long one-RIP profiles yielded raw
+JIT medians of 1.0001 and 1.0002 times stock, with ranges overlapping
+the same-file A/A control. The stock dispatcher is retained.
+[Results and linked code](STAGE_3_S3-31j_2026-11-19.md)
+
+S3-31k passed the memo address to the resolved-hit path directly.
+The M1 Pro signed caller uses four instructions instead of ten.
+The warm paired JIT medians fell by 1.99–2.49% on the two long
+same-RIP profiles and by 2.62–3.25% on two alternating-RIP profiles.
+All four ranges lie below their same-file A/A ranges.
+[Warm JIT results, source and disassembly](STAGE_3_S3-31k_2026-11-19.md)
+
+S3-31l held all other source at `a4dbc7d` and compared the pre-memo
+function with the adopted dispatcher. Warm `same_64` overlaps
+the same-file control. The raw `same_4096` median was 0.33% higher
+for warm execution and 0.36% higher for first dispatch including
+session creation. Both alternating-RIP profiles favoured the current
+dispatcher in both modes. ISSUE-520 remains open.
+[Warm and first-dispatch evidence](STAGE_3_S3-31l_2026-11-19.md)
+
+S3-31m profiled the current dispatcher on four signed M1 Pro register
+fixtures, with 60 pairs each. The one-RIP case used one key lookup
+over 4,096 native blocks. The two-RIP cases used two lookups per call.
+The three-RIP control used 190 lookups in 190 native blocks, with key
+snapshot and lookup accounting for 40.75% of the observed call time.
+Keep the dispatcher, memo and explicit hit arguments for this scope.
+The user-selected third round includes a 79.0% idle exception, and
+the separate series that passed the automatic floor supports the same
+choice. ISSUE-520 remains open.
+[Attribution, selection records and archive](STAGE_3_S3-31m_2026-11-20.md)
+
+S3-40al records the decisions for the measured NativeRegisterV1,
+S0-09 register and S3-14 branch/helper profiles. Keep eager flags,
+fixed homes, dispatcher transitions with memo and the current IR
+lowering. The report ties
+each choice to its paired evidence and records the separate cold,
+warm and churn results for FIFO16. Stage acceptance is recorded in
+the S3-41 plan.
+[Measurement decisions and boundaries](STAGE_3_S3-40al_2026-11-20.md)
 
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite

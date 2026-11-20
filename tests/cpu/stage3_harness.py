@@ -60,6 +60,8 @@ SELF_TEST_NAMES = (
     "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
     "test_s3_37e_memory_cache_gate_is_pinned_once_and_fail_closed",
     "test_s3_23_memory_pair_invalidation_gate_is_pinned_once_and_fail_closed",
+    "test_s3_23_source_permission_gates_are_pinned_and_fail_closed",
+    "test_s3_24c_following_block_gate_is_pinned_and_fail_closed",
     "test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
@@ -177,7 +179,9 @@ SELF_TEST_NAMES = (
     "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34dr_load_load_profile_gates_are_pinned_and_fail_closed",
+    "test_s3_34ds_mixed_register_corpus_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
+    "test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed",
     "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -203,6 +207,8 @@ SELF_TEST_NAMES = (
     "test_vmhost_process_timeout_kills_child_group",
     "test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed",
     "test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed",
+    "test_s3_16_publication_refusal_gate_is_pinned",
+    "test_s3_27_fault_boundary_gates_are_pinned_and_fail_closed",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -214,6 +220,7 @@ LIFECYCLE_TESTS = (
     "code_region_store_invalidates_cached_prefix_and_tail_before_redispatch",
     "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry",
     "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
+    "active_code_v3_republishes_immediate_of_following_block",
     "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
     "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse",
     "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
@@ -234,6 +241,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_38f_session_proxy_fresh_state_lease", "local_lifecycle", "od-host",
         "session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease",
+    ),
+    (
+        "s3_27_pc_map_snapshot_boundary", "local_acceptance", "od-jit",
+        "statepoints::tests::maps_cover_code_with_checked_half_open_ranges_and_separate_boundaries",
+    ),
+    (
+        "s3_27_uncached_memory_fault_boundary", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::guest_fault_requires_pending_memory_site",
+    ),
+    (
+        "s3_27_cached_memory_fault_boundary", "local_acceptance", "od-jit",
+        "memory_cache::tests::guest_fault_requires_pending_cached_memory_site",
     ),
     (
         "s3_27d_direct_memory_v2_pc_map", "local_acceptance", "od-jit",
@@ -274,6 +293,30 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_38c_native_register_v1_candidate_cold_hit_parity", "local_acceptance", "od-host",
         "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity",
+    ),
+    (
+        "s3_55_mixed_witness_exact", "local_acceptance", "od-jit",
+        "block::s3_52_admission_equivalence_tests::s3_55_mixed_witness_preserves_strict_admission_and_exact_helper_forms",
+    ),
+    (
+        "s3_55_helper_control_and_native_progress", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_helper_only_budget_stop_event_and_zero_progress",
+    ),
+    (
+        "s3_55_post_helper_snapshot_guards", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_post_helper_validation_rejects_changed_source_and_invalid_dependencies",
+    ),
+    (
+        "s3_55_interpreter_zero_progress", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_interpreter_zero_progress_is_typed_and_not_retired",
+    ),
+    (
+        "s3_55_interpreter_error_retirement", "local_acceptance", "od-jit",
+        "dispatch::tests::s3_55_interpreter_failure_does_not_retire",
+    ),
+    (
+        "s3_55_mixed_native_full_state", "local_acceptance", "od-host",
+        "tests::s3_54_native_multi_cache_reuses_published_handle",
     ),
     (
         "s3_38e_session_same_code_reuses_publication", "local_lifecycle", "od-host",
@@ -667,10 +710,22 @@ ADDITIONAL_TEST_GATES = (
         "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
     ),
     (
+        "s3_37f_session_cache_pressure", "local_lifecycle", "od-host",
+        "session::tests::cache_pressure_preserves_state_and_releases_the_arena",
+    ),
+    (
         "s3_23_memory_pair_cache_invalidation_republishes",
         "local_acceptance",
         "od-host",
         "tests::memory_pair_cache_invalidation_drops_mapping_before_republish",
+    ),
+    (
+        "s3_23_tracked_v2_source_permission", "local_acceptance", "od-host",
+        "tests::s3_23_tracked_v2_rejects_revoked_source_permission",
+    ),
+    (
+        "s3_23_tracked_v3_source_permission", "local_acceptance", "od-host",
+        "tests::s3_23_tracked_v3_rejects_revoked_source_permission",
     ),
     (
         "s3_34y_ir_dword_alias_store_admission_provenance", "local_acceptance", "od-jit",
@@ -1450,6 +1505,10 @@ ADDITIONAL_TEST_GATES = (
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
     ),
     (
+        "s3_34do_captured_runtime_mismatch", "local_acceptance", "od-host",
+        "s3_34do_captured_runtime_mismatch_replays_and_reduces",
+    ),
+    (
         "s3_26f_store_store_source_sites_and_pc_map", "local_acceptance", "od-jit",
         "memory_load_v2::tests::ir_store_then_store_binds_two_exact_ordered_sites",
     ),
@@ -1482,6 +1541,10 @@ ADDITIONAL_TEST_GATES = (
         "tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries",
     ),
     (
+        "s3_16_publication_refusal", "local_acceptance", "od-host",
+        "paged_host_loop::tests::s3_16_publication_refusal_interprets_once_and_resumes_native",
+    ),
+    (
         "s3_34dr_load_load_profile_exact_sequences", "local_acceptance", "od-jit",
         "memory_cache::tests::profiles_admit_only_the_exact_load_store_sequences",
     ),
@@ -1492,6 +1555,10 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34dr_retained_load_load_host_regression", "local_acceptance", "od-host",
         "tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault",
+    ),
+    (
+        "s3_34ds_mixed_register_v1_corpus", "local_acceptance", "od-host",
+        "generated_mixed_register_v1_corpus_runs_twice_on_published_arena",
     ),
     (
         "s3_18g_load_load_dependency_generation_republishes", "local_acceptance", "od-host",
@@ -1535,6 +1602,14 @@ RUST_TEST_TARGET_OVERRIDES = {
         "od-host",
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
     ): ("--test", "stage3_dword_store_corpus"),
+    (
+        "od-host",
+        "s3_34do_captured_runtime_mismatch_replays_and_reduces",
+    ): ("--test", "stage3_dword_store_corpus"),
+    (
+        "od-host",
+        "generated_mixed_register_v1_corpus_runs_twice_on_published_arena",
+    ): ("--test", "mixed_register_v1_corpus"),
 }
 RUST_TEST_ARGV_OVERRIDES = {
     (
@@ -1586,6 +1661,7 @@ LOCAL_VMHOST_RESULT_TIMEOUTS = {
     "local_s38d_launcher_entitlements": 120,
     "local_s38d_result_state": 900,
 }
+VMHOST_LINUX_DIRECT_SOURCE = "apps/vmhost/Sources/LinuxDirectRunner.swift"
 LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
     "Cargo.lock",
     "Cargo.toml",
@@ -1598,6 +1674,7 @@ LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
     "apps/macos/Sources/Shared/InputProtocol.swift",
     "apps/macos/Sources/Shared/InputQueue.swift",
     "apps/vmhost/Sources/VMHostMain.swift",
+    VMHOST_LINUX_DIRECT_SOURCE,
     "apps/macos/Sources/Shared/ControlV2.swift",
     "apps/vmhost/Sources/BundleLock.swift",
     "apps/vmhost/Sources/Lifecycle.swift",
@@ -1647,10 +1724,16 @@ PROCESS_SUITE_STEPS = (
     "process_verify_fault_helper",
     "process_fault_helper_signature",
     "process_fault_helper_entitlements",
+    "process_compile_v1_admission_failure_vmhost",
+    "process_sign_v1_admission_failure_vmhost",
+    "process_verify_v1_admission_failure_vmhost",
+    "process_v1_admission_failure_vmhost_signature",
+    "process_v1_admission_failure_vmhost_entitlements",
     "process_control_race",
     "process_control_v1_sessions",
     "process_control_v1_code_mismatch",
     "process_control_v1_frames",
+    "process_control_v1_admission_failures",
     "process_control_v1_stop_eof",
     "process_control_v1_run_stop_id",
     "process_control_v1_run_id_exhaustion",
@@ -1676,7 +1759,11 @@ PROCESS_SUCCESS_MARKERS = {
         "preserves binding and RUN ID high-watermark"
     ),
     "control_v1_frames": (
-        "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length"
+        "VMHost control V1 smoke passed: fragmented/coalesced frames, "
+        "maximum RUN length, bounded EOF teardown, oversized length, backpressure, active completion"
+    ),
+    "control_v1_admission_failures": (
+        "VMHost control V1 smoke passed: create/begin INVALID_STATE closes the frame batch"
     ),
     "control_v1_stop_eof": (
         "VMHost control V1 smoke passed: STOP isolation and bounded active-run EOF teardown"
@@ -1733,10 +1820,16 @@ PROCESS_STEP_TIMEOUTS = {
     "process_verify_fault_helper": 120,
     "process_fault_helper_signature": 120,
     "process_fault_helper_entitlements": 120,
+    "process_compile_v1_admission_failure_vmhost": 900,
+    "process_sign_v1_admission_failure_vmhost": 120,
+    "process_verify_v1_admission_failure_vmhost": 120,
+    "process_v1_admission_failure_vmhost_signature": 120,
+    "process_v1_admission_failure_vmhost_entitlements": 120,
     "process_control_race": 900,
     "process_control_v1_sessions": 30,
     "process_control_v1_code_mismatch": 30,
     "process_control_v1_frames": 30,
+    "process_control_v1_admission_failures": 30,
     "process_control_v1_stop_eof": 30,
     "process_control_v1_run_stop_id": 30,
     "process_control_v1_run_id_exhaustion": 30,
@@ -1768,6 +1861,7 @@ PROCESS_SOURCE_PATHS = (
     "apps/macos/Sources/Shared/InputQueue.swift",
     "apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h",
     "apps/vmhost/Sources/VMHostMain.swift",
+    VMHOST_LINUX_DIRECT_SOURCE,
     "apps/macos/Sources/Shared/ControlV2.swift",
     "apps/vmhost/Sources/BundleLock.swift",
     "apps/vmhost/Sources/Lifecycle.swift",
@@ -1777,6 +1871,8 @@ PROCESS_SOURCE_PATHS = (
     "apps/macos/Sources/launcher.swift",
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
+    "tests/fixtures/control/control_v0_scenarios.json",
+    "tests/fixtures/control/v1_admission_failure_bridge.h",
     "tests/system/vmhost_control_v1_same_code_smoke.py",
     "tests/system/vmhost_control_v1_code_mismatch_smoke.py",
     "tests/system/vmhost_control_v1_frames_smoke.py",
@@ -1792,8 +1888,10 @@ PROCESS_SOURCE_PATHS = (
 )
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
+    "crates/od-host/tests/mixed_register_v1_corpus.rs",
     "crates/od-testkit/src/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/paged_host_loop.rs",
     "crates/od-host/src/session_abi_v1.rs",
     "crates/od-host/src/session.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",
@@ -1806,6 +1904,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-jit/src/lowering.rs",
     "crates/od-jit/src/dispatch.rs",
     "crates/od-jit/src/memory_dispatch.rs",
+    "crates/od-jit/src/statepoints.rs",
     "crates/od-jit/src/translation.rs",
     "tests/cpu/stage3_harness.py",
     "tests/cpu/test_stage3_harness.py",
@@ -2344,6 +2443,7 @@ def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
         "vmhost": artifacts / "od-vmhost-smoke",
         "launcher": artifacts / "open-desktop-launcher-smoke",
         "fault_helper": artifacts / "od-vmhost-generated-fault-smoke",
+        "v1_admission_failure_vmhost": artifacts / "od-vmhost-v1-admission-failure-smoke",
         "app_bundle": artifacts / "OpenDesktop-Stage0-Smoke.app",
         "entitlements": ROOT / "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     }
@@ -2371,12 +2471,22 @@ def vmhost_process_commands(
         "-framework", "CoreServices",
         "-framework", "Foundation",
     ]
-    swift_common = [
+    swift_compile = [
         "xcrun", "swiftc", "-module-cache-path", str(paths["swift_modules"]),
         "-parse-as-library", "-O", "-import-objc-header",
-        "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h", "apps/macos/Sources/Shared/ControlFrame.swift",
     ]
+    control_frame = "apps/macos/Sources/Shared/ControlFrame.swift"
+    swift_common = [*swift_compile, "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h", control_frame]
     link_args = ["-ldl", "-lpthread", "-lm", *frameworks]
+    vmhost_inputs = [
+        "apps/macos/Sources/Shared/InputProtocol.swift", "apps/macos/Sources/Shared/InputQueue.swift",
+        "apps/macos/Sources/Shared/ControlV2.swift", "apps/vmhost/Sources/BundleLock.swift",
+        "apps/vmhost/Sources/Lifecycle.swift", "apps/vmhost/Sources/ControlV2Host.swift",
+        "apps/vmhost/Sources/InputChannel.swift", "apps/vmhost/Sources/FrameTransport.swift",
+        "apps/vmhost/Sources/VMHostMain.swift", VMHOST_LINUX_DIRECT_SOURCE,
+        str(paths["od_host_library"]), *link_args,
+    ]
+    admission_failure_vmhost = str(paths["v1_admission_failure_vmhost"])
     return {
         "process_sw_vers": ["sw_vers"],
         "process_uname": ["uname", "-a"],
@@ -2390,10 +2500,7 @@ def vmhost_process_commands(
             "--target-dir", str(paths["build_target"]),
         ],
         "process_compile_vmhost": [
-            *swift_common, "apps/macos/Sources/Shared/InputProtocol.swift", "apps/macos/Sources/Shared/InputQueue.swift",
-            "apps/macos/Sources/Shared/ControlV2.swift", "apps/vmhost/Sources/BundleLock.swift", "apps/vmhost/Sources/Lifecycle.swift", "apps/vmhost/Sources/ControlV2Host.swift",
-            "apps/vmhost/Sources/InputChannel.swift", "apps/vmhost/Sources/FrameTransport.swift", "apps/vmhost/Sources/VMHostMain.swift",
-            str(paths["od_host_library"]), *link_args, "-o", str(paths["vmhost"]),
+            *swift_common, *vmhost_inputs, "-o", str(paths["vmhost"]),
         ],
         "process_sign_vmhost": [
             codesign_path, "--force", "--sign", "-", "--options", "runtime",
@@ -2442,6 +2549,23 @@ def vmhost_process_commands(
         "process_fault_helper_entitlements": [
             codesign_path, "-d", "--entitlements", ":-", str(paths["fault_helper"]),
         ],
+        "process_compile_v1_admission_failure_vmhost": [
+            *swift_compile, "tests/fixtures/control/v1_admission_failure_bridge.h",
+            control_frame, *vmhost_inputs, "-o", admission_failure_vmhost,
+        ],
+        "process_sign_v1_admission_failure_vmhost": [
+            codesign_path, "--force", "--sign", "-", "--options", "runtime",
+            "--entitlements", str(paths["entitlements"]), admission_failure_vmhost,
+        ],
+        "process_verify_v1_admission_failure_vmhost": [
+            codesign_path, "--verify", "--strict", "--verbose=2", admission_failure_vmhost,
+        ],
+        "process_v1_admission_failure_vmhost_signature": [
+            codesign_path, "-d", "--verbose=4", admission_failure_vmhost,
+        ],
+        "process_v1_admission_failure_vmhost_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-", admission_failure_vmhost,
+        ],
         "process_control_race": [
             sys.executable, "tests/system/vmhost_control_race_smoke.py",
             str(paths["launcher"]), str(paths["vmhost"]), "--diagnostics-dir",
@@ -2458,6 +2582,10 @@ def vmhost_process_commands(
         "process_control_v1_frames": [
             sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
             str(paths["vmhost"]),
+        ],
+        "process_control_v1_admission_failures": [
+            sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
+            admission_failure_vmhost, "--admission-failures",
         ],
         "process_control_v1_stop_eof": [
             sys.executable, "tests/system/vmhost_control_v1_stop_eof_smoke.py",
@@ -3419,6 +3547,7 @@ def collect_vmhost_process_artifacts(run_root: Path) -> dict[str, object]:
         "vmhost": process_artifact_record(paths["vmhost"]),
         "launcher": process_artifact_record(paths["launcher"]),
         "fault_helper": process_artifact_record(paths["fault_helper"]),
+        "v1_admission_failure_vmhost": process_artifact_record(paths["v1_admission_failure_vmhost"]),
         "entitlements_source": process_artifact_record(paths["entitlements"]),
     }
     if paths["app_bundle"].exists():
@@ -3510,7 +3639,10 @@ def run_vmhost_process_suite(
                 raise HarnessError(
                     f"process command failed before semantic validation: {step.get('failure')}"
                 )
-            if step_name in {"process_control_race", "process_control_v1_sessions",
+            if step_name == "process_control_v1_admission_failures":
+                step["binary_inputs"] = process_binary_inputs(artifacts, "v1_admission_failure_vmhost")
+                require_process_marker(step, PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"], step_name)
+            elif step_name in {"process_control_race", "process_control_v1_sessions",
                              "process_control_v1_code_mismatch",
                              "process_control_v1_frames", "process_control_v1_stop_eof",
                              "process_control_v1_run_stop_id",
@@ -3577,12 +3709,14 @@ def run_vmhost_process_suite(
                     step["process_observation"] = observation
             elif step_name in {
                 "process_vmhost_signature", "process_fault_helper_signature",
+                "process_v1_admission_failure_vmhost_signature",
                 "process_bundle_signature", "process_bundle_vmhost_signature",
                 "process_bundle_launcher_signature",
             }:
                 process_signature_output(step, requires_jit=False, step_name=step_name)
             elif step_name in {
                 "process_vmhost_entitlements", "process_fault_helper_entitlements",
+                "process_v1_admission_failure_vmhost_entitlements",
                 "process_bundle_vmhost_entitlements",
             }:
                 process_entitlements_output(step, requires_jit=True, step_name=step_name)
@@ -4307,17 +4441,20 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         raise HarnessError("VMHost process artifact hashes differ from the current run outputs")
     if set(expected_artifacts) != {
         "od_host_library", "vmhost", "launcher", "fault_helper", "entitlements_source",
+        "v1_admission_failure_vmhost",
         "app_bundle", "bundle_vmhost", "bundle_launcher",
     }:
         raise HarnessError("VMHost process artifact set is incomplete")
 
     for name in ("process_vmhost_signature", "process_launcher_signature",
-                 "process_fault_helper_signature", "process_bundle_signature",
+                 "process_fault_helper_signature", "process_v1_admission_failure_vmhost_signature",
+                 "process_bundle_signature",
                  "process_bundle_vmhost_signature", "process_bundle_launcher_signature"):
         process_signature_output(
             steps[name], requires_jit=False, step_name=name
         )
     for name in ("process_vmhost_entitlements", "process_fault_helper_entitlements",
+                 "process_v1_admission_failure_vmhost_entitlements",
                  "process_bundle_vmhost_entitlements"):
         process_entitlements_output(
             steps[name], requires_jit=True, step_name=name
@@ -4348,6 +4485,11 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         steps["process_control_v1_frames"],
         PROCESS_SUCCESS_MARKERS["control_v1_frames"],
         "process_control_v1_frames",
+    )
+    require_process_marker(
+        steps["process_control_v1_admission_failures"],
+        PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"],
+        "process_control_v1_admission_failures",
     )
     require_process_marker(
         steps["process_control_v1_stop_eof"],
@@ -4384,6 +4526,9 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         "process_control_v1_sessions": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_code_mismatch": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_frames": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_admission_failures": process_binary_inputs(
+            expected_artifacts, "v1_admission_failure_vmhost"
+        ),
         "process_control_v1_stop_eof": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_stop_id": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_id_exhaustion": process_binary_inputs(expected_artifacts, "vmhost"),

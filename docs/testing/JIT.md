@@ -1871,6 +1871,17 @@ observation as `StaleCodeResult` and a corrupted backing generation as
 `BackingGenerationMismatch`. This does not disable production validation or
 claim physical x86 equivalence.
 
+### S3-27 local fault boundary regressions
+
+`python3 tests/cpu/stage3_harness.py --suite local` requires three exact
+`od-jit` tests. `s3_27_pc_map_snapshot_boundary` checks aligned PC lookup and
+rejects invalid offsets. `s3_27_uncached_memory_fault_boundary` and
+`s3_27_cached_memory_fault_boundary` check the executor report against the
+pending instruction's RIP and budget. The cache test also verifies mapping
+release after a rejected report. The manifest fingerprints all three test
+source files. A harness self-test verifies that missing or ignored results
+fail validation for each gate.
+
 ### S3-34e unified local Stage 3 correctness harness
 
 Run `python3 tests/cpu/stage3_harness.py --suite local`. It first runs its own
@@ -2829,10 +2840,18 @@ command ran. See the
 
 ## S3-34do: bounded value-only reducer for one S3-34dn artifact
 
-**Status:** reducer implementation, independent static Sol/high review, and
-synthetic self-check passed; real-artifact execution is deferred. Runtime
-commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. No
-real artifact was reduced.
+The local selector requires `s3_34do_captured_runtime_mismatch` in addition
+to the synthetic reducer self-check. It runs the interpreter and native
+JIT on a fixed-seed store input, then flips one R9 bit in the JIT observation
+after execution. The corpus captures the resulting mismatch. The saved input
+replays and reduces with the same injection. Ordinary replay of the original
+reports `not_reproduced`, and ordinary reduction stops before trying any
+candidate. The test checks that the original bytes survive reduction, the
+reduced input preserves profile and provenance, and its mismatch replays.
+
+```sh
+cargo test --offline -p od-host --test stage3_dword_store_corpus s3_34do_captured_runtime_mismatch_replays_and_reduces -- --exact --test-threads=1
+```
 
 The reducer consumes exactly one validated S3-34dn artifact for
 `67 89 04 24`. First replay the original saved input twice through the
@@ -2883,17 +2902,10 @@ cargo test -p od-host --test stage3_dword_store_corpus s3_34do_value_only_reduce
 PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed
 ```
 
-The Rust gate passed 1/1 and the Python self-test exited 0. These checks
-exercise only the labeled synthetic self-check and fail-closed harness pin.
-No real S3-34dn artifact was replayed or reduced, and no JIT/interpreter
-parity or S3-34.2 runtime acceptance is established. ISSUE-045 is resolved
-for the separate S3-20eg retry-assertion host gate; ISSUE-046 is resolved for
-the S3-34dn artifact-protection self-check only. Neither closure establishes
-general runtime acceptance. Mini remains unavailable, M1
-is deferred, and physical-x86, production owner/MMU, performance, and broader
-Stage 3 acceptance remain open. No generic reducer framework, runtime API,
-dependency, or opcode is added. Stage 3 remains partial. See the
-[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
+The Rust synthetic self-check and the Python fail-closed test each passed.
+The controlled runtime test covers the exact store profile. General S3-34.2
+acceptance remains open. See the
+[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md#controlled-runtime-capture-replay-and-reduction).
 
 ## S3-23b: MemoryPairCache invalidation between synchronous calls
 
@@ -2980,6 +2992,11 @@ and dependency coverage. `InterpreterProgressMismatch` rejects non-advancing
 steps; a helper-only entry is stepped directly without native compilation.
 This does not cover profile-required instructions or data-memory fallback.
 
+On a cache hit, the cached NativeRegisterV1 strategies use the index
+returned by `record_hit` after applying the cache policy. The dispatcher
+checks the selected entry's dependencies and code view before native
+execution.
+
 `cargo test -p od-jit --lib --offline` covers strict versus mixed witness,
 helper-only dispatch, STOP, budget including zero, event, non-advancing native
 and interpreter paths, injected interpreter failures, and post-helper rejection
@@ -2989,3 +3006,22 @@ ADD → NOP → CLD → STD → ADD and ADD → CLD → ADD → STD → ADD with
 full-state interpreter comparison, eager and demand flags, FIFO and LRU, cold
 and warm cache. The latter exercises the native terminal at both CLD and STD. The test is part of
 `cargo test -p od-host --lib --offline`.
+
+The separate signed integration test
+`generated_mixed_register_v1_corpus_runs_twice_on_published_arena`
+covers 1,200 unique inputs across three fixed seeds. It checks full
+state, DF, both branch outcomes, helper and native retirements, STOP,
+budget, and retained hits with eager and demand flags.
+[S3-34ds result and reproduction](../reports/STAGE_3_S3-34ds_2026-11-19.md)
+
+`python3 tests/cpu/stage3_harness.py --suite local` requires these six
+S3-55 tests under separate exact Cargo identities. The harness records
+each invocation and passing log. Its self-check rejects missing
+evidence or a passing log from the strict native host test substituted
+for the mixed host test.
+
+The final Core checks on `11cbe6b` repeated admission equivalence (2,452
+comparisons, zero mismatches), all 31 register wrapper checks, the two
+direct-entry checks, and the cache and mixed-helper suites on macOS ARM64.
+The final Core report records the complete command and coverage results.
+[Core verification](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)

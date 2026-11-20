@@ -324,11 +324,11 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [x] | S3-28c | Сводная матрица STOP/event по путям, граница задержки, общий budget блоков и interpreter | S3-28a, S3-28b |
 | [x] | S3-28d | Локальный замер wall-time задержки STOP на busy-пути (не Mini, без обещания миллисекунд) | S3-28c |
-| [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
+| [partial] | S3-29 | Eager выбран для измеренных профилей NativeRegisterV1 | S3-01, S3-27, S3-28. [S3-29l](../reports/STAGE_3_S3-29l_2026-11-20.md) |
 | [x] | S3-29g | Cached NativeRegisterV1 eager/candidate full-dispatch comparison | S3-29f, S3-38b/c |
 | [partial] | S3-30 | Ограниченное allocator comparison; выбор по более широким workloads открыт | S3-01, S3-29 |
-| [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
-| [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
+| [partial] | S3-31 | Штатный диспетчер с memo выбран для измеренных регистровых профилей S0-09 | S3-25, S3-28, S3-30. [S3-31m](../reports/STAGE_3_S3-31m_2026-11-20.md) |
+| [partial] | S3-32 | Текущий lowering сохранён для измеренных eager-профилей с фиксированными слотами | S3-03, S3-27, S3-30. [S3-32b](../reports/STAGE_3_S3-32b_2026-11-20.md) |
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
 | [partial] | S3-33n | Composed uncached `NativeRegisterV1` admission/lowering for committed S3-33a–m forms | Bounded implementation, independent review, and local evidence recorded; 33 local cases `not_run`; broader Stage 3 acceptance remains open |
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
@@ -440,25 +440,27 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dp | Exact local harness gates for S3-38e session ownership | Four exact `od-host --lib` lifecycle identities and the fail-closed harness self-check are pinned, including the `session.rs` source fingerprint; all four Rust gates passed 1/1 and the pinned self-test exited 0. Current totals after S3-34dr: 324 gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-tests, 18 sources. Full Stage 3 harness and physical x86/Mini acceptance remain open; M1 deferred. См. [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner) and [report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-34dq | Exact Store→Store fixed-seed corpus, replay/reducer coverage, and gates | Adds 1,200 unique exact `48 89 03 48 89 02` inputs, strict profile `s3-26f-two-site-qword-store-store-v1`, and second-write fault/continuation no-replay evidence. Three exact od-host corpus gates, the od-testkit generator gate, and S3-26f fail-closed Python self-test pass 1/1. Current harness totals: 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-test names, 18 source pins. Full harness unittest timed out after 180s without final result; not classified as failure. Mini not run; M1 deferred. Physical-x86, owner/MMU and performance acceptance remain open; ISSUE-045 stays open. См. [implementation report](../reports/STAGE_3_S3-34dq_2026-11-03.md) |
 | [partial] | S3-34dr | Exact local harness gates for retained Load→Load S3-18f | Pins the two JIT profile/entry-boundary gates and one od-host retained load-pair regression with exact local acceptance identities; adds a fail-closed source/gate/evidence self-test. Totals 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-test names, and 18 Rust source pins. Sol/high review PASS; the new self-test and all three exact Rust gates passed 1/1. Full unittest run exceeded 180s and was killed without a final result (not classified as failure). Mini has not run; M1 remains deferred. См. [implementation report](../reports/STAGE_3_S3-34dr_2026-11-03.md) and [JIT testing reference](../testing/JIT.md#s3-34dr-exact-harness-gates-for-the-s3-18f-loadload-profile) |
-| [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
-| [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
-| [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
+| [partial] | S3-34ds | Generated mixed S3-55 register corpus | 1,200 unique inputs from three seeds run twice in the interpreter and on the real ARM64 arena for each flags mode. The integration test is now required by the local selector. The selected Rust gate and all 158 harness self-tests passed on local ARM64. Stage-wide and physical gates remain open. [Report](../reports/STAGE_3_S3-34ds_2026-11-19.md) |
+| [partial] | S3-34dt | Reduce a generated NativeRegisterV1 cache-trace GPR mismatch | Exact ordered-prefix replay and register-only reduction preserve the mismatch class and record all three backend observations. Four signed ARM64 gates passed, including a controlled observation mismatch and ordinary rejection of an unreproduced artifact. Broader S3-34.2 remains open. [Report](../reports/STAGE_3_S3-34dt_2026-11-19.md) |
+| [partial] | S3-35 | Холодный запуск 1 010 восстановленных входов S3-17 измерен на M1 Pro | S3-01, S3-34. [S3-35i](../reports/STAGE_3_S3-35i_2026-11-19.md), [S3-35j](../reports/STAGE_3_S3-35j_2026-11-19.md) |
+| [partial] | S3-36 | Прогретый FIFO16 на пяти branch/helper сценариях измерен на M1 Pro | S3-35. [S3-36l](../reports/STAGE_3_S3-36l_2026-11-19.md) |
+| [partial] | S3-37 | Churn и RSS на восстановленном S3-17 измерены на M1 Pro | S3-25, S3-34. [S3-37j](../reports/STAGE_3_S3-37j_2026-11-19.md) |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact macOS/ARM64 local lifecycle gates passed 1/1 each; the pinned harness self-test exited 0. Full Stage 3 harness and physical x86/Mini acceptance remain open; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
-| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy and fresh CLOEXEC notification descriptors. Three exact macOS/ARM64 Rust lifecycle gates passed 1/1; pinned harness self-test exited 0. C-client linking/layout, pipe-failure injection, broader race ordering, VMHost integration and full S3-38 acceptance remain open. Mini SSH timed out before remote tests; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
+| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Three exact macOS/ARM64 Rust lifecycle gates and the pinned harness self-test passed. The signed C client verified linking/layout, normal delivery, injected reader loss and pipe creation failure with `EMFILE` locally and on M1 Pro. Broader race ordering, Mac mini, physical x86 and full S3-38 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution was performed at the S3-38g integration revision; the later focused S3-38h process smoke passed. Broader V1 acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
 | [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Release od-host build, Swift VMHost compile, ad-hoc runtime signature/strict verification and `allow-jit` entitlement verification passed. The exact process smoke passed with two decoder-supported ADD RAX,RBX instructions, fresh state/budgets, increasing IDs, complete RESULT payloads, ACK/RESULT ordering and idle EOF teardown; manifest self-test passed. Current harness totals are 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 source pins. Full 39-step VMHost suite, C-client layout/link, pipe-failure, active STOP/EOF and framing acceptance remain open. Mini SSH timed out before remote tests; M1 deferred; Stage 3 partial. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Exact bounded smoke passed: STOP_ACK→RESULT ordering, stopped result, fresh same-code invocation, and clean teardown after active-run EOF. Descriptor/lease cleanup before exit, broader process suite, Mini/physical-x86 and full Stage 3 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
-| [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Focused process smoke passed: fragmented HELLO/RUN, coalesced second RUN rejected BUSY, partial-frame EOF, and overlength rejection before body; process-manifest self-test passed 1/1. The two-instruction fixture now uses admitted `ADD RAX,RBX` forms. Full `--suite vmhost-process` timed out at the tool call after 300s with no summary; result unconfirmed. Graphify refresh timed out after 120s. Mini SSH timed out before remote tests; M1 deferred. INVALID_STATE batch closure, full process suite, races/backpressure, internal buffer bound, owner/MMU and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
+| [pass] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Local signed suite passed 46/46. Covers maximum fragmented RUN, coalesced BUSY, truncated and oversized frames, output backpressure with active completion, and batch closure after injected create/begin INVALID_STATE. Decoder and response staging limits were audited and traced. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [pass] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Focused ARM64 process smoke and both manifest checks pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [pass] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Focused ARM64 process smoke and fail-closed manifest test pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [pass] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Focused ARM64 process smoke and fail-closed manifest test pass using decoder-supported ADD; physical Mini and full process-suite acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
 | [pass] | S3-38n | V1 process isolation after a helper SIGSEGV | Focused two-helper smoke passed: both admitted `JNZ -2` RUNs were active, SIGSEGV terminated only helper A, helper B returned exact-ID STOP_ACK before its full unchanged-state RESULT, then completed same-code fresh-state RUN and idle EOF. Exact process gate and fail-closed manifest self-check passed against a locally rebuilt and signed VMHost. The full process suite, physical Mini, and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md) |
 | [x] | S3-38o | Production host loop одного vCPU для `PagedFetchedLoadSession` — принято с ограничениями (gate-ревью Claude Opus, high, 2026-11-18) (внешний STOP, протокол STOP-байта S6-40 в однопоточной форме, общий бюджет, общий интерпретатор для не-JIT форм) | S3-25 (S3-25c), S3-28 (S3-28c), S4-15, S4-16; не зависит от S3-34 и S3-38f–n; блокер S6-42; закрытие не закрывает S3-38. Оценка 2–3 дня-агента |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
-| [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
+| [partial] | S3-40 | Решения зафиксированы для измеренных профилей NativeRegisterV1, S0-09 и S3-14 | S3-35–S3-39. [S3-40al](../reports/STAGE_3_S3-40al_2026-11-20.md) |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
 
@@ -499,6 +501,18 @@ Event, поднятый memory callback, опрашивается только �
 4. Подготовить повторные calibrated samples с переменным порядком вариантов и сырыми durations/counts. Не придумывать speedup threshold без требований; шум не считать улучшением.
 
 **Готово:** воспроизводимый протокол позволяет сравнивать решения до их окончательного выбора. Отсутствующие workloads отмечены, старые fragment numbers не перенесены на block JIT.
+
+Повтор от 18 ноября 2026 года подтвердил локальный baseline Stage 1 и
+совпадение результата на общем register-only входе у interpreter, legacy
+fragment, block JIT и dispatcher. Обновлена [методика измерений](../testing/BENCHMARKS.md#jit-этапа-3-workload-и-уровни-прогрева).
+Физический x86 preflight на совпадающем fingerprint достиг лимита 1 800 с.
+В следующем завершившемся preflight два теста `od-runner` остановились на
+отсутствующих файлах отчётов в изолированном checkout. Перед Cargo oracle
+теперь сверяет отдельный отпечаток x86-фикстур и трёх отчётов `linux_gate`.
+Проверка неполного снимка подтверждена локально. Физические проверки этапа 3
+отложены по решению владельца. S3-01 остаётся открытой.
+См. [baseline report](../reports/STAGE_3_BASELINE_2026-10-26.md#повтор-на-исходниках-3476780-18-ноября-2026)
+и [ISSUE-519](../KNOWN_ISSUES.md#issue-519).
 
 ### S3-02. Определить runtime contract
 
@@ -756,11 +770,11 @@ repeat comparisons дали 0 differences. Локальный и удалённ�
 
 **Готово:** multi-block program даёт состояние interpreter при том же budget; ошибочный target или невозможный exit не зацикливает runtime.
 
-**S3-50…S3-55, bounded generic path:** регистровые dispatch-обёртки
-используют общий механизм; проверены budget, STOP и совпадение состояний на
-поддержанных смесях native и helper. Это fixture-level данные, не полный
-обязательный corpus этапа 1 с physical oracle. S3-15 остаётся открытой;
-границы и проверки приведены в [отчёте Core](../reports/STAGE_3_CORE_REPORT.md).
+**Ограниченный generic путь S3-50…S3-55.** Все 31 регистровая
+dispatch-обёртка проверена на эквивалентность общему входу. На допустимых
+смесях native и helper проверены budget, STOP и состояние гостя.
+Физическое сравнение полного корпуса этапа 1 для generic пути остаётся
+открытым. [Итоговые локальные проверки](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)
 
 **Локальная partial реализация:** `od-jit` теперь имеет отдельный
 `compile_block_for_dispatch`/`lower_for_dispatch` путь, который принимает
@@ -921,12 +935,24 @@ machine-readable summary записаны в
 
 **Готово:** смесь native blocks и interpreter instructions совпадает с чистым interpreter. Новые S2 формы используются только после их проверки; all-fallback workload не называется JIT-ускорением.
 
+На локальном стенде macOS ARM64 закреплён отказ публикации в production
+paged loop. При занятой MAP_JIT-аренде `MOV RAX,[RBX]` завершается одним
+шагом интерпретатора. После освобождения аренды тот же сеанс доходит до
+следующей итерации и выполняет загрузку нативно. Состояние, бюджет и
+порядок записей совпадают с чистым интерпретатором. Обязательный шаг
+`s3_16_publication_refusal` включён в local selector.
+См. [JIT contract](../specs/JIT_CONTRACT.md#s3-16-paged-publication-refusal).
+Локальный прогон `stage3-20261118-231721-cf43a57691` завершился
+в статусе `local_only`: 345 шагов прошли, 40 остались `not_run`.
+Новый шаг и все 153 самотеста стенда прошли.
+
 **S3-55, bounded generic fallback:** opt-in mixed путь передаёт существующему
 `od_isa::execute::step` точные bare CLD/STD и NOP, отдельно учитывает compile,
 helper и успешные interpreter steps, проверяет progress и повторно проверяет
 источник, CR3, context и зависимости после helper. Смеси с native blocks
 проверены против интерпретатора. Общий Stage 2, profile-required и data-memory
 fallback, а также production owner остаются открытыми; S3-16 не принята целиком.
+[Итоговые проверки generic fallback](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b)
 
 **Локальная partial реализация (S3-16):** добавлены отдельные
 `S0_09NopAdmission` и `run_with_nop_fallback`. Admission строит полные
@@ -1028,6 +1054,9 @@ mixed eager/demand пути; generic cache проверяет предостав
 snapshot зависимостей и отклоняет несовместимый ввод. Production mapping и
 backing identity/version, их связь с MMU и представительный выбор lookup не
 подтверждены этой линией. S3-17 остаётся открытой.
+Холодное сравнение S3-56 использовало исходную трассу S3-17 и все 1 010
+входов с проверкой порядка и SHA-256. Исходный список путей остаётся
+недоступным. [Привязка корпуса и результаты](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 **Локальная partial реализация:** `od_jit::translation::TranslationKey`
 требует typed compile flavor, entry RIP, полные bytes/base/end `CodeView`,
@@ -1082,6 +1111,9 @@ owner-provided identity/version guarantees, production cache/invalidation и
 тот же опубликованный handle без новой компиляции и публикации; проверены
 инвалидация и смена контекста между синхронными вызовами. Production owner,
 MMU, memory-путь и полная этапная приёмка остаются открытыми; S3-18 не принята.
+На трассе S3-17 FIFO и generic дали одинаковые 2 hits, 1 320 компиляций и
+публикаций и 1 304 eviction на 1 322 visits. Пиковые размеры кода и метаданных
+также совпали. [Счётчики на полном S3-17](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 **S3-18a local partial:** `od_jit::dispatch::run_cached` adds one resident
 fixture-dispatch block with an opaque published handle supplied by a generic
@@ -2296,6 +2328,8 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
+Физический прогон отложен по решению владельца. Условия приёмки сохраняются.
+
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
 2. Добавить ручные и generated load/store cases, пересечения regions/pages, ошибки доступов и неполное наблюдение fault metadata.
 3. Сравнить interpreter/JIT/native, повторить прогоны и сохранить полные результаты. Проверять helper и allocator clobbers вместе с памятью.
@@ -2483,6 +2517,19 @@ mapping operation, MMIO/DMA, or concurrent writer support is implied. See
 
 **Готово:** повторное исполнение наблюдает новые bytes. Уведомление future DMA/device writers описано как обязательная integration point, а не фиктивно реализованное устройство.
 
+Локальная регрессия проверяет отзыв права исполнения у уже опубликованного
+tracked V2 store и у двухчастного исходного диапазона V3. При неизменных
+байтах владелец фикстуры возвращает `Preflight(NotExecutable)`. Для V3
+проверяется также отзыв права у хвоста при бюджете в одну инструкцию.
+Отклонённые вызовы сохраняют состояние CPU, RAM и версии backing и не
+выдают уведомлений. Выборка интерпретатора через фикстуру отклоняет
+запрещённое отображение и сохраняет доступ через разрешённый алиас. После
+восстановления разрешения тот же артефакт можно
+исполнить. Оба точных теста обязательны в локальном селекторе. Их можно
+запустить через `cargo test --offline -p od-host --lib
+rejects_revoked_source_permission`. Общая S3-23 остаётся открытой.
+Обе регрессии прошли в [локальном прогоне из 351 шага](../reports/STAGE_3_REPORT.md#local-tracked-source-and-reducer-run-2026-11-19-utc).
+
 ### S3-24. Обработать self-modifying code текущего блока
 
 1. Создать case, в котором store изменяет ещё не исполненную guest instruction текущего compiled block, и case с изменением следующего блока.
@@ -2491,9 +2538,42 @@ mapping operation, MMIO/DMA, or concurrent writer support is implied. See
 
 **S3-24 остаётся открытым.** S3-24a добавляет один compiler-issued 23-byte native artifact с тремя decoder-validated instructions: `MOV RDX,imm64; MOV [RBX],RAX; MOV RCX,imm64`. Один typed V3 arena entry выполняет все три в одном generated call, но при успешной записи в уже исполненный prefix synchronously sets an invocation-local dirty marker, commits store RIP/budget/retirement once, and returns `CodeInvalidated` before stale native tail. The owner applies the reserved backing version/notification after result decoding and before the active handle is released. A later dispatch executes the tail from current bytes; re-entry observes the changed prefix. An unrelated destination completes the full three-instruction artifact. The store instruction itself may not overlap.
 
-S3-24b narrowly permits one additional case: a committed qword store replaces exactly the immediate at artifact offsets `15..23` of the not-yet-executed `MOV RCX,imm64`. The complete 23-byte source lease is checked before entry; the target must resolve to the same backing and offset and one write-plan segment. The staged plan is marked dirty only after exact opcode, source identity, and destination checks pass. The generated call commits the store at RIP `entry+13` and returns `CodeInvalidated`; backing generation and notification are applied after return, invalidating direct and alias cache entries before a fresh dispatch decodes the new immediate. Tail opcodes, partial/shifted qwords, writes overlapping the store instruction, and split-mapping targets remain rejected.
+S3-24b permits an exact qword replacement of the immediate at artifact
+offsets `15..23` in the pending `MOV RCX,imm64`. The 23-byte source
+lease is checked before entry. The generated call commits the store
+at RIP `entry+13` and returns `CodeInvalidated`. The owner applies the
+backing generation and notification after return, so a fresh dispatch
+uses the changed immediate. The current fixture also accepts a
+destination split across two adjacent mappings that expose contiguous
+offsets of that same backing. It rejects noncontiguous offsets, a
+different backing in the split, changes to the tail opcode, partial or
+shifted writes and overlap with the executing store.
 
 Fault after the prefix preserves RIP at the store and the committed prefix; budget/STOP boundaries, STOP raised during a successful write, alias writes, and backend failure are covered. The future-tail case remains a fixture-only invalidation/redispatch demonstration, not a physical x86 SMC oracle. General multi-instruction compilation, production MMU/writers, and full S3-24 remain open. See [S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md) and [S3-24b report](../reports/STAGE_3_S3-24b_2026-10-29.md).
+
+#### S3-24c. Запись в отдельный блок по следующему RIP
+
+ARM64 gate `active_code_v3_republishes_immediate_of_following_block`
+прогревает блок по следующему RIP и его алиас. Нативный V3 store меняет
+immediate в их общем backing через прямой адрес или алиас. Активный
+трёхинструкционный блок завершается с оставшимся бюджетом 1. Уведомление
+удаляет две записи, освобождает два слота и сохраняет записи двух
+незатронутых блоков. Продолжение по прямому и алиасному адресу компилирует
+обновлённые байты и совпадает с полным состоянием интерпретатора.
+Гостевая запись выполняется один раз в каждом сценарии. Gate использует
+имеющийся tracked owner fixture и локальный selector этапа 3.
+
+В прогоне `stage3-20261119-053704-96e70bb3d6` прошли 359 из 359
+локальных шагов, включая 341 точный Rust gate и 157 самопроверок.
+Новый ARM64 gate прошёл 1/1. Ещё 46 шагов VMHost process остались
+`not_run`, а физические x86 и Mac mini проверки отложены.
+Отпечаток дерева с изменениями к `626e582` совпал до и после прогона
+(`56fc39b807148a46d06197c2fa161702f269f6404c3c0079e44c53b7f2561c99`).
+Summary SHA-256
+`e40c8e39334120909d276dae4f10e518dadd501498f228f9dc17db5058663dba`
+и input manifest SHA-256
+`b5561279f6f34ae34de8390e99ba2c2ad19abe9ed888af67f3eb653b2a20ed81`
+сохранены в `work/stage3-harness/` под ID прогона.
 
 ### S3-25. Реализовать eviction и безопасное освобождение
 
@@ -2573,6 +2653,28 @@ S3-25 и S3-28 приняты с ограничениями (gate-ревью Cla
 
 **Готово:** все предусмотренные guest faults имеют тот же определённый snapshot, что interpreter и доступный physical oracle; runtime failures однозначно отделены.
 
+Локальная регрессия PC map закрепляет одинаковую проверку host PC для
+`PcMap::lookup` и `snapshot_admissibility_at`. До исправления смещение
+`1` давало `CanonicalBoundary`. Теперь невыровненные PC, конец кода и
+смещения за ним возвращают `None`; допустимые PC сохраняют свою
+классификацию. Проверка запускается через `cargo test --offline -p od-jit
+--lib statepoints::tests`. Общая S3-27 остаётся открытой.
+
+Локальная регрессия checked-memory dispatcher проверяет `GuestFault` на
+границе с исполнителем. В путях с кешем и без кеша RIP должен указывать на
+следующую незавершённую инструкцию артефакта, а остаток бюджета должен
+позволять её начать. Неверный RIP, завершённый артефакт или исчерпанный
+бюджет дают ошибку контракта хоста. Кеш освобождает запись после возврата
+управления от исполнителя. До исправления оба теста принимали `GuestFault`
+после завершения пары. `cargo test --offline -p od-jit --lib
+guest_fault_requires_pending` проверяет допустимые отчёты и отклонения.
+
+В локальный селектор Stage 3 входят три обязательных точных теста этих
+границ. Самопроверка стенда требует каждую запись и отклоняет результат
+`ignored` даже при успешном коде выхода Cargo. См.
+[протокол тестирования](../testing/JIT.md#s3-27-local-fault-boundary-regressions).
+Все три проверки и S3-29e прошли в [локальном прогоне из 348 шагов](../reports/STAGE_3_REPORT.md#local-fault-boundary-regression-run-2026-11-18).
+
 #### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
 
 Native execution of either exact pair returns its canonical `A+6` CPU/RAM
@@ -2623,6 +2725,14 @@ delivery, owner/MMU integration, Mini, performance, or complete S3-27. See the
 [S3-27e report](../reports/STAGE_3_S3-27e_2026-11-01.md) and
 [JIT testing reference](../testing/JIT.md#bounded-s3-27e-two-site-v2-pc-map-attribution).
 
+#### S3-27h. Отказ для неподдержанной формы 0F C2
+
+Декодер возвращает типизированный `Unsupported`, если после выбора
+`0F C2` ни одна из поддерживаемых комбинаций префиксов не подошла.
+Регрессия проверяет семь вариантов REX, точную длину отказа, fetch
+только до опкода и приоритет ошибки чтения самого опкода.
+[ISSUE-522 и границы проверки](../KNOWN_ISSUES.md#issue-522)
+
 ### S3-28. Реализовать STOP и event safepoints
 
 1. Проверять cooperative STOP/events на документированных instruction/block/helper boundaries, сохраняя ограниченный work interval.
@@ -2646,6 +2756,10 @@ delivery, owner/MMU integration, Mini, performance, or complete S3-27. See the
 Для каждой задачи этого раздела сначала сохранить корректный baseline и сравнить минимальные варианты в одинаковых условиях. Записывать compile time, warm execution, code size, spills/helper calls и ресурсы, если они меняются. Выбор «по теории должно быть быстрее» не закрывает задачу.
 
 ### S3-29. Вычислять flags по потребности
+
+**Статус измерений и выбора.** Для измеренных путей NativeRegisterV1
+выбран eager. Приняты cold, repeat-dispatch и resident FIFO16 на M1 Pro.
+Физическая сверка x86 отложена. [S3-29l и обоснование](../reports/STAGE_3_S3-29l_2026-11-20.md)
 
 1. На ограниченном integer subset представить pending flags с width, operation и достаточными исходными values. Не терять значения после перезаписи host registers.
 2. Материализовать нужные bits при Jcc/ADC/SBB и все наблюдаемые определённые bits перед exit/helper/fallback/snapshot. Учитывать операции, которые изменяют только часть flags.
@@ -2763,6 +2877,54 @@ Candidate code was 28.2–57.5% larger. This is narrow profile evidence only;
 S3-29 remains open for broader strategy selection and the Stage 3 performance
 gate.
 
+#### S3-29h. Проверить флаги на составном корпусе и в resident FIFO16
+
+Штатная release-сборка на M1 Pro прошла untimed preflight всех 1 200
+случаев и 2 400 сравнений с интерпретатором. На локальном ARM64 прошли
+preflight двух экспериментальных измерителей, включая полное совпадение
+составных cache baselines и повторный проход по четырём случаям
+resident FIFO16 с одними попаданиями. Четыре попытки замеров на M1 Pro
+отклонены из-за загрузки. S3-29 остаётся открыт до валидных замеров
+задержки. [S3-29h и raw preflights](../reports/STAGE_3_S3-29h_2026-11-19.md)
+
+#### S3-29i. Проверить перенос флага CF к ADC и SBB в интерпретаторе
+
+Host-регрессия проверяет eager и demand после нативного ADD для обеих
+команд и обоих значений CF. При выходе на ADC или SBB полный guest state,
+RIP, retirement и остаток бюджета сверяются с интерпретатором. Затем
+интерпретатор выполняет ровно одну команду с ожидаемым CF.
+[S3-29i и команда проверки](../reports/STAGE_3_S3-29i_2026-11-19.md)
+
+#### S3-29j. Проверить раздельные окна на M1 Pro
+
+Подписанный ARM64 split-драйвер на M1 Pro прошёл 1 200 проверок сохранённых
+результатов интерпретатора и 2 400 сравнений состояния. Две попытки cold
+отклонены до замеров. После включения временного удержания от сна ещё две
+попытки завершили по 20 пар с `nice -5` от обычного пользователя. Обе
+отклонены по загрузке в процессе замеров. Все четыре исходных combined
+попытки и четыре split попытки воспроизводятся из архива. S3-29 остаётся
+открыт до принятых замеров. [S3-29j и журналы](../reports/STAGE_3_S3-29j_2026-11-19.md)
+
+#### S3-29k. Измерить eager и demand в прогретом FIFO16 на M1 Pro
+
+Три процесса прошли проверку загрузки и приоритета с первой попытки.
+В 60 парных замерах на четырёх resident случаях медианы составили
+4,2095 мкс на вызов для eager и 4,2277 мкс для demand. Медианное
+парное отношение 1,00437. По 19 попаданий на sweep, без компиляций,
+публикаций и вытеснений. Demand разместил 8 408 байт кода и 23 620
+байт логических метаданных, eager 5 880 и 13 540 байт. S3-29 остаётся
+открыт до принятых замеров составного корпуса.
+[S3-29k и raw evidence](../reports/STAGE_3_S3-29k_2026-11-20.md)
+
+#### S3-29l. Измерить составной корпус и выбрать стратегию флагов
+
+На M1 Pro приняты по 60 пар для cold и repeat-dispatch по точным
+1 200 входам. Медианные парные отношения demand/eager составили
+1,02479 и 1,02166. Demand опубликовал на 14,27% и 13,07% больше кода.
+Три медианы процесса в каждом режиме и отдельный прогретый FIFO16
+поддерживают выбор eager для проверенного пути. Физическая сверка
+x86 отложена. [S3-29l и raw evidence](../reports/STAGE_3_S3-29l_2026-11-20.md)
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.
@@ -2797,6 +2959,53 @@ Focused host test прошёл 1/1; `cargo fmt --all -- --check`, `git diff --ch
 Три release процесса на Apple M3 Max завершили frozen `distinct-jz-fallthrough` профиль; все 360 измеренных compile/execution sides прошли 200 ms floor. По 60 raw budget0/budget4 pairs в каждом наборе pooled ratio median/range составили 0.996036170827 (0.962808301520–1.045968410700) для compile, 1.019455351209 (0.981907318288–1.048155961189) для JZ-taken и 1.038610853426 (1.008862994910–1.086055631502) для JZ-fallthrough. Каждая native сторона исполняла 8,388,608 вызовов. Budget4 использовал 4 home values/10 spills и emitted 3,052 bytes; diagnostic budget0 — 0 homes/14 spills и 3,040 bytes; frame обоих вариантов — 288 bytes.
 
 Это только bounded budget4-versus-budget0 configuration-cost evidence на одном Jcc-terminated block: admitted fallthrough `MOV RBX,imm64`, dispatcher и последующие блоки не входят в timing. Это не marginal spill cost, не сравнение allocator algorithms и не основание выбирать winner/default; runtime working-tree status каждого прогона остался неизвестным (`null` после Git metadata timeout). S3-30 остаётся открытым для более широких workload correctness/performance evidence. Детали протокола — в [BENCHMARKS S3-30b](../testing/BENCHMARKS.md#s3-30b-bounded-distinct-branch-allocator-configuration-profile); итоговые сырые пары, run/log/calibration fingerprints и pooled summaries — в [S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md) и [suite manifest](../reports/data/stage3/s3-30b/suite-manifest.json).
+
+#### S3-30c. Проверить spill/reload и helper transfers на профиле S3-36l
+
+Untimed census прошёл на подписанной локальной ARM64-сборке. Все пять
+артефактов побайтно совпали с обычной компиляцией dispatch, а FIFO16
+повторил состояния интерпретатора и 14 guest retirements. Из 49
+статических allocator sites, взвешенных по проходам trace, 33 относятся
+к `s3_14_live_through_helpers`. Точная частота выполненных transfer
+инструкций и стоимость варианта аллокатора требуют дополнительных
+данных. Untimed-проверка чистой ревизии `eb31473` на M1 Pro
+подтвердила те же состояния и статические счётчики с `nice -5`.
+[S3-30c и архивы обеих проверок](../reports/STAGE_3_S3-30c_2026-11-20.md)
+
+#### S3-30d. Проверить вариант повторного использования освобождённых регистров
+
+Подписанные ARM64-сборки прошли пять проверок полного состояния и 28
+проверок STOP-RIP и продолжения по бюджету на M3 Max и M1 Pro. В случае
+`s3_14_live_through_helpers` число статических allocator transfer sites
+снизилось с 33 до 20, стековый кадр с 288 до 256 байт, а объём кода вырос
+с 3 052 до 3 064 байт. Для выбора аллокатора ещё нужны отдельные
+замеры полной компиляции и прогретого входа.
+Отдельный нативный тест отложенных флагов прошёл на M3 Max и M1 Pro.
+Он подтвердил повторное использование x9, передачу исходных операндов
+ADD в helper и продолжение от STOP-RIP до Jcc на новом аллокаторе.
+[S3-30d и данные обеих проверок](../reports/STAGE_3_S3-30d_2026-11-20.md)
+
+#### S3-30e. Измерить компиляцию и прогретый прямой вход на M1 Pro
+
+Принято по 60 пар. Strict reuse занял 0,982805 времени fixed homes
+на прогретом прямом входе и 0,953405 в сценарии с давлением на регистры.
+Медианное отношение полной компиляции составило 1,005805. Пять попыток
+компиляции отклонены по нагрузке. Все двенадцать попыток и обе серии
+воспроизведены по сырым данным. Выбор по обычному dispatcher зафиксирован
+в S3-30f.
+[S3-30e и сырые замеры](../reports/STAGE_3_S3-30e_2026-11-20.md)
+
+#### S3-30f. Выбрать аллокатор по обычному прогретому FIFO16
+
+**Выбор для пяти eager branch/helper сценариев S3-14 — fixed homes.** На M1 Pro
+в 60 принятых парах обычного прогретого FIFO16 медиана strict/fixed
+составила 0,998434 с диапазоном 0,981343–1,018863. Для сценария с давлением
+на регистры медиана 0,996204 с диапазоном 0,976183–1,023936. На всех
+измеренных вызовах сохранены обычные попадания, одинаковые состояния и
+отсутствие компиляций, публикаций и вытеснений внутри окна. Выигрыш
+прямого входа подтверждён отдельно в S3-30e. Сравнение через dispatcher
+не выявило устойчивого выигрыша для замены текущей стратегии.
+[S3-30f, выбор и полные данные](../reports/STAGE_3_S3-30f_2026-11-20.md)
 
 ### S3-31. Оценить прямые связи блоков
 
@@ -2906,6 +3115,119 @@ open. See [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md),
 [process runs](../reports/data/stage3/s3-31c-20261101/), and the
 [suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
 
+#### S3-31d. Проверка совпадающего снимка зависимостей
+
+`TranslationKey` теперь сравнивает текущие зависимости с проверенной
+упорядоченной копией в ключе. Точное совпадение проходит без выделения
+памяти и сортировки. Остальные снимки проходят прежнюю проверку.
+В трёх локальных release-раундах медианное нормированное время
+прогретого вызова снизилось на 9,3–16,3% по шести профилям S3-36f.
+Сырые времена пересекли равенство в четырёх профилях, а медианное время
+JIT осталось выше времени интерпретатора. S3-31 и S3-36 остаются открытыми.
+См. [замеры и критерии сравнения](../reports/STAGE_3_S3-31d_2026-11-19.md).
+
+#### S3-31e. Повторный замер prepared-key reuse после S3-31d
+
+Три локальных release-прогона на `b142e96` сравнили обычный cached JIT,
+prepared-key JIT и интерпретатор. Штатный валидатор принял 60 троек на
+профиль. На четырёх профилях с 64 и 4096 итерациями все замеры показали
+выигрыш prepared-key пути у обоих вариантов сравнения. На одном проходе
+его медиана на 8,2–12,8% выше обычного JIT. Режим остаётся opt-in.
+Порог окупаемости и более широкие нагрузки остаются открытыми.
+См. [отчёт и сырые данные](../reports/STAGE_3_S3-31e_2026-11-19.md).
+
+#### S3-31f. Подготовленный ключ без копирования на первом проходе
+
+Opt-in диспетчер переносит готовый `TranslationKey` в кеш текущего вызова
+и хранит рассчитанную нижнюю границу размера ключа. Повторный проход
+сохраняет проверку лимита и зависимостей. Все шесть профилей прошли
+предварительную проверку. В измеренных `a_1` и `b_1` медианное время после
+нормировки на обычный JIT снизилось на 10,8% и 6,8% соответственно.
+Медианы обновлённого пути отличались от обычного JIT менее чем на 0,8%
+в каждом раунде. Режим остаётся opt-in. См.
+[отчёт и сырые замеры](../reports/STAGE_3_S3-31f_2026-11-19.md).
+
+#### S3-31g. Повторное использование записей при чередовании двух RIP
+
+Штатный S0-09 dispatcher в пределах одного RUN повторно использует
+индекс текущего или предыдущего блока. Связь проходит через обычный
+диспетчер с проверкой снимка, кода и условий выхода при каждом входе.
+Локальные тесты проверяют точный порядок вызовов под FIFO и LRU с
+вместимостью в одну и две записи. Тест LRU на трёх записях проверяет
+индексы и порядок кеша после попаданий в среднюю запись.
+В двух измеренных циклах с двумя RIP
+нормализованное warm-время составило 9,05% и 7,36% прежнего времени, а
+cold-время составило 20,36% и 7,52%. На одноблочных warm-циклах в 64 и
+4096 итераций медианы выросли на 2,30% и 4,16%.
+[Отчёт, ограничения и исходные данные](../reports/STAGE_3_S3-31g_2026-11-19.md)
+
+#### S3-31h. Повторные замеры одноблочных циклов
+
+В одном процессе текущий путь S0-09 занял на 1,9–2,6% больше времени
+на длинных одноблочных циклах. Отложенный пересчёт индекса дал около
+1% выигрыша в этом сравнении. На двух RIP в раздельных сборках у
+прототипа выше нормализованное отношение JIT/interpreter. Сохраняется
+текущая реализация. На актуальном снимке
+JIT быстрее интерпретатора в cold и warm для одного и двух RIP
+на 64 и 4096 итерациях. [Замеры и воспроизведение](../reports/STAGE_3_S3-31h_2026-11-19.md)
+
+#### S3-31i. Прогретые циклы S0-09 на M1 Pro
+
+На `5c92bf7` сравнили исходное и текущее тела диспетчера, добавив
+повтор запуска того же подписанного файла как контроль A/A. В
+шести раундах `same_64` и `same_4096` заняли на 2,01% и 2,82%
+больше времени по парным медианам JIT. Их диапазоны лежат выше
+разброса A/A. Два потока с двумя RIP заняли 8,23% и 6,70% времени
+исходного пути. Текущая реализация сохранена. ISSUE-520 открыта.
+[Замеры и воспроизведение](../reports/STAGE_3_S3-31i_2026-11-19.md)
+
+#### S3-31j. Запись memo при переходе на тот же RIP
+
+Кандидат пропустил запись пары RIP и индекс при переходе на тот же
+RIP. На M1 Pro медианы JIT на `same_64` и `same_4096` составили
+1.0001 и 1.0002 от исходного времени. Диапазоны включают единицу и
+перекрываются с A/A. Сохранён исходный диспетчер. ISSUE-520 открыта.
+[Замеры и воспроизведение](../reports/STAGE_3_S3-31j_2026-11-19.md)
+
+#### S3-31k. Аргументы вызова при попадании по сохранённому индексу
+
+Диспетчер передаёт кеш, индекс и адрес memo напрямую. На M1 Pro
+подготовка вызова сократилась с десяти инструкций до четырёх.
+Парные медианы прогретого JIT снизились на 1,99–2,49% на двух
+длинных профилях с одним RIP и на 2,62–3,25% на двух профилях
+с чередованием RIP. Все четыре диапазона лежат ниже A/A.
+Изменение принято. Для ISSUE-520 остаётся прямое сравнение
+с диспетчером до введения memo.
+[Замеры, проверки и машинный код](../reports/STAGE_3_S3-31k_2026-11-19.md)
+
+#### S3-31l. Прямое сравнение с диспетчером до memo
+
+Обе сборки используют `a4dbc7d`. В исходном плече восстановлена
+только функция `run_cached_store_controlled` из `ac3395da`. На
+M1 Pro прогретый `same_64` укладывается в разброс A/A.
+`same_4096` занял на 0,33% больше времени в прогретом режиме и
+на 0,36% больше в первом запуске вместе с созданием сессии.
+Два чередующихся профиля сохранили выигрыш в обоих режимах.
+ISSUE-520 открыта для остатка на `same_4096`.
+[Отчёт и архивы обоих прогонов](../reports/STAGE_3_S3-31l_2026-11-19.md)
+
+#### S3-31m. Фазы текущего диспетчера на четырёх прогретых профилях
+
+На M1 Pro сравнили обычный и инструментированный диспетчер в одном
+подписанном release. Каждый профиль получил 60 пар и прошёл сверку
+полного состояния с интерпретатором. На одном и двух RIP memo
+разрешает почти все продолжения. На трёх RIP все 190 обращений
+проходят через `cache.find`. Фаза snapshot/lookup заняла 40,75%
+в инструментированном плече этого сценария. Она включает
+подготовку snapshot и поиск по ключу. Экономия от прямой связи
+этим замером не определена.
+Для измеренных профилей сохранены переходы через диспетчер с memo
+и явной передачей аргументов. ISSUE-520 остаётся открытой.
+Основная выборка включает разрешённую пользователем попытку
+с минимумом 79,0% простоя при автоматическом пороге 80%.
+Отдельный автоматический набор дал тот же вывод.
+[Замеры, выборки и воспроизведение](../reports/STAGE_3_S3-31m_2026-11-20.md)
+
 ### S3-32. Оценить локальные IR-преобразования
 
 1. Выбрать только подтверждённые профилем возможности: local constant propagation, устранение избыточного state load/store или dead pure temporary.
@@ -2990,6 +3312,27 @@ status timeout в 2s; чистота runtime не подтверждена. По
 allocator winner или production default. Mini checks отложены до конца Stage 3.
 Stage 2 suite в этом срезе не запускался; параллельная активность Stage 2 не
 является blocker. S3-32 и Stage 3 остаются открытыми.
+
+**Холодный повтор на M1 Pro.** В одной подписанной release-сборке и при
+`nice −5` объединённый путь от компиляции до первого нативного возврата
+для candidate занял на 6,2–6,3% больше времени по парной медиане. Отдельные
+контроли компиляции и прогретого исполнения дали снижение на 1,4–2,1%.
+Для этого fixture сохраняем baseline. Принятие преобразований на более
+широких нагрузках в S3-32 остаётся открытым.
+[Методика, результаты и архив](../reports/STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
+
+#### S3-32b. Выбрать локальные преобразования по измеренным корпусам
+
+**Выбор для измеренных eager/fixed-home нагрузок — сохранить текущий
+lowering.** Untimed-перепись 1 702 допущенных IR-блоков составного корпуса
+S3-29l не выявила пригодных повторных чтений, повторных констант или
+мёртвых чистых временных значений в проверенных границах. В пяти
+измеренных FIFO16 fixtures три пригодные W64 пары относятся к одному
+helper-pressure блоку. Ранее ровно один aliased ADD из этого класса
+проверен замерами S3-32a. Его первый native return оказался медленнее
+в обоих исходах ветви. Для обоих корпусов подтверждены штатный
+допуск и фактические посещения, с отдельным учётом компиляций.
+[S3-32b, решение и воспроизведение переписи](../reports/STAGE_3_S3-32b_2026-11-20.md)
 
 ### S3-33. Расширять lowering по готовности interpreter
 
@@ -3687,6 +4030,14 @@ retirement parity; paired observed/ordinary ratio median составил 1.0301
 Mini не запускался, Stage 2 не менялся. Этот результат не выбирает оптимизацию
 или default.
 
+`cold-phases --relocated-s3-17-paths` принимает восстановленный список путей
+при точном хеше исходной трассы S3-17. Проверяются порядок и байты всех
+1 010 фикстур и 1 322 посещения. Отчёт записывает хеши использованного и
+исторического списков. Три локальных теста проверили разбор флага, привязку
+трассы и отказ при перестановке или изменении фикстур. Замер фаз на M1 Pro
+остаётся впереди.
+[Команда и границы измерения](../testing/BENCHMARKS.md#s3-35b-cold-dispatcher-pipeline-attribution)
+
 #### S3-35c: cold direct-entry checked-memory profile
 
 Три release process run завершили opt-in `od-bench two-site-memory-cold` на
@@ -3719,6 +4070,78 @@ repetitions. Проекция 16.7555 min включает cumulative calibratio
 setup, teardown и другой overhead исключены. Scored runs остановились на 1,024. S3-35 остаётся partial:
 третий sequence, dispatcher/VMHost и broader checked-memory workloads не
 измерялись. Mini отложен до конца Stage 3.
+
+#### S3-35d. Сравнение свежих процессов на общих register-only входах
+
+Один release `od-runner` прогнал пять закреплённых S3-14 branch/helper
+фикстур через interpreter, legacy fragment JIT и uncached IR dispatcher.
+В каждом из трёх прогонов собрано по 24 группы с балансировкой порядка
+движков и одинаковыми 32 sweep на sample. Все 34 560 измеренных запусков
+совпали по результату с локальным интерпретатором. Медианы времени
+на пять процессов составили 14.073–15.459 мс для интерпретатора,
+14.082–15.277 мс для legacy JIT и 14.277–15.587 мс для IR dispatcher.
+Парные диапазоны пересекли равенство. Сравнение включает запуск процесса и
+обработку JSON; разницу времени самого JIT оно не изолирует.
+Команда и [сырые замеры](../testing/BENCHMARKS.md#s3-35d-fresh-runner-process-comparison)
+сохранены. Общая приёмка S3-35 остаётся открытой.
+
+#### S3-35e. Первый RUN нового S0-09 Session
+
+Все 576 измеренных сторон прошли проверку на одинаковом гостевом объёме
+работы. Каждый вызов JIT начал с пустого кеша. Таймер включает создание
+`Session` и первый RUN. На одном RIP текущая сборка уложилась в 10,6 мкс
+против 27,5 мкс у интерпретатора при 64 итерациях и в 163 мкс против
+1752 мкс при 4096 итерациях. Короткие и двух-RIP сценарии остались
+медленнее интерпретатора. Полная матрица S3-35 остаётся открытой.
+[Отчёт и сырые данные S3-35e](../reports/STAGE_3_S3-35e_2026-11-19.md)
+
+#### S3-35f. Первый RUN после упрощения поиска в кеше
+
+Сравнение `06bb39a` и `2b0f598` повторило шесть S3-35e профилей
+с пустым кешем. Все 768 измеренных сторон прошли аудит. После
+нормализации относительно интерпретатора новый JIT быстрее предыдущего
+во всех четырёх раундах для `same_4096`, `two_64` и `two_4096`.
+В остальных профилях диапазон включает 1. Текущий JIT быстрее
+интерпретатора на одном RIP при 64 и 4096 итерациях во всех парах.
+Оба профиля с двумя RIP и короткие циклы быстрее на интерпретаторе.
+Полная матрица S3-35 и отдельные фазы компиляции остаются открытыми.
+[Отчёт и сырые данные S3-35f](../reports/STAGE_3_S3-35f_2026-11-19.md)
+
+#### S3-35g. Первый запуск смешанного регистрового пути
+
+На четырёх входах S3-55 измерено создание допуска, FIFO16 cache и
+исполняемой арены вместе с первым RUN. Два прямолинейных потока и два
+цикла исполняют native blocks и точные CLD/STD interpreter steps.
+В каждой паре холодный JIT медленнее интерпретатора. Результаты, raw
+samples и раздельные счётчики опубликованы вместе с замером warm.
+[Отчёт S3-35g/S3-36i](../reports/STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
+#### S3-35h. Холодный вызов проверяемого кеша памяти
+
+Для обоих профилей S3-34a измерен полный `MemoryPairCache::run` с
+пустым кешем. В каждом вызове проверены одна компиляция и публикация,
+полное состояние CPU, RAM и порядок обращений. Медиана текущей сборки
+составила около 7,89 мкс на вызов в обоих профилях. Подготовка входа и освобождение
+публикации проходили вне таймера.
+[Парные результаты и сырые данные](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
+#### S3-35i. Холодный запуск всего восстановленного S3-17 на M1 Pro
+
+На подписанном `2e9b601` три независимых процесса сравнили FIFO с пустым
+кешем и интерпретатор на 1 010 входах. Во всех 60 парах интерпретатор
+завершил проход быстрее. Медианы составили 8,301–8,318 мс для FIFO
+и около 0,659 мс для интерпретатора. В зачёт приняты раунды с отдельной
+проверкой загрузки и `nice −5`. Отклонённые прогоны сохранены отдельно.
+[Замер и архивы](../reports/STAGE_3_S3-35i_2026-11-19.md)
+
+#### S3-35j. Фазы холодного FIFO на M1 Pro
+
+На подписанном `9405ff4` приняты 60 пар ordinary/observed на том же
+корпусе. Медианы dispatch составили 8,371 и 8,633 мс за проход, медиана
+парного отношения 1,0315. При расчёте на событие эмиссия и финализация
+заняли 2,303 мкс. Инициализация измерена отдельно. Все интервалы прошли
+порог 200 мс, а раунды с повышенной нагрузкой сохранены как отклонённые.
+[Фазы, границы таймеров и архив](../reports/STAGE_3_S3-35j_2026-11-19.md)
 
 ### S3-36. Измерить прогретое исполнение
 
@@ -3887,6 +4310,65 @@ Stage 3. See the [S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md),
 [process 3](../reports/data/stage3/s3-36f-20261101/process-3.json), and the
 [suite manifest](../reports/data/stage3/s3-36f-20261101/suite-manifest.json).
 
+#### S3-36g. Повторный RIP в прогретом retained Session
+
+S0-09 dispatcher повторно использует индекс последней записи кеша внутри
+одного вызова при возврате на тот же RIP. Три парных release-раунда на
+штатном Rust `Session::run` показали, что при 64 и 4096 итерациях медиана
+времени стала 7,6% и 5,6% от предыдущего JIT. Один проход стал дороже на
+3,75% по медиане абсолютного сравнения. Сценарии с двумя RIP сохранили
+обычный поиск и дали медианный нормированный overhead 2,22–3,47%. Полный
+набор прогретых сценариев и физические проверки остаются открытыми.
+[Отчёт и сырые данные S3-36g](../reports/STAGE_3_S3-36g_2026-11-19.md)
+
+#### S3-36h. Один поиск на обычное попадание в кеш S0-09
+
+Dispatcher использует индекс после `record_hit` и запоминает его только
+при продолжении с тем же RIP. Все 576 измеренных сторон прошли проверку
+объёма работы. Медиана абсолютного времени одного прохода снизилась на
+3,73%, медианы двух-RIP случаев после нормировки — на 2,82% и 3,02%.
+При двух RIP интерпретатор по-прежнему быстрее. Общая приёмка S3-36 открыта.
+[Отчёт и сырые данные S3-36h](../reports/STAGE_3_S3-36h_2026-11-19.md)
+
+#### S3-36i. Прогретый смешанный путь с CLD и STD
+
+Четыре S3-35g профиля повторены с резидентным кешем на той же сборке
+и с теми же входами и объёмом исполнения. Все native entries дают hits.
+На циклах в 64 и 512 итераций интервалы прогретого JIT примерно в 2,10
+раза длиннее интерпретатора по медианам пар. Два прямолинейных потока
+также медленнее интерпретатора в каждой паре. Общая матрица памяти и
+других fallback профилей остаётся открытой.
+[Отчёт S3-35g/S3-36i](../reports/STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
+#### S3-36j. Один поиск на попадание в кеш NativeRegisterV1
+
+Диспетчер получает актуальную позицию записи из обработчика попадания,
+в том числе после перемещения записи в LRU. В четырёх смешанных FIFO
+профилях с eager flags проверено то же состояние и тот же объём работы.
+После нормировки медианы двух прогретых прямолинейных профилей снизились
+на 1,86% и 2,58%. В обоих случаях выигрыш повторился во всех раундах.
+На циклах прогретые медианы также снизились, а диапазоны пересекли
+паритет. Интерпретатор оставался быстрее во всех зачётных парах.
+[Отчёт с холодными результатами и сырыми данными](../reports/STAGE_3_S3-36j_2026-11-19.md)
+
+#### S3-36k. Прогретый вызов того же кеша памяти
+
+Парный прогон использует те же входы, таймер и сборку, что S3-35h.
+На текущей сборке медианное отношение прогретого вызова к интерпретатору
+составило 0,597 и 0,602. Все тройки дают выигрыш после публикации.
+При повторе на исторической сборке `d24865d` интерпретатор быстрее во
+всех тройках. Причина различия времени интерпретатора открыта в ISSUE-521.
+[Отчёт и границы замеров](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
+#### S3-36l. Прогретый FIFO на пяти входах S3-14 на M1 Pro
+
+На подписанном `9405ff4` приняты 60 пар по пяти входам с ветвлениями и
+helper-вызовами. Медианы за проход составили 5,675 мкс для FIFO и
+3,089 мкс для интерпретатора. Парная медиана отношения 1,8374. В каждом
+измеряемом проходе подтверждены пять попаданий и нулевые счётчики
+компиляций, публикаций и вытеснений после прогрева.
+[Замер и архив](../reports/STAGE_3_S3-36l_2026-11-19.md)
+
 ### S3-37. Проверить cache churn и ресурсы
 
 #### S3-37a: bounded FIFO16 corpus churn observation path
@@ -3922,6 +4404,14 @@ the runner and its allocations; allocator retention and process-wide RSS do
 not establish cache attribution, leak-free behavior, or per-runtime release.
 See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md) and
 [benchmark protocol](../testing/BENCHMARKS.md#s3-37b-process-wide-rss-snapshots).
+
+`cache-churn --relocated-s3-17-paths` принимает восстановленный список
+путей при точной исторической трассе. Проверки связывают порядок и байты
+1 010 фикстур с 1 322 посещениями. Прогон по-прежнему использует один FIFO16
+на 128 проходов и три снимка RSS. Локально прошли семь тестов CLI, два теста
+привязки корпуса и `cargo check` для целей `od-bench`. Замер на M1 Pro
+остаётся впереди.
+[Запуск на восстановленном корпусе](../testing/BENCHMARKS.md#s3-37a-bounded-production-fifo16-corpus-churn-observation)
 
 #### S3-37c: deterministic invalidation and arena lifecycle path
 
@@ -4025,6 +4515,90 @@ Summary, manifest, logs and generated artifacts are preserved in
 [`S3-37e local report data`](../reports/data/stage3/s3-37e-local/) and the
 [bounded report](../reports/STAGE_3_S3-37e-local_2026-11-01.md).
 
+#### S3-37f. Давление на кеш штатного S0-09 Session
+
+Локальный gate `s3_37f_session_cache_pressure` выполняет 64 обхода 20
+различных гостевых блоков в одном `od_host::session::Session`. Блок
+записывает порядковый номер в RAX и завершается коротким переходом к
+следующей границе. После каждого обхода отдельный RUN попадает в
+последний резидентный блок. Проверяются полный CPU state, RIP, exit,
+retirement, бюджет, 1 280 компиляций и публикаций, 1 264 вытеснения и
+64 попадания. При 16 резидентных записях учёт code и logical metadata
+остаётся стабильным между обходами, оба high-water значения укладываются
+в лимиты.
+
+STOP, выставленный перед RUN с заполненным кешем, оставляет CPU state и
+счётчики прежними. `clear` освобождает публикации и lease MAP_JIT, обнуляет
+текущий учёт и сохраняет накопленные счётчики. Тест подтверждает новый
+lease, повторную компиляцию на очищенной сессии и исполнение в новой
+сессии после уничтожения прежней. Это проверка локального ресурса
+иммутабельного register-only Session. Измерения RSS и длительная нагрузка
+S3-37b/d имеют отдельные сценарии. Production owner/MMU и SMC остаются
+открытыми. Физические x86 и Mac mini проверки отложены.
+
+Прогон `python3 tests/cpu/stage3_harness.py --suite local`
+`stage3-20261119-040226-f23ee99ef0` завершился с `local_only`. Прошли
+352 из 352 выбранных шагов, включая 334 Rust gate и 155 самопроверок
+harness. Ещё 46 шагов получили `not_run`. S3-37f прошёл как один точный
+тест `od-host --lib`. Начальный и конечный fingerprint дерева с
+изменениями к `2b0f598` совпали
+(`326302b49d983cfcaf43754510687f44d8678f45ef7ca3204604a5f8212f193c`).
+SHA-256 summary
+`d1ccb5b91ee33f15659bdeb6b1b9e26482c91123a50663a5c2eb6d4cd5411b30`,
+SHA-256 input manifest
+`f1d069345ca4326c9156a22b321839fe45474a98db11ff1c40aea96e9dd5ed89`.
+Оба файла сохранены локально в `work/stage3-harness/` под ID прогона.
+
+#### S3-37g. Стоимость инвалидации и первого запуска после неё
+
+На FIFO16 измерены уведомление без удаления, удаление пары записей
+одного backing и первые два запуска с новой версией. При начальной
+заполненности 2 и 16 записей медианы удаления составили 0,221 и
+0,364 мкс, а два запуска с перекомпиляцией и публикацией заняли около
+5,25 мкс вместе. За 33 187 872 зачётных цикла освобождались два слота
+на удаление, учёт кода и метаданных восстанавливался после двух
+публикаций, вытеснений по ёмкости не было. Пара удалялась из начала
+очереди между вызовами диспетчера. Измерения активной гостевой записи
+и production owner/MMU остаются открытыми.
+[Отчёт и сырые данные S3-37g](../reports/STAGE_3_S3-37g_2026-11-19.md)
+
+#### S3-37h. Запись в активный V3-хвост и возобновление
+
+В 4 202 880 циклах точный V3 store менял immediate ещё не исполненного
+хвоста по прямому или алиасному адресу. Медианы вызова со store,
+уведомлением и удалением двух записей составили 0,454 и 0,459 мкс.
+Два первых вызова обновлённого хвоста занимали около 5,5 мкс вместе,
+два попадания после публикации — около 1,38 мкс. В каждом цикле
+проверены полное состояние, одна запись, отказ старого V3-handle,
+освобождение слотов и восстановление текущего учёта после двух
+публикаций. Отдельно измерена сборка активного V3 блока. Это данные
+tracked fixture S3-24b. Общий active code и production owner/MMU
+остаются открытыми.
+[Отчёт и сырые данные S3-37h](../reports/STAGE_3_S3-37h_2026-11-19.md)
+
+#### S3-37i. Длительное давление на штатный S0-09 Session
+
+В каждом из двух подписанных процессов серия длилась не менее 660
+секунд и включала 64 контрольные точки. На 20 гостевых блоках проверены полный
+результат интерпретатора, попадания в хвост и точный учёт публикаций
+и вытеснений. Всего проверено 335 331 840 публикаций.
+При полном кеше каждый процесс удерживал 16 записей, 15 936 байт кода
+и 38 144 байта логических метаданных. На каждой точке проверены STOP
+перед RUN, отказ для недопущенного RIP, очистка, освобождение и повторный захват
+lease MAP_JIT, заполнение и уничтожение сессии. RSS измерен
+отдельно для каждого процесса до и после этих переходов.
+[Отчёт, RSS и сырые данные](../reports/STAGE_3_S3-37i_2026-11-19.md)
+
+#### S3-37j. FIFO16 и RSS на полном S3-17 на M1 Pro
+
+Три процесса подписанного `8cdac54` выполнили по 128 проходов на
+восстановленном корпусе. В каждом проверены 168 960 публикаций и
+168 944 вытеснения, максимум 16 резидентных записей, 21 640 байт кода и
+50 124 байта логических метаданных. Все девять снимков RSS доступны.
+В каждом процессе после уничтожения runtime RSS был на 32 КиБ ниже
+предыдущего снимка.
+[Счётчики, снимки RSS и архив](../reports/STAGE_3_S3-37j_2026-11-19.md)
+
 ### S3-38. Интегрировать runtime с VMHost
 
 1. Подключить новый путь через существующий host ownership/lifecycle, сохранив старые публичные ABI guarantees. Новая версия ABI нужна только при реальной несовместимости и обновляется вместе со всеми consumers.
@@ -4033,6 +4607,17 @@ Summary, manifest, logs and generated artifacts are preserved in
 4. Повторить существующие control lifecycle/fault/process regressions и новый busy-JIT STOP. Host crash остаётся аварией helper, не гостевым исключением.
 
 **Готово:** реальный VMHost исполняет принятый JIT slice и корректно завершает/очищает его. Это не означает готовность GUI или release distribution.
+
+Повтор процессного набора 18 ноября 2026 года прошёл 40 из 40 выбранных
+шагов, включая control race, изоляцию процессов и generated-fault smoke.
+Исправлена отрицательная HELLO-фикстура [ISSUE-058](../KNOWN_ISSUES.md#issue-058).
+Таймаут [ISSUE-044](../KNOWN_ISSUES.md#issue-044) в этом прогоне не встретился.
+Команда и границы прогона приведены в [отчёте этапа](../reports/STAGE_3_REPORT.md#full-vmhost-process-selector-2026-11-18).
+
+Повтор с S3-38j прошёл 46 из 46 шагов. Он включает отдельную подписанную
+сборку для проверки закрытия соединения после `INVALID_STATE` и предыдущие
+проверки control, process isolation и generated fault. Физические проверки
+отложены. См. [отчёт S3-38j](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md#invalid_state-admission-batch-closure-2026-11-19-utc).
 
 #### S3-38a. Register-only S0-09 integration through the existing V0 ABI
 
@@ -4106,6 +4691,13 @@ This bounded process suite does not establish persistent cache reuse across
 requests, a whole VM session, general memory execution through the C ABI,
 owner/MMU integration, Mini support, or performance benefit.
 
+The V0 process isolation smoke now validates the entire survivor RESULT
+after SIGSEGV in its peer. Its loop writes a marker to RCX and preserves
+flags. RCX and RIP must match the reported instruction count, including
+the valid zero-instruction STOP after RUN_ACK. Repetition on the same
+signed macOS ARM64 helper reproduced the old assertion failure twice in
+40 runs and passed all 100 runs with the correction. [ISSUE-059](../KNOWN_ISSUES.md#issue-059).
+
 #### S3-38c. Sequential cross-thread V0 handle lifecycle
 
 The focused `od-host` C ABI regression executes the same idle handle
@@ -4162,6 +4754,11 @@ VMHost process suite. Принят только финальный прогон,
 Stage 2 и ISSUE-044 не запускался; Mini остаётся отложенным до конца Stage 3.
 S3-38 и Stage 3 остаются открытыми. См. [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
 
+Повтор 18 ноября 2026 года восстановил проверку на текущем VMHost. Harness
+компилирует `LinuxDirectRunner.swift` вместе с `VMHostMain.swift` и фиксирует
+его digest в обоих VMHost manifests. Селектор `vmhost-result-state` прошёл
+14 из 14 шагов. См. [результат повтора](../reports/STAGE_3_S3-38d-local_2026-11-01.md#vmhost-build-regression-2026-11-18).
+
 #### S3-38e. Bounded local Rust session owner
 
 The opt-in `od-host::session::Session` owns a copied S0-09 code fragment and
@@ -4194,10 +4791,16 @@ completion. Destroy is BUSY until the accepted invocation is consumed.
 
 The code slice adds three exact Rust lifecycle identities and a fail-closed
 Stage3 harness self-check. Each exact Rust gate passed 1/1, and the Python
-self-check exited 0. This validates only the local Rust proxy; it does not
-connect the proxy to VMHost or implement the control V1 event loop. C-client
-linking/layout, pipe-failure injection, physical-x86/Mini and full S3-38
-acceptance remain open. See the
+self-check exited 0. The signed native C smoke checks public layout, linking,
+normal notification and a deliberately lost notification reader. The owner
+returns `INVALID_STATE` and the client can destroy the failed session and
+acquire a fresh one. Descriptor exhaustion verifies `ALLOCATION_FAILED`
+during pipe creation and recovery at a greater request ID. Both native
+scenarios were repeated on M1 Pro. The signed local C smoke also sends
+two waiters into the same active invocation. One receives `BUSY` before
+STOP and the other consumes the single result with one notification.
+The Mac mini, physical x86 and full
+S3-38 acceptance remain open. See the
 [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
 
 #### S3-38g. VMHost control V1 repeated same-code RUN transport
@@ -4263,22 +4866,28 @@ See the
 
 #### S3-38j. Process-level framing and admission checks
 
-The smoke sends HELLO and RUN in header/body fragments, exercises coalesced
-RUN frames, checks partial-header/body EOF teardown, and submits an oversized
-declared payload without a body to pin early rejection. The fixture uses two
-decoder-supported `ADD RAX,RBX` instructions. Coalesced admission expects the
-second RUN to receive scope-1 BUSY while the first invocation finishes with its
-exact RESULT. Invalid-state admission closure within the same frame batch has
-no deterministic process-level trigger yet and remains open. This process
-evidence does not claim the VMHost's internal buffer size.
+The smoke sends HELLO and a maximum-length RUN in header/body fragments,
+exercises coalesced RUN frames, checks partial-header/body EOF teardown, and
+submits an oversized declared payload without a body to pin early rejection.
+The fragmented RUN carries 4096 code bytes. Its final byte is withheld before
+admission and controls the RIP of the last `JNZ` executed with budget one.
+The coalesced fixture uses two decoder-supported `ADD RAX,RBX` instructions
+and expects the second RUN to receive scope-1 BUSY while the first invocation
+finishes with its exact RESULT. A dedicated signed fixture injects scope-1
+`INVALID_STATE` at create and begin. It verifies that a following STOP was
+read with the RUN, receives no STOP ACK and checks EOF after the ERROR.
 
-The focused process smoke passed with its exact success marker, and the process
-manifest self-test passed 1/1. A full `--suite vmhost-process` attempt timed out
-at the tool call after 300 seconds with an empty captured log and no summary;
-its result is unconfirmed. The Graphify refresh after the fixture edit timed
-out after 120 seconds; Mini SSH timed out before remote tests; M1 remains
-deferred. Full process-suite/Stage 3 acceptance remains open. See the
-[S3-38j report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md).
+V1 sets `O_NONBLOCK` after READY so output pressure leaves the reactor free
+to poll the completion descriptor. The process smoke pauses client reads
+until the client cannot continue writing and ACKs are pending. It then drains
+8192 exact, ordered STOP ACKs, completes another RUN and checks clean idle
+EOF. A separate scenario holds output unread while sending the matching STOP
+for an active RUN. The test observes retirement of its completion pipe before
+draining and checks the ordered STOP ACKs and terminal RESULT. The staging
+audit pins the decoder prefix at at most 8208 bytes and the response queue at
+at most 16416 bytes. Signed diagnostic traces observed the 8208-byte decoder
+boundary and exercised both idle and active output pressure.
+See the [S3-38j report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md).
 
 #### S3-38k. Process-level immutable-code mismatch and request IDs
 
@@ -4289,9 +4898,9 @@ and checks scope-1 `CODE_MISMATCH`. It retries ID 2 and checks
 rejected; ID 4 with code A succeeds using fresh CPU state. The process harness
 pins the exact command, 30-second timeout, source fingerprint, marker, and
 VMHost binary hash. Independent Sol/high review passed. The focused smoke and
-both manifest tests passed locally on ARM64; Mini SSH timed out before remote
-commands. INVALID_STATE batch closure, full process-suite execution, and
-physical V1 acceptance remain open. See the
+both manifest tests passed locally on ARM64. The later signed 46-step S3-38j
+suite covered this gate and INVALID_STATE batch closure. Physical V1
+acceptance is deferred. See the
 [S3-38k report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md).
 
 #### S3-38l. Process-level active STOP and RUN-ID high-watermark
@@ -4303,9 +4912,9 @@ remains stale because BUSY consumed it. RUN ID 4 proves the session remains
 usable with fresh registers, flags, and budget. The process harness pins the
 command, 30-second timeout, source fingerprint, success marker, and VMHost
 binary hash. Two independent Sol/high static reviews passed. The focused smoke
-and manifest test passed locally on ARM64; Mini SSH timed out before remote
-commands. INVALID_STATE batch closure, full process-suite execution, and
-broader V1 acceptance remain open. See the
+and manifest test passed locally on ARM64. The later signed 46-step S3-38j
+suite covered this gate and INVALID_STATE batch closure. Physical V1
+acceptance is deferred. See the
 [S3-38l report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md).
 
 #### S3-38m. Process-level RUN-ID exhaustion and fresh helper
@@ -4349,6 +4958,8 @@ the broader V1, Mini, or Stage 3 gates. See the
 Статус: принято с ограничениями после gate-ревью Claude Opus (high, 2026-11-18); дефект Д1 (S4-16i при `StopRequested` с retired 1) исправлен при приёмке, Д2 (нет детерминированного теста цикла на retired 1) оставлен ограничением. Ограничения: один vCPU и один поток; одна инструкция на блок, допуск на каждом native-шаге, производительность не измерялась; узкий интерпретатор платы (у форм только для JIT нет fallback и оракула); S3-27 открыт; S3-38 не закрыт. Оценка: 2–3 дня-агента. Зависимости: S3-25 (S3-25c), S3-28 (S3-28c), S4-15, S4-16 (приняты с ограничениями). Не зависит от S3-34 и от VMHost/ABI-части S3-38 (S3-38f–n). Закрытие S3-38o пункты 1–4 S3-38 не закрывает. Потребитель — S6-42: он подключает цикл к потокам vCPU и переводит допуск на слоты region (M1/M2 контракта S6-40); в этом срезе этого нет.
 
 **Где:** `crates/od-host/src/` (рядом с `PagedFetchedLoadSession`, допустим новый модуль), тесты `od-host`. Не трогать: `crates/od-isa/src/` (линия S4-38; интерпретатор — только через существующий публичный API), `crates/od-host/src/storage_abi_v1.rs`, VMHost/Swift, C ABI V0/V1.
+
+Замечание Д2 закрыто детерминированной регрессией цикла на ARM64. Тест поднимает STOP между записью RAM и проверкой байта в сгенерированном блоке. Проверены один retired store, выход на следующей безопасной точке и продолжение с нужной инструкции для обычной записи и записи в активную страницу кода. Результаты приведены в [отчёте S3-38o](../reports/STAGE_3_S3-38o_2026-11-18.md#deterministic-post-commit-stop-regression).
 
 **Сделать:**
 1. Цикл сессии одного vCPU. Каждая итерация начинается на safe point S3-25c: результат и счётчики проверены, уведомления `committed_write` применены, следующий lookup не начат. Затем один шаг: JIT-путь `PagedFetchedLoadSession` для допущенных форм. Если сессия отказала без эффектов инструкции, делается ровно один шаг общего paged-интерпретатора — того же, которым плата исполняет гостя (`run_paged_probe`, `FirmwareBoard::run_quantum`). MOV-only `step_paged_mov` для общей программы недостаточен. Все записи RAM обоих путей идут через `commit_write` (поколение растёт).
@@ -4588,6 +5199,309 @@ This is a profile-specific audit of existing S3-31c data, not a second
 benchmark, full S3-40 acceptance, or Stage 3 completion. Broader Stage 3 and
 Mini checks remain open/deferred. See the [bounded report](../reports/STAGE_3_S3-31c_2026-11-01.md).
 
+#### S3-40k. Повторные входы в S0-09 dispatcher
+
+Для шести countdown inputs проверили SHA-256 файлов и пересчитали
+сохранённые samples S3-35e/f и S3-36g/h встроенными Python-аудитами.
+В экспериментах сверяли одинаковую работу гостя на Apple M3 Max
+с macOS 26.7.1 и rustc 1.99.0. Оба столбца ниже относятся к версии
+диспетчера `2b0f598`.
+
+| Цикл | Cold JIT / interpreter, S3-35f | Warm JIT / interpreter, S3-36h |
+| --- | ---: | ---: |
+| Один RIP, 1 итерация | 17.1386 | 1.4255 |
+| Один RIP, 3 итерации | 6.4181 | 0.6241 |
+| Один RIP, 64 итерации | 0.3937 | 0.1132 |
+| Один RIP, 4096 итераций | 0.0915 | 0.0867 |
+| Два RIP, 64 итерации | 2.0451 | 1.7529 |
+| Два RIP, 4096 итераций | 1.7905 | 1.7581 |
+
+В таблице медианы по 32 cold и 24 warm парам на профиль. Каждый
+диапазон лежит по одну сторону от 1. Cold включает создание `Session`
+и первый RUN с публикацией. Warm измеряет RUN с резидентным кешем.
+Порог окупаемости требует отдельного измерения.
+
+Сохраняем оба изменения в штатном S0-09 dispatcher. Повторное использование
+записи при возврате на тот же RIP в S3-36g снизило нормализованное время
+до 7.60% и 5.77% прежнего результата на прогретых циклах в 64 и 4096
+итераций. Короткий контроль и оба цикла с двумя RIP дали регрессию.
+Переход на индекс, возвращаемый обработчиком cache hit, в S3-36h снизил
+нормализованные медианы во всех шести профилях. В двух циклах с двумя RIP
+медианы составили 97.18% и 96.98% прежнего JIT времени после нормализации.
+Диапазон ненормализованного отношения времён для 64 итераций включил 1.
+Интерпретатор быстрее в однопроходном контроле и обоих циклах с двумя RIP.
+Вывод ограничен измеренными S0-09 профилями. Политика для более широких
+нагрузок и оценка direct linking остаются открытыми.
+[S3-35e](../reports/STAGE_3_S3-35e_2026-11-19.md),
+[S3-35f](../reports/STAGE_3_S3-35f_2026-11-19.md),
+[S3-36g](../reports/STAGE_3_S3-36g_2026-11-19.md),
+[S3-36h](../reports/STAGE_3_S3-36h_2026-11-19.md)
+
+S3-31g повторил два холодных и два прогретых двухблочных профиля с
+повторным использованием предыдущей записи. В каждом профиле JIT
+оказался быстрее интерпретатора во всех 32 парах. Отдельные одно- и
+трёхблочные контроли ограничивают вывод этим чередованием RIP.
+[S3-31g](../reports/STAGE_3_S3-31g_2026-11-19.md)
+
+#### S3-40l. Сопоставление cold и warm одного пути памяти
+
+На текущей сборке интерпретатор быстрее при первом вызове обоих
+профилей. Прогретый кеш быстрее при сохранении той же записи.
+Модель по парным замерам даёт 34–44 вызова до окупаемости, включая
+первую публикацию. В эту оценку входят только измеренные интервалы
+вызовов. Отдельный замер серии и причины разницы между сборками открыты.
+[Решение по замерам S3-35h и S3-36k](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md#reuse-estimate)
+
+#### S3-40m. Локализация изменения времени интерпретатора
+
+При общих счётчиках работы текущий `run` на двух профилях S3-34a
+медленнее исторического примерно в 4,2 раза. Разница сохраняется
+на двух прямых шагах и при отдельном декодировании. Изолированная
+проба с известным набором выключенных профилей сокращает медиану
+парного времени полного вызова примерно на 26%. Причина замедления
+внутри декодера и оставшаяся часть времени исполнения открыты.
+[Отчёт, замеры и исходники пробы](../reports/STAGE_3_S3-40m_2026-11-19.md)
+
+#### S3-40n. Вклад общего пути декодирования двух MOV
+
+На двух последовательностях S3-34a ограничение общего выбора операции
+веткой MOV уменьшило медиану отдельного декодирования с 185–276 до
+95–136 нс. Проба с тем же разбором префикса и операндов MOV, без общих
+предварительных проверок, дала 36–47 нс. Совмещённая проба для полного
+исполнения дала 212–316 нс с проверкой состояния, RAM и порядка обращений.
+Точные затраты отдельных проверок и изменение производственного пути
+остаются открытыми.
+[Отчёт, замеры и исходники проб](../reports/STAGE_3_S3-40n_2026-11-19.md)
+
+#### S3-40o. Сокращённый путь MOV с одним REX.W
+
+Общий декодер использует тот же разбор операндов для первичных `89` и
+`8B` с одним `48`–`4F`. Совпали полный результат и порядок fetch в
+943 170 проверках. В парных локальных замерах медиана целевых MOV
+составила 0.211 от исходной, контрольные группы дали 1.009–1.016.
+Эффект для полного вызова требует отдельного подтверждения.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40o_2026-11-19.md)
+
+#### S3-40p. Полный вызов интерпретатора после изменения MOV
+
+На 2 400 входах S3-34a новый декодер снизил медианное время полного
+вызова на 33.7% и 33.4% на двух последовательностях. Все 64 пары
+показали выигрыш, сравнение полного состояния, RAM, STOP и бюджета
+прошло. Для исторического разрыва и отношения JIT к текущему
+интерпретатору нужны отдельные прогоны.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40p_2026-11-19.md)
+
+#### S3-40q. Cold и warm JIT после изменения декодера MOV
+
+На текущей сборке прогретый JIT занял 0.901 и 0.908 времени
+интерпретатора по парным медианам двух потоков S3-34a. Холодный
+вызов с компиляцией стоил 21.738 и 21.772 раза дороже. Исторический
+интерпретатор всё ещё быстрее примерно в 2.8 раза. Результат
+локален для этих потоков и кеша ёмкостью 1.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40q_2026-11-19.md)
+
+#### S3-40r. Стоимость отключённых профилей интерпретатора
+
+Специализированная диагностическая копия дала 0.629 и 0.628 времени
+полного вызова текущего интерпретатора по парным медианам S3-34a.
+Все 64 пары показали выигрыш, проверки состояния, RAM, STOP и бюджета
+прошли. Для решения по основному пути остаются проверки соседних
+сценариев и размера кода.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40r_2026-11-19.md)
+
+#### S3-40s. Выбор представления пустых профилей
+
+В парных пробах с общим исходным телом `run` и шага
+`Default` дал отношения 1.063 и 1.060, ассоциированная
+константа — 0.700 и 0.699. Константа выбрана для проверки
+соседних сценариев и размера машинного кода.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40s_2026-11-19.md)
+
+#### S3-40t. Пустые профили в обычном интерпретаторе
+
+Обычный `execute::run` подключён к общему циклу и шагу со статически
+пустой конфигурацией. Полные результаты совпали на четырёх группах
+по 2 400 входов. Выигрыш обычного вызова подтверждён, разброс явно
+настроенного XORPD пересекает единицу. Секция машинного кода
+стенда выросла на 150 528 байт, у подписанного VMHost уменьшилась
+на 45 760 байт. Требуется обновить историческое и JIT сравнения.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40t_2026-11-19.md)
+
+#### S3-40u. Повторное сравнение JIT с текущим интерпретатором
+
+На двух потоках S3-34a `e74f721` дал warm/interpreter 1.125 и
+1.128 и cold/interpreter 28.160 и 28.019. Модель окупаемости не
+дала порога в 47 из 48 троек. Остаточное отношение времени
+интерпретатора к `d24865d` составило 2.226 и 2.250. По этим
+потокам польза checked-memory JIT на текущей сборке пока не доказана.
+[Отчёт, замеры и исходники](../reports/STAGE_3_S3-40u_2026-11-19.md)
+
+#### S3-40v. Переиспользование точного ключа checked-memory
+
+`MemoryPairCache::run` переиспользует ранее проверенный ключ при полном
+совпадении входных данных. На двух потоках S3-34a медианы прогретого
+candidate/baseline составили 0.714 и 0.713 по шести раундам. Парные
+warm/interpreter у кандидата составили 0.799 и 0.802. Cold/interpreter
+остались около 27. Результат ограничен кешем ёмкостью 1, двумя
+проверенными профилями и локальным ARM64.
+[Отчёт, замеры и воспроизведение](../reports/STAGE_3_S3-40v_2026-11-19.md)
+
+#### S3-40w. Раздельные замеры RUN, STEP и декодирования
+
+На двух потоках S3-34a `d9ecaa2` занял 2.073 и 2.107 времени
+исторического RUN, 2.794 и 2.872 времени двух STEP, 0.740 и 0.730
+времени двух decode. Все шесть раундов на каждом потоке сохранили
+направление каждой разницы. Следующий замер проверит пустые профили
+в обычном STEP. [Отчёт и сырые данные](../reports/STAGE_3_S3-40w_2026-11-19.md)
+
+#### S3-40x. Пустые профили в обычном STEP
+
+Обычный STEP использует тот же специализированный исполнитель,
+что и обычный RUN. На двух потоках S3-34a медианы двух STEP составили
+0.747 и 0.743 от baseline. Выигрыш повторился во всех шести раундах.
+Диапазоны RUN и decode пересекли единицу. Паритет подтверждён
+на MOV, исключении памяти, REP со STOP и настроенном XORPD.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40x_2026-11-19.md)
+
+#### S3-40y. Проверка checked-memory JIT на актуальной ревизии
+
+На Apple M1 Pro сравнили `d9ecaa2` и `5275d67` в шести парных раундах
+на двух последовательностях S3-34a. Прогретый JIT на `5275d67` занял
+0.8094 и 0.8205 времени парного интерпретатора. Отношения JIT между
+ревизиями пересекли единицу по разбросу. Холодный путь на тех же входах
+занял около 31 времени интерпретатора. [Отчёт и сырые данные](../reports/STAGE_3_S3-40y_2026-11-19.md)
+
+#### S3-40z. Сравнение RUN с бюджетами 0, 1 и 2
+
+На M1 Pro сравнили `d24865d` и `5275d67` на тех же двух
+последовательностях S3-34a. При бюджете 0 медианы парных отношений
+составили 1.2845 и 1.2847, при бюджете 1 — 2.0754 и 2.0557,
+при бюджете 2 — 2.1433 и 2.1400. Исторический разрыв сохраняется,
+а разница в абсолютном времени растёт с числом завершённых инструкций.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40z_2026-11-19.md)
+
+#### S3-40aa. Проверка границы fetch и decode внутри RUN
+
+На бюджете 2 сравнили исходный RUN, сквозной вызов декодера через
+общую точку входа и возврат заранее декодированных инструкций. На M1 Pro
+разрыв между `d24865d` и `5275d67` составил 162.2–163.0 нс на исходном RUN
+и 176.5–176.8 нс в варианте без fetch/decode во время замера. На всех
+2 400 входах совпали состояние CPU и RAM, порядок обращений к данным,
+определённые флаги и выход по бюджету.
+ISSUE-521 остаётся открытой. [Отчёт и сырые данные](../reports/STAGE_3_S3-40aa_2026-11-19.md)
+
+#### S3-40ab. Цикл RUN и два вызова общего STEP
+
+На тех же двух последовательностях и бюджете 2 проверили три варианта
+без FETCH. Разрыв между ревизиями составил 178.0–178.4 нс на прежнем
+predecoded RUN, около 176.7 нс в RUN с общим STEP и 170.3–170.5 нс
+на прямой паре вызовов этого же STEP. Дизассемблирование подтвердило
+общую точку входа, а проверки подтвердили два `Advanced`, состояние
+CPU/RAM и порядок обращений с их контекстами. ISSUE-521 остаётся открытой.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ab_2026-11-19.md)
+
+#### S3-40ac. Входные проверки STEP
+
+На M1 Pro проверили те же 2 400 входов с исходной парой STEP и двумя
+режимами общего диагностического STEP. В текущей сборке обход выбранных
+проверок изменил медианы менее чем на 1 нс. Разрыв с `d24865d` при обходе
+составил 167.4 и 168.0 нс. Дизассемблирование подтвердило общий вызов
+декодера, а проверки подтвердили точные состояния и обращения на
+обоих префиксах. Причина остаточного разрыва остаётся открытой.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ac_2026-11-19.md)
+
+#### S3-40ad. Финальная диспетчеризация MOV
+
+На M1 Pro сравнили исходную пару и два режима общего STEP на тех же
+2 400 входах. Прямой вызов существующего `transfer` перед финальной
+диспетчеризацией дал медианы 1.0080 и 1.0147 от времени обычной
+диспетчеризации в текущей сборке. Разрыв с `d24865d` сохранился на
+уровне 170.3 и 170.7 нс. Проверены оба префикса, порядок обращений,
+CPU и RAM. Атрибуция оставшегося разрыва продолжается в ISSUE-521.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ad_2026-11-19.md)
+
+#### S3-40ae. Проверки вариантов x87 на пути RUN
+
+По профилю M1 Pro заменили шесть сравнений с вариантами x87 без
+полей на `matches!`. Дизассемблирование измеряемого STEP подтвердило
+исчезновение всех шести вызовов `Operation::eq`. При бюджетах 1 и 2
+время обычного RUN сократилось на 5,6–6,7% по парным медианам.
+Выигрыш повторился во всех шести раундах для обеих последовательностей.
+При нулевом бюджете парные диапазоны включили единицу. Проверены 2 400
+MOV-входов и 2 609 тестов `od-isa` для обеих сборок. ISSUE-521 открыта
+для оставшегося исторического разрыва.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ae_2026-11-19.md)
+
+#### S3-40af. Сгруппированные проверки сравнения x87
+
+Одна проверка `matches!` объединяет четыре смежных условия с тем
+же помощником. Связанный STEP на M1 Pro содержит 90 вызовов
+`Operation::eq` вместо 93. На двух MOV-последовательностях
+при бюджетах 1 и 2 обычный RUN занял на 2,58–3,28% меньше времени
+по парным медианам. Все шесть раундов показали выигрыш. Прошли
+проверки 2 400 MOV-входов и 2 609 тестов `od-isa` для обеих сборок.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40af_2026-11-19.md)
+
+#### S3-40ag. Остаточный разрыв обычного RUN
+
+На M1 Pro сравнили `d24865d` и `5bc5ec6` на тех же 2 400 входах
+с бюджетами 0, 1 и 2. При двух завершённых инструкциях парные
+отношения медиан составили 1.9716 и 1.9770, а разница общих
+медиан составила 134.2 и 134.7 нс. При нулевом бюджете разница
+составила 5.3 нс. Все шесть раундов дали одно направление.
+ISSUE-521 остаётся открытой.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ag_2026-11-19.md)
+
+#### S3-40ah. Проверки системных инструкций на пути RUN
+По профилю M1 Pro четыре проверки RDTSC, CPUID, SYSCALL и SYSRET
+заменены отдельными `matches!`. В связанном STEP исчезли все четыре
+целевых вызова `Operation::eq`. При бюджетах 1 и 2 время обычного
+RUN на обеих MOV-последовательностях сократилось на 5,91–6,70% по
+парным медианам. Все шесть раундов дали выигрыш при ненулевом
+бюджете. Диапазоны при бюджете 0 включили единицу. Обе сборки
+прошли 2 400 MOV-входов и 6 007 тестов `od-isa`. ISSUE-521 открыта.
+[Отчёт, профили и сырые данные](../reports/STAGE_3_S3-40ah_2026-11-19.md)
+
+#### S3-40ai. Остаточный разрыв RUN после S3-40ah
+
+На M1 Pro сравнили `d24865d` и `de1f446` по тому же расписанию.
+При бюджете 2 парные отношения медиан составили 1,8436 и 1,8499,
+а разница общих медиан составила 117,6 и 118,0 нс. При бюджете 0
+она составила 4,7 нс. Обе сборки прошли проверку состояния и
+обращений к памяти на 2 400 MOV-входах. ISSUE-521 открыта.
+[Отчёт и сырые данные](../reports/STAGE_3_S3-40ai_2026-11-19.md)
+
+#### S3-40aj. Проверки HLT и прерываний на пути RUN
+
+Свежий профиль `de1f446` связал 42 стека с проверками HLT, INT3 и CLI.
+Для соседней проверки STI подтверждён вызов в машинном коде.
+Четыре внешних предиката заменены на `matches!`. В связанном STEP
+осталось 81 сравнение `Operation::eq` из 86. На двух MOV-профилях
+при бюджетах 1 и 2 парные медианы RUN снизились на 3,39–3,86%.
+При нулевом бюджете диапазоны включили единицу. Обе сборки прошли
+семь профильных тестов и 2 400 MOV-входов на каждом бюджете.
+ISSUE-521 остаётся открытой.
+[Профили, замеры и проверки](../reports/STAGE_3_S3-40aj_2026-11-19.md)
+
+#### S3-40ak. Остаточный разрыв RUN после S3-40aj
+
+Повтор на M1 Pro сравнил `d24865d` и `d48eef9` на тех же двух
+MOV-последовательностях. При бюджете 2 разница медиан составляет
+109,8 нс для обоих сценариев, парные отношения составляют 1,7952
+и 1,7957. При бюджете 0 разница составляет 5,3 нс. Обе сборки
+прошли проверку состояния и памяти на 2 400 MOV-входах.
+ISSUE-521 остаётся открытой.
+[Парный замер и архив](../reports/STAGE_3_S3-40ak_2026-11-19.md)
+
+#### S3-40al. Решения для проверенных путей по замерам M1 Pro
+
+По S3-29l–S3-32b сохранены eager flags, фиксированные слоты,
+переходы через диспетчер с memo и текущий lowering в проверенных
+профилях. Для FIFO16 зафиксированы раздельные холодные, прогретые
+и ресурсные результаты S3-35i/j, S3-36l и S3-37j. Сохранены границы
+применимости и статусы ISSUE-520, ISSUE-521 и итоговой приёмки.
+[Сводка решений и источники замеров](../reports/STAGE_3_S3-40al_2026-11-20.md)
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
@@ -4647,6 +5561,112 @@ timeout 600 секунд, временные fixture-каталоги в ignored
 первичной причины ошибки. Focused regression passed 1/1; post-fix full local
 selector attempt exceeded the 240-second context RPC window without a final
 summary, so its result remains unconfirmed and S3-41 stays open.
+
+**Обновление, 18 ноября 2026 года.** Local selector на `3ece775`
+(`stage3-20261118-221234-a03bfcd2f6`) остановился на семи устаревших
+проверках счётчиков [ISSUE-060](../KNOWN_ISSUES.md#issue-060). В self-tests
+сведены в одно место ожидаемые 152 self-tests, 326 Rust gates и 344 local
+steps. Проверки точных имён, команд и дубликатов сохранены. Отдельно прошли
+7 регрессий, а повторный selector `stage3-20261118-221625-51e161ab59`
+прошёл `harness_self_tests` (152 из 152). Этот результат закрывает
+ISSUE-060. Для S3-41 требуется итог полного прогона.
+
+После восстановления сборки S3-38d локальный набор
+`stage3-20261118-223445-2770f791c4` завершился в статусе `local_only`.
+Все 344 выбранных шага прошли, 40 шагов остались `not_run`. Зафиксированы
+локальный dispatcher corpus, memory corpus и VMHost RESULT. Команда,
+fingerprints и границы результата приведены в [отчёте этапа](../reports/STAGE_3_REPORT.md#full-local-selector-2026-11-18).
+Итоговая приёмка S3-41 остаётся открытой.
+
+**Обновление, 19 ноября 2026 года.** Полный локальный selector после
+S3-31g на `d99ce3b` завершился как `local_only`. Прошли все 359
+выбранных шагов. Отдельный подписанный VMHost selector прошёл 46 шагов
+на снимке исходников S3-31g. Физические x86 и Mac mini gates отложены.
+Локальные результаты и открытые ограничения учтены в S3-41.
+[Прогоны и привязка к исходникам](../reports/STAGE_3_REPORT.md#full-local-selector-after-s3-31g-2026-11-19-utc)
+
+**Обновление, 19 ноября 2026 года.** После S3-40o на `e31c105`
+прошли все 359 локальных шагов и 46 шагов отдельного локального
+набора VMHost. Снимок исходников совпал в начале и конце обоих
+прогонов. Исторические пять x87-тестов из ISSUE-040 проверены
+отдельно в полном наборе `od-isa`. Физические проверки отложены.
+[Результаты и привязки](../reports/STAGE_3_REPORT.md#local-and-vmhost-selectors-after-the-mov-decoder-change-2026-11-19-utc)
+
+**Обновление после S3-40t, 19 ноября 2026 года.** Отдельный
+подписанный локальный набор VMHost прошёл все 46 из 46 шагов на
+`9a6e4e9`. Физические проверки отложены.
+[Прогон и привязка к исходникам](../reports/STAGE_3_REPORT.md#signed-vmhost-selector-after-interpreter-specialization-2026-11-19-utc)
+
+**Обновление после S3-40v, 19 ноября 2026 года.** На одном снимке
+`d9ecaa2` прошли 359 из 359 шагов локального набора и 46 из 46 шагов
+подписанного VMHost process suite. Обе сводки связаны с одним
+отпечатком исходников и входным манифестом. Журналы и артефакты
+дочернего прогона Stage 1 сохранены для повторной проверки. Физические
+проверки отложены, итоговая приёмка S3-41 остаётся открытой.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#local-and-signed-vmhost-selectors-after-s3-40v)
+
+**Обновление после S3-40x, 19 ноября 2026 года.** На `5275d67`
+прошли 359 из 359 локальных шагов и 46 из 46 шагов подписанного
+VMHost process suite. Оба прогона связаны одним отпечатком исходников
+и входным манифестом. Проверены хеши всех журналов и доказательства
+дочернего прогона Stage 1. Итоговая приёмка и отложенные физические
+проверки остаются открытыми.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#local-and-signed-vmhost-selectors-after-s3-40x)
+
+**Повтор на M1 Pro, 19 ноября 2026 года.** После исправления сборки
+под Swift 5.10 на чистом `f6b5214` прошли 359 из 359 локальных шагов и
+46 из 46 процессных шагов VMHost. Отпечаток исходников и манифест
+входов совпали, все 405 выбранных шагов сверены с сырыми журналами.
+Открыты критерии Mac mini и нативного сравнения на физическом x86.
+Итоговая приёмка S3-41 остаётся открытой.
+[Проверки и архивы](../reports/STAGE_3_REPORT.md#full-local-and-vmhost-process-checks-on-m1-pro-after-the-swift-fix)
+
+**Повтор после S3-40ae, 19 ноября 2026 года.** На чистом `8c159c8`
+прошли 359 из 359 локальных шагов на M1 Pro. VMHost прошёл 45 из
+46 шагов. На `process_generated_fault` launcher сообщил закрытие
+канала во время чтения кадра. Двенадцать повторов с трассировкой
+на тех же подписанных артефактах получили статус SIGSEGV.
+Исходный сбой и диагностические повторы сохранены в ISSUE-523.
+[Проверки и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-at-8c159c8)
+
+**Исправление launcher.** Локальный тест воспроизвёл закрытие канала
+до появления статуса SIGSEGV. Launcher теперь ограниченно ожидает
+статус при оборванном кадре и сохраняет обычную очистку для живого
+потомка. Пять случаев regression smoke и подписанный generated-fault
+smoke прошли. [Проверки исправления](../reports/STAGE_3_REPORT.md#launcher-exit-reporting-after-a-truncated-frame)
+
+**Повтор на M1 Pro после исправления launcher и S3-40af.** На чистом
+`5bc5ec6` прошли 359 из 359 локальных шагов и 46 из 46 шагов VMHost.
+Отдельные пять сценариев закрытия канала прошли на том же подписанном
+launcher. `process_generated_fault` зарегистрировал SIGSEGV и
+подтвердил очистку группы. Сводки и журналы проверены, отпечаток исходников
+и входной манифест совпали. Физические критерии и итоговая приёмка
+S3-41 остаются открытыми.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-the-launcher-fix)
+
+**Повтор на M1 Pro после S3-40ah.** На чистом `de1f446` прошли все
+359 локальных шагов и 46 шагов подписанного набора VMHost. Отпечаток
+исходников и манифест входов совпали. Проверены журналы, включая SIGSEGV
+и очистку группы в `process_generated_fault`. Отдельный подписанный
+C-клиент проверил layout, обработку потери читателя и восстановление
+после `EMFILE`. Физические критерии и итоговая приёмка S3-41 остаются
+открытыми.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-s3-40ah)
+
+**Повтор на M1 Pro после S3-40aj.** На чистом `d48eef9` прошли 359 из
+359 локальных шагов и 46 из 46 шагов подписанного VMHost. После обрыва
+SSH исходный локальный процесс завершил прогон. Отдельный подписанный
+C-клиент использовал release-библиотеку из прогона VMHost и проверил
+двух одновременных waiters, отправку уведомления и следующий RUN.
+Этот прогон предшествует добавлению S3-34ds в локальный selector.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#m1-pro-checks-after-s3-40aj)
+
+**Расширенный набор на M1 Pro.** На чистом `2e9b601` прошли все 360
+локальных шагов и 46 шагов подписанного VMHost. Локальный набор включает
+S3-34ds и обновлённую проверку редьюсера S3-34dt. У обоих прогонов совпали
+отпечаток исходников и манифест входов. Физические проверки остаются
+отложенными.
+[Результаты и архивы](../reports/STAGE_3_REPORT.md#expanded-local-and-vmhost-selectors-on-m1-pro)
 
 ## 10. Матрица приёмки
 
@@ -4722,11 +5742,11 @@ python3 tools/check_layout.py
 git diff --check
 ```
 
-On integrated revision `f1670fc`, the linked-worktree metadata fix in
-`tools/check_layout.py` passed independent static Sol/high review. The exact
-layout checker has not been run after the fix; ISSUE-042 remains open until
-`python3 tools/check_layout.py` passes at Stage 3 end. The earlier S3-00
-layout-check result is historical and does not establish post-fix acceptance.
+The linked-worktree metadata fix in `f1670fc` passed independent static
+Sol High review. On 2026-11-18, `python3 tools/check_layout.py` passed in the
+`codex` linked worktree at `3476780` after restoration of the existing local
+evidence. This verifies the layout and link check for that checkout.
+Repeat the command at S3-41 acceptance. See the [layout evidence](../reports/STAGE_3_REPORT.md#layout-acceptance).
 
 После изменения кода выполнять `graphify update .`. Временные логи/корпуса хранить в `work/`; в Git — малые собственные fixtures, необходимые raw measurements и отчёты без секретов. Не запускать CPU-тесты ради изменения только этого плана.
 
@@ -5160,7 +6180,14 @@ ISSUE-046 is resolved for the S3-34dn artifact-protection self-check only. See t
 
 #### S3-34do. Bounded value-only reducer for one S3-34dn artifact
 
-**Статус реализации, независимого статического Sol/high review и synthetic self-check: PASS; реальный artifact run отложен.** Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. The exact reducer self-check and pinned Python self-test passed (Rust 1/1; Python exit 0). No real artifact was reduced and no runtime acceptance gate was executed.
+**Статус:** пройден локальный сценарий сохранения, повтора и сокращения
+артефакта с контролируемым расхождением. Оба движка исполняют `67 89 04 24`
+с исходным набором и с кандидатами reducer. Тест меняет бит R9 в наблюдении
+после успешного исполнения JIT. С обычным наблюдением повтор выдаёт
+`not_reproduced`, а reducer проверяет исходное состояние и останавливается
+до перебора кандидатов. С тем же искажением reducer сохраняет уменьшенный
+вход, исходный файл остаётся побайтно цел, а повтор уменьшенного входа
+подтверждает расхождение. Общая приёмка S3-34 остаётся открытой.
 
 Reduce one validated S3-34dn mismatch artifact for the exact profile
 `67 89 04 24`. First replay the original artifact twice from its saved state
@@ -5204,33 +6231,21 @@ framework.
 Write a profile-specific reduced artifact using create-only semantics only
 after at least one candidate meets every acceptance condition and the chosen
 result has lower mutable-value popcount. Never replace the original or an
-existing reduced artifact. The reducer self-check is a fail-closed acceptance
-gate using explicitly labeled synthetic data; it is not a real artifact run
-and does not establish runtime mismatch evidence. The real S3-34dn artifact
-must not be run or reduced as part of this documentation task.
+existing reduced artifact. The reducer has a synthetic self-check and a
+separate diagnostic that executes the local interpreter and JIT with a
+deliberately altered JIT observation.
 
 The Rust reducer identity is `reduce_saved_s3_34do_value_only_artifact`; its
 self-check identity is
 `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`.
-Harness gate: `s3_34do_value_only_reducer_self_check`; fail-closed harness
-self-test: `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
-At the S3-34do integration revision, manifest totals were pinned at 305 gates
-(295 acceptance + 10 lifecycle), 323 steps, and 138 self-test names. The
-current manifest after S3-34dr contains 324 gates (306 acceptance + 18
-lifecycle), 342 steps, 149 self-test names, and 18 source pins; the exact
-checks above did not run that full manifest. The self-check uses synthetic
-data only: no real S3-34dn artifact was replayed or reduced, and no JIT parity
-or S3-34.2 runtime acceptance is established. No runtime API, dependency,
-opcode, or generalized reducer framework is in scope. ISSUE-045 is resolved
-for the separate S3-20eg retry-assertion host gate; ISSUE-046 is resolved for
-the S3-34dn artifact-protection self-check only. Neither closure establishes
-general S3-34.2 runtime acceptance. No runtime reducer execution
-gate, full Python harness, build, formatting, Mini, or M1 check was run. Mini
-remains unavailable and M1 is deferred. Physical-x86, production owner/MMU,
-performance, and broader Stage 3 acceptance remain open. Stage 3 remains
-partial. See the
-[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md) and the
-[JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).
+The local harness requires `s3_34do_value_only_reducer_self_check` and
+`s3_34do_captured_runtime_mismatch`. The fail-closed harness self-test
+`test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`
+checks both exact identities and rejects missing, zero-match, ignored or
+failed results. См. [отчёт о проверке](../reports/STAGE_3_S3-34do_2026-11-03.md#controlled-runtime-capture-replay-and-reduction).
+The controlled run covers the exact store profile. General S3-34.2 runtime
+acceptance remains open. Physical x86 and Mac mini checks are deferred. See
+the [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).
 
 #### S3-34dp. Exact local harness gates for S3-38e session ownership
 

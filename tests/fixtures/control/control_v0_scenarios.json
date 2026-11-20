@@ -14,7 +14,7 @@
   ],
   "malformed_hello": [
     {"label": "bad magic", "magic_hex": "42414421", "version": 0, "kind": 1, "request_id": 0, "payload_length": 0},
-    {"label": "unsupported version", "magic_hex": "4f444350", "version": 1, "kind": 1, "request_id": 0, "payload_length": 0},
+    {"label": "unsupported version", "magic_hex": "4f444350", "version": 65535, "kind": 1, "request_id": 0, "payload_length": 0},
     {"label": "unknown kind", "magic_hex": "4f444350", "version": 0, "kind": 254, "request_id": 0, "payload_length": 0},
     {"label": "oversized HELLO payload", "magic_hex": "4f444350", "version": 0, "kind": 1, "request_id": 0, "payload_length": 8193}
   ],

@@ -1,0 +1,12 @@
+{
+  "base_revision": "4995612fb2fd4585304845e1f42fe424340b986a",
+  "fixture_sha256": "878bf5b759aa7477f4c317695d20ae80aa6c08af4f5869d6aaaf7cd913b11979",
+  "signed_executable_sha256": "04eb7a9549d4108a2f33fe7ba8fd0ed32ab56c04942a97cac48d29388431298c",
+  "result_sha256": "b6e6f9e8ae0f8c81575fe693792ca2ec5ff73cf86f0c04d0663cdbf77a07928c",
+  "architecture": "arm64",
+  "host": "macOS 26.7.1 (25G241)",
+  "deployment_target": "14.0",
+  "rustc": "1.99.0",
+  "xcode": "27.1 (27A9275)",
+  "stdout": "\nrunning 1 test\nmixed inputs=1200 programs=1196 seeds=[5333343500000001, 5333343500000002, 5333343500000003] sha256=410e2edbeacab8a2f16f507ce588c21df619831e2400639274935173c978cbd5 exits=[1011, 63, 105, 21] helpers=[1074, 1084, 1085] branches=[361, 366] df_changes=[806, 801] native_steps=4436 warm_hits=6556\ntest generated_mixed_register_v1_corpus_runs_twice_on_published_arena ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s\n\n"
+}

@@ -2798,6 +2798,149 @@ struct ExecutionProfiles<'a> {
     iretq_user_entry: Option<&'a IretqUserBoundary>,
 }
 
+impl<'a> ExecutionProfiles<'a> {
+    const EMPTY: Self = Self {
+        cpuid: None,
+        msr: None,
+        msr_bases: false,
+        msr_efer: None,
+        guest_msrs: None,
+        sep: None,
+        xorpd: None,
+        minss_invalid: None,
+        maxss_unmasked: None,
+        minsd_unmasked: None,
+        maxsd_unmasked: None,
+        minpd_unmasked: None,
+        minps_unmasked: None,
+        maxps_unmasked: None,
+        maxpd_unmasked: None,
+        cvtdq2pd: None,
+        cvtdq2pd_registers: None,
+        cvtdq2pd_memory: None,
+        cvtdq2ps_registers: None,
+        cvtdq2ps_memory: None,
+        cvtps2dq_registers: None,
+        cvtps2dq_memory: None,
+        cvttps2dq_registers: None,
+        cvttps2dq_memory: None,
+        cvtpd2dq_registers: None,
+        cvtpd2ps_registers: None,
+        cvtpd2ps_memory: None,
+        cvttpd2dq_registers: None,
+        cvttpd2dq_memory: None,
+        cvtpd2dq_memory: None,
+        sqrtss_registers: None,
+        sqrtss_memory_rax: None,
+        sqrtsd_registers: None,
+        sqrtps_registers: None,
+        sqrtpd_registers: None,
+        subpd_registers: None,
+        subpd_memory_rax: None,
+        mulpd_memory_rax: None,
+        mulpd_registers: None,
+        addpd_registers: None,
+        addpd_memory_rax: None,
+        addsd_registers: None,
+        addsd_memory_rax: None,
+        addss_registers: None,
+        addss_memory_rax: None,
+        addps_registers: None,
+        addps_memory_rax_unmasked: None,
+        subps_memory_rax_unmasked: None,
+        divpd_registers: None,
+        divpd_memory_rax: None,
+        divsd_registers: None,
+        divps_registers: None,
+        divps_memory_rax_unmasked: None,
+        divss_registers: None,
+        mulsd_registers: None,
+        mulss_registers: None,
+        mulps_registers: None,
+        mulps_memory_rax_unmasked: None,
+        subps_registers: None,
+        subsd_registers: None,
+        subss_registers: None,
+        scalar_float_memory_rax: None,
+        cvtss2sd_registers: None,
+        cvtsd2ss_registers: None,
+        cvtsd2ss_memory: None,
+        cvtpi2pd_memory_rax: None,
+        cvtpi2_profile: None,
+        cvtps2pd_registers: None,
+        cvtps2pd_memory: None,
+        cvtss2sd_memory: None,
+        comiss_ucomiss_registers: None,
+        cmpss_registers: None,
+        cmpss_memory_rax: None,
+        cmpsd_memory_rax: None,
+        cmpsd_registers: None,
+        cmppd_registers: None,
+        cmppd_memory_rax: None,
+        cmpps_memory_rax: None,
+        minsd_memory_rax: None,
+        minsd_memory_unmasked_rax: None,
+        maxss_memory_rax: None,
+        minss_memory_rax: None,
+        maxsd_memory_rax: None,
+        maxsd_memory_unmasked_rax: None,
+        minpd_memory_rax: None,
+        minps_memory_rax: None,
+        sqrtps_memory_rax: None,
+        rsqrtps_memory_rax: None,
+        rsqrtss_memory_rax: None,
+        rcpps_memory_rax: None,
+        rcpss_memory_rax: None,
+        sqrtpd_memory_rax: None,
+        sqrtsd_memory_rax: None,
+        maxpd_memory_rax: None,
+        maxpd_memory_unmasked_rax: None,
+        maxps_memory_rax: None,
+        maxps_memory_unmasked_rax: None,
+        cmpps_registers: None,
+        comisd_ucomisd_registers: None,
+        comparison_memory_rax: None,
+        cvtsi2sd_r32: None,
+        cvtsi2sd_r32_memory: None,
+        cvtsi2sd_r64: None,
+        cvtsi2sd_r64_memory: None,
+        cvtsi2sd_registers: None,
+        cvtsi2ss_registers: None,
+        cvtsi2ss_r32_memory: None,
+        cvtsi2ss_r64_memory: None,
+        cvtss2si_registers: None,
+        cvttss2si_registers: None,
+        cvtsd2si_registers: None,
+        cvtsd2si_r32_memory: None,
+        cvtsd2si_r64_memory: None,
+        cvttsd2si_r32_memory: None,
+        cvttsd2si_r64_memory: None,
+        cvtss2si_r32_memory: None,
+        cvtss2si_r64_memory: None,
+        cvttss2si_r64_memory: None,
+        cvttss2si_r32_memory: None,
+        cvttsd2si_registers: None,
+        fx_cr0: None,
+        unmasked_minss_denormal: false,
+        rdtsc: None,
+        swapgs: None,
+        cli: None,
+        sti: None,
+        halt: None,
+        cr0: None,
+        cr4: None,
+        mov_cr3: None,
+        control_policy: None,
+        fp_cpl0: None,
+        cpu_owned_cr3: None,
+        pio_u8: None,
+        popf_cpl0: false,
+        sti_cpl0: false,
+        int3_cpl0: false,
+        iretq_user_entry: None,
+    };
+}
+
 struct StepRuntime<'source, 'sti, 'stop> {
     rdtsc_source: Option<&'source mut dyn FnMut() -> u64>,
     sti_sequence: Option<&'sti mut StiSequenceProgress>,
@@ -3682,12 +3825,18 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_execution_loop(
+    run_configured_with_profile_mode::<true>(
         state,
         memory,
         config,
         crate::INTEGER_FLAGS,
-        &mut stop_requested,
+        ExecutionProfiles::EMPTY,
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
     )
 }
 
@@ -28055,124 +28204,9 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
         ExecutionProfiles {
             cpuid: cpuid_profile.map(CpuidSelection::single_vcpu),
             msr: msr_profile,
-            msr_bases: false,
-            msr_efer: None,
-            guest_msrs: None,
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
-            maxss_unmasked: None,
-            minsd_unmasked: None,
-            maxsd_unmasked: None,
-            minpd_unmasked: None,
-            minps_unmasked: None,
-            maxps_unmasked: None,
-            maxpd_unmasked: None,
-            cvtdq2pd: None,
-            cvtdq2pd_registers: None,
-            cvtdq2pd_memory: None,
-            cvtdq2ps_registers: None,
-            cvtdq2ps_memory: None,
-            cvtps2dq_registers: None,
-            cvtps2dq_memory: None,
-            cvttps2dq_registers: None,
-            cvttps2dq_memory: None,
-            cvtpd2dq_registers: None,
-            cvtpd2ps_registers: None,
-            cvtpd2ps_memory: None,
-            cvttpd2dq_registers: None,
-            cvttpd2dq_memory: None,
-            cvtpd2dq_memory: None,
-            sqrtss_registers: None,
-            sqrtss_memory_rax: None,
-            sqrtsd_registers: None,
-            sqrtps_registers: None,
-            sqrtpd_registers: None,
-            subpd_registers: None,
-            subpd_memory_rax: None,
-            mulpd_memory_rax: None,
-            mulpd_registers: None,
-            addpd_registers: None,
-            addpd_memory_rax: None,
-            addsd_registers: None,
-            addsd_memory_rax: None,
-            addss_registers: None,
-            addss_memory_rax: None,
-            addps_registers: None,
-            addps_memory_rax_unmasked: None,
-            subps_memory_rax_unmasked: None,
-            divpd_registers: None,
-            divpd_memory_rax: None,
-            divsd_registers: None,
-            divps_registers: None,
-            divps_memory_rax_unmasked: None,
-            divss_registers: None,
-            mulsd_registers: None,
-            mulss_registers: None,
-            mulps_registers: None,
-            mulps_memory_rax_unmasked: None,
-            subps_registers: None,
-            subsd_registers: None,
-            subss_registers: None,
-            scalar_float_memory_rax: None,
-            cvtss2sd_registers: None,
-            cvtps2pd_registers: None,
-            cvtps2pd_memory: None,
-            cvtss2sd_memory: None,
-            comiss_ucomiss_registers: None,
-            cmpss_registers: None,
-            cmpss_memory_rax: None,
-            cmpsd_memory_rax: None,
-            cmpsd_registers: None,
-            cmppd_registers: None,
-            cmppd_memory_rax: None,
-            cmpps_memory_rax: None,
-            minsd_memory_rax: None,
-            minsd_memory_unmasked_rax: None,
-            maxss_memory_rax: None,
-            minss_memory_rax: None,
-            maxsd_memory_rax: None,
-            maxsd_memory_unmasked_rax: None,
-            minpd_memory_rax: None,
-            minps_memory_rax: None,
-            sqrtps_memory_rax: None,
-            rsqrtps_memory_rax: None,
-            rsqrtss_memory_rax: None,
-            rcpps_memory_rax: None,
-            rcpss_memory_rax: None,
-            sqrtpd_memory_rax: None,
-            sqrtsd_memory_rax: None,
-            maxpd_memory_rax: None,
-            maxpd_memory_unmasked_rax: None,
-            maxps_memory_rax: None,
-            maxps_memory_unmasked_rax: None,
-            cmpps_registers: None,
-            comisd_ucomisd_registers: None,
-            comparison_memory_rax: None,
-            cvtsi2sd_r32: None,
-            cvtsi2sd_r32_memory: None,
-            cvtsi2sd_r64: None,
-            cvtsi2sd_r64_memory: None,
-            cvtsi2sd_registers: None,
-            cvtsi2ss_registers: None,
-            cvtsi2ss_r32_memory: None,
-            cvtsi2ss_r64_memory: None,
-            cvtss2si_registers: None,
-            cvttss2si_registers: None,
-            cvtsd2si_registers: None,
-            cvtsd2si_r32_memory: None,
-            cvtsd2si_r64_memory: None,
-            cvttsd2si_r32_memory: None,
-            cvttsd2si_r64_memory: None,
-            cvtss2si_r32_memory: None,
-            cvtss2si_r64_memory: None,
-            cvttss2si_r64_memory: None,
-            cvttss2si_r32_memory: None,
-            cvttsd2si_registers: None,
-            cvtsd2ss_registers: None,
-            cvtsd2ss_memory: None,
-            cvtpi2pd_memory_rax: None,
-            cvtpi2_profile: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -28180,17 +28214,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cli: cli_profile,
             sti: sti_profile,
             halt: halt_profile,
-            cr0: None,
-            mov_cr3: None,
-            control_policy: None,
-            fp_cpl0: None,
-            cpu_owned_cr3: None,
-            pio_u8: None,
-            popf_cpl0: false,
-            sti_cpl0: false,
-            int3_cpl0: false,
-            iretq_user_entry: None,
-            cr4: None,
+            ..ExecutionProfiles::EMPTY
         },
         StepRuntime {
             rdtsc_source,
@@ -31878,7 +31902,26 @@ fn run_cpl0_profile_set_inner(
     Ok((result, cr3_effect.get(), user_outcome))
 }
 
+#[inline(always)]
 fn run_configured(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    rflags_defined: u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> RunResult {
+    run_configured_with_profile_mode::<false>(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        profiles,
+        runtime,
+    )
+}
+
+fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
@@ -31886,6 +31929,11 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     mut runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
+    let profiles = if NO_PROFILES {
+        ExecutionProfiles::EMPTY
+    } else {
+        profiles
+    };
     let sti_profile = profiles.sti;
     let halt_profile = profiles.halt;
     let rdtsc_source = &mut runtime.rdtsc_source;
@@ -32098,7 +32146,7 @@ fn run_configured(
         } else {
             let old_shadow = state.sti_shadow;
             let outcome = if let Some(source) = rdtsc_source.take() {
-                let outcome = step_configured(
+                let outcome = step_configured_with_profile_mode::<NO_PROFILES>(
                     state,
                     memory,
                     config.context,
@@ -32114,7 +32162,7 @@ fn run_configured(
                 *rdtsc_source = Some(source);
                 outcome
             } else {
-                step_configured(
+                step_configured_with_profile_mode::<NO_PROFILES>(
                     state,
                     memory,
                     config.context,
@@ -32514,19 +32562,18 @@ fn step_tracked_with_stop(
     rflags_defined: &mut u64,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
-    step_tracked_with_profiles(
+    step_configured_with_profile_mode::<true>(
         state,
         memory,
         context,
         rflags_defined,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-        stop_requested,
+        ExecutionProfiles::EMPTY,
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested,
+        },
     )
 }
 
@@ -38641,6 +38688,7 @@ fn execute_sysret(
     StepOutcome::Advanced
 }
 
+#[inline(always)]
 fn step_configured(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -38649,6 +38697,29 @@ fn step_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> Result<StepOutcome, MemoryError> {
+    step_configured_with_profile_mode::<false>(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        profiles,
+        runtime,
+    )
+}
+
+fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> Result<StepOutcome, MemoryError> {
+    let profiles = if NO_PROFILES {
+        ExecutionProfiles::EMPTY
+    } else {
+        profiles
+    };
     let divpd_memory_profile = profiles.divpd_memory_rax;
     let divpd_memory_enabled = divpd_memory_profile.is_some();
     let ExecutionProfiles {
@@ -45045,7 +45116,7 @@ fn step_configured(
         }
         _ => {}
     }
-    if instruction.operation == Operation::Hlt {
+    if matches!(instruction.operation, Operation::Hlt) {
         if halt_profile.is_none()
             || instruction.prefixes != Prefixes::default()
             || instruction.length != 1
@@ -45066,7 +45137,7 @@ fn step_configured(
         }
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Int3 {
+    if matches!(instruction.operation, Operation::Int3) {
         // S4-38L9e: the bare `CC` is delivered through the IDT gate of vector 3 inside the CPL0
         // profile set under its INT3 member only; everywhere else (bare `run`/`step`, the paged
         // probes, a set without the member, a shadow that is not `Clear`) it is the stop it was.
@@ -45088,7 +45159,9 @@ fn step_configured(
             crate::interrupt::Cpl0Int3Delivery::Aborted { cause, .. } => report_memory_error(cause),
         };
     }
-    if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
+    if matches!(instruction.operation, Operation::Cli)
+        || matches!(instruction.operation, Operation::Sti)
+    {
         let has_cli = cli_profile.is_some() || sti_profile.is_some();
         let is_sti = instruction.operation == Operation::Sti;
         // S4-38L7bp: `sti_cpl0` admits STI (only) in the CPL0 set; it does not admit CLI.
@@ -45150,7 +45223,7 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Rdtsc {
+    if matches!(instruction.operation, Operation::Rdtsc) {
         let (Some(controls), Some(source)) = (rdtsc_controls, rdtsc_source) else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -45176,7 +45249,7 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Cpuid {
+    if matches!(instruction.operation, Operation::Cpuid) {
         let Some(cpuid) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -45193,7 +45266,7 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::Syscall {
+    if matches!(instruction.operation, Operation::Syscall) {
         return Ok(execute_syscall(
             state,
             context,
@@ -45205,7 +45278,7 @@ fn step_configured(
             guest_msr_cells,
         ));
     }
-    if instruction.operation == Operation::Sysret {
+    if matches!(instruction.operation, Operation::Sysret) {
         return Ok(execute_sysret(
             state,
             context,
@@ -46941,7 +47014,7 @@ fn step_configured(
         || matches!(instruction.operation, Operation::FstSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || instruction.operation == Operation::Ftst && bounded_x87_ftst_source(state).is_none()
-        || instruction.operation == Operation::Fxam && bounded_x87_fxam_cc(state).is_none()
+        || matches!(instruction.operation, Operation::Fxam) && bounded_x87_fxam_cc(state).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -46959,7 +47032,7 @@ fn step_configured(
     } else {
         None
     };
-    let fsqrt = if instruction.operation == Operation::Fsqrt {
+    let fsqrt = if matches!(instruction.operation, Operation::Fsqrt) {
         match bounded_x87_fsqrt_result(state) {
             Some(result) => Some(result),
             None => {
@@ -46971,7 +47044,7 @@ fn step_configured(
     } else {
         None
     };
-    let fprem = if instruction.operation == Operation::Fprem {
+    let fprem = if matches!(instruction.operation, Operation::Fprem) {
         match bounded_x87_fprem_result(state) {
             Some(result) => Some(result),
             None => {
@@ -46983,7 +47056,7 @@ fn step_configured(
     } else {
         None
     };
-    let fprem1 = if instruction.operation == Operation::Fprem1 {
+    let fprem1 = if matches!(instruction.operation, Operation::Fprem1) {
         match bounded_x87_fprem1_result(state) {
             Some(result) => Some(result),
             None => {
@@ -47106,22 +47179,11 @@ fn step_configured(
             opcode: instruction.opcode.byte,
         });
     }
-    if instruction.operation == Operation::Fcompp && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if instruction.operation == Operation::Fucompp && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if instruction.operation == Operation::Fucom && bounded_x87_fcom_result(state, 1).is_none() {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    if instruction.operation == Operation::Fucomp && bounded_x87_fcom_result(state, 1).is_none() {
+    if matches!(
+        instruction.operation,
+        Operation::Fcompp | Operation::Fucompp | Operation::Fucom | Operation::Fucomp
+    ) && bounded_x87_fcom_result(state, 1).is_none()
+    {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -49598,7 +49660,7 @@ fn step_configured(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if instruction.operation == Operation::FldM64FpRax {
+    if matches!(instruction.operation, Operation::FldM64FpRax) {
         let destination = fild_destination.expect("FLD m64 destination was prevalidated");
         let address = state.gpr[Register::Rax as usize];
         let last = match address.checked_add(7) {
@@ -142046,6 +142108,110 @@ mod tests {
                     assert_eq!(reference_memory.bytes, memory.bytes);
                     assert_eq!(reference_memory.accesses, memory.accesses);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bare_tracked_step_matches_configured_empty_profile() {
+        let mut initial = LongModeState {
+            rip: 0x2000,
+            ..Default::default()
+        };
+        initial.gpr[Register::Rax as usize] = 0x0123_4567_89ab_cdef;
+        initial.gpr[Register::Rbx as usize] = 0x1008;
+        initial.gpr[Register::Rcx as usize] = 3;
+        initial.gpr[Register::Rsi as usize] = 0x1000;
+        initial.gpr[Register::Rdi as usize] = 0x1008;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        let flags_defined = crate::INTEGER_FLAGS & !crate::AF;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x1008),
+        };
+        for (code, error, expected) in [
+            (&[0x48, 0x89, 0x03][..], None, StepOutcome::Advanced),
+            (
+                &[0x48, 0x8b, 0x03],
+                Some(MemoryError::Architectural(fault.clone())),
+                StepOutcome::Fault(fault),
+            ),
+            (&[0xf3, 0xa4], None, StepOutcome::StopRequested),
+        ] {
+            let observe = |bare| {
+                let mut state = initial.clone();
+                let mut memory = Memory::at(code, initial.rip);
+                memory.error = error.clone();
+                let mut defined = flags_defined;
+                let mut polls = 0;
+                let mut stop_requested = || {
+                    polls += 1;
+                    true
+                };
+                let outcome = if bare {
+                    step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        context,
+                        &mut defined,
+                        &mut stop_requested,
+                    )
+                } else {
+                    step_configured(
+                        &mut state,
+                        &mut memory,
+                        context,
+                        &mut defined,
+                        ExecutionProfiles::EMPTY,
+                        StepRuntime {
+                            rdtsc_source: None,
+                            sti_sequence: None,
+                            exact_hlt_only: false,
+                            stop_requested: &mut stop_requested,
+                        },
+                    )
+                };
+                (outcome.unwrap(), state, memory, defined, polls)
+            };
+
+            let (outcome, state, memory, defined, polls) = observe(true);
+            let (
+                configured_outcome,
+                configured_state,
+                configured_memory,
+                configured_defined,
+                configured_polls,
+            ) = observe(false);
+            assert_eq!(outcome, expected);
+            assert_eq!(outcome, configured_outcome);
+            assert_eq!(state, configured_state);
+            assert_eq!(defined, configured_defined);
+            assert_eq!(defined, flags_defined);
+            assert_eq!(memory.bytes, configured_memory.bytes);
+            assert_eq!(memory.fetches, configured_memory.fetches);
+            assert_eq!(memory.fetch_contexts, configured_memory.fetch_contexts);
+            assert_eq!(memory.accesses, configured_memory.accesses);
+            assert_eq!(memory.contexts, configured_memory.contexts);
+            assert_eq!(polls, configured_polls);
+            assert_eq!(polls, usize::from(outcome == StepOutcome::StopRequested));
+
+            if outcome == StepOutcome::StopRequested {
+                assert_eq!(state.rip, initial.rip);
+                assert_eq!(state.gpr[Register::Rcx as usize], 2);
+                assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+                assert_eq!(state.gpr[Register::Rdi as usize], 0x1009);
+                assert_eq!(
+                    memory.accesses,
+                    [
+                        (AccessKind::Read, 0x1000, 1),
+                        (AccessKind::Write, 0x1008, 1)
+                    ]
+                );
+                assert_eq!(memory.bytes[8], memory.bytes[0]);
             }
         }
     }

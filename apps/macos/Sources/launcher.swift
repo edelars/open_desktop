@@ -86,8 +86,10 @@ struct OpenDesktopLauncherSmoke {
             var reportedError: Error = error
             Issue027Trace.mark("launcher_caught_error", detail: "error=\(error)")
             if let childPID {
-                var status: Int32 = 0
-                let waited = waitpid(childPID, &status, WNOHANG)
+                let (waited, status, shouldTerminate) = waitForChildAfterFailure(
+                    childPID,
+                    truncated: ControlFrame.isTruncationError(error)
+                )
                 Issue027Trace.mark("child_wait_probe", detail: "waited=\(waited) status=\(status)")
                 if waited == childPID {
                     if status & 0x7F != 0 {
@@ -102,7 +104,7 @@ struct OpenDesktopLauncherSmoke {
                             Issue027Trace.mark("child_exited", detail: "status=0")
                         }
                     }
-                } else {
+                } else if shouldTerminate {
                     Issue027Trace.mark("terminating_child", detail: "pid=\(childPID)")
                     VMHostLaunch.terminateChild(childPID)
                     Issue027Trace.mark("child_termination_complete", detail: "pid=\(childPID)")
@@ -112,6 +114,23 @@ struct OpenDesktopLauncherSmoke {
             if childFD >= 0 { Darwin.close(childFD) }
             fputs("open-desktop-launcher-smoke: \(reportedError)\n", stderr)
             exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func waitForChildAfterFailure(
+        _ pid: pid_t, truncated: Bool
+    ) -> (waited: pid_t, status: Int32, shouldTerminate: Bool) {
+        // The channel can reach EOF before the kernel makes the child's exit status waitable.
+        let deadline = DispatchTime.now() + .milliseconds(truncated ? 200 : 0)
+        var status: Int32 = 0
+        while true {
+            let waited = waitpid(pid, &status, WNOHANG)
+            let waitError = waited < 0 ? errno : 0
+            if (waited != 0 && waitError != EINTR) || DispatchTime.now() >= deadline {
+                // ECHILD means the PID no longer identifies a child we can clean up.
+                return (waited, status, waited != pid && waitError != ECHILD)
+            }
+            usleep(10_000)
         }
     }
 

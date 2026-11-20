@@ -361,6 +361,10 @@ impl TranslationKey {
         &self,
         current: &[CodeDependencySpan],
     ) -> Result<bool, TranslationKeyError> {
+        // The key already owns a validated, ordered snapshot.
+        if current == self.dependencies.as_slice() {
+            return Ok(true);
+        }
         Ok(validate_dependency_spans(self.code_base, self.code_end, current)? == self.dependencies)
     }
 
@@ -1196,16 +1200,29 @@ mod tests {
     fn dependency_snapshot_validation_reports_stale_without_rebuilding_key() {
         let bytes = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
         let (code, block) = build(&bytes, 0x4000);
-        let original = one_span(code, identity(10, 1, 20, 1, true));
+        let original = [
+            span(0x4000, 0x4005, identity(10, 1, 20, 1, true)),
+            span(0x4005, 0x400a, identity(11, 1, 20, 1, true)),
+        ];
         let key = key(code, &block, CompileFlavor::S0_09NativeBlock, &original).unwrap();
         assert!(key.dependencies_match_snapshot(&original).unwrap());
+        assert!(
+            key.dependencies_match_snapshot(&[original[1], original[0]])
+                .unwrap()
+        );
 
-        let changed_mapping = one_span(code, identity(10, 2, 20, 1, true));
+        let mut changed_mapping = original;
+        changed_mapping[1].identity.mapping_version = MappingVersion::new(nz(2));
         assert!(!key.dependencies_match_snapshot(&changed_mapping).unwrap());
-        let denied = one_span(code, identity(10, 1, 20, 1, false));
+        let mut denied = original;
+        denied[1].identity.executable = false;
         assert!(matches!(
             key.dependencies_match_snapshot(&denied),
-            Err(TranslationKeyError::NonExecutableDependency { .. })
+            Err(TranslationKeyError::NonExecutableDependency { index: 1 })
+        ));
+        assert!(matches!(
+            key.dependencies_match_snapshot(&original[..1]),
+            Err(TranslationKeyError::DependencyCoverageIncomplete { .. })
         ));
     }
 }

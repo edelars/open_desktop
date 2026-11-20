@@ -322,7 +322,10 @@ trait CachedEntryStore<H> {
     ) -> Result<(), CacheError>;
     fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError>;
     fn remove(&mut self, index: usize) -> Result<(), CacheError>;
-    fn record_hit(&mut self, index: usize) -> Result<(), CacheError>;
+    // Return the current index after applying the eviction policy's hit handling.
+    /// Returns the touched entry's index. A move to the back shifts entries
+    /// after its old index one position toward the front.
+    fn record_hit(&mut self, index: usize) -> Result<usize, CacheError>;
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
     fn record_publish(&mut self, code_bytes: usize) -> Result<(), CacheError>;
@@ -555,8 +558,9 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self, _index: usize) -> Result<(), CacheError> {
-        Self::add_counter(&mut self.counters.hits)
+    fn record_hit(&mut self, _index: usize) -> Result<usize, CacheError> {
+        Self::add_counter(&mut self.counters.hits)?;
+        Ok(0)
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.misses)
@@ -900,13 +904,14 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self, index: usize) -> Result<(), CacheError> {
+    fn record_hit(&mut self, index: usize) -> Result<usize, CacheError> {
         Self::add_counter(&mut self.counters.hits)?;
         if self.eviction_policy == CacheEvictionPolicy::Lru && index < self.entries.len() {
             let touched = self.entries.remove(index);
             self.entries.push(touched);
+            return Ok(self.entries.len() - 1);
         }
-        Ok(())
+        Ok(index)
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.misses)
@@ -1289,7 +1294,7 @@ pub struct PreparedKeyReuseCounts {
 
 struct PreparedNativeRegisterKey {
     rip: u64,
-    block: crate::block::BasicBlock,
+    minimum_key_bytes: usize,
     key: TranslationKey,
 }
 
@@ -1460,22 +1465,27 @@ fn run_cached_native_register_v1_strategy_controlled<
             }
         }
         let (key, hit_index) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-            let block = guest_block
-                .as_ref()
-                .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.block))
-                .expect("block or prepared memo exists");
-            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, block)
-                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+            let minimum = match &guest_block {
+                Some(block) => minimum_cache_key_size::<B::Published>(code, dependencies, block)
+                    .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?,
+                None => {
+                    prepared_key
+                        .as_ref()
+                        .expect("memo exists")
+                        .minimum_key_bytes
+                }
+            };
             cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
             if reuse_hit {
                 let key = &prepared_key.as_ref().expect("memo exists").key;
                 validate_cached_snapshot(key, code, dependencies)?;
-                let hit_index = cache.find(key);
-                if let Some(index) = hit_index {
-                    cache.record_hit(index).map_err(DispatchError::Cache)?;
-                } else {
-                    cache.record_miss().map_err(DispatchError::Cache)?;
-                }
+                let hit_index = match cache.find(key) {
+                    Some(index) => Some(cache.record_hit(index).map_err(DispatchError::Cache)?),
+                    None => {
+                        cache.record_miss().map_err(DispatchError::Cache)?;
+                        None
+                    }
+                };
                 Ok::<_, DispatchError<B::Error>>((None, hit_index))
             } else {
                 let block = guest_block.as_ref().expect("new block exists");
@@ -1504,17 +1514,18 @@ fn run_cached_native_register_v1_strategy_controlled<
                 )
                 .map_err(DispatchError::TranslationKey)?;
                 validate_cached_snapshot(&key, code, dependencies)?;
-                let hit_index = cache.find(&key);
-                if let Some(index) = hit_index {
-                    cache.record_hit(index).map_err(DispatchError::Cache)?;
-                } else {
-                    cache.record_miss().map_err(DispatchError::Cache)?;
-                }
+                let hit_index = match cache.find(&key) {
+                    Some(index) => Some(cache.record_hit(index).map_err(DispatchError::Cache)?),
+                    None => {
+                        cache.record_miss().map_err(DispatchError::Cache)?;
+                        None
+                    }
+                };
                 if reuse_candidate {
                     prepared_key = Some(PreparedNativeRegisterKey {
                         rip: state.rip,
-                        block: block.clone(),
-                        key: key.clone(),
+                        minimum_key_bytes: minimum,
+                        key,
                     });
                     if TRACK_REUSE_COUNTS {
                         let counts = reuse_counts
@@ -1525,18 +1536,18 @@ fn run_cached_native_register_v1_strategy_controlled<
                             .checked_add(1)
                             .ok_or(DispatchError::AggregateOverflow)?;
                     }
+                    Ok((None, hit_index))
+                } else {
+                    Ok((Some(key), hit_index))
                 }
-                Ok((Some(key), hit_index))
             }
         })?;
         let key = key
             .as_ref()
             .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.key))
             .expect("key or prepared memo exists");
-        let cached_index = if hit_index.is_some() {
-            // LRU hits can move the matched entry. Resolve its index again
-            // after recording the hit before borrowing the published handle.
-            cache.find(key).expect("hit remains resident")
+        let cached_index = if let Some(index) = hit_index {
+            index
         } else {
             let compilation = match strategy {
                 NativeRegisterV1CacheStrategy::Eager => {
@@ -1934,6 +1945,11 @@ where
     C: CachedEntryStore<B::Published>,
     O: PhaseObserver,
 {
+    enum BlockSelection {
+        PreviousEntry(usize),
+        Built(crate::block::BuildOutcome),
+    }
+
     if let Some(value) = state.cr3 {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedCr3State { value },
@@ -1983,6 +1999,8 @@ where
     let mut retired_total = 0u64;
     let mut blocks_executed = 0u64;
 
+    let mut next_cached_entry = None;
+    let mut previous_entry: Option<(u64, usize)> = None;
     loop {
         if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
             return Ok(result(exit, remaining, retired_total, blocks_executed));
@@ -1994,88 +2012,122 @@ where
             return Ok(result(exit, remaining, retired_total, blocks_executed));
         }
 
-        let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
-            build_dispatch_block(code, state.rip, admission)
+        let selection = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
+            if let Some(index) = next_cached_entry {
+                return Ok(BlockSelection::PreviousEntry(index));
+            }
+            build_dispatch_block(code, state.rip, admission).map(BlockSelection::Built)
         })
         .map_err(DispatchError::Compile)?;
-        let guest_block = match &built {
-            crate::block::BuildOutcome::Block(block) => block,
-            crate::block::BuildOutcome::NoBlock(no_block) => {
-                return Err(DispatchError::NoNativePrefix {
-                    rip: no_block.entry_rip,
-                });
-            }
-        };
-        let (key, hit) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
-                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-            cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-            let key = TranslationKey::for_block(
-                code,
-                guest_block,
-                CompileFlavor::S0_09FixtureDispatch,
-                execution_context,
-                dependencies,
-            )
-            .map_err(DispatchError::TranslationKey)?;
-            validate_cached_snapshot(&key, code, dependencies)?;
-
-            let hit_index = cache.find(&key);
-            let hit = hit_index.is_some();
-            if let Some(index) = hit_index {
-                cache.record_hit(index).map_err(DispatchError::Cache)?;
-            } else {
-                cache.record_miss().map_err(DispatchError::Cache)?;
-            }
-            Ok::<_, DispatchError<B::Error>>((key, hit))
-        })?;
-
-        let cached_index = if !hit {
-            let compiled = match crate::block_compile::compile_prepared_dispatch_block_observed(
-                code.code_end(),
-                built,
-                admission,
-                observer,
-            )
-            .map_err(DispatchError::Compile)?
+        let record_hit = |cache: &mut C, index, previous_entry: &mut Option<(u64, usize)>| {
+            let touched = cache.record_hit(index)?;
+            if touched != index
+                && let Some((_, previous_index)) = previous_entry
             {
-                BlockCompileOutcome::Compiled(block) => block,
-                BlockCompileOutcome::NoNativePrefix { rip, .. } => {
-                    return Err(DispatchError::NoNativePrefix { rip });
+                if *previous_index == index {
+                    *previous_index = touched;
+                } else if index < *previous_index {
+                    *previous_index -= 1;
                 }
-            };
-            cache.record_compile().map_err(DispatchError::Cache)?;
-            let logical_bytes = cache
-                .size_for_candidate(&key, &compiled)
-                .map_err(DispatchError::Cache)?;
-            let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
-            cache
-                .prepare_install(code_bytes, logical_bytes)
-                .map_err(DispatchError::Cache)?;
-
-            validate_cached_snapshot(&key, code, dependencies)?;
-
-            let published = measure(observer, DispatchPhase::Publication, || {
-                backend.publish_cached_block(&compiled)
-            })
-            .map_err(DispatchError::CachePublish)?;
-            cache
-                .record_publish(code_bytes)
-                .map_err(DispatchError::Cache)?;
-            let published = validate_published_candidate(&key, code, dependencies, published)?;
-            let index = cache
-                .install(CachedEntry {
-                    key,
-                    block: compiled,
-                    published,
-                    logical_bytes,
-                })
-                .map_err(DispatchError::Cache)?;
-            index
-        } else {
-            cache.find(&key).expect("hit index still resident")
+            }
+            Ok::<_, CacheError>(touched)
         };
+        let cached_index = match selection {
+            BlockSelection::PreviousEntry(index) => {
+                let phase = DispatchPhase::KeySnapshotAndLookup;
+                let mark = observer.begin(phase);
+                let touched = record_hit(cache, index, &mut previous_entry);
+                observer.end(phase, mark);
+                touched.map_err(DispatchError::Cache)?
+            }
+            BlockSelection::Built(built) => {
+                let guest_block = match &built {
+                    crate::block::BuildOutcome::Block(block) => block,
+                    crate::block::BuildOutcome::NoBlock(no_block) => {
+                        return Err(DispatchError::NoNativePrefix {
+                            rip: no_block.entry_rip,
+                        });
+                    }
+                };
+                let (key, hit_index) =
+                    measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+                        let minimum =
+                            minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
+                                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+                        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+                        let key = TranslationKey::for_block(
+                            code,
+                            guest_block,
+                            CompileFlavor::S0_09FixtureDispatch,
+                            execution_context,
+                            dependencies,
+                        )
+                        .map_err(DispatchError::TranslationKey)?;
+                        validate_cached_snapshot(&key, code, dependencies)?;
 
+                        let hit_index = if let Some(index) = cache.find(&key) {
+                            Some(
+                                record_hit(cache, index, &mut previous_entry)
+                                    .map_err(DispatchError::Cache)?,
+                            )
+                        } else {
+                            cache.record_miss().map_err(DispatchError::Cache)?;
+                            None
+                        };
+                        Ok::<_, DispatchError<B::Error>>((key, hit_index))
+                    })?;
+
+                if let Some(index) = hit_index {
+                    index
+                } else {
+                    let compiled =
+                        match crate::block_compile::compile_prepared_dispatch_block_observed(
+                            code.code_end(),
+                            built,
+                            admission,
+                            observer,
+                        )
+                        .map_err(DispatchError::Compile)?
+                        {
+                            BlockCompileOutcome::Compiled(block) => block,
+                            BlockCompileOutcome::NoNativePrefix { rip, .. } => {
+                                return Err(DispatchError::NoNativePrefix { rip });
+                            }
+                        };
+                    cache.record_compile().map_err(DispatchError::Cache)?;
+                    let logical_bytes = cache
+                        .size_for_candidate(&key, &compiled)
+                        .map_err(DispatchError::Cache)?;
+                    let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
+                    // Installing can evict entries and shift their indices.
+                    previous_entry = None;
+                    cache
+                        .prepare_install(code_bytes, logical_bytes)
+                        .map_err(DispatchError::Cache)?;
+
+                    validate_cached_snapshot(&key, code, dependencies)?;
+
+                    let published = measure(observer, DispatchPhase::Publication, || {
+                        backend.publish_cached_block(&compiled)
+                    })
+                    .map_err(DispatchError::CachePublish)?;
+                    cache
+                        .record_publish(code_bytes)
+                        .map_err(DispatchError::Cache)?;
+                    let published =
+                        validate_published_candidate(&key, code, dependencies, published)?;
+                    let index = cache
+                        .install(CachedEntry {
+                            key,
+                            block: compiled,
+                            published,
+                            logical_bytes,
+                        })
+                        .map_err(DispatchError::Cache)?;
+                    index
+                }
+            }
+        };
         let cached_key = &cache.entry(cached_index).expect("cache index valid").key;
         if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
@@ -2085,6 +2137,7 @@ where
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
             return Err(DispatchError::StaleDependencySnapshot);
         }
+        let entry_rip = cached_key.entry_rip();
         let cached = cache.entry(cached_index).expect("cache index valid");
         let cached_block = &cached.block;
         let published = &cached.published;
@@ -2139,6 +2192,17 @@ where
                 if let Some(exit) = event_exit(control) {
                     return Ok(result(exit, remaining, retired_total, blocks_executed));
                 }
+                // Both indices were resolved against this invocation's
+                // borrowed source and dependencies. The next entry still
+                // goes through the snapshot and control checks above.
+                next_cached_entry = if state.rip == entry_rip {
+                    Some(cached_index)
+                } else {
+                    previous_entry
+                        .filter(|&(rip, _)| rip == state.rip)
+                        .map(|(_, index)| index)
+                };
+                previous_entry = Some((entry_rip, cached_index));
             }
             RuntimeExitTag::BudgetExhausted => {
                 if remaining != 0 {
@@ -8726,6 +8790,161 @@ mod tests {
         run_multi_fixture(&c, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
         run_multi_fixture(&a, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
         assert_eq!(fifo.counters().successful_compiles, 4);
+    }
+
+    #[test]
+    fn recent_rip_reuse_tracks_current_entries_after_hits_and_eviction() {
+        let base = 0x7200;
+        let second = base + 10;
+        let code = [
+            0x48, 0xB8, 0x11, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xB8, 0x22, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (view, admission) = cached_fixture(&code, base);
+        let dependencies = dependency(view, 1);
+        let expected = [
+            (1, &[1, 2, 3, 3, 4, 5, 6, 6, 7][..], 2, 7, 6),
+            (2, &[1, 2, 1, 1, 2, 1, 2, 2, 1][..], 7, 2, 0),
+        ];
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            for (capacity, executed, hits, publications, evictions) in expected {
+                let tracker = Rc::new(RefCell::new(PublishedTracker {
+                    allow_multiple_live: true,
+                    ..PublishedTracker::default()
+                }));
+                let mut backend = MockCachedBackend(tracker.clone());
+                let mut cache = MultiEntryBlockCache::with_policy(
+                    capacity,
+                    MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                    policy,
+                )
+                .unwrap();
+                let stop = AtomicU8::new(0);
+                let mut run = |rip, budget| {
+                    let mut state = LongModeState {
+                        rip,
+                        ..LongModeState::default()
+                    };
+                    run_multi_cached_controlled(
+                        view,
+                        &admission,
+                        test_context(),
+                        &dependencies,
+                        &mut state,
+                        budget,
+                        DispatchControl {
+                            stop_rip: None,
+                            stop_requested: &stop,
+                            event_requested: None,
+                        },
+                        &mut cache,
+                        &mut backend,
+                    )
+                    .unwrap()
+                };
+                run(base, 1);
+                run(second, 1);
+                // Execute A, A, B, A, B, B, A. With capacity two, moving B
+                // under LRU shifts the remembered index of A. With
+                // capacity one, each RIP change evicts the previous entry.
+                tracker.borrow_mut().scripted_replies = vec![
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (second, RuntimeExitTag::DispatchCandidate, 1),
+                    (base, RuntimeExitTag::DispatchCandidate, 1),
+                    (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+                ];
+                let result = run(base, 9);
+                assert_eq!(result.exit, DispatchExit::CodeEnd);
+                assert_eq!(result.retired_instructions, 7);
+                assert_eq!(result.remaining_budget, 2);
+                assert_eq!(
+                    cache.counters().hits,
+                    hits,
+                    "{policy:?} capacity {capacity}"
+                );
+                assert_eq!(cache.counters().successful_publications, publications);
+                assert_eq!(cache.counters().evictions, evictions);
+                assert_eq!(tracker.borrow().executed_ids, executed);
+            }
+        }
+    }
+
+    #[test]
+    fn recent_rip_reuse_rebases_after_middle_lru_hits() {
+        let a = 0x7200;
+        let b = a + 10;
+        let c = b + 10;
+        let code = [
+            0x48, 0xb8, 0x11, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xb8, 0x22, 0, 0, 0, 0, 0, 0, 0, 0x48,
+            0xb8, 0x33, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (view, admission) = cached_fixture(&code, a);
+        let dependencies = dependency(view, 1);
+        let (mut backend, tracker) = new_fixture_backend();
+        let mut cache = MultiEntryBlockCache::with_policy(
+            3,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            CacheEvictionPolicy::Lru,
+        )
+        .unwrap();
+        let stop = AtomicU8::new(0);
+        let mut run = |rip, budget| {
+            let mut state = LongModeState {
+                rip,
+                ..LongModeState::default()
+            };
+            run_multi_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                budget,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: None,
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap()
+        };
+        for rip in [a, b, c] {
+            run(rip, 1);
+        }
+        // A moves to the back of [A, B, C]. The middle hit on C shifts
+        // the remembered A, and the middle memo hit on A shifts C again.
+        tracker.borrow_mut().scripted_replies = vec![
+            (c, RuntimeExitTag::DispatchCandidate, 1),
+            (a, RuntimeExitTag::DispatchCandidate, 1),
+            (c, RuntimeExitTag::DispatchCandidate, 1),
+            (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+        ];
+        let result = run(a, 5);
+
+        assert_eq!(result.exit, DispatchExit::CodeEnd);
+        assert_eq!(result.retired_instructions, 4);
+        assert_eq!(result.blocks_executed, 4);
+        assert_eq!(result.remaining_budget, 1);
+        assert_eq!(tracker.borrow().executed_ids, [1, 2, 3, 1, 3, 1, 3]);
+        let counters = cache.counters();
+        assert_eq!(counters.hits, 4);
+        assert_eq!(counters.misses, 3);
+        assert_eq!(counters.successful_publications, 3);
+        assert_eq!(counters.evictions, 0);
+        assert_eq!(
+            cache
+                .entries
+                .iter()
+                .map(|entry| entry.key.entry_rip())
+                .collect::<Vec<_>>(),
+            [b, a, c],
+        );
     }
 
     #[test]

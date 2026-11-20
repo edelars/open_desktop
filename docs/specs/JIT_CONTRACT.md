@@ -1969,6 +1969,9 @@ remains `not_run` for this slice. See the
 
 ## 3a. Единые правила допуска регистрового набора
 
+Сверка допуска и регистровых обёрток на итоговом исходном дереве
+описана в [отчёте Core](../reports/STAGE_3_CORE_REPORT.md#проверки-итогового-исходного-дерева-11cbe6b).
+
 Этот раздел задаёт **действующее** множество для регистровых admission-профилей S0-09, S3-32a и S3-33a–m одним описанием. Он не добавляет инструкции или кодировки и не делает все строки доступными каждому существующему API: профиль выбирается явно по таблице ниже. Ранее описанные ограниченные срезы и их условия исполнения сохраняются. Здесь определяется только допуск; наличие правила само по себе не доказывает готовность JIT или этапа 3.
 
 ### Вход и привязка свидетельства
@@ -2846,6 +2849,9 @@ guest RIP or the canonical RIP at that runtime point, optional instruction
 index, phase and snapshot admissibility. The Jcc terminal transfer, its return
 stub and shared epilogue use canonical-RIP metadata because taken, fallthrough,
 and earlier planned exits can reach those ranges with different committed RIPs.
+Both `lookup` and `snapshot_admissibility_at` classify only aligned ARM64
+instruction PCs within emitted code. A misaligned offset, the exclusive
+code end or trailing padding has no snapshot classification.
 Per-instruction guard/helper failure stubs retain their fixed faulting guest
 RIP. Helper call
 failure has an instruction-specific return stub and map range; it returns a
@@ -3414,6 +3420,14 @@ fault delivery requires the future owner-supplied fetch integration.
 exactly one mapping per artifact before returning to the dispatcher. The
 dispatcher accepts only exact compiler-issued artifact types, preserves a
 committed prefix on later architectural or host errors, and never caches code.
+Both the uncached dispatcher and the retained memory-pair cache accept a
+`GuestFault` report only when the remaining budget permits the faulting
+instruction and the canonical RIP matches the artifact site indexed by the
+number of retired instructions. A report outside those bounds fails the host
+executor contract. The cache drops the affected mapping at the synchronous
+return boundary without retrying the artifact. The uncached dispatcher retains
+the rejected report in its error so the arithmetic/load coordinator can keep
+its existing phase RIP and invalid-memory-report diagnostics.
 Its unsafe caller contract requires immutable non-aliasing code bytes and
 private synchronous ordinary data RAM with all-or-nothing writes, no MMIO,
 executable/code aliases, DMA, concurrency, re-entry, or unwind. `GuestMemory`
@@ -3523,6 +3537,18 @@ minus remaining budget. The current implementation covers only exact NOP;
 other decoded operations, memory instructions, general Stage 2 fallback,
 dispatcher CLI changes, faults on writable/mapped guest memory and generic
 fallback are outside this partial API.
+
+#### S3-16: paged publication refusal
+
+The single-vCPU paged loop falls back for a supported `MOV RAX,[RBX]`
+when the MAP_JIT lease is busy before native entry. The attempted fetch
+can commit page-walk Accessed bits. The interpreter then consumes one
+instruction and one unit of budget. No block was published for that step.
+After the lease is released, the test resumes the same session at the
+next instruction and checks exactly one native retirement at the next
+visit to the load. The combined write log, registers, RIP, flags, RAM
+and retirement agree with the interpreter. The local Stage 3 selector
+requires the exact `s3_16_publication_refusal` gate.
 
 #### S3-16m: exact bare-NOP continuation for the bounded memory dispatcher
 
@@ -3674,8 +3700,12 @@ not enter the V1 cached-block executor. A fixture-only tracked code owner
 after the entry stop-RIP → STOP → budget guards preflights the full qword
 destination, executable and write permissions, nonwrapping backing-version
 increment, and binds the artifact RIP/source bytes to the owner-held active
-source lease before the helper can write. It also checks overlap against that
-source backing, including guest aliases. It owns fixed
+source lease before the helper can write. Every mapping of the instruction
+source and any supplied tracked code region must retain execute permission.
+A revoked source returns `Preflight(NotExecutable)` without a guest commit.
+The fixture's interpreter fetch checks the same mapping permission and
+reports `PermissionDenied` on the revoked mapping. The owner also checks
+overlap against the source backing, including guest aliases. It owns fixed
 ordinary host RAM; guest-executable backing is never the host MAP_JIT arena.
 
 The verified generated helper performs one all-or-nothing write. After the
@@ -3824,7 +3854,9 @@ dirty exit, and tail. Only the lower-level checked-store helper call primitive
 is shared. Load/store V2 entries and the V1 runtime/tag 6 remain isolated.
 
 After stop-RIP, STOP, and initial-budget entry guards, the host validates the
-complete 23-byte source lease before executing any generated instruction. A
+complete 23-byte source lease before executing any generated instruction. It
+requires execute permission on each mapping, including a separate mapping for
+the tail even when the current budget would stop in the prefix. A
 stale source returns a boundary error without changing CPU state or RAM,
 including when budget would later stop before the store. The store owner then
 preflights the full qword destination, active source, tail, permissions, and

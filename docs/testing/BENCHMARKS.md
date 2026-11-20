@@ -4,6 +4,18 @@
 
 Для ограниченного CPU-среза [`od-runner --benchmark`](../../tools/runner/README.md#reproducible-cpu-benchmark) собирает decode, translation/lowering, executable publication, повторный interpreter и повторный JIT с чередованием порядка и 20 samples по умолчанию. Каждая серия калибруется отдельно до batch не короче 200 ms; raw samples включают объём работы и elapsed time. Это не покрывает cold process/VMHost launch, ABI/IPC и resource measurements.
 
+## S3-40al. Решения и измеренные профили
+
+Итог по проверенным профилям связывает выбор флагов,
+аллокатора, переходов и lowering с условиями замеров. Сохраняйте
+раздельные границы таймера для первого вызова, прогретого
+диспетчера и проверки ресурсов. Для фаз публикуйте отношение
+инструментированного времени к штатному и доли от собственного
+времени инструментированного вызова. Фиксируйте эффективный
+nice −5 бенчмарка и реального пользователя процесса. Отдельно
+отмечайте исключения из автоматического порога простоя CPU.
+[Решения и исходные отчёты S3-40al](../reports/STAGE_3_S3-40al_2026-11-20.md)
+
 ## S3-29f: single-block eager/demand-flags comparison
 
 `od-bench flags-compare` is an opt-in Apple Silicon macOS release measurement
@@ -303,20 +315,18 @@ tests and independent code review passed. See the [bounded S3-31c report](../rep
 
 ## JIT этапа 3: workload и уровни прогрева
 
-Старые значения S0-13 характеризуют direct fragment path и host wrapper на
-конкретной машине. Они остаются историческим baseline и не переносятся на
-будущий block JIT. Перед выбором lowering/allocator сохранить текущие fixture
-и corpus fingerprints. Текущий runner сравнивает interpreter и legacy fragment
-JIT; новый block JIT включается после S3-13.
+Замеры S0-13 относятся к direct fragment path и host wrapper на указанной
+машине. Для block JIT используются отдельные серии `od-bench`. При сравнении
+вариантов сохранять fingerprints исходников, фикстур и порядка обхода корпуса.
 
 | Workload | Состав | Доступность сравнения |
 |---|---|---|
-| Linear integer | Повторяемые `MOV`/`ADD`/`SUB`/`CMP` из S0-09 без memory | Interpreter и legacy fragment path; новый block JIT после S3-13 |
-| Conditional branch | Короткая программа с `JZ`/`JNZ`, одинаковыми taken/not-taken inputs | Одноблочные cases после S3-13; полный Stage 1 corpus после dispatcher S3-15 |
-| Short/long loop | Одни и те же guest instructions с разным числом loop iterations | Legacy path — только для его собственного сравнения; block JIT требует S3-15 и точной interpreter semantics |
-| Multi-block | Несколько связанных basic blocks и повторные переходы между ними | После dispatcher и cache lookup; не включать в ранний one-block result |
-| Helper-heavy | Частые `ADD`/`SUB`/`CMP` и eager materialization flags через helper | Только при одинаковой x86 flag semantics и измерении фактических helper calls |
-| Memory/fallback/invalidation | Checked accesses, interpreter exits, изменённый guest code | Добавлять вместе с соответствующей реализацией и correctness evidence; сейчас не измерять |
+| Linear integer | `MOV`/`ADD`/`SUB`/`CMP` из S0-09 без memory | Interpreter и legacy fragment через `od-runner`; сравнения block JIT ограничены корпусами конкретных серий |
+| Conditional branch | `JZ`/`JNZ`, taken и not taken | [S3-36b](#s3-36b-bounded-branchhelper-warm-profile) использует замороженный набор из пяти S3-14 cases |
+| Short/long loop | Одни и те же guest instructions с разным числом итераций | [S3-36f](#s3-36f-cached-nativeregisterv1-register-recurrence-full-call-profile) проверяет две register recurrences при 1, 64 и 4 096 итерациях |
+| Multi-block | Связанные basic blocks и повторные переходы | [S3-35a](#s3-35a-cold-first-full-corpus-execution) измерял dispatcher на замороженном S3-17 trace; оригинальные list и trace требуются для повтора |
+| Helper-heavy | Частые записи флагов с одинаковой x86 semantics | S3-36b покрывает только свои branch/helper cases; общий helper-heavy workload и сопоставимые счётчики для всех вариантов не измерены |
+| Memory/fallback/invalidation | Checked accesses, interpreter exits, изменённый guest code | Использовать узкие серии с собственной проверкой корректности. Например, [S3-35c](#s3-35c-cold-direct-entry-checked-memory-comparison) измеряет direct-entry memory, а [S3-36c](#s3-36c-resident-warm-nop-fallback-comparison) — resident NOP fallback |
 
 Для каждого workload сохранить exact guest bytes, initial CPU state, число
 исполняемых guest instructions, instruction budget, exit/branch behavior и
@@ -325,18 +335,33 @@ JIT; новый block JIT включается после S3-13.
 проверка там, где её требует план, но его время на отдельной Ubuntu-машине не
 является прямым A/B performance comparison с ARM64 host.
 
+Для проверки общего register-only входа можно прогнать одну и ту же
+[S0-09 fixture](../../tests/fixtures/x86/s0_09_add_overflow.case.json).
+
+```sh
+cargo build --release --offline -p od-runner
+for engine in interpreter jit jit-block jit-dispatch; do
+  target/release/od-runner --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
+    --engine "$engine" --json
+done
+```
+
+Сверять `input_sha256`, `status`, `exit_reason`, `instructions_executed` и
+`snapshot`; поле `backend` подтверждает путь каждого прогона. Этот preflight
+проверяет общий вход и выход для поддержанной формы и оставляет таймеры
+самим benchmark-командам.
+
 Различать три измеряемых уровня:
 
 1. **Cold process:** отдельный запуск и startup целевого runner; измерять
    внешним supervisor, поскольку `od-runner --benchmark` не включает старт
    процесса.
-2. **Cold compilation/code cache:** программа при пустом in-process cache,
-   включая decode/build/lowering, ARM64 emission, publication и первое
-   исполнение. Текущий `od-runner --benchmark` отдельно измеряет translation и
-   compile/publish/drop, но не исполняет код в этой cold-серии; полная
-   cold-compilation-plus-first-execution метрика пока недоступна. Не получать
-   её сложением медиан отдельных серий. Для legacy fragment path явно указывать
-   отсутствие постоянного block cache.
+2. **Cold compilation/code cache:** `od-bench cold-first-run` измеряет первый
+   sweep при пустом in-process cache, в том числе decode, compilation, ARM64
+   emission, publication и guest execution. Поле compile/publish/drop у
+   `od-runner --benchmark` относится к legacy fragment без постоянного block
+   cache и покрывает подготовку и освобождение mapping. Первое исполнение
+   требует отдельного замера с соответствующими границами таймера.
 3. **Warm execution:** уже опубликованный код и одинаковые повторные inputs.
    Время нового block JIT включает предусмотренные dispatcher/cache lookup и
    state materialization; время interpreter включает decode при каждом вызове,
@@ -624,6 +649,25 @@ common. Mac mini checks remain deferred until the end of Stage 3. See the
 [S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md) and
 [suite manifest with checksums and raw-derived summaries](../reports/data/stage3/s3-30b/suite-manifest.json).
 
+### S3-30e. Strict register-home reuse on M1 Pro
+
+Compare fixed homes and strict reuse with eager flags on the five S3-36l
+fixtures. Run signed `allocator-compare-s3-30` in the separate `compile`
+and `warm-direct-entry` profiles. Each mode uses three independent process
+rounds of 20 alternating pairs. Calibrate a common count per side and
+verify actual nice −5, load coverage, full guest state and the 200 ms
+side floor. The warm mode times calls into code published before the
+window. [Procedure, measured bounds and archive](../reports/STAGE_3_S3-30e_2026-11-20.md)
+
+### S3-30f. Strict register-home reuse through warm FIFO16 dispatch
+
+Use `allocator-compare-s3-30 --profile warm-fifo16-dispatch` on the same
+five eager S3-36l cases. The variants fill separate FIFO16 caches using
+the normal prepared miss path. Timed sides repeat the five-case sweep
+through the same dispatcher and verify all hits, five resident blocks
+and stable cache geometry. The selected M1 Pro series uses three process
+rounds at nice −5. [Protocol, decision and raw data](../reports/STAGE_3_S3-30f_2026-11-20.md)
+
 ### S3-35a: cold first full-corpus execution
 
 `od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark
@@ -682,12 +726,24 @@ admission and semantics were not established for this corpus.
 ### S3-35b: cold dispatcher pipeline attribution
 
 `od-bench cold-phases` uses the same frozen S3-17 case list and trace on the
-real FIFO16 dispatch/cache/compiler path. It reports distinct intervals for
+real FIFO16 dispatch/cache/compiler path. With
+`--relocated-s3-17-paths`, pass the recovered `relocated-cases.txt` and exact
+historical `dispatch-trace.json`. The trace SHA-256, 1,010 ordered fixture
+identities and raw hashes, and 1,322 visits remain binding. The report's
+`case_list_sha256` records the replacement list, alongside
+`historical_case_list_sha256` and `case_list_mode`. The original case list
+SHA-256 remains required by default.
+[S3-17 recovery bundle and hashes](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+
+The benchmark reports distinct intervals for
 block build/decode and admission, key/snapshot/lookup, IR lowering, allocation,
 emission plus byte encoding/finalization, publication, and host execution
-boundary. A hit still includes block build and key/lookup. Guards, cache install
-and accounting remain in `other_dispatch_ns`; they are not misreported as a
-compiler phase. Stage intervals are non-overlapping and are components of the
+boundary. Normal lookup includes block build and key lookup. When the
+dispatcher reuses the index for the current or previous RIP, the build
+phase checks the saved index and the lookup phase records the hit. Hit
+handling includes adjusting the saved index after LRU reordering. Guards,
+cache install and other accounting remain in `other_dispatch_ns`.
+Stage intervals are non-overlapping and are components of the
 instrumented dispatch pass, not standalone end-to-end measurements.
 An observed phase spans the `Instant` sample taken by `begin` through the clock
 read taken by `end`; it includes the wrapped operation and callback/wrapper
@@ -779,10 +835,13 @@ construction/reset, full result/state validation, and phase-total extraction
 are outside the interval. Warm active phases are block build/admission,
 `key_snapshot_and_initial_lookup`, and the host execution boundary. The lookup
 phase covers minimum sizing, key construction, initial snapshot validation,
-the first `cache.find`, and its hit/miss update only. A hit performs a second
-`cache.find`, cached-snapshot and code-view revalidation, guards, accounting,
-and other cache bookkeeping outside the phase samples; adapter and recorder
-work is also in the unattributed residual. The host boundary includes backend
+one `cache.find`, and its hit/miss update for normal lookup. When reusing
+the current or previous RIP, the build phase checks the saved index and
+the lookup phase records the hit. Hit handling includes adjusting the
+saved index after LRU reordering. Next-entry selection at continuation, cached-snapshot
+and code-view revalidation, guards, accounting, other cache bookkeeping,
+and adapter and recorder work contribute to the
+unattributed residual. The host boundary includes backend
 and arena checks, host context, generated entry, and result decoding, so it is
 not pure guest execution time.
 
@@ -856,6 +915,63 @@ result only; it does not select a production default or general winner. See the
 [reviewed suite manifest](../reports/data/stage3/s3-35c/suite-manifest.json),
 and [raw evidence archive](../reports/data/stage3/s3-35c/).
 
+### S3-35d: fresh runner process comparison
+
+The process benchmark runs interpreter, legacy fragment JIT
+(`--engine jit`) and the uncached IR dispatcher (`--engine jit-dispatch`)
+on the same five S3-14 branch/helper fixtures. The case list, trace and
+each fixture's bytes must match the recorded S3-36b digests. The trace
+binds the inputs. The interpreter output from the current build provides
+the comparison state. All variants pass a preflight, and every timed
+launch must match that output, including exit, retirement and snapshot.
+
+Each fixture starts a fresh release `od-runner` process. The timed interval
+includes spawn, fixture parsing, engine execution, JSON transfer and child
+exit. JSON parsing and validation in the benchmark controller are outside
+the timer. Each sweep sums five intervals and retires 14 guest instructions.
+No guest code survives between processes. macOS file caches are left in
+their normal state. These timings include startup and cannot replace the
+in-process cold or warm measurements above.
+
+From the repository root:
+
+```sh
+OPEN_DESKTOP_GIT_REVISION="$(git rev-parse HEAD)" \
+  RUSTC_VERSION="$(rustc --version)" cargo build --release --offline -p od-runner
+mkdir -p work/tmp/s3-35d
+for run in 1 2 3; do
+  python3 tools/bench/stage3_cold_process.py --output "work/tmp/s3-35d/run-$run.json"
+done
+```
+
+The script needs local macOS host-model information from `sysctl`. It
+calibrates a common sweep count to at least 300 ms per engine, then repeats
+every engine order four times across 24 groups. Each scored sample must
+reach 200 ms. Three sequential runs on Mac15,11 / Apple M3 Max, macOS
+26.7.1 (25G241), used release revision `31ecf35` and 32 sweeps per sample.
+All 34,560 scored child launches passed the input and parity checks. The
+shortest sample was 404.262 ms. One-minute host load averages measured
+at the start and end of each run ranged from 8.02 to 12.04. Power and
+thermal state were not sampled.
+
+Median ms per five-process sweep, with observed minima and maxima:
+
+| Run | Interpreter | Legacy fragment JIT | IR dispatcher |
+| --- | ---: | ---: | ---: |
+| 1 | 14.073 [12.964, 35.738] | 14.082 [12.633, 31.541] | 14.314 [13.099, 17.561] |
+| 2 | 15.459 [13.879, 35.571] | 15.277 [13.680, 36.319] | 15.587 [13.780, 36.734] |
+| 3 | 14.168 [13.573, 35.639] | 14.150 [13.644, 36.686] | 14.277 [13.843, 36.749] |
+
+Across the 72 paired observations, the legacy/interpreter median time
+ratio was 0.9877 [0.5010, 1.5477] and dispatcher/interpreter was 1.0065
+[0.3829, 1.3372]. The observed spread crosses parity for both comparisons.
+The measurements do not establish a speed difference or a default policy.
+A pilot under the workspace sandbox did not write a report because
+`sysctl` was denied. The measured runs queried the host before calibration.
+Raw evidence is archived as [run 1](../reports/data/stage3/s3-35d-cold-process/run-1.json),
+[run 2](../reports/data/stage3/s3-35d-cold-process/run-2.json) and
+[run 3](../reports/data/stage3/s3-35d-cold-process/run-3.json).
+
 ### S3-36a: bounded resident warm register-only execution
 
 `od-bench warm-first-run` is an opt-in Apple Silicon macOS release benchmark
@@ -910,7 +1026,9 @@ The existing `cold-first-run` and `warm-first-run` commands accept
 selects the same frozen five S3-14 cases and trace used by S3-36b and runs
 `NativeRegisterV1Admission` through `run_multi_cached_native_register_v1_controlled`
 with eager flags and FIFO(16). Without the flag both commands retain their
-existing S3-17 profiles and output. Other commands reject the flag.
+S3-17 profiles. The default FIFO `cold-first-run` also accepts the exact
+S3-14 case list and trace. Use `warm-branch-helper` for the corresponding
+resident FIFO profile on those inputs. Other commands reject the flag.
 
 Both list and trace SHA-256 values, each fixture/program hash, trace visits,
 interpreter outcome and retirement are validated before timing. The generic
@@ -951,12 +1069,59 @@ for run in 1 2 3; do
 done
 ```
 
+For a FIFO comparison on this same corpus, run `cold-first-run` with the
+paths above and omit `--generic-register`. Run `warm-branch-helper` with
+those paths for the warm side.
+[Matched FIFO/generic runs](../reports/STAGE_3_S3-56_MATCHED_2026-11-19.md)
+
 The [S3 Core report](../reports/STAGE_3_CORE_REPORT.md)
 records the six process runs and their limitations. S3-35a's 1,010-case cold
-corpus differs from this five-case workload; its numbers are context, not a
-direct comparison. S3-36b uses the same five-case digests and is comparable as
-a bounded historical warm observation, with the source-revision difference
-reported. Neither comparison accepts Stage 3 as a whole.
+corpus has its own direct comparison below. S3-36b uses the same five-case
+digests as the bounded historical warm observation. The reports record the
+build differences. Stage 3 acceptance is tracked separately in S3-41.
+
+#### S3-56 cold comparison on the recovered S3-17 corpus
+
+The `cold-first-run --relocated-s3-17-paths` opt-in accepts an explicit
+list of alternate fixture paths for the exact historical S3-17 trace.
+The trace hash, 1,010 ordered fixture identifiers and hashes, 1,322 visits,
+outcomes and retirements remain binding. Reports record the actual list
+hash, the expected historical list hash and `case_list_mode`. The original
+list check remains the default for S3-17. Both FIFO and `--generic-register`
+accept the opt-in. The generic cold path requires native-only admission
+for all inputs.
+
+Recover the trace, list and fixtures at the paths in the recovery report.
+Build `od-bench` in release mode, sign it for Hardened Runtime with
+`apps/vmhost/Configuration/vmhost-smoke.entitlements`, and use its absolute
+path as `OD_BENCH`. The following example runs round 1 from the repository
+root and assumes the launching shell has nice 0. Check that each benchmark
+process runs under the caller's UID with effective nice −5. The archived
+launcher checks those values and user-interactive QoS in the benchmark
+process itself. Use the archived build and launcher to repeat the measured
+series with the same QoS, input and ordering controls.
+
+```sh
+input_dir=work/tmp/s3-17-exact-recovery/verified
+benchmark_uid=$(/usr/bin/id -u)
+run_cold_s3_17() {
+    /usr/bin/sudo -n /usr/bin/nice -n -5 /usr/bin/sudo -n -u "#$benchmark_uid" -- \
+        "$OD_BENCH" cold-first-run --relocated-s3-17-paths \
+        --case-list "$input_dir/relocated-cases.txt" \
+        --trace "$input_dir/dispatch-trace.json" "$@"
+}
+run_cold_s3_17 --process-run 1 --output work/tmp/s3-56-cold-fifo-1.json
+run_cold_s3_17 --process-run 1 --output work/tmp/s3-56-cold-generic-1.json --generic-register
+```
+
+Use fresh output paths and reverse process order in round 2, then repeat
+round 1 order in round 3. Each process times 20 paired JIT/interpreter
+intervals with the same number of sweeps per side and a 200 ms floor per
+interval. Compare the same-binary processes first, and report the historical
+S3-35a comparison with its own interpreter baseline. The S3-36b comparison
+uses the five S3-14 inputs described above.
+[Recovered inputs](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+[Cold results, exact release build and archived launcher](../reports/STAGE_3_S3-56_S3-17_2026-11-19.md)
 
 ### S3-36c: resident warm NOP-fallback comparison
 
@@ -1320,16 +1485,424 @@ artifacts share clean source revision and fingerprints
 detached worktree, while timing ran from the main working directory. See the [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and
 [suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
 
+### S3-31d. Exact dependency snapshot comparison
+
+Three local A/B release rounds used `cached-native-loop` with its six fixed
+S3-36f profiles. The standard cached dispatcher now accepts an exact match
+against the key's validated dependency snapshot without allocating or sorting.
+The profile medians improved by 9.3–16.3% after normalization against the
+interpreter control. The [measurement report](../reports/STAGE_3_S3-31d_2026-11-19.md)
+records raw ranges, source provenance, reproduction commands and the archive.
+
+### S3-31e. Prepared-key reuse after S3-31d
+
+The S3-31c procedure above was repeated on clean revision `b142e96` after
+the exact dependency snapshot comparison landed. The validator accepted
+60 triples per profile. All retained samples at 64 and 4,096 iterations
+favored prepared-key reuse against ordinary JIT and the interpreter.
+At one iteration the prepared variant's median exceeded ordinary JIT in
+both profiles. Prepared-key reuse remains opt-in. See the
+[refresh report and evidence archive](../reports/STAGE_3_S3-31e_2026-11-19.md).
+
+### S3-31f. Prepared-key ownership on one-pass dispatch
+
+Two matched release builds used the S3-31c timing path with scoring limited
+to `a_1` and `b_1`. Both builds ran the full six-profile correctness preflight.
+The revised opt-in path improved both one-pass medians across rounds after
+normalizing against the ordinary cached dispatcher. The
+[report and evidence archive](../reports/STAGE_3_S3-31f_2026-11-19.md)
+contain raw ranges, the benchmark patch, reproduction steps and build hashes.
+
+### S3-35e. Cold retained-session first execution
+
+Both signed builds use a fresh `Session` for every scored JIT call on the
+same six countdown profiles as S3-36g. The contiguous timer spans session
+creation and first execution. The phase split records initialization and
+the first RUN with the two cold-cache probes. The driver checks empty
+counters, exact publications, state and retired work on each call. Process
+launch has its own S3-35d measurement. The archive contains the fixed-call
+schedule, signed build provenance, raw times and the offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-35e_2026-11-19.md)
+
+### S3-35f. Cold first RUN after the cache-index change
+
+The same cold driver and six profiles compare `06bb39a` with `2b0f598`.
+Four process rounds balance execution order and retain 32 paired cold
+samples per build and profile. Each pair checks the published work,
+architectural state and retirement. The archive contains the build
+scripts, fixed schedule, raw data and offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-35f_2026-11-19.md)
+
+### S3-35g / S3-36i. Cold and warm mixed register dispatch
+
+One signed release build compares the interpreter with the S3-55 mixed
+cache route on two straight-line streams and two loops with CLD/STD
+steps. Cold includes admission and fresh cache/arena construction.
+Warm times a retained FIFO with hits and zero publication. Four rounds
+share fixed counts across the two modes and check guest state and
+native/interpreter retirement for every call.
+[Report and reproduction](../reports/STAGE_3_S3-35g_S3-36i_2026-11-19.md)
+
+### S3-36j. Single NativeRegisterV1 cache search on a hit
+
+Signed matched release builds compare the old dispatcher with the
+post-touch index path on the four mixed FIFO eager profiles. The cold
+and warm modes each use four matched rounds, eight pairs per profile
+per process and a 30 ms timing floor. The archive preserves fixed
+work and cache footprints, both raw and interpreter-normalized
+comparisons, and separate LRU correctness smoke results.
+[Report and reproduction](../reports/STAGE_3_S3-36j_2026-11-19.md)
+
+### S3-35h / S3-36k. Matched checked-memory cache calls
+
+The experiment times the same complete capacity-one cache call
+on an empty cache and on a resident entry. Every cold call compiles
+and publishes once. Warm samples record hits only. The interpreter
+runs the same frozen S3-34a inputs. Each signed revision contributes
+18 matched triples per sequence and verifies full state, RAM,
+ordered callbacks and exact cache counters.
+[Report and reproduction](../reports/STAGE_3_S3-35h_S3-36k_2026-11-19.md)
+
+### S3-40m. Interpreter timing controls for the S3-34a corpus
+
+Matched release builds run the same complete interpreter call,
+two `step` calls and two decoder calls over the same 2,400 inputs.
+The current build adds an empty-profile probe. Four rounds share
+fixed counts, alternate revision order and rotate timing sides.
+The artifact preserves profile construction, architectural parity
+checks and the raw intervals.
+[Report and reproduction](../reports/STAGE_3_S3-40m_2026-11-19.md)
+
+### S3-40n. MOV decoder controls for S3-34a
+
+The signed release driver times the ordinary decoder, two clones
+that retain the original MOV arm, and the corresponding execution
+controls. Every decoder trial compares the complete decoded
+instructions on the two fixed byte streams. Execution trials check
+state, RAM, ordered callbacks and retirement. The archive preserves
+three processes with six rotations per sequence.
+[Report and reproduction](../reports/STAGE_3_S3-40n_2026-11-19.md)
+
+### S3-40o. Single-REX.W primary MOV
+
+The signed release comparison tests four decoder builds for exact decoded
+results and ordered fetch requests, including injected failures. A second
+driver times the selected and original decoder in the same process.
+It keeps per-side call counts fixed and alternates measurement order.
+Four processes give a 0.211 median candidate/reference ratio on target
+MOV and 1.009–1.016 on register, neighboring MOV and `0F` controls.
+[Report and reproduction](../reports/STAGE_3_S3-40o_2026-11-19.md)
+
+### S3-40p. Full interpreter calls with the updated MOV decoder
+
+One signed build compares ordinary `execute::run` and the equivalent
+path using the previous decoder on the same 2,400 frozen inputs.
+Full-call median paired ratios are 0.663 and 0.666 for the two S3-34a
+sequences. The audit retains all 128 intervals and checks their
+schedule, call counts and corpus identity.
+[Report and reproduction](../reports/STAGE_3_S3-40p_2026-11-19.md)
+
+### S3-40q. Cold and warm checked-memory JIT after the MOV decoder update
+
+Two signed builds run the same frozen corpus and fixed sweep counts
+in four alternating process pairs. Each process measures all six
+cold/warm/interpreter orders per sequence. The current warm ratios
+are 0.901 and 0.908 versus the current interpreter, and the cold
+ratios are 21.738 and 21.772. Cross-revision interpreter ratios
+use medians from separate processes within each round.
+[Report and reproduction](../reports/STAGE_3_S3-40q_2026-11-19.md)
+
+### S3-40r. Full interpreter calls with statically empty execution profiles
+
+The signed release diagnostic couples ordinary `execute::run` and a clone
+with statically empty execution profiles in one binary. Both paths
+use the post-S3-40o decoder. Full-call median paired ratios on the two
+S3-34a streams are 0.629 and 0.628 across four processes.
+[Report and reproduction](../reports/STAGE_3_S3-40r_2026-11-19.md)
+
+### S3-40s. Empty-profile configuration prototypes
+
+Separate signed diagnostics pair each prototype with the ordinary
+call route. The derived-default ratios are 1.063 and 1.060.
+The associated-constant ratios are 0.700 and 0.699.
+Each of the two archives preserves 128 intervals and the measured
+step prologues.
+[Report and reproduction](../reports/STAGE_3_S3-40s_2026-11-19.md)
+
+### S3-40t. Empty-profile route and machine-code size
+
+Two standalone signed builds run the checked-memory, register,
+neighboring and configured XORPD controls. Four alternating process
+pairs share sweeps for each group. The archive retains digests of the
+complete outcomes and ordered effects, raw timings and section sizes
+for the benchmark and signed VMHost. The configured XORPD time range
+crosses parity.
+[Report and reproduction](../reports/STAGE_3_S3-40t_2026-11-19.md)
+
+### S3-40u. Cold and warm checked-memory JIT after empty-profile specialization
+
+The S3-40q driver replays the same corpus with S3-40t applied.
+All 288 intervals and four paired process rounds are preserved.
+Current warm native/interpreter ratios are 1.125 and 1.128.
+Cold ratios are 28.160 and 28.019. Forty-seven current triples
+have no modeled crossover.
+[Report and reproduction](../reports/STAGE_3_S3-40u_2026-11-19.md)
+
+### S3-40v. Exact resident key in checked-memory warm dispatch
+
+Two signed builds run the S3-40u driver with shared sweep counts and
+six alternating process rounds. Every measuring process verifies
+`nice -5`, its non-root UID, and QoS before timing. The audit checks
+432 individual intervals, cache accounting and interpreter controls.
+The evidence includes the load trace, all scored samples and an
+offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-40v_2026-11-19.md)
+
+### S3-40w. Interpreter RUN, STEP and decode controls on S3-34a
+
+Two signed builds compare the same 2,400 inputs at three public call
+boundaries. Six alternating rounds use shared sweep counts and cover
+all six control orders. The audit checks all 432 scored intervals and
+the startup UID, `nice -5` and QoS in every process. The archive
+retains raw rows, host load and offline replay.
+[Report and reproduction](../reports/STAGE_3_S3-40w_2026-11-19.md)
+
+### S3-40x. Statically empty profiles in ordinary STEP
+
+The S3-40w driver compares two signed builds from the same revision
+with the ordinary STEP change applied to the candidate. Each build
+passes the same release correctness gates. Six alternating rounds
+use shared sweep counts and verify `nice -5`, UID and QoS. The
+archive retains all 432 scored intervals and the host-load trace.
+[Report and reproduction](../reports/STAGE_3_S3-40x_2026-11-19.md)
+
+### S3-40y. Checked-memory JIT on M1 Pro
+
+Build `d9ecaa2` and `5275d67` on one host with the archived S3-40v
+driver and pinned inputs. The runner pilots a common sweep count for
+each sequence, then alternates six matched process rounds. Each round
+checks cold/warm cache counters and pairs JIT timings with the
+interpreter on the same work. The M1 Pro audit covers 432 intervals.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40y_2026-11-19.md)
+
+### S3-40z. Public RUN budgets on M1 Pro
+
+The same S3-34a cases time RUN at budgets 0, 1 and 2 on `d24865d` and
+`5275d67`. The driver validates each exact instruction prefix. Pilots
+set equal work for both builds and six matched rounds rotate budget
+order. The audit compares revisions within each budget and sequence.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40z_2026-11-19.md)
+
+### S3-40aa. RUN fetch and decode boundary on M1 Pro
+
+On the same two S3-34a sequences and budget 2, the diagnostic runner
+compares public RUN with two variants that share an indirect callback
+at the existing decode boundary. One callback calls the original
+decoder and one returns a predecoded instruction. The untimed receipt
+checks six exact FETCH callbacks or zero as appropriate, plus state,
+data and retirement parity. Compare whole-call timings. The callback and
+predecoded lookup are part of the measured paths.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40aa_2026-11-19.md)
+
+### S3-40ab. RUN loop and common STEP boundary on M1 Pro
+
+This three-arm diagnostic uses the S3-40aa predecoded control, a RUN
+with a shared out-of-line tracked STEP and two direct calls to that same
+STEP. The runner checks the common call destination in disassembly,
+validates two retirements and equivalent state and accesses, and repeats
+the comparison in six matched rounds. Timings cover complete arms.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ab_2026-11-19.md)
+
+### S3-40ac. STEP entry checks on M1 Pro
+
+Compare the original S3-40ab pair with a shared STEP that runs its entry
+checks in one arm and bypasses the selected checks in another. Require
+parity after each instruction, including access contexts, and verify
+the shared decoder call in both compiled current paths. The historical
+selector arms provide an A/A control. The measurement covers full pairs.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ac_2026-11-19.md)
+
+### S3-40ad. Final MOV dispatch on M1 Pro
+
+Compare the S3-40ac pair with two modes of one STEP path. A runtime
+selector adds a narrow direct call to the existing MOV transfer helper
+after admission. Require parity on both prefixes and verify the common
+STEP and transfer destinations in the signed binaries. Timings cover
+the full paths, including the selector and eligibility predicate.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ad_2026-11-19.md)
+
+### S3-40ae. Unit-variant predicates in interpreter RUN on M1 Pro
+
+Use the unchanged S3-40z driver and fixed sweep counts to compare
+stock `5275d67` and the same source with six unit-variant predicates
+changed. Verify the six removed calls in the signed binaries and check
+the full MOV prefixes at budgets 0, 1 and 2. Six matched rounds
+at nice −5 record whole RUN calls for both sequences.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ae_2026-11-19.md)
+
+### S3-40af. Adjacent x87 comparisons in interpreter RUN on M1 Pro
+
+Compare the same public RUN driver and S3-40z fixed counts with
+stock `8c159c8` and the grouped x87 check. Confirm removal of the
+three selected calls in the linked STEP. Timings cover whole RUN
+calls at budgets 0, 1 and 2 on the same 2,400 inputs.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40af_2026-11-19.md)
+
+### S3-40ag. Historical residual in public interpreter RUN
+
+Use the unchanged S3-40z driver and fixed counts to compare
+`d24865d` and `5bc5ec6` on the same input sequences at budgets 0,
+1 and 2. Check the complete prefix state and ordered accesses
+for each build before recording six paired rounds at nice −5.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ag_2026-11-19.md)
+
+### S3-40ah. System instruction variant checks in interpreter RUN
+
+Use short stack samples of the exact signed S3-40ag images to locate
+the RDTSC, CPUID, SYSCALL and SYSRET comparisons. Verify that the
+four calls disappear in the signed candidate, then time the unchanged
+S3-40z RUN workload at budgets 0, 1 and 2 on M1 Pro at nice −5.
+Keep attribution samples and paired RUN timings in separate archives.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ah_2026-11-19.md)
+
+### S3-40ai. Historical interpreter RUN residual after S3-40ah
+
+Compare `d24865d` and `de1f446` with the S3-40ag driver, counts,
+correctness checks and six paired rounds. The archive includes full
+RUN intervals at budgets 0, 1 and 2 and the verifier for signed-build
+provenance, sample validity and exact replay.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ai_2026-11-19.md)
+
+### S3-40aj. HLT and interrupt guards in interpreter RUN
+
+Attribute the signed S3-40ai call sites from isolated stack samples.
+Verify the four outer calls in the stock STEP and their removal in the
+candidate. Run the seven focused guard cases and the full S3-34a MOV
+checks before the unchanged S3-40z timing schedule.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40aj_2026-11-19.md)
+
+### S3-40ak. Historical interpreter RUN residual after S3-40aj
+
+Repeat S3-40ai at `d48eef9` against `d24865d`. Use the same driver,
+correctness cases, fixed call counts and six paired rounds. Keep the
+accepted timing archive and the rejected preflight as separate evidence.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-40ak_2026-11-19.md)
+
+### S3-32a. First native return on M1 Pro
+
+Use the signed release probe for the exact aliased ADD. Time from the
+uncompiled fixture through compilation, executable publication and first
+native return. Include candidate-only admission. Run the compile and warm
+controls from the same binary after confirming architectural parity.
+The archived scripts pin the fixture and source and verify effective
+nice −5, matching UID, pair ordering, interval floors and raw hashes.
+[Report, commands and raw evidence](../reports/STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
+
+### S3-32b. Untimed census of admitted IR opportunities
+
+Replay the frozen S3-29l corpus and the five S3-14 FIFO16 fixtures through
+the native admission, publication and execution paths. Match emitted
+bytes and PC maps before inspecting IR. Keep compilation counts,
+current replay visits and archived FIFO16 repeat weights explicit.
+[Census recipe and evidence](../reports/STAGE_3_S3-32b_2026-11-20.md)
+
+### S3-36g. Warm retained Session on one- and two-RIP loops
+
+The signed release comparison times complete `Session::run` and interpreter
+calls on the same S0-09 countdown loops. It checks full state and retirement
+outside timing and verifies hit-only cache counters across each warm sample.
+The archive includes the fixed counts, matched builds, alternating order,
+individual timings and offline audit. [Report and reproduction](../reports/STAGE_3_S3-36g_2026-11-19.md)
+
+### S3-36h. Warm hit with the post-touch cache index
+
+Two matched signed builds use the S3-36g driver with the same six warm
+profiles. The candidate reuses the post-touch cache index and records a
+continuation index only for same-RIP returns. All six profiles use fixed
+counts and alternating call order. [Report and raw audit](../reports/STAGE_3_S3-36h_2026-11-19.md)
+
+### S3-31g. Cached dispatch across RIP transitions
+
+Two signed release comparisons against the same baseline use the six
+S3-35f and S3-36h countdown inputs and a three-RIP control. The warm timer
+covers RUN with resident entries. The cold timer includes a fresh
+session, empty-cache probes and first RUN. Each comparison uses four
+matched rounds per mode, eight JIT/interpreter pairs per profile per
+process and calibrated fixed counts. The selected change trades a
+small slowdown in long one-RIP controls for a repeatable reduction in
+dispatch time on the two-RIP profiles.
+[Report and raw audits](../reports/STAGE_3_S3-31g_2026-11-19.md)
+
+### S3-31h. One-RIP cost on the current S0-09 dispatcher
+
+Fresh signed cold and warm runs share the same fixture inputs,
+retirement counts, and checked per-process `nice -5`. A separate
+warm driver compares the three paths inside one resident session.
+The evidence retains all samples and the CPU load trace. The
+production choice follows the complete-call measurements on the
+one-, two-, and three-RIP fixtures.
+[Report and reproduction](../reports/STAGE_3_S3-31h_2026-11-19.md)
+
+### S3-31i. Warm S0-09 register loops on M1 Pro
+
+Compare the current dispatcher with the exact pre-memo body using
+one source pin and the S3-31h driver. Use the same signed current
+file for the A/A control. Six rounds cover all arm orders and
+preserve eight JIT/interpreter pairs per process and profile.
+The primary result uses full warm JIT times. The recorded controls
+include CPU idle samples, effective nice −5 and the 30 ms interval floor.
+[Report and reproduction](../reports/STAGE_3_S3-31i_2026-11-19.md)
+
+### S3-31j. Same-RIP continuation memo on M1 Pro
+
+Use one pinned revision and the same fixed work counts as S3-31i.
+Check the linked same-RIP branch and compare stock, the candidate
+without the memo payload store, and a repeated launch of the same
+stock file. Require the 30 ms floor and exact child priority.
+[Report and reproduction](../reports/STAGE_3_S3-31j_2026-11-19.md)
+
+### S3-31k. Warm resolved-hit arguments on M1 Pro
+
+Bind the linked hit caller and FIFO branch to each signed executable.
+Compare the candidate with stock and a repeat of the same stock file
+across all seven S3-31i profiles. Use the same fixed counts, exact
+ordinary-user priority and 30 ms floor. Assess raw warm JIT times
+against the same-file control before interpreting normalized ratios.
+[Report and reproduction](../reports/STAGE_3_S3-31k_2026-11-19.md)
+
+### S3-31l. Direct warm and first-dispatch comparison with pre-memo
+
+Hold both builds at `a4dbc7d` and restore the pre-memo function in
+the original arm. Keep the seven warm profiles, fixed counts and
+same-file A/A. Link the exact S3-31h cold driver against the same
+two release libraries and run the dedicated shared calibration and
+first-dispatch series. Keep both raw archives and replay commands.
+[Report and reproduction](../reports/STAGE_3_S3-31l_2026-11-19.md)
+
+### S3-31m. Current-memo attribution on M1 Pro
+
+Use the source patch pinned in the S3-31m archive with
+`warm-dispatch-phases --profile current-memo-attribution --process-run N --output FILE`,
+where `N` is 1, 2 or 3. The four register fixtures use warmed FIFO16.
+Each process measures
+20 ordinary/observed pairs per fixture with a shared sweep count.
+Warm work and cache deltas must match on both sides. Report phase
+shares from the same observed side and ordinary call time separately.
+The archive README replays the automatic selection and the user's
+explicit 79.0% idle exception without altering either receipt.
+[Report and replay commands](../reports/STAGE_3_S3-31m_2026-11-20.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
-accepts only the frozen S3-17 case-list and trace, admits all 1,010 cases, and
-runs 128 complete corpus sweeps on one retained production FIFO16 runtime,
-cache, and arena. Each sweep records timed dispatch-call duration, input calls,
-native block executions, retirements, counter deltas, resident high-water,
-arena reservation, and a derived unoccupied-slot value (capacity minus
-resident-entry high-water, not an allocator counter). The report also records cumulative hit, miss,
-compile, publication, and eviction totals. The existing 30-minute process
+requires the original S3-17 case-list and trace by default. Each run admits
+all 1,010 cases and completes 128 corpus sweeps on one retained production
+FIFO16 runtime, cache, and arena. Each sweep records timed dispatch-call
+duration, input calls, native block executions, retirements, counter deltas,
+resident high-water, arena reservation, and a derived unoccupied-slot value
+(capacity minus resident-entry high-water). The report also records cumulative hit, miss,
+compile, publication, and eviction totals from the production FIFO counter
+deltas before and after each sweep. The existing 30-minute process
 limit applies; runs fail unless the full work count and bounded FIFO
 eviction/recompile invariants are observed.
 
@@ -1345,6 +1918,29 @@ Resident high-water was 16 entries, 21,640 code bytes, and 50,124 logical
 metadata bytes. This is bounded capacity-churn evidence, not a long leak-free
 stress result. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
+Use `--relocated-s3-17-paths` to run the same workload with recovered
+fixtures. The historical trace hash, 1,322 visits, and 1,010 ordered fixture
+identities and raw hashes remain binding. Schema 2 records the supplied list's
+SHA-256 in `case_list_sha256` and includes `historical_case_list_sha256` and
+`case_list_mode` when the option is used.
+[S3-17 recovery bundle and hashes](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+
+From the repository root, use the signed release binary as `OD_BENCH` and
+the launcher setup documented for the recovered S3-17 comparison. Verify
+the benchmark process's ordinary UID and effective nice −5. Repeat for
+process runs 2 and 3 with fresh output paths.
+[Signing and priority setup](#s3-56-cold-comparison-on-the-recovered-s3-17-corpus)
+
+```sh
+input_dir=work/tmp/s3-17-exact-recovery/verified
+benchmark_uid=$(/usr/bin/id -u)
+/usr/bin/sudo -n /usr/bin/nice -n -5 /usr/bin/sudo -n -u "#$benchmark_uid" -- \
+  "$OD_BENCH" cache-churn --relocated-s3-17-paths \
+  --case-list "$input_dir/relocated-cases.txt" \
+  --trace "$input_dir/dispatch-trace.json" \
+  --process-run 1 --output work/tmp/s3-37-cache-churn-1.json
+```
 
 ### S3-37b: process-wide RSS snapshots
 
@@ -1364,6 +1960,10 @@ pre-drop sample and remained 688–912 KiB above that process's pre-runtime
 baseline. This is process-wide RSS observation only; it does not prove memory
 was released or retained by the cache itself. See the
 [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).
+
+For a new host's resource comparison, retain the three raw reports and verify
+that each contains a value for all three RSS snapshots. Preserve the recorded
+method and the per-sweep FIFO counters with the RSS observations.
 
 ### S3-37c: deterministic FIFO16 invalidation and runtime lifecycle
 
@@ -1470,6 +2070,40 @@ admission сценариев, parity вариантов и stale hit. Для loo
 prototype default не выбран и ускорение не заявляется. Recorded corpus runs
 для dispatch/cache, cold first execution, warm resident execution и FIFO16
 churn описаны отдельно в отчётах S3-18d1, S3-35a, S3-36a и S3-37a.
+
+### S3-37g. Backing invalidation and first redispatch
+
+The signed FIFO16 driver measures separate intervals for ready dispatch,
+a current-version notification, deletion of the oldest two entries
+sharing a backing, and first redispatch at both addresses after a version
+advance. It checks full CPU state against the interpreter and records
+the exact code, metadata and slot counts at 2 and 16 resident entries.
+The archive contains source, calibration, scored samples and an offline
+audit. [Report and reproduction](../reports/STAGE_3_S3-37g_2026-11-19.md)
+
+### S3-37h. Native write to the active V3 tail
+
+The signed release driver uses the existing tracked owner in a
+test-only source snapshot. It measures active compilation and
+publication, the actual store with its invalidation callback, and
+first and warm dispatch of the updated tail at both addresses.
+Each epoch verifies the retired prefix and store, rejection of the
+stale V3 handle, native tail parity with the interpreter and slot
+reuse at bounded capacity.
+[Report and reproduction](../reports/STAGE_3_S3-37h_2026-11-19.md)
+
+### S3-37i. Sustained S0-09 Session pressure and process memory
+
+The signed release driver runs two concurrent processes, each with
+one live retained Session, 20 immutable guest blocks and FIFO16.
+Each process executes 64 checkpoints over at least 660 seconds.
+Sweeps verify interpreter-equivalent state and exact publication,
+hit and eviction counts. Checkpoints verify STOP, entry refusal,
+clear, a fresh lease, refill and destruction. The Mach self-task
+RSS snapshots are per process. Logical code and metadata occupancy
+come from the Session counters. The archive reproduces both the
+build and the offline audit.
+[Report and reproduction](../reports/STAGE_3_S3-37i_2026-11-19.md)
 
 ## S4-13a: uncached page walk versus experimental one-entry probe cache
 

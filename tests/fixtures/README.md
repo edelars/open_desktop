@@ -5,6 +5,11 @@ The local SEP-disabled SYSENTER/SYSEXIT fixtures are indexed in the
 
 `x86/` — короткие тестовые последовательности и их исходное описание. `control/` — детерминированные сценарии проверки существующего control protocol; его wire format нормативно задан в `protocols/control/`. `guest/` — небольшие собственные данные для гостевых сценариев. Для каждого набора фиксировать источник, способ генерации, ожидаемый контракт и seed при необходимости. Установочные ISO, большие диски и пользовательские материалы сюда не помещать.
 
+The hand-written V1 admission failure bridge injects the published
+`INVALID_STATE` ABI status at session creation or RUN admission. The Stage 3
+process harness compiles it into a dedicated test binary.
+[Fixture source](control/v1_admission_failure_bridge.h), [S3-38j socket expectations](../../docs/reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md#invalid_state-admission-batch-closure-2026-11-19-utc).
+
 The bounded S2-35.7 PSUBW example is documented in the
 [Stage 2 fixture index](x86/stage2/README.md#s2-357-local-register-psubw-diagnostic-profile).
 

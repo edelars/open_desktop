@@ -399,6 +399,23 @@ pub fn compile_block_for_dispatch(
     compile_prepared_dispatch_block(code.code_end(), built, admission)
 }
 
+/// Lower one dispatch block through the exact production path for opt-in
+/// allocator census tooling. This exposes no runtime policy and does not emit
+/// or publish code; the caller can inspect the verified IR and allocator
+/// mapping while checking its emission against [`compile_block_for_dispatch`].
+#[cfg(feature = "phase-observation")]
+#[doc(hidden)]
+pub fn lower_dispatch_block_for_observation(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &AdmittedInstructionBoundaries,
+) -> Result<LoweringOutcome, BlockCompileError> {
+    let built = build_dispatch_block(code, entry_rip, admission)?;
+    let lowered =
+        lowering::lower_for_dispatch(&built, admission).map_err(BlockCompileError::Lowering)?;
+    Ok(lowered)
+}
+
 /// Decode and validate the source block once so the cache path can construct
 /// a full translation key before deciding whether native lowering is needed.
 pub(crate) fn build_dispatch_block(

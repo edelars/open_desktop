@@ -1745,6 +1745,94 @@ mod tests {
         assert_eq!(state.rip, CODE_RIP + 3);
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_38o_stop_in_the_native_store_helper_retires_once_and_invalidates_active_code() {
+        use crate::store_invalidates_active_code_tests::STOP_ON_PAGED_STORE;
+
+        let _guard = jit_guard();
+        let code = [
+            0x48, 0x89, 0x03, // mov [rbx],rax
+            0x48, 0x8b, 0x03, // mov rax,[rbx]
+            0xf4, 0xf4, 0xf4, 0xf4, 0xf4,
+        ];
+        // When targeting the code page, replace the next qword load with a dword load.
+        let patch = u64::from_le_bytes([0x8b, 0x03, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4]);
+        for (target, physical, expected_rax, next_rip) in [
+            (DATA_LINEAR, DATA_QWORD, patch, CODE_RIP + 6),
+            (
+                CODE_RIP + 3,
+                CODE_PHYSICAL + 3,
+                patch & 0xffff_ffff,
+                CODE_RIP + 5,
+            ),
+        ] {
+            let mut session = new_session();
+            let control = std::sync::Arc::new(PagedHostLoopControl::new());
+            let mut bus = make_bus(&code);
+            let code_page = GuestPhysicalAddress::new(CODE_PHYSICAL);
+            let generation = bus.code_page_generation(code_page).unwrap();
+            let mut state = make_state(patch, target, 0);
+            let mut rflags_defined = RFLAGS_DEFINED;
+            let on_code_page = physical == CODE_PHYSICAL + 3;
+            STOP_ON_PAGED_STORE.with(|slot| slot.set(Some(control.clone())));
+
+            let stopped = run_loop(
+                &mut session,
+                &control,
+                &mut bus,
+                &mut state,
+                &mut rflags_defined,
+                20,
+            );
+            assert!(STOP_ON_PAGED_STORE.with(|slot| slot.take().is_none()));
+            assert_eq!(stopped.report.exit, PagedHostLoopExit::StopRequested);
+            assert_eq!(stopped.report.retired_jit, 1);
+            assert_eq!(stopped.report.retired_interpreter, 0);
+            assert_eq!(stopped.report.remaining_budget, 19);
+            assert_eq!(stopped.report.stop_byte_observations, 1);
+            assert_eq!(stopped.report.retired_at_stop_byte, Some(1));
+            assert_eq!(stopped.report.native_stop_exits, u64::from(!on_code_page));
+            assert_eq!(session.admissions(), 1);
+            assert_eq!(session.admitted.as_ref().unwrap().retired, on_code_page);
+            assert_eq!(
+                bus.code_page_generation(code_page).unwrap() > generation,
+                on_code_page
+            );
+            assert_eq!(state.rip, CODE_RIP + 3);
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(physical), AccessWidth::Qword)
+                    .unwrap(),
+                patch,
+            );
+            assert_eq!(
+                stopped
+                    .writes
+                    .iter()
+                    .filter(|&&write| write == (physical, 8))
+                    .count(),
+                1
+            );
+            assert!(control.stop_pending());
+            assert_eq!(control.stop_byte().load(Ordering::SeqCst), 0);
+
+            control.clear_stop_request();
+            let resumed = run_loop(
+                &mut session,
+                &control,
+                &mut bus,
+                &mut state,
+                &mut rflags_defined,
+                1,
+            );
+            assert_eq!(resumed.report.exit, PagedHostLoopExit::BudgetExhausted);
+            assert_eq!(resumed.report.retired_jit, 1);
+            assert_eq!(resumed.report.retired_total(), 1);
+            assert_eq!(state.rip, next_rip);
+            assert_eq!(state.gpr[Register::Rax as usize], expected_rax);
+        }
+    }
+
     /// A request that was raised and withdrawn before the loop looked leaves a
     /// byte without a flag: harmless (S6-40 S4), nothing is replayed.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2214,6 +2302,63 @@ mod tests {
         );
         assert_eq!(run.report.retired_total(), 0);
         assert_eq!(observe(&state, &mut bus, false), before);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_16_publication_refusal_interprets_once_and_resumes_native() {
+        let _guard = jit_guard();
+        let lease = crate::MapJitLease::acquire().unwrap();
+        let mut session = PagedFetchedLoadSession::new();
+        let control = PagedHostLoopControl::new();
+        let mut bus = make_bus(&LOOP_ALIAS);
+        let mut initial = loop_state();
+        initial.gpr[Register::Rcx as usize] ^= 0xff;
+        let mut state = initial.clone();
+        let mut rflags_defined = RFLAGS_DEFINED;
+
+        // The load is supported, but another owner holds the publication lease.
+        let first = run_loop(
+            &mut session,
+            &control,
+            &mut bus,
+            &mut state,
+            &mut rflags_defined,
+            1,
+        );
+        let reference_first = reference(&LOOP_ALIAS, &initial, 1, false);
+        assert_eq!(first.report.exit, PagedHostLoopExit::BudgetExhausted);
+        assert_eq!(first.report.retired_jit, 0);
+        assert_eq!(first.report.retired_interpreter, 1);
+        assert_eq!(first.report.jit_refusals, 1);
+        assert!(first.report.budget_is_consistent());
+        assert_eq!(session.admissions(), 0);
+        assert_eq!(
+            observe(&state, &mut bus, false),
+            reference_first.observation
+        );
+        assert_eq!(first.writes, reference_first.writes);
+
+        drop(lease);
+        // Resume at the store, then the stack operations, then the same load.
+        let rest = run_loop(
+            &mut session,
+            &control,
+            &mut bus,
+            &mut state,
+            &mut rflags_defined,
+            4,
+        );
+        let reference_all = reference(&LOOP_ALIAS, &initial, 5, false);
+        assert_eq!(rest.report.exit, PagedHostLoopExit::BudgetExhausted);
+        assert_eq!(rest.report.retired_jit, 1);
+        assert_eq!(rest.report.retired_interpreter, 3);
+        assert_eq!(rest.report.jit_refusals, 3);
+        assert!(rest.report.budget_is_consistent());
+        assert_eq!(session.admissions(), 1);
+        assert_eq!(rflags_defined, RFLAGS_DEFINED);
+        assert_eq!(observe(&state, &mut bus, false), reference_all.observation);
+        assert_eq!([first.writes, rest.writes].concat(), reference_all.writes);
     }
 
     /// Where the native path is unavailable the session refuses every admission

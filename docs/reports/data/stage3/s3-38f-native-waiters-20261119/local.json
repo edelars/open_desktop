@@ -1,0 +1,16 @@
+{
+  "revision": "963a0f629da2c5da64ed35f3677960c96d49ad57",
+  "returncode": 0,
+  "stdout": "normal notification: one byte, EOF, then valid result\npipe EMFILE: begin status=5, no active run, retained high-water mark, recovered on greater ID\nconcurrent wait: one BUSY, one STOP result, one notification, later greater ID completed\ninjecting lost notification reader before STOP\nV1 native ABI smoke passed: layout, notification failure, destroy and fresh session\n",
+  "stderr": "",
+  "source_patch_sha256": "04a048b8cbd90c8dab7b303e40c944ec8bbd54a782e76e00dd8166334a3470ac",
+  "c_fixture_sha256": "079c8bb3380a1a192d8dce7d2cd05a9cc52d374be7b17dde8d12dfd4781500a6",
+  "signed_executable_sha256": "13215fe4daccac3aa32f33f06d9cde19195efde47fde853b11edda06c512df21",
+  "libod_host_sha256": "71a1a742608b60679b7ffbcfd7c5edd7e09562a5711e4720f50752930140e95d",
+  "os": "macOS 26.7.1",
+  "architecture": "arm64",
+  "deployment_target": "14.0",
+  "xcode": "27.1 (27A9275)",
+  "rustc": "1.99.0",
+  "repeated_passes": 10
+}

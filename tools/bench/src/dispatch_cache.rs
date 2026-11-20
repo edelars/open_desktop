@@ -56,6 +56,11 @@ const BRANCH_HELPER_TRACE_SHA256: &str =
     "272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8";
 const BRANCH_HELPER_INPUTS: usize = 5;
 const BRANCH_HELPER_VISITS: usize = 5;
+const S3_17_INPUTS: usize = 1_010;
+const S3_17_VISITS: usize = 1_322;
+const RELOCATED_S3_17_CASE_LIST_MODE: &str = "relocated-s3-17-paths";
+const S3_14_GENERIC_SCOPE: &str =
+    "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback";
 const WARM_DISPATCH_PHASE_MAX_RESTARTS: usize = 8;
 const WARM_DISPATCH_PHASE_STRATA: [WarmDispatchPhaseStratumSpec; 2] = [
     WarmDispatchPhaseStratumSpec {
@@ -562,6 +567,10 @@ struct FirstRunReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -635,6 +644,10 @@ struct ColdPipelineReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -853,6 +866,10 @@ struct CacheChurnReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -1161,16 +1178,22 @@ pub fn run(
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
 }
 
-/// Measures one complete register-only corpus pass from an empty FIFO block
-/// cache against the interpreter on the same frozen fixtures. Each measured
-/// JIT sweep owns a new arena/cache; runtime teardown and harness state/reset
-/// validation are intentionally outside the timed intervals.
+/// Measures one complete S3-17 or S3-14 branch/helper corpus pass from an empty
+/// FIFO block cache against the interpreter on the same frozen fixtures. Each
+/// measured JIT sweep owns a new arena/cache. Runtime teardown and harness
+/// state/reset validation are outside the timed intervals.
 pub fn run_cold_first_execution(
     case_list: &Path,
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
-    run_cold_first_profile(case_list, trace_path, process_run, false)
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        false,
+        ColdCaseListPaths::Frozen,
+    )
 }
 
 /// S3-56: the frozen resident S3-14 corpus through the generic native path.
@@ -1179,7 +1202,73 @@ pub fn run_generic_cold_first_execution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
-    run_cold_first_profile(case_list, trace_path, process_run, true)
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        true,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Use alternate fixture paths for the exact historical S3-17 trace.
+pub fn run_relocated_s3_17_cold_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    generic: bool,
+) -> Result<serde_json::Value, BenchError> {
+    run_cold_first_profile(
+        case_list,
+        trace_path,
+        process_run,
+        generic,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColdCaseListPaths {
+    Frozen,
+    RelocatedS3_17,
+}
+
+fn validate_cold_corpus_digests(
+    case_list_sha256: &str,
+    trace_sha256: &str,
+    generic: bool,
+    paths: ColdCaseListPaths,
+) -> Result<(usize, usize), BenchError> {
+    if paths == ColdCaseListPaths::Frozen
+        && (generic || case_list_sha256 == BRANCH_HELPER_CASE_LIST_SHA256)
+    {
+        if case_list_sha256 != BRANCH_HELPER_CASE_LIST_SHA256
+            || trace_sha256 != BRANCH_HELPER_TRACE_SHA256
+        {
+            return Err(err(
+                "case list or trace does not match the frozen S3-14 branch/helper corpus",
+            ));
+        }
+        return Ok((BRANCH_HELPER_INPUTS, BRANCH_HELPER_VISITS));
+    }
+
+    validate_s3_17_corpus_digests(case_list_sha256, trace_sha256, paths)?;
+    Ok((S3_17_INPUTS, S3_17_VISITS))
+}
+
+fn validate_s3_17_corpus_digests(
+    case_list_sha256: &str,
+    trace_sha256: &str,
+    paths: ColdCaseListPaths,
+) -> Result<(), BenchError> {
+    if trace_sha256 != FROZEN_TRACE_SHA256
+        || (paths == ColdCaseListPaths::Frozen && case_list_sha256 != FROZEN_CASE_LIST_SHA256)
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    Ok(())
 }
 
 fn run_cold_first_profile(
@@ -1187,6 +1276,7 @@ fn run_cold_first_profile(
     trace_path: &Path,
     process_run: u8,
     generic: bool,
+    paths: ColdCaseListPaths,
 ) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cold-first-run measurement requires a release build"));
@@ -1197,30 +1287,10 @@ fn run_cold_first_profile(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = if generic {
-        (
-            BRANCH_HELPER_CASE_LIST_SHA256,
-            BRANCH_HELPER_TRACE_SHA256,
-            BRANCH_HELPER_INPUTS,
-            BRANCH_HELPER_VISITS,
-            "S3-14 branch/helper",
-        )
-    } else {
-        (
-            FROZEN_CASE_LIST_SHA256,
-            FROZEN_TRACE_SHA256,
-            MAX_INPUTS,
-            1_322,
-            "S3-17",
-        )
-    };
-    if od_testkit::sha256_hex(&list) != list_hash
-        || od_testkit::sha256_hex(&trace_raw) != trace_hash
-    {
-        return Err(err(format!(
-            "case list or trace does not match the frozen {label} corpus"
-        )));
-    }
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    let (expected_inputs, expected_visits) =
+        validate_cold_corpus_digests(&case_list_sha256, &trace_sha256, generic, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
     if trace.inputs.len() != expected_inputs
@@ -1304,11 +1374,14 @@ fn run_cold_first_profile(
             interpreter / fifo
         })
         .collect();
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = FirstRunReport {
         schema: 2,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
+        trace_sha256,
         capture_host: trace.capture_host.clone(),
         measure_host: HostMetadata::current(),
         inputs: trace.inputs.len(),
@@ -1328,6 +1401,11 @@ fn run_cold_first_profile(
         serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
         generic,
         &cases,
+        if relocated {
+            "native-only S3-17 corpus; does not exercise S3-55 mixed denied-form fallback"
+        } else {
+            S3_14_GENERIC_SCOPE
+        },
     )
 }
 
@@ -1339,6 +1417,35 @@ pub fn run_cold_pipeline_attribution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_cold_pipeline_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Attribute the same cold FIFO16 phases with alternate fixture paths for the
+/// exact historical S3-17 trace.
+pub fn run_relocated_s3_17_cold_pipeline_attribution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_cold_pipeline_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+fn run_cold_pipeline_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    paths: ColdCaseListPaths,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cold-phases measurement requires a release build"));
     }
@@ -1348,22 +1455,18 @@ pub fn run_cold_pipeline_attribution(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
-    {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
-    }
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    validate_s3_17_corpus_digests(&case_list_sha256, &trace_sha256, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+    if trace.inputs.len() != S3_17_INPUTS
+        || trace.visits.len() != S3_17_VISITS
+        || trace.visits.len() > MAX_TOTAL_TRACE_VISITS
+    {
         return Err(err("frozen trace visit count mismatch"));
     }
     let cases = prepare_cases(&list, &trace, started)?;
-    if cases.len() != MAX_INPUTS {
-        return Err(err("cold-phases requires the complete frozen S3-17 corpus"));
-    }
 
     // Every case is checked against the independently prepared interpreter
     // oracle inside each sweep; the fresh ordinary/observed paths must also
@@ -1533,11 +1636,14 @@ pub fn run_cold_pipeline_attribution(
         observed_cache_misses: observed_preflight.counters.misses,
         phase_event_counts_match_cache_counters: true,
     };
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = ColdPipelineReport {
         schema: 1,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
+        trace_sha256,
         capture_host: trace.capture_host,
         measure_host: HostMetadata::current(),
         inputs: cases.len(),
@@ -1550,7 +1656,7 @@ pub fn run_cold_pipeline_attribution(
         calibration_observed_dispatch_ns: calibration_observed_ns,
         minimum_dispatch_sample_ns: MIN_SAMPLE.as_nanos(),
         timing_scope: "dispatch-call intervals across a complete S3-17 corpus sweep; each sweep constructs a fresh FIFO16 runtime/cache/arena; per-case state cloning and interpreter-result validation are outside each dispatch-call interval; arena teardown is outside intervals".into(),
-        phase_boundary_contract: "real dispatcher boundaries: block decode/build and instruction-boundary admission; minimum-key sizing, TranslationKey/snapshot work and cache lookup; typed IR lowering; allocator build; ARM64 emission plus byte encoding/finalization; backend publication; host executor call. A cache hit still records block build and key/lookup. Every phase is sequential and non-overlapping. Each observed phase duration spans the Instant sample in PhaseRecorder::begin through the clock read in PhaseRecorder::end, so it includes the wrapped operation and wrapper/callback transit between those samples.".into(),
+        phase_boundary_contract: "real dispatcher boundaries: block decode/build and instruction-boundary admission; minimum-key sizing, TranslationKey/snapshot work and cache lookup; typed IR lowering; allocator build; ARM64 emission plus byte encoding/finalization; backend publication; host executor call. When the dispatcher reuses the index for the current or previous RIP, the build phase checks the saved index and the lookup phase records the hit. Hit handling includes adjusting the saved index after LRU reordering. Every phase is sequential and non-overlapping. Each observed phase duration spans the Instant sample in PhaseRecorder::begin through the clock read in PhaseRecorder::end, so it includes the wrapped operation and wrapper/callback transit between those samples.".into(),
         phase_overhead_interpretation: "ordinary/observed paired ratios measure total instrumentation overhead on identical cold sweeps. Phase durations include the operation and elapsed boundary transit between the begin/end clock samples; PhaseRecorder bookkeeping after the end clock read is excluded from that phase. other_dispatch_ns is measured dispatch total minus phase totals and includes control guards, cache install/accounting, result validation, and observer work outside measured phase intervals. Components are attribution within one observed pass, not independent end-to-end measurements and must not be summed with other benchmark reports.".into(),
         preflight,
         ordinary_variant: PipelinePhaseVariant {
@@ -1631,6 +1737,359 @@ pub fn run_warm_branch_helper(
         "S3-14 branch/helper",
         false,
     )
+}
+
+/// Untimed profile-first allocator census for the frozen S3-14 FIFO16 corpus.
+/// The ordinary warm sweep establishes runtime correctness and FIFO residency;
+/// emitted instruction observations are then attributed to allocator frame
+/// slots by matching SP offsets against the exact allocation used to emit them.
+pub fn run_allocator_census(
+    case_list: &Path,
+    trace_path: &Path,
+    accepted_archive_path: &Path,
+) -> Result<serde_json::Value, BenchError> {
+    use od_jit::allocator::{AllocatorConfig, HelperBoundaryPosition, ValueLocation};
+    use od_jit::block::{BlockLimits, BuildOutcome, build_block};
+    use od_jit::block_compile::{
+        BlockCompileOutcome, RUNTIME_FRAME_PREFIX_BYTES, allocate_lowered_block,
+        compile_block_for_dispatch, lower_dispatch_block_for_observation,
+    };
+    use od_jit::block_emitter::emit_runtime_block;
+    use od_jit::lowering::LoweringOutcome;
+
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    let accepted_archive = read_bounded(
+        accepted_archive_path,
+        crate::MAX_LOGICAL_BYTES,
+        "accepted S3-36l archive",
+    )?;
+    if od_testkit::sha256_hex(&list) != BRANCH_HELPER_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != BRANCH_HELPER_TRACE_SHA256
+        || od_testkit::sha256_hex(&accepted_archive)
+            != "a66c599f81f3e759b8a35c106ddc0489eff8d26c7d46b5af42880c575d59af68"
+    {
+        return Err(err(
+            "case list, trace, or accepted archive does not match the frozen S3-36l profile",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.inputs.len() != BRANCH_HELPER_INPUTS
+        || trace.visits.len() != BRANCH_HELPER_VISITS
+        || trace.visits.len() != 5
+        || trace.visits.iter().any(|visit| visit.input_index >= 5)
+    {
+        return Err(err(
+            "frozen S3-14 census trace count or input index mismatch",
+        ));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    let expected_ids = [
+        "s3_14_jz_to_end_skips_tail",
+        "s3_14_jnz_to_end_skips_tail",
+        "s3_14_jz_not_taken_backward_target",
+        "s3_14_jnz_not_taken_backward_target",
+        "s3_14_live_through_helpers",
+    ];
+    if cases.len() != expected_ids.len()
+        || cases
+            .iter()
+            .zip(expected_ids)
+            .any(|(case, id)| case.id != id)
+    {
+        return Err(err("S3-14 census case order or identity mismatch"));
+    }
+
+    // This is the same normal FIFO16 cached dispatcher and correctness oracle
+    // used by the warm profile. The result also pins the aggregate execution
+    // totals against the accepted five-case trace.
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let sweep = warm_fifo_sweep(&mut engine, &cases, started)?;
+    let counters = sweep.counters;
+    if sweep.calls != 5
+        || sweep.retired != 14
+        || sweep.native_blocks != 5
+        || counters.misses != 5
+        || counters.compiles != 5
+        || counters.publications != 5
+        || counters.evictions != 0
+    {
+        return Err(err(
+            "ordinary FIFO16 census warm sweep did not match accepted totals",
+        ));
+    }
+
+    let mut blocks = Vec::new();
+    let mut trace_weighted_transfer_sites = 0u64;
+    for (input_index, case) in cases.iter().enumerate() {
+        let visits = trace
+            .visits
+            .iter()
+            .filter(|visit| visit.input_index == input_index)
+            .collect::<Vec<_>>();
+        if visits.len() != 1 {
+            return Err(err(format!(
+                "expected one accepted S3-14 trace visit for {}",
+                case.id
+            )));
+        }
+        let entry_rip = visits[0].entry_rip;
+        let code = CodeView::new(0, &case.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+        let built = build_block(
+            code,
+            entry_rip,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .map_err(|e| err(format!("block build: {e:?}")))?;
+        let BuildOutcome::Block(built_block) = &built else {
+            return Err(err(format!(
+                "trace entry produced no block for {}",
+                case.id
+            )));
+        };
+        let lowered = match lower_dispatch_block_for_observation(code, entry_rip, &case.admission)
+            .map_err(|e| err(format!("dispatch lowering: {e:?}")))?
+        {
+            LoweringOutcome::Program(lowered) => lowered,
+            LoweringOutcome::NoNativePrefix { .. } => {
+                return Err(err(format!(
+                    "trace entry has no native prefix for {}",
+                    case.id
+                )));
+            }
+        };
+        let allocation = allocate_lowered_block(
+            &lowered,
+            AllocatorConfig {
+                register_homes: 4,
+                reserved_prefix_bytes: RUNTIME_FRAME_PREFIX_BYTES,
+            },
+        )
+        .map_err(|e| err(format!("allocation: {e:?}")))?;
+        let emitted = emit_runtime_block(&lowered.program, &allocation)
+            .map_err(|e| err(format!("emission: {e:?}")))?;
+        let normal = match compile_block_for_dispatch(code, entry_rip, &case.admission)
+            .map_err(|e| err(format!("normal dispatch compilation: {e:?}")))?
+        {
+            BlockCompileOutcome::Compiled(block) => block,
+            BlockCompileOutcome::NoNativePrefix { .. } => {
+                return Err(err(format!(
+                    "normal FIFO compile had no native prefix for {}",
+                    case.id
+                )));
+            }
+        };
+        if emitted
+            .to_le_bytes()
+            .map_err(|e| err(format!("census encoding: {e:?}")))?
+            != normal
+                .emitted()
+                .to_le_bytes()
+                .map_err(|e| err(format!("runtime encoding: {e:?}")))?
+        {
+            return Err(err(format!(
+                "census emission differs from normal dispatch artifact for {}",
+                case.id
+            )));
+        }
+
+        let mut spill_offsets = std::collections::BTreeSet::new();
+        let mut helper_slots = std::collections::BTreeSet::new();
+        let mut helper_pairs = Vec::new();
+        let mut seen_temps = std::collections::BTreeSet::new();
+        for operation in &lowered.program.operations {
+            let dst = match operation {
+                od_jit::ir::Operation::Constant { dst, .. }
+                | od_jit::ir::Operation::ReadGpr { dst, .. }
+                | od_jit::ir::Operation::CheckedLoad { dst, .. } => Some(*dst),
+                od_jit::ir::Operation::Integer { result, .. } => *result,
+                _ => None,
+            };
+            if let Some(temp) = dst.filter(|temp| seen_temps.insert(*temp)) {
+                if let ValueLocation::Spill(slot) = allocation
+                    .location(temp)
+                    .map_err(|e| err(format!("allocation location: {e:?}")))?
+                {
+                    spill_offsets.insert(slot.byte_offset());
+                }
+            }
+        }
+        for (index, operation) in lowered.program.operations.iter().enumerate() {
+            if matches!(
+                operation,
+                od_jit::ir::Operation::Integer { .. }
+                    | od_jit::ir::Operation::CheckedLoad { .. }
+                    | od_jit::ir::Operation::CheckedStore { .. }
+            ) {
+                let boundary = allocation
+                    .helper_boundary(HelperBoundaryPosition::BeforeOperation(index))
+                    .map_err(|e| err(format!("helper boundary: {e:?}")))?;
+                for capture in &boundary.captures {
+                    helper_slots.insert(capture.slot.byte_offset());
+                    helper_pairs.push((capture.home.number(), capture.slot.byte_offset()));
+                }
+            }
+        }
+
+        let mut transfers = Vec::new();
+        for (word_index, word) in emitted.code().words().iter().copied().enumerate() {
+            let direction = if word & 0xffc0_03e0 == 0xf940_03e0 {
+                "load"
+            } else if word & 0xffc0_03e0 == 0xf900_03e0 {
+                "store"
+            } else {
+                continue;
+            };
+            let offset = ((word >> 10) & 0xfff) * 8;
+            let register = (word & 0x1f) as u8;
+            let helper_save = direction == "store" && helper_pairs.contains(&(register, offset));
+            let helper_restore = direction == "load" && helper_pairs.contains(&(register, offset));
+            let allocator_owned_slot =
+                spill_offsets.contains(&offset) || helper_slots.contains(&offset);
+            let kind = if helper_save || helper_restore {
+                if helper_save {
+                    "helper_save"
+                } else {
+                    "helper_restore"
+                }
+            } else if spill_offsets.contains(&offset) {
+                if direction == "load" {
+                    "spill_reload"
+                } else {
+                    "spill_store"
+                }
+            } else if helper_slots.contains(&offset) {
+                "helper_slot_other_transfer"
+            } else if offset < RUNTIME_FRAME_PREFIX_BYTES {
+                "runtime_frame"
+            } else {
+                "unmatched_above_allocator_prefix"
+            };
+            let code_offset =
+                u32::try_from(word_index * 4).map_err(|_| err("emitted word offset overflow"))?;
+            let state_point = normal
+                .emitted()
+                .pc_map()
+                .lookup(code_offset)
+                .ok_or_else(|| err("emitted transfer has no PC-map statepoint"))?;
+            transfers.push(serde_json::json!({
+                "word_index": word_index,
+                "word_hex": format!("{word:08x}"),
+                "direction": direction,
+                "register": register,
+                "sp_offset": offset,
+                "allocator_owned_slot": allocator_owned_slot,
+                "kind": kind,
+                "statepoint": {
+                    "guest_rip_source": format!("{:?}", state_point.guest_rip),
+                    "instruction_index": state_point.instruction_index,
+                    "phase": format!("{:?}", state_point.phase),
+                    "snapshot": format!("{:?}", state_point.snapshot),
+                },
+            }));
+        }
+        let planned = allocation.counters();
+        let static_transfer_sites = transfers
+            .iter()
+            .filter(|transfer| transfer["allocator_owned_slot"] == true)
+            .count() as u64;
+        trace_weighted_transfer_sites = trace_weighted_transfer_sites
+            .checked_add(static_transfer_sites)
+            .ok_or_else(|| err("trace weighted transfer-site count overflow"))?;
+        let locations = seen_temps
+            .iter()
+            .map(|temp| {
+                let location = allocation
+                    .location(*temp)
+                    .map_err(|e| err(format!("allocation location: {e:?}")))?;
+                Ok(match location {
+                    ValueLocation::Register(register) => serde_json::json!({
+                        "temp": temp.0,
+                        "location": "register",
+                        "register": register.number(),
+                    }),
+                    ValueLocation::Spill(slot) => serde_json::json!({
+                        "temp": temp.0,
+                        "location": "spill",
+                        "slot": slot.index(),
+                        "sp_offset": slot.byte_offset(),
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, BenchError>>()?;
+        let helper_boundaries = (0..lowered.program.operations.len())
+            .filter_map(|index| {
+                allocation
+                    .helper_boundary(HelperBoundaryPosition::BeforeOperation(index))
+                    .ok()
+                    .map(|boundary| serde_json::json!({
+                        "operation_index": index,
+                        "live_through": boundary.live_through.iter().map(|temp| temp.0).collect::<Vec<_>>(),
+                        "captures": boundary.captures.iter().map(|capture| serde_json::json!({
+                            "temp": capture.temp.0,
+                            "home_register": capture.home.number(),
+                            "slot": capture.slot.index(),
+                            "sp_offset": capture.slot.byte_offset(),
+                        })).collect::<Vec<_>>(),
+                    }))
+            })
+            .collect::<Vec<_>>();
+        blocks.push(serde_json::json!({
+            "case_id": case.id,
+            "input_index": input_index,
+            "program_sha256": trace.inputs[input_index].program_sha256,
+            "entry_rip": entry_rip,
+            "trace_visits": visits.len(),
+            "guest_instructions_in_built_block": built_block.instructions.len(),
+            "compiled_code_bytes": normal.emitted().to_le_bytes().map_err(|e| err(format!("runtime encoding: {e:?}")))?.len(),
+            "frame": {
+                "reserved_prefix_bytes": allocation.frame().reserved_prefix_bytes,
+                "allocator_bytes": allocation.frame().allocator_bytes,
+                "frame_bytes": allocation.frame().frame_bytes,
+            },
+            "locations": locations,
+            "helper_boundaries": helper_boundaries,
+            "planned_counts": {
+                "register_homes": allocation.location_counts().register_homes,
+                "spill_values": allocation.location_counts().spill_values,
+                "value_spill_slots": planned.value_spill_slots,
+                "value_spill_loads": planned.value_spill_loads,
+                "value_spill_stores": planned.value_spill_stores,
+                "helper_capture_slots": planned.helper_capture_slots,
+                "helper_saves": planned.helper_saves,
+                "helper_reloads": planned.helper_reloads,
+                "planned_transfer_words": planned.planned_transfer_words,
+                "planned_transfer_bytes": planned.planned_transfer_bytes,
+            },
+            "emitted_transfer_observations": transfers,
+            "trace_weighted_static_allocator_transfer_sites": static_transfer_sites,
+        }));
+    }
+    Ok(serde_json::json!({
+        "schema": 1,
+        "profile": "s3-14-branch-helper-fifo16-allocator-census",
+        "timing": "untimed; allocator/build/emission census is excluded from warm profile timings",
+        "case_list_sha256": BRANCH_HELPER_CASE_LIST_SHA256,
+        "trace_sha256": BRANCH_HELPER_TRACE_SHA256,
+        "accepted_measurement_archive_sha256": od_testkit::sha256_hex(&accepted_archive),
+        "normal_fifo_sweep": {
+            "case_calls": sweep.calls,
+            "retired_guest_instructions": sweep.retired,
+            "native_blocks": sweep.native_blocks,
+            "compiles": counters.compiles,
+            "hits": counters.hits,
+            "misses": counters.misses,
+        },
+        "trace_visit_count": trace.visits.len(),
+        "trace_weighted_static_allocator_transfer_sites": trace_weighted_transfer_sites,
+        "dynamic_transfer_counts": null,
+        "dynamic_transfer_count_limit": "the committed trace records block entry RIPs, not per-instruction host-PC execution; transfer observations are emitted sites matched to allocation slots and weighted by block visits only",
+        "blocks": blocks,
+        "elapsed_preparation_ns": started.elapsed().as_nanos(),
+    }))
 }
 
 /// Compares ordinary and phase-observed dispatch calls on two explicitly
@@ -1720,7 +2179,7 @@ pub fn run_warm_dispatch_phases(
         inputs: cases.len(),
         trace_visits: trace.visits.len(),
         timing_scope: "sum of full Variant::call / Variant::call_observed adapter-plus-dispatcher intervals over one warmed FIFO(16) stratum; each interval includes CodeView, dependency and control/context setup performed by the adapter plus the complete dispatcher call. Case-state cloning/reset, full result/state validation, PhaseRecorder construction/reset and totals extraction are outside the interval. Ordinary and observed paths alternate on one shared warmed engine and arena; strata are never aggregated.".into(),
-        phase_boundary_contract: "warm hit-only phase inventory: block_build_and_admission; key_snapshot_and_initial_lookup (minimum sizing, TranslationKey construction, initial snapshot validation, first cache.find and hit/miss counter update only); host_execution_boundary (backend/arena checks, host context, generated entry and result decoding, not pure guest execution). Lowering/allocation/emission/publication phase calls must be zero after warmup. Phase call counts are checked against the full expected visit/block counts for each completed deterministic dispatch; an early exit fails reconciliation. PhaseRecorder end-phase/index work before its elapsed clock read is inside that phase; duration/call accumulation after the clock read is outside. The unattributed_adapter_dispatcher_ns residual also includes the second cache.find, cached snapshot and code-view revalidation, guards, accounting, other cache bookkeeping, adapter setup, and observer bookkeeping outside the phase clock samples.".into(),
+        phase_boundary_contract: "warm hit-only phase inventory: block_build_and_admission; key_snapshot_and_initial_lookup (minimum sizing, TranslationKey construction, initial snapshot validation, one cache.find and hit/miss update on a normal lookup; hit accounting on reuse of the current or previous RIP; saved-index adjustment on LRU hits when the index shifts); host_execution_boundary (backend/arena checks, host context, generated entry and result decoding, not pure guest execution). Lowering/allocation/emission/publication phase calls must be zero after warmup. Phase call counts are checked against the full expected visit/block counts for each completed deterministic dispatch; an early exit fails reconciliation. PhaseRecorder end-phase/index work before its elapsed clock read is inside that phase; duration/call accumulation after the clock read is outside. Block-build samples include the saved-index check when reusing the current or previous RIP. The unattributed_adapter_dispatcher_ns residual includes next-entry selection at continuation, cached snapshot and code-view revalidation, guards, accounting, other cache bookkeeping, adapter setup, and observer bookkeeping outside the phase clock samples.".into(),
         observer_effect_interpretation: "paired observed/ordinary call ratios are the net difference between two full adapter-plus-dispatcher call paths, including PhaseRecorder work and any difference between generic instantiations; they are not a pure observer-cost estimate. No pure generated-code host-execution time, dispatcher-only total lookup time, or linking benefit is isolated.".into(),
         cache_counter_interpretation: "hit/miss/compile/publication/eviction fields are per-sample deltas from cumulative counters. Resident entry/code/metadata values are high-water values; arena_available_slots_from_high_water is derived from capacity minus resident-entry high-water and is not live occupancy.".into(),
         strata,
@@ -2440,6 +2899,7 @@ fn run_warm_profile(
         serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
         generic,
         cases,
+        S3_14_GENERIC_SCOPE,
     )
 }
 
@@ -2450,6 +2910,35 @@ pub fn run_cache_churn(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_cache_churn_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Record the same FIFO16 churn with alternate paths for the exact historical
+/// S3-17 fixtures.
+pub fn run_relocated_s3_17_cache_churn(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_cache_churn_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+fn run_cache_churn_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    paths: ColdCaseListPaths,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cache-churn measurement requires a release build"));
     }
@@ -2459,20 +2948,16 @@ pub fn run_cache_churn(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
-    {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
-    }
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    validate_s3_17_corpus_digests(&case_list_sha256, &trace_sha256, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+    if trace.visits.len() != S3_17_VISITS || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
         return Err(err("frozen trace visit count mismatch"));
     }
     let cases = prepare_cases(&list, &trace, started)?;
-    if cases.len() != MAX_INPUTS {
+    if cases.len() != S3_17_INPUTS {
         return Err(err("cache-churn requires the complete frozen corpus"));
     }
 
@@ -2564,11 +3049,14 @@ pub fn run_cache_churn(
     drop(engine);
     let process_rss_after_runtime_drop = process_rss_snapshot();
 
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = CacheChurnReport {
         schema: 2,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
+        trace_sha256,
         capture_host: trace.capture_host.clone(),
         measure_host: HostMetadata::current(),
         inputs: trace.inputs.len(),
@@ -4144,6 +4632,7 @@ fn annotate_generic_report(
     mut value: serde_json::Value,
     generic: bool,
     cases: &[Case],
+    scope: &str,
 ) -> Result<serde_json::Value, BenchError> {
     if !generic {
         return Ok(value);
@@ -4157,7 +4646,7 @@ fn annotate_generic_report(
         "case_ids": cases.iter().map(|case| &case.id).collect::<Vec<_>>(),
         "fallback_helper_calls": 0,
         "fallback_helper_calls_basis": "preflight rejects bare NOP, the only NativeRegisterV1 interpreter handoff; each successful dispatch also verifies retired_interpreter == 0",
-        "scope": "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback"
+        "scope": scope
     }));
     let variants = object
         .get_mut("variants")
@@ -4831,6 +5320,115 @@ mod tests {
         assert!(matches!(&engine, Variant::Lru { .. }));
         replace_variant(&mut engine, VariantName::SingleEntryArena16).unwrap();
         assert!(matches!(&engine, Variant::Single { .. }));
+    }
+
+    #[test]
+    fn cold_corpus_digest_gate_requires_explicit_relocation() {
+        use ColdCaseListPaths::{Frozen, RelocatedS3_17};
+        let admit = |list, trace, generic, paths| {
+            validate_cold_corpus_digests(list, trace, generic, paths).ok()
+        };
+
+        for generic in [false, true] {
+            assert_eq!(
+                admit("relocated", FROZEN_TRACE_SHA256, generic, Frozen),
+                None
+            );
+            for wrong_trace in [BRANCH_HELPER_TRACE_SHA256, "altered"] {
+                assert_eq!(
+                    admit("relocated", wrong_trace, generic, RelocatedS3_17),
+                    None
+                );
+            }
+            assert_eq!(
+                admit("relocated", FROZEN_TRACE_SHA256, generic, RelocatedS3_17),
+                Some((1_010, 1_322))
+            );
+            assert_eq!(
+                admit(
+                    BRANCH_HELPER_CASE_LIST_SHA256,
+                    BRANCH_HELPER_TRACE_SHA256,
+                    generic,
+                    Frozen
+                ),
+                Some((5, 5))
+            );
+        }
+        assert_eq!(
+            admit(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, false, Frozen),
+            Some((1_010, 1_322))
+        );
+        assert_eq!(
+            admit(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, true, Frozen),
+            None
+        );
+
+        assert!(
+            validate_s3_17_corpus_digests(FROZEN_CASE_LIST_SHA256, FROZEN_TRACE_SHA256, Frozen)
+                .is_ok()
+        );
+        assert!(validate_s3_17_corpus_digests("relocated", FROZEN_TRACE_SHA256, Frozen).is_err());
+        assert!(
+            validate_s3_17_corpus_digests("relocated", FROZEN_TRACE_SHA256, RelocatedS3_17).is_ok()
+        );
+        for paths in [Frozen, RelocatedS3_17] {
+            assert!(validate_s3_17_corpus_digests("relocated", "altered", paths).is_err());
+            assert!(
+                validate_s3_17_corpus_digests(
+                    BRANCH_HELPER_CASE_LIST_SHA256,
+                    BRANCH_HELPER_TRACE_SHA256,
+                    paths,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn cold_case_preparation_rejects_reordered_or_modified_fixtures() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let trace: RecordedTrace = serde_json::from_slice(include_bytes!(
+            "../../../docs/reports/data/stage3/s3-36b/trace.json"
+        ))
+        .unwrap();
+        let mut paths: Vec<_> =
+            include_str!("../../../tests/fixtures/x86/stage3/s3_14_branch_helper_case_list.txt")
+                .lines()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(|path| root.join(path))
+                .collect();
+        let prepare = |paths: &[PathBuf]| {
+            let list = paths
+                .iter()
+                .map(|path| path.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            prepare_cases(list.as_bytes(), &trace, Instant::now())
+        };
+
+        let error = prepare(&paths[1..]).err().unwrap();
+        assert_eq!(error.to_string(), "case list and trace length differ");
+        paths.swap(0, 1);
+        let error = prepare(&paths).err().unwrap();
+        assert_eq!(error.to_string(), "frozen trace mismatch at 0");
+        paths.swap(0, 1);
+
+        let mut bytes = std::fs::read(&paths[0]).unwrap();
+        let modified = std::env::temp_dir().join(format!(
+            "od-bench-{}-modified-fixture.json",
+            std::process::id()
+        ));
+        std::fs::write(&modified, &bytes).unwrap();
+        paths[0] = modified.clone();
+        let exact = prepare(&paths);
+        bytes.push(b'\n');
+        std::fs::write(&modified, bytes).unwrap();
+        let result = prepare(&paths);
+        std::fs::remove_file(modified).unwrap();
+        assert_eq!(exact.unwrap().len(), trace.inputs.len());
+        let error = result.err().unwrap();
+        assert_eq!(error.to_string(), "frozen trace mismatch at 0");
     }
 
     #[test]

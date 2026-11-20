@@ -196,6 +196,12 @@ struct VmHostSmoke {
         try ControlFrame(kind: .ready, requestID: 0, payload: readyPayload,
                          protocolVersion: ControlFrame.versionV1).write(to: fd)
 
+        // Keep polling run completion even while the peer is not reading.
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw VmHostError.channelFailure
+        }
+
         var outgoing = Data()
         var session: od_session_handle_v1?
         var boundCode: [UInt8]?

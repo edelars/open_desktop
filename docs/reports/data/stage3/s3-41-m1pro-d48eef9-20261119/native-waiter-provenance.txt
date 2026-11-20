@@ -1,0 +1,39 @@
+source_revision=d48eef9330cf5fc9031ae868ebb144b943a71a5f
+library_mode=supplied-release
+ProductName:		macOS
+ProductVersion:		14.6.1
+BuildVersion:		23G93
+14.5
+Apple clang version 15.0.0 (clang-1500.3.9.4)
+Target: arm64-apple-darwin23.6.0
+Thread model: posix
+InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+04a048b8cbd90c8dab7b303e40c944ec8bbd54a782e76e00dd8166334a3470ac  /Users/senya/.open-desktop-stage3.HqBX2kTu/integrated-d48eef9/waiter-regression.patch
+079c8bb3380a1a192d8dce7d2cd05a9cc52d374be7b17dde8d12dfd4781500a6  /Users/senya/.open-desktop-stage3.HqBX2kTu/integrated-d48eef9/verify.HdzpeuCh/source/tests/system/session_abi_v1_smoke.c
+958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a  /Users/senya/.open-desktop-stage3.HqBX2kTu/integrated-d48eef9/verify.HdzpeuCh/source/apps/vmhost/Configuration/vmhost-smoke.entitlements
+209211df35697b5e819e720b9cf746e8abb3b83a3817d0e6dcbef31adc2739e5  /Users/senya/.open-desktop-stage3.HqBX2kTu/stage3-checks/work/stage3-harness/stage3-20261119-222004-8658d550f4/build-target/release/libod_host.a
+42f57d1eb8df26f8e581e7735f877f24f66e09b538d2172356072ad0de54b2f5  /Users/senya/.open-desktop-stage3.HqBX2kTu/integrated-d48eef9/verify.HdzpeuCh/session-abi-v1-waiter-smoke
+Executable=/Users/senya/.open-desktop-stage3.HqBX2kTu/integrated-d48eef9/verify.HdzpeuCh/session-abi-v1-waiter-smoke
+Identifier=session-abi-v1-waiter-smoke-555549447f532bb9b34f3922ad554adaef339678
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=70693 flags=0x10002(adhoc,runtime) hashes=2197+7 location=embedded
+VersionPlatform=1
+VersionMin=917504
+VersionSDK=918784
+Hash type=sha256 size=32
+CandidateCDHash sha256=6f97ab5a7b3e142bf53164b6a88dfbff5b70f2f0
+CandidateCDHashFull sha256=6f97ab5a7b3e142bf53164b6a88dfbff5b70f2f0797cb419c75acc29e24f2139
+Hash choices=sha256
+CMSDigest=6f97ab5a7b3e142bf53164b6a88dfbff5b70f2f0797cb419c75acc29e24f2139
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=6979584
+Executable Segment flags=0x1
+Page size=4096
+CDHash=6f97ab5a7b3e142bf53164b6a88dfbff5b70f2f0
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=14.5.0
+Sealed Resources=none
+Internal requirements count=0 size=12

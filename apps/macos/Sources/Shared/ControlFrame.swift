@@ -50,6 +50,11 @@ public struct ControlFrame {
         try read(from: fd, expectedVersion: versionV0)
     }
 
+    public static func isTruncationError(_ error: Error) -> Bool {
+        if case .truncated? = error as? ControlFrameError { return true }
+        return false
+    }
+
     public static func readInitial(from fd: Int32) throws -> ControlFrame {
         let header = try readExact(fd: fd, length: headerLength)
         let bytes = [UInt8](header)

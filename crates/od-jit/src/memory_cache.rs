@@ -19,6 +19,7 @@ use crate::{
     memory_load_v2::{
         IrMemoryTwoSiteBlockV2, MemoryLoadCompileErrorV2, compile_ir_memory_two_site_block_v2,
     },
+    runtime::MemorySiteV2,
     translation::CodeDependencySpan,
 };
 
@@ -292,7 +293,7 @@ struct MemoryPairCacheEntry<H> {
     key: MemoryPairCacheKey,
     // Retain compiler metadata with its published handle, but never pass it
     // separately to execution where a different handle could be paired.
-    _artifact: IrMemoryTwoSiteBlockV2,
+    artifact: IrMemoryTwoSiteBlockV2,
     published: H,
 }
 
@@ -499,7 +500,7 @@ impl<H> MemoryPairCache<H> {
             .max(logical_bytes);
         self.entry = Some(MemoryPairCacheEntry {
             key,
-            _artifact: artifact,
+            artifact,
             published,
         });
         Ok(())
@@ -580,10 +581,25 @@ impl<H> MemoryPairCache<H> {
         }
         self.bind_context(profile, context_generation)
             .map_err(MemoryPairCacheRunError::Cache)?;
-        let key = MemoryPairCacheKey::new(profile, context_generation, code, dependencies)
-            .map_err(MemoryCacheError::Key)
-            .map_err(MemoryPairCacheRunError::Cache)?;
-        self.ensure_entry(key, code, backend)?;
+        // An exact match to the validated resident key needs no normalization.
+        let exact_hit = self.entry.as_ref().is_some_and(|entry| {
+            let key = &entry.key;
+            key.profile == profile
+                && key.context_generation == context_generation
+                && key.code_base == code.base_rip()
+                && key.code_end == code_end
+                && key.entry_rip == state.rip
+                && key.source.as_slice() == code.bytes()
+                && key.dependencies.as_slice() == dependencies
+        });
+        if exact_hit {
+            Self::add_counter(&mut self.counters.hits).map_err(MemoryPairCacheRunError::Cache)?;
+        } else {
+            let key = MemoryPairCacheKey::new(profile, context_generation, code, dependencies)
+                .map_err(MemoryCacheError::Key)
+                .map_err(MemoryPairCacheRunError::Cache)?;
+            self.ensure_entry(key, code, backend)?;
+        }
         let entry = self.entry.as_ref().expect("entry installed");
         // Re-sample invocation-local guards immediately before entry. The
         // backend repeats this check after publication on a cache miss.
@@ -641,7 +657,7 @@ impl<H> MemoryPairCache<H> {
         if let Err(error) = validate_report(
             &report,
             prior_rip,
-            code.base_rip(),
+            entry.artifact.sites(),
             code_end,
             total_budget,
             state,
@@ -729,7 +745,7 @@ fn map_block_exit(
 fn validate_report(
     report: &MemoryBlockReport,
     prior_rip: u64,
-    code_base: u64,
+    sites: &[MemorySiteV2; 2],
     code_end: u64,
     incoming_budget: u64,
     state: &LongModeState,
@@ -771,7 +787,8 @@ fn validate_report(
             report: report.clone(),
         });
     }
-    let expected_rip = code_base
+    let expected_rip = sites[0]
+        .guest_rip()
         .checked_add(report.retired_instructions * 3)
         .ok_or(MemoryCacheError::InvalidProgress { rip: state.rip })?;
     if state.rip != expected_rip {
@@ -786,7 +803,7 @@ fn validate_report(
                 || (report.retired_instructions == 0 && stop_rip == Some(prior_rip)) => {}
         MemoryBlockExit::StopRequested if stop_requested.load(Ordering::Acquire) != 0 => {}
         MemoryBlockExit::EventPending => {}
-        MemoryBlockExit::GuestFault(_) => {}
+        MemoryBlockExit::GuestFault(_) if report.is_at_pending_fault_site(sites, state.rip) => {}
         _ => {
             return Err(MemoryCacheError::InvalidProgress { rip: state.rip });
         }
@@ -893,6 +910,7 @@ mod tests {
         fail_publish: bool,
         event_on_publish: Option<Rc<AtomicBool>>,
         executes: usize,
+        execution: Option<(u64, MemoryBlockReport)>,
     }
 
     impl CachedMemoryPairBackend for MockBackend {
@@ -922,7 +940,7 @@ mod tests {
         unsafe fn execute_memory_pair(
             &mut self,
             _: &Self::Published,
-            _: &mut LongModeState,
+            state: &mut LongModeState,
             _: &mut dyn GuestMemory,
             _: AccessContext,
             _: u64,
@@ -931,7 +949,9 @@ mod tests {
             _: Option<&AtomicBool>,
         ) -> Result<MemoryBlockReport, Self::Error> {
             self.executes += 1;
-            Err("unexpected mock execution")
+            let (rip, report) = self.execution.take().ok_or("unexpected mock execution")?;
+            state.rip = rip;
+            Ok(report)
         }
     }
 
@@ -1209,6 +1229,99 @@ mod tests {
         assert_eq!(backend.live.get(), 1);
         cache.clear();
         assert_eq!(backend.live.get(), 0);
+    }
+
+    #[test]
+    fn run_reuses_validated_dependencies_and_checks_changed_versions() {
+        let profile = MemoryPairProfile::StoreThenLoad;
+        let bytes = profile.source_bytes();
+        let code = CodeView::new(BASE, &bytes).unwrap();
+        let code_end = code.code_end();
+        let ordered = [
+            CodeDependencySpan {
+                start_rip: BASE,
+                end_rip: BASE + 3,
+                identity: identity(1, 1),
+            },
+            CodeDependencySpan {
+                start_rip: BASE + 3,
+                end_rip: code_end,
+                identity: identity(2, 1),
+            },
+        ];
+        let reversed = [ordered[1], ordered[0]];
+        let run = |cache: &mut MemoryPairCache<MockPublished>,
+                   backend: &mut MockBackend,
+                   dependencies: &[CodeDependencySpan]| {
+            let mut state = LongModeState {
+                cr3: None,
+                rip: BASE,
+                ..Default::default()
+            };
+            backend.execution = Some((
+                code_end,
+                MemoryBlockReport {
+                    exit: MemoryBlockExit::Complete,
+                    remaining_budget: 0,
+                    retired_instructions: 2,
+                },
+            ));
+            // SAFETY: the mock only changes RIP and does not access memory.
+            unsafe {
+                cache.run(
+                    profile,
+                    context(1),
+                    code,
+                    dependencies,
+                    &mut state,
+                    &mut UnusedMemory,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    backend,
+                )
+            }
+        };
+
+        let mut cache = MemoryPairCache::new();
+        let mut backend = MockBackend::default();
+        let completed = memory_result(
+            BoundedMemoryExit::BoundaryReached { rip: code_end },
+            0,
+            2,
+            1,
+        );
+        for dependencies in [&ordered, &ordered, &reversed] {
+            assert_eq!(
+                run(&mut cache, &mut backend, dependencies).unwrap(),
+                completed
+            );
+        }
+        let warm = cache.counters();
+        assert_eq!(warm.hits, 2);
+        assert_eq!(warm.misses, 1);
+
+        let mut changed = ordered;
+        changed[1].identity = identity(2, 2);
+        assert_eq!(
+            run(&mut cache, &mut backend, &changed),
+            Err(MemoryPairCacheRunError::Cache(MemoryCacheError::Key(
+                MemoryCacheKeyError::InconsistentBackingVersion { index: 1 }
+            )))
+        );
+        assert_eq!(cache.counters(), warm);
+        assert_eq!(backend.publishes, 1);
+        assert_eq!(backend.executes, 3);
+
+        changed[0].identity = identity(1, 2);
+        assert_eq!(run(&mut cache, &mut backend, &changed).unwrap(), completed);
+        assert_eq!(cache.counters().hits, 2);
+        assert_eq!(cache.counters().misses, 2);
+        assert_eq!(cache.counters().replacements, 1);
+        assert_eq!(backend.publishes, 2);
+        assert_eq!(backend.executes, 4);
     }
 
     #[test]
@@ -1523,6 +1636,151 @@ mod tests {
         assert_eq!(backend.publishes, 1);
         assert_eq!(backend.executes, 0);
         assert_eq!(backend.live.get(), 1);
+    }
+
+    #[test]
+    fn run_guards_precede_hit_counter_overflow() {
+        let profile = MemoryPairProfile::StoreThenLoad;
+        let (key, code) = key(profile, 1, BASE, 1, 1);
+        let code_end = code.code_end();
+        let mut backend = MockBackend {
+            execution: Some((
+                code_end,
+                MemoryBlockReport {
+                    exit: MemoryBlockExit::Complete,
+                    remaining_budget: 0,
+                    retired_instructions: 2,
+                },
+            )),
+            ..MockBackend::default()
+        };
+        let mut run =
+            |cache: &mut MemoryPairCache<MockPublished>, budget, stop_rip, stop, event| {
+                let mut state = LongModeState {
+                    cr3: None,
+                    rip: BASE,
+                    ..Default::default()
+                };
+                // SAFETY: the mock only changes RIP and does not access memory.
+                unsafe {
+                    cache.run(
+                        profile,
+                        context(1),
+                        code,
+                        &key.dependencies,
+                        &mut state,
+                        &mut UnusedMemory,
+                        AccessContext::default(),
+                        budget,
+                        stop_rip,
+                        &AtomicU8::new(stop),
+                        Some(&AtomicBool::new(event)),
+                        &mut backend,
+                    )
+                }
+            };
+
+        let mut cache = MemoryPairCache::new();
+        assert_eq!(
+            run(&mut cache, 2, None, 0, false).unwrap().exit,
+            BoundedMemoryExit::BoundaryReached { rip: code_end }
+        );
+        cache.counters.hits = u64::MAX;
+        let before = cache.counters();
+
+        for (budget, stop_rip, stop, event, exit) in [
+            (2, Some(BASE), 0, false, BoundedMemoryExit::StopAddress),
+            (2, None, 1, false, BoundedMemoryExit::StopRequested),
+            (0, None, 0, false, BoundedMemoryExit::BudgetExhausted),
+            (2, None, 0, true, BoundedMemoryExit::EventPending),
+        ] {
+            assert_eq!(
+                run(&mut cache, budget, stop_rip, stop, event).unwrap(),
+                memory_result(exit, budget, 0, 0)
+            );
+            assert_eq!(cache.counters(), before);
+        }
+        assert_eq!(
+            run(&mut cache, 2, None, 0, false),
+            Err(MemoryPairCacheRunError::Cache(
+                MemoryCacheError::CounterOverflow
+            ))
+        );
+        assert_eq!(cache.counters(), before);
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(backend.publishes, 1);
+        assert_eq!(backend.executes, 1);
+        assert_eq!(backend.live.get(), 1);
+    }
+
+    #[test]
+    fn guest_fault_requires_pending_cached_memory_site() {
+        let profile = MemoryPairProfile::StoreThenLoad;
+        let (key, code) = key(profile, 1, BASE, 1, 1);
+        for (budget, retired, rip_offset, valid) in [
+            (3, 0, 0, true),
+            (3, 1, 3, true),
+            (3, 2, 6, false),
+            (3, 1, 4, false),
+            (1, 1, 3, false),
+        ] {
+            let mut cache = MemoryPairCache::<MockPublished>::new();
+            let rip = BASE + rip_offset;
+            let fault = od_isa::memory::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            };
+            let mut backend = MockBackend {
+                execution: Some((
+                    rip,
+                    MemoryBlockReport {
+                        exit: MemoryBlockExit::GuestFault(fault.clone()),
+                        remaining_budget: budget - retired,
+                        retired_instructions: retired,
+                    },
+                )),
+                ..MockBackend::default()
+            };
+            let mut state = LongModeState {
+                cr3: None,
+                rip: BASE,
+                ..Default::default()
+            };
+            // SAFETY: the mock only changes RIP and returns the supplied report.
+            let result = unsafe {
+                cache.run(
+                    profile,
+                    context(1),
+                    code,
+                    &key.dependencies,
+                    &mut state,
+                    &mut UnusedMemory,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    &mut backend,
+                )
+            };
+            if valid {
+                let report = result.unwrap();
+                assert_eq!(report.exit, BoundedMemoryExit::GuestFault(fault));
+                assert_eq!(report.remaining_budget, budget - retired);
+                assert_eq!(report.retired_instructions, retired);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(MemoryPairCacheRunError::Cache(
+                        MemoryCacheError::InvalidProgress { rip }
+                    ))
+                );
+            }
+            assert_eq!(backend.executes, 1);
+            assert_eq!(cache.resident_entries(), usize::from(valid));
+            assert_eq!(backend.live.get(), usize::from(valid));
+        }
     }
 
     #[test]

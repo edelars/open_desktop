@@ -250,8 +250,15 @@ final class NotificationQueue {
 
     /// Bytes held by the queue; never above 256 (11.5).
     var bufferedBytes: Int {
-        partial.count + pendingMode.reduce(0) { $0 + ($1?.count ?? 0) }
-            + pendingFrame.reduce(0) { $0 + ($1?.count ?? 0) } + (pendingCursor?.count ?? 0)
+        let partialBytes = partial.count
+        let modeBytes: Int = pendingMode.reduce(0) { total, message in
+            total + (message?.count ?? 0)
+        }
+        let frameBytes: Int = pendingFrame.reduce(0) { total, message in
+            total + (message?.count ?? 0)
+        }
+        let cursorBytes = pendingCursor?.count ?? 0
+        return partialBytes + modeBytes + frameBytes + cursorBytes
     }
 
     /// A new MODE of screen `screen` replaces its unsent MODE and drops its unsent FRAME (11.5).

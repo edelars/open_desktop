@@ -91,7 +91,39 @@ they exclude decode, key construction, native publication/execution, cache
 miss handling, invalidation and eviction. They do not establish full dispatcher
 or JIT speedup, production cache policy, or behavior on other hardware.
 
-The input trace remains in the local ignored `work/` directory; the three raw
-measurement JSON reports are committed beside this report. The code and
-benchmark protocol remain a prototype; production caching and end-to-end
-performance remain open.
+The three raw measurement JSON reports are committed beside this report.
+Production caching and end-to-end performance remain open.
+
+## Exact input recovery, 2026-11-19
+
+The original signed ARM64 recorder was rebuilt from
+`80b318a6293da499c7d9287da4d9db8c4e3ff4f6`. Two retained October Stage 1
+manifests supplied the same 1,010 fixture files in different orders.
+Each file matched its manifest digest. Both actual captures returned 1,322
+visits. The case-ID-sorted capture matched the historical trace when its
+capture host and elapsed time were restored from the archived measurement.
+The recorder's input and visit payload bytes were preserved. The restored
+`trace_elapsed_ns` value of 593184292 is historical metadata.
+
+The recovered trace is 587,555 bytes, with 1,010 inputs, 1,322 visits,
+and 1,320 distinct input-index/entry-RIP pairs. Its SHA-256 equals the
+historical pin
+`bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3`.
+All 1,010 archived fixture files match the trace's ordered case IDs,
+byte lengths and raw SHA-256 values.
+
+The [recovery bundle](data/stage3/s3-17-recovery-20261119/historical-trace-and-fixtures.json.gz)
+contains 1,020 files and has SHA-256
+`a6c8db14570d5420d540401c466cc3ac85186458fb3e881618b403df7bf1d969`.
+It retains the recovered trace, raw sorted capture, exact fixtures,
+recovery scripts and build metadata. The UTF-8 contents are in `files`
+and their SHA-256 values are in `file_sha256`.
+
+The original `cases.txt` remains unavailable. The archive's
+`verified/relocated-cases.txt` lists the recovered files in trace order.
+Its locator strings give it a separate SHA-256
+`e72bb9c57da22b65f14aa8028621021cf171d793267d874330c2e6ca3d2ba074`.
+The default historical list pin stays
+`b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3`.
+The relocated list and exact historical trace were used in the three
+matched cold rounds. [S3-56 results on S3-17](STAGE_3_S3-56_S3-17_2026-11-19.md)

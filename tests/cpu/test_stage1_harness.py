@@ -4,7 +4,9 @@
 import contextlib
 import io
 import json
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +35,45 @@ class OracleInputTests(unittest.TestCase):
             value["case_id"] = case_id
         path.write_text(json.dumps(value))
         return path
+
+    def test_preflight_fingerprint_covers_checked_in_test_data(self):
+        fixtures = self.root / "tests/fixtures/x86"
+        fixtures.mkdir(parents=True)
+        first_case = fixtures / "first.case.json"
+        first_case.write_bytes(b"first case")
+        second_case = fixtures / "second.hex"
+        second_case.write_bytes(b"second case")
+        reports = [self.root / relative for relative in oracle.PREFLIGHT_REPORTS]
+        for report in reports:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_bytes(b"report bytes")
+
+        def fingerprint():
+            return subprocess.run(
+                [sys.executable, "-c", oracle.PREFLIGHT_INPUT_FINGERPRINT_CODE],
+                cwd=self.root, capture_output=True, text=True, check=False,
+            )
+
+        complete = fingerprint()
+        self.assertEqual(complete.returncode, 0, complete.stderr)
+        for report in reports:
+            with self.subTest(missing_report=report.name):
+                report.unlink()
+                missing = fingerprint()
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertIn(report.relative_to(self.root).as_posix(), missing.stderr)
+                report.write_bytes(b"report bytes")
+        reports[-1].write_bytes(b"changed report bytes")
+        changed = fingerprint()
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        self.assertNotEqual(changed.stdout, complete.stdout)
+        reports[-1].write_bytes(b"report bytes")
+        second_case.unlink()
+        incomplete_corpus = fingerprint()
+        self.assertEqual(incomplete_corpus.returncode, 0, incomplete_corpus.stderr)
+        self.assertNotEqual(incomplete_corpus.stdout, complete.stdout)
+        first_case.unlink()
+        self.assertIn("missing preflight fixtures: tests/fixtures/x86", fingerprint().stderr)
 
     def test_freezes_exact_input_bytes_before_execution(self):
         path = self.case()
@@ -194,7 +235,7 @@ class HarnessSelectionTests(unittest.TestCase):
 
     def _run_oracle_main(self, *, engine="jit-block", selection="manifest", result_backend=None,
                          preflight_exit_code=0, preflight_timeout=False, local_only=False,
-                         result_revision=None):
+                         result_revision=None, remote_preflight_inputs=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -229,6 +270,7 @@ class HarnessSelectionTests(unittest.TestCase):
         native_batches = []
         comparisons = []
         fingerprint = "a" * 64
+        preflight_inputs = "b" * 64
         machine = {
             "host_os": "test-os", "host_arch": "test-arch", "cpu_model": None,
             "kernel": "test-kernel", "page_size": 4096,
@@ -258,6 +300,8 @@ class HarnessSelectionTests(unittest.TestCase):
             }
 
         def fake_run(argv, *, cwd=oracle.ROOT, env=None, timeout=60.0):
+            if argv == [sys.executable, "-c", oracle.PREFLIGHT_INPUT_FINGERPRINT_CODE]:
+                return subprocess.CompletedProcess(argv, 0, preflight_inputs + "\n", "")
             if argv[0] == "ssh":
                 return subprocess.CompletedProcess(
                     argv, preflight_exit_code, "preflight stdout: all lines\n",
@@ -279,6 +323,8 @@ class HarnessSelectionTests(unittest.TestCase):
             )
 
         def fake_ssh_run(target, command, *, timeout=60.0):
+            if shlex.quote(oracle.PREFLIGHT_INPUT_FINGERPRINT_CODE) in command:
+                return (remote_preflight_inputs or preflight_inputs) + "\n"
             if "python3 -c" in command:
                 return fingerprint + "\n"
             if "rustc --version" in command:
@@ -355,6 +401,7 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(saved["status"], "local_only")
         self.assertEqual(saved["evidence_scope"], "local_only")
         self.assertEqual(saved["physical_x86"], "not_run")
+        self.assertNotIn("preflight_input_fingerprints", saved)
         self.assertEqual(saved["jit_backend"], "jit_ir_dispatch")
         self.assertEqual(saved["stage"], "S3-15")
         self.assertIsNone(saved["host"])
@@ -410,6 +457,8 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(saved["suite"], "register-only one-block triple comparison")
         self.assertEqual(saved["engine"], "jit-block")
         self.assertEqual(saved["jit_backend"], "jit_ir_block")
+        self.assertEqual(saved["source_fingerprint"], "a" * 64)
+        self.assertEqual(saved["preflight_input_fingerprints"], {"local": "b" * 64, "remote": "b" * 64})
         self.assertEqual(saved["remote_test_preflight"]["exit_code"], 0)
         self.assertEqual(saved["_preflight_stdout"], "preflight stdout: all lines\n")
         self.assertEqual(saved["repeats"], 2)
@@ -444,6 +493,19 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(engines, [])
         self.assertEqual(native_batches, [])
         self.assertIn("full stdout/stderr are saved", saved["error"])
+
+    def test_preflight_input_mismatch_aborts_before_cargo_even_with_matching_source(self):
+        status, engines, native_batches, comparisons, saved = self._run_oracle_main(
+            remote_preflight_inputs="c" * 64,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(saved["status"], "failed")
+        self.assertIn("local and remote preflight input fingerprints differ", saved["error"])
+        self.assertEqual(saved["source_fingerprint"], "a" * 64)
+        self.assertEqual(saved["preflight_input_fingerprints"], {"local": "b" * 64, "remote": "c" * 64})
+        self.assertNotIn("remote_test_preflight", saved)
+        self.assertEqual(saved["commands"], [])
+        self.assertEqual((engines, native_batches, comparisons), ([], [], []))
 
     def test_remote_preflight_timeout_is_logged_before_aborting(self):
         status, engines, native_batches, _, saved = self._run_oracle_main(preflight_timeout=True)

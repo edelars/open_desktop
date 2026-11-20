@@ -739,6 +739,15 @@ fn create_cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
             return Err(io::Error::last_os_error());
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin can report a lost reader as EPIPE without signaling the process.
+        const F_SETNOSIGPIPE: i32 = 73;
+        // SAFETY: the write end is valid and the command takes an int flag.
+        if unsafe { fcntl(write_fd.as_raw_fd(), F_SETNOSIGPIPE, 1) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
     Ok((read_fd, write_fd))
 }
 

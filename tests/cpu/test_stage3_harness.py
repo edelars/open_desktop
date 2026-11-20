@@ -19,6 +19,13 @@ from pathlib import Path
 
 import stage3_harness as harness
 
+# Keep inventory pins independent of the runtime registries.
+EXPECTED_SELF_TESTS = 158
+EXPECTED_RUST_GATES = 342
+EXPECTED_LOCAL_ACCEPTANCE_GATES = 322
+EXPECTED_LOCAL_LIFECYCLE_GATES = 20
+EXPECTED_LOCAL_STEPS = 360
+
 _result_smoke_spec = importlib.util.spec_from_file_location(
     "vmhost_result_state_smoke",
     harness.ROOT / "tests/system/vmhost_result_state_smoke.py",
@@ -403,7 +410,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
     def test_self_test_output_validator_rejects_zero_match_and_all_skipped(self):
         count = len(harness.SELF_TEST_NAMES)
-        self.assertEqual(count, 149)
+        self.assertEqual(count, EXPECTED_SELF_TESTS)
         def output(status):
             rows = [
                 f"{name} (__main__.Stage3HarnessValidationTests.{name}) ... {status}"
@@ -505,6 +512,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_38e_session_clear_releases_publication",
             "s3_38e_session_rejects_second_mapping_owner",
             "s3_38e_session_invalid_entry_no_automatic_retry",
+            "s3_37f_session_cache_pressure",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -538,8 +546,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "identity": p3_identity,
         }])
         self.assertEqual(harness.LOCAL_STEPS.count(p3_step), 1)
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), EXPECTED_RUST_GATES)
         self.assertEqual(harness.rust_test_argv("od-host", p3_identity), [
             "cargo", "test", "--offline", "-p", "od-host", "--lib", p3_identity,
             "--", "--exact", "--test-threads=1",
@@ -830,13 +838,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         manifest = harness.rust_test_gate_manifest()
         identities = [gate["identity"] for gate in manifest]
         steps_in_manifest = [gate["step"] for gate in manifest]
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len(set(steps_in_manifest)), 326)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len(set(steps_in_manifest)), EXPECTED_RUST_GATES)
         for _, _, _, identity in expected:
             self.assertEqual(identities.count(identity), 1)
-        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
             [gate["step"] for gate in manifest if gate["step"].startswith("s3_32a_")],
             [gate[0] for gate in expected],
@@ -988,12 +996,12 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in manifest if gate["step"] == step],
             [{"step": step, "suite": suite, "package": package, "identity": identity}],
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(harness.rust_test_argv(package, identity), [
             "cargo", "test", "--offline", "-p", package, "--test", "memory_corpus",
             identity, "--", "--exact", "--test-threads=1",
@@ -1086,10 +1094,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual([gate for gate in harness.RUST_TEST_GATES if gate[0] == step], [expected])
         self.assertEqual([gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0] == step], [expected])
         self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
-        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
+        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
         manifest = harness.rust_test_gate_manifest()
         self.assertEqual(
             [gate for gate in manifest if gate["step"] == step],
@@ -1124,6 +1132,37 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(harness.HarnessError, step):
                 harness.validate_required_rust_test_evidence(missing, run_root)
 
+    def test_s3_23_source_permission_gates_are_pinned_and_fail_closed(self):
+        manifest = harness.rust_test_gate_manifest()
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary) / "run"
+            log_dir = run_root / "logs"
+            log_dir.mkdir(parents=True)
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            for version in ("v2", "v3"):
+                step = f"s3_23_tracked_{version}_source_permission"
+                identity = f"tests::s3_23_tracked_{version}_rejects_revoked_source_permission"
+                with self.subTest(step=step):
+                    self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+                    self.assertEqual(
+                        [gate for gate in manifest if gate["step"] == step],
+                        [{"step": step, "suite": "local_acceptance", "package": "od-host", "identity": identity}],
+                    )
+                    self.assertEqual(harness.rust_test_argv("od-host", identity), [
+                        "cargo", "test", "--offline", "-p", "od-host", "--lib", identity,
+                        "--", "--exact", "--test-threads=1",
+                    ])
+                    missing = steps.copy()
+                    del missing[step]
+                    with self.assertRaisesRegex(harness.HarnessError, step):
+                        harness.validate_required_rust_test_evidence(missing, run_root)
+                    ignored = passing_rust_gate_steps(log_dir)
+                    replace_step_log_output(ignored[step], f"test {identity} ... ignored\n")
+                    with self.assertRaisesRegex(harness.HarnessError, f"lacks exact passing output: {step}"):
+                        harness.validate_required_rust_test_evidence(ignored, run_root)
+                    replace_step_log_output(steps[step], f"test {identity} ... ok\n")
+
     def test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed(self):
         expected = (
             "s3_18g_load_load_dependency_generation_republishes",
@@ -1140,12 +1179,12 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in manifest if gate["step"] == step],
             [{"step": step, "suite": suite, "package": package, "identity": identity}],
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308)
-        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES)
+        self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
             harness.rust_test_argv(package, identity),
             ["cargo", "test", "--offline", "-p", package, "--lib", identity, "--", "--exact", "--test-threads=1"],
@@ -1396,13 +1435,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         native_identities = {
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
@@ -1543,8 +1582,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34p_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), EXPECTED_RUST_GATES)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -1694,8 +1733,109 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "cargo", "test", "--offline", "-p", package, "--lib", identity,
                 "--", "--exact", "--test-threads=1",
             ])
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest_by_name), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest_by_name), EXPECTED_RUST_GATES)
+
+    def test_s3_24c_following_block_gate_is_pinned_and_fail_closed(self):
+        step = "active_code_v3_republishes_immediate_of_following_block"
+        identity = "tests::active_code_v3_republishes_immediate_of_following_block"
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(harness.LIFECYCLE_TESTS.count(step), 1)
+        self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+        self.assertEqual(
+            [gate for gate in harness.rust_test_gate_manifest() if gate["step"] == step],
+            [{"step": step, "suite": "local_lifecycle", "package": "od-host", "identity": identity}],
+        )
+        self.assertEqual(harness.rust_test_argv("od-host", identity), [
+            "cargo", "test", "--offline", "-p", "od-host", "--lib", identity,
+            "--", "--exact", "--test-threads=1",
+        ])
+        self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-host/src/lib.rs"), 1)
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            missing = steps.copy()
+            del missing[step]
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(missing, run_root)
+
+            replace_step_log_output(
+                steps[step],
+                "test tests::active_code_v3_invalidates_exact_not_yet_executed_tail_immediate ... ok\n",
+            )
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+
+    def test_s3_55_mixed_dispatch_gates_are_pinned_and_fail_closed(self):
+        expected = (
+            (
+                "s3_55_mixed_witness_exact", "od-jit",
+                "block::s3_52_admission_equivalence_tests::s3_55_mixed_witness_preserves_strict_admission_and_exact_helper_forms",
+            ),
+            (
+                "s3_55_helper_control_and_native_progress", "od-jit",
+                "dispatch::tests::s3_55_helper_only_budget_stop_event_and_zero_progress",
+            ),
+            (
+                "s3_55_post_helper_snapshot_guards", "od-jit",
+                "dispatch::tests::s3_55_post_helper_validation_rejects_changed_source_and_invalid_dependencies",
+            ),
+            (
+                "s3_55_interpreter_zero_progress", "od-jit",
+                "dispatch::tests::s3_55_interpreter_zero_progress_is_typed_and_not_retired",
+            ),
+            (
+                "s3_55_interpreter_error_retirement", "od-jit",
+                "dispatch::tests::s3_55_interpreter_failure_does_not_retire",
+            ),
+            (
+                "s3_55_mixed_native_full_state", "od-host",
+                "tests::s3_54_native_multi_cache_reuses_published_handle",
+            ),
+        )
+        suite = "local_acceptance"
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(
+            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_55_")],
+            [(step, suite, package, identity) for step, package, identity in expected],
+        )
+        self.assertEqual(
+            [entry for entry in harness.rust_test_gate_manifest() if entry["step"].startswith("s3_55_")],
+            [{"step": step, "suite": suite, "package": package, "identity": identity}
+             for step, package, identity in expected],
+        )
+        for source in ("crates/od-jit/src/block.rs", "crates/od-jit/src/dispatch.rs", "crates/od-host/src/lib.rs"):
+            self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+        for step, package, identity in expected:
+            self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+            self.assertEqual(harness.rust_test_argv(package, identity), [
+                "cargo", "test", "--offline", "-p", package, "--lib", identity,
+                "--", "--exact", "--test-threads=1",
+            ])
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            valid_steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(valid_steps, run_root)
+            for step, _, _ in expected:
+                missing_steps = valid_steps.copy()
+                del missing_steps[step]
+                with self.subTest(missing=step), self.assertRaisesRegex(harness.HarnessError, step):
+                    harness.validate_required_rust_test_evidence(missing_steps, run_root)
+
+            host_step = expected[-1][0]
+            replace_step_log_output(
+                valid_steps[host_step],
+                "test tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity ... ok\n",
+            )
+            with self.assertRaisesRegex(harness.HarnessError, host_step):
+                harness.validate_required_rust_test_evidence(valid_steps, run_root)
 
     def test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed(self):
         expected = (
@@ -1715,31 +1855,32 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_38e_session_invalid_entry_no_automatic_retry", "local_lifecycle", "od-host",
                 "session::tests::invalid_entry_is_reported_without_an_automatic_retry",
             ),
+            (
+                "s3_37f_session_cache_pressure", "local_lifecycle", "od-host",
+                "session::tests::cache_pressure_preserves_state_and_releases_the_arena",
+            ),
         )
         self.assertIn(
             "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 151)
-        self.assertEqual(
-            [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_38e_")],
-            list(expected),
-        )
-        self.assertEqual(
-            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_38e_")],
-            list(expected),
-        )
+        self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
+        for gates in (harness.ADDITIONAL_TEST_GATES, harness.RUST_TEST_GATES):
+            self.assertEqual(
+                [gate for gate in gates if gate[0].startswith(("s3_38e_", "s3_37f_"))],
+                list(expected),
+            )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-host/src/session.rs"), 1)
 
@@ -1971,10 +2112,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34s_")],
             expected,
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/memory_dispatch.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
@@ -2119,10 +2260,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34t_")],
             expected,
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/dispatch.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
@@ -2256,9 +2397,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
@@ -2359,11 +2500,11 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-host/tests/memory_corpus.rs"), 1)
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count("crates/od-testkit/src/memory_corpus.rs"), 1)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         all_gates = (*s3_26f_gates, host_gate)
         for step, suite, package, identity in all_gates:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
@@ -2432,23 +2573,23 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "__main__.Stage3HarnessValidationTests.test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed",
             harness.SELF_TEST_IDENTITIES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 151)
-        self.assertEqual(len(harness.SELF_TEST_IDENTITIES), 149)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
+        self.assertEqual(len(harness.SELF_TEST_IDENTITIES), EXPECTED_SELF_TESTS)
 
         manifest = harness.rust_test_gate_manifest()
         self.assertEqual(
             [gate for gate in manifest if gate["step"] == step],
             [{"step": step, "suite": suite, "package": package, "identity": identity}],
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         command = [
             "cargo", "test", "--offline", "-p", package, "--lib", identity,
@@ -2538,9 +2679,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
@@ -2728,9 +2869,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -2827,9 +2968,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -2921,10 +3062,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34z_")],
             expected,
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), EXPECTED_RUST_GATES)
         self.assertEqual(
-            len({gate["step"] for gate in harness.rust_test_gate_manifest()}), 325
+            len({gate["step"] for gate in harness.rust_test_gate_manifest()}), EXPECTED_RUST_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -3030,10 +3171,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -3148,10 +3289,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -3247,10 +3388,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [expected],
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-host/tests/memory_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
         step, suite, package, identity = expected
@@ -3361,10 +3502,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -3467,10 +3608,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [expected],
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
         step, suite, package, identity = expected
@@ -3569,10 +3710,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [expected],
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-host/tests/memory_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
         step, suite, package, identity = expected
@@ -3681,10 +3822,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -3800,10 +3941,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
@@ -3919,15 +4060,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4039,15 +4180,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4158,15 +4299,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4277,15 +4418,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -4479,6 +4620,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_38e_session_clear_releases_publication",
                 "s3_38e_session_rejects_second_mapping_owner",
                 "s3_38e_session_invalid_entry_no_automatic_retry",
+                "s3_37f_session_cache_pressure",
             )
             for missing_step in (harness.ADDITIONAL_TEST_GATES[0][0], *mandatory_steps):
                 steps = passing_rust_gate_steps(Path(temporary))
@@ -4823,6 +4965,14 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 [sys.executable, code_mismatch_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"],
             )
             manifest_inputs = harness.input_manifest()["vmhost_process"]["inputs"]
+            race_fixture = "tests/fixtures/control/control_v0_scenarios.json"
+            self.assertEqual(
+                manifest_inputs.count({
+                    "path": race_fixture,
+                    "sha256": harness.sha256_file(harness.ROOT / race_fixture),
+                }),
+                1,
+            )
             mismatch_source = {
                 "path": code_mismatch_path,
                 "sha256": harness.sha256_file(harness.ROOT / code_mismatch_path),
@@ -4836,7 +4986,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     "process_control_v1_frames",
                     "tests/system/vmhost_control_v1_frames_smoke.py",
                     "control_v1_frames",
-                    "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length",
+                    "VMHost control V1 smoke passed: fragmented/coalesced frames, "
+                    "maximum RUN length, bounded EOF teardown, oversized length, backpressure, active completion",
                 ),
                 (
                     "process_control_v1_stop_eof",
@@ -4863,8 +5014,41 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h",
                 commands["process_compile_vmhost"],
             )
+            fixture_bridge = "tests/fixtures/control/v1_admission_failure_bridge.h"
+            fixture_binary = str(run_root / "artifacts" / "od-vmhost-v1-admission-failure-smoke")
+            fixture_compile = commands["process_compile_vmhost"].copy()
+            fixture_compile[fixture_compile.index("-import-objc-header") + 1] = fixture_bridge
+            fixture_compile[-1] = fixture_binary
+            self.assertEqual(commands["process_compile_v1_admission_failure_vmhost"], fixture_compile)
+            fixture_gate = "process_control_v1_admission_failures"
+            self.assertEqual(commands[fixture_gate], [
+                sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
+                fixture_binary, "--admission-failures",
+            ])
+            self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[fixture_gate], 30)
             self.assertEqual(
-                harness.input_manifest()["vmhost_process"]["success_markers"],
+                harness.PROCESS_SUCCESS_MARKERS["control_v1_admission_failures"],
+                "VMHost control V1 smoke passed: create/begin INVALID_STATE closes the frame batch",
+            )
+            self.assertEqual(manifest_inputs.count({
+                "path": fixture_bridge,
+                "sha256": harness.sha256_file(harness.ROOT / fixture_bridge),
+            }), 1)
+            linux_direct_source = "apps/vmhost/Sources/LinuxDirectRunner.swift"
+            source_pin = {
+                "path": linux_direct_source,
+                "sha256": harness.sha256_file(harness.ROOT / linux_direct_source),
+            }
+            inputs = harness.input_manifest()
+            self.assertEqual(commands["process_compile_vmhost"].count(linux_direct_source), 1)
+            self.assertEqual(inputs["vmhost_process"]["inputs"].count(source_pin), 1)
+            local_commands = harness.local_vmhost_result_commands(run_root)
+            self.assertEqual(
+                local_commands["local_s38d_compile_vmhost"].count(linux_direct_source), 1
+            )
+            self.assertEqual(inputs["local_vmhost_result_state"]["inputs"].count(source_pin), 1)
+            self.assertEqual(
+                inputs["vmhost_process"]["success_markers"],
                 harness.PROCESS_SUCCESS_MARKERS,
             )
             self.assertEqual(
@@ -5227,15 +5411,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5348,15 +5532,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5468,15 +5652,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5588,15 +5772,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5708,15 +5892,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5828,15 +6012,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -5948,15 +6132,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6068,15 +6252,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6188,15 +6372,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6308,15 +6492,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6428,15 +6612,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6546,15 +6730,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6665,15 +6849,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6784,15 +6968,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -6903,15 +7087,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -7021,15 +7205,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -7139,15 +7323,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7216,15 +7400,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7296,15 +7480,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7407,15 +7591,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7518,15 +7702,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7625,15 +7809,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7702,15 +7886,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7786,15 +7970,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7882,15 +8066,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -7998,15 +8182,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8113,15 +8297,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8232,15 +8416,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8351,15 +8535,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8469,15 +8653,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8587,15 +8771,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8706,15 +8890,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8825,15 +9009,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -8944,15 +9128,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9081,15 +9265,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9226,15 +9410,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9371,15 +9555,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9516,15 +9700,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9662,15 +9846,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9809,15 +9993,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -9959,15 +10143,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10104,15 +10288,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10249,15 +10433,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10394,15 +10578,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10539,15 +10723,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10684,15 +10868,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10829,15 +11013,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -10973,15 +11157,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11072,15 +11256,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11172,15 +11356,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11272,15 +11456,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11372,15 +11556,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11471,15 +11655,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11569,15 +11753,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11667,15 +11851,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11765,15 +11949,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11863,15 +12047,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -11961,15 +12145,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12059,15 +12243,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12165,15 +12349,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12274,15 +12458,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12384,15 +12568,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12493,15 +12677,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12599,15 +12783,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12705,15 +12889,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12810,15 +12994,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -12912,15 +13096,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13018,15 +13202,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13123,15 +13307,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13228,15 +13412,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13332,15 +13516,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13437,15 +13621,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13544,15 +13728,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13652,15 +13836,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13759,15 +13943,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13865,15 +14049,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -13975,15 +14159,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14084,15 +14268,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14188,15 +14372,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14283,12 +14467,16 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_34do_value_only_reducer_self_check", "local_acceptance", "od-host",
                 "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
             ),
+            (
+                "s3_34do_captured_runtime_mismatch", "local_acceptance", "od-host",
+                "s3_34do_captured_runtime_mismatch_replays_and_reduces",
+            ),
         )
         self.assertIn(
             "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 151)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
         self.assertEqual(
             [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34do_")],
             list(expected),
@@ -14299,15 +14487,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14346,46 +14534,45 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [{"path": corpus_source, "sha256": harness.sha256_file(harness.ROOT / corpus_source)}],
         )
         harness.validate_rust_test_manifest(source_manifest)
-        step = expected[0][0]
-        missing_manifest_gate = {
-            **source_manifest,
-            "gates": [gate for gate in manifest if gate["step"] != step],
-        }
-        with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
-            harness.validate_rust_test_manifest(missing_manifest_gate)
+        for step, _, _, identity in expected:
+            with self.subTest(step=step), temporary_fixture_directory() as temporary:
+                missing_manifest_gate = {
+                    **source_manifest,
+                    "gates": [gate for gate in manifest if gate["step"] != step],
+                }
+                with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
+                    harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with temporary_fixture_directory() as temporary:
-            run_root = Path(temporary) / "run"
-            log_dir = run_root / "logs"
-            log_dir.mkdir(parents=True)
-            valid_steps = passing_rust_gate_steps(log_dir)
-            harness.validate_required_rust_test_evidence(valid_steps, run_root)
+                run_root = Path(temporary) / "run"
+                log_dir = run_root / "logs"
+                log_dir.mkdir(parents=True)
+                valid_steps = passing_rust_gate_steps(log_dir)
+                harness.validate_required_rust_test_evidence(valid_steps, run_root)
 
-            missing_evidence = passing_rust_gate_steps(log_dir)
-            del missing_evidence[step]
-            with self.assertRaisesRegex(harness.HarnessError, step):
-                harness.validate_required_rust_test_evidence(missing_evidence, run_root)
+                missing_evidence = valid_steps.copy()
+                del missing_evidence[step]
+                with self.assertRaisesRegex(harness.HarnessError, step):
+                    harness.validate_required_rust_test_evidence(missing_evidence, run_root)
 
-            _, _, _, identity = expected[0]
-            for label, output in (
-                (
-                    "zero matches",
-                    "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
-                ),
-                ("ignored", f"test {identity} ... ignored\n"),
-                ("failed", f"test {identity} ... FAILED\n"),
-            ):
-                changed = passing_rust_gate_steps(log_dir)
-                replace_step_log_output(changed[step], output)
-                with self.subTest(evidence=label), self.assertRaisesRegex(
-                    harness.HarnessError, step
+                for label, output in (
+                    (
+                        "zero matches",
+                        "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
+                    ),
+                    ("ignored", f"test {identity} ... ignored\n"),
+                    ("failed", f"test {identity} ... FAILED\n"),
                 ):
-                    harness.validate_required_rust_test_evidence(changed, run_root)
+                    changed = passing_rust_gate_steps(log_dir)
+                    replace_step_log_output(changed[step], output)
+                    with self.subTest(evidence=label), self.assertRaisesRegex(
+                        harness.HarnessError, step
+                    ):
+                        harness.validate_required_rust_test_evidence(changed, run_root)
 
-            forged_argv = passing_rust_gate_steps(log_dir)
-            forged_argv[step]["argv"] = ["cargo", "test"]
-            with self.assertRaisesRegex(harness.HarnessError, "invocation is not exact"):
-                harness.validate_required_rust_test_evidence(forged_argv, run_root)
+                forged_argv = passing_rust_gate_steps(log_dir)
+                forged_argv[step]["argv"] = ["cargo", "test"]
+                with self.assertRaisesRegex(harness.HarnessError, "invocation is not exact"):
+                    harness.validate_required_rust_test_evidence(forged_argv, run_root)
 
     def test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed(self):
         expected = (
@@ -14398,7 +14585,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 151)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
         self.assertEqual(
             [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34dn_")],
             list(expected),
@@ -14409,15 +14596,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
 
         for step, suite, package, identity in expected:
@@ -14497,6 +14684,80 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(harness.HarnessError, "invocation is not exact"):
                 harness.validate_required_rust_test_evidence(forged_argv, run_root)
 
+
+    def test_s3_27_fault_boundary_gates_are_pinned_and_fail_closed(self):
+        expected = (
+            (
+                "s3_27_pc_map_snapshot_boundary",
+                "statepoints::tests::maps_cover_code_with_checked_half_open_ranges_and_separate_boundaries",
+                "crates/od-jit/src/statepoints.rs",
+            ),
+            (
+                "s3_27_uncached_memory_fault_boundary",
+                "memory_dispatch::tests::guest_fault_requires_pending_memory_site",
+                "crates/od-jit/src/memory_dispatch.rs",
+            ),
+            (
+                "s3_27_cached_memory_fault_boundary",
+                "memory_cache::tests::guest_fault_requires_pending_cached_memory_site",
+                "crates/od-jit/src/memory_cache.rs",
+            ),
+        )
+        with tempfile.TemporaryDirectory(dir=harness.ROOT / "work") as tmp:
+            run_root = Path(tmp).resolve()
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(steps, run_root)
+            for step, identity, source in expected:
+                with self.subTest(step=step):
+                    self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+                    self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+                    self.assertEqual(
+                        harness.RUST_TEST_GATES.count((step, "local_acceptance", "od-jit", identity)),
+                        1,
+                    )
+                    missing = steps.copy()
+                    del missing[step]
+                    with self.assertRaisesRegex(harness.HarnessError, f"not passed: {step}"):
+                        harness.validate_required_rust_test_evidence(missing, run_root)
+
+                    ignored_output = f"test {identity} ... ignored\n"
+                    ignored = {
+                        **steps[step],
+                        "output_tail": ignored_output,
+                        "output_sha256": harness.sha256_bytes(ignored_output.encode("utf-8")),
+                        "test_outcomes": {identity: "ignored"},
+                    }
+                    log_path = log_dir / f"{step}.log"
+                    try:
+                        log_path.write_text(ignored_output)
+                        with self.assertRaisesRegex(
+                            harness.HarnessError, f"lacks exact passing output: {step}"
+                        ):
+                            harness.validate_required_rust_test_evidence({**steps, step: ignored}, run_root)
+                    finally:
+                        log_path.write_text(steps[step]["output_tail"])
+
+    def test_s3_16_publication_refusal_gate_is_pinned(self):
+        step = "s3_16_publication_refusal"
+        identity = "paged_host_loop::tests::s3_16_publication_refusal_interprets_once_and_resumes_native"
+        source = "crates/od-host/src/paged_host_loop.rs"
+        manifest = harness.input_manifest()["local_rust_tests"]
+        self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+        self.assertEqual(
+            [gate for gate in manifest["gates"] if gate["step"] == step],
+            [{"step": step, "suite": "local_acceptance", "package": "od-host", "identity": identity}],
+        )
+        self.assertEqual(
+            manifest["sources"].count({"path": source, "sha256": harness.sha256_file(harness.ROOT / source)}),
+            1,
+        )
+        self.assertEqual(
+            harness.rust_test_argv("od-host", identity),
+            ["cargo", "test", "--offline", "-p", "od-host", "--lib", identity,
+             "--", "--exact", "--test-threads=1"],
+        )
 
     def test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed(self):
         expected = [
@@ -14525,8 +14786,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             command.extend(["--lib"] if gate[2] in {"od-jit", "od-host"} else [])
             command.extend([gate[3], "--", "--exact", "--test-threads=1"])
             self.assertEqual(harness.rust_test_argv(gate[2], gate[3]), command)
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), EXPECTED_RUST_GATES)
 
         source_manifest = {
             "gates": harness.rust_test_gate_manifest(),
@@ -14607,8 +14868,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
         source_manifest = {
             "gates": manifest,
             "sources": [
@@ -14667,7 +14928,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "test_s3_34dr_load_load_profile_gates_are_pinned_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 151)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), EXPECTED_SELF_TESTS)
         self.assertEqual(
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34dr_")],
             list(expected),
@@ -14678,19 +14939,19 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         )
 
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(harness.RUST_TEST_GATES), 326)
-        self.assertEqual(len(manifest), 326)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 326)
-        self.assertEqual(len(harness.LOCAL_STEPS), 344)
+        self.assertEqual(len(harness.RUST_TEST_GATES), EXPECTED_RUST_GATES)
+        self.assertEqual(len(manifest), EXPECTED_RUST_GATES)
+        self.assertEqual(len({gate["step"] for gate in manifest}), EXPECTED_RUST_GATES)
+        self.assertEqual(len(harness.LOCAL_STEPS), EXPECTED_LOCAL_STEPS)
         self.assertEqual(
-            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 308
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_ACCEPTANCE_GATES
         )
         self.assertEqual(
-            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 18
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), EXPECTED_LOCAL_LIFECYCLE_GATES
         )
         source_path = "crates/od-jit/src/memory_cache.rs"
         self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source_path), 1)
-        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 18)
+        self.assertEqual(len(harness.LOCAL_RUST_TEST_SOURCES), 21)
 
         source_manifest = {
             "gates": manifest,
@@ -14764,6 +15025,74 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     harness.HarnessError, "invocation is not exact"
                 ):
                     harness.validate_required_rust_test_evidence(forged_argv, run_root)
+
+
+    def test_s3_34ds_mixed_register_corpus_gate_is_pinned_and_fail_closed(self):
+        step = "s3_34ds_mixed_register_v1_corpus"
+        suite = "local_acceptance"
+        package = "od-host"
+        identity = "generated_mixed_register_v1_corpus_runs_twice_on_published_arena"
+        source = "crates/od-host/tests/mixed_register_v1_corpus.rs"
+        argv = [
+            "cargo", "test", "--offline", "-p", package, "--test",
+            "mixed_register_v1_corpus", identity, "--", "--exact", "--test-threads=1",
+        ]
+        self.assertIn(self._testMethodName, harness.SELF_TEST_NAMES)
+        self.assertEqual(harness.RUST_TEST_GATES.count((step, suite, package, identity)), 1)
+        self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+        self.assertEqual(harness.LOCAL_RUST_TEST_SOURCES.count(source), 1)
+        self.assertEqual(harness.rust_test_argv(package, identity), argv)
+        manifest = {
+            "gates": harness.rust_test_gate_manifest(),
+            "sources": [
+                {"path": path, "sha256": harness.sha256_file(harness.ROOT / path)}
+                for path in harness.LOCAL_RUST_TEST_SOURCES
+            ],
+        }
+        self.assertEqual(
+            [entry for entry in manifest["gates"] if entry["step"] == step],
+            [{"step": step, "suite": suite, "package": package, "identity": identity}],
+        )
+        harness.validate_rust_test_manifest(manifest)
+        missing_source = {
+            **manifest,
+            "sources": [entry for entry in manifest["sources"] if entry["path"] != source],
+        }
+        with self.assertRaisesRegex(harness.HarnessError, "required Rust test sources"):
+            harness.validate_rust_test_manifest(missing_source)
+        current_source = next(entry for entry in manifest["sources"] if entry["path"] == source)
+        current_source["sha256"] = "0" * 64
+        with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
+            harness.validate_rust_test_manifest(manifest)
+
+        with temporary_fixture_directory() as temporary:
+            run_root = Path(temporary)
+            log_dir = run_root / "logs"
+            log_dir.mkdir()
+            valid = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(valid, run_root)
+            missing = valid.copy()
+            del missing[step]
+            with self.assertRaisesRegex(harness.HarnessError, step):
+                harness.validate_required_rust_test_evidence(missing, run_root)
+            for wrong_target in (["--lib"], ["--test", "memory_corpus"]):
+                wrong = {**valid, step: {**valid[step], "argv": argv[:5] + wrong_target + argv[7:]}}
+                with self.subTest(target=wrong_target), self.assertRaisesRegex(
+                    harness.HarnessError, "invocation is not exact"
+                ):
+                    harness.validate_required_rust_test_evidence(wrong, run_root)
+            for output in (
+                "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
+                "test tests::s3_54_native_multi_cache_reuses_published_handle ... ok\n",
+                f"test {identity} ... ignored\n",
+                f"test {identity} ... FAILED\n",
+            ):
+                wrong = {**valid, step: valid[step].copy()}
+                replace_step_log_output(wrong[step], output)
+                with self.subTest(output=output), self.assertRaisesRegex(
+                    harness.HarnessError, "lacks exact passing output"
+                ):
+                    harness.validate_required_rust_test_evidence(wrong, run_root)
 
 
 if __name__ == "__main__":

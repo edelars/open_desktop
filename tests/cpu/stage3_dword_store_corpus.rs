@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU8;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,8 @@ const REDUCE_ENV: &str = "OD_S3_34DO_REDUCE_ARTIFACT";
 const REPLAY_RAM_LAYOUT: &str = "offsets:-4..=7;omit-address-underflow";
 const DEFINED_FLAGS_MASK: u64 = 0x8d5;
 const MAX_REDUCER_CANDIDATES: usize = 256;
+// This integration target shares the process's single MAP_JIT mapping.
+static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WriteCallback {
@@ -163,6 +166,8 @@ struct Observation {
     retired_instructions: u64,
     callbacks: Vec<WriteCallback>,
 }
+
+type ObserveJit = fn(&PublishedCode, &DwordStoreCorpusInput) -> Observation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReplayArtifact {
@@ -608,6 +613,24 @@ fn comparator_mismatch(
         })
 }
 
+fn capture_mismatch(
+    seed: u64,
+    index: usize,
+    input: &DwordStoreCorpusInput,
+    expected: &Observation,
+    interpreter: &Observation,
+    jit: &Observation,
+) -> Option<ReplayArtifact> {
+    Some(ReplayArtifact {
+        mismatch: comparator_mismatch(expected, interpreter, jit)?,
+        seed,
+        index,
+        input: input.clone(),
+        interpreter_observation: format!("{interpreter:#?}"),
+        jit_observation: format!("{jit:#?}"),
+    })
+}
+
 fn classify_replay(
     artifact: &ReplayArtifact,
     interpreter_first: &Observation,
@@ -628,18 +651,24 @@ fn classify_replay(
     }
 }
 
-fn run_replay_observations(input: &DwordStoreCorpusInput) -> Result<ReplayRuns, String> {
+fn run_replay_observations(
+    input: &DwordStoreCorpusInput,
+    observe_jit: ObserveJit,
+) -> Result<ReplayRuns, String> {
     let expected = expected(input);
     let source_view = CodeView::new(ENTRY_RIP, &SOURCE)
         .map_err(|error| format!("invalid source view: {error:?}"))?;
     let compiled = compile_ir_memory_dword_store_block_v2(source_view, ENTRY_RIP)
         .map_err(|error| format!("compile failed: {error:?}"))?;
+    let _guard = JIT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled)
         .map_err(|error| format!("publication failed: {error:?}"))?;
     let interpreter_first = run_interpreter(input);
-    let jit_first = run_jit(&published, input);
+    let jit_first = observe_jit(&published, input);
     let interpreter_second = run_interpreter(input);
-    let jit_second = run_jit(&published, input);
+    let jit_second = observe_jit(&published, input);
     let mismatch_first = comparator_mismatch(&expected, &interpreter_first, &jit_first);
     let mismatch_second = comparator_mismatch(&expected, &interpreter_second, &jit_second);
     Ok(ReplayRuns {
@@ -663,12 +692,12 @@ fn replay_outcome(artifact: &ReplayArtifact, runs: &ReplayRuns) -> ReplayOutcome
     )
 }
 
-fn replay_saved_artifact(path: &Path) -> Result<ReplayOutcome, String> {
+fn replay_saved_artifact(path: &Path, observe_jit: ObserveJit) -> Result<ReplayOutcome, String> {
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
     // Parsing validates the complete profile, input domain, and RAM layout/digest
     // before compiling or publishing executable code.
     let artifact = parse_replay_artifact(&contents).map_err(str::to_owned)?;
-    let runs = run_replay_observations(&artifact.input)?;
+    let runs = run_replay_observations(&artifact.input, observe_jit)?;
     Ok(replay_outcome(&artifact, &runs))
 }
 
@@ -935,11 +964,11 @@ fn value_candidates(input: &DwordStoreCorpusInput, limit: usize) -> Vec<ValueCan
     candidates
 }
 
-fn reduce_saved_artifact(path: &Path) -> Result<ReductionReport, String> {
+fn reduce_saved_artifact(path: &Path, observe_jit: ObserveJit) -> Result<ReductionReport, String> {
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
     // The strict single-profile parser runs before any publication or execution.
     let original = parse_replay_artifact(&contents).map_err(str::to_owned)?;
-    let original_runs = match run_replay_observations(&original.input) {
+    let original_runs = match run_replay_observations(&original.input, observe_jit) {
         Ok(runs) => runs,
         Err(_) => {
             return Ok(ReductionReport {
@@ -1003,7 +1032,7 @@ fn reduce_saved_artifact(path: &Path) -> Result<ReductionReport, String> {
                 stop_reason = "candidate_changed_fixed_profile_or_did_not_reduce_values".into();
                 break 'reduce;
             }
-            let candidate_runs = match run_replay_observations(&candidate.input) {
+            let candidate_runs = match run_replay_observations(&candidate.input, observe_jit) {
                 Ok(runs) => runs,
                 Err(_) => {
                     stop_reason = "candidate_backend_error".into();
@@ -1033,13 +1062,14 @@ fn reduce_saved_artifact(path: &Path) -> Result<ReductionReport, String> {
             };
             // Re-run through the ordinary artifact replay contract before this
             // candidate can become the next best input or be persisted.
-            let verification_runs = match run_replay_observations(&candidate_artifact.input) {
-                Ok(runs) => runs,
-                Err(_) => {
-                    stop_reason = "candidate_verification_backend_error".into();
-                    break 'reduce;
-                }
-            };
+            let verification_runs =
+                match run_replay_observations(&candidate_artifact.input, observe_jit) {
+                    Ok(runs) => runs,
+                    Err(_) => {
+                        stop_reason = "candidate_verification_backend_error".into();
+                        break 'reduce;
+                    }
+                };
             observations += 4;
             if !candidate_passes_ordinary_replay(
                 &candidate_artifact,
@@ -1143,6 +1173,9 @@ fn fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input(
         ENTRY_RIP,
     )
     .unwrap();
+    let _guard = JIT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
 
     let first_input = generate_s3_34dm_dword_store_input(S3_34DM_SEEDS[0], 0);
@@ -1172,20 +1205,15 @@ fn fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input(
             for repetition in 0..2 {
                 let interpreter = run_interpreter(&input);
                 let native = run_jit(&published, &input);
-                if let Some(mismatch) = comparator_mismatch(&expected, &interpreter, &native) {
-                    let artifact = ReplayArtifact {
-                        seed,
-                        index,
-                        input: input.clone(),
-                        interpreter_observation: format!("{interpreter:#?}"),
-                        jit_observation: format!("{native:#?}"),
-                        mismatch: mismatch.clone(),
-                    };
+                if let Some(artifact) =
+                    capture_mismatch(seed, index, &input, &expected, &interpreter, &native)
+                {
                     let artifact_path = save_mismatch_artifact(&artifact).unwrap_or_else(|error| {
                         panic!("could not persist mismatch artifact: {error}")
                     });
                     panic!(
-                        "S3-34dm mismatch: seed={seed:#018x} index={index} repetition={repetition} comparator={mismatch}\nartifact={}\ninput={input:#?}\nexpected={expected:#?}\ninterpreter={interpreter:#?}\nJIT={native:#?}",
+                        "S3-34dm mismatch: seed={seed:#018x} index={index} repetition={repetition} comparator={}\nartifact={}\ninput={input:#?}\nexpected={expected:#?}\ninterpreter={interpreter:#?}\nJIT={native:#?}",
+                        artifact.mismatch,
                         artifact_path.display(),
                     );
                 }
@@ -1193,6 +1221,70 @@ fn fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input(
         }
     }
     assert_eq!(unique.len(), S3_34DM_SEEDS.len() * S3_34DM_CASES_PER_SEED);
+}
+
+#[test]
+fn s3_34do_captured_runtime_mismatch_replays_and_reduces() {
+    let observe_injected: ObserveJit = |published, input| {
+        let mut observation = run_jit(published, input);
+        compare(&expected(input), &observation)
+            .expect("JIT must agree before diagnostic injection");
+        // Change only the observation after native execution. R9 is unrelated
+        // to this instruction's address, store value and callback protocol.
+        observation.state.gpr[9] ^= 1;
+        observation
+    };
+    let seed = S3_34DM_SEEDS[0];
+    let index = 2;
+    let input = generate_s3_34dm_dword_store_input(seed, index);
+    let runs = run_replay_observations(&input, observe_injected).unwrap();
+    let original = capture_mismatch(
+        seed,
+        index,
+        &input,
+        &expected(&input),
+        &runs.interpreter_first,
+        &runs.jit_first,
+    )
+    .expect("comparator must detect the injected R9 mismatch");
+    assert_eq!(original.mismatch, "expected/JIT: full CPU state");
+    let original_path = save_mismatch_artifact(&original).unwrap();
+    let _original_directory = TemporaryArtifactDirectory(original_path.parent().unwrap().into());
+    let original_bytes = fs::read_to_string(&original_path).unwrap();
+    assert_eq!(parse_replay_artifact(&original_bytes), Ok(original.clone()));
+
+    assert_eq!(
+        replay_saved_artifact(&original_path, run_jit),
+        Ok(ReplayOutcome::NotReproduced)
+    );
+    let ordinary = reduce_saved_artifact(&original_path, run_jit).unwrap();
+    assert_eq!(ordinary.outcome, "not_reproduced");
+    assert_eq!(ordinary.attempts, 0);
+    assert_eq!(ordinary.observations, 4);
+    assert!(ordinary.reduced_artifact.is_none());
+    assert_eq!(
+        replay_saved_artifact(&original_path, observe_injected),
+        Ok(ReplayOutcome::Reproduced)
+    );
+
+    let report = reduce_saved_artifact(&original_path, observe_injected).unwrap();
+    let reduced_path = report.reduced_artifact.as_ref().expect("reduced artifact");
+    let _reduced_directory = TemporaryArtifactDirectory(reduced_path.parent().unwrap().into());
+    assert_eq!(report.outcome, "reduced");
+    assert!((1..=MAX_REDUCER_CANDIDATES).contains(&report.attempts));
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), original_bytes);
+    let reduced = parse_replay_artifact(&fs::read_to_string(reduced_path).unwrap()).unwrap();
+    assert_eq!((reduced.seed, reduced.index), (seed, index));
+    assert_eq!(reduced.mismatch, original.mismatch);
+    assert!(value_only_mutation_preserves_profile(
+        &input,
+        &reduced.input
+    ));
+    assert!(mutable_value_popcount(&reduced.input) < mutable_value_popcount(&input));
+    assert_eq!(
+        replay_saved_artifact(reduced_path, observe_injected),
+        Ok(ReplayOutcome::Reproduced)
+    );
 }
 
 #[test]
@@ -1335,7 +1427,7 @@ fn replay_saved_s3_34dn_mismatch_artifact() {
         eprintln!("S3-34dn replay: not_reproduced (prior mismatch artifact is absent)");
         return;
     }
-    match replay_saved_artifact(&path) {
+    match replay_saved_artifact(&path, run_jit) {
         Ok(ReplayOutcome::NotReproduced) => {
             eprintln!("S3-34dn replay: not_reproduced (the deterministic mismatch did not recur)");
         }
@@ -1362,7 +1454,7 @@ fn reduce_saved_s3_34do_value_only_artifact() {
         );
         return;
     }
-    match reduce_saved_artifact(&path) {
+    match reduce_saved_artifact(&path, run_jit) {
         Ok(report) => eprintln!(
             "S3-34do reducer: outcome={} attempts={} observations={} stop_reason={} reduced_artifact={}",
             report.outcome,

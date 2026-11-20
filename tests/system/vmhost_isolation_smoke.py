@@ -113,13 +113,18 @@ def main():
             if read_frame(channel) != (2, 0, struct.pack("<I", 1)):
                 raise RuntimeError("VMHost ABI handshake failed")
 
-        # Run guest code in both independent helpers before simulating one fatal signal.
-        loop = bytes.fromhex("75fe")
+        # Both helpers accept a RUN before one receives the fatal signal.
+        # MOV RCX,imm64; JNZ back to MOV. The write witnesses guest progress
+        # without changing the flags or the process-specific RAX marker.
+        marker = 0x123456789ABCDEF0
+        loop = bytes.fromhex("48b9") + struct.pack("<Q", marker) + bytes.fromhex("75f4")
         request_run(first_channel, 1, loop, (1 << 64) - 1, 0x111)
         request_run(second_channel, 2, loop, (1 << 64) - 1, 0x222)
         first.send_signal(signal.SIGSEGV)
         if first.wait(timeout=3) != -signal.SIGSEGV:
             raise RuntimeError("faulted helper did not exit from SIGSEGV")
+        if second.poll() is not None:
+            raise RuntimeError("surviving VMHost exited before its own STOP")
 
         # The surviving helper must remain responsive to its own STOP request.
         send_frame(second_channel, 5, 2)
@@ -128,14 +133,21 @@ def main():
         kind, response_id, payload = read_frame(second_channel)
         if (kind, response_id) != (7, 2) or len(payload) != 64:
             raise RuntimeError("surviving VMHost returned an invalid RESULT")
-        rax = struct.unpack_from("<Q", payload, 0)[0]
-        reason = struct.unpack_from("<I", payload, 48)[0]
-        if rax != 0x222 or reason != 2 or struct.unpack_from("<Q", payload, 56)[0] == 0:
-            raise RuntimeError(f"surviving VMHost returned RAX={rax}, reason={reason}")
+        rax, rcx, rdx, rbx, rip, rflags, reason, reserved, retired = struct.unpack("<6QIIQ", payload)
+        # V0 permits STOP after RUN_ACK before the first guest instruction.
+        expected_rcx = marker if retired else 0
+        expected_rip = 10 if retired % 2 else 0
+        expected = (0x222, expected_rcx, 0, 0, expected_rip, 2, 2, 0)
+        actual = (rax, rcx, rdx, rbx, rip, rflags, reason, reserved)
+        if actual != expected:
+            raise RuntimeError(f"surviving VMHost state {actual} != {expected} at retired={retired}")
         if second.wait(timeout=3) != 0:
             raise RuntimeError("surviving VMHost exited unsuccessfully")
 
-        print("VMHost isolation smoke passed: one active helper received SIGSEGV; the other returned its own state after STOP")
+        print(
+            "VMHost isolation smoke passed: one helper received SIGSEGV; the other "
+            f"returned its own state after STOP (retired={retired})"
+        )
     finally:
         for channel in channels:
             channel.close()

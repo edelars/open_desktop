@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut corpus_path = None::<PathBuf>;
     let mut case_list = None::<PathBuf>;
     let mut trace_path = None::<PathBuf>;
+    let mut accepted_archive = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut calibration = None::<PathBuf>;
     let mut epochs = None::<usize>;
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut preflight_only = false;
     let mut calibration_only = false;
     let mut generic_register = false;
+    let mut relocated_s3_17_paths = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--case-list" => {
@@ -44,6 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let path: PathBuf = args.next().ok_or("--trace requires a path")?.into();
                 trace_path = Some(path.clone());
                 input = Some(path);
+            }
+            "--accepted-archive" => {
+                accepted_archive = Some(
+                    args.next()
+                        .ok_or("--accepted-archive requires a path")?
+                        .into(),
+                );
             }
             "--corpus" => {
                 corpus_path = Some(args.next().ok_or("--corpus requires a path")?.into());
@@ -66,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--preflight-only" => preflight_only = true,
             "--calibration-only" => calibration_only = true,
             "--generic-register" => generic_register = true,
+            "--relocated-s3-17-paths" => relocated_s3_17_paths = true,
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -77,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|message| message.to_owned())?;
 
     validate_generic_register(&mode, generic_register)?;
+    validate_relocated_s3_17_paths(&mode, relocated_s3_17_paths)?;
 
     match mode.as_str() {
         "record" => {
@@ -184,7 +195,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cold-first-run requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value = if generic_register {
+                let value = if relocated_s3_17_paths {
+                    od_bench::dispatch_cache::run_relocated_s3_17_cold_first_execution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                        generic_register,
+                    )?
+                } else if generic_register {
                     od_bench::dispatch_cache::run_generic_cold_first_execution(
                         &case_list,
                         &trace,
@@ -211,11 +229,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cold-phases requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value = od_bench::dispatch_cache::run_cold_pipeline_attribution(
-                    &case_list,
-                    &trace,
-                    process_run,
-                )?;
+                let value = if relocated_s3_17_paths {
+                    od_bench::dispatch_cache::run_relocated_s3_17_cold_pipeline_attribution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_cold_pipeline_attribution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -272,6 +298,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "allocator-census-s3-36l" => {
+            let case_list = case_list.ok_or("allocator-census-s3-36l requires --case-list PATH")?;
+            let trace = trace_path.ok_or("allocator-census-s3-36l requires --trace PATH")?;
+            let archive = accepted_archive
+                .ok_or("allocator-census-s3-36l requires --accepted-archive PATH")?;
+            let output = output.ok_or("allocator-census-s3-36l requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value =
+                    od_bench::dispatch_cache::run_allocator_census(&case_list, &trace, &archive)?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, archive, output);
+                return Err(
+                    "allocator-census-s3-36l requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "warm-dispatch-phases" => {
             let case_list = case_list.ok_or("warm-dispatch-phases requires --case-list PATH")?;
             let trace = trace_path.ok_or("warm-dispatch-phases requires --trace PATH")?;
@@ -299,8 +345,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cache-churn requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value =
-                    od_bench::dispatch_cache::run_cache_churn(&case_list, &trace, process_run)?;
+                let value = if relocated_s3_17_paths {
+                    od_bench::dispatch_cache::run_relocated_s3_17_cache_churn(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_cache_churn(&case_list, &trace, process_run)?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -781,7 +834,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, page-walk-compare, translation-micro, translation-hit-share, stage6-host-memory, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
+                "expected record, measure, synthetic, page-walk-compare, translation-micro, translation-hit-share, stage6-host-memory, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, allocator-census-s3-36l, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -821,13 +874,14 @@ fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench translation-micro [--process-run 1..3] --output report.json\n  od-bench translation-hit-share [--process-run 1..3] --output report.json\n  od-bench stage6-host-memory --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register]\n\
-  od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench translation-micro [--process-run 1..3] --output report.json\n  od-bench translation-hit-share [--process-run 1..3] --output report.json\n  od-bench stage6-host-memory --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register] [--relocated-s3-17-paths]\n\
+  od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench allocator-census-s3-36l --case-list PATH --trace PATH --accepted-archive PATH --output census.json\n\
   od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
-  od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\
   od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle-stress-calibrate --case-list PATH --trace PATH --output calibration.json\n\
   od-bench cache-lifecycle-stress --case-list PATH --trace PATH --calibration calibration.json --epochs N --process-run 1..3 --output report.json\n\
@@ -877,11 +931,21 @@ fn validate_mode_flags(
     Ok(())
 }
 
+fn validate_relocated_s3_17_paths(mode: &str, relocated: bool) -> Result<(), &'static str> {
+    if relocated && !matches!(mode, "cold-first-run" | "cold-phases" | "cache-churn") {
+        return Err(
+            "--relocated-s3-17-paths is only valid for cold-first-run, cold-phases, or cache-churn",
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         two_site_memory_cache_journal_path, two_site_memory_cold_journal_path,
         two_site_memory_warm_journal_path, validate_generic_register, validate_mode_flags,
+        validate_relocated_s3_17_paths,
     };
     use od_bench::calibration_report::calibration_only_report_succeeded;
     use std::path::PathBuf;
@@ -895,11 +959,37 @@ mod tests {
             "record",
             "synthetic",
             "cold-phases",
+            "cache-churn",
             "warm-dispatch-phases",
             "unknown",
         ] {
             assert!(validate_generic_register(mode, true).is_err(), "{mode}");
             assert!(validate_generic_register(mode, false).is_ok(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn relocated_s3_17_paths_are_limited_to_supported_commands() {
+        for mode in ["cold-first-run", "cold-phases", "cache-churn"] {
+            assert!(validate_relocated_s3_17_paths(mode, true).is_ok());
+            assert!(validate_relocated_s3_17_paths(mode, false).is_ok());
+        }
+        for mode in [
+            "warm-first-run",
+            "warm-dispatch-phases",
+            "cache-lifecycle",
+            "cache-lifecycle-stress",
+            "record",
+            "unknown",
+        ] {
+            assert!(
+                validate_relocated_s3_17_paths(mode, true).is_err(),
+                "{mode}"
+            );
+            assert!(
+                validate_relocated_s3_17_paths(mode, false).is_ok(),
+                "{mode}"
+            );
         }
     }
 

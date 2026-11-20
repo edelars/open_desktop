@@ -47,6 +47,37 @@ SOURCE_ROOTS = (
     "tools/x86-runner",
 )
 SOURCE_SUFFIXES = {".rs", ".toml", ".h", ".c", ".S"}
+# The od-runner linux_gate tests read these reports at runtime from the checkout.
+PREFLIGHT_REPORTS = (
+    "docs/reports/data/stage4/s4-39i-uart-irq4-stage4a-run.json",
+    "docs/reports/data/stage4/s4-39j-gate-counted-cold1-stage4a-run.json",
+    "docs/reports/data/stage4/s4-39j-gate-counted-cold2-stage4a-run.json",
+)
+PREFLIGHT_INPUT_FINGERPRINT_CODE = r"""import hashlib
+from pathlib import Path
+
+fixture_root = Path('tests/fixtures/x86')
+reports = [Path(name) for name in %r]
+fixtures = sorted(
+    path for path in fixture_root.rglob('*')
+    if path.is_file() and not path.name.startswith('._')
+    and path.name.endswith(('.case.json', '.hex'))
+)
+if not fixtures:
+    raise SystemExit(f'missing preflight fixtures: {fixture_root}')
+
+digest = hashlib.sha256()
+for path in reports + fixtures:
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise SystemExit(f'cannot read preflight input {path}: {error.strerror}')
+    digest.update(path.as_posix().encode())
+    digest.update(b'\0')
+    digest.update(data)
+    digest.update(b'\0')
+print(digest.hexdigest())
+""" % (PREFLIGHT_REPORTS,)
 REMOTE_FINGERPRINT_CODE = """import hashlib,pathlib
 r=pathlib.Path('.')
 roots=['Cargo.toml','Cargo.lock']+list(%r)
@@ -726,6 +757,22 @@ def main() -> int:
                 "local and remote runner source fingerprints differ: "
                 f"{fingerprint} != {remote_fingerprint}"
             )
+        manifest["source_fingerprint"] = fingerprint
+        input_fingerprints: dict[str, str] = {}
+        manifest["preflight_input_fingerprints"] = input_fingerprints
+        input_fingerprints["local"] = require_success(
+            run([sys.executable, "-c", PREFLIGHT_INPUT_FINGERPRINT_CODE], cwd=ROOT),
+            "local preflight input fingerprint",
+        ).strip()
+        input_fingerprints["remote"] = ssh_run(
+            target,
+            f"{remote_cd} && python3 -c {shlex.quote(PREFLIGHT_INPUT_FINGERPRINT_CODE)}",
+        ).strip()
+        if input_fingerprints["remote"] != input_fingerprints["local"]:
+            raise Stage1Error(
+                "local and remote preflight input fingerprints differ: "
+                f"{input_fingerprints['local']} != {input_fingerprints['remote']}"
+            )
         revision = f"sha256:{fingerprint}"
         local_info = local_machine()
         remote_rustc = ssh_run(
@@ -736,7 +783,6 @@ def main() -> int:
             target,
             f"{remote_cd} && . \"$HOME/.cargo/env\" && cargo --version",
         ).strip()
-        manifest["source_fingerprint"] = fingerprint
         manifest["machines"] = {"local": local_info, "remote_rustc": remote_rustc, "remote_cargo": remote_cargo}
 
         remote_tests = remote_test_command(args.remote_root, args.engine)

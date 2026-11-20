@@ -60,6 +60,11 @@ between completed calls; the caller supplies the updated dependency snapshot
 to the next lookup. This remains a fixture contract and does not add owner or
 MMU integration.
 
+S3-40v reuses the validated key on an exact match of the context,
+code view and ordered dependency slice. Other inputs use the usual
+key validation and dependency normalization.
+[Checked-memory measurements](../../docs/reports/STAGE_3_S3-40v_2026-11-19.md)
+
 S3-05 добавил `lowering::lower`, который строит и verifier-checks typed IR из
 decoder records для принятых S0-09 MOV imm64, ADD/SUB/CMP reg64 и JZ/JNZ.
 Lowering сохраняет RIP boundaries, читает оба арифметических источника до
@@ -360,6 +365,22 @@ publications/evictions/resident bytes. LRU доступен как явная po
 предварительны и не являются performance claim; требуется repeat end-to-end
 FIFO-vs-LRU measurement. `SingleEntryBlockCache::new` и обычные
 release-on-return executor contracts сохраняют прежнее поведение.
+
+Кешированный S0-09 dispatcher в пределах одного вызова может повторно
+использовать индекс только что выполненного блока и индекс предыдущего
+блока. Это покрывает как повторный вход на тот же RIP, так и чередование
+двух RIP. При попадании dispatcher использует позицию после обновления
+порядка LRU и корректирует сохранённый индекс, если запись сдвинулась.
+При установке нового блока сохранённый индекс сбрасывается до вытеснения.
+Перед каждым входом проверяются снимок зависимостей, код, бюджет, события
+и условия остановки. Первый вход и переход на другой RIP, для которого
+индекс не сохранён, проходят обычное построение блока и поиск ключа.
+
+S3-31k передаёт кеш, индекс и адрес memo напрямую при попадании по
+сохранённому индексу. В проверенных прогретых профилях на M1 Pro
+время JIT сократилось на 1,99–2,49% для длинных циклов с одним RIP
+и на 2,62–3,25% для циклов с двумя чередующимися RIP.
+[Замеры и проверки](../../docs/reports/STAGE_3_S3-31k_2026-11-19.md)
 
 `od-bench dispatch-cache` имеет implementation-only native mode для uncached
 publication, single-entry arena, FIFO(16) и opt-in LRU(16). Он требует exact
