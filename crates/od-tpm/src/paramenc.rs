@@ -122,6 +122,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::IMPORT
             | cc::DUPLICATE
             | cc::SIGN
+            | cc::SIGN_DIGEST
             | cc::VERIFY_SIGNATURE
             | cc::VERIFY_DIGEST_SIGNATURE
             | cc::RSA_ENCRYPT

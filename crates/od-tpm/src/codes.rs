@@ -90,6 +90,7 @@ pub mod cc {
     pub const LOAD: u32 = 0x0000_0157;
     pub const SEQUENCE_UPDATE: u32 = 0x0000_015C;
     pub const SIGN: u32 = 0x0000_015D;
+    pub const SIGN_DIGEST: u32 = 0x0000_01A6;
     pub const UNSEAL: u32 = 0x0000_015E;
     pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
     pub const LOAD_EXTERNAL: u32 = 0x0000_0167;

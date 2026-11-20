@@ -17,8 +17,6 @@
 //! until the S7-32 trace).
 //!
 //! Limitations recorded in `docs/specs/VTPM.md`:
-//! - the `validation` ticket is always the NULL ticket (`TPMT_TK_HASHCHECK` with `TPM_RH_NULL`
-//!   and an empty digest). A real ticket needs the hierarchy proof values (phase B, S7-23).
 //! - NOT VERIFIED against TPM 2.0 Library v185: `TPM_RC_MODE` for a sequence of the wrong kind
 //!   carries the handle number here; whether sequence objects are exempt from dictionary attack
 //!   protection (a wrong password is answered `TPM_RC_BAD_AUTH`, there is no DA in phase A).
@@ -27,8 +25,8 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384};
 use zeroize::Zeroize;
 
-use crate::codes::{alg, handle, object_attr};
-use crate::crypto::{hmac_sha256, hmac_sha256_state};
+use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
+use crate::crypto::{hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
 use crate::dispatch::Invocation;
 use crate::marshal::{PublicParams, Reader, TpmtTkHashcheck, Writer, digest_size, limits};
 use crate::object::Secret;
@@ -47,12 +45,14 @@ fn check_hierarchy(r: &Reader<'_>, h: u32) -> Result<u32, Rc> {
     }
 }
 
-/// The NULL ticket of Part 2, Table 112 (`TPM_RH_NULL`, empty digest).
-fn null_ticket() -> TpmtTkHashcheck {
-    TpmtTkHashcheck {
-        hierarchy: handle::RH_NULL,
-        digest: Vec::new(),
-    }
+fn safe_hashcheck_prefix(data: &[u8]) -> bool {
+    const GENERATED: [u8; 4] = TPM_GENERATED_VALUE.to_be_bytes();
+    data.len() >= GENERATED.len() && !data.starts_with(&GENERATED)
+}
+
+fn hashcheck_parts(digest: &[u8]) -> [&[u8]; 2] {
+    const TAG: [u8; 2] = st::HASHCHECK.to_be_bytes();
+    [&TAG, digest]
 }
 
 /// Authorization value of a sequence object (at most one digest long); wiped on drop.
@@ -135,6 +135,8 @@ pub(crate) enum SequenceKind {
 pub(crate) struct Sequence {
     pub kind: SequenceKind,
     pub auth: AuthValue,
+    /// `None` until the first hash buffer has been accepted (Part 3 v185 §17.8.1).
+    first_buffer_safe: Option<bool>,
 }
 
 /// Transient sequence slots.
@@ -172,7 +174,11 @@ impl Sequences {
             .iter()
             .position(|s| s.is_none())
             .ok_or(Rc::OBJECT_MEMORY)?;
-        self.slots[slot] = Some(Sequence { kind, auth });
+        self.slots[slot] = Some(Sequence {
+            kind,
+            auth,
+            first_buffer_safe: None,
+        });
         Ok(Output {
             handles: seq_handle(slot).to_be_bytes().to_vec(),
             params: Vec::new(),
@@ -226,17 +232,45 @@ impl Tpm {
         let hierarchy = p.u32()?;
         check_hierarchy(p, hierarchy)?;
         p.finish()?;
-        let mut w = Writer::new();
-        match hash_alg {
-            alg::SHA256 => w.tpm2b(&Sha256::digest(data)),
-            alg::SHA384 => w.tpm2b(&Sha384::digest(data)),
+        let hierarchy = if safe_hashcheck_prefix(data) {
+            hierarchy
+        } else {
+            handle::RH_NULL
+        };
+        let result = match hash_alg {
+            alg::SHA256 => self.hash_result(&Sha256::digest(data), hierarchy),
+            alg::SHA384 => self.hash_result(&Sha384::digest(data), hierarchy),
             _ => unreachable!("hash algorithm has already been checked"),
-        }
-        null_ticket().marshal(&mut w);
-        Ok(Output {
+        };
+        Ok(result)
+    }
+
+    /// The digest and its optional HASHCHECK in the common Hash/SequenceComplete wire format.
+    fn hash_result(&self, digest: &[u8], hierarchy: u32) -> Output {
+        let ticket = match self.proof(hierarchy) {
+            Some(proof) => TpmtTkHashcheck {
+                hierarchy,
+                digest: hmac_sha256(&proof, &hashcheck_parts(digest)).to_vec(),
+            },
+            None => TpmtTkHashcheck {
+                hierarchy: handle::RH_NULL,
+                digest: Vec::new(),
+            },
+        };
+        let mut w = Writer::new();
+        w.tpm2b(digest);
+        ticket.marshal(&mut w);
+        Output {
             handles: Vec::new(),
             params: w.finish(),
-        })
+        }
+    }
+
+    pub(crate) fn valid_hashcheck_ticket(&self, digest: &[u8], ticket: &TpmtTkHashcheck) -> bool {
+        self.permanent_enabled(ticket.hierarchy)
+            && self.proof(ticket.hierarchy).is_some_and(|proof| {
+                hmac_sha256_verify(&proof, &hashcheck_parts(digest), &ticket.digest)
+            })
     }
 
     /// `TPM2_HashSequenceStart` (Part 3, clause 17.4): `hashAlg` NULL starts an event sequence.
@@ -329,6 +363,14 @@ impl Tpm {
         let data = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
         p.finish()?;
         if let Some(sequence) = self.sequences.slots[slot].as_mut() {
+            if matches!(
+                sequence.kind,
+                SequenceKind::Hash(_) | SequenceKind::Hash384(_)
+            ) {
+                sequence
+                    .first_buffer_safe
+                    .get_or_insert_with(|| safe_hashcheck_prefix(data));
+            }
             match &mut sequence.kind {
                 SequenceKind::Hash(hash) => hash.update(data),
                 SequenceKind::Hash384(hash) => hash.update(data),
@@ -356,30 +398,33 @@ impl Tpm {
         let sequence = self.sequences.slots[slot]
             .take()
             .expect("the sequence slot was validated");
-        let mut w = Writer::new();
-        match sequence.kind {
+        let first_buffer_safe = sequence
+            .first_buffer_safe
+            .unwrap_or_else(|| safe_hashcheck_prefix(data));
+        let hierarchy = if first_buffer_safe {
+            hierarchy
+        } else {
+            handle::RH_NULL
+        };
+        let result = match sequence.kind {
             SequenceKind::Hash(mut hash) => {
                 hash.update(data);
-                w.tpm2b(&hash.finalize());
+                self.hash_result(&hash.finalize(), hierarchy)
             }
             SequenceKind::Hash384(mut hash) => {
                 hash.update(data);
-                w.tpm2b(&hash.finalize());
+                self.hash_result(&hash.finalize(), hierarchy)
             }
             SequenceKind::Hmac(mut mac) => {
                 mac.update(data);
-                w.tpm2b(&mac.finalize().into_bytes());
+                self.hash_result(&mac.finalize().into_bytes(), handle::RH_NULL)
             }
             SequenceKind::Event(_) => {
                 self.sequences.slots[slot] = Some(sequence);
                 return Err(Rc::MODE.in_handle(1));
             }
-        }
-        null_ticket().marshal(&mut w);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
+        };
+        Ok(result)
     }
 
     /// `TPM2_EventSequenceComplete` (Part 3, clause 17.7): handle 1 is the PCR (or `TPM_RH_NULL`),

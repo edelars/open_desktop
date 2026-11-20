@@ -47,6 +47,7 @@ use crate::object::{
     creation_pcr_digest, derive_object, find_object, is_object_hierarchy, open_private,
     primary_drbg, private_blob, qualified_name_of,
 };
+use crate::random::Drbg;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
@@ -56,6 +57,47 @@ const CREATION_TAG: [u8; 2] = st::CREATION.to_be_bytes();
 
 fn creation_ticket_parts<'a>(name: &'a [u8], creation_hash: &'a [u8]) -> [&'a [u8]; 3] {
     [&CREATION_TAG, name, creation_hash]
+}
+
+fn fixed_digest_scheme(object: &Object) -> Result<Scheme, Rc> {
+    if !object.has(object_attr::SIGN) {
+        return Err(Rc::KEY.in_handle(1));
+    }
+    match object.public.params {
+        PublicParams::Rsa { scheme, .. } if scheme.alg == alg::RSASSA => Ok(scheme),
+        PublicParams::Ecc { scheme, .. } if scheme.alg == alg::ECDSA => Ok(scheme),
+        _ => Err(Rc::SCHEME.in_handle(1)),
+    }
+}
+
+fn sign_digest_output(
+    object: &Object,
+    digest: &[u8],
+    scheme: Scheme,
+    drbg: &mut Drbg,
+) -> Result<Output, Rc> {
+    let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+    let signature = match &sensitive.secret {
+        Secret::Rsa(key) => TpmtSignature::Rsassa {
+            hash: scheme.hash,
+            sig: rsa_sign(key, digest, drbg).ok_or(Rc::FAILURE)?,
+        },
+        Secret::Ecc(key) => {
+            let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;
+            TpmtSignature::Ecdsa {
+                hash: scheme.hash,
+                r,
+                s,
+            }
+        }
+        Secret::Data(_) => return Err(Rc::KEY.in_handle(1)),
+    };
+    let mut w = Writer::new();
+    signature.marshal(&mut w);
+    Ok(Output {
+        handles: Vec::new(),
+        params: w.finish(),
+    })
 }
 
 /// The implemented selectors of `TPMT_TK_VERIFIED` (Part 2 v185, Table 113).
@@ -715,7 +757,7 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_Sign` (Part 3, clause 20.2) with RSASSA or ECDSA over a SHA-256 digest.
+    /// `TPM2_Sign` (Part 3 v185 §20.5) with RSASSA or ECDSA over a SHA-256 digest.
     pub(crate) fn cmd_sign(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
         let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
@@ -759,39 +801,58 @@ impl Tpm {
         if digest.len() != limits::MAX_DIGEST_SIZE {
             return Err(Rc::SIZE.in_param(1));
         }
-        // Only NULL tickets exist (module comment): a restricted key, or any other ticket,
-        // cannot be validated. NOT VERIFIED: this is stricter than Part 3 (clause 20.2), where the
-        // ticket is checked only for a restricted key and an unrestricted key signs with any
-        // `validation`; here a non-NULL ticket is refused for an unrestricted key too (safe side,
-        // recorded in docs/specs/VTPM.md).
-        if o.has(object_attr::RESTRICTED)
-            || !validation.digest.is_empty()
-            || validation.hierarchy != handle::RH_NULL
+        self.check_signing_ticket(o, digest, &validation)?;
+        sign_digest_output(o, digest, scheme, &mut self.drbg)
+    }
+
+    /// `TPM2_SignDigest` (Part 3 v185 §20.7) uses the key's fixed scheme and signs a prehash.
+    pub(crate) fn cmd_sign_digest(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        // Neither RSASSA nor ECDSA accepts a signature context (Part 2 v185, Table 220).
+        p.tpm2b(0)?;
+        p.set_param(2);
+        let digest = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
+        p.set_param(3);
+        let validation = TpmtTkHashcheck::unmarshal(p)?;
+        p.finish()?;
+        if !is_object_hierarchy(validation.hierarchy) {
+            return Err(Rc::VALUE.in_param(3));
+        }
+        let o = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
+            .ok_or(Rc::reference_handle(0))?;
+        if o.has(object_attr::X509_SIGN) {
+            return Err(Rc::ATTRIBUTES.in_handle(1));
+        }
+        let scheme = fixed_digest_scheme(o)?;
+        if digest_size(scheme.hash) != Some(digest.len()) {
+            return Err(Rc::SIZE.in_param(2));
+        }
+        self.check_signing_ticket(o, digest, &validation)?;
+        sign_digest_output(o, digest, scheme, &mut self.drbg)
+    }
+
+    fn check_signing_ticket(
+        &self,
+        o: &Object,
+        digest: &[u8],
+        ticket: &TpmtTkHashcheck,
+    ) -> Result<(), Rc> {
+        if !o.has(object_attr::RESTRICTED)
+            && ticket.hierarchy == handle::RH_NULL
+            && ticket.digest.is_empty()
         {
+            return Ok(());
+        }
+        // Currently every hash produces a different digest width. The preceding length check and
+        // the HASHCHECK over those bytes therefore bind the digest to the signing scheme's hash.
+        if !self.valid_hashcheck_ticket(digest, ticket) {
             return Err(Rc::TICKET.in_param(3));
         }
-        let sensitive = o.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
-        let signature = match &sensitive.secret {
-            Secret::Rsa(key) => TpmtSignature::Rsassa {
-                hash: scheme.hash,
-                sig: rsa_sign(key, digest, &mut self.drbg).ok_or(Rc::FAILURE)?,
-            },
-            Secret::Ecc(key) => {
-                let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;
-                TpmtSignature::Ecdsa {
-                    hash: scheme.hash,
-                    r,
-                    s,
-                }
-            }
-            Secret::Data(_) => return Err(Rc::KEY.in_handle(1)),
-        };
-        let mut w = Writer::new();
-        signature.marshal(&mut w);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
+        Ok(())
     }
 
     /// `TPM2_VerifySignature` (Part 3, clause 20.1): a failed check is `TPM_RC_SIGNATURE`; on
@@ -843,14 +904,7 @@ impl Tpm {
         p.finish()?;
 
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        if !o.has(object_attr::SIGN) {
-            return Err(Rc::KEY.in_handle(1));
-        }
-        let key_scheme = match o.public.params {
-            PublicParams::Rsa { scheme, .. } if scheme.alg == alg::RSASSA => scheme,
-            PublicParams::Ecc { scheme, .. } if scheme.alg == alg::ECDSA => scheme,
-            _ => return Err(Rc::SCHEME.in_handle(1)),
-        };
+        let key_scheme = fixed_digest_scheme(o)?;
         let sig_scheme = match &signature {
             TpmtSignature::Rsassa { hash, .. } => (alg::RSASSA, *hash),
             TpmtSignature::Ecdsa { hash, .. } => (alg::ECDSA, *hash),
@@ -859,7 +913,7 @@ impl Tpm {
         if sig_scheme != (key_scheme.alg, key_scheme.hash) {
             return Err(Rc::SCHEME.in_param(3));
         }
-        if digest.len() != limits::MAX_DIGEST_SIZE {
+        if digest_size(key_scheme.hash) != Some(digest.len()) {
             return Err(Rc::SIZE.in_param(2));
         }
         if !o.verify_signature(digest, &signature) {

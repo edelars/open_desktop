@@ -406,7 +406,7 @@ impl TpmtTkHashcheck {
             return Err(r.err(Rc::TAG));
         }
         let hierarchy = r.u32()?;
-        let digest = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let digest = r.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?.to_vec();
         Ok(TpmtTkHashcheck { hierarchy, digest })
     }
 }

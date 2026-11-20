@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use super::tests_b::{hc, pw_cmd, run_hmac, start_hmac};
 use super::*;
 use crate::codes::{curve, object_attr as oa};
-use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
+use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique, Writer};
 use crate::object::{MAX_OBJECTS, MAX_PERSISTENT};
 
 pub(super) const OWNER: u32 = handle::RH_OWNER;
@@ -1393,6 +1393,43 @@ fn ecdsa_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
 
 fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256), &tpm2b(sig)])
+}
+
+#[test]
+fn restricted_sign_digest_requires_a_hashcheck_bound_to_the_first_buffer() {
+    let mut t = started();
+    let message = b"digest signing test";
+    let hashed = run(&mut t, hash_cmd(message, alg::SHA256, OWNER));
+    let (digest, expected_ticket) = digest_and_ticket(&hashed);
+    assert_eq!(digest.as_slice(), &Sha256::digest(message)[..]);
+    assert_eq!(expected_ticket.hierarchy, OWNER);
+    assert_eq!(expected_ticket.digest.len(), 32);
+
+    let restricted = ecc(base() | oa::RESTRICTED | oa::SIGN, SymDef::Null, ECDSA);
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"pw", &restricted)).handle;
+    for first_len in [0, 3, 4] {
+        let sequence = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+        ok(&seq_update(&mut t, sequence, b"", &message[..first_len]));
+        let completed = seq_complete(&mut t, sequence, b"", &message[first_len..], OWNER);
+        let (computed, ticket) = digest_and_ticket(&completed);
+        assert_eq!(computed, digest);
+        let mut w = Writer::new();
+        w.tpm2b(&[]);
+        w.tpm2b(&digest);
+        ticket.marshal(&mut w);
+        let reply = run(
+            &mut t,
+            with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &w.finish()),
+        );
+        if first_len == 4 {
+            assert_eq!(ticket, expected_ticket);
+            ok(&verify(&mut t, key, &digest, params(&reply, 0)));
+        } else {
+            assert_eq!(ticket.hierarchy, NULL);
+            assert!(ticket.digest.is_empty());
+            err(&reply, Rc::TICKET.in_param(3));
+        }
+    }
 }
 
 #[test]
