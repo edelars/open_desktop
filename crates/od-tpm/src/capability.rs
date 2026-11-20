@@ -62,7 +62,9 @@ struct Entries {
 
 // TPM Library v185 Part 2 §6.14 and Table 29. Locality 0 is the only
 // supported locality. This profile exposes no D-RTM, PCR policy or PCR auth.
-fn tagged_pcr_properties() -> [(u32, fn(PcrAttr) -> bool); 4] {
+type PcrPropertyTest = fn(PcrAttr) -> bool;
+
+fn tagged_pcr_properties() -> [(u32, PcrPropertyTest); 4] {
     [
         (0x00, |attr| attr.save),
         (0x02, |attr| attr.reset_l0),

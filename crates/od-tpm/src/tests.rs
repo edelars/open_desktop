@@ -853,7 +853,7 @@ fn capability_commands_paging_and_more_data() {
     assert!(!more);
     assert_eq!(count as usize, expected.len());
     assert_eq!(body.len(), 4 * expected.len());
-    for (entry, code) in body.chunks_exact(4).zip(expected) {
+    for (entry, code) in body.as_chunks::<4>().0.iter().zip(expected) {
         assert_eq!(u16::from_be_bytes([entry[2], entry[3]]), code);
     }
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x1AB, 100));

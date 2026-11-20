@@ -182,7 +182,7 @@ pub(crate) enum SequenceKind {
     /// Event sequence with both PCR bank algorithms.
     Event(EventHash),
     Sign(SignSequence),
-    Verify(VerifySequence),
+    Verify(Box<VerifySequence>),
     /// Reserved for platform indications. It has no guest handle.
     Hcrtm(EventHash),
 }
@@ -455,12 +455,12 @@ impl Tpm {
                 mac: verified_ticket_mac(&proof, st::MESSAGE_VERIFIED),
             }
         });
-        let kind = SequenceKind::Verify(VerifySequence {
+        let kind = SequenceKind::Verify(Box::new(VerifySequence {
             key_name: key.name.clone(),
             scheme,
             digest: Sha256::new(),
             tickets,
-        });
+        }));
         self.sequences.start(kind, auth)
     }
 

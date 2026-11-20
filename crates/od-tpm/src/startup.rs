@@ -112,10 +112,10 @@ impl Tpm {
                 }
             }
         }
-        if let Some(digests) = self.pre_startup_hcrtm.take() {
-            if startup_type == su::CLEAR {
-                self.pcrs.measure_static_hcrtm(&digests);
-            }
+        if let Some(digests) = self.pre_startup_hcrtm.take()
+            && startup_type == su::CLEAR
+        {
+            self.pcrs.measure_static_hcrtm(&digests);
         }
         self.startup_hcrtm = startup_hcrtm;
         // `safe`: no Clock value above the current one was reported earlier, which holds only
@@ -182,7 +182,7 @@ impl Tpm {
         }
         let algorithms = p.bytes(count as usize * 2)?;
         p.finish()?;
-        for entry in algorithms.chunks_exact(2) {
+        for entry in algorithms.as_chunks::<2>().0 {
             let algorithm = u16::from_be_bytes([entry[0], entry[1]]);
             if !ALGORITHMS
                 .iter()

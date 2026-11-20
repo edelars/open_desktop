@@ -74,6 +74,8 @@ pub(crate) struct PolicyState {
 
 /// Deferred hash restrictions share a single TPM policy-session field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// The shared `Hash` postfix mirrors the TPM command names (CpHash, NameHash, ...); renaming would touch dispatch.rs, context.rs and tests_c2.rs.
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum PolicyHashRestriction {
     CpHash([u8; DIGEST]),
     NameHash([u8; DIGEST]),
