@@ -1502,6 +1502,12 @@ timing checks under ordinary UID at nice −5 and were rejected below the
 80% idle threshold. All eight stock and split dispositions replayed.
 [S3-29j M1 flags receipts](STAGE_3_S3-29j_2026-11-19.md)
 
+S3-29k accepted 60 pairs on the four retained FIFO16 flags cases on
+M1 Pro, with 4.2095 µs per call for eager and 4.2277 µs for demand by
+the pooled medians. The paired median ratio was 1.00437. Every sweep
+had 19 hits and zero new compilations, publications or evictions.
+[S3-29k resident flags timings](STAGE_3_S3-29k_2026-11-20.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
