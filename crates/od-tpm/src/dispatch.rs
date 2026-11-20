@@ -815,7 +815,13 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     }
                 } else {
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
-                    let (key, with_auth) = authorization_key(session, handles[i], &auth);
+                    // The Name matters only to a bound session (it changes with an NV index's first write).
+                    let name = if session.bound.is_some() {
+                        handle_name(tpm, handles[i])
+                    } else {
+                        Vec::new()
+                    };
+                    let (key, with_auth) = authorization_key(session, &name, &auth);
                     if !verify_command_hmac(
                         session,
                         &key,
@@ -1287,31 +1293,34 @@ fn check_sign_handle(tpm: &Tpm, h: u32, idx: usize) -> Result<(), Rc> {
     }
 }
 
-/// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` (salted sessions
-/// are not implemented: a loaded object as `tpmKey` is `TPM_RC_VALUE`, an unloaded transient
-/// handle "not loaded", a missing persistent one `TPM_RC_HANDLE`), `bind` is `TPM_RH_NULL` or a
-/// hierarchy authorization handle (binding to an object is not implemented).
-/// NOT VERIFIED against TPM 2.0 Library v185/v184: the code `TPM_RC_VALUE` for an object handle
-/// that the TPM could use but this implementation does not.
+/// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` or a loaded object
+/// (a salted session; its type, attributes and the salt are checked by the command: `TPM_RC_KEY`
+/// and `TPM_RC_VALUE` for the parameter), an unloaded transient handle is "not loaded", a missing
+/// persistent one `TPM_RC_HANDLE`, any other handle `TPM_RC_VALUE`. `bind` is `TPM_RH_NULL`, a
+/// hierarchy authorization handle, a loaded object or a defined NV index (the authValue of the
+/// entity joins the session key, see `session.rs`); a PCR and the other handles are
+/// `TPM_RC_VALUE`.
+/// NOT VERIFIED against TPM 2.0 Library v185/v184: the codes for a `tpmKey` or `bind` that is not
+/// loaded (they follow the neighbouring commands) and `TPM_RC_VALUE` for an undefined NV index
+/// and for a PCR as `bind` (a PCR is not supported as a bind entity here).
 fn check_start_auth_session_handles(tpm: &Tpm, handles: &CommandHandles) -> Result<(), Rc> {
     let key = handles[0];
-    if key != handle::RH_NULL {
+    if key != handle::RH_NULL && tpm.object(key).is_none() {
         return Err(match handle::handle_type(key) {
-            _ if tpm.object(key).is_some() => Rc::VALUE.in_handle(1),
             handle::HT_TRANSIENT => Rc::reference_handle(0),
             handle::HT_PERSISTENT => Rc::HANDLE.in_handle(1),
             _ => Rc::VALUE.in_handle(1),
         });
     }
     let bind = handles[1];
-    if bind == handle::RH_NULL || is_authorization_handle(bind) {
+    if bind == handle::RH_NULL || is_authorization_handle(bind) || tpm.object(bind).is_some() {
         return Ok(());
     }
     Err(match handle::handle_type(bind) {
-        _ if tpm.object(bind).is_some() => Rc::VALUE.in_handle(2),
         handle::HT_TRANSIENT => Rc::reference_handle(1),
         handle::HT_PERSISTENT => Rc::HANDLE.in_handle(2),
-        // NV indices, PCR, ...: not bindable in slice A.
+        handle::HT_NV_INDEX if tpm.nv_index_at(bind, 2).is_ok() => return Ok(()),
+        // An undefined or inaccessible NV index, a PCR, ...
         _ => Rc::VALUE.in_handle(2),
     })
 }

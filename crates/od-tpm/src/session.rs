@@ -5,11 +5,15 @@
 //! - session type `TPM_SE_HMAC`; slice C2 adds `TPM_SE_POLICY` and `TPM_SE_TRIAL` (the policy
 //!   state and the policy commands are in `policy.rs`; a policy session has no binding, `bind`
 //!   only feeds the session key, and a trial session cannot authorize anything);
-//! - `tpmKey` = `TPM_RH_NULL` (no salt, so `encryptedSalt` must be empty);
+//! - `tpmKey` = `TPM_RH_NULL` (no salt, so `encryptedSalt` must be empty) or a loaded RSA or ECC
+//!   decrypt key (a salted session, slice 4): `encryptedSalt` is opened like the seed of a credential
+//!   with the label "SECRET" (`decrypt_session_salt`);
 //! - `bind` = `TPM_RH_NULL` (an unbound, unsalted session: the session key is the Empty Buffer) or
-//!   a hierarchy authorization handle (owner, platform, endorsement, lockout): a bound session,
-//!   `sessionKey = KDFa(sessionAlg, authValue_bind, "ATH", nonceTPM, nonceCaller, bits)`
-//!   (Part 1, clause 17.6.10, Equation 20);
+//!   a hierarchy authorization handle (owner, platform, endorsement, lockout), a loaded object or a
+//!   defined NV index: a bound session. A bound or salted session has
+//!   `sessionKey = KDFa(sessionAlg, authValue_bind || salt, "ATH", nonceTPM, nonceCaller, bits)`
+//!   (Part 1, clause 17.6.10, Equation 20). The salt is used only here: the session key is what
+//!   `TPM2_ContextSave` keeps, so a salted session round-trips through a context like a bound one;
 //! - `authHash` SHA-256, SHA-384 or SHA-512 (hash agility, step D: `Session::auth_hash` selects the hash of
 //!   every HMAC, cpHash, rpHash, `KDFa` and audit digest of the session; since step E a policy or
 //!   trial session also takes SHA-256, SHA-384 or SHA-512 and its policy digest follows the hash, see
@@ -20,6 +24,13 @@
 //! - An HMAC session may audit successful commands, either as an additional session or while it
 //!   authorizes a handle (Part 1 rev 01.83, clauses 19.6.1 and 20.1); the first audited use of a
 //!   bound session drops the binding (`Sessions::extend_audit`), the authValue then joins the key.
+//!
+//! Documented narrowing: the reference accepts a PCR as `bind` (`TPMI_DH_ENTITY`); here it is
+//! `TPM_RC_VALUE`.
+//! The binding is the Name of the entity together with its authValue (Session.c
+//! `SessionComputeBoundEntity` at start, `IsSessionBindEntity` at authorization; Part 1, clauses
+//! 19.6.10-19.6.11): an NV index whose Name changed (first write) or another object that has the
+//! bound handle and authValue is not the bound entity and gets the key `sessionKey || authValue`.
 //!
 //! Authorization HMAC (clause 17.6.5, Equation 17): `authHMAC = HMAC(sessionKey || authValue,
 //! pHash || nonceNewer || nonceOlder || sessionAttributes)` with `pHash` = cpHash for a command
@@ -41,24 +52,24 @@
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (the open text names the rule, not the code or
 //! the detail): `TPM_RC_VALUE` with the parameter number for an unknown session type, for
 //! a non-empty `encryptedSalt` with a NULL `tpmKey`, and with the handle number for a `bind`
-//! entity that is neither NULL nor a hierarchy authorization (slice A binds only to those);
+//! entity that is none of those listed above (an undefined NV index);
 //! `TPM_RC_NONCE` for a `nonceCaller` larger than the session nonce; `TPM_RC_ATTRIBUTES` for the
 //! reserved or audit attribute bits and `TPM_RC_SYMMETRIC` for `decrypt`/`encrypt` (the session
 //! has no symmetric algorithm, `paramenc.rs`); `TPM_RC_HANDLE` with the parameter number for a flush handle that
-//! names no loaded session or object; that the bound-entity test compares the handle and the
-//! authValue (the reference text records "Name and authValue" and, for an NV index, the
-//! authValue as well); that the authValue used in `KDFa` has trailing zeros removed (clause
+//! names no loaded session or object; that the authValue used in `KDFa` has trailing zeros removed (clause
 //! 17.6.5 says so for authorization computations); that a session handle `0x02nnnnnn` and
 //! `0x03nnnnnn` name the same slot when flushing ("the upper byte is ignored", clause 28.4).
 
 use zeroize::Zeroizing;
 
-use crate::codes::{handle, se, session_attr};
+use crate::codes::{handle, object_attr, se, session_attr};
+use crate::credential::{SeedError, recover_seed};
 use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash, hmac, hmac_verify, kdfa};
 use crate::da::DaClass;
-use crate::dispatch::Invocation;
+use crate::dispatch::{Invocation, handle_name};
 use crate::hash::{AuthValue, password_matches};
-use crate::marshal::{Reader, Writer, limits};
+use crate::marshal::{MAX_RSA_BYTES, Reader, Writer, limits};
+use crate::object::find_object;
 use crate::paramenc::SessionSym;
 use crate::policy::PolicyState;
 use crate::response::{Output, Rc};
@@ -72,10 +83,20 @@ pub const MAX_SESSIONS: usize = 64;
 /// `TPM_RC_SIZE`, Part 3, clause 11.1).
 pub(crate) const MIN_NONCE: usize = 16;
 
-/// The entity a bound session was started with.
+/// Label of the secret of a salted session (Part 1, clause 19.6.13), the NUL included like every
+/// label of the TPM's key derivation.
+const SECRET_LABEL: &[u8] = b"SECRET\0";
+
+/// The entity a bound session was started with. The reference (Session.c,
+/// `SessionComputeBoundEntity` / `IsSessionBindEntity`; Part 1, clauses 19.6.10 and 19.6.11)
+/// records the Name of the entity together with its authValue, so that another entity, or the same
+/// handle after its Name changed (an NV index after its first write), is not the bound one.
 #[derive(Clone)]
 pub(crate) struct BoundEntity {
     pub handle: u32,
+    /// Name of the entity at the start of the session (`handle_name`): the handle itself for a
+    /// hierarchy.
+    pub name: Vec<u8>,
     pub auth: AuthValue,
 }
 
@@ -252,16 +273,19 @@ impl Sessions {
     }
 }
 
-/// The HMAC key of an authorization of the entity `(entity_handle, entity_auth)` with `session`,
+/// The HMAC key of an authorization of the entity `(entity_name, entity_auth)` with `session`,
 /// and whether the entity's authValue went into it. A session bound to this very entity (same
-/// handle, same authValue as recorded at start) uses the session key alone (Equation 22).
+/// Name and same authValue as recorded at start, the reference's `IsSessionBindEntity`) uses the
+/// session key alone (Equation 22); `entity_name` is the current Name of the entity, read only for
+/// a bound session. Any other entity, even one with the bound handle and authValue, gets the key
+/// `sessionKey || authValue`.
 pub(crate) fn authorization_key(
     session: &Session,
-    entity_handle: u32,
+    entity_name: &[u8],
     entity_auth: &AuthValue,
 ) -> (Zeroizing<Vec<u8>>, bool) {
     let bound_here = session.bound.as_ref().is_some_and(|b| {
-        b.handle == entity_handle && password_matches(b.auth.as_slice(), entity_auth.as_slice())
+        b.name == entity_name && password_matches(b.auth.as_slice(), entity_auth.as_slice())
     });
     let mut key = Zeroizing::new(session.key.as_slice().to_vec());
     if !bound_here {
@@ -334,8 +358,8 @@ pub(crate) fn check_hmac_session_attributes(attributes: u8, n: usize) -> Result<
 }
 
 impl Tpm {
-    /// `TPM2_StartAuthSession` (Part 3, clause 11.1), unbound-unsalted and hierarchy-bound HMAC
-    /// sessions. Handles `tpmKey`, `bind` were checked by the dispatcher.
+    /// `TPM2_StartAuthSession` (Part 3, clause 11.1): HMAC, policy and trial sessions, unbound or
+    /// bound, unsalted or salted. Handles `tpmKey`, `bind` were checked by the dispatcher.
     pub(crate) fn cmd_start_auth_session(
         &mut self,
         inv: &Invocation,
@@ -382,34 +406,53 @@ impl Tpm {
         if nonce_caller.len() < MIN_NONCE {
             return Err(Rc::SIZE.in_param(1));
         }
-        if !encrypted_salt.is_empty() {
-            // `tpmKey` is `TPM_RH_NULL`: the salt must be the Empty Buffer.
-            return Err(Rc::VALUE.in_param(2));
-        }
+        let tpm_key = inv.handles[0];
+        let salt = if tpm_key == handle::RH_NULL {
+            if !encrypted_salt.is_empty() {
+                // `tpmKey` is `TPM_RH_NULL`: the salt must be the Empty Buffer.
+                return Err(Rc::VALUE.in_param(2));
+            }
+            Zeroizing::new(Vec::new())
+        } else {
+            self.decrypt_session_salt(tpm_key, encrypted_salt)?
+        };
         let bind = inv.handles[1];
         let bind_da = self.da_class_of(bind);
         let bound = if bind == handle::RH_NULL {
             None
         } else {
-            let auth = self.permanent_auth(bind).ok_or(Rc::VALUE.in_handle(2))?;
-            Some(BoundEntity { handle: bind, auth })
+            let auth = self.bind_auth(bind).ok_or(Rc::VALUE.in_handle(2))?;
+            let name = handle_name(self, bind);
+            Some(BoundEntity {
+                handle: bind,
+                name,
+                auth,
+            })
         };
         let reserved = self.context.reserved_slots();
         let mut nonce_tpm = vec![0u8; nonce_caller.len()];
         self.drbg.generate(&mut nonce_tpm).ok_or(Rc::FAILURE)?;
-        let key = match &bound {
-            None => AuthValue::empty(),
-            Some(b) => {
-                let k = kdfa(
-                    auth_alg,
-                    b.auth.as_slice(),
-                    b"ATH",
-                    &nonce_tpm,
-                    nonce_caller,
-                    (auth_alg.size() * 8) as u32,
-                );
-                AuthValue::from_slice_up_to(&k, auth_alg.size()).ok_or(Rc::FAILURE)?
+        // sessionKey = KDFa(authHash, authValue_bind || salt, "ATH", nonceTPM, nonceCaller, bits)
+        // when the session is bound or the salt is not empty, the Empty Buffer otherwise (Part 1,
+        // Equation 20; the reference's condition is `bind != TPM_RH_NULL || seed.size != 0`): a
+        // salt that decrypted to the Empty Buffer with a NULL `bind` leaves the key empty.
+        let key = if bound.is_none() && salt.is_empty() {
+            AuthValue::empty()
+        } else {
+            let mut material = Zeroizing::new(Vec::new());
+            if let Some(b) = &bound {
+                material.extend_from_slice(b.auth.as_slice());
             }
+            material.extend_from_slice(&salt);
+            let k = kdfa(
+                auth_alg,
+                &material,
+                b"ATH",
+                &nonce_tpm,
+                nonce_caller,
+                (auth_alg.size() * 8) as u32,
+            );
+            AuthValue::from_slice_up_to(&k, auth_alg.size()).ok_or(Rc::FAILURE)?
         };
         let slot = self
             .sessions
@@ -439,6 +482,59 @@ impl Tpm {
             handles: handles.finish(),
             params: params.finish(),
         })
+    }
+
+    /// The authValue of the entity a session is bound to: a hierarchy, a loaded object (the Empty
+    /// Buffer for an object with no private part, whose sensitive area is zero) or an NV index.
+    fn bind_auth(&self, h: u32) -> Option<AuthValue> {
+        match handle::handle_type(h) {
+            handle::HT_PERMANENT => self.permanent_auth(h),
+            handle::HT_NV_INDEX => self.nv_auth(h),
+            handle::HT_TRANSIENT | handle::HT_PERSISTENT if self.object(h).is_some() => {
+                Some(self.object_auth_now(h).unwrap_or_else(AuthValue::empty))
+            }
+            _ => None,
+        }
+    }
+
+    /// The salt of `TPM2_StartAuthSession` (Part 3, clause 11.1, Part 1, clause 19.6.13): the
+    /// `encryptedSalt` is made for `tpmKey` like the seed of a credential, with the label
+    /// "SECRET\0": RSA-OAEP with the `nameAlg` of the key, or the ephemeral point of an ECDH whose
+    /// KDFe (`nameAlg`, party U the ephemeral X, party V the X of `tpmKey`) gives one digest.
+    /// `TPM_RC_KEY` when `tpmKey` is no loaded decrypt key with a private part (the spec lists
+    /// "does not reference a decrypt key"), `TPM_RC_HASH` when its `nameAlg` is no hash we know, and
+    /// `TPM_RC_VALUE` with parameter 2 for an empty or undecryptable secret, a size that does not
+    /// match the key, a wrong label or an off-curve point (the spec says `TPM_RC_VALUE` for the size
+    /// and for a salt longer than the digest of `nameAlg`; the other decrypt failures are mapped the
+    /// same way). An `encryptedSalt` longer than any key's secret is `TPM_RC_SIZE`.
+    /// Checked against the text: `TPM_RC_KEY` for a key without `decrypt` (Part 3, clause 11.1:
+    /// "tpmKey does not reference a decrypt key").
+    /// NOT VERIFIED against TPM 2.0 Library v185/v184: the other codes and their order, `TPM_RC_KEY`
+    /// for a key with no private part or of another asymmetric type, the use of the shared KDFe of
+    /// `credential.rs` for the salt.
+    fn decrypt_session_salt(
+        &mut self,
+        tpm_key: u32,
+        encrypted_salt: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, Rc> {
+        let key = find_object(&self.objects, &self.persistent.objects, tpm_key)
+            .ok_or(Rc::reference_handle(0))?;
+        if key.sensitive.is_none() || !key.has(object_attr::DECRYPT) {
+            return Err(Rc::KEY.in_handle(1));
+        }
+        let name_hash = HashAlg::from_alg(key.public.name_alg).ok_or(Rc::HASH.in_handle(1))?;
+        if encrypted_salt.len() > MAX_RSA_BYTES {
+            return Err(Rc::SIZE.in_param(2));
+        }
+        if encrypted_salt.is_empty() {
+            return Err(Rc::VALUE.in_param(2));
+        }
+        recover_seed(key, encrypted_salt, SECRET_LABEL, &mut self.drbg, name_hash).map_err(
+            |error| match error {
+                SeedError::NoPrivate | SeedError::KeyType => Rc::KEY.in_handle(1),
+                SeedError::Ciphertext | SeedError::Point => Rc::VALUE.in_param(2),
+            },
+        )
     }
 
     /// `TPM2_FlushContext` (Part 3, clause 28.4): `flushHandle` is a parameter. A session handle

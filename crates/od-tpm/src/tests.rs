@@ -27,6 +27,8 @@ mod tests_nv_props;
 mod tests_obj;
 #[path = "tests_rsa3072.rs"]
 mod tests_rsa3072;
+#[path = "tests_salted.rs"]
+mod tests_salted;
 #[path = "tests_session_audit.rs"]
 mod tests_session_audit;
 #[path = "tests_sha2.rs"]

@@ -356,10 +356,21 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
         });
     w.tpm2b(&s.nonce_tpm);
     w.tpm2b(s.key.as_slice());
+    // The bound entity: tag 1 is the original body (handle, authValue) and its Name is the handle
+    // itself, which is the case of every hierarchy, so a session bound to a hierarchy (every
+    // context saved before the Name was recorded, and the SHA-256 golden bodies) keeps its bytes.
+    // Tag 2 adds the Name between the handle and the authValue for an entity whose Name is not its
+    // handle (an object, an NV index). A tag 1 body read back is bound by its handle as a Name.
     match &s.bound {
-        Some(b) => {
+        Some(b) if b.name == b.handle.to_be_bytes() => {
             w.u8(1);
             w.u32(b.handle);
+            w.tpm2b(b.auth.as_slice());
+        }
+        Some(b) => {
+            w.u8(2);
+            w.u32(b.handle);
+            w.tpm2b(&b.name);
             w.tpm2b(b.auth.as_slice());
         }
         None => w.u8(0),
@@ -454,7 +465,25 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         1 => {
             let h = r.u32()?;
             let auth = AuthValue::from_slice(r.tpm2b(limits::MAX_DIGEST_SIZE)?).ok_or(Rc::SIZE)?;
-            Some(BoundEntity { handle: h, auth })
+            Some(BoundEntity {
+                handle: h,
+                name: h.to_be_bytes().to_vec(),
+                auth,
+            })
+        }
+        2 => {
+            let h = r.u32()?;
+            // A Name is `nameAlg` and one digest; the authValue of an object or an NV index is at
+            // most one digest of its `nameAlg`.
+            let name = r.tpm2b(2 + limits::MAX_HASH_SIZE)?.to_vec();
+            let auth =
+                AuthValue::from_slice_up_to(r.tpm2b(limits::MAX_HASH_SIZE)?, limits::MAX_HASH_SIZE)
+                    .ok_or(Rc::SIZE)?;
+            Some(BoundEntity {
+                handle: h,
+                name,
+                auth,
+            })
         }
         _ => return Err(Rc::VALUE),
     };
