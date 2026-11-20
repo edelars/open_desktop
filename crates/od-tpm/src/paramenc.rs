@@ -123,6 +123,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::HMAC
             | cc::QUOTE
             | cc::CERTIFY
+            | cc::CERTIFY_CREATION
             | cc::GET_TIME
             | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_PCR
@@ -155,6 +156,7 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
             | cc::LOAD_EXTERNAL
             | cc::QUOTE
             | cc::CERTIFY
+            | cc::CERTIFY_CREATION
             | cc::GET_TIME
             | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_GET_DIGEST

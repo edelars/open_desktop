@@ -81,7 +81,7 @@ use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
     limits,
 };
-use crate::object::{Object, Secret, find_object};
+use crate::object::{Object, Secret, find_object, is_object_hierarchy};
 use crate::policy::pcr_selection_digest;
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
@@ -98,7 +98,12 @@ const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
 type Signing<'a> = Option<(&'a Object, Scheme)>;
 
 /// The scheme an attestation is signed with (Part 3, clause 18.1) and the checks of the key.
-fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme, Rc> {
+fn attest_scheme(
+    o: &Object,
+    in_scheme: Scheme,
+    handle_no: u8,
+    scheme_no: u8,
+) -> Result<Scheme, Rc> {
     if !o.has(object_attr::SIGN) {
         return Err(Rc::KEY.in_handle(handle_no));
     }
@@ -111,7 +116,7 @@ fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme,
     };
     let scheme = if key_scheme.alg != alg::NULL {
         if in_scheme.alg != alg::NULL && in_scheme.alg != key_scheme.alg {
-            return Err(Rc::SCHEME.in_param(2));
+            return Err(Rc::SCHEME.in_param(scheme_no));
         }
         key_scheme
     } else {
@@ -122,7 +127,7 @@ fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme,
         (PublicParams::Rsa { .. }, alg::RSASSA) | (PublicParams::Ecc { .. }, alg::ECDSA)
     );
     if !fits || scheme.hash != alg::SHA256 {
-        return Err(Rc::SCHEME.in_param(2));
+        return Err(Rc::SCHEME.in_param(scheme_no));
     }
     Ok(scheme)
 }
@@ -156,14 +161,23 @@ impl Tpm {
     /// The signing key of an attestation at handle position `n` (one-based) and its scheme;
     /// `None` for `TPM_RH_NULL` (clause 18.1: the scheme must be a valid signing scheme, which
     /// the parser checked, and has no effect).
-    fn attest_signer(&self, h: u32, in_scheme: Scheme, n: u8) -> Result<Signing<'_>, Rc> {
+    fn attest_signer(
+        &self,
+        h: u32,
+        in_scheme: Scheme,
+        handle_no: u8,
+        scheme_no: u8,
+    ) -> Result<Signing<'_>, Rc> {
         if h == handle::RH_NULL {
             return Ok(None);
         }
         let signer = self
             .object(h)
-            .ok_or(Rc::reference_handle(usize::from(n) - 1))?;
-        Ok(Some((signer, attest_scheme(signer, in_scheme, n)?)))
+            .ok_or(Rc::reference_handle(usize::from(handle_no) - 1))?;
+        Ok(Some((
+            signer,
+            attest_scheme(signer, in_scheme, handle_no, scheme_no)?,
+        )))
     }
 
     /// The marshaled `TPMS_ATTEST` for a signing key `signer` (`None`: `TPM_RH_NULL`), clause
@@ -235,6 +249,46 @@ impl Tpm {
         })
     }
 
+    /// `TPM2_CertifyCreation` (Part 3 v185, clause 18.3).
+    pub(crate) fn cmd_certify_creation(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let creation_hash = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(3);
+        let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
+        p.set_param(4);
+        if p.u16()? != st::CREATION {
+            return Err(p.err(Rc::TAG));
+        }
+        let hierarchy = p.u32()?;
+        if !is_object_hierarchy(hierarchy) {
+            return Err(p.err(Rc::VALUE));
+        }
+        let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+
+        let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 3)?;
+        let object = self.object(inv.handles[1]).ok_or(Rc::reference_handle(1))?;
+        if !self.valid_creation_ticket(&object.name, creation_hash, hierarchy, digest) {
+            return Err(Rc::TICKET.in_param(4));
+        }
+        let mut attested = Writer::new();
+        attested.tpm2b(&object.name);
+        attested.tpm2b(creation_hash);
+        let attest = self.attest_bytes(
+            signing.map(|(object, _)| object),
+            st::ATTEST_CREATION,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(inv.handles[0], signing.map(|(_, scheme)| scheme), attest)
+    }
+
     /// `TPM2_Quote` (Part 3, clause 18.4).
     pub(crate) fn cmd_quote(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
@@ -244,7 +298,7 @@ impl Tpm {
         p.set_param(3);
         let selection = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
-        let signing = self.attest_signer(inv.handles[0], in_scheme, 1)?;
+        let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 2)?;
         let mut attested = Writer::new();
         selection.marshal(&mut attested);
         attested.tpm2b(&pcr_selection_digest(&self.pcrs, &selection));
@@ -269,7 +323,7 @@ impl Tpm {
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.finish()?;
         let certified = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         let mut attested = Writer::new();
         attested.tpm2b(&certified.name);
         attested.tpm2b(&certified.qualified_name);
@@ -302,7 +356,7 @@ impl Tpm {
             .get(slot)
             .and_then(|session| session.audit_digest)
             .ok_or(Rc::TYPE.in_handle(3))?;
-        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         let mut attested = Writer::new();
         attested.u8(u8::from(self.sessions.exclusive_audit == Some(slot)));
         attested.tpm2b(&digest);
@@ -327,7 +381,7 @@ impl Tpm {
         p.set_param(2);
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.finish()?;
-        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         // `TPMS_TIME_ATTEST_INFO`: the clock values in clear (clause 18.7.1, note).
         let mut attested = Writer::new();
         self.time_info().marshal(&mut attested);

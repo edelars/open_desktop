@@ -1426,6 +1426,158 @@ pub(super) fn certify(
     )
 }
 
+fn certify_creation_params(
+    nonce: &[u8],
+    hash: &[u8],
+    scheme: &[u8],
+    ticket: &(u16, u32, Vec<u8>),
+) -> Vec<u8> {
+    cat(&[
+        &tpm2b(nonce),
+        &tpm2b(hash),
+        scheme,
+        &u16b(ticket.0),
+        &u32b(ticket.1),
+        &tpm2b(&ticket.2),
+    ])
+}
+
+#[test]
+fn certify_creation_attests_the_creation_hash_and_child_name() {
+    let mut t = started();
+    let signer = parse_primary(&create_primary(&mut t, PLATFORM, b"signer", &ecc_sign()));
+    let owner = parse_primary(&create_primary(&mut t, OWNER, b"parent", &ecc_storage()));
+    let child = parse_child(&create_child(
+        &mut t,
+        owner.handle,
+        b"parent",
+        b"child-auth",
+        b"",
+        &ecc_sign(),
+    ));
+    let (handle, name) = parse_loaded(&load(
+        &mut t,
+        owner.handle,
+        b"parent",
+        &child.private,
+        &child.public,
+    ));
+    let args = certify_creation_params(b"fresh", &child.hash, &u16b(alg::NULL), &child.ticket);
+    let r = run(
+        &mut t,
+        with_pw(
+            cc::CERTIFY_CREATION,
+            &[signer.handle, handle],
+            &[b"signer"],
+            &args,
+        ),
+    );
+    let (attestation, signature) = parse_attestation(&r);
+    assert_eq!(
+        attestation,
+        attest_bytes(
+            0x801a,
+            &qualified(PLATFORM, &signer.name),
+            b"fresh",
+            (0, 1, 0),
+            FIRMWARE,
+            &cat(&[&tpm2b(&name), &tpm2b(&child.hash)]),
+        ),
+    );
+    ok(&verify(
+        &mut t,
+        signer.handle,
+        &h256(&[&attestation]),
+        &signature,
+    ));
+
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::CERTIFY_CREATION,
+                &[signer.handle, owner.handle],
+                &[b"signer"],
+                &args,
+            ),
+        ),
+        Rc::TICKET.in_param(4),
+    );
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::CERTIFY_CREATION,
+                &[signer.handle, handle],
+                &[b"child-auth"],
+                &args,
+            ),
+        ),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    let wrong_scheme = cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256)]);
+    let args = certify_creation_params(b"fresh", &child.hash, &wrong_scheme, &child.ticket);
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::CERTIFY_CREATION,
+                &[signer.handle, handle],
+                &[b"signer"],
+                &args,
+            ),
+        ),
+        Rc::SCHEME.in_param(3),
+    );
+}
+
+#[test]
+fn certify_creation_rejects_empty_forged_and_mismatched_null_hierarchy_tickets() {
+    let mut t = started();
+    let object = parse_primary(&create_primary(&mut t, NULL, b"object-auth", &ecc_sign()));
+    let handles = [NULL, object.handle];
+    let send = |t: &mut Tpm, hash: &[u8], ticket: &(u16, u32, Vec<u8>)| {
+        let args = certify_creation_params(b"fresh", hash, &u16b(alg::NULL), ticket);
+        run(t, with_pw(cc::CERTIFY_CREATION, &handles, &[b""], &args))
+    };
+    let success = send(&mut t, &object.hash, &object.ticket);
+    let (attested, signature) = parse_attestation(&success);
+    assert_eq!(attested[4..6], [0x80, 0x1a]);
+    assert_eq!(signature, [0, 0x10]);
+    assert!(attested.ends_with(&cat(&[&tpm2b(&object.name), &tpm2b(&object.hash)])));
+    let mut forged = object.ticket.clone();
+    forged.2[0] ^= 1;
+    err(&send(&mut t, &object.hash, &forged), Rc::TICKET.in_param(4));
+    err(
+        &send(&mut t, &object.hash, &(0x8021, NULL, Vec::new())),
+        Rc::TICKET.in_param(4),
+    );
+    let mut other_hash = object.hash.clone();
+    other_hash[0] ^= 1;
+    err(
+        &send(&mut t, &other_hash, &object.ticket),
+        Rc::TICKET.in_param(4),
+    );
+    let mut malformed = object.ticket.clone();
+    malformed.0 = 0x8022;
+    err(&send(&mut t, &object.hash, &malformed), Rc::TAG.in_param(4));
+
+    shutdown(&mut t, su::CLEAR);
+    t.init();
+    startup(&mut t, su::CLEAR);
+    let old_public = unmarshal_public(&object.public);
+    let (loaded, same_name) = parse_loaded(&load_external(&mut t, &old_public, NULL));
+    assert_eq!(same_name, object.name);
+    let args = certify_creation_params(b"fresh", &object.hash, &u16b(alg::NULL), &object.ticket);
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::CERTIFY_CREATION, &[NULL, loaded], &[b""], &args),
+        ),
+        Rc::TICKET.in_param(4),
+    );
+}
+
 fn quote_attested() -> Vec<u8> {
     cat(&[&sel04(), &tpm2b(&hex(V_PCR_DIGEST))])
 }

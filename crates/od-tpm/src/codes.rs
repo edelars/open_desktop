@@ -15,6 +15,7 @@ pub mod cc {
     /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
+    pub const CERTIFY_CREATION: u32 = 0x0000_014A;
     pub const GET_TIME: u32 = 0x0000_014C;
     pub const GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014D;
     pub const NV_INCREMENT: u32 = 0x0000_0134;
@@ -95,6 +96,7 @@ pub mod st {
     pub const ATTEST_QUOTE: u16 = 0x8018;
     /// `TPM2_GetTime` (Table 23).
     pub const ATTEST_TIME: u16 = 0x8019;
+    pub const ATTEST_CREATION: u16 = 0x801A;
     /// Ticket tag of `TPM2_PolicySecret` (Table 23).
     pub const AUTH_SECRET: u16 = 0x8023;
 }

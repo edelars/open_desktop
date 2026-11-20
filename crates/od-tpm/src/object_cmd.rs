@@ -13,7 +13,8 @@
 //! Tickets (Part 2 v184, clauses 10.7.3 and 10.7.4): the creation ticket is
 //! `HMAC(proof, TPM_ST_CREATION || name || H(creationData))` and the verified ticket
 //! `HMAC(proof, TPM_ST_VERIFIED || digest || keyName)`, the proof being that of the hierarchy of
-//! the object; the Null hierarchy gets the NULL ticket. The `validation` ticket of `TPM2_Sign` is
+//! the object. Creation in the Null hierarchy uses the reset-bound nullProof. Verification in
+//! the Null hierarchy returns an empty ticket. The `validation` ticket of `TPM2_Sign` is
 //! always a NULL ticket in this TPM (`TPM2_Hash` produces only NULL tickets, `hash.rs`), so a
 //! restricted signing key cannot sign: `TPM_RC_TICKET`.
 //!
@@ -32,7 +33,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr, st};
-use crate::crypto::{ecc_sign, ecc_verify, hmac_sha256, kdfa_sha256, rsa_sign, rsa_verify};
+use crate::crypto::{
+    ecc_sign, ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign, rsa_verify,
+};
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{
@@ -50,6 +53,11 @@ use crate::state::Tpm;
 
 /// `TPMA_LOCALITY` of locality 0 (Part 2, Table 41, bit 0).
 const LOCALITY_ZERO: u8 = 1;
+const CREATION_TAG: [u8; 2] = st::CREATION.to_be_bytes();
+
+fn creation_ticket_parts<'a>(name: &'a [u8], creation_hash: &'a [u8]) -> [&'a [u8]; 3] {
+    [&CREATION_TAG, name, creation_hash]
+}
 
 /// What a child needs from its parent, copied so that the parent is not borrowed while the TPM
 /// DRBG is used.
@@ -150,8 +158,8 @@ impl Tpm {
         Zeroizing::new(seed.to_vec())
     }
 
-    /// The proof value of a hierarchy; `None` for the Null hierarchy (its tickets are NULL
-    /// tickets). Part 3, clause 24.6 allows deriving proofs from the Primary Seeds ("if derived
+    /// The proof value of a permanent object hierarchy. Part 3, clause 24.6 allows deriving
+    /// proofs from the Primary Seeds ("if derived
     /// from the Primary Seeds, the derivation of ehProof shall use both the SPS and EPS"): here
     /// `proof = KDFa(SHA-256, seed, "ODTPM-<H>PROOF", NULL, NULL, 256)` and for the endorsement
     /// hierarchy the storage seed is the context, so `TPM2_Clear` (new SPS) changes `shProof`
@@ -173,6 +181,30 @@ impl Tpm {
                 256,
             ),
             _ => return None,
+        })
+    }
+    /// Proof for temporary objects and session contexts, changed by each TPM Reset.
+    pub(crate) fn null_proof(&self) -> Zeroizing<Vec<u8>> {
+        kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-NULLPROOF", &[], &[], 256)
+    }
+
+    fn creation_proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
+        if hierarchy == handle::RH_NULL {
+            Some(self.null_proof())
+        } else {
+            self.proof(hierarchy)
+        }
+    }
+
+    pub(crate) fn valid_creation_ticket(
+        &self,
+        name: &[u8],
+        creation_hash: &[u8],
+        hierarchy: u32,
+        digest: &[u8],
+    ) -> bool {
+        self.creation_proof(hierarchy).is_some_and(|proof| {
+            hmac_sha256_verify(&proof, &creation_ticket_parts(name, creation_hash), digest)
         })
     }
 
@@ -233,11 +265,14 @@ impl Tpm {
         data.marshal(&mut w);
         let bytes = w.finish();
         let hash = Sha256::digest(&bytes).to_vec();
-        let ticket = self.ticket(
-            st::CREATION,
-            obj.hierarchy,
-            &[&st::CREATION.to_be_bytes(), &obj.name, &hash],
-        );
+        let proof = self
+            .creation_proof(obj.hierarchy)
+            .expect("a newly created object has a hierarchy proof");
+        let ticket = TpmtTicket {
+            tag: st::CREATION,
+            hierarchy: obj.hierarchy,
+            digest: hmac_sha256(&proof, &creation_ticket_parts(&obj.name, &hash)).to_vec(),
+        };
         (bytes, hash, ticket)
     }
 

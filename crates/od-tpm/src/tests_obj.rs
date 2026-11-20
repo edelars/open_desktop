@@ -587,10 +587,13 @@ fn endorsement_auth_does_not_change_the_ek() {
 }
 
 #[test]
-fn create_primary_in_the_null_hierarchy_has_a_null_ticket() {
+fn create_primary_in_the_null_hierarchy_issues_a_creation_ticket() {
     let mut t = started();
     let pr = parse_primary(&create_primary(&mut t, NULL, b"", &ecc_sign()));
-    assert_eq!(pr.ticket, (0x8021, NULL, vec![]));
+    assert_eq!(
+        (pr.ticket.0, pr.ticket.1, pr.ticket.2.len()),
+        (0x8021, NULL, 32)
+    );
     // Parent of a temporary object: nameAlg NULL, Name and QN the handle of TPM_RH_NULL.
     assert!(contains(&pr.creation, &tpm2b(&NULL.to_be_bytes())));
 }

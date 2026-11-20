@@ -439,9 +439,7 @@ impl Tpm {
     /// The proof of the context's hierarchy. Null objects and sessions use a `nullProof`
     /// derived from the Null seed, which a TPM Reset replaces.
     fn context_proof(&self, hierarchy: u32) -> Zeroizing<Vec<u8>> {
-        self.proof(hierarchy).unwrap_or_else(|| {
-            kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-NULLPROOF", &[], &[], 256)
-        })
+        self.proof(hierarchy).unwrap_or_else(|| self.null_proof())
     }
 
     /// `TPM2_ContextSave` (Part 3, clause 28.2).

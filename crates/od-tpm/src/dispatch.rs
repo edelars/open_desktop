@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 64] = [
+pub(crate) static COMMANDS: [CommandSpec; 65] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -134,6 +134,7 @@ pub(crate) static COMMANDS: [CommandSpec; 64] = [
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
+    spec(cc::CERTIFY_CREATION, 2, 1, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
     spec(cc::GET_SESSION_AUDIT_DIGEST, 3, 2, false, false, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
@@ -726,6 +727,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::HMAC => tpm.cmd_hmac(&inv, &mut p)?,
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
+        cc::CERTIFY_CREATION => tpm.cmd_certify_creation(&inv, &mut p)?,
         cc::GET_TIME => tpm.cmd_get_time(&inv, &mut p)?,
         cc::GET_SESSION_AUDIT_DIGEST => tpm.cmd_get_session_audit_digest(&inv, &mut p)?,
         cc::NV_INCREMENT => tpm.cmd_nv_increment(&inv, &mut p)?,
@@ -887,6 +889,10 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
         }
+        cc::CERTIFY_CREATION => {
+            check_sign_handle(tpm, handles[0], 0)?;
+            tpm.check_object_handle(handles[1], 1, false)?;
+        }
         cc::GET_TIME | cc::GET_SESSION_AUDIT_DIGEST => {
             // `TPMI_RH_ENDORSEMENT` (Part 3, Table 99): `TPM_RH_ENDORSEMENT` only.
             if handles[0] != handle::RH_ENDORSEMENT {
@@ -991,6 +997,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 64);
+        assert_eq!(COMMANDS.len(), 65);
     }
 }
