@@ -624,11 +624,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
         // Slice C3: NV_Increment, NV_SetBits, NV_Extend, GetTime.
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
-        0x14A, 0x14D, 0x15B, 0x163, 0x178, 0x18A,
+        0x14A, 0x14D, 0x15B, 0x163, 0x16E, 0x16F, 0x178, 0x18A,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 66);
+    assert_eq!(expected.len(), 68);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -654,7 +654,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(66)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(68)[..]].concat()
     );
 }
 

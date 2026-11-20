@@ -1,6 +1,7 @@
 //! Policy sessions and the policy commands (slice C2 of phase B, S7-23): `TPM2_PolicyRestart`,
 //! `TPM2_PolicyPCR`, `TPM2_PolicyOR`, `TPM2_PolicyAuthValue`, `TPM2_PolicyCommandCode`,
-//! `TPM2_PolicySecret` and `TPM2_PolicyGetDigest`; the check that a policy session authorizes a
+//! `TPM2_PolicySecret`, `TPM2_PolicyGetDigest`, `TPM2_PolicyCpHash` and `TPM2_PolicyLocality`.
+//! The check that a policy session authorizes a
 //! command is [`Tpm::policy_use_check`], called by the dispatcher.
 //!
 //! A policy session (`TPM_SE_POLICY`) or trial session (`TPM_SE_TRIAL`) is started by
@@ -8,7 +9,7 @@
 //! Every assertion extends the digest with `H(policyDigest || commandCode || data)`, SHA-256 being
 //! the only session hash (Part 3, clauses 23.4-23.19). A trial session updates the digest without
 //! validating (Part 3, clause 23.1) and cannot authorize. The policy context holds: the
-//! `policyDigest`, `commandCode`, `cpHash`, `pcrUpdateCounter`, `isAuthValueNeeded` and
+//! `policyDigest`, `commandCode`, `cpHash`, `pcrUpdateCounter`, `commandLocality`, `isAuthValueNeeded` and
 //! `isPasswordNeeded` (Part 1 v184, clause 17.7.8). `TPM2_PolicyRestart` returns all of it to the
 //! initial state and keeps the session nonce.
 //!
@@ -16,14 +17,15 @@
 //! 17.7): `cpHash` set must match the command (`TPM_RC_POLICY_FAIL`), `commandCode` set must match
 //! (`TPM_RC_POLICY_CC`), `policyDigest` must equal the `authPolicy` of the entity
 //! (`TPM_RC_POLICY_FAIL`), `pcrUpdateCounter` set must equal the current one
-//! (`TPM_RC_PCR_CHANGED`); with `isAuthValueNeeded` the HMAC key is `sessionKey || authValue`
+//! (`TPM_RC_PCR_CHANGED`), and `commandLocality` must allow the command's locality
+//! (`TPM_RC_LOCALITY`); with `isAuthValueNeeded` the HMAC key is `sessionKey || authValue`
 //! (an empty HMAC is refused), with `isPasswordNeeded` the `hmac` field is the authValue in clear,
 //! otherwise the HMAC key is `sessionKey` alone (nothing to prove when it is empty). A policy
 //! failure is not a dictionary-attack failure (Part 1, clause 17.8.3). An ADMIN-role authorization
 //! with a policy session needs `TPM2_PolicyCommandCode` in the policy (Part 3, clause 5.6, step 6).
 //!
 //! Not implemented (answered `TPM_RC_COMMAND_CODE`): `PolicySigned`, `PolicyTicket`,
-//! `PolicyLocality`, `PolicyNV`, `PolicyCounterTimer`, `PolicyPhysicalPresence`, `PolicyCpHash`,
+//! `PolicyNV`, `PolicyCounterTimer`, `PolicyPhysicalPresence`,
 //! `PolicyNameHash`, `PolicyDuplicationSelect`, `PolicyAuthorize`, `PolicyPassword`,
 //! `PolicyNvWritten`, `PolicyTemplate`, `PolicyAuthorizeNV`, `PolicyCapability`,
 //! `PolicyParameters`. `TPM2_PolicySecret` takes `expiration` 0 only (a non-zero value needs the
@@ -69,6 +71,8 @@ pub(crate) struct PolicyState {
     pub digest: [u8; DIGEST],
     pub command_code: Option<u32>,
     pub cp_hash: Option<[u8; DIGEST]>,
+    /// Zero for unrestricted, 1..=31 for the locality mask, 32..=255 for an extended locality.
+    pub command_locality: u8,
     pub pcr_update_counter: Option<u32>,
     pub auth_value_needed: bool,
     pub password_needed: bool,
@@ -81,6 +85,7 @@ impl PolicyState {
             digest: [0; DIGEST],
             command_code: None,
             cp_hash: None,
+            command_locality: 0,
             pcr_update_counter: None,
             auth_value_needed: false,
             password_needed: false,
@@ -251,6 +256,59 @@ impl Tpm {
         Ok(Output::default())
     }
 
+    /// `TPM2_PolicyCpHash` (Part 3, clause 23.13).
+    pub(crate) fn cmd_policy_cp_hash(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let cp_hash: [u8; DIGEST] = p
+            .tpm2b(limits::MAX_DIGEST_SIZE)?
+            .try_into()
+            .map_err(|_| Rc::SIZE.in_param(1))?;
+        p.finish()?;
+        let slot = self.policy_slot(inv.handles[0])?;
+        let (state, kind) = self.policy_mut(slot)?;
+        if kind == SessionKind::Policy {
+            if state.cp_hash.is_some_and(|old| old != cp_hash) {
+                return Err(Rc::CPHASH);
+            }
+            state.cp_hash = Some(cp_hash);
+        }
+        state.extend(&[&cc::POLICY_CP_HASH.to_be_bytes(), &cp_hash]);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyLocality` (Part 3, clause 23.8).
+    pub(crate) fn cmd_policy_locality(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let locality = p.u8()?;
+        p.finish()?;
+        let slot = self.policy_slot(inv.handles[0])?;
+        let (state, kind) = self.policy_mut(slot)?;
+        if kind == SessionKind::Policy {
+            let old = state.command_locality;
+            let allowed = if old == 0 || old == locality {
+                locality
+            } else if old < 32 && locality < 32 {
+                old & locality
+            } else {
+                return Err(Rc::RANGE.in_param(1));
+            };
+            if allowed == 0 {
+                return Err(Rc::RANGE.in_param(1));
+            }
+            state.command_locality = allowed;
+        }
+        state.extend(&[&cc::POLICY_LOCALITY.to_be_bytes(), &[locality]]);
+        Ok(Output::default())
+    }
+
     /// `TPM2_PolicyGetDigest` (Part 3, clause 23.19).
     pub(crate) fn cmd_policy_get_digest(
         &mut self,
@@ -364,6 +422,11 @@ impl Tpm {
             && c != self.pcrs.update_counter()
         {
             return Err(Rc::PCR_CHANGED);
+        }
+        // The dispatcher only admits commands at locality 0.
+        let locality = st.command_locality;
+        if locality != 0 && (locality >= 32 || locality & 1 == 0) {
+            return Err(Rc::LOCALITY);
         }
         // The authorization of `TPM2_PolicySecret` itself must prove the authValue (clause 23.4.1).
         if code == cc::POLICY_SECRET && !(st.auth_value_needed || st.password_needed) {

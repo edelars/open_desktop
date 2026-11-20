@@ -441,6 +441,101 @@ fn policy_command_code_checks_the_code() {
 }
 
 #[test]
+fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
+    let mut t = started();
+    let policy = policy_session(&mut t, se::POLICY);
+    let cp_hash = [0x42; 32];
+    err(
+        &pol(&mut t, cc::POLICY_CP_HASH, &policy, &tpm2b(&cp_hash[..31])),
+        Rc::SIZE.in_param(1),
+    );
+    let encoded = tpm2b(&cp_hash);
+    let first = h256(&[&[0; 32], &[0, 0, 1, 0x6e], &cp_hash]);
+    ok(&pol(&mut t, cc::POLICY_CP_HASH, &policy, &encoded));
+    assert_eq!(digest(&mut t, &policy), first);
+    err(
+        &pol(&mut t, cc::POLICY_CP_HASH, &policy, &tpm2b(&[0x43; 32])),
+        Rc::CPHASH,
+    );
+    assert_eq!(digest(&mut t, &policy), first);
+    ok(&pol(&mut t, cc::POLICY_CP_HASH, &policy, &encoded));
+    let second = h256(&[&first, &[0, 0, 1, 0x6e], &cp_hash]);
+    assert_eq!(digest(&mut t, &policy), second);
+
+    let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+    let slot = t.sessions.slot_of(policy.handle).unwrap();
+    assert_eq!(
+        t.policy_use_check(slot, cc::SIGN, &cp_hash, &second, false, 1),
+        Ok((false, false))
+    );
+    assert_eq!(
+        t.policy_use_check(slot, cc::SIGN, &[0x43; 32], &second, false, 1),
+        Err(Rc::POLICY_FAIL.in_session(1))
+    );
+    ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+    ok(&pol(
+        &mut t,
+        cc::POLICY_CP_HASH,
+        &policy,
+        &tpm2b(&[0x43; 32]),
+    ));
+
+    let trial = policy_session(&mut t, se::TRIAL);
+    ok(&pol(&mut t, cc::POLICY_CP_HASH, &trial, &encoded));
+    assert_eq!(digest(&mut t, &trial), first);
+}
+
+#[test]
+fn policy_locality_intersects_masks_and_gates_real_authorization_after_restore() {
+    let (mut t, parent) = with_ecc_parent();
+    let first = h256(&[&[0; 32], &[0, 0, 1, 0x6f, 3]]);
+    for (mask, expected_error) in [(1, None), (2, Some(Rc::LOCALITY))] {
+        let expected = h256(&[&first, &[0, 0, 1, 0x6f, mask]]);
+        let (key, name, _) = make_child(&mut t, parent, &policy_key(&expected), b"kpw", b"");
+        let mut policy = policy_session(&mut t, se::POLICY);
+        err(
+            &pol(&mut t, cc::POLICY_LOCALITY, &policy, &[0]),
+            Rc::RANGE.in_param(1),
+        );
+        ok(&pol(&mut t, cc::POLICY_LOCALITY, &policy, &[3]));
+        ok(&pol(&mut t, cc::POLICY_LOCALITY, &policy, &[mask]));
+        for rejected in [mask ^ 3, 36] {
+            err(
+                &pol(&mut t, cc::POLICY_LOCALITY, &policy, &[rejected]),
+                Rc::RANGE.in_param(1),
+            );
+        }
+        assert_eq!(digest(&mut t, &policy), expected);
+        let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+        assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+        let sign = sign_command(key, &name, b"kpw");
+        let response = use_session(&mut t, &mut policy, &sign, 0, true, false);
+        if let Some(error) = expected_error {
+            err(&response, error);
+            assert_eq!(digest(&mut t, &policy), expected);
+        } else {
+            ok(&response);
+            ok(&verify(&mut t, key, &[7; 32], params(&response, 0)));
+        }
+        ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+        ok(&pol(&mut t, cc::POLICY_LOCALITY, &policy, &[36]));
+        ok(&pol(&mut t, cc::POLICY_LOCALITY, &policy, &[36]));
+        for rejected in [37, 3] {
+            err(
+                &pol(&mut t, cc::POLICY_LOCALITY, &policy, &[rejected]),
+                Rc::RANGE.in_param(1),
+            );
+        }
+        ok(&flush(&mut t, policy.handle));
+        ok(&flush(&mut t, key));
+    }
+    let trial = policy_session(&mut t, se::TRIAL);
+    ok(&pol(&mut t, cc::POLICY_LOCALITY, &trial, &[3]));
+    assert_eq!(digest(&mut t, &trial), first);
+}
+
+#[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
     let mut s = policy_session(&mut t, se::POLICY);
@@ -2532,6 +2627,8 @@ fn malformed_slice_c2_commands_never_panic() {
         cc::CONTEXT_SAVE,
         cc::POLICY_AUTH_VALUE,
         cc::POLICY_COMMAND_CODE,
+        cc::POLICY_CP_HASH,
+        cc::POLICY_LOCALITY,
         cc::POLICY_OR,
         cc::POLICY_PCR,
         cc::POLICY_RESTART,

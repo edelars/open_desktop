@@ -360,6 +360,9 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     if let Some(digest) = s.audit_digest {
         w.u8(1); // Version of the optional audit tail.
         w.bytes(&digest);
+    } else if p.command_locality != 0 {
+        w.u8(2); // Optional locality tail for policy sessions.
+        w.u8(p.command_locality);
     }
     Zeroizing::new(w.buf)
 }
@@ -410,14 +413,21 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     policy.auth_value_needed = flags & 1 != 0;
     policy.password_needed = flags & 2 != 0;
     let symmetric = SessionSym::from_octet(r.u8()?).ok_or(Rc::VALUE)?;
-    let audit_digest = if r.remaining() == 0 {
-        None
-    } else {
-        if r.u8()? != 1 || kind != SessionKind::Hmac || bound.is_some() {
-            return Err(Rc::VALUE);
+    let mut audit_digest = None;
+    if r.remaining() != 0 {
+        match r.u8()? {
+            1 if kind == SessionKind::Hmac && bound.is_none() => {
+                audit_digest = Some(r.bytes(DIGEST)?.try_into().map_err(|_| Rc::SIZE)?);
+            }
+            2 if kind == SessionKind::Policy => {
+                policy.command_locality = r.u8()?;
+                if policy.command_locality == 0 {
+                    return Err(Rc::VALUE);
+                }
+            }
+            _ => return Err(Rc::VALUE),
         }
-        Some(r.bytes(DIGEST)?.try_into().map_err(|_| Rc::SIZE)?)
-    };
+    }
     r.finish()?;
     Ok(Session {
         nonce_tpm,

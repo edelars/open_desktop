@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use super::tests_b::{
     Hc, Hs, check_hmac_ack, define, define_raw, hc, hmac_auth_entry, hmac_command, kdfa_256,
     name_of, nv_attributes, nv_public, nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd,
-    run_hmac, set_auth, shutdown, split_response, start_cmd, start_params, startup, trimmed,
+    run_hmac, set_auth, shutdown, split_response, start_cmd, start_params, start_session, startup,
+    trimmed,
 };
 use super::tests_c2::{
     FIRMWARE, attest_bytes, ecdsa_parts, h256, hexs, make_child, parse_attestation, qualified,
@@ -1883,6 +1884,39 @@ fn additional_session_decrypts_the_command_and_encrypts_the_response() {
             false
         ),
         h256(&[PLAIN])
+    );
+}
+
+#[test]
+fn additional_decrypt_session_protects_policy_cp_hash() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut protection = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let policy = start_session(&mut t, se::POLICY, NULL, b"", &[0x44; 16]);
+    let mut command = hc(
+        cc::POLICY_CP_HASH,
+        &[policy.handle],
+        Vec::new(),
+        (NULL, b""),
+    );
+    command.attrs |= session_attr::DECRYPT;
+    let hash = [0x37; 32];
+    let ciphertext = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &command.nonce_caller,
+        &protection.nonce_tpm,
+        &hash,
+        true,
+    );
+    assert_ne!(ciphertext, hash);
+    command.params = tpm2b(&ciphertext);
+    ok(&run_hmac(&mut t, &mut protection, &command));
+    let r = run(&mut t, plain(cc::POLICY_GET_DIGEST, &[policy.handle], &[]));
+    assert_eq!(
+        Reader::new(params(&r, 0)).tpm2b(32).unwrap(),
+        h256(&[&[0; 32], &[0, 0, 1, 0x6e], &hash])
     );
 }
 

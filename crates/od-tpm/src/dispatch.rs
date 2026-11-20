@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 66] = [
+pub(crate) static COMMANDS: [CommandSpec; 68] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -158,6 +158,8 @@ pub(crate) static COMMANDS: [CommandSpec; 66] = [
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::POLICY_AUTH_VALUE, 1, 0, false, false, false),
     spec(cc::POLICY_COMMAND_CODE, 1, 0, false, false, false),
+    spec(cc::POLICY_CP_HASH, 1, 0, false, false, false),
+    spec(cc::POLICY_LOCALITY, 1, 0, false, false, false),
     spec(cc::POLICY_OR, 1, 0, false, false, false),
     spec(cc::READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::RSA_ENCRYPT, 1, 0, false, false, false),
@@ -721,6 +723,8 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::POLICY_OR => tpm.cmd_policy_or(&inv, &mut p)?,
         cc::POLICY_AUTH_VALUE => tpm.cmd_policy_auth_value(&inv, &mut p)?,
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
+        cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
+        cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
         cc::POLICY_SECRET => tpm.cmd_policy_secret(&inv, &mut p)?,
         cc::POLICY_GET_DIGEST => tpm.cmd_policy_get_digest(&inv, &mut p)?,
         cc::CONTEXT_SAVE => tpm.cmd_context_save(&inv, &mut p)?,
@@ -916,6 +920,8 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_OR
         | cc::POLICY_AUTH_VALUE
         | cc::POLICY_COMMAND_CODE
+        | cc::POLICY_CP_HASH
+        | cc::POLICY_LOCALITY
         | cc::POLICY_GET_DIGEST => tpm.check_policy_session(handles[0], 0)?,
         cc::POLICY_SECRET => tpm.check_policy_session(handles[1], 1)?,
         cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {
@@ -1000,6 +1006,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 66);
+        assert_eq!(COMMANDS.len(), 68);
     }
 }
