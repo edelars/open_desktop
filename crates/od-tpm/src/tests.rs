@@ -672,11 +672,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
         0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F, 0x192, 0x13B, 0x130, 0x172,
-        0x160, 0x142, 0x12B, 0x156, 0x14B, 0x188, 0x1A5, 0x1A6,
+        0x160, 0x142, 0x12B, 0x156, 0x14B, 0x188, 0x1A5, 0x1A6, 0x1A4, 0x1AA,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 95);
+    assert_eq!(expected.len(), 97);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -744,7 +744,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(95)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(97)[..]].concat()
     );
 }
 
@@ -756,7 +756,7 @@ fn capability_commands_paging_and_more_data() {
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
     let expected = [
         0x17E, 0x17F, 0x180, 0x181, 0x182, 0x184, 0x185, 0x186, 0x188, 0x189, 0x18A, 0x18C, 0x18F,
-        0x190, 0x192, 0x19C, 0x1A5, 0x1A6,
+        0x190, 0x192, 0x19C, 0x1A4, 0x1A5, 0x1A6, 0x1AA,
     ];
     assert!(!more);
     assert_eq!(count as usize, expected.len());
@@ -764,7 +764,7 @@ fn capability_commands_paging_and_more_data() {
     for (entry, code) in body.chunks_exact(4).zip(expected) {
         assert_eq!(u16::from_be_bytes([entry[2], entry[3]]), code);
     }
-    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x1A7, 100));
+    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x1AB, 100));
     assert!(!more && count == 0);
     // propertyCount 0: empty list, moreData YES because entries remain.
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0, 0));

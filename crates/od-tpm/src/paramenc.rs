@@ -104,6 +104,8 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::HASH_SEQUENCE_START
             | cc::SEQUENCE_UPDATE
             | cc::SEQUENCE_COMPLETE
+            | cc::SIGN_SEQUENCE_START
+            | cc::SIGN_SEQUENCE_COMPLETE
             | cc::EVENT_SEQUENCE_COMPLETE
             | cc::PCR_EVENT
             | cc::NV_DEFINE_SPACE

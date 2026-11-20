@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 95 кодов из списка, 6 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 97 кодов из списка, 4 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,7 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `SignSequenceComplete` |
+| PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `VerifySequenceComplete` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -262,6 +262,28 @@ Unrestricted-ключ принимает канонический NULL-биле�
 постоянного proof иерархии и сохраняется при обычном сбросе TPM.
 [TPM Library v185 Part 2 §10.6.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
 [Part 3 §§15.4, 17.7–17.8 и 20.5–20.7](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
+
+### Потоковая подпись
+
+`SignSequenceStart` (`0x1AA`) резервирует один из общих слотов
+последовательностей, задаёт его `authValue` и сохраняет Name и схему
+ключа. Текущий профиль поддерживает фиксированные RSASSA и ECDSA с
+RSA-2048, P-256, SHA-256 и пустым контекстом. Авторизация ключа происходит в
+`SignSequenceComplete` (`0x1A4`). Эта команда авторизует сначала
+последовательность, затем ключ, оба в роли USER. Защита параметров
+доступна для `auth` при старте и последней порции при завершении.
+
+`SequenceUpdate` принимает порции сообщения. `SignSequenceComplete`
+добавляет последнюю порцию и проверяет Name ключа. Тот же ключ можно
+загрузить с другим handle. Префикс первых четырёх байтов собирается
+через границы порций, поэтому restricted-ключ отклоняет любое сообщение,
+начинающееся с `TPM_GENERATED_VALUE`, с кодом `TPM_RC_VALUE` первого
+параметра. Так реализована проверка полного префикса из §20.6.
+Правило первой порции из §17.7 применяется к обычной хеш-последовательности,
+которая выдаёт дайджест с `HASHCHECK`. Успешное завершение освобождает слот. При ошибке накопленный
+хеш и префикс остаются доступны для повторной попытки.
+[TPM Library v185 Part 3 §§17.5, 17.7 и 20.6](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
+[Errata 1 §2.2](https://medias.cdn.trustedcomputinggroup.org/production/Eratta_Trusted_Platform_Module_2_0_Library_Version_185_pub_17260f83c0.pdf).
 
 ### Ограничения шаблона и параметров команды
 

@@ -1396,6 +1396,40 @@ fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn restricted_sign_sequence_rejects_a_generated_prefix_without_consuming_the_final_buffer() {
+    let mut t = started();
+    let restricted = ecc(base() | oa::RESTRICTED | oa::SIGN, SymDef::Null, ECDSA);
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"key", &restricted)).handle;
+    let started = run(
+        &mut t,
+        plain(
+            cc::SIGN_SEQUENCE_START,
+            &[key],
+            &cat(&[&tpm2b(b"sequence"), &tpm2b(&[])]),
+        ),
+    );
+    let sequence = seq_handle(&started);
+    ok(&seq_update(&mut t, sequence, b"sequence", b"\xff"));
+    ok(&seq_update(&mut t, sequence, b"sequence", b"TC"));
+    let complete = |t: &mut Tpm, data| {
+        run(
+            t,
+            with_pw(
+                cc::SIGN_SEQUENCE_COMPLETE,
+                &[sequence, key],
+                &[b"sequence", b"key"],
+                &tpm2b(data),
+            ),
+        )
+    };
+    err(&complete(&mut t, b"G"), Rc::VALUE.in_param(1));
+    let reply = complete(&mut t, b"X");
+    let digest = Sha256::digest(b"\xffTCX");
+    ok(&verify(&mut t, key, &digest, params(&reply, 0)));
+    err(&complete(&mut t, b"X"), Rc::reference_handle(0));
+}
+
+#[test]
 fn restricted_sign_digest_requires_a_hashcheck_bound_to_the_first_buffer() {
     let mut t = started();
     let message = b"digest signing test";

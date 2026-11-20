@@ -28,8 +28,9 @@ use zeroize::Zeroize;
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
 use crate::crypto::{hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
 use crate::dispatch::Invocation;
-use crate::marshal::{PublicParams, Reader, TpmtTkHashcheck, Writer, digest_size, limits};
-use crate::object::Secret;
+use crate::marshal::{PublicParams, Reader, Scheme, TpmtTkHashcheck, Writer, digest_size, limits};
+use crate::object::{Secret, find_object};
+use crate::object_cmd::{fixed_digest_scheme, sign_digest_output};
 use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -45,9 +46,10 @@ fn check_hierarchy(r: &Reader<'_>, h: u32) -> Result<u32, Rc> {
     }
 }
 
+const GENERATED_PREFIX: [u8; 4] = TPM_GENERATED_VALUE.to_be_bytes();
+
 fn safe_hashcheck_prefix(data: &[u8]) -> bool {
-    const GENERATED: [u8; 4] = TPM_GENERATED_VALUE.to_be_bytes();
-    data.len() >= GENERATED.len() && !data.starts_with(&GENERATED)
+    data.len() >= GENERATED_PREFIX.len() && !data.starts_with(&GENERATED_PREFIX)
 }
 
 fn hashcheck_parts(digest: &[u8]) -> [&[u8]; 2] {
@@ -121,6 +123,31 @@ pub(crate) fn password_matches(given: &[u8], auth: &[u8]) -> bool {
     diff == 0
 }
 
+#[derive(Clone, Copy, Default)]
+struct MessagePrefix {
+    bytes: [u8; GENERATED_PREFIX.len()],
+    len: usize,
+}
+
+impl MessagePrefix {
+    fn append(&mut self, data: &[u8]) {
+        let count = (self.bytes.len() - self.len).min(data.len());
+        self.bytes[self.len..self.len + count].copy_from_slice(&data[..count]);
+        self.len += count;
+    }
+
+    fn is_generated(self) -> bool {
+        self.len == GENERATED_PREFIX.len() && self.bytes == GENERATED_PREFIX
+    }
+}
+
+pub(crate) struct SignSequence {
+    key_name: Vec<u8>,
+    scheme: Scheme,
+    digest: Sha256,
+    prefix: MessagePrefix,
+}
+
 pub(crate) enum SequenceKind {
     /// Hash sequence of one algorithm (SHA-256).
     Hash(Sha256),
@@ -130,6 +157,7 @@ pub(crate) enum SequenceKind {
     Hmac(Hmac<Sha256>),
     /// Event sequence with both PCR bank algorithms.
     Event(EventHash),
+    Sign(SignSequence),
 }
 
 pub(crate) struct Sequence {
@@ -290,6 +318,35 @@ impl Tpm {
         self.sequences.start(kind, auth)
     }
 
+    /// `TPM2_SignSequenceStart` without key authorization (Part 3 v185 §17.5).
+    pub(crate) fn cmd_sign_sequence_start(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let auth = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let auth = AuthValue::from_slice(auth).ok_or_else(|| p.err(Rc::SIZE))?;
+        p.set_param(2);
+        p.tpm2b(0)?;
+        p.finish()?;
+        let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        if key.has(object_attr::X509_SIGN) {
+            return Err(Rc::ATTRIBUTES.in_handle(1));
+        }
+        let scheme = fixed_digest_scheme(key, 1)?;
+        if scheme.hash != alg::SHA256 {
+            return Err(Rc::SCHEME.in_handle(1));
+        }
+        let kind = SequenceKind::Sign(SignSequence {
+            key_name: key.name.clone(),
+            scheme,
+            digest: Sha256::new(),
+            prefix: MessagePrefix::default(),
+        });
+        self.sequences.start(kind, auth)
+    }
+
     /// The key and hash selection rules shared by HMAC and HMAC_Start (Part 3, Tables 75 and 79).
     fn hmac_key_for_hash(&self, handle: u32, hash_alg: u16) -> Result<&[u8], Rc> {
         let object = self.object(handle).ok_or(Rc::reference_handle(0))?;
@@ -376,6 +433,10 @@ impl Tpm {
                 SequenceKind::Hash384(hash) => hash.update(data),
                 SequenceKind::Event(hash) => hash.update(data),
                 SequenceKind::Hmac(mac) => mac.update(data),
+                SequenceKind::Sign(sign) => {
+                    sign.digest.update(data);
+                    sign.prefix.append(data);
+                }
             }
         }
         Ok(Output::default())
@@ -419,11 +480,45 @@ impl Tpm {
                 mac.update(data);
                 self.hash_result(&mac.finalize().into_bytes(), handle::RH_NULL)
             }
-            SequenceKind::Event(_) => {
+            SequenceKind::Event(_) | SequenceKind::Sign(_) => {
                 self.sequences.slots[slot] = Some(sequence);
                 return Err(Rc::MODE.in_handle(1));
             }
         };
+        Ok(result)
+    }
+
+    /// `TPM2_SignSequenceComplete` adds the final message buffer (Part 3 v185 §20.6).
+    pub(crate) fn cmd_sign_sequence_complete(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        let slot = self.seq_slot(inv.handles[0], 0)?;
+        p.set_param(1);
+        let data = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
+        p.finish()?;
+        let Some(Sequence {
+            kind: SequenceKind::Sign(sign),
+            ..
+        }) = self.sequences.slots[slot].as_ref()
+        else {
+            return Err(Rc::MODE.in_handle(1));
+        };
+        let key = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
+            .ok_or(Rc::reference_handle(1))?;
+        if key.name != sign.key_name {
+            return Err(Rc::SIGN_CONTEXT_KEY.in_handle(2));
+        }
+
+        let mut prefix = sign.prefix;
+        prefix.append(data);
+        if key.has(object_attr::RESTRICTED) && prefix.is_generated() {
+            return Err(Rc::VALUE.in_param(1));
+        }
+        let digest = sign.digest.clone().chain_update(data).finalize();
+        let result = sign_digest_output(key, &digest, sign.scheme, &mut self.drbg)?;
+        self.sequences.release(slot);
         Ok(result)
     }
 

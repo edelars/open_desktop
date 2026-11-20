@@ -59,18 +59,18 @@ fn creation_ticket_parts<'a>(name: &'a [u8], creation_hash: &'a [u8]) -> [&'a [u
     [&CREATION_TAG, name, creation_hash]
 }
 
-fn fixed_digest_scheme(object: &Object) -> Result<Scheme, Rc> {
+pub(crate) fn fixed_digest_scheme(object: &Object, handle_no: u8) -> Result<Scheme, Rc> {
     if !object.has(object_attr::SIGN) {
-        return Err(Rc::KEY.in_handle(1));
+        return Err(Rc::KEY.in_handle(handle_no));
     }
     match object.public.params {
         PublicParams::Rsa { scheme, .. } if scheme.alg == alg::RSASSA => Ok(scheme),
         PublicParams::Ecc { scheme, .. } if scheme.alg == alg::ECDSA => Ok(scheme),
-        _ => Err(Rc::SCHEME.in_handle(1)),
+        _ => Err(Rc::SCHEME.in_handle(handle_no)),
     }
 }
 
-fn sign_digest_output(
+pub(crate) fn sign_digest_output(
     object: &Object,
     digest: &[u8],
     scheme: Scheme,
@@ -827,7 +827,7 @@ impl Tpm {
         if o.has(object_attr::X509_SIGN) {
             return Err(Rc::ATTRIBUTES.in_handle(1));
         }
-        let scheme = fixed_digest_scheme(o)?;
+        let scheme = fixed_digest_scheme(o, 1)?;
         if digest_size(scheme.hash) != Some(digest.len()) {
             return Err(Rc::SIZE.in_param(2));
         }
@@ -904,7 +904,7 @@ impl Tpm {
         p.finish()?;
 
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        let key_scheme = fixed_digest_scheme(o)?;
+        let key_scheme = fixed_digest_scheme(o, 1)?;
         let sig_scheme = match &signature {
             TpmtSignature::Rsassa { hash, .. } => (alg::RSASSA, *hash),
             TpmtSignature::Ecdsa { hash, .. } => (alg::ECDSA, *hash),
