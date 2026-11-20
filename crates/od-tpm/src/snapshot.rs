@@ -1,5 +1,5 @@
-//! The payload codec of the persistent-state snapshot `ODTPMSTA` version 3 (slice C1 of phase B,
-//! S7-23, introduced version 2; slice C3 raised it to 3). The header, the SHA-256 check and the
+//! The payload codec of `ODTPMSTA` versions 3 and 4. Version 4 adds the
+//! primary policies of Owner, Endorsement and Lockout. The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
 //! **Sensitive data.** The payload holds the hierarchy seeds, the authorization values of the
@@ -10,7 +10,7 @@
 //! (two passes: length, then writing), so that no earlier, smaller copy is freed unwiped, wipes the
 //! buffer on drop and never prints it.
 //!
-//! **Not in the payload** (volatile by Part 3, clause 9.3.1 or not state): `platformAuth` (EmptyAuth
+//! **Not in the payload** (volatile by Part 3, clause 9.3.1 or not state): `platformPolicy`, `platformAuth` (EmptyAuth
 //! on every `Startup(CLEAR)`; a restored TPM is in the state after `_TPM_Init`, so `Startup` follows),
 //! the Null seed, the enables, PCR, sessions, transient objects, sequences, the state saved by
 //! `Shutdown(STATE)`, the DRBG, `Time`, the volatile DA timers.
@@ -28,6 +28,7 @@
 //! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16), attributes (u32; bits 7:4 are `TPM_NT`: ordinary, counter, bit field or extend), `authPolicy` (`lv8`), `authValue` (`lv8`), data (`lv16`) | variable |
 //! | NV counter maximum: the largest value any counter has had (u64, slice C3) | 8 |
 //! | persistent objects: count (u8, at most 16), then per object: handle (u32), hierarchy (u32), `TPMT_PUBLIC` (`lv16`), Qualified Name (`lv8`), marshaled `TPM2B_SENSITIVE` (`lv16`) | variable |
+//! | v4 only: Owner, Endorsement, Lockout policy. Each is `hashAlg` (u16), then 32 octets for SHA-256. NULL has no digest. | 6–102 |
 //!
 //! `decode` rejects, with `StateError::BadField`, a field that is out of range or inconsistent
 //! (a length above its limit, a duplicate or foreign handle, a handle outside the range of its
@@ -45,6 +46,7 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle as h};
+use crate::crypto::DIGEST;
 use crate::da::DaPersistent;
 use crate::hash::AuthValue;
 use crate::hierarchy::HierarchyPersistent;
@@ -229,16 +231,27 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         let bytes = sensitive_to_bytes(sensitive, o.public.type_alg()).ok()?;
         e.lv16(&bytes);
     }
+    for policy in [&hp.owner_policy, &hp.endorsement_policy, &hp.lockout_policy] {
+        if let Some(digest) = policy {
+            e.u16(alg::SHA256);
+            e.raw(digest);
+        } else {
+            e.u16(alg::NULL);
+        }
+    }
     Some(())
 }
 
 /// Parses a payload into persistent state; the payload has been checked against its digest by the
 /// caller.
-pub(crate) fn decode(payload: &[u8]) -> Result<Persistent, StateError> {
-    decode_inner(payload).map_err(StateError::from)
+pub(crate) fn decode(
+    payload: &[u8],
+    has_hierarchy_policies: bool,
+) -> Result<Persistent, StateError> {
+    decode_inner(payload, has_hierarchy_policies).map_err(StateError::from)
 }
 
-fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
+fn decode_inner(payload: &[u8], has_hierarchy_policies: bool) -> Result<Persistent, Bad> {
     let mut c = Cur { buf: payload };
     let seed = |c: &mut Cur<'_>| -> Result<Zeroizing<[u8; 32]>, Bad> {
         let b = c.take(32).ok_or(Bad::Short)?;
@@ -267,10 +280,13 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
     if hflags & 0xF0 != 0 {
         return Err(Bad::Field);
     }
-    let hier = HierarchyPersistent {
+    let mut hier = HierarchyPersistent {
         owner_auth,
         endorsement_auth,
         lockout_auth,
+        owner_policy: None,
+        endorsement_policy: None,
+        lockout_policy: None,
         owner_auth_set: hflags & 1 != 0,
         endorsement_auth_set: hflags & 2 != 0,
         lockout_auth_set: hflags & 4 != 0,
@@ -348,6 +364,24 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
         ));
     }
     let objects = PersistentObjects::from_items(items).ok_or(Bad::Field)?;
+    if has_hierarchy_policies {
+        for policy in [
+            &mut hier.owner_policy,
+            &mut hier.endorsement_policy,
+            &mut hier.lockout_policy,
+        ] {
+            *policy = match c.u16().ok_or(Bad::Short)? {
+                alg::NULL => None,
+                alg::SHA256 => Some(
+                    c.take(DIGEST)
+                        .ok_or(Bad::Short)?
+                        .try_into()
+                        .map_err(|_| Bad::Short)?,
+                ),
+                _ => return Err(Bad::Field),
+            };
+        }
+    }
     if !c.buf.is_empty() {
         return Err(Bad::Field);
     }

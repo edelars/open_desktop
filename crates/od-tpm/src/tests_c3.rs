@@ -687,7 +687,10 @@ fn offset_of(haystack: &[u8], needle: &[u8]) -> usize {
 fn counter_bit_field_and_extend_indices_survive_the_snapshot() {
     let t = typed_nv_tpm();
     let snap = t.persistent_snapshot();
-    assert_eq!(u16::from_be_bytes([snap[8], snap[9]]), 3);
+    assert_eq!(
+        u16::from_be_bytes([snap[8], snap[9]]),
+        crate::SNAPSHOT_VERSION
+    );
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();
     assert_eq!(r.persistent_snapshot(), snap, "byte for byte");
     startup(&mut r, 0);
@@ -774,8 +777,8 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
         StateError::BadField,
         "data without WRITTEN",
     );
-    // The counter maximum sits just before the (zero) object count: below a live counter.
-    let max_at = snap.len() - 32 - 1 - 8;
+    // The counter maximum precedes the zero object count and three NULL policies.
+    let max_at = snap.len() - 32 - 6 - 1 - 8;
     assert_eq!(&snap[max_at..max_at + 8], &9u64.to_be_bytes());
     let mut b = snap.clone();
     b[max_at..max_at + 8].copy_from_slice(&2u64.to_be_bytes());
@@ -2099,6 +2102,34 @@ fn additional_session_decrypts_the_command_and_encrypts_the_response() {
 }
 
 #[test]
+fn encrypted_set_primary_policy_stores_the_plaintext_digest() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut session = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::SET_PRIMARY_POLICY,
+        &[OWNER],
+        Vec::new(),
+        (OWNER, OWNER_PW),
+    );
+    command.attrs |= session_attr::DECRYPT;
+    let digest = [0x53; 32];
+    let ciphertext = crypt(
+        &AES_SYM,
+        &session,
+        OWNER_PW,
+        &command.nonce_caller,
+        &session.nonce_tpm,
+        &digest,
+        true,
+    );
+    assert_ne!(ciphertext, digest);
+    command.params = cat(&[&tpm2b(&ciphertext), &u16b(alg::SHA256)]);
+    ok(&run_hmac(&mut t, &mut session, &command));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&digest));
+}
+
+#[test]
 fn additional_decrypt_session_protects_policy_cp_hash() {
     let mut t = started();
     ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
@@ -2306,7 +2337,8 @@ fn increment_overflow_is_nv_range_and_changes_nothing() {
         .map(|p| at + p + 2)
         .expect("counter data");
     snap[data_at..data_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-    let max_at = snap.len() - 32 - 1 - 8;
+    // The empty hierarchy policy table adds three two-byte algorithm selectors after objects.
+    let max_at = snap.len() - 32 - 6 - 1 - 8;
     snap[max_at..max_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     refix(&mut snap);
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();

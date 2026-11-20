@@ -77,6 +77,288 @@ fn pol_cc(t: &mut Tpm, s: &Hs, code: u32) -> Vec<u8> {
     pol(t, cc::POLICY_COMMAND_CODE, s, &u32b(code))
 }
 
+fn set_primary_policy(
+    t: &mut Tpm,
+    hierarchy: u32,
+    auth: &[u8],
+    policy: &[u8],
+    hash: u16,
+) -> Vec<u8> {
+    pw_cmd(
+        t,
+        cc::SET_PRIMARY_POLICY,
+        &[hierarchy],
+        auth,
+        &cat(&[&tpm2b(policy), &u16b(hash)]),
+    )
+}
+
+#[test]
+fn primary_policy_uses_current_authorization_and_reports_explicit_zero() {
+    let mut t = started();
+    let mut zero = policy_session(&mut t, se::POLICY);
+    let set = hc(
+        cc::SET_PRIMARY_POLICY,
+        &[OWNER],
+        cat(&[&tpm2b(&[4; 32]), &u16b(alg::SHA256)]),
+        (OWNER, b""),
+    );
+    err(
+        &use_session(&mut t, &mut zero, &set, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &[0; 32],
+        alg::SHA256,
+    ));
+    let response = get_cap(&mut t, cap::AUTH_POLICIES, 0x4000_0000, 2);
+    let (more, selector, body, count) = cap_list(&response);
+    assert!(more && selector == 9 && count == 2);
+    assert_eq!(
+        body,
+        cat(&[
+            &u32b(OWNER),
+            &u16b(alg::SHA256),
+            &[0; 32],
+            &u32b(LOCKOUT),
+            &u16b(alg::NULL),
+        ])
+    );
+    let response = get_cap(&mut t, cap::AUTH_POLICIES, ENDORSEMENT, 6);
+    let (more, _, body, count) = cap_list(&response);
+    assert!(!more && count == 2);
+    assert_eq!(
+        body,
+        cat(&[
+            &u32b(ENDORSEMENT),
+            &u16b(alg::NULL),
+            &u32b(PLATFORM),
+            &u16b(alg::NULL)
+        ])
+    );
+    let response = get_cap(&mut t, cap::AUTH_POLICIES, OWNER, 0);
+    assert_eq!(
+        cap_list(&response),
+        (true, cap::AUTH_POLICIES, Vec::new(), 0)
+    );
+    let response = get_cap(&mut t, cap::AUTH_POLICIES, PLATFORM + 1, 10);
+    assert_eq!(
+        cap_list(&response),
+        (false, cap::AUTH_POLICIES, Vec::new(), 0)
+    );
+    err(
+        &get_cap(&mut t, cap::AUTH_POLICIES, 0, 1),
+        Rc::VALUE.in_param(2),
+    );
+
+    ok(&use_session(&mut t, &mut zero, &set, 0, true, false));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    err(
+        &use_session(&mut t, &mut zero, &set, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&set_auth(&mut t, OWNER, b"", b"new owner"));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    err(
+        &set_primary_policy(&mut t, OWNER, b"", b"", alg::NULL),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    err(
+        &set_primary_policy(&mut t, OWNER, b"new owner", &[1; 31], alg::SHA256),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &set_primary_policy(&mut t, OWNER, b"new owner", &[1; 32], alg::NULL),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &set_primary_policy(&mut t, OWNER, b"new owner", b"", 0x000c),
+        Rc::HASH.in_param(2),
+    );
+    err(
+        &set_primary_policy(&mut t, NULL, b"", b"", alg::NULL),
+        Rc::VALUE.in_handle(1),
+    );
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"new owner",
+        b"",
+        alg::NULL,
+    ));
+    assert_eq!(t.permanent_auth_policy(OWNER), None);
+
+    ok(&set_primary_policy(
+        &mut t,
+        ENDORSEMENT,
+        b"",
+        &[2; 32],
+        alg::SHA256,
+    ));
+    ok(&super::tests_b::hierarchy_control(
+        &mut t,
+        PLATFORM,
+        b"",
+        ENDORSEMENT,
+        0,
+    ));
+    err(
+        &set_primary_policy(&mut t, ENDORSEMENT, b"", b"", alg::NULL),
+        Rc::HIERARCHY.in_handle(1),
+    );
+    let response = get_cap(&mut t, cap::AUTH_POLICIES, ENDORSEMENT, 1);
+    assert_eq!(
+        cap_list(&response).2,
+        cat(&[&u32b(ENDORSEMENT), &u16b(alg::SHA256), &[2; 32]])
+    );
+}
+
+#[test]
+fn hierarchy_policies_follow_reset_resume_clear_and_snapshot() {
+    let mut t = started();
+    let policies = [
+        (OWNER, [1; 32]),
+        (ENDORSEMENT, [2; 32]),
+        (LOCKOUT, [3; 32]),
+        (PLATFORM, [4; 32]),
+    ];
+    for (hierarchy, policy) in policies {
+        ok(&set_primary_policy(
+            &mut t,
+            hierarchy,
+            b"",
+            &policy,
+            alg::SHA256,
+        ));
+    }
+    let restored = Tpm::restore(&t.persistent_snapshot(), &ENTROPY).unwrap();
+    for (hierarchy, policy) in policies.into_iter().take(3) {
+        assert_eq!(restored.permanent_auth_policy(hierarchy), Some(&policy));
+    }
+    assert_eq!(restored.permanent_auth_policy(PLATFORM), None);
+
+    shutdown(&mut t, su::STATE);
+    t.init();
+    startup(&mut t, su::STATE);
+    for (hierarchy, policy) in policies {
+        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy));
+    }
+    shutdown(&mut t, su::STATE);
+    t.init();
+    startup(&mut t, su::CLEAR);
+    assert_eq!(t.permanent_auth_policy(PLATFORM), None);
+    for (hierarchy, policy) in policies.into_iter().take(3) {
+        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy));
+    }
+    ok(&set_primary_policy(
+        &mut t,
+        PLATFORM,
+        b"",
+        &[4; 32],
+        alg::SHA256,
+    ));
+    ok(&pw_cmd(&mut t, cc::CLEAR, &[PLATFORM], b"", &[]));
+    for (hierarchy, _) in policies.into_iter().take(3) {
+        assert_eq!(t.permanent_auth_policy(hierarchy), None);
+    }
+    assert_eq!(t.permanent_auth_policy(PLATFORM), Some(&[4; 32]));
+    t.init();
+    startup(&mut t, su::CLEAR);
+    assert_eq!(t.permanent_auth_policy(PLATFORM), None);
+}
+
+#[test]
+fn hierarchy_policy_restricts_create_primary_and_recovers_lockout_auth() {
+    let mut t = started();
+    let key = ecc_sign();
+    let template_hash = h256(&[&key.to_bytes()]);
+    let policy = h256(&[&[0; 32], &u32b(cc::POLICY_TEMPLATE), &template_hash]);
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &policy,
+        alg::SHA256,
+    ));
+    let mut primary = policy_session(&mut t, se::POLICY);
+    ok(&pol(
+        &mut t,
+        cc::POLICY_TEMPLATE,
+        &primary,
+        &tpm2b(&template_hash),
+    ));
+    let mut changed = key.clone();
+    changed.attributes |= oa::NO_DA;
+    let mut create = hc(
+        cc::CREATE_PRIMARY,
+        &[OWNER],
+        creation_params(b"", b"", &changed, b"other", &NO_PCR),
+        (OWNER, b""),
+    );
+    err(
+        &use_session(&mut t, &mut primary, &create, 1, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    create.params = creation_params(b"", b"", &key, b"other", &NO_PCR);
+    let result = use_session(&mut t, &mut primary, &create, 1, true, false);
+    let _ = parse_primary(&result);
+    ok(&flush(&mut t, primary.handle));
+
+    let recovery = h256(&[
+        &[0; 32],
+        &u32b(cc::POLICY_COMMAND_CODE),
+        &u32b(cc::DICTIONARY_ATTACK_LOCK_RESET),
+    ]);
+    ok(&set_auth(&mut t, LOCKOUT, b"", b"secret"));
+    ok(&set_primary_policy(
+        &mut t,
+        LOCKOUT,
+        b"secret",
+        &recovery,
+        alg::SHA256,
+    ));
+    err(
+        &pw_cmd(
+            &mut t,
+            cc::DICTIONARY_ATTACK_LOCK_RESET,
+            &[LOCKOUT],
+            b"wrong",
+            &[],
+        ),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    err(
+        &pw_cmd(
+            &mut t,
+            cc::DICTIONARY_ATTACK_LOCK_RESET,
+            &[LOCKOUT],
+            b"secret",
+            &[],
+        ),
+        Rc::LOCKOUT,
+    );
+    let mut session = policy_session(&mut t, se::POLICY);
+    ok(&pol_cc(&mut t, &session, cc::DICTIONARY_ATTACK_LOCK_RESET));
+    let reset = hc(
+        cc::DICTIONARY_ATTACK_LOCK_RESET,
+        &[LOCKOUT],
+        Vec::new(),
+        (LOCKOUT, b""),
+    );
+    ok(&use_session(&mut t, &mut session, &reset, 0, true, false));
+    ok(&pw_cmd(
+        &mut t,
+        cc::DICTIONARY_ATTACK_LOCK_RESET,
+        &[LOCKOUT],
+        b"secret",
+        &[],
+    ));
+}
+
 fn pol_pcr(t: &mut Tpm, s: &Hs, d: &[u8], sel: &[u8]) -> Vec<u8> {
     pol(t, cc::POLICY_PCR, s, &cat(&[&tpm2b(d), sel]))
 }

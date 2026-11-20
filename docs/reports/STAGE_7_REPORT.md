@@ -9358,6 +9358,26 @@ DA-состояние. Тест с защищённой целевой сущн�
 TPM и проверка Rust workspace.
 [Контракт](../specs/VTPM.md#фаза-b-срез-c1-rsa_encryptdecrypt-ecdh_zgen-da-persistent-state-v2-s7-23).
 
+## S7-23 — SetPrimaryPolicy и snapshot v4
+
+Нативный CRB-прогон сверил сортировку и формат `TPM_CAP_AUTH_POLICIES`,
+отказ для свойства вне permanent-диапазона и различие между NULL
+политикой и явным нулевым SHA-256. После назначения нулевой политики
+новая policy-сессия заменила её без отдельной привязки к коду команды.
+Проверены XOR-защита входа `SetPrimaryPolicy`, HMAC ответа и
+`CreatePrimary` с исходным шаблоном и зашифрованным `inSensitive`.
+Изменённый шаблон отклонён. Lockout policy восстановила `lockoutAuth`
+после неверного пароля. `Clear` сохранила Platform policy.
+
+Тесты проверили сохранение политик Owner, Endorsement и Lockout,
+сброс Platform policy при Reset и Restart и сохранение при Resume.
+Восстановление проверено на отдельно сформированном v3 без политик,
+актуальном v4 и повреждённых записях. Прошёл 321 тест `od-tpm`,
+5 тестов `od-machine` с фильтром `tpm` (2 пропущены по аннотации) и
+проверка рабочего пространства Rust. Sol High одобрил срез.
+Объявлены 79 из 101 обязательного кода.
+[Политики](../specs/VTPM.md#политики-иерархий), [формат](../specs/VTPM.md#формат-snapshot-odtpmsta-версия-4).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

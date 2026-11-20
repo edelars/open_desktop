@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 78 кодов из списка, 23 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 79 кодов из списка, 22 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -38,7 +38,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicySigned`, `PolicyTicket`, `PolicyNV`, `PolicyCounterTimer`, `PolicyDuplicationSelect`, `PolicyNvWritten`, `PolicyAuthorizeNV` |
-| Управление и NV | `SetPrimaryPolicy`, `ClockRateAdjust`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth` |
+| Управление и NV | `ClockRateAdjust`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -164,8 +164,9 @@ CpHash, а код `2` представляет NameHash. Контекст с Nam
 Внешнее поле размера не входит в хеш. Параметры `inSensitive` и
 `outsideInfo` могут меняться. TPM проверяет шаблон после команды,
 дайджеста политики, PCR и locality. Для команды без применимого
-шаблона профиль возвращает `TPM_RC_POLICY_FAIL`. Проверка политики
-иерархии в `CreatePrimary` зависит от будущего `SetPrimaryPolicy`.
+шаблона профиль возвращает `TPM_RC_POLICY_FAIL`. Политика Owner,
+Endorsement или Platform может авторизовать `CreatePrimary` с этим
+ограничением.
 
 `TPM2_PolicyParameters` (`0x19C`) проверяет SHA-256 от кода команды
 и всего блока параметров на проводе. В хеш входят поля размеров и
@@ -182,11 +183,34 @@ CpHash, а код `2` представляет NameHash. Контекст с Nam
 слота и формат snapshot сохраняются.
 [TPM Library v185 Part 3 §§23.21 и 23.24](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=259).
 
+### Политики иерархий
+
+`TPM2_SetPrimaryPolicy` (`0x12E`) принимает Owner, Endorsement, Platform
+или Lockout. Текущая авторизация USER выбирается по `authValue` или уже
+установленной политике. Пара `SHA256` и 32 байта устанавливает дайджест.
+`NULL` и пустой параметр очищают политику. Пустая политика не даёт
+доступа policy-сессии. Явно установленный дайджест из 32 нулей совпадает
+с исходным дайджестом новой сессии. Первый параметр допускает шифрование.
+
+`TPM_CAP_AUTH_POLICIES` (`0x9`) принимает начальный handle из диапазона
+permanent. Ответ перечисляет Owner, Lockout, Endorsement и Platform по
+возрастанию, включая отключённые иерархии и отсутствующие политики.
+После handle идёт `TPMT_HA`. Для `NULL` дайджест отсутствует, для
+`SHA256` идут 32 байта без поля размера.
+
+Owner, Endorsement и Lockout сохраняются в snapshot v4. Platform хранится
+в volatile state и переживает только `Startup(STATE)` после
+`Shutdown(STATE)` в том же экземпляре TPM. `HierarchyChangeAuth`
+сохраняет политики. `Clear` очищает три постоянные политики и сохраняет
+Platform. `DictionaryAttackLockReset` с рабочей Lockout policy может
+восстановить доступ, когда `lockoutAuth` заблокирован.
+[TPM Library v185 Part 3 §§9.3.1, 24.3, 24.6, 25.2 и 30.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=285).
+
 ### Изменение Clock
 
 `TPM2_ClockSet` (`0x128`) допускает авторизацию Owner или Platform. Новое значение в миллисекундах должно быть не меньше текущего `Clock` и не больше `0xFFFF_0000_0000_0000`. Равенство допустимо. Команда меняет сохранённую базу и продолжает отсчёт с текущего времени включения. `Time`, флаг `safe`, счётчики запуска и таймеры DA не меняются.
 
-Существующий формат `ODTPMSTA` v3 сохраняет текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` и `ClockRateAdjust` остаются в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+Форматы `ODTPMSTA` v3 и v4 сохраняют текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` и `ClockRateAdjust` остаются в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
 
 ### Привязка политики к команде и locality
 
@@ -205,7 +229,7 @@ CpHash, а код `2` представляет NameHash. Контекст с Nam
 | Выдача/приём байтов TPM state host-стороне | `od-machine` public API (S7-22) | ADR-0009, решение 1 |
 | Защита ключей, хранение в bundle, rollback | этап 9, S9-27 | решение владельца D1 |
 
-- **Persistent** (snapshot `ODTPMSTA` v3: срез C1 S7-23 ввёл v2, срез C3 поднял до v3): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth` и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
+- **Persistent** (snapshot `ODTPMSTA` v4, читается и v3): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth`, их политики и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
 - **Volatile:** PCR, сессии, transient objects, загруженные контексты, hash/event sequences, locality, признак `Startup`.
 - Байты persistent state версионные; неизвестная версия (в том числе прежние v1 и v2) отвергается. **Snapshot — чувствительные данные:** в нём seeds, auth иерархий и NV, данные NV и приватные ключи в открытом виде; до S9-27 (защита, host) он выдаётся владельцу машины как есть, не логируется и не хранится без защиты.
 - Seeds, приватные ключи, `authValue`, ключи сессий, состояние и выход DRBG, данные NV и `Unseal` никогда не логируются и не попадают в отчёты и эталоны.
@@ -503,7 +527,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 PTP требует вместить поддерживаемый максимальный кадр. Используются 3968 байт, включая конец страницы locality 0. Это явный выбор окна ADR из-за расхождения диапазона и размера в Table 36. Загрузка команды не принимает пропуски и допускает начало новой команды с базового адреса; §6.5.3.11.2 разрешает такой режим. Внутри firmware-кванта время берётся на START по позиции инструкции. Обычная шина использует текущее время платы. Часы TPM получают миллисекунды от включения.
 
-Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v3, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
+Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v4, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
 
 ## Measured boot
 
@@ -524,10 +548,10 @@ PTP требует вместить поддерживаемый максима�
 
 ## Состояние
 
-Фаза A держала только каркас persistent state; срез C1 S7-23 довёл его до snapshot v2, срез C3 — до v3 (ADR-0009, решение 5): всё, что Part 3 и Part 1 относят к постоянному (seeds, auth `owner`/`endorsement`/`lockout`, NV, persistent-объекты, DA), сохраняется; остальное volatile.
+Фаза A держала каркас persistent state. Срез C1 ввёл snapshot v2, C3 добавил v3 с NV-счётчиками, а v4 хранит политики постоянных иерархий. Действует разделение persistent и volatile state из ADR-0009, решение 5.
 
-- **Persistent (в snapshot v3):** три seed'а иерархий (platform, owner/storage, endorsement; по 32 октета, генерируются DRBG от энтропии владельца), база `Clock` (мс), `resetCount`, `restartCount`, флаг «последнее завершение работы упорядоченное», `ownerAuth`, `endorsementAuth`, `lockoutAuth`, флаги `AuthSet` и `disableClear`, состояние DA, NV-индексы (ordinary, counter, bit field, extend) и наибольшее значение NV-счётчика (срез C3), persistent-объекты (срез C1).
-- **Volatile:** значения PCR и `pcrUpdateCounter`, sequence-объекты, transient-объекты (срез B; сбрасываются `Startup`, `_TPM_Init`, `FlushContext`), HMAC-сессии, `platformAuth`, enables иерархий, Null seed, признаки `started`/`failed`, состояние `Shutdown(STATE)` (PCR с `TPM_PT_PCR_SAVE` и volatile-блок иерархий), DRBG, `Time`.
+- **Persistent (в snapshot v4):** три seed'а иерархий (platform, owner/storage, endorsement; по 32 октета, генерируются DRBG от энтропии владельца), база `Clock` (мс), `resetCount`, `restartCount`, флаг «последнее завершение работы упорядоченное», `ownerAuth`, `endorsementAuth`, `lockoutAuth`, политики Owner, Endorsement и Lockout, флаги `AuthSet` и `disableClear`, состояние DA, NV-индексы (ordinary, counter, bit field, extend) и наибольшее значение NV-счётчика (срез C3), persistent-объекты (срез C1).
+- **Volatile:** значения PCR и `pcrUpdateCounter`, sequence-объекты, transient-объекты (срез B; сбрасываются `Startup`, `_TPM_Init`, `FlushContext`), HMAC-сессии, `platformAuth` и `platformPolicy`, enables иерархий, Null seed, признаки `started`/`failed`, состояние `Shutdown(STATE)` (PCR с `TPM_PT_PCR_SAVE` и volatile-блок иерархий), DRBG, `Time`.
 - **Volatile и не в snapshot, хотя похоже на постоянное:** `platformAuth` (Part 3, 9.3.1: на TPM Reset — Empty Buffer), таймеры DA (непрерывное питание). После `restore` TPM в состоянии после `_TPM_Init`: первая команда — `Startup`.
 - **`Startup`/`Shutdown` (Part 3, 9.3.1):** *Reset* — `Startup(CLEAR)` после `Shutdown(CLEAR)` или без `Shutdown` (`resetCount` + 1, `restartCount` = 0); *Restart* — `Startup(CLEAR)` после `Shutdown(STATE)` (`restartCount` + 1, PCR в начальных значениях); *Resume* — `Startup(STATE)` после `Shutdown(STATE)` (`restartCount` + 1, PCR 0–15 восстановлены, остальные в начальных значениях). Все transient-объекты (здесь — sequence) сбрасываются на любом `Startup`. Сохранённое `Shutdown(STATE)` состояние живёт в объекте `Tpm` и **в snapshot не входит**; после перезапуска процесса `Startup(STATE)` вернёт `TPM_RC_VALUE`.
 - **`safe`** в `TPMS_CLOCK_INFO`: `YES` только если предыдущее завершение работы было упорядоченным (`Shutdown`) или TPM новый.
@@ -545,7 +569,22 @@ PTP требует вместить поддерживаемый максима�
 | 16 | `L` | payload: seeds (3 × 32), `Clock` мс (u64), `resetCount` (u32), `restartCount` (u32), orderly (u8); три auth (`lv8`) и флаги иерархий (u8); DA (4 × u32 и флаг u8); NV (u16 счётчик, затем индексы), наибольшее значение NV-счётчика (u64, срез C3); persistent-объекты (u8 счётчик, затем объекты с `TPM2B_SENSITIVE`) |
 | 16 + `L` | 32 | SHA-256 payload (контроль повреждения, не аутентификация) |
 
-Пустой TPM даёт payload 145 октетов (snapshot 193 октета). `restore` отвергает: длину не `16 + L + 32` или `L` выше предела (`BadLength`), чужую магию (`BadMagic`), версию ≠ 3 (`UnsupportedVersion`; в том числе v1 и v2), флаги ≠ 0 и любое несогласованное поле payload (`BadField`), неверный SHA-256 (`BadDigest`), усечённый payload (`BadLength`), мало энтропии (`InsufficientEntropy`). Версия 1 (только seeds и счётчики, 161 октет) существовала лишь в тестах и не восстанавливается: см. «Фаза B, срез C1».
+Пустой TPM в v3 даёт payload 145 октетов и snapshot 193 октета.
+При восстановлении v3 политики иерархий пусты.
+
+### Формат snapshot `ODTPMSTA` версия 4
+
+Текущий writer записывает `4` в поле версии. В конец payload v3
+добавлены три обязательные записи политик в порядке Owner, Endorsement,
+Lockout. Запись содержит `hashAlg` (u16 big-endian) и 32 байта при SHA-256.
+Для NULL после алгоритма дайджеста нет. Platform policy в snapshot
+отсутствует. Пустой TPM даёт payload 151 октет и snapshot 199 октетов.
+
+`restore` принимает v3 и v4. Для обеих версий проверяются магия, нулевые
+флаги, точная длина и SHA-256 payload. Неизвестные алгоритмы, лишние
+байты и несогласованные поля дают `BadField`, усечённая запись даёт
+`BadLength`. Версии v1, v2 и неизвестные версии дают `UnsupportedVersion`.
+Проверки энтропии и обработка чувствительных данных сохраняются.
 
 ### Host API и persistence
 

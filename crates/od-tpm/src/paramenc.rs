@@ -110,6 +110,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::NV_WRITE
             | cc::NV_EXTEND
             | cc::HIERARCHY_CHANGE_AUTH
+            | cc::SET_PRIMARY_POLICY
             | cc::START_AUTH_SESSION
             | cc::CREATE_PRIMARY
             | cc::CREATE

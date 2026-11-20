@@ -242,8 +242,8 @@ impl Tpm {
         }
     }
 
-    /// `TPM2_DictionaryAttackLockReset` (Part 3, clause 25.2): `failedTries` to zero (and
-    /// `lockoutAuth` enabled: the command ran, so it was). Authorized by `lockoutAuth`.
+    /// `TPM2_DictionaryAttackLockReset` (Part 3 §25.2): clears failed tries and
+    /// reenables lockoutAuth. The Lockout policy also authorizes recovery.
     pub(crate) fn cmd_dictionary_attack_lock_reset(
         &mut self,
         p: &mut Reader<'_>,

@@ -56,6 +56,7 @@ pub mod cc {
     pub const CLEAR_CONTROL: u32 = 0x0000_0127;
     pub const CLOCK_SET: u32 = 0x0000_0128;
     pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+    pub const SET_PRIMARY_POLICY: u32 = 0x0000_012E;
     pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
     pub const NV_WRITE: u32 = 0x0000_0137;
@@ -127,6 +128,7 @@ pub mod cap {
     pub const TPM_PROPERTIES: u32 = 0x0000_0006;
     pub const PCR_PROPERTIES: u32 = 0x0000_0007;
     pub const ECC_CURVES: u32 = 0x0000_0008;
+    pub const AUTH_POLICIES: u32 = 0x0000_0009;
 }
 
 /// Table 30 (v184): `TPM_PT` property tags (PT_FIXED = 0x100, PT_VAR = 0x200).

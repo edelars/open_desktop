@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 78] = [
+pub(crate) static COMMANDS: [CommandSpec; 79] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -120,6 +120,7 @@ pub(crate) static COMMANDS: [CommandSpec; 78] = [
     spec(cc::CLOCK_SET, 1, 1, false, true, false),
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
+    spec(cc::SET_PRIMARY_POLICY, 1, 1, false, true, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
     spec(cc::NV_INCREMENT, 2, 1, false, true, false),
     spec(cc::NV_SET_BITS, 2, 1, false, true, false),
@@ -275,12 +276,13 @@ fn admin_role(code: u32, i: usize) -> bool {
         )
 }
 
-/// The `authPolicy` of the entity behind handle number `i`: that of an object, the Empty Buffer
-/// for everything else (hierarchies have no `authPolicy` without `TPM2_SetPrimaryPolicy`).
-fn handle_auth_policy(tpm: &Tpm, handles: &CommandHandles, i: usize) -> Vec<u8> {
-    tpm.object(handles[i])
-        .map(|o| o.public.auth_policy.clone())
-        .unwrap_or_default()
+/// The `authPolicy` installed on an object or hierarchy, or the empty policy.
+fn handle_auth_policy(tpm: &Tpm, handle: u32) -> &[u8] {
+    if let Some(policy) = tpm.permanent_auth_policy(handle) {
+        return policy;
+    }
+    tpm.object(handle)
+        .map_or(&[], |object| &object.public.auth_policy)
 }
 
 /// DA class of the authorization of handle number `i` of the command (`da.rs`): a PCR and
@@ -632,7 +634,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 } else if let Some(pslot) = policy_slot {
                     // A policy session: the policy is validated before any HMAC (Part 1, clause
                     // 17.8.3), a policy failure never touches the DA counters.
-                    let policy = handle_auth_policy(tpm, &handles, i);
+                    let policy = handle_auth_policy(tpm, handles[i]);
                     let (need_auth, need_password) = tpm.policy_use_check(
                         pslot,
                         spec.code,
@@ -648,7 +650,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                                 command_parameters_hash(spec.code, parameters) == expected
                             }
                         },
-                        &policy,
+                        policy,
                         admin,
                         n,
                     )?;
@@ -771,6 +773,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::CLOCK_SET => tpm.cmd_clock_set(&mut p)?,
         cc::HIERARCHY_CONTROL => tpm.cmd_hierarchy_control(&inv, &mut p)?,
         cc::HIERARCHY_CHANGE_AUTH => tpm.cmd_hierarchy_change_auth(&inv, &mut p)?,
+        cc::SET_PRIMARY_POLICY => tpm.cmd_set_primary_policy(&inv, &mut p)?,
         cc::CLEAR => tpm.cmd_clear(&mut p)?,
         cc::CLEAR_CONTROL => tpm.cmd_clear_control(&inv, &mut p)?,
         cc::START_AUTH_SESSION => tpm.cmd_start_auth_session(&inv, &mut p)?,
@@ -949,7 +952,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
-        cc::HIERARCHY_CHANGE_AUTH => {
+        cc::HIERARCHY_CHANGE_AUTH | cc::SET_PRIMARY_POLICY => {
             // `TPMI_RH_HIERARCHY_AUTH` without `TPM_RH_NULL` (Part 3, Table 188).
             if !is_authorization_handle(handles[0]) {
                 return Err(Rc::VALUE.in_handle(1));
@@ -1115,6 +1118,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 78);
+        assert_eq!(COMMANDS.len(), 79);
     }
 }

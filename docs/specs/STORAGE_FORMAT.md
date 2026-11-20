@@ -15,7 +15,7 @@
 | Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен, формат не принят (S9-40); production `ParentResolver` нет |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
 | UEFI variable store artifact | семантика — `firmware/uefi/src/`, банковый снимок — `od-machine`, persistence — `od-storage` | Доступен `ODNVBANK` v1/v2. Контейнер и запись в bundle относятся к S9-26. [Контракт NVRAM](NVRAM_DEVICE.md#host-api) |
-| vTPM persistent state | состояние и кодек — `od-tpm`, доступ к байтам платы — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | Доступен `ODTPMSTA` v3 для текущего профиля. Защищённый контейнер относится к S9-27. [Контракт TPM](VTPM.md#host-api-и-persistence) |
+| vTPM persistent state | состояние и кодек — `od-tpm`, доступ к байтам платы — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | Доступен `ODTPMSTA` v4 с чтением v3 для текущего профиля. Защищённый контейнер относится к S9-27. [Контракт TPM](VTPM.md#host-api-и-persistence) |
 
 Вне документа:
 
