@@ -1532,9 +1532,14 @@ JZ/JNZ after register reuse and continuation past STOP-RIP.
 S3-30e accepted 60 compile pairs and 60 warm direct-entry pairs on M1 Pro.
 Strict reuse took 0.982805 of fixed-home warm direct-entry time by the
 paired median and 0.953405 on the pressure fixture. The paired compile
-ratio was 1.005805. The production choice still needs the paired
-ordinary FIFO16 dispatcher comparison.
+ratio was 1.005805.
 [S3-30e M1 Pro timings](STAGE_3_S3-30e_2026-11-20.md)
+
+S3-30f keeps fixed homes for the measured eager NativeRegisterV1 scope.
+The 60 warm FIFO16 pairs gave a strict/fixed median of 0.998434 and a
+range of 0.981343–1.018863 across the five cases. Both sides used their
+ordinary dispatcher, with matching cache work and full-state preflight.
+[S3-30f allocator decision](STAGE_3_S3-30f_2026-11-20.md)
 
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%

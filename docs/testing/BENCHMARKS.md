@@ -647,6 +647,15 @@ verify actual nice −5, load coverage, full guest state and the 200 ms
 side floor. The warm mode times calls into code published before the
 window. [Procedure, measured bounds and archive](../reports/STAGE_3_S3-30e_2026-11-20.md)
 
+### S3-30f. Strict register-home reuse through warm FIFO16 dispatch
+
+Use `allocator-compare-s3-30 --profile warm-fifo16-dispatch` on the same
+five eager S3-36l cases. The variants fill separate FIFO16 caches using
+the normal prepared miss path. Timed sides repeat the five-case sweep
+through the same dispatcher and verify all hits, five resident blocks
+and stable cache geometry. The selected M1 Pro series uses three process
+rounds at nice −5. [Protocol, decision and raw data](../reports/STAGE_3_S3-30f_2026-11-20.md)
+
 ### S3-35a: cold first full-corpus execution
 
 `od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark
