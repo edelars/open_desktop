@@ -34,6 +34,8 @@ pub mod cc {
     pub const DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;
     pub const DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013A;
     pub const ECDH_Z_GEN: u32 = 0x0000_0154;
+    pub const ECDH_KEY_GEN: u32 = 0x0000_0163;
+    pub const ECC_PARAMETERS: u32 = 0x0000_0178;
     pub const RSA_DECRYPT: u32 = 0x0000_0159;
     pub const RSA_ENCRYPT: u32 = 0x0000_0174;
     pub const EVICT_CONTROL: u32 = 0x0000_0120;
@@ -179,6 +181,7 @@ pub mod alg {
     pub const OAEP: u16 = 0x0017;
     pub const ECDSA: u16 = 0x0018;
     pub const ECDH: u16 = 0x0019;
+    pub const KDF1_SP800_56A: u16 = 0x0020;
     pub const ECC: u16 = 0x0023;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;

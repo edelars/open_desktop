@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 61] = [
+pub(crate) static COMMANDS: [CommandSpec; 63] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -149,6 +149,7 @@ pub(crate) static COMMANDS: [CommandSpec; 61] = [
     spec(cc::UNSEAL, 1, 1, false, false, false),
     spec(cc::CONTEXT_LOAD, 0, 0, true, false, false),
     spec(cc::CONTEXT_SAVE, 1, 0, false, false, false),
+    spec(cc::ECDH_KEY_GEN, 1, 0, false, false, false),
     spec(cc::FLUSH_CONTEXT, 0, 0, false, false, false),
     spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
@@ -159,6 +160,7 @@ pub(crate) static COMMANDS: [CommandSpec; 61] = [
     spec(cc::RSA_ENCRYPT, 1, 0, false, false, false),
     spec(cc::START_AUTH_SESSION, 2, 0, true, false, false),
     spec(cc::VERIFY_SIGNATURE, 1, 0, false, false, false),
+    spec(cc::ECC_PARAMETERS, 0, 0, false, false, false),
     spec(cc::GET_CAPABILITY, 0, 0, false, false, false),
     spec(cc::GET_RANDOM, 0, 0, false, false, false),
     spec(cc::GET_TEST_RESULT, 0, 0, false, false, false),
@@ -663,7 +665,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::VERIFY_SIGNATURE => tpm.cmd_verify_signature(&inv, &mut p)?,
         cc::RSA_ENCRYPT => tpm.cmd_rsa_encrypt(&inv, &mut p)?,
         cc::RSA_DECRYPT => tpm.cmd_rsa_decrypt(&inv, &mut p)?,
+        cc::ECDH_KEY_GEN => tpm.cmd_ecdh_key_gen(&inv, &mut p)?,
         cc::ECDH_Z_GEN => tpm.cmd_ecdh_zgen(&inv, &mut p)?,
+        cc::ECC_PARAMETERS => Tpm::cmd_ecc_parameters(&mut p)?,
         cc::DICTIONARY_ATTACK_LOCK_RESET => tpm.cmd_dictionary_attack_lock_reset(&mut p)?,
         cc::DICTIONARY_ATTACK_PARAMETERS => tpm.cmd_dictionary_attack_parameters(&mut p)?,
         cc::POLICY_RESTART => tpm.cmd_policy_restart(&inv, &mut p)?,
@@ -810,6 +814,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
         | cc::VERIFY_SIGNATURE
         | cc::RSA_ENCRYPT
         | cc::RSA_DECRYPT
+        | cc::ECDH_KEY_GEN
         | cc::ECDH_Z_GEN
         | cc::HMAC => tpm.check_object_handle(handles[0], 0, false)?,
         // `signHandle` may be `TPM_RH_NULL` (Part 3, clause 18.1: `TPMI_DH_OBJECT+`).
@@ -914,6 +919,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 61);
+        assert_eq!(COMMANDS.len(), 63);
     }
 }

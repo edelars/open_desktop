@@ -1,6 +1,7 @@
 //! Asymmetric primitives (slice C1 of phase B, S7-23): `TPM2_RSA_Encrypt`, `TPM2_RSA_Decrypt` and
-//! `TPM2_ECDH_ZGen` (Part 3 v184, clauses 14.2, 14.3 and 14.5). The key model is in `object.rs`,
-//! the primitives in `crypto.rs`.
+//! `TPM2_ECDH_ZGen` (Part 3 v184, clauses 14.2, 14.3 and 14.5), and
+//! `TPM2_ECDH_KeyGen` / `TPM2_ECC_Parameters` (Part 3 v185, clauses 14.4 and 14.6).
+//! The key model is in `object.rs` and the primitives in `crypto.rs`.
 //!
 //! **RSA.** The padding follows Part 3, Table 42: the scheme of the key and `inScheme` select
 //! none (raw RSA), RSAES-PKCS1-v1_5 or RSAES-OAEP (SHA-256 for the label hash and for MGF1). A
@@ -26,8 +27,10 @@
 //! defence against padding oracles), so an invalid RSAES padding does not give `TPM_RC_VALUE` but a
 //! deterministic synthetic message, unlike the text of clause 14.3.1.
 
-use crate::codes::{alg, object_attr};
-use crate::crypto::{RsaPadding, ecc_ecdh, rsa_decrypt_private, rsa_encrypt_public};
+use crate::codes::{alg, curve, object_attr};
+use crate::crypto::{
+    RsaPadding, ecc_ecdh, ecc_generate, ecc_public, rsa_decrypt_private, rsa_encrypt_public,
+};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     MAX_DATA, MAX_ECC_BYTES, MAX_RSA_BYTES, PublicParams, Reader, Scheme, Unique, Writer,
@@ -35,6 +38,52 @@ use crate::marshal::{
 use crate::object::{Secret, find_object};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
+
+// NIST SP 800-186 §3.2.1.3 and TCG Algorithm Registry v1.35 §5.2.4, big-endian.
+const P256_ELEMENTS: [[u8; 32]; 6] = [
+    // p
+    [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff,
+    ],
+    // a
+    [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xfc,
+    ],
+    // b
+    [
+        0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98, 0x86,
+        0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2,
+        0x60, 0x4b,
+    ],
+    // gX
+    [
+        0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40,
+        0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98,
+        0xc2, 0x96,
+    ],
+    // gY
+    [
+        0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e,
+        0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf,
+        0x51, 0xf5,
+    ],
+    // n
+    [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63,
+        0x25, 0x51,
+    ],
+];
+
+fn write_ecc_point(writer: &mut Writer, x: &[u8], y: &[u8]) {
+    writer.u16((4 + x.len() + y.len()) as u16);
+    writer.tpm2b(x);
+    writer.tpm2b(y);
+}
 
 /// Padding for the scheme of the key and `inScheme` (Part 3, Table 42).
 fn select_padding(key: Scheme, requested: Scheme) -> Result<RsaPadding, Rc> {
@@ -130,6 +179,65 @@ impl Tpm {
         })
     }
 
+    /// `TPM2_ECC_Parameters` (Part 3 v185 §14.6): curve ID → TPMS_ALGORITHM_DETAIL_ECC.
+    pub(crate) fn cmd_ecc_parameters(p: &mut Reader<'_>) -> Result<Output, Rc> {
+        p.set_param(1);
+        let id = p.u16()?;
+        p.finish()?;
+        if id != curve::NIST_P256 {
+            return Err(Rc::CURVE.in_param(1));
+        }
+        let mut w = Writer {
+            buf: Vec::with_capacity(10 + 6 * 34 + 3),
+        };
+        w.u16(id);
+        w.u16(256);
+        w.u16(alg::KDF1_SP800_56A);
+        w.u16(alg::SHA256);
+        w.u16(alg::NULL);
+        for element in &P256_ELEMENTS {
+            w.tpm2b(element);
+        }
+        w.tpm2b(&[1]); // Cofactor.
+        Ok(Output {
+            handles: Vec::new(),
+            params: w.finish(),
+        })
+    }
+
+    /// `TPM2_ECDH_KeyGen` (Part 3 v185 §14.4) operates on the loaded public area.
+    pub(crate) fn cmd_ecdh_key_gen(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.finish()?;
+        let object = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
+            .ok_or(Rc::reference_handle(0))?;
+        let (
+            PublicParams::Ecc {
+                curve: curve::NIST_P256,
+                ..
+            },
+            Unique::Ecc { x, y },
+        ) = (&object.public.params, &object.public.unique)
+        else {
+            return Err(Rc::KEY.in_handle(1));
+        };
+        let ephemeral = ecc_generate(&mut self.drbg).ok_or(Rc::FAILURE)?;
+        let (zx, zy) = ecc_ecdh(&ephemeral, x, y).ok_or(Rc::KEY.in_handle(1))?;
+        let (qx, qy) = ecc_public(&ephemeral).ok_or(Rc::FAILURE)?;
+        let mut w = Writer {
+            buf: Vec::with_capacity(2 * (2 + 68)),
+        };
+        write_ecc_point(&mut w, &zx, &zy);
+        write_ecc_point(&mut w, &qx, &qy);
+        Ok(Output {
+            handles: Vec::new(),
+            params: w.finish(),
+        })
+    }
+
     /// `TPM2_ECDH_ZGen` (clause 14.5): `inPoint` (`TPM2B_ECC_POINT`) → `outPoint`.
     pub(crate) fn cmd_ecdh_zgen(
         &mut self,
@@ -159,16 +267,10 @@ impl Tpm {
             return Err(Rc::AUTH_UNAVAILABLE);
         };
         let (zx, zy) = ecc_ecdh(key, x, y).ok_or(Rc::ECC_POINT.in_param(1))?;
-        let mut body = Writer {
-            buf: Vec::with_capacity(2 + 32 + 2 + 32),
-        };
-        body.tpm2b(&zx);
-        body.tpm2b(&zy);
         let mut w = Writer {
             buf: Vec::with_capacity(2 + 68),
         };
-        w.tpm2b(&body.buf);
-        zeroize::Zeroize::zeroize(&mut body.buf);
+        write_ecc_point(&mut w, &zx, &zy);
         Ok(Output {
             handles: Vec::new(),
             params: w.finish(),

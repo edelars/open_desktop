@@ -24,7 +24,7 @@ use super::tests_b::*;
 use super::tests_obj::*;
 use super::*;
 use crate::StateError;
-use crate::codes::{object_attr as oa, pt};
+use crate::codes::{curve, object_attr as oa, pt};
 use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique, Writer};
 use sha2::{Digest, Sha256};
 
@@ -93,12 +93,17 @@ fn ecdh_zgen(t: &mut Tpm, key: u32, pw: &[u8], point: &[u8]) -> Vec<u8> {
 /// `(x, y)` of the `TPM2B_ECC_POINT` of a successful `ECDH_ZGen`.
 fn out_point(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut r = Reader::new(params(resp, 0));
+    let point = read_point(&mut r);
+    r.finish().unwrap();
+    point
+}
+
+fn read_point(r: &mut Reader<'_>) -> (Vec<u8>, Vec<u8>) {
     let n = usize::from(r.u16().unwrap());
     let mut p = r.sub(n).unwrap();
     let x = p.tpm2b(32).unwrap().to_vec();
     let y = p.tpm2b(32).unwrap().to_vec();
     p.finish().unwrap();
-    r.finish().unwrap();
     (x, y)
 }
 
@@ -574,6 +579,103 @@ fn rsa_private_values_never_leave_the_tpm_through_decrypt() {
 }
 
 // ========================================================================== ECDH
+
+#[test]
+fn ecc_parameters_reports_the_p256_registry_values_and_rejects_unsupported_curves() {
+    let mut t = started();
+    let response = run(
+        &mut t,
+        plain(cc::ECC_PARAMETERS, &[], &u16b(curve::NIST_P256)),
+    );
+    let mut reader = Reader::new(params(&response, 0));
+    for value in [0x0003, 256, 0x0020, 0x000b, 0x0010] {
+        assert_eq!(reader.u16().unwrap(), value);
+    }
+    for expected in [
+        "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+        "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
+        "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
+        "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+        "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+        "01",
+    ] {
+        assert_eq!(reader.tpm2b(32).unwrap(), hex(expected));
+    }
+    reader.finish().unwrap();
+    for id in [0, 4, 0xffff] {
+        err(
+            &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &u16b(id))),
+            Rc::CURVE.in_param(1),
+        );
+    }
+    err(
+        &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &[0])),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+    err(
+        &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &[0, 3, 0])),
+        Rc::SIZE,
+    );
+    for (code, attributes) in [(0x163, 1 << 25), (0x178, 0)] {
+        let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, code, 1));
+        assert_eq!(count, 1);
+        assert_eq!(
+            u32::from_be_bytes(body.try_into().unwrap()),
+            code | attributes
+        );
+    }
+}
+
+#[test]
+fn ecdh_key_gen_uses_a_public_only_ecc_key_and_returns_fresh_ephemeral_points() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(
+        &mut t,
+        OWNER,
+        b"pw",
+        &ecc_decrypt_key(Scheme::NULL),
+    ));
+    let mut public = unmarshal_public(&key.public);
+    public.attributes = oa::SIGN;
+    let PublicParams::Ecc { scheme, .. } = &mut public.params else {
+        unreachable!()
+    };
+    *scheme = Scheme {
+        alg: alg::ECDSA,
+        hash: alg::SHA256,
+    };
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let before = t.persistent_snapshot();
+    let request = plain(cc::ECDH_KEY_GEN, &[external], &[]);
+    let mut previous = None;
+    for _ in 0..2 {
+        let response = run(&mut t, request.clone());
+        let mut reader = Reader::new(params(&response, 0));
+        let shared = read_point(&mut reader);
+        let (qx, qy) = read_point(&mut reader);
+        reader.finish().unwrap();
+        let recovered = ecdh_zgen(&mut t, key.handle, b"pw", &ecc_point(&qx, &qy));
+        assert_eq!(shared, out_point(&recovered));
+        let public = (qx, qy);
+        assert_ne!(previous, Some(public.clone()));
+        previous = Some(public);
+    }
+    assert_eq!(t.persistent_snapshot(), before);
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[external], &[0])),
+        Rc::SIZE,
+    );
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[0x80000040], &[])),
+        Rc::reference_handle(0),
+    );
+    let (rsa, _) = parse_loaded(&load_external(&mut t, &ext_rsa_encryption_key(), NULL));
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[rsa], &[])),
+        Rc::KEY.in_handle(1),
+    );
+}
 
 #[test]
 fn ecdh_zgen_matches_an_independently_computed_shared_point() {
