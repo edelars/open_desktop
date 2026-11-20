@@ -86,10 +86,49 @@ ContextSave и snapshot v8 сохраняют канонический seed.
 принимает шифрование входного шифротекста.
 
 Номенклатура `TestParms` ограничена набором ML-KEM-768 и симметричным
-алгоритмом NULL. Ключ может быть объектом `Certify` с классическим
-ключом подписи. Этот срез покрывает работу под RSA/ECC Storage key.
-ML-KEM Storage parent, labeled KEM для salt и credential, выпуск
-производственного EK и PQC-подписи остаются в ISSUE-529.
+алгоритмом NULL или AES-128/256-CFB (последний — для restricted decrypt),
+а также SYMCIPHER с AES-128/256-CFB. Ключ может быть объектом `Certify` с
+классическим ключом подписи.
+
+**Restricted ML-KEM Storage parent (срез 5).** Ключ с `restricted` и
+`decrypt`, без `sign`, и `symmetric` AES-128/256-CFB — родитель. Его
+`seedValue` (один дайджест `nameAlg`, как у RSA и ECC) защищает `outPrivate`
+детей обычным образом (Part 1 §§20.3–20.5). KEM участвует только там, где
+seed передаётся получателю. Это labeled KEM (Part 1 §8.4.5.2, таблица 5;
+§47.4, уравнение 67):
+`seed = KDFa(nameAlg, K, label, ciphertext, publicKey, 8 × размер дайджеста)`.
+K — 32-байтовый секрет ML-KEM, `ciphertext` — 1088 октетов целиком (это же
+содержимое `TPM2B_ENCRYPTED_SECRET`), `publicKey` — 1184 октета. В KDFa
+идут только содержимое буферов без размеров; KDFa сама добавляет нулевой
+октет после метки.
+
+| Протокол | Метка | Сверено с текстом v185 |
+|---|---|---|
+| MakeCredential/ActivateCredential | `IDENTITY` | да, таблица 5 Part 1 |
+| Соль StartAuthSession | `SECRET` | да, таблица 5 |
+| Duplicate/Import (Rewrap не реализован) | `DUPLICATE` | да, таблица 5 |
+
+NOT VERIFIED: §47.4 называет K «64-байтовым секретом». У FIPS 203 и у
+`Encapsulate` профиля секрет 32 байта, KDFa принимает его как есть. Код
+ошибки неверного размера шифротекста — `TPM_RC_VALUE` (параметр
+`inSymSeed`/`secret`/`encryptedSalt`), больше 1088 октетов — `TPM_RC_SIZE`;
+изменённый шифротекст правильной длины даёт другой seed (implicit rejection
+FIPS 203) и `TPM_RC_INTEGRITY` на HMAC. Независимая проверка (OpenSSL 4.1.0:
+инкапсуляция и декапсуляция по seed `d || z`; Python `hmac`) закреплена
+векторами в `tests_symcipher_mlkem.rs`.
+
+**SYMCIPHER (срез 5).** Тип `0x0025`, параметры — `TPMT_SYM_DEF_OBJECT`:
+AES, 128 или 256 бит, CFB (иначе `TPM_RC_VALUE` для длины, `TPM_RC_MODE` для
+режима, `TPM_RC_SYMMETRIC` для NULL и других алгоритмов).
+`unique = H(seedValue || key)` (Part 1 уравнение 48). Ключ либо создаёт TPM,
+либо передаёт вызывающий в `inSensitive.data` (не больше размера ключа, иначе
+`TPM_RC_SIZE`; короче — дополняется нулями со старшего конца). Шифрование
+данных (`EncryptDecrypt`) не входит в профиль. Объект с `restricted` и
+`decrypt` — Storage parent; секрет он не разделяет, поэтому не может быть
+новым родителем `Duplicate` и ключом `MakeCredential`/`ActivateCredential`
+(NOT VERIFIED: код `TPM_RC_TYPE`). `TPM_ALG_SYMCIPHER` (`0x0025`) входит в
+`TPM_CAP_ALGS` с битом `object` (NOT VERIFIED). Выпуск производственного EK и
+PQC-подпись остаются в ISSUE-529.
 [TPM Library v185 Part 2 §§11.2.6, 12.2.3.8](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
 [Part 3 §§14.10–14.11](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
 [FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
@@ -133,8 +172,7 @@ RSA-2048, RSA-3072 и P-256 Storage keys с `nameAlg=SHA-256` принимают
 Алгоритм внутренней обёртки Duplicate/Import задаётся отдельно.
 Ключ AES имеет длину 16 или 32 байта. Duplicate генерирует ключ
 выбранной длины при пустом `encryptionKeyIn` и возвращает его через
-`encryptionKeyOut`. Поддержка самостоятельных объектов SYMCIPHER
-остаётся в ISSUE-529.
+`encryptionKeyOut`. Самостоятельные объекты SYMCIPHER описаны в разделе «ML-KEM-768 и команды KEM».
 [TPM Library Part 1 §§20–22](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [результаты проверки](../reports/STAGE_7_REPORT.md#s7-23--aes-256-cfb-для-storage-keys).
 

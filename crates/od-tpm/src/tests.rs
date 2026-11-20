@@ -41,6 +41,8 @@ mod tests_sha2_policy;
 mod tests_sha2_sessions;
 #[path = "tests_sha2_sign.rs"]
 mod tests_sha2_sign;
+#[path = "tests_symcipher_mlkem.rs"]
+mod tests_symcipher_mlkem;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
@@ -911,7 +913,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
     let mut t = started();
     let before = t.persistent_snapshot();
     for (encoded, error) in [
-        ("0025", Rc::TYPE), // SYMCIPHER is outside the implemented profile.
+        ("0025", Rc::INSUFFICIENT), // SYMCIPHER (slice 5): the cipher is missing.
+        ("00a1", Rc::TYPE),         // ML-DSA is outside the implemented profile.
         ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
         ("0001001000140027080000000000", Rc::HASH), // SHA3-256 is not implemented.
@@ -923,7 +926,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
         ("002300100018000b00030021", Rc::KDF), // Non-null KDF.
         ("002300100014000b00030010", Rc::SCHEME), // RSASSA in ECC union.
         ("00080005", Rc::INSUFFICIENT), // Missing HMAC hash.
-        ("", Rc::INSUFFICIENT), // Missing type selector.
+        ("", Rc::INSUFFICIENT),     // Missing type selector.
     ] {
         err(
             &run(&mut t, plain(0x18A, &[], &hex(encoded))),
@@ -943,8 +946,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 17);
-    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 18);
+    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, SYMCIPHER, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -969,14 +972,17 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x18, 0, 0, 1, 1],
             &[0x00, 0x19, 0, 0, 4, 1],
             &[0x00, 0x23, 0, 0, 0, 9],
+            // SYMCIPHER "O" (slice 5); NOT VERIFIED: the bit is our reading of the registry.
+            &[0x00, 0x25, 0, 0, 0, 8],
             &[0x00, 0x43, 0, 0, 2, 0],
             &[0x00, 0xA0, 0, 0, 0, 9],
         ]
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 11);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 2);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 12);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 3);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x26, 100)).3, 2);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);
     let (_, _, sets, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x131, 1));

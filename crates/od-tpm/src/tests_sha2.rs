@@ -61,7 +61,7 @@ fn hash_sequence_start_error_order_for_an_oversized_auth_and_unknown_hash_is_pro
 fn capability_reports_sha512_and_max_digest_64() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 17);
+    assert!(!more && c == cap::ALGS && count == 18);
     let entries: Vec<(u16, u32)> = body
         .chunks(6)
         .map(|e| {
@@ -71,7 +71,7 @@ fn capability_reports_sha512_and_max_digest_64() {
             )
         })
         .collect();
-    assert_eq!(entries.len(), 17);
+    assert_eq!(entries.len(), 18);
     assert!(entries.windows(2).all(|w| w[0].0 < w[1].0));
     for (id, name) in [
         (0x000B, "SHA-256"),

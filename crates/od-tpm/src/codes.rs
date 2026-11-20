@@ -251,6 +251,8 @@ pub mod alg {
     pub const ECDH: u16 = 0x0019;
     pub const KDF1_SP800_56A: u16 = 0x0020;
     pub const ECC: u16 = 0x0023;
+    /// `TPM_ALG_SYMCIPHER`: the object type of a symmetric block cipher key (Part 2 v185, Table 8).
+    pub const SYMCIPHER: u16 = 0x0025;
     pub const MLKEM: u16 = 0x00A0;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;

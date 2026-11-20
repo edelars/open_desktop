@@ -97,7 +97,9 @@ fn attest_scheme(
     }
     if matches!(
         o.public.params,
-        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. }
+        PublicParams::KeyedHash { .. }
+            | PublicParams::MlKem { .. }
+            | PublicParams::SymCipher { .. }
     ) {
         return Err(Rc::KEY.in_handle(handle_no));
     }

@@ -416,9 +416,10 @@ fn tpmt_public_layout_matches_hand_written_bytes() {
 fn tpmt_public_unmarshal_codes() {
     let good = ecc_sign().to_bytes();
     let parse = |b: &[u8]| TpmtPublic::unmarshal(&mut Reader::new(b)).unwrap_err();
-    // Object type SYMCIPHER (0x0025) is not implemented: TPM_RC_TYPE (Table 211).
+    // Object type ML-DSA (0x00A1) is not implemented: TPM_RC_TYPE (Table 211).
     let mut b = good.clone();
-    b[1] = 0x25;
+    b[0] = 0x00;
+    b[1] = 0xA1;
     assert_eq!(parse(&b), Rc::TYPE);
     // nameAlg SHA-1: TPM_RC_HASH (Table 78).
     let mut b = good.clone();

@@ -130,7 +130,7 @@ fn golden_transcript() -> String {
 fn sha256_golden_unchanged() {
     assert_eq!(
         golden_transcript(),
-        "83485529fb39e8007b38491ae958c02153d212c052f9a71038b003682347a70e"
+        "7213c5cb8f83c555229cd431fb6b0212258dbce651d7a679bc04e845f3152770"
     );
 }
 

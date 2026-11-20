@@ -103,7 +103,9 @@ pub(crate) fn select_signing_scheme(
 ) -> Result<Scheme, Rc> {
     let key_scheme = match params {
         PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => {
+        PublicParams::KeyedHash { .. }
+        | PublicParams::MlKem { .. }
+        | PublicParams::SymCipher { .. } => {
             return Err(Rc::SCHEME.in_param(param));
         }
     };
@@ -426,7 +428,8 @@ impl Tpm {
             _ => &self.hv.null_seed[..],
         };
         match params {
-            PublicParams::MlKem { .. } => seed,
+            // New types, no legacy identity: the whole Primary Seed.
+            PublicParams::MlKem { .. } | PublicParams::SymCipher { .. } => seed,
             PublicParams::Rsa { .. }
             | PublicParams::Ecc { .. }
             | PublicParams::KeyedHash { .. } => &seed[..LEGACY_SEED_BYTES],
@@ -983,7 +986,9 @@ impl Tpm {
         }
         if matches!(
             o.public.params,
-            PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. }
+            PublicParams::KeyedHash { .. }
+                | PublicParams::MlKem { .. }
+                | PublicParams::SymCipher { .. }
         ) {
             return Err(Rc::KEY.in_handle(1));
         }
@@ -1074,7 +1079,9 @@ impl Tpm {
         // A key with a signing scheme verifies signatures of that scheme only (RSASSA or RSAPSS).
         let key_scheme_alg = match &o.public.params {
             PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => scheme.alg,
-            PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => alg::NULL,
+            PublicParams::KeyedHash { .. }
+            | PublicParams::MlKem { .. }
+            | PublicParams::SymCipher { .. } => alg::NULL,
         };
         if !type_ok || (key_scheme_alg != alg::NULL && key_scheme_alg != signature_alg(&signature))
         {

@@ -1,4 +1,10 @@
-//! TPM credential protection and seed sharing (Library v185 Part 1 §§21.3–5, 43.10 and 44.7).
+//! TPM credential protection and seed sharing (Library v185 Part 1 §§21.3–5, 43.10, 44.7 and 47.4).
+//!
+//! The labeled KEM of an ML-KEM-768 Storage key (clause 47.4, Equation 67) is `seed = KDFa(nameAlg,
+//! K, label, ciphertext, publicKey, digest bits)`, K being the 32-octet ML-KEM shared secret and the
+//! ciphertext the whole `TPM2B_ENCRYPTED_SECRET`. Labels (Part 1, Table 5, checked against the v185
+//! text): "IDENTITY" for credentials, "SECRET" for the salt of a session, "DUPLICATE" for duplication.
+//! NOT VERIFIED: that clause 47.4 calls K "the 64-byte shared secret"; FIPS 203 and this code use 32.
 
 use zeroize::Zeroizing;
 
@@ -7,8 +13,10 @@ use crate::crypto::{
     hmac_verify, kdfa, rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
+use crate::kem;
 use crate::marshal::{
-    MAX_ECC_BYTES, MAX_NAME, MAX_RSA_BYTES, Reader, Scheme, SymDef, Unique, Writer, limits,
+    MAX_ECC_BYTES, MAX_NAME, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, Unique, Writer,
+    limits,
 };
 use crate::object::{Object, Secret, find_object, storage_cfb};
 use crate::random::Drbg;
@@ -55,7 +63,7 @@ impl Tpm {
         let object_name = reader.tpm2b(MAX_NAME)?;
         reader.finish()?;
 
-        let (symmetric, name_hash) = check_storage_key(key, 1)?;
+        let (symmetric, name_hash) = check_sharing_key(key, 1)?;
         let (seed, secret) = make_seed(
             &key.public.unique,
             IDENTITY_LABEL,
@@ -89,7 +97,7 @@ impl Tpm {
         reader.set_param(1);
         let blob = reader.tpm2b(4 + 2 * digest)?;
         reader.set_param(2);
-        let secret = reader.tpm2b(MAX_RSA_BYTES)?;
+        let secret = reader.tpm2b(encrypted_secret_limit(key))?;
         reader.finish()?;
 
         // The Name of the activated object is hashed into the wrapper as it is; an object with no
@@ -97,7 +105,7 @@ impl Tpm {
         if HashAlg::from_alg(activated.public.name_alg).is_none() {
             return Err(Rc::HASH.in_handle(1));
         }
-        let (symmetric, name_hash) = check_storage_key(key, 2)?;
+        let (symmetric, name_hash) = check_sharing_key(key, 2)?;
         let mut id = Reader::new(blob);
         id.set_param(1);
         let tag = id.tpm2b(name_hash.size())?;
@@ -118,6 +126,18 @@ impl Tpm {
             params: output.finish(),
         })
     }
+}
+
+/// [`check_storage_key`] for a key that shares a secret (`MakeCredential`, `ActivateCredential`,
+/// the new parent of `Duplicate`): a symmetric Storage key shares none, the seed travels under an
+/// asymmetric key (Part 3 v185, clause 13.1: `newParentHandle` "shall reference the public area of
+/// an asymmetric key"). NOT VERIFIED: `TPM_RC_TYPE` for a SYMCIPHER key.
+pub(crate) fn check_sharing_key(key: &Object, position: u8) -> Result<(SymDef, HashAlg), Rc> {
+    let checked = check_storage_key(key, position)?;
+    if matches!(key.public.params, PublicParams::SymCipher { .. }) {
+        return Err(Rc::TYPE.in_handle(position));
+    }
+    Ok(checked)
 }
 
 /// The storage key of a seed wrapper: its symmetric cipher and the hash of its `nameAlg`, which is the
@@ -167,8 +187,38 @@ pub(crate) fn recover_seed(
             let (shared_x, _) = ecc_ecdh(ecc, x, y).ok_or(SeedError::Point)?;
             Ok(kdfe(name_hash, &shared_x, label, x, receiver_x))
         }
+        (Secret::MlKem(kem_key), Unique::MlKem(public_key)) => {
+            // The labeled KEM of Part 1 v185, clause 47.4: the ciphertext is the whole secret.
+            if encrypted.len() != kem::CIPHERTEXT_BYTES {
+                return Err(SeedError::Ciphertext);
+            }
+            let shared =
+                kem::decapsulate_ciphertext(kem_key, encrypted).ok_or(SeedError::Ciphertext)?;
+            Ok(kem::labeled_seed(
+                name_hash,
+                &shared,
+                kdfa_label(label),
+                encrypted,
+                public_key,
+            ))
+        }
         _ => Err(SeedError::KeyType),
     }
+}
+
+/// The largest `TPM2B_ENCRYPTED_SECRET` a key opens: the ML-KEM-768 ciphertext, or the largest
+/// RSA modulus (an ECC point is shorter).
+pub(crate) fn encrypted_secret_limit(key: &Object) -> usize {
+    if matches!(key.public.unique, Unique::MlKem(_)) {
+        kem::CIPHERTEXT_BYTES
+    } else {
+        MAX_RSA_BYTES
+    }
+}
+
+/// The label of a protocol for KDFa, which appends the zero octet itself.
+fn kdfa_label(label: &[u8]) -> &[u8] {
+    label.strip_suffix(&[0]).unwrap_or(label)
 }
 
 /// Seed (one digest of `name_hash`, the `nameAlg` of the storage key) and encrypted secret.
@@ -195,6 +245,17 @@ pub(crate) fn make_seed(
             point.tpm2b(&ephemeral_x);
             point.tpm2b(&ephemeral_y);
             Some((seed, point.finish()))
+        }
+        Unique::MlKem(public_key) => {
+            let (shared, ciphertext) = kem::encapsulate_public(public_key, rng)?;
+            let seed = kem::labeled_seed(
+                name_hash,
+                &shared,
+                kdfa_label(label),
+                &ciphertext,
+                public_key,
+            );
+            Some((seed, ciphertext))
         }
         _ => None,
     }

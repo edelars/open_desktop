@@ -100,7 +100,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 18] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -134,6 +134,9 @@ pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
     ),
     (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
     (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_SYMCIPHER` (0x0025): the object type of a symmetric block cipher key (slice 5).
+    // NOT VERIFIED: the attribute bits are our reading of the registry's object type "O".
+    (alg::SYMCIPHER, TPMA_ALGORITHM_OBJECT),
     (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
     (
         alg::MLKEM,
@@ -254,11 +257,6 @@ impl Tpm {
             && !supported_rsa_exponent(exponent)
         {
             return Err(p.err(Rc::RANGE));
-        }
-        if let PublicParams::MlKem { symmetric, .. } = params
-            && symmetric != crate::marshal::SymDef::Null
-        {
-            return Err(p.err(Rc::SYMMETRIC));
         }
         Ok(Output::default())
     }

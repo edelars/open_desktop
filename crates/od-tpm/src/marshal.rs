@@ -836,6 +836,10 @@ pub enum PublicParams {
         symmetric: SymDef,
         parameter_set: u16,
     },
+    /// `TPMS_SYMCIPHER_PARMS` (Part 2 v185, Table 165): the `TPMT_SYM_DEF_OBJECT` is AES-128 or
+    /// AES-256 in CFB mode, never NULL. It is the key's own cipher, and for a restricted decryption
+    /// key the cipher that protects its children (Part 2, Table 233 note).
+    SymCipher { symmetric: SymDef },
     /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is `TPM_ALG_NULL` (sealed data, or an HMAC
     /// key without a default hash) or `TPM_ALG_HMAC` with SHA-256 (an HMAC key, slice C2).
     KeyedHash { scheme: Scheme },
@@ -845,7 +849,7 @@ impl PublicParams {
     pub(crate) fn unmarshal_type(r: &mut Reader<'_>) -> Result<u16, Rc> {
         let type_alg = r.u16()?;
         match type_alg {
-            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM => Ok(type_alg),
+            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM | alg::SYMCIPHER => Ok(type_alg),
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -901,6 +905,13 @@ impl PublicParams {
                     parameter_set,
                 })
             }
+            alg::SYMCIPHER => {
+                // `TPMT_SYM_DEF_OBJECT` without the "+": TPM_ALG_NULL is no valid cipher.
+                match SymDef::unmarshal(r)? {
+                    SymDef::Null => Err(r.err(Rc::SYMMETRIC)),
+                    symmetric => Ok(Self::SymCipher { symmetric }),
+                }
+            }
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -915,7 +926,7 @@ pub enum Unique {
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ML-KEM-768, SYMCIPHER (AES-CFB), or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -934,6 +945,7 @@ impl TpmtPublic {
             PublicParams::Ecc { .. } => alg::ECC,
             PublicParams::KeyedHash { .. } => alg::KEYEDHASH,
             PublicParams::MlKem { .. } => alg::MLKEM,
+            PublicParams::SymCipher { .. } => alg::SYMCIPHER,
         }
     }
 
@@ -966,6 +978,7 @@ impl TpmtPublic {
                 w.u16(alg::NULL);
             }
             PublicParams::KeyedHash { scheme } => scheme.marshal(w),
+            PublicParams::SymCipher { symmetric } => symmetric.marshal(w),
             PublicParams::MlKem {
                 symmetric,
                 parameter_set,
@@ -1021,7 +1034,9 @@ impl TpmtPublic {
                 x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
                 y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
             },
-            PublicParams::KeyedHash { .. } => Unique::Digest(r.tpm2b(digest_limit)?.to_vec()),
+            PublicParams::KeyedHash { .. } | PublicParams::SymCipher { .. } => {
+                Unique::Digest(r.tpm2b(digest_limit)?.to_vec())
+            }
             PublicParams::MlKem { .. } => Unique::MlKem(r.tpm2b(MAX_MLKEM_PUBLIC_BYTES)?.to_vec()),
         };
         Ok(TpmtPublic {

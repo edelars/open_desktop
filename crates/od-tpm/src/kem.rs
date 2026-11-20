@@ -12,7 +12,8 @@ use crate::random::Drbg;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
-const CIPHERTEXT_BYTES: usize = 1088;
+/// The ML-KEM-768 ciphertext (`TPM2B_KEM_CIPHERTEXT` contents; FIPS 203, Table 3).
+pub(crate) const CIPHERTEXT_BYTES: usize = 1088;
 
 pub(crate) type KemPrivate = DecapsulationKey;
 
@@ -38,6 +39,54 @@ pub(crate) fn public_bytes(key: &KemPrivate) -> Vec<u8> {
 
 pub(crate) fn public_encoding_is_valid(bytes: &[u8]) -> bool {
     EncapsulationKey::new_from_slice(bytes).is_ok()
+}
+
+/// Encapsulation with a public key (`ek`, 1184 octets) and 32 octets of DRBG randomness: the shared
+/// secret K (32 octets) and the ciphertext. `None` for an invalid public key or an exhausted DRBG.
+pub(crate) fn encapsulate_public(
+    public: &[u8],
+    drbg: &mut Drbg,
+) -> Option<(Zeroizing<Vec<u8>>, Vec<u8>)> {
+    let key = EncapsulationKey::new_from_slice(public).ok()?;
+    let mut m = Zeroizing::new(B32::default());
+    drbg.generate(m.as_mut_slice())?;
+    let (ciphertext, shared) = key.encapsulate_deterministic(&m);
+    let shared = Zeroizing::new(shared);
+    Some((
+        Zeroizing::new(shared.as_slice().to_vec()),
+        ciphertext.as_slice().to_vec(),
+    ))
+}
+
+/// Decapsulation of a ciphertext of exactly [`CIPHERTEXT_BYTES`] octets; a modified ciphertext
+/// gives the implicit-rejection secret of FIPS 203. `None` for another length.
+pub(crate) fn decapsulate_ciphertext(
+    key: &KemPrivate,
+    ciphertext: &[u8],
+) -> Option<Zeroizing<Vec<u8>>> {
+    let shared = Zeroizing::new(key.decapsulate_slice(ciphertext).ok()?);
+    Some(Zeroizing::new(shared.as_slice().to_vec()))
+}
+
+/// The seed of the ML-KEM Labeled KEM (Part 1 v185, clause 47.4, Equation 67): `KDFa(hashAlg, K,
+/// label, ciphertext, publicKey, bits)` with `hashAlg` the `nameAlg` of the recipient key, K the
+/// ML-KEM shared secret, the label of the protocol without its terminating zero (KDFa adds it),
+/// `bits` the size of one digest of `hashAlg`, and only the contents of the two buffers as context.
+pub(crate) fn labeled_seed(
+    name_hash: crate::crypto::HashAlg,
+    shared: &[u8],
+    label: &[u8],
+    ciphertext: &[u8],
+    public: &[u8],
+) -> Zeroizing<Vec<u8>> {
+    crate::crypto::kdfa(
+        name_hash,
+        shared,
+        label,
+        ciphertext,
+        public,
+        (name_hash.size() * 8) as u32,
+    )
 }
 
 impl Tpm {

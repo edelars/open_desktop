@@ -14,6 +14,17 @@
 //! `unique`, and the creation hash and PCR digest); a keyed-hash object holds sealed data
 //! (`TPM2_Unseal`). Storage keys (`restricted` + `decrypt`, no `sign`) can be parents.
 //!
+//! **Slice 5.** A SYMCIPHER object (AES-128/256-CFB, `unique = H(seedValue || key)`, Part 1
+//! Equation 48; no `EncryptDecrypt`, which the profile leaves optional) is a data key or, when
+//! `restricted` + `decrypt`, a Storage parent whose `seedValue` protects its children like the
+//! seed of an asymmetric parent; it shares no secret, so it is no new parent of `Duplicate`,
+//! `MakeCredential` or `ActivateCredential` (`credential.rs`). A restricted ML-KEM-768 key with
+//! an AES cipher is a Storage parent too; its seed value protects children, and the seeds of
+//! credentials, salts and duplication blobs come from the labeled KEM (`kem.rs`, Part 1 clause
+//! 47.4). Part 1 clauses 24.5.3.3 and 24.7.5.1 and Part 3 clause 12.1.1 were read for these types;
+//! NOT VERIFIED: the order of the key and the seed value in the DRBG stream (the key first, as
+//! the numbered steps of clause 12.1.1 list them).
+//!
 //! **Primary derivation** (Part 1 v184, clauses 25.6.3 and 25.7: "choice of the entropy generation
 //! for Primary Objects is a vendor option"). Our choice: `material = KDFa(SHA-256, seed, "ODTPM-
 //! PRIMARY", H(template), data, 384 bits)` seeds an HMAC_DRBG (`random.rs`); the seed value and
@@ -236,6 +247,12 @@ impl TpmtPublic {
             | PublicParams::Ecc {
                 symmetric, scheme, ..
             } if is_storage(self) => Some((symmetric, scheme)),
+            // A restricted ML-KEM key or a symmetric block cipher key has no asymmetric scheme.
+            PublicParams::MlKem { symmetric, .. } | PublicParams::SymCipher { symmetric }
+                if is_storage(self) =>
+            {
+                Some((symmetric, Scheme::NULL))
+            }
             _ => None,
         }
     }
@@ -246,7 +263,10 @@ fn is_storage(public: &TpmtPublic) -> bool {
     let a = public.attributes;
     matches!(
         public.params,
-        PublicParams::Rsa { .. } | PublicParams::Ecc { .. }
+        PublicParams::Rsa { .. }
+            | PublicParams::Ecc { .. }
+            | PublicParams::MlKem { .. }
+            | PublicParams::SymCipher { .. }
     ) && a & object_attr::RESTRICTED != 0
         && a & object_attr::DECRYPT != 0
         && a & object_attr::SIGN == 0
@@ -484,11 +504,28 @@ pub(crate) fn check_public(
             }
         }
         PublicParams::MlKem { symmetric, .. } => {
-            // This profile creates unrestricted ML-KEM decryption objects.
-            if sign || !decrypt || restricted || public.attributes & object_attr::X509_SIGN != 0 {
+            // Unrestricted decryption objects (`TPM2_Decapsulate`) and restricted decryption
+            // Storage parents (labeled KEM; Part 2, Table 232: the symmetric cipher is NULL unless
+            // `restricted` and `decrypt` are SET). An ML-KEM key never signs.
+            if sign || !decrypt || public.attributes & object_attr::X509_SIGN != 0 {
                 return Err(bad(Rc::ATTRIBUTES));
             }
             check_symmetric(public, *symmetric)?;
+        }
+        PublicParams::SymCipher { symmetric } => {
+            // A block cipher key encrypts (`sign`) and/or decrypts; neither is invalid (Part 3,
+            // clause 12.1.1), a restricted one cannot do both (Part 2, clause 8.3.3.14) and a
+            // Storage parent is restricted decrypt. x509sign needs an asymmetric signing key.
+            if (!sign && !decrypt)
+                || (restricted && sign && decrypt)
+                || public.attributes & object_attr::X509_SIGN != 0
+            {
+                return Err(bad(Rc::ATTRIBUTES));
+            }
+            // `TPMT_SYM_DEF_OBJECT` is never NULL here (checked at unmarshal).
+            if *symmetric == SymDef::Null {
+                return Err(bad(Rc::SYMMETRIC));
+            }
         }
     }
     Ok(())
@@ -529,6 +566,17 @@ pub(crate) fn check_creation(public: &TpmtPublic, sens: &TpmsSensitiveCreate) ->
     }
     let origin = public.attributes & object_attr::SENSITIVE_DATA_ORIGIN != 0;
     match public.params {
+        PublicParams::SymCipher { symmetric } => {
+            // As for an HMAC key: the TPM generates the key (data empty, origin SET) or the caller
+            // supplies it (origin CLEAR); at most the key size (`TPM_RC_SIZE`, Part 3, clause 12.1.1,
+            // step 2), shorter data are padded (Part 1, clause 24.7.5.1).
+            if sens.data.is_empty() != origin {
+                return Err(Rc::ATTRIBUTES.in_param(2));
+            }
+            if sens.data.len() > usize::from(symmetric.key_bits() / 8) {
+                return Err(Rc::SIZE.in_param(1));
+            }
+        }
         PublicParams::KeyedHash { .. } => {
             // A sealed-data object with no data is invalid (sign and decrypt are CLEAR), and its
             // data come from the caller. An HMAC key (`sign`) takes the caller's key and no
@@ -605,13 +653,36 @@ pub(crate) fn derive_object(
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }
         PublicParams::MlKem { .. } => {
+            // A restricted decryption key is a Storage parent: its seed value protects the
+            // children, one digest of the nameAlg as for RSA and ECC (the seed comes first).
+            let seed = if storage {
+                new_seed(rng, name_hash.size())?
+            } else {
+                Zeroizing::new(Vec::new())
+            };
             let key = kem::generated_key(rng)?;
             let unique = Unique::MlKem(kem::public_bytes(&key));
-            (
-                Secret::MlKem(Box::new(key)),
-                unique,
-                Zeroizing::new(Vec::new()),
-            )
+            (Secret::MlKem(Box::new(key)), unique, seed)
+        }
+        PublicParams::SymCipher { symmetric } => {
+            // Part 3, clause 12.1.1 and Part 1, clause 24.7.5.1: the key first (generated, or
+            // the caller's data padded with zero octets at the high-order end), then the
+            // obfuscation value / storage seed of one digest; unique = H(seed || key), Equation 1.
+            let key_bytes = usize::from(symmetric.key_bits() / 8);
+            let key = if data.is_empty() {
+                new_seed(rng, key_bytes)?
+            } else {
+                if data.len() > key_bytes {
+                    return Err(Rc::SIZE.in_param(1));
+                }
+                let mut key = Zeroizing::new(vec![0u8; key_bytes]);
+                key[key_bytes - data.len()..].copy_from_slice(data);
+                key
+            };
+            let seed = new_seed(rng, name_hash.size())?;
+            let unique =
+                Unique::Digest(hash(name_hash, &[&seed[..], &key[..]]).as_slice().to_vec());
+            (Secret::Data(key), unique, seed)
         }
         PublicParams::KeyedHash { .. } => {
             let seed = new_seed(rng, name_hash.size())?;
@@ -751,7 +822,10 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
     let auth = AuthValue::from_slice_trimmed_up_to(&auth, digest).ok_or(Rc::SENSITIVE)?;
     if duplicate {
         let storage = object_attr::RESTRICTED | object_attr::DECRYPT;
-        let required_seed = if matches!(public.params, PublicParams::KeyedHash { .. }) {
+        let required_seed = if matches!(
+            public.params,
+            PublicParams::KeyedHash { .. } | PublicParams::SymCipher { .. }
+        ) {
             digest
         } else if public.attributes & storage == storage {
             digest / 2
@@ -816,6 +890,21 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
                 return Err(Rc::BINDING);
             }
             Secret::MlKem(Box::new(key))
+        }
+        PublicParams::SymCipher { symmetric } => {
+            // The key has exactly the size of the template's cipher (Part 3, clause 12.2.1: the
+            // size of the key in the sensitive area shall be consistent with the public area).
+            if secret.len() != usize::from(symmetric.key_bits() / 8) {
+                return Err(Rc::KEY_SIZE);
+            }
+            let Unique::Digest(u) = &public.unique else {
+                return Err(Rc::BINDING);
+            };
+            let name_hash = name_hash_alg(public.name_alg)?;
+            if hash(name_hash, &[&seed[..], &secret[..]]).as_slice() != u.as_slice() {
+                return Err(Rc::BINDING);
+            }
+            Secret::Data(secret)
         }
         PublicParams::KeyedHash { .. } => {
             if secret.len() > MAX_SYM_DATA {

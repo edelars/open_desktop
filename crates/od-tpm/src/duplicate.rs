@@ -4,11 +4,12 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::credential::{
-    DUPLICATE_LABEL, check_storage_key, make_seed, open_seed_blob, protect_seed_blob, recover_seed,
+    DUPLICATE_LABEL, check_sharing_key, check_storage_key, encrypted_secret_limit, make_seed,
+    open_seed_blob, protect_seed_blob, recover_seed,
 };
 use crate::crypto::{HashAlg, TpmDigest, hash};
 use crate::dispatch::Invocation;
-use crate::marshal::{MAX_DATA, MAX_RSA_BYTES, Reader, SymDef, TpmtPublic, Writer};
+use crate::marshal::{MAX_DATA, Reader, SymDef, TpmtPublic, Writer};
 use crate::object::{
     MAX_PRIVATE, ParentKey, aes_cfb, check_public, find_object, name_of, private_blob,
     sensitive_from_duplicate, sensitive_to_duplicate,
@@ -70,7 +71,7 @@ impl Tpm {
         } else {
             let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
                 .ok_or(Rc::reference_handle(1))?;
-            let (symmetric, parent_hash) = check_storage_key(parent, 2)?;
+            let (symmetric, parent_hash) = check_sharing_key(parent, 2)?;
             Some((parent, symmetric, parent_hash))
         };
         if object.has(object_attr::ENCRYPTED_DUPLICATION) {
@@ -159,7 +160,7 @@ impl Tpm {
         reader.set_param(3);
         let duplicate = reader.tpm2b(MAX_PRIVATE)?;
         reader.set_param(4);
-        let encrypted_seed = reader.tpm2b(MAX_RSA_BYTES)?;
+        let encrypted_seed = reader.tpm2b(encrypted_secret_limit(parent))?;
         reader.set_param(5);
         let symmetric = SymDef::unmarshal(reader)?;
         reader.finish()?;
