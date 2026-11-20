@@ -5553,6 +5553,85 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         }
     }
 
+    fn read_integer_for_write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+    ) -> Result<u64, MemoryError> {
+        use crate::page_walk::translate_long64_2m_ram_write_span_check_with_fault_trace;
+
+        if !self.cpl0_set_narrow_write
+            || self.capture_effects
+            || context.privilege != PrivilegeLevel::Ring3
+            || context.origin != AccessOrigin::Explicit
+        {
+            return Err(Self::unsupported("CPL3 write-intent integer read"));
+        }
+        let length = size.bytes();
+        let length_u64 = length as u64;
+        if address.checked_add(length_u64 - 1).is_none() {
+            return Err(MemoryError::AddressOverflow { address, length });
+        }
+        if self.capture_page_fault_trace {
+            self.page_fault_trace = None;
+        }
+        let physical_memory = match &self.bus {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => *memory,
+            AdapterBus::Machine(bus, _) => bus.physical_memory(),
+            AdapterBus::Shared(bus, _) => bus.physical_memory(),
+        };
+        let mut checked = [(GuestPhysicalAddress::new(0), 0usize, 0usize); 2];
+        let mut checked_count = 0usize;
+        let mut offset = 0usize;
+        while offset < length {
+            let linear = address + offset as u64;
+            let chunk = ((0x1000 - (linear & 0xfff)).min(length_u64 - offset as u64)) as usize;
+            let mut trace = None;
+            let result = translate_long64_2m_ram_write_span_check_with_fault_trace(
+                physical_memory,
+                &self.paging,
+                self.instruction_rip,
+                GuestLinearAddress::new(linear),
+                chunk as u64,
+                context,
+                &mut *self.committed_write,
+                self.capture_page_fault_trace.then_some(&mut trace),
+            );
+            match result {
+                Ok(physical) => {
+                    if let Some(walks) = self.walks {
+                        walks.note_write();
+                    }
+                    checked[checked_count] = (physical, offset, chunk);
+                    checked_count += 1;
+                    offset += chunk;
+                }
+                Err(error) => {
+                    if let Some(trace) = trace {
+                        self.page_fault_trace = faulting_page_walk_context(&error, trace);
+                    }
+                    self.access_error = Some(error.clone());
+                    return Err(self.map_access_error(error));
+                }
+            }
+        }
+        let mut bytes = [0u8; 8];
+        for (physical, offset, chunk) in checked.into_iter().take(checked_count) {
+            if let Err(source) =
+                physical_memory.load_bytes(physical, &mut bytes[offset..offset + chunk])
+            {
+                let error = TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                };
+                self.access_error = Some(error.clone());
+                return Err(self.map_access_error(error));
+            }
+        }
+        Ok(u64::from_le_bytes(bytes))
+    }
+
     fn read(
         &mut self,
         address: u64,
@@ -9652,6 +9731,160 @@ mod tests {
                 "walk may update paging prefixes, but the operand is not notified: {log:?}"
             );
         }
+    }
+
+    #[test]
+    fn cpl3_write_intent_integer_read_walks_write_and_reads_only_after_full_validation() {
+        use od_isa::OperandSize::Dword;
+        let user = user_context();
+        for (pte, expected_error) in [(0x7006, 0x06), (0x7003, 0x07), (0x7005, 0x07)] {
+            let memory = lock_memory(0, pte);
+            memory
+                .store_u32(GuestPhysicalAddress::new(0x7040), 0x1122_3344, |_| {})
+                .unwrap();
+            let before = data_frame(&memory);
+            let mut log = Vec::new();
+            let result = {
+                let mut note = |range| log.push(range);
+                let mut adapter = lock_adapter(&memory, &mut note);
+                adapter.read_integer_for_write(DATA_LINEAR + 0x40, user, Dword)
+            };
+            let Err(MemoryError::Architectural(fault)) = result else {
+                panic!("expected write-intent page fault, got {result:?}");
+            };
+            assert_eq!(fault.vector, 14);
+            assert_eq!(fault.error_code, Some(expected_error));
+            assert_eq!(fault.linear_address, Some(DATA_LINEAR + 0x40));
+            assert_eq!(data_frame(&memory), before);
+            let entries = table_entries(&memory);
+            assert_eq!(entries[5] & 0x40, 0, "no operand dirty bit on fault");
+            assert!(log.iter().all(|range| range.start().get() < 0x7000));
+        }
+
+        let memory = lock_memory(0, 0x7007);
+        memory
+            .store_u32(GuestPhysicalAddress::new(0x7040), 0x89ab_cdef, |_| {})
+            .unwrap();
+        let before = data_frame(&memory);
+        let mut log = Vec::new();
+        let value = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter
+                .read_integer_for_write(DATA_LINEAR + 0x40, user, Dword)
+                .unwrap()
+        };
+        assert_eq!(value, 0x89ab_cdef);
+        assert_eq!(
+            data_frame(&memory),
+            before,
+            "read-intent does not store or set D"
+        );
+        assert_eq!(table_entries(&memory)[5] & 0x40, 0);
+        assert!(log.iter().all(|range| range.start().get() < 0x7000));
+
+        // The first two bytes map, but the second 4 KiB translation is not present. No first-page
+        // data read is issued until every write-intent span has passed its permission walk.
+        let memory = lock_memory(0, 0x7007);
+        memory
+            .store_u16(GuestPhysicalAddress::new(0x7ffe), 0xa55a, |_| {})
+            .unwrap();
+        let before = data_frame(&memory);
+        let mut log = Vec::new();
+        let result = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter.read_integer_for_write(DATA_LINEAR + 0xffe, user, Dword)
+        };
+        let Err(MemoryError::Architectural(fault)) = result else {
+            panic!("expected second-page write fault, got {result:?}");
+        };
+        assert_eq!(fault.vector, 14);
+        assert_eq!(fault.error_code, Some(0x06));
+        assert_eq!(fault.linear_address, Some(DATA_LINEAR + 0x1000));
+        assert_eq!(data_frame(&memory), before);
+        assert_eq!(table_entries(&memory)[5] & 0x40, 0);
+        assert!(log.iter().all(|range| range.start().get() < 0x7000));
+    }
+
+    #[test]
+    fn cpl3_write_intent_integer_read_accepts_last_canonical_dword() {
+        let memory = lock_memory(0, 0x7007);
+        let address = u64::MAX - 3;
+        let mut log = Vec::new();
+        let result = {
+            let mut note = |range| log.push(range);
+            lock_adapter(&memory, &mut note).read_integer_for_write(
+                address,
+                user_context(),
+                od_isa::OperandSize::Dword,
+            )
+        };
+        let Err(MemoryError::Architectural(fault)) = result else {
+            panic!("expected a page fault for the absent high PML4 entry, got {result:?}");
+        };
+        assert_eq!(fault.vector, 14);
+        assert_eq!(fault.error_code, Some(0x06));
+        assert_eq!(fault.linear_address, Some(address));
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn cpl3_write_intent_integer_read_refuses_the_read_only_scope_without_effects() {
+        let bus = bus(0x7007);
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let report = with_paged_mov_dword_memory(&bus, paging, 0x0040_0000, |memory| {
+            memory.read_integer_for_write(
+                DATA_LINEAR + 0x40,
+                user_context(),
+                od_isa::OperandSize::Dword,
+            )
+        });
+        assert!(matches!(
+            report.callback_result,
+            Err(MemoryError::Backend(_))
+        ));
+        assert!(report.committed_ad_updates.is_empty());
+        assert!(report.committed_writes.is_empty());
+        assert_eq!(
+            bus.physical_memory()
+                .load_u64(GuestPhysicalAddress::new(0x5000))
+                .unwrap(),
+            0x7007
+        );
+    }
+
+    #[test]
+    fn cpl3_write_intent_integer_read_supports_two_mib_leaf_permissions() {
+        use od_isa::OperandSize::Dword;
+        let user = user_context();
+        let memory = lock_memory_2m(0x200087); // present, writable, user, 2 MiB leaf
+        memory
+            .store_u32(GuestPhysicalAddress::new(0x200040), 0x7654_3210, |_| {})
+            .unwrap();
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        assert_eq!(
+            adapter
+                .read_integer_for_write(DATA_LINEAR + 0x40, user, Dword)
+                .unwrap(),
+            0x7654_3210
+        );
+        assert_eq!(two_mib_entries(&memory)[3] & 0x40, 0);
+
+        let memory = lock_memory_2m(0x200085); // present, user, read-only 2 MiB leaf
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        let result = adapter.read_integer_for_write(DATA_LINEAR + 0x40, user, Dword);
+        assert!(matches!(
+            result,
+            Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(7),
+                linear_address: Some(address),
+            })) if address == DATA_LINEAR + 0x40
+        ));
+        assert_eq!(two_mib_entries(&memory)[3] & 0x40, 0);
     }
 
     #[test]

@@ -1,0 +1,217 @@
+{
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "raw_namespace_sectors": 4194304,
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "guest_kernel_markers": [
+    "smpboot: Total of 2 processors activated",
+    "Run /s6-smp-init as init process"
+  ],
+  "base_commit": "db7ee0370641557271eeb3e8c419e742e8571189",
+  "previous_run_evidence": "s6-22-busybox-tls-tid-replay.json",
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "before": {
+    "report_sha256": "0a11054f1bf39fdf3357b514d70f2f53a85edeb528b54fad3f94adf4c8eaab53",
+    "runner_sha256": "de690cc04df7c752b06fe91c7aaf26de374e1dea3808dd3e7e428c83155f0228",
+    "retired": 2401360893,
+    "retired_by_vcpu": [
+      1971201057,
+      430159836
+    ],
+    "terminal_vcpu": 1,
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "cpl": 3,
+    "cpl3_retired": 3234,
+    "rip": "0x4f9fb7",
+    "rip_gpa": "0x7d9bfb7",
+    "rip_bytes": "39 47 08 75 3f 8b 47 04 83 f8 ff 0f 84 c9 00 00",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 57 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x1b08e000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x1b08ed80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "busybox_elf_file_offset": "0xf9fb7"
+  },
+  "after": {
+    "report_sha256": "2d969e2d4c94a1a2976ac3945038faedfd6e00dfa16fc53ec3b4c9facf049266",
+    "runner_sha256": "29806cf3c2242d1b6411c605234cb7ab26f97794e511d2d6f85335411d98dd40",
+    "retired": 2401375267,
+    "retired_by_vcpu": [
+      1971201057,
+      430174210
+    ],
+    "terminal_vcpu": 1,
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "cpl": 3,
+    "cpl3_retired": 3317,
+    "rip": "0x401160",
+    "rip_gpa": "0x7855160",
+    "rip_bytes": "ff 25 82 1d 21 00 66 90 ff 25 82 1d 21 00 66 90",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 255 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x1b08e000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x1b08ed80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "busybox_elf_file_offset": "0x1160"
+  },
+  "same_com1": true,
+  "comparison_cpu": 0,
+  "same_comparison_cpu": true,
+  "candidate_patch_sha256": "0d64c8b82dba5ca661b1611ece15979a2905148c644ab828b1d2b8907307f157",
+  "sources_sha256": {
+    "crates/od-isa/src/execute.rs": "f11b8b841df61b7925403d168159b44df049338d713061c80fad4fb5755157ad",
+    "crates/od-isa/src/long_decode.rs": "b76d00d9c4dfb956a9d1b29a176b54d8bd596678aa51221708fa264f3bc00135",
+    "crates/od-isa/tests/cpl3_profile_set.rs": "52ee48e7ee738c946480ea0e6873eb2dc430f00ff6bdbc2163c6119678debbdf",
+    "crates/od-machine/src/paged_memory_adapter.rs": "2cf256276e1c677f131649a125b4d72c4247ed1f0db5ff71640181da165e12a0",
+    "crates/od-machine/src/page_walk.rs": "07fab4942798b30f3111de2cd63a5a841db7f21ede93e7e5c4984aaa9cb4f41f"
+  },
+  "diagnostic": {
+    "stop": {
+      "report_sha256": "39649041234e0afd617d1578ad63ecededc27a4a77c34accbc31419c9d51d6e8",
+      "runner_sha256": "1777be7d878e8c61ee8116f71e683cca4546ae3ba54e550821d259fb7e1c9504",
+      "retired": 2401381158,
+      "retired_by_vcpu": [
+        1971201057,
+        430180101
+      ],
+      "terminal_vcpu": 1,
+      "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+      "cpl": 3,
+      "cpl3_retired": 3453,
+      "rip": "0x4f68c2",
+      "rip_gpa": "0x7d988c2",
+      "rip_bytes": "64 48 8b 00 48 8b 00 48 8b 70 38 48 8d 96 00 01",
+      "exit_kind": "user_mode_unsupported",
+      "exit_detail": "Unsupported { opcode: 139 }",
+      "syscall_journal": {
+        "capacity": 32,
+        "entered": 6,
+        "entries": [
+          {
+            "nr": 12,
+            "rax_return": "0x1b08e000",
+            "rip": "0x4f4129"
+          },
+          {
+            "nr": 12,
+            "rax_return": "0x1b08ed80",
+            "rip": "0x4f4137"
+          },
+          {
+            "nr": 158,
+            "rax_return": "0x0",
+            "rip": "0x4c858e"
+          },
+          {
+            "nr": 218,
+            "rax_return": "0x1",
+            "rip": "0x4f3aa1"
+          },
+          {
+            "nr": 273,
+            "rax_return": "0x0",
+            "rip": "0x4f3b00"
+          },
+          {
+            "nr": 334,
+            "rax_return": "0x0",
+            "rip": "0x4f3b96"
+          }
+        ],
+        "returned": 6
+      },
+      "busybox_elf_file_offset": "0xf68c2"
+    },
+    "newly_admitted_forms": [
+      "S6-22-QUALIFY rip=0x401160 encoding=Primary:0xff:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: None } operation=IndirectJump { operand: Memory(MemoryOperand { base: NextRip, index: None, scale: 1, displacement: 2170242, address_size: Qword, size: Qword }) }",
+      "S6-22-QUALIFY rip=0x439879 encoding=Primary:0x2b:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(72) } operation=Arithmetic { kind: Sub, dst: Register(RegisterView { register: Rdx, size: Qword, shift: 0 }), src: Memory(MemoryOperand { base: Register(Rbp), index: None, scale: 1, displacement: -64, address_size: Qword, size: Qword }) }",
+      "S6-22-QUALIFY rip=0x439890 encoding=Primary:0x80:Byte:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: None } operation=Logic { kind: And, dst: Memory(MemoryOperand { base: Register(Rbx), index: None, scale: 1, displacement: 853, address_size: Qword, size: Byte }), src: Immediate(127) }",
+      "S6-22-QUALIFY rip=0x4fa7f5 encoding=Primary:0x83:Dword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: None } operation=Arithmetic { kind: Sub, dst: Memory(MemoryOperand { base: Register(Rdi), index: None, scale: 1, displacement: 4, address_size: Qword, size: Dword }), src: Immediate(1) }",
+      "S6-22-QUALIFY rip=0x4763f8 encoding=Primary:0x30:Byte:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: None } operation=Logic { kind: Xor, dst: Register(RegisterView { register: Rax, size: Byte, shift: 0 }), src: Register(RegisterView { register: Rax, size: Byte, shift: 0 }) }"
+    ]
+  },
+  "prior_host_decoder_panic": {
+    "qualification_log_sha256": "1db532ea946752f4d691c0440ea88bec19c6fe1550b181276bf34d02a8de5dc6",
+    "local_decode_log_sha256": "48ac18b9a5f171412113732676f3f6f432fe7fa6920c097fcb807e0bbd1bc808",
+    "busybox_rip": "0x4398e9",
+    "rip_bytes": "66 0f 6f 0d 7f 42 19 00",
+    "stop": "host panic before JSON"
+  }
+}

@@ -28785,6 +28785,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::MovupsStoreMemory { .. }
             | Operation::MovupsLoadMemory { .. }
             | Operation::MovdquLoadMemory { .. }
+            | Operation::MovdqaLoadMemory { .. }
     ) {
         return true;
     }
@@ -29016,7 +29017,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Memory(dst),
                 src: Operand::Register(_),
             },
-        ) => dst.size == OperandSize::Qword && dst.address_size == OperandSize::Qword,
+        ) if dst.size == OperandSize::Qword => dst.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x01,
@@ -29092,7 +29093,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 count: Operand::Immediate(_),
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Dword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0x98,
@@ -29135,6 +29139,24 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
             },
         ) if instruction.operand_size == OperandSize::Dword => true,
+        (
+            OpcodeMap::Primary,
+            0x39,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Register(_),
+            },
+        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
         (
             OpcodeMap::Escape0f,
             0x40..=0x4f,
@@ -42594,6 +42616,7 @@ fn step_configured(
                 | Operation::MovupsStoreMemory { .. }
                 | Operation::MovupsLoadMemory { .. }
                 | Operation::MovdquLoadMemory { .. }
+                | Operation::MovdqaLoadMemory { .. }
         )
     {
         return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
@@ -47100,7 +47123,8 @@ fn step_configured(
         Operation::MulsdRegister { .. } => false,
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
-        | Operation::MovdquLoadMemory { .. } => false,
+        | Operation::MovdquLoadMemory { .. }
+        | Operation::MovdqaLoadMemory { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -58562,7 +58586,8 @@ fn step_configured(
         Operation::MovupdStoreMemory { .. } => unreachable!("MOVUPD store commits before dispatch"),
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
-        | Operation::MovdquLoadMemory { .. } => {
+        | Operation::MovdquLoadMemory { .. }
+        | Operation::MovdqaLoadMemory { .. } => {
             return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
         }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
@@ -60749,7 +60774,20 @@ fn step_configured(
         }
         Operation::Arithmetic { kind, dst, src } => {
             let arithmetic = (|| {
-                let lhs = read_operand(state, memory, context, next_rip, dst)?;
+                let lhs = match (kind, dst, src) {
+                    (ArithmeticKind::Add, Operand::Memory(mem), Operand::Immediate(_))
+                        if control_policy.is_some()
+                            && context.privilege == PrivilegeLevel::Ring3
+                            && instruction.opcode.map == OpcodeMap::Primary
+                            && instruction.opcode.byte == 0x83
+                            && mem.size == OperandSize::Dword
+                            && mem.address_size == OperandSize::Qword =>
+                    {
+                        let address = mem.access_address_48(state, next_rip)?;
+                        memory.read_integer_for_write(address, context, mem.size)?
+                    }
+                    _ => read_operand(state, memory, context, next_rip, dst)?,
+                };
                 let rhs = read_operand(state, memory, context, next_rip, src)?;
                 let (result, flags) =
                     arithmetic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
@@ -64794,11 +64832,33 @@ fn step_cpl3_xmm(
         | Operation::MovdquLoadMemory {
             destination,
             source,
+        }
+        | Operation::MovdqaLoadMemory {
+            destination,
+            source,
         } => {
-            let address = match source.access_range_address_48(state, next_rip, 16) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
+            let movdqa = matches!(instruction.operation, Operation::MovdqaLoadMemory { .. });
+            let address = if movdqa {
+                match source.linear_address_48(state, next_rip) {
+                    Ok(address) => address,
+                    Err(fault) => return Ok(StepOutcome::Fault(fault)),
+                }
+            } else {
+                match source.access_range_address_48(state, next_rip, 16) {
+                    Ok(address) => address,
+                    Err(error) => return report_memory_error(error),
+                }
             };
+            if movdqa && address & 15 != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            if movdqa && let Err(error) = source.access_range_address_48(state, next_rip, 16) {
+                return report_memory_error(error);
+            }
             let mut value = [0; 16];
             if let Err(error) = memory.read(address, context, &mut value) {
                 return report_memory_error(error);

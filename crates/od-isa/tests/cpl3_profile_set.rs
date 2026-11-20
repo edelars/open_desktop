@@ -598,7 +598,6 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x67, 0x48, 0x39, 0x0b],
             0x39,
         ),
-        ("cmp [rbx], ecx (39 /r memory)", &[0x39, 0x0b], 0x39),
         ("operand-size cmp rbx, rcx", &[0x66, 0x48, 0x39, 0xcb], 0x39),
         ("lock cmp rbx, rcx", &[0xf0, 0x48, 0x39, 0xcb], 0x39),
         ("rep cmp rbx, rcx", &[0xf3, 0x48, 0x39, 0xcb], 0x39),
@@ -1894,6 +1893,7 @@ struct DataMemory {
     absent: std::collections::BTreeSet<u64>,
     writes: Vec<(u64, u8)>,
     reads: usize,
+    read_widths: Vec<(u64, usize)>,
     atomic_rmws: usize,
 }
 
@@ -1907,6 +1907,7 @@ impl DataMemory {
             absent: std::collections::BTreeSet::new(),
             writes: Vec::new(),
             reads: 0,
+            read_widths: Vec::new(),
             atomic_rmws: 0,
         }
     }
@@ -1959,6 +1960,7 @@ impl GuestMemory for DataMemory {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         self.reads += 1;
+        self.read_widths.push((address, destination.len()));
         for (index, byte) in destination.iter_mut().enumerate() {
             let at = address + index as u64;
             if self.absent.contains(&at) {
@@ -1979,6 +1981,44 @@ impl GuestMemory for DataMemory {
                 })?;
         }
         Ok(())
+    }
+
+    fn read_integer_for_write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+    ) -> Result<u64, MemoryError> {
+        let length = usize::from(size.bytes());
+        self.reads += 1;
+        self.read_widths.push((address, length));
+        for index in 0..length {
+            let at = address + index as u64;
+            if self.absent.contains(&at) {
+                return Err(Self::not_present_fault(AccessKind::Write, context, at));
+            }
+            if self.supervisor.contains_key(&at)
+                && context.page_privilege() == PrivilegeLevel::Ring3
+            {
+                return Err(Self::page_fault(AccessKind::Write, context, at));
+            }
+            if !self.user.contains_key(&at) && !self.supervisor.contains_key(&at) {
+                return Err(MemoryError::Unmapped {
+                    address: at,
+                    access: AccessKind::Write,
+                });
+            }
+        }
+        let mut bytes = [0u8; 8];
+        for (index, byte) in bytes[..length].iter_mut().enumerate() {
+            let at = address + index as u64;
+            *byte = *self
+                .user
+                .get(&at)
+                .or_else(|| self.supervisor.get(&at))
+                .unwrap();
+        }
+        Ok(u64::from_le_bytes(bytes))
     }
 
     fn write(
@@ -3850,7 +3890,6 @@ fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
             &[0x66, 0x83, 0x3b, 0x01],
             0x83,
         ),
-        ("39 03 cmpl %eax, (%rbx)", &[0x39, 0x03], 0x39),
         (
             "67 48 39 03 cmpq %rax, (%ebx)",
             &[0x67, 0x48, 0x39, 0x03],
@@ -8017,4 +8056,212 @@ fn cpl3_indirect_call_checks_user_memory_before_pushing_return_address() {
             );
         }
     }
+}
+
+#[test]
+fn cpl3_issue571_scalar_glibc_forms_are_bounded() {
+    // CMP dword [rdi+8], eax: one read, no store, dword flags and full RAX preserved.
+    let code = [0x39, 0x47, 0x08];
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.gpr[Register::Rax as usize] = 0xfeed_face_8000_0000;
+    state.gpr[Register::Rbx as usize] = 0x1122_3344_5566_7788;
+    state.rflags |= ARITH;
+    let preserved_flags = state.rflags & !ARITH;
+    let mut memory = DataMemory::new(&code);
+    for (i, b) in 0x7fff_ffffu32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + 8 + i as u64, b);
+    }
+    let before_rax = state.gpr[Register::Rax as usize];
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.gpr[Register::Rax as usize], before_rax);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x1122_3344_5566_7788);
+    assert_eq!(state.rflags, preserved_flags | CF | PF | SF | OF);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_widths, [(DATA + 8, 4)]);
+
+    // ADD dword [rdi+12], 1; the upper bytes of RDI are used for addressing.
+    let code = [0x83, 0x47, 0x0c, 0x01];
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = 0x0000_7fff_ffff_0000;
+    let address = state.gpr[Register::Rdi as usize] + 12;
+    let mut memory = DataMemory::new(&code);
+    for (i, b) in 0xffff_ffffu32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(address + i as u64, b);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_widths, [(address, 4)]);
+    assert_eq!(
+        memory.writes,
+        (address..address + 4).map(|a| (a, 0)).collect::<Vec<_>>()
+    );
+    assert_ne!(state.rflags & ZF, 0);
+
+    // SHL RAX, 4: the qword form zeroes no unrelated registers and preserves the source's full width.
+    let code = [0x48, 0xc1, 0xe0, 0x04];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0x0123_4567_89ab_cdef;
+    state.gpr[Register::Rbx as usize] = 0xfedc_ba98_7654_3210;
+    let result = run3_data(&mut state, &mut DataMemory::new(&code), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_def0);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0xfedc_ba98_7654_3210);
+}
+
+#[test]
+fn cpl3_issue571_memory_add_uses_write_fault_before_read_or_state_commit() {
+    let code = [0x83, 0x47, 0x0c, 0x01]; // ADD dword [rdi+12], 1
+    let address = DATA + 12;
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.rflags |= ARITH;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for (i, byte) in 0x1234_5678u32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_supervisor(address + i as u64, byte);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7), // present, write, user
+            linear_address: Some(address),
+        })
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_widths, [(address, 4)]);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_issue571_movdqa_uses_aligned_memory_and_guest_fp_state() {
+    // Pinned BusyBox bytes at 0x4398e9: MOVDQA xmm1, [RIP+0x19427f].
+    let code = [0x66, 0x0f, 0x6f, 0x0d, 0x7f, 0x42, 0x19, 0x00];
+    let target = 0x005c_db70;
+    let mut state = user_state();
+    state.rip = 0x0043_98e9;
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    let mut expected = state.clone();
+    expected.rip += code.len() as u64;
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[1] = [0xa5; 16];
+    let fp = std::cell::RefCell::new(initial_fp.clone());
+    let value = [
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x00,
+    ];
+    let mut memory = DataMemory::new(&code);
+    memory.code_base = state.rip;
+    for (i, b) in value.into_iter().enumerate() {
+        memory = memory.with_user(target + i as u64, b);
+    }
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state, expected);
+    assert_eq!(fp.borrow().sse.xmm[1], value);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_widths, [(target, 16)]);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_issue571_movdqa_alignment_fault_precedes_memory_read() {
+    let code = [0x66, 0x0f, 0x6f, 0x0f]; // MOVDQA xmm1, [rdi]
+    for address in [DATA + 1, u64::MAX - 7] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rdi as usize] = address;
+        let before = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(&code);
+        if address == DATA + 1 {
+            for offset in 0..16 {
+                memory = memory.with_user(address + offset, 0x55);
+            }
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_issue571_neighboring_6f_and_7e_spellings_are_typed_unsupported() {
+    for code in [
+        &[0x0f, 0x6f, 0x07][..],       // unprefixed MOVQ form
+        &[0x66, 0x0f, 0x6f, 0xc0][..], // MOVDQA register form outside this memory slice
+        &[0x66, 0x0f, 0x7e, 0x07][..], // legacy MOVD/MOVQ store direction
+        &[0x0f, 0x7e, 0x07][..],
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        let before = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported {
+                opcode: if code.contains(&0x6f) { 0x6f } else { 0x7e }
+            }
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_issue571_cmp_dword_memory_fault_preserves_flags_and_rip() {
+    let code = [0x39, 0x47, 0x08];
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.gpr[Register::Rax as usize] = 0xdead_beef_8000_0000;
+    state.rflags |= ARITH;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..4 {
+        memory = memory.with_supervisor(DATA + 8 + offset, 0x55);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(DATA + 8),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.read_widths, [(DATA + 8, 4)]);
+    assert!(memory.writes.is_empty());
 }

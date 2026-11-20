@@ -1406,9 +1406,32 @@ pub(crate) fn translate_long64_2m_ram_write_check_with_fault_trace(
     instruction_rip: u64,
     address: GuestLinearAddress,
     context: AccessContext,
-    mut committed_write: impl FnMut(GuestPhysicalRange),
+    committed_write: impl FnMut(GuestPhysicalRange),
     fault_trace: Option<&mut Option<WalkTrace>>,
 ) -> Result<(), TrackedAccessError> {
+    translate_long64_2m_ram_write_span_check_with_fault_trace(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        1,
+        context,
+        committed_write,
+        fault_trace,
+    )
+    .map(|_| ())
+}
+
+pub(crate) fn translate_long64_2m_ram_write_span_check_with_fault_trace(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    length: u64,
+    context: AccessContext,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+    fault_trace: Option<&mut Option<WalkTrace>>,
+) -> Result<GuestPhysicalAddress, TrackedAccessError> {
     let walk = walk_long64_4k_with_writer(
         memory,
         paging,
@@ -1428,8 +1451,8 @@ pub(crate) fn translate_long64_2m_ram_write_check_with_fault_trace(
         }
     };
     let physical = translation.physical;
-    match memory.locate_region_kind(physical, 1) {
-        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
+    match memory.locate_region_kind(physical, length) {
+        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(physical),
         Ok(MemoryRegionKind::Mmio) => {
             Err(TrackedAccessError::DeviceUnavailable { address: physical })
         }

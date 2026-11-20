@@ -243,6 +243,21 @@ pub trait GuestMemory {
         source: &[u8],
     ) -> Result<(), MemoryError>;
 
+    /// Reads an integer destination only after validating its complete range for a guest write.
+    /// Memory read-modify-write instructions use this to report write-protection faults before
+    /// reading a read-only destination. Backends must validate all translated spans before
+    /// returning data; unsupported backends refuse instead of falling back to a read-first path.
+    fn read_integer_for_write(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: crate::OperandSize,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend(
+            "write-intent integer read is unsupported".into(),
+        ))
+    }
+
     /// Checks whether a delayed descriptor Accessed-bit write can safely
     /// follow the supplied frame writes. Implementations must account for
     /// aliases and translation metadata, preserving earlier access failures.

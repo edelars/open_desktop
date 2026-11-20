@@ -1980,6 +1980,11 @@ pub enum Operation {
         destination: u8,
         source: MemoryOperand,
     },
+    /// Legacy 66 0F 6F MOVDQA from aligned m128 into XMM.
+    MovdqaLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
     MovupsStoreMemory {
         destination: MemoryOperand,
         source: u8,
@@ -5979,6 +5984,31 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source,
                 }
             }
+            (OpcodeMap::Escape0f, 0x6f) => {
+                let legacy_66_load = prefix_count >= 1
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.operand_override
+                    && prefixes.group1.is_none()
+                    && prefixes.segment.is_none()
+                    && !prefixes.address_override
+                    && (prefix_count == 1 && prefixes.rex.is_none()
+                        || prefix_count == 2 && prefixes.rex == Some(prefix_bytes[1]));
+                if !legacy_66_load {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                size = OperandSize::Qword;
+                let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                Operation::MovdqaLoadMemory {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source,
+                }
+            }
             (OpcodeMap::Escape0f, 0x7e) if f3_xmm_load => {
                 let modrm = self.byte()?;
                 size = OperandSize::Qword;
@@ -5991,6 +6021,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source,
                 }
             }
+            (OpcodeMap::Escape0f, 0x7e) => return Err(self.unsupported(opcode)),
             (OpcodeMap::Escape0f, 0x6e | 0xd6) => {
                 if prefix_bytes[0] != 0x66
                     || !(prefix_count == 1
