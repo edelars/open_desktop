@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod authenticated;
+mod image;
 mod provision;
 
 pub const NVRAM_MMIO_BASE: u64 = 0xff00_0000;
@@ -24,6 +25,9 @@ const READ: u32 = 1;
 const WRITE: u32 = 2;
 const FLUSH: u32 = 3;
 const AUTH_UPDATE: u32 = 4;
+const IMAGE_BEGIN: u32 = 5;
+const IMAGE_CHUNK: u32 = 6;
+const IMAGE_VERIFY: u32 = 7;
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"ODNVBANK";
 const SNAPSHOT_HEADER_BYTES: usize = 16;
@@ -219,6 +223,9 @@ enum Status {
     ReadReady = 1,
     WriteReady = 2,
     Committed = 3,
+    ImageCollecting = 4,
+    ImageAuthorized = 5,
+    ImagePolicyDisabled = 6,
     InvalidRange = 0x8000_0001,
     Incomplete = 0x8000_0002,
     InvalidCommand = 0x8000_0003,
@@ -228,11 +235,12 @@ enum Status {
     OutOfResources = 0x8000_0007,
 }
 
-#[derive(Clone, Copy)]
 enum Transfer {
     Idle,
     Read { start: usize, end: usize },
     Write { length: usize, written: usize },
+    ImageUpload(image::Upload),
+    ImageAuthority(Vec<u8>),
 }
 
 struct State {
@@ -249,8 +257,10 @@ impl State {
         validate_access(access)?;
         let offset = access.offset;
         if offset < REGISTERS {
-            let Transfer::Read { start, end } = self.transfer else {
-                return Err(DeviceError::Busy);
+            let (data, start, end) = match &self.transfer {
+                Transfer::Read { start, end } => (self.banks.current().data(), *start, *end),
+                Transfer::ImageAuthority(bytes) => (&bytes[..], 0, bytes.len()),
+                _ => return Err(DeviceError::Busy),
             };
             let offset = offset as usize;
             let length = access.width.bytes() as usize;
@@ -258,7 +268,7 @@ impl State {
                 return Err(DeviceError::UnknownOffset);
             }
             let mut value = [0; 8];
-            value[..length].copy_from_slice(&self.banks.current().data[offset..offset + length]);
+            value[..length].copy_from_slice(&data[offset..offset + length]);
             return Ok(u64::from_le_bytes(value));
         }
         match offset {
@@ -275,6 +285,10 @@ impl State {
         validate_access(access)?;
         let offset = access.offset;
         if offset < REGISTERS {
+            if let Transfer::ImageUpload(upload) = &mut self.transfer {
+                let width = access.width.bytes() as usize;
+                return upload.write(offset as usize, &value.to_le_bytes()[..width]);
+            }
             let Transfer::Write { length, written } = self.transfer else {
                 return Err(DeviceError::ReadOnly);
             };
@@ -337,6 +351,9 @@ impl State {
                 }
                 _ => Status::Incomplete,
             },
+            IMAGE_BEGIN | IMAGE_CHUNK | IMAGE_VERIFY if self.staging.is_some() => {
+                self.image_command(code, previous)
+            }
             _ => Status::InvalidCommand,
         };
     }
@@ -670,6 +687,99 @@ mod tests {
         image.truncate(length);
         Image::write_header(&mut image, flags).unwrap();
         image
+    }
+
+    #[test]
+    fn image_upload_requires_complete_consecutive_chunks_without_writing_banks() {
+        let mut device =
+            NvramDevice::with_protected_store(&protected_image(DEFAULT_FLAGS, &[])).unwrap();
+        let snapshot = device.nvram_snapshot();
+        let total = NVRAM_STORE_BYTES + 3;
+        start(&mut device, IMAGE_BEGIN, 0, total);
+        status(&mut device, Status::ImageCollecting);
+        start(&mut device, IMAGE_CHUNK, 0, NVRAM_STORE_BYTES);
+        status(&mut device, Status::WriteReady);
+        assert!(matches!(
+            device.write(access(8, AccessWidth::Qword), 0),
+            Err(DeviceError::UnknownOffset)
+        ));
+        for offset in (0..NVRAM_STORE_BYTES).step_by(8) {
+            device
+                .write(access(offset as u64, AccessWidth::Qword), offset as u64)
+                .unwrap();
+        }
+        start(&mut device, IMAGE_CHUNK, NVRAM_STORE_BYTES as u32, 3);
+        status(&mut device, Status::WriteReady);
+        device.write(access(0, AccessWidth::Word), 0x1234).unwrap();
+        device.write(access(2, AccessWidth::Byte), 0x56).unwrap();
+        start(&mut device, IMAGE_VERIFY, 0, 0);
+        status(&mut device, Status::ImagePolicyDisabled);
+        assert!(matches!(
+            device.read(access(0, AccessWidth::Byte)),
+            Err(DeviceError::Busy)
+        ));
+
+        for (offset, expected) in [(0, Status::Incomplete), (1, Status::InvalidRange)] {
+            start(&mut device, IMAGE_BEGIN, 0, 4);
+            status(&mut device, Status::ImageCollecting);
+            start(&mut device, IMAGE_CHUNK, offset, 4);
+            if offset == 0 {
+                status(&mut device, Status::WriteReady);
+                device.write(access(0, AccessWidth::Word), 0).unwrap();
+                start(&mut device, IMAGE_CHUNK, 2, 2);
+            }
+            status(&mut device, expected);
+            start(&mut device, IMAGE_VERIFY, 0, 0);
+            status(&mut device, Status::Incomplete);
+        }
+        start(&mut device, IMAGE_BEGIN, 0, 64 * 1024 * 1024 + 1);
+        status(&mut device, Status::InvalidRange);
+        assert_eq!(device.nvram_snapshot(), snapshot);
+    }
+
+    #[test]
+    fn image_verification_uses_protected_mode_and_drops_inflight_state_on_other_commands() {
+        let pk = esl(
+            od_uefi_security::siglist::SignatureType::X509,
+            include_bytes!("../../../tests/fixtures/firmware/certs/windows-uefi-ca-2023.der"),
+        );
+        let records = [protected_record(GLOBAL_VARIABLE, b"P\0K\0", &pk)];
+        for (disabled, expected) in [
+            (false, Status::PolicyRejected),
+            (true, Status::ImagePolicyDisabled),
+        ] {
+            let flags = Flags {
+                secure_boot_disabled: disabled,
+                ..DEFAULT_FLAGS
+            };
+            let mut device =
+                NvramDevice::with_protected_store(&protected_image(flags, &records)).unwrap();
+            let snapshot = device.nvram_snapshot();
+            for interrupt in [false, true] {
+                start(&mut device, IMAGE_BEGIN, 0, 1);
+                status(&mut device, Status::ImageCollecting);
+                start(&mut device, IMAGE_CHUNK, 0, 1);
+                status(&mut device, Status::WriteReady);
+                device.write(access(0, AccessWidth::Byte), 0).unwrap();
+                if interrupt {
+                    start(&mut device, READ, 0, 1);
+                    status(&mut device, Status::ReadReady);
+                }
+                start(&mut device, IMAGE_VERIFY, 0, 0);
+                status(
+                    &mut device,
+                    if interrupt {
+                        Status::Incomplete
+                    } else {
+                        expected
+                    },
+                );
+                assert_eq!(device.nvram_snapshot(), snapshot);
+            }
+        }
+        let mut legacy = NvramDevice::new();
+        start(&mut legacy, IMAGE_BEGIN, 0, 1);
+        status(&mut legacy, Status::InvalidCommand);
     }
 
     #[test]
