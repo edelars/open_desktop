@@ -393,7 +393,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-26. Включить UEFI variables как отдельного участника
 
-- [ ] Принято после ревью; нужна реализованная UEFI variable semantics этапа 7.
+- [ ] Принято после ревью.
+- **Контракт этапа 7 доступен для текущей реализации.** Снимок `ODNVBANK` v1/v2, API выдачи и приёма байтов, создание и холодный сброс защищённых ключей описаны в [контракте NVRAM](../specs/NVRAM_DEVICE.md#host-api). Завершение S7-24 и S7-33 отмечается в плане этапа 7.
 - **Где:** firmware state contract в `firmware/uefi/src/`, host persistence/container в `od-storage`, coordination `od-machine`.
 - **Сделать:** versioned variable store, attributes, authenticated-update metadata и trust policy согласно поддержанному профилю; capture immutable generation во время общего cut. Firmware остаётся отдельной guest-target сборкой.
 - **Проверить:** concurrent variable operation, partial save, wrong identity/version, rollback authenticated/trust state и зависимости от внешних anchors. Не переносить семантику variables в generic disk parser.
@@ -401,8 +402,9 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-27. Включить vTPM и определить security/rollback policy
 
-- [ ] Принято после архитектурного и независимого ревью; нужен собственный работающий vTPM.
-- **Где:** TPM state owner `od-machine`, persistent serialization `od-storage`, host key protection `od-host`.
+- [ ] Принято после архитектурного и независимого ревью.
+- **Контракт этапа 7 доступен для текущей реализации.** `ODTPMSTA` v3 содержит поля постоянного состояния действующего профиля. Полный PTP 1.07 и приёмка его передачи остаются в S7-23 и S7-33. [Контракт TPM](../specs/VTPM.md#host-api-и-persistence).
+- **Где:** состоянием TPM и кодеком `ODTPMSTA` владеет `od-tpm`. `od-machine` выдаёт и принимает эти байты. `od-storage` отвечает за контейнер, `od-host` — за защиту ключей.
 - **Сделать:** полный перечень persistent/volatile TPM state по profile, sessions/counters/keys и external anchors; согласованный capture с диском/UEFI. Определить confidentiality/access control для TPM secrets и RAM snapshots, ключевые зависимости и поведение при отсутствии host secret.
 - **Проверить:** mixed disk/TPM epochs, corrupted/protected state, wrong VM identity, unavailable key, counter rollback и restore на другой host в заявленных границах. Подготовить recovery encrypted guest; secrets не логировать.
 - **Готово локально:** policy честно различает coherent rollback, обнаружение rollback и доверие внешних систем; fresh TPM и восстановленный TPM — разные операции. Никакой anti-rollback гарантии из одной checksum.
