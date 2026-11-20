@@ -720,17 +720,16 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         pslot,
                         (spec.code, handles[i]),
                         |restriction| match restriction {
-                            PolicyHashRestriction::CpHash(expected) => cp.as_slice() == expected,
+                            PolicyHashRestriction::CpHash(expected) => cp == expected,
                             PolicyHashRestriction::NameHash(expected) => {
-                                command_names_hash(tpm, spec, &handles, alg).as_slice() == expected
+                                command_names_hash(tpm, spec, &handles, alg) == expected
                             }
                             PolicyHashRestriction::TemplateHash(expected) => {
                                 command_template_hash(spec.code, parameters, alg)
-                                    .is_some_and(|hash| hash.as_slice() == expected)
+                                    .is_some_and(|hash| hash == expected)
                             }
                             PolicyHashRestriction::ParametersHash(expected) => {
-                                command_parameters_hash(spec.code, parameters, alg).as_slice()
-                                    == expected
+                                command_parameters_hash(spec.code, parameters, alg) == expected
                             }
                         },
                         policy,
@@ -1047,7 +1046,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     if session.kind == SessionKind::Policy {
                         session.nonce_time = Some(nonce_time);
                         if i < needed {
-                            session.policy = PolicyState::new();
+                            session.policy = PolicyState::new(session.auth_hash);
                         }
                     }
                 }

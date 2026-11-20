@@ -4,7 +4,7 @@
 //! transcript below was computed from its inputs by Python and agrees with the TPM. The TPM
 //! entropy is fixed, so the `nonceTPM` values (and the Names of the sealed primaries) are inputs
 //! pinned here; if the use of the DRBG changes they drift and the vectors must be regenerated.
-//! Policy and trial sessions stay SHA-256 until step E.
+//! Policy and trial sessions follow the same hashes since step E (`tests_sha2_policy.rs`).
 
 use super::tests_b::{
     Hs, hc, hmac_auth_entry, set_auth, split_response, start_cmd, start_hmac, start_params,
@@ -892,12 +892,15 @@ fn auth_hash_unsupported_refused() {
             Rc::HASH.in_param(5),
         );
     }
-    // The policy digest of a policy or trial session is SHA-256 until step E.
+    // A policy or trial session takes the same hashes since step E, and no others.
     for kind in [se::POLICY, se::TRIAL] {
-        for wide in [alg::SHA384, alg::SHA512] {
-            err(&start_attempt(&mut t, kind, 32, wide), Rc::HASH.in_param(5));
+        for wide in [alg::SHA256, alg::SHA384, alg::SHA512] {
+            ok(&start_attempt(&mut t, kind, 32, wide));
         }
-        ok(&start_attempt(&mut t, kind, 32, alg::SHA256));
+        err(
+            &start_attempt(&mut t, kind, 32, 0x0027),
+            Rc::HASH.in_param(5),
+        );
     }
     // The nonce is at least 16 and at most one digest of the authHash.
     for (hash, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
@@ -913,7 +916,7 @@ fn auth_hash_unsupported_refused() {
         );
     }
     // Nothing but the accepted sessions was loaded.
-    assert_eq!(t.sessions.loaded(), 2 + 6);
+    assert_eq!(t.sessions.loaded(), 6 + 6);
 }
 
 #[test]

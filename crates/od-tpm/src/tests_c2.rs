@@ -951,7 +951,11 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
         t.policy_use_check(
             slot,
             (cc::SIGN, NULL),
-            |rule| rule == PolicyHashRestriction::CpHash(cp_hash),
+            |rule| {
+                rule == PolicyHashRestriction::CpHash(crate::crypto::TpmDigest::from_output(
+                    &cp_hash,
+                ))
+            },
             &second,
             false,
             1
@@ -962,7 +966,11 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
         t.policy_use_check(
             slot,
             (cc::SIGN, NULL),
-            |rule| rule == PolicyHashRestriction::CpHash([0x43; 32]),
+            |rule| {
+                rule == PolicyHashRestriction::CpHash(crate::crypto::TpmDigest::from_output(
+                    &[0x43; 32],
+                ))
+            },
             &second,
             false,
             1
@@ -5013,7 +5021,11 @@ fn saved_pcr_assertions_are_stale_after_counted_startup_resets() {
             t.policy_use_check(
                 slot,
                 (cc::SIGN, NULL),
-                |rule| rule == PolicyHashRestriction::CpHash([0; 32]),
+                |rule| {
+                    rule == PolicyHashRestriction::CpHash(crate::crypto::TpmDigest::from_output(
+                        &[0; 32],
+                    ))
+                },
                 &previous_digest,
                 false,
                 1

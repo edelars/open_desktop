@@ -3,8 +3,10 @@
 //!
 //! A policy session (`TPM_SE_POLICY`) or trial session (`TPM_SE_TRIAL`) is started by
 //! `TPM2_StartAuthSession` (`session.rs`) with a zero `policyDigest` (Part 3 v184, clause 11.1.1).
-//! SHA-256 is the only session hash. Most assertions extend the digest with
-//! `H(policyDigest || commandCode || data)`; PolicyOR and PolicyAuthorize start from zero.
+//! The session hash is the `authHash` of the session (SHA-256, SHA-384 or SHA-512): the policy
+//! digest, the operands, the cpHash, nameHash and PolicyPCR digests and every comparison with the
+//! `authPolicy` of an entity are one digest of that hash long. Most assertions extend the digest
+//! with `H(policyDigest || commandCode || data)`; PolicyOR and PolicyAuthorize start from zero.
 //! A trial session calculates the digest and cannot authorize (Part 3 §23.1).
 //! The context keeps one deferred restriction for cpHash, nameHash, templateHash, or pHash.
 //! `TPM2_PolicyRestart` resets the policy state and keeps the session nonce.
@@ -22,7 +24,10 @@
 //! with a policy session needs `TPM2_PolicyCommandCode` in the policy (Part 3, clause 5.6, step 6).
 //!
 //! A negative `PolicySecret` expiration can issue a reusable authorization ticket.
-//! `PolicyTicket` authenticates the ticket and reuses its original assertion.
+//! `PolicyTicket` authenticates the ticket and reuses its original assertion. The authorization
+//! tickets (PolicySecret, PolicySigned, PolicyTicket) and the verified tickets of PolicyAuthorize are
+//! HMAC-SHA-256 under the hierarchy proof whatever the hash of the session (as the context
+//! integrity values), so their format does not depend on the `authHash`.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the numbers of the
 //! handle and parameter modifiers of the codes below; `TPM_RC_VALUE` (handle 1/2) for a session
@@ -36,10 +41,10 @@
 //! of a session that needs the authValue; the response HMAC of a policy session with
 //! `isPasswordNeeded` (keyed with `sessionKey`).
 
-use sha2::{Digest, Sha256, Sha384};
+use sha2::{Digest, Sha256};
 
 use crate::codes::{alg, cc, handle, object_attr, st};
-use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify};
+use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash, hmac_sha256, hmac_sha256_verify};
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{
     PublicParams, Reader, Scheme, TpmlDigest, TpmlPcrSelection, TpmtSignature, TpmtTicket, Writer,
@@ -47,7 +52,7 @@ use crate::marshal::{
 };
 use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
-use crate::object_cmd::{VerifiedTicket, require_sha256_signature};
+use crate::object_cmd::VerifiedTicket;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::{Session, SessionKind};
@@ -55,12 +60,17 @@ use crate::state::{TimePoint, Tpm};
 
 /// The top bit of the private eight-octet timeout marks an assertion without nonceTPM.
 const RESET_BOUND_TIMEOUT: u64 = 1 << 63;
-const MAX_NAME_SIZE: usize = 2 + limits::MAX_PCR_DIGEST_SIZE;
+/// `TPM2B_NAME` limit: `sizeof(TPMU_NAME)`, which is `sizeof(TPMT_HA)` (Part 2, Table 80 `TPMU_NAME`
+/// and Table 81 `TPM2B_NAME`): the 2-octet algorithm identifier and the digest of the largest hash,
+/// SHA-512 (64 octets), so 66. A SHA-384 Name has 50 octets and a SHA-256 Name 34, both within it.
+const MAX_NAME_SIZE: usize = 2 + limits::MAX_HASH_SIZE;
 
-/// The policy context of a session (Part 1, clause 17.7.8) for the SHA-256 session hash.
+/// The policy context of a session (Part 1, clause 17.7.8) for the session hash `hash`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct PolicyState {
-    pub digest: [u8; DIGEST],
+    /// The `authHash` of the session: the size of every digest below and the hash of `extend`.
+    pub hash: HashAlg,
+    pub digest: TpmDigest,
     pub command_code: Option<u32>,
     pub hash_restriction: Option<PolicyHashRestriction>,
     /// Zero for unrestricted, 1..=31 for the locality mask, 32..=255 for an extended locality.
@@ -77,10 +87,10 @@ pub(crate) struct PolicyState {
 // The shared `Hash` postfix mirrors the TPM command names (CpHash, NameHash, ...); renaming would touch dispatch.rs, context.rs and tests_c2.rs.
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum PolicyHashRestriction {
-    CpHash([u8; DIGEST]),
-    NameHash([u8; DIGEST]),
-    TemplateHash([u8; DIGEST]),
-    ParametersHash([u8; DIGEST]),
+    CpHash(TpmDigest),
+    NameHash(TpmDigest),
+    TemplateHash(TpmDigest),
+    ParametersHash(TpmDigest),
 }
 
 /// TPM_EO operations on same-width, big-endian inputs.
@@ -150,9 +160,10 @@ struct ComparisonArgs<'a> {
 }
 
 impl<'a> ComparisonArgs<'a> {
-    fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
+    /// `limit` is the digest size of the session hash.
+    fn unmarshal(p: &mut Reader<'a>, limit: usize) -> Result<Self, Rc> {
         p.set_param(1);
-        let operand = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let operand = p.tpm2b(limit)?;
         p.set_param(2);
         let offset = p.u16()?;
         p.set_param(3);
@@ -167,12 +178,15 @@ impl<'a> ComparisonArgs<'a> {
         })
     }
 
-    fn digest(&self) -> [u8; DIGEST] {
-        let mut args = Sha256::new();
-        args.update(self.operand);
-        args.update(self.offset.to_be_bytes());
-        args.update(self.operation.to_be_bytes());
-        args.finalize().into()
+    fn digest(&self, alg: HashAlg) -> TpmDigest {
+        hash(
+            alg,
+            &[
+                self.operand,
+                &self.offset.to_be_bytes(),
+                &self.operation.to_be_bytes(),
+            ],
+        )
     }
 }
 
@@ -184,13 +198,14 @@ struct AuthorizationParameters<'a> {
 }
 
 impl<'a> AuthorizationParameters<'a> {
-    fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
+    /// `limit` is the digest size of the session hash.
+    fn unmarshal(p: &mut Reader<'a>, limit: usize) -> Result<Self, Rc> {
         p.set_param(1);
-        let nonce = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let nonce = p.tpm2b(limit)?;
         p.set_param(2);
-        let cp_hash = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let cp_hash = p.tpm2b(limit)?;
         p.set_param(3);
-        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let policy_ref = p.tpm2b(limit)?;
         p.set_param(4);
         let expiration = p.u32()? as i32;
         Ok(Self {
@@ -204,14 +219,16 @@ impl<'a> AuthorizationParameters<'a> {
 
 struct AuthorizationRestrictions {
     deadline: Option<TimePoint>,
-    cp_hash: Option<[u8; DIGEST]>,
+    cp_hash: Option<TpmDigest>,
 }
 
 impl PolicyState {
-    /// The initial state: a Zero Digest and no restriction.
-    pub(crate) fn new() -> PolicyState {
+    /// The initial state of a session of hash `hash`: a Zero Digest of its size and no
+    /// restriction.
+    pub(crate) fn new(hash: HashAlg) -> PolicyState {
         PolicyState {
-            digest: [0; DIGEST],
+            hash,
+            digest: TpmDigest::zeros(hash.size()),
             command_code: None,
             hash_restriction: None,
             command_locality: 0,
@@ -225,12 +242,16 @@ impl PolicyState {
 
     /// `policyDigest = H(policyDigest || parts...)` (Part 3, clauses 23.2.3 and 23.4-23.19).
     pub(crate) fn extend(&mut self, parts: &[&[u8]]) {
-        let mut h = Sha256::new();
-        h.update(self.digest);
-        for p in parts {
-            h.update(p);
-        }
-        self.digest = h.finalize().into();
+        let mut all: Vec<&[u8]> = Vec::with_capacity(parts.len() + 1);
+        all.push(self.digest.as_slice());
+        all.extend_from_slice(parts);
+        let next = hash(self.hash, &all);
+        self.digest = next;
+    }
+
+    /// The policyDigest returns to the Zero Digest (PolicyOR, PolicyAuthorize, PolicyAuthorizeNV).
+    fn reset_digest(&mut self) {
+        self.digest = TpmDigest::zeros(self.hash.size());
     }
 
     fn restrict_deadline(&mut self, limit: Option<TimePoint>) {
@@ -244,8 +265,8 @@ impl PolicyState {
         }
     }
 
-    fn restrict_cp_hash(&mut self, hash: [u8; DIGEST]) -> Result<(), Rc> {
-        let restriction = PolicyHashRestriction::CpHash(hash);
+    fn restrict_cp_hash(&mut self, cp_hash: TpmDigest) -> Result<(), Rc> {
+        let restriction = PolicyHashRestriction::CpHash(cp_hash);
         if self.hash_restriction.is_some_and(|old| old != restriction) {
             return Err(Rc::CPHASH);
         }
@@ -259,10 +280,10 @@ impl PolicyState {
         name: &[u8],
         policy_ref: &[u8],
         deadline: Option<TimePoint>,
-        cp_hash: Option<[u8; DIGEST]>,
+        cp_hash: Option<TpmDigest>,
     ) {
-        if let Some(hash) = cp_hash {
-            self.hash_restriction = Some(PolicyHashRestriction::CpHash(hash));
+        if let Some(cp_hash) = cp_hash {
+            self.hash_restriction = Some(PolicyHashRestriction::CpHash(cp_hash));
         }
         self.restrict_deadline(deadline);
         // PolicyUpdate (Part 3, §23.2.3) has two extensions, including an empty policyRef.
@@ -272,13 +293,40 @@ impl PolicyState {
 }
 
 /// SHA-256 over the values of the selected PCR in ascending index order (Part 1, "Selecting
-/// Multiple PCR"); the digest of the empty string when nothing is selected.
+/// Multiple PCR"); the digest of the empty string when nothing is selected. A quote or a creation
+/// record always uses SHA-256; `TPM2_PolicyPCR` uses the hash of its session instead.
 pub(crate) fn pcr_selection_digest(pcrs: &Pcrs, selection: &TpmlPcrSelection) -> [u8; DIGEST] {
     pcrs.selection_digest(selection)
         .unwrap_or_else(|| Sha256::digest([]).into())
 }
 
+/// The hash that digests the authorization message of `TPM2_PolicySigned` (the `sigHashAlg` of the
+/// signature, `None` for the null signature of a trial session). A SHA-256 signature is accepted
+/// by a session of any hash, as before hash agility; a SHA-384 or SHA-512 signature only by a
+/// session of the same hash, otherwise `TPM_RC_HASH` (the caller sets parameter 5).
+fn signature_hash(signature: &TpmtSignature, session: HashAlg) -> Result<Option<HashAlg>, Rc> {
+    match signature {
+        TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. } => {
+            match HashAlg::from_alg(*hash) {
+                Some(HashAlg::Sha256) => Ok(Some(HashAlg::Sha256)),
+                Some(wide) if wide == session => Ok(Some(wide)),
+                _ => Err(Rc::HASH),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 impl Tpm {
+    /// The `authHash` of the session `h`, SHA-256 for a handle that is not a loaded session: the
+    /// command then fails on its handle after its parameters were unmarshaled, as it always did.
+    fn session_hash(&self, h: u32) -> HashAlg {
+        self.sessions
+            .slot_of(h)
+            .and_then(|slot| self.sessions.get(slot))
+            .map_or(HashAlg::Sha256, |session| session.auth_hash)
+    }
+
     /// `TPMI_SH_POLICY` validity of handle number `idx` (zero-based) of a command: a loaded policy
     /// or trial session.
     pub(crate) fn check_policy_session(
@@ -315,7 +363,7 @@ impl Tpm {
         p.finish()?;
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, _) = self.policy_mut(slot)?;
-        *state = PolicyState::new();
+        *state = PolicyState::new(state.hash);
         Ok(Output::default())
     }
 
@@ -325,7 +373,8 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        let args = ComparisonArgs::unmarshal(p)?;
+        let alg = self.session_hash(inv.handles[0]);
+        let args = ComparisonArgs::unmarshal(p, alg.size())?;
 
         let slot = self.policy_slot(inv.handles[0])?;
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
@@ -365,7 +414,10 @@ impl Tpm {
         }
         let (state, _) = self.policy_mut(slot)?;
         state.restrict_deadline(deadline);
-        state.extend(&[&cc::POLICY_COUNTER_TIMER.to_be_bytes(), &args.digest()]);
+        state.extend(&[
+            &cc::POLICY_COUNTER_TIMER.to_be_bytes(),
+            args.digest(alg).as_slice(),
+        ]);
         Ok(Output::default())
     }
 
@@ -389,7 +441,8 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        let args = ComparisonArgs::unmarshal(p)?;
+        let alg = self.session_hash(inv.handles[2]);
+        let args = ComparisonArgs::unmarshal(p, alg.size())?;
         let (slot, kind, index) = self.nv_policy_input(inv)?;
         if kind != SessionKind::Trial {
             let offset = usize::from(args.offset);
@@ -403,7 +456,11 @@ impl Tpm {
         }
         let name = index.name();
         let (state, _) = self.policy_mut(slot)?;
-        state.extend(&[&cc::POLICY_NV.to_be_bytes(), &args.digest(), &name]);
+        state.extend(&[
+            &cc::POLICY_NV.to_be_bytes(),
+            args.digest(alg).as_slice(),
+            &name,
+        ]);
         Ok(Output::default())
     }
 
@@ -417,20 +474,23 @@ impl Tpm {
         p.finish()?;
         let (slot, kind, index) = self.nv_policy_input(inv)?;
         if kind != SessionKind::Trial {
+            let session = self.sessions.get(slot).ok_or(Rc::reference_handle(2))?;
+            let session_hash = session.auth_hash;
             let mut data = Reader::new(&index.data);
-            // SHA-256 is the only supported authHash for policy sessions.
-            if data.u16().map_err(|rc| rc.in_handle(2))? != alg::SHA256 {
+            // The `TPMT_HA` must carry the hash of the session: its digest is that long.
+            if data.u16().map_err(|rc| rc.in_handle(2))? != session_hash.alg() {
                 return Err(Rc::HASH.in_handle(2));
             }
-            let approved = data.bytes(DIGEST).map_err(|rc| rc.in_handle(2))?;
-            let session = self.sessions.get(slot).ok_or(Rc::reference_handle(2))?;
-            if approved != session.policy.digest {
+            let approved = data
+                .bytes(session_hash.size())
+                .map_err(|rc| rc.in_handle(2))?;
+            if approved != session.policy.digest.as_slice() {
                 return Err(Rc::VALUE.in_handle(2));
             }
         }
         let name = index.name();
         let (state, _) = self.policy_mut(slot)?;
-        state.digest = [0; DIGEST];
+        state.reset_digest();
         state.extend(&[&cc::POLICY_AUTHORIZE_NV.to_be_bytes(), &name]);
         Ok(Output::default())
     }
@@ -467,12 +527,17 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        // pcrDigest is one digest of the session hash (the size limit) or empty.
+        let alg = self.session_hash(inv.handles[0]);
         p.set_param(1);
-        let pcr_digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let pcr_digest = p.tpm2b(alg.size())?;
         p.set_param(2);
         let mut pcrs = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
         let (slot, kind) = self.check_policy_session(inv.handles[0], 0)?;
+        if !pcr_digest.is_empty() && pcr_digest.len() != alg.size() {
+            return Err(Rc::VALUE.in_param(1));
+        }
         if kind == SessionKind::Policy {
             self.pcrs.filter_selection(&mut pcrs);
         }
@@ -481,8 +546,13 @@ impl Tpm {
             // A trial policy can target a different allocation. Keep the original selectors.
             pcr_digest
         } else {
-            current = pcr_selection_digest(&self.pcrs, &pcrs);
-            &current
+            // The PCR values come from the selected banks (SHA-256 or SHA-384) and are hashed
+            // with the hash of the session.
+            current = self
+                .pcrs
+                .selection_digest_with(alg, &pcrs)
+                .unwrap_or_else(|| hash(alg, &[]));
+            current.as_slice()
         };
         let counter = self.pcrs.update_counter();
         let (state, _) = self.policy_mut(slot)?;
@@ -509,17 +579,23 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let list = TpmlDigest::unmarshal_with_limit(p, limits::MAX_DIGEST_SIZE)?;
+        let alg = self.session_hash(inv.handles[0]);
+        let list = TpmlDigest::unmarshal_with_limit(p, alg.size())?;
         p.finish()?;
         if list.digests.len() < 2 {
             return Err(Rc::SIZE.in_param(1));
         }
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, kind) = self.policy_mut(slot)?;
-        if kind == SessionKind::Policy && !list.digests.iter().any(|d| d[..] == state.digest[..]) {
+        if kind == SessionKind::Policy
+            && !list
+                .digests
+                .iter()
+                .any(|d| d.as_slice() == state.digest.as_slice())
+        {
             return Err(Rc::VALUE.in_param(1));
         }
-        state.digest = [0; DIGEST];
+        state.reset_digest();
         let joined = list.digests.concat();
         state.extend(&[&cc::POLICY_OR.to_be_bytes(), &joined]);
         Ok(Output::default())
@@ -572,18 +648,17 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        let alg = self.session_hash(inv.handles[0]);
         p.set_param(1);
-        let cp_hash: [u8; DIGEST] = p
-            .tpm2b(limits::MAX_DIGEST_SIZE)?
-            .try_into()
-            .map_err(|_| Rc::SIZE.in_param(1))?;
+        let cp_hash =
+            TpmDigest::exact(p.tpm2b(alg.size())?, alg.size()).ok_or(Rc::SIZE.in_param(1))?;
         p.finish()?;
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, kind) = self.policy_mut(slot)?;
         if kind == SessionKind::Policy {
             state.restrict_cp_hash(cp_hash)?;
         }
-        state.extend(&[&cc::POLICY_CP_HASH.to_be_bytes(), &cp_hash]);
+        state.extend(&[&cc::POLICY_CP_HASH.to_be_bytes(), cp_hash.as_slice()]);
         Ok(Output::default())
     }
 
@@ -613,10 +688,8 @@ impl Tpm {
             if state.command_code.is_some_and(|code| code != cc::DUPLICATE) {
                 return Err(Rc::POLICY_CC);
             }
-            let mut hash = Sha256::new();
-            hash.update(object_name);
-            hash.update(parent_name);
-            state.hash_restriction = Some(PolicyHashRestriction::NameHash(hash.finalize().into()));
+            let names = hash(state.hash, &[object_name, parent_name]);
+            state.hash_restriction = Some(PolicyHashRestriction::NameHash(names));
             state.command_code = Some(cc::DUPLICATE);
         }
         let selected_object = if include == 1 { object_name } else { &[] };
@@ -637,8 +710,9 @@ impl Tpm {
         p: &mut Reader<'_>,
         code: u32,
     ) -> Result<Output, Rc> {
+        let alg = self.session_hash(inv.handles[0]);
         p.set_param(1);
-        let input = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let input = p.tpm2b(alg.size())?;
         p.finish()?;
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, kind) = self.policy_mut(slot)?;
@@ -647,13 +721,13 @@ impl Tpm {
         {
             if let (cc::POLICY_TEMPLATE, PolicyHashRestriction::TemplateHash(old)) =
                 (code, existing)
-                && old != input
+                && old.as_slice() != input
             {
                 return Err(Rc::VALUE.in_param(1));
             }
             return Err(Rc::CPHASH);
         }
-        let digest: [u8; DIGEST] = input.try_into().map_err(|_| Rc::SIZE.in_param(1))?;
+        let digest = TpmDigest::exact(input, alg.size()).ok_or(Rc::SIZE.in_param(1))?;
         let restriction = match code {
             cc::POLICY_NAME_HASH => PolicyHashRestriction::NameHash(digest),
             cc::POLICY_TEMPLATE => PolicyHashRestriction::TemplateHash(digest),
@@ -663,7 +737,7 @@ impl Tpm {
         if kind == SessionKind::Policy {
             state.hash_restriction = Some(restriction);
         }
-        state.extend(&[&code.to_be_bytes(), &digest]);
+        state.extend(&[&code.to_be_bytes(), digest.as_slice()]);
         Ok(Output::default())
     }
 
@@ -706,7 +780,7 @@ impl Tpm {
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, _) = self.policy_mut(slot)?;
         let mut w = Writer::new();
-        w.tpm2b(&state.digest);
+        w.tpm2b(state.digest.as_slice());
         Ok(Output {
             handles: Vec::new(),
             params: w.finish(),
@@ -721,7 +795,8 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        let parameters = AuthorizationParameters::unmarshal(p)?;
+        let alg = self.session_hash(inv.handles[1]);
+        let parameters = AuthorizationParameters::unmarshal(p, alg.size())?;
         p.finish()?;
         let slot = self.policy_slot(inv.handles[1])?;
         let name = handle_name(self, inv.handles[0]);
@@ -756,11 +831,12 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        let parameters = AuthorizationParameters::unmarshal(p)?;
+        let alg = self.session_hash(inv.handles[1]);
+        let parameters = AuthorizationParameters::unmarshal(p, alg.size())?;
         p.set_param(5);
         let signature = TpmtSignature::unmarshal_optional(p)?;
-        // The signed message is a SHA-256 digest: a signature over another hash is TPM_RC_HASH.
-        require_sha256_signature(&signature, 5)?;
+        // The signed message is hashed with the hash of the signature; see `signature_hash`.
+        let sig_hash = signature_hash(&signature, alg).map_err(|rc| rc.in_param(5))?;
         p.finish()?;
 
         let slot = self.policy_slot(inv.handles[1])?;
@@ -788,14 +864,20 @@ impl Tpm {
             if !key.has(object_attr::SIGN) || (fixed != Scheme::NULL && fixed != supplied) {
                 return Err(Rc::POLICY_FAIL);
             }
-            // The authorization message is hashed with SHA-256 (the guard above rejects signatures
-            // labelled with another hash); the message uses no TPM2B lengths.
-            let mut h = Sha256::new();
-            h.update(parameters.nonce);
-            h.update(parameters.expiration.to_be_bytes());
-            h.update(parameters.cp_hash);
-            h.update(parameters.policy_ref);
-            if !key.verify_signature(&h.finalize(), &signature) {
+            // aHash = H_sigHash(nonceTPM || expiration || cpHashA || policyRef); the message uses no
+            // TPM2B lengths. A real session always has a signature here (the match above refuses
+            // the null one).
+            let sig_hash = sig_hash.ok_or(Rc::POLICY_FAIL)?;
+            let a_hash = hash(
+                sig_hash,
+                &[
+                    parameters.nonce,
+                    &parameters.expiration.to_be_bytes(),
+                    parameters.cp_hash,
+                    parameters.policy_ref,
+                ],
+            );
+            if !key.verify_signature(a_hash.as_slice(), &signature) {
                 return Err(Rc::POLICY_FAIL);
             }
         }
@@ -894,14 +976,16 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        let alg = self.session_hash(inv.handles[0]);
         p.set_param(1);
         let timeout = p.tpm2b(8)?;
         p.set_param(2);
-        let cp_hash_a = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let cp_hash_a = p.tpm2b(alg.size())?;
         p.set_param(3);
-        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let policy_ref = p.tpm2b(alg.size())?;
         p.set_param(4);
-        let name = p.tpm2b(2 + limits::MAX_DIGEST_SIZE)?;
+        // The Name of the authority can be that of a SHA-384 or SHA-512 object.
+        let name = p.tpm2b(MAX_NAME_SIZE)?;
         p.set_param(5);
         let tag = p.u16()?;
         let code = match tag {
@@ -1014,16 +1098,18 @@ impl Tpm {
     fn policy_assertion_cp_hash(
         state: &PolicyState,
         cp_hash: &[u8],
-    ) -> Result<Option<[u8; DIGEST]>, Rc> {
+    ) -> Result<Option<TpmDigest>, Rc> {
         if cp_hash.is_empty() {
             return Ok(None);
         }
-        if state.hash_restriction.is_some_and(
-            |restriction| !matches!(restriction, PolicyHashRestriction::CpHash(old) if old == cp_hash),
-        ) {
+        if state.hash_restriction.is_some_and(|restriction| {
+            !matches!(restriction, PolicyHashRestriction::CpHash(old) if old.as_slice() == cp_hash)
+        }) {
             return Err(Rc::CPHASH);
         }
-        Ok(Some(cp_hash.try_into().map_err(|_| Rc::SIZE.in_param(2))?))
+        Ok(Some(
+            TpmDigest::exact(cp_hash, state.hash.size()).ok_or(Rc::SIZE.in_param(2))?,
+        ))
     }
 
     /// `TPM2_PolicyAuthorize` with a legacy or digest verification ticket (Part 3 v185 §23.16).
@@ -1032,10 +1118,15 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        // A real session takes an approved policy of exactly one digest of its hash; a trial one
+        // may describe a policy of another TPM, so the wire limit of the two fields is at least one
+        // SHA-384 digest.
+        let alg = self.session_hash(inv.handles[0]);
+        let field_limit = alg.size().max(limits::MAX_PCR_DIGEST_SIZE);
         p.set_param(1);
-        let approved = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
+        let approved = p.tpm2b(field_limit)?;
         p.set_param(2);
-        let policy_ref = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
+        let policy_ref = p.tpm2b(field_limit)?;
         p.set_param(3);
         let key_name = p.tpm2b(MAX_NAME_SIZE)?;
         p.set_param(4);
@@ -1052,33 +1143,23 @@ impl Tpm {
         let slot = self.policy_slot(inv.handles[0])?;
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
         if session.kind == SessionKind::Policy {
-            if approved != session.policy.digest {
+            if approved != session.policy.digest.as_slice() {
                 return Err(Rc::VALUE.in_param(1));
             }
             let valid = match ticket.signed_hash_alg(name_alg) {
                 None => self.valid_verified_ticket(key_name, &[approved, policy_ref], &ticket),
-                Some(alg::SHA256) => {
-                    let signed = Sha256::new()
-                        .chain_update(approved)
-                        .chain_update(policy_ref)
-                        .finalize();
-                    self.valid_verified_ticket(key_name, &[&signed], &ticket)
+                Some(signed_alg) => {
+                    let signed_alg = HashAlg::from_alg(signed_alg).ok_or(Rc::HASH.in_param(4))?;
+                    let signed = hash(signed_alg, &[approved, policy_ref]);
+                    self.valid_verified_ticket(key_name, &[signed.as_slice()], &ticket)
                 }
-                Some(alg::SHA384) => {
-                    let signed = Sha384::new()
-                        .chain_update(approved)
-                        .chain_update(policy_ref)
-                        .finalize();
-                    self.valid_verified_ticket(key_name, &[&signed], &ticket)
-                }
-                _ => return Err(Rc::HASH.in_param(4)),
             };
             if !valid {
                 return Err(Rc::POLICY);
             }
         }
         let (state, _) = self.policy_mut(slot)?;
-        state.digest = [0; DIGEST];
+        state.reset_digest();
         state.extend(&[&cc::POLICY_AUTHORIZE.to_be_bytes(), key_name]);
         state.extend(&[policy_ref]);
         Ok(Output::default())
@@ -1123,7 +1204,7 @@ impl Tpm {
         {
             return Err(Rc::POLICY_CC.in_session(n));
         }
-        if st.digest[..] != *auth_policy {
+        if st.digest.as_slice() != auth_policy {
             return Err(Rc::POLICY_FAIL.in_session(n));
         }
         if let Some(c) = st.pcr_update_counter

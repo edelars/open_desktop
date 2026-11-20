@@ -13,6 +13,7 @@
 use sha2::{Digest, Sha256, Sha384};
 
 use crate::codes::{alg, handle};
+use crate::crypto::{HashAlg, TpmDigest, hash};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     Reader, TpmlDigest, TpmlDigestValues, TpmlPcrSelection, TpmsPcrSelection, TpmtHa, Writer,
@@ -332,19 +333,29 @@ impl Pcrs {
     /// SHA-256 over concatenated PCR values in selector order and PCR index order.
     /// No values produces an absent creation digest.
     pub(crate) fn selection_digest(&self, selection: &TpmlPcrSelection) -> Option<[u8; 32]> {
-        let mut hash = Sha256::new();
-        let mut any = false;
+        self.selection_digest_with(HashAlg::Sha256, selection)
+            .and_then(|digest| digest.as_slice().try_into().ok())
+    }
+
+    /// The digest of the selected PCR values with the hash `alg` (the `authHash` of a policy
+    /// session for `TPM2_PolicyPCR`), in the same order as [`Pcrs::selection_digest`]. The values
+    /// come from the banks of the selection (SHA-256 or SHA-384), whatever `alg` is.
+    pub(crate) fn selection_digest_with(
+        &self,
+        alg: HashAlg,
+        selection: &TpmlPcrSelection,
+    ) -> Option<TpmDigest> {
+        let mut values: Vec<&[u8]> = Vec::new();
         for bank in &selection.selections {
             for index in 0..limits::PCR_COUNT {
                 if bank.selects(index)
                     && let Some(value) = self.value(bank.hash, index)
                 {
-                    hash.update(value);
-                    any = true;
+                    values.push(value);
                 }
             }
         }
-        any.then(|| hash.finalize().into())
+        (!values.is_empty()).then(|| hash(alg, &values))
     }
 }
 

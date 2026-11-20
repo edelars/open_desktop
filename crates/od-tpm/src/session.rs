@@ -11,8 +11,9 @@
 //!   `sessionKey = KDFa(sessionAlg, authValue_bind, "ATH", nonceTPM, nonceCaller, bits)`
 //!   (Part 1, clause 17.6.10, Equation 20);
 //! - `authHash` SHA-256, SHA-384 or SHA-512 (hash agility, step D: `Session::auth_hash` selects the hash of
-//!   every HMAC, cpHash, rpHash, `KDFa` and audit digest of the session; a policy or trial session
-//!   stays SHA-256 until its policy digest follows the hash in step E, `TPM_RC_HASH` otherwise);
+//!   every HMAC, cpHash, rpHash, `KDFa` and audit digest of the session; since step E a policy or
+//!   trial session also takes SHA-256, SHA-384 or SHA-512 and its policy digest follows the hash, see
+//!   `policy.rs`; any other hash is `TPM_RC_HASH`);
 //!   `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
 //!   `paramenc.rs`: the attributes `decrypt`/`encrypt` need a symmetric algorithm, otherwise
 //!   `TPM_RC_SYMMETRIC`).
@@ -107,8 +108,8 @@ pub(crate) struct Session {
     pub nonce_tpm: Vec<u8>,
     /// Time when this nonce was generated, absent in older saved policy contexts.
     pub nonce_time: Option<TimePoint>,
-    /// `authHash` of `TPM2_StartAuthSession` (SHA-256, SHA-384 or SHA-512; a policy or trial session
-    /// is SHA-256 until step E).
+    /// `authHash` of `TPM2_StartAuthSession` (SHA-256, SHA-384 or SHA-512, for an HMAC, policy or
+    /// trial session alike).
     pub auth_hash: HashAlg,
     /// `sessionKey`: empty (unbound, unsalted) or one digest of `auth_hash`.
     pub key: AuthValue,
@@ -374,10 +375,6 @@ impl Tpm {
             se::TRIAL => SessionKind::Trial,
             _ => return Err(Rc::VALUE.in_param(3)),
         };
-        // The policy digest of a policy or trial session is SHA-256 until step E.
-        if kind.is_policy() && auth_alg != HashAlg::Sha256 {
-            return Err(Rc::HASH.in_param(5));
-        }
         if nonce_caller.len() > auth_alg.size() {
             return Err(Rc::SIZE.in_param(1));
         }
@@ -426,7 +423,7 @@ impl Tpm {
                     bind_da,
                     kind,
                     auth_hash: auth_alg,
-                    policy: PolicyState::new(),
+                    policy: PolicyState::new(auth_alg),
                     symmetric,
                     audit_digest: None,
                 },

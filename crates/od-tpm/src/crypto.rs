@@ -101,6 +101,20 @@ impl TpmDigest {
         }
     }
 
+    /// The Zero Digest of a hash of `len` octets (at most 64).
+    pub(crate) fn zeros(len: usize) -> TpmDigest {
+        assert!(len <= 64, "a digest holds at most 64 octets");
+        TpmDigest {
+            len,
+            bytes: [0; 64],
+        }
+    }
+
+    /// The digest held in `out`, only when it has exactly `len` octets.
+    pub(crate) fn exact(out: &[u8], len: usize) -> Option<TpmDigest> {
+        (out.len() == len).then(|| TpmDigest::from_output(out))
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
