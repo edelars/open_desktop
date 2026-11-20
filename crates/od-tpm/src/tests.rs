@@ -21,6 +21,8 @@ mod tests_c2;
 mod tests_c3;
 #[path = "tests_ek.rs"]
 mod tests_ek;
+#[path = "tests_mldsa.rs"]
+mod tests_mldsa;
 #[path = "tests_nv_props.rs"]
 mod tests_nv_props;
 #[path = "tests_obj.rs"]
@@ -916,7 +918,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
     let before = t.persistent_snapshot();
     for (encoded, error) in [
         ("0025", Rc::INSUFFICIENT), // SYMCIPHER (slice 5): the cipher is missing.
-        ("00a1", Rc::TYPE),         // ML-DSA is outside the implemented profile.
+        ("00a1", Rc::INSUFFICIENT), // ML-DSA (slice 7): the parameter set is missing.
+        ("00a2", Rc::TYPE),         // HashML-DSA (0x00A2) is not implemented.
         ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
         ("0001001000140027080000000000", Rc::HASH), // SHA3-256 is not implemented.
@@ -948,7 +951,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 18);
+    assert!(!more && c == cap::ALGS && count == 19);
     // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, SYMCIPHER, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
@@ -978,18 +981,22 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x25, 0, 0, 0, 8],
             &[0x00, 0x43, 0, 0, 2, 0],
             &[0x00, 0xA0, 0, 0, 0, 9],
+            // MLDSA "A O X" (slice 7); NOT VERIFIED: the bits are our reading of the registry.
+            &[0x00, 0xA1, 0, 0, 1, 9],
         ]
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 12);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 3);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x26, 100)).3, 2);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 13);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 4);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x26, 100)).3, 3);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 2);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA2, 100)).3, 0);
     let (_, _, sets, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x131, 1));
     assert_eq!(count, 1);
-    assert_eq!(sets, hex("0000013100000002"));
+    // mlKem_768 (bit 1), mlDsa_65 (bit 4) and extMu (bit 6).
+    assert_eq!(sets, hex("0000013100000052"));
 
     let r = get_cap(&mut t, cap::PCRS, 0, 100);
     let p = params(&r, 0);

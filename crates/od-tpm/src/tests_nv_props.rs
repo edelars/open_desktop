@@ -30,7 +30,9 @@ fn record(log: &mut Vec<u8>, response: Vec<u8>) -> Vec<u8> {
 
 /// A fixed scenario of what was implemented before slice 3 (NV types, PCR, capability lists other
 /// than `TPM_CAP_TPM_PROPERTIES`, `Shutdown`, snapshot, `Startup`): every response and both
-/// snapshots, hashed. The value was taken on commit fbb4f38 before slice 3.
+/// snapshots, hashed. The value was taken on commit fbb4f38 before slice 3 and pinned again for the
+/// ML-DSA entry of the algorithm list of slice 7 (the transcript was checked to give the old value
+/// with that entry removed).
 fn golden_transcript() -> String {
     let mut log = Vec::new();
     let mut t = started();
@@ -130,7 +132,7 @@ fn golden_transcript() -> String {
 fn sha256_golden_unchanged() {
     assert_eq!(
         golden_transcript(),
-        "7213c5cb8f83c555229cd431fb6b0212258dbce651d7a679bc04e845f3152770"
+        "ec98122de43fa7fc38867b3a9b648e80cf94aad728beac1d4f40b8ac2411d27d"
     );
 }
 
@@ -476,8 +478,9 @@ fn capability_table2_properties_match_behaviour() {
         (pt::CONTEXT_SYM, u32::from(alg::AES)),
         (pt::CONTEXT_SYM_SIZE, 128),
         (pt::ORDERLY_COUNT, 255),
-        (pt::MAX_OBJECT_CONTEXT, 2066),
-        (pt::MAX_SESSION_CONTEXT, 2066),
+        // 8 + 4 + 4 + 2 + 4096: the contextBlob limit was 2048 before the ML-DSA-65 objects (2.1 KiB).
+        (pt::MAX_OBJECT_CONTEXT, 4114),
+        (pt::MAX_SESSION_CONTEXT, 4114),
         (pt::SPLIT_MAX, 0),
         (pt::MODES, 0),
     ];

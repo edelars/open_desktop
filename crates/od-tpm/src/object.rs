@@ -25,6 +25,11 @@
 //! NOT VERIFIED: the order of the key and the seed value in the DRBG stream (the key first, as
 //! the numbered steps of clause 12.1.1 list them).
 //!
+//! **Slice 7.** An ML-DSA-65 object (`TPM_ALG_MLDSA`, `mldsa.rs`) is a signing key only: no seed value, no
+//! storage role, and the private value is the 32-octet seed xi of FIPS 204 (Part 2 v185, Table 211).
+//! `Objects::accepts` limits the loaded transient ML-DSA objects to [`MAX_LOADED_MLDSA`] (two), and
+//! `verify_mldsa_message` and `verify_mldsa_mu` check message and external-mu signatures.
+//!
 //! **Primary derivation** (Part 1 v184, clauses 25.6.3 and 25.7: "choice of the entropy generation
 //! for Primary Objects is a vendor option"). Our choice: `material = KDFa(SHA-256, seed, "ODTPM-
 //! PRIMARY", H(template), data, 384 bits)` seeds an HMAC_DRBG (`random.rs`); the seed value and
@@ -89,12 +94,18 @@ use crate::marshal::{
     MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, Scheme, SymDef, TpmsSensitiveCreate,
     TpmtPublic, TpmtSignature, Unique, Writer, limits,
 };
+use crate::mldsa::{self, MlDsaPrivate};
 use crate::pcr::Pcrs;
 use crate::random::Drbg;
 use crate::response::Rc;
 
 /// Transient objects held at once (other than sequence objects, which have their own slots).
 pub const MAX_OBJECTS: usize = 8;
+/// Loaded transient ML-DSA objects at one time. The profile requires at least two ML-DSA objects of the
+/// largest supported parameter set (Part 1 Table 2 as quoted in `VTPM.md`); a third `CreatePrimary`,
+/// `Load`, `LoadExternal` or `ContextLoad` is `TPM_RC_OBJECT_MEMORY` until one is flushed. Persistent
+/// objects do not count: they occupy no transient slot.
+pub const MAX_LOADED_MLDSA: usize = 2;
 /// Persistent objects held at once.
 pub const MAX_PERSISTENT: usize = 16;
 /// Largest `TPM2B_PRIVATE` accepted by `TPM2_Load`: an RSA-3072 storage key with a SHA-512 `nameAlg`
@@ -122,6 +133,8 @@ pub(crate) enum Secret {
     Rsa(Box<RsaPrivate>),
     Ecc(EccPrivate),
     MlKem(Box<KemPrivate>),
+    /// The ML-DSA-65 key; its private value is the 32-octet seed xi (Part 2, Table 211).
+    MlDsa(Box<MlDsaPrivate>),
     /// Sealed data.
     Data(Zeroizing<Vec<u8>>),
 }
@@ -212,6 +225,33 @@ impl Object {
             _ => false,
         }
     }
+
+    /// Verifies an ML-DSA signature over `message` under `context` (FIPS 204, Algorithm 3). A message
+    /// signature is no digest signature: `verify_signature` is false for it.
+    pub(crate) fn verify_mldsa_message(
+        &self,
+        message: &[u8],
+        context: &[u8],
+        signature: &TpmtSignature,
+    ) -> bool {
+        match (&self.public.unique, signature) {
+            (Unique::MlDsa(public), TpmtSignature::MlDsa { sig }) => {
+                mldsa::verify_message(public, message, context, sig)
+            }
+            _ => false,
+        }
+    }
+
+    /// Verifies an ML-DSA signature over an external mu of 64 octets.
+    pub(crate) fn verify_mldsa_mu(&self, mu: &[u8], signature: &TpmtSignature) -> bool {
+        match (&self.public.unique, signature) {
+            (Unique::MlDsa(public), TpmtSignature::MlDsa { sig }) => {
+                mldsa::verify_mu(public, mu, sig)
+            }
+            _ => false,
+        }
+    }
+
     /// Builds an object; `parent_qn` is the Qualified Name of the parent, or the hierarchy
     /// handle for a primary (Part 1, clause 24.5).
     pub(crate) fn new(
@@ -290,6 +330,20 @@ impl Objects {
         self.slots.iter().filter(|s| s.is_none()).count()
     }
 
+    /// Whether an object with the parameters `params` can be loaded now: a free slot and, for an
+    /// ML-DSA key, fewer than [`MAX_LOADED_MLDSA`] ML-DSA objects loaded.
+    pub(crate) fn accepts(&self, params: &PublicParams) -> bool {
+        self.free_slots() > 0
+            && (!matches!(params, PublicParams::MlDsa { .. })
+                || self
+                    .slots
+                    .iter()
+                    .flatten()
+                    .filter(|o| matches!(o.public.params, PublicParams::MlDsa { .. }))
+                    .count()
+                    < MAX_LOADED_MLDSA)
+    }
+
     pub(crate) fn loaded_handles(&self) -> Vec<u32> {
         (0..MAX_OBJECTS)
             .filter(|i| self.slots[*i].is_some())
@@ -303,6 +357,9 @@ impl Objects {
 
     /// Stores `o` in the lowest free slot and returns its handle; `None` when all slots are used.
     pub(crate) fn insert(&mut self, o: Object) -> Option<u32> {
+        if !self.accepts(&o.public.params) {
+            return None;
+        }
         let slot = self.slots.iter().position(Option::is_none)?;
         self.slots[slot] = Some(o);
         Some(object_handle(slot))
@@ -515,6 +572,21 @@ pub(crate) fn check_public(
             }
             check_symmetric(public, *symmetric)?;
         }
+        PublicParams::MlDsa {
+            allow_external_mu, ..
+        } => {
+            // An ML-DSA key only signs (Part 2, Table 233): `sign` SET and `decrypt` CLEAR. It has
+            // no storage cipher, and `x509sign` needs a certificate format that this profile does
+            // not define for it. `allowExternalMu` YES implies `restricted` CLEAR (Part 3, clause
+            // 20.1): a restricted key signs attestation structures only.
+            if !sign
+                || decrypt
+                || public.attributes & object_attr::X509_SIGN != 0
+                || (*allow_external_mu && restricted)
+            {
+                return Err(bad(Rc::ATTRIBUTES));
+            }
+        }
         PublicParams::SymCipher { symmetric } => {
             // A block cipher key encrypts (`sign`) and/or decrypts; neither is invalid (Part 3,
             // clause 12.1.1), a restricted one cannot do both (Part 2, clause 8.3.3.14) and a
@@ -667,6 +739,16 @@ pub(crate) fn derive_object(
             let unique = Unique::MlKem(kem::public_bytes(&key));
             (Secret::MlKem(Box::new(key)), unique, seed)
         }
+        PublicParams::MlDsa { .. } => {
+            // A signing key has no seed value; the key is the 32-octet seed xi.
+            let key = mldsa::generated_key(rng)?;
+            let unique = Unique::MlDsa(mldsa::public_bytes(&key));
+            (
+                Secret::MlDsa(Box::new(key)),
+                unique,
+                Zeroizing::new(Vec::new()),
+            )
+        }
         PublicParams::SymCipher { symmetric } => {
             // Part 3, clause 12.1.1 and Part 1, clause 24.7.5.1: the key first (generated, or
             // the caller's data padded with zero octets at the high-order end), then the
@@ -756,6 +838,7 @@ fn sensitive_with_auth(
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
         Secret::Ecc(k) => ecc_scalar(k),
         Secret::MlKem(k) => kem::private_seed(k)?,
+        Secret::MlDsa(k) => mldsa::private_seed(k),
         Secret::Data(d) => d.clone(),
     };
     // Reserved up front so that the secret is never copied by a reallocation.
@@ -892,6 +975,17 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
                 return Err(Rc::BINDING);
             }
             Secret::MlKem(Box::new(key))
+        }
+        PublicParams::MlDsa { .. } => {
+            let Unique::MlDsa(public_key) = &public.unique else {
+                return Err(Rc::BINDING);
+            };
+            // The private value is the seed xi of exactly 32 octets (Part 2, Table 211).
+            let key = mldsa::private_from_seed(&secret).map_err(|_| Rc::KEY_SIZE)?;
+            if mldsa::public_bytes(&key) != *public_key {
+                return Err(Rc::BINDING);
+            }
+            Secret::MlDsa(Box::new(key))
         }
         PublicParams::SymCipher { symmetric } => {
             // The key has exactly the size of the template's cipher (Part 3, clause 12.2.1: the
@@ -1142,6 +1236,11 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
         }
         (PublicParams::MlKem { .. }, Unique::MlKem(key)) => {
             if !kem::public_encoding_is_valid(key) {
+                return Err(bad(Rc::KEY));
+            }
+        }
+        (PublicParams::MlDsa { .. }, Unique::MlDsa(key)) => {
+            if !mldsa::public_encoding_is_valid(key) {
                 return Err(bad(Rc::KEY));
             }
         }

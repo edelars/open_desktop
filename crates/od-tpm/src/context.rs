@@ -80,8 +80,10 @@ use crate::response::{Output, Rc};
 use crate::session::{BoundEntity, MIN_NONCE, Session, SessionKind, session_handle};
 use crate::state::{TimePoint, Tpm};
 
-/// Largest `contextBlob` accepted by `TPM2_ContextLoad` (an RSA object context is under 1 KiB).
-const MAX_CONTEXT_BLOB: usize = 2048;
+/// Largest `contextBlob` accepted by `TPM2_ContextLoad`. An RSA-3072 object context is under 1.5 KiB;
+/// an ML-DSA-65 object context holds the public key of 1952 octets, the seed and the wrapper, about
+/// 2.1 KiB (it was 2048 before ML-DSA, which does not fit).
+const MAX_CONTEXT_BLOB: usize = 4096;
 
 /// The largest `TPMS_CONTEXT` that `TPM2_ContextLoad` takes: `sequence` (8), `savedHandle` (4),
 /// `hierarchy` (4) and the `TPM2B` `contextBlob` (2 + [`MAX_CONTEXT_BLOB`]). Reported as

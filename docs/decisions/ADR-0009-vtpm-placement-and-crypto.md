@@ -81,6 +81,7 @@
 | `rsa` | **Selected stable pin and current host implementation: `=0.10.0` (migration, API/feature compatibility checks, and independent review completed 2026-11-18).** | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, features `pkcs1v15`, `hazmat`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, features `pkcs1v15`, `encoding` (для разбора RSA public key в PKCS#1 при проверке сертификата) |
 | `p256` | `=0.14.0` | ECC NIST P-256: ECDSA, ECDH (`ECDH_ZGen`, KDFe) | host (S7-23) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `arithmetic`, `ecdsa`, `ecdh` | — |
 | `p384` | `=0.14.0` | ECC NIST P-384: ECDSA, ECDH (`ECDH_ZGen`, `ECDH_KeyGen`, KDFe) | host (S7-23, срез 6) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `ecdsa` (включает `arithmetic` и `sha384`) | — |
+| `ml-dsa` | `=0.1.2` | ML-DSA-65 (FIPS 204): `TPM_ALG_MLDSA`, подпись и проверка сообщения и внешнего mu, `SignDigest`, `VerifyDigestSignature`, последовательности, аттестация, `PolicySigned` | host (S7-23, срез 7) | да / да (`alloc` включён: ключи на куче, а не на стеке) | Apache-2.0 OR MIT | `default-features = false`, `alloc`, `zeroize` | — |
 | `ecdsa` | `=0.17.0` | общий ECDSA (подключается через `p256/ecdsa`; прямая зависимость — только если S7-23 нужна напрямую) | host | да / нет | Apache-2.0 OR MIT | `default-features = false`, `digest` | — |
 | `der` | `=0.8.3` | DER/ASN.1: разбор PKCS#7, X.509, `EFI_SIGNATURE_LIST` с X.509 | прошивка (S7-24); host — если понадобится | да / нет (`alloc` опционален; в firmware-наборе включён) | Apache-2.0 OR MIT | — | `default-features = false`, `alloc`, `oid` |
 | `x509-cert` | `=0.3.0` | структуры X.509 (сертификаты `db`/`KEK`, цепочка Authenticode) | прошивка (S7-24) | да / **да** | Apache-2.0 OR MIT | — | `default-features = false` |
@@ -101,6 +102,24 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 Форматы объектов TPM, авторизация, транспорты и сохранение остаются здесь.
 Лицензия Apache-2.0 OR MIT. [Пакет и функции](https://docs.rs/crate/ml-kem/0.3.3),
 [FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
+
+### ML-DSA-65 для host S7-23 (срез 7)
+
+Для примитива FIPS 204 выбран RustCrypto `ml-dsa =0.1.2` из crates.io (индекс
+crates.io 2026-11-20: последняя версия линейки 0.1, не отозвана, MSRV 1.87; 0.1.0
+выпущена 2026-05-17) с `default-features = false` и features `alloc`, `zeroize`.
+Линейка совместима с уже подключёнными `ml-kem =0.3.3`, `module-lattice 0.2.4`,
+`hybrid-array 0.4.15`, `shake 0.1.0`, `signature 3.0.0` и `crypto-common 0.2.2`:
+в `Cargo.lock` появился один новый пакет, `ml-dsa`. Feature `hazmat` не существует; нужные
+вызовы (`sign_deterministic`, `sign_mu_deterministic`, `verify_with_context`,
+`verify_mu`) входят в основной API. `alloc` держит расширенный ключ и сид в `Box` вместо
+стека (расширенный ключ ML-DSA-65 занимает десятки КиБ); `getrandom`, `rand_core` и `pkcs8`
+(features по умолчанию) не включены: TPM получает сид из собственного HMAC_DRBG. Подпись
+детерминированная (вариант FIPS 204 с `rnd` из нулей). Форматы объектов TPM, авторизация,
+транспорты и сохранение остаются здесь: закрытое значение объекта — 32-октетный сид ξ
+(Part 2 v185, Table 211). Лицензия Apache-2.0 OR MIT. Контрольные ответы самопроверки —
+NIST ACVP (ревизия `975de31e`), внешняя проверка — OpenSSL 4.1. [Пакет и
+функции](https://docs.rs/crate/ml-dsa/0.1.2), [FIPS 204](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.204.pdf).
 
 ### ECC P-384 для host S7-23 (срез 6)
 

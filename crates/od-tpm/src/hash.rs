@@ -16,6 +16,11 @@
 //! `docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md` (by Microsoft documentation; use is a hypothesis
 //! until the S7-32 trace).
 //!
+//! **ML-DSA sequences (slice 7).** Pure ML-DSA signs the message, not a digest, so the sign and verify
+//! sequences of an ML-DSA key buffer the message (at most [`MAX_MLDSA_MESSAGE`] octets, then
+//! `TPM_RC_SIZE`) and keep the context string of the start command (up to 255 octets); the key is
+//! asked to sign or verify at completion.
+//!
 //! Limitations recorded in `docs/specs/VTPM.md`:
 //! - NOT VERIFIED against TPM 2.0 Library v185: `TPM_RC_MODE` for a sequence of the wrong kind
 //!   carries the handle number here; whether sequence objects are exempt from dictionary attack
@@ -23,7 +28,7 @@
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
 use crate::crypto::{DIGEST, HashAlg, hash, hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
@@ -31,14 +36,21 @@ use crate::dispatch::Invocation;
 use crate::marshal::{
     PublicParams, Reader, Scheme, TpmtSignature, TpmtTkHashcheck, Writer, digest_size, limits,
 };
+use crate::mldsa;
 use crate::object::{Secret, find_object};
 use crate::object_cmd::{
-    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, sign_digest_output,
-    verified_ticket_mac,
+    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, mldsa_message_signature,
+    sign_digest_output, signature_output, verified_ticket_mac,
 };
 use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
+
+/// The longest message of an ML-DSA sign or verify sequence, in octets: pure ML-DSA signs the whole
+/// message and the primitive takes it in one piece, so the sequence buffers it (the largest command
+/// the TPM accepts, `limits::MAX_COMMAND_SIZE`, is also the largest message). Choice of this
+/// implementation, NOT VERIFIED against the profile: a longer message is `TPM_RC_SIZE`.
+pub const MAX_MLDSA_MESSAGE: usize = limits::MAX_COMMAND_SIZE;
 
 /// Sequence objects held at once (`TPM_PT_HR_TRANSIENT_MIN` is 3 in PTP 1.07, Table 2).
 pub const MAX_SEQUENCES: usize = 3;
@@ -160,12 +172,14 @@ impl MessagePrefix {
 }
 
 /// The running hash of a sign or verify sequence: the hash of the signing scheme of the key
-/// (SHA-256, SHA-384 or SHA-512).
+/// (SHA-256, SHA-384 or SHA-512), or the buffered message of an ML-DSA key (which signs the
+/// message, not a digest).
 #[derive(Clone)]
 enum SchemeDigest {
     Sha256(Sha256),
     Sha384(Sha384),
     Sha512(Sha512),
+    Message(Zeroizing<Vec<u8>>),
 }
 
 impl SchemeDigest {
@@ -179,22 +193,47 @@ impl SchemeDigest {
         }
     }
 
-    fn update(&mut self, data: &[u8]) {
+    /// Appends `data`; `Err` (nothing appended) when a buffered message would pass
+    /// [`MAX_MLDSA_MESSAGE`].
+    fn update(&mut self, data: &[u8]) -> Result<(), ()> {
         match self {
             Self::Sha256(hash) => hash.update(data),
             Self::Sha384(hash) => hash.update(data),
             Self::Sha512(hash) => hash.update(data),
+            Self::Message(message) => {
+                if message.len() + data.len() > MAX_MLDSA_MESSAGE {
+                    return Err(());
+                }
+                message.extend_from_slice(data);
+            }
         }
+        Ok(())
+    }
+
+    /// The buffered message and `data` (`None` for a hash, or past [`MAX_MLDSA_MESSAGE`]).
+    fn message_with(&self, data: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        let Self::Message(message) = self else {
+            return None;
+        };
+        if message.len() + data.len() > MAX_MLDSA_MESSAGE {
+            return None;
+        }
+        let mut whole = Zeroizing::new(Vec::with_capacity(message.len() + data.len()));
+        whole.extend_from_slice(message);
+        whole.extend_from_slice(data);
+        Some(whole)
     }
 
     /// The digest of everything so far and `data`, leaving the running state as it is.
     fn finalize_with(&self, data: &[u8]) -> Vec<u8> {
         let mut state = self.clone();
-        state.update(data);
+        let _ = state.update(data);
         match state {
             Self::Sha256(hash) => hash.finalize().to_vec(),
             Self::Sha384(hash) => hash.finalize().to_vec(),
             Self::Sha512(hash) => hash.finalize().to_vec(),
+            // Never a digest: an ML-DSA sequence is completed by `message_with`.
+            Self::Message(message) => message.to_vec(),
         }
     }
 }
@@ -204,6 +243,8 @@ pub(crate) struct SignSequence {
     scheme: Scheme,
     digest: SchemeDigest,
     prefix: MessagePrefix,
+    /// The context string of an ML-DSA key (empty for every other key).
+    context: Vec<u8>,
 }
 
 // A public key with the same Name may be reloaded under any of these hierarchies.
@@ -222,6 +263,7 @@ pub(crate) struct VerifySequence {
     key_name: Vec<u8>,
     scheme: Scheme,
     digest: SchemeDigest,
+    context: Vec<u8>,
     tickets: [MessageTicketState; VERIFIED_HIERARCHIES.len()],
 }
 
@@ -461,19 +503,32 @@ impl Tpm {
         let auth = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
         let auth = AuthValue::from_slice(auth).ok_or_else(|| p.err(Rc::SIZE))?;
         p.set_param(2);
-        p.tpm2b(0)?;
+        // Only an ML-DSA key takes a context (Part 2 v185, Table 220): up to 255 octets.
+        let context = p.tpm2b(mldsa::MAX_CONTEXT_BYTES)?;
         p.finish()?;
         let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
         if key.has(object_attr::X509_SIGN) {
             return Err(Rc::ATTRIBUTES.in_handle(1));
         }
-        let scheme = fixed_digest_scheme(key, 1)?;
-        let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
+        let (scheme, digest) = if matches!(key.public.params, PublicParams::MlDsa { .. }) {
+            if !key.has(object_attr::SIGN) {
+                return Err(Rc::KEY.in_handle(1));
+            }
+            (Scheme::NULL, SchemeDigest::Message(Zeroizing::default()))
+        } else {
+            if !context.is_empty() {
+                return Err(Rc::SIZE.in_param(2));
+            }
+            let scheme = fixed_digest_scheme(key, 1)?;
+            let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
+            (scheme, digest)
+        };
         let kind = SequenceKind::Sign(SignSequence {
             key_name: key.name.clone(),
             scheme,
             digest,
             prefix: MessagePrefix::default(),
+            context: context.to_vec(),
         });
         self.sequences.start(kind, auth)
     }
@@ -490,11 +545,22 @@ impl Tpm {
         p.set_param(2);
         p.tpm2b(0)?; // Only EdDSA signing schemes take a hint.
         p.set_param(3);
-        p.tpm2b(0)?;
+        let context = p.tpm2b(mldsa::MAX_CONTEXT_BYTES)?;
         p.finish()?;
         let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        let scheme = fixed_digest_scheme(key, 1)?;
-        let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
+        let (scheme, digest) = if matches!(key.public.params, PublicParams::MlDsa { .. }) {
+            if !key.has(object_attr::SIGN) {
+                return Err(Rc::KEY.in_handle(1));
+            }
+            (Scheme::NULL, SchemeDigest::Message(Zeroizing::default()))
+        } else {
+            if !context.is_empty() {
+                return Err(Rc::SIZE.in_param(3));
+            }
+            let scheme = fixed_digest_scheme(key, 1)?;
+            let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
+            (scheme, digest)
+        };
         // Parallel accumulators preserve the raw-message transcript across key reloads. Their
         // size is independent of the number of SequenceUpdate calls and message length.
         let tickets = VERIFIED_HIERARCHIES.map(|hierarchy| {
@@ -510,6 +576,7 @@ impl Tpm {
             key_name: key.name.clone(),
             scheme,
             digest,
+            context: context.to_vec(),
             tickets,
         }));
         self.sequences.start(kind, auth)
@@ -603,11 +670,17 @@ impl Tpm {
                 SequenceKind::Event(hash) => hash.update(data),
                 SequenceKind::Hmac(mac) => mac.update(data),
                 SequenceKind::Sign(sign) => {
-                    sign.digest.update(data);
+                    // A message over the ML-DSA limit changes nothing.
+                    sign.digest
+                        .update(data)
+                        .map_err(|()| Rc::SIZE.in_param(1))?;
                     sign.prefix.append(data);
                 }
                 SequenceKind::Verify(verify) => {
-                    verify.digest.update(data);
+                    verify
+                        .digest
+                        .update(data)
+                        .map_err(|()| Rc::SIZE.in_param(1))?;
                     for ticket in &mut verify.tickets {
                         ticket.mac.update(data);
                     }
@@ -699,8 +772,14 @@ impl Tpm {
         if key.has(object_attr::RESTRICTED) && prefix.is_generated() {
             return Err(Rc::VALUE.in_param(1));
         }
-        let digest = sign.digest.finalize_with(data);
-        let result = sign_digest_output(key, &digest, sign.scheme, &mut self.drbg)?;
+        let result = if matches!(key.public.params, PublicParams::MlDsa { .. }) {
+            // ML-DSA signs the whole message under the context of the sequence.
+            let message = sign.digest.message_with(data).ok_or(Rc::SIZE.in_param(1))?;
+            signature_output(&mldsa_message_signature(key, &message, &sign.context)?)
+        } else {
+            let digest = sign.digest.finalize_with(data);
+            sign_digest_output(key, &digest, sign.scheme, &mut self.drbg)?
+        };
         self.sequences.release(slot);
         Ok(result)
     }
@@ -727,10 +806,20 @@ impl Tpm {
         if key.name != verify.key_name {
             return Err(Rc::SIGN_CONTEXT_KEY.in_handle(2));
         }
-        check_signature_scheme(&signature, verify.scheme, 1)?;
-        let digest = verify.digest.finalize_with(&[]);
-        if !key.verify_signature(&digest, &signature) {
-            return Err(Rc::SIGNATURE);
+        if matches!(key.public.params, PublicParams::MlDsa { .. }) {
+            if !matches!(signature, TpmtSignature::MlDsa { .. }) {
+                return Err(Rc::SCHEME.in_param(1));
+            }
+            let message = verify.digest.message_with(&[]).ok_or(Rc::SIZE)?;
+            if !key.verify_mldsa_message(&message, &verify.context, &signature) {
+                return Err(Rc::SIGNATURE);
+            }
+        } else {
+            check_signature_scheme(&signature, verify.scheme, 1)?;
+            let digest = verify.digest.finalize_with(&[]);
+            if !key.verify_signature(&digest, &signature) {
+                return Err(Rc::SIGNATURE);
+            }
         }
         let result = if key.hierarchy == handle::RH_NULL {
             VerifiedTicket::message_output(handle::RH_NULL, &[])

@@ -848,7 +848,28 @@ impl Tpm {
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(1))?;
         let restrictions = self.policy_authorization_restrictions(session, &parameters)?;
         let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        if session.kind != SessionKind::Trial {
+        if session.kind != SessionKind::Trial
+            && matches!(
+                (&key.public.params, &signature),
+                (PublicParams::MlDsa { .. }, TpmtSignature::MlDsa { .. })
+            )
+        {
+            // Pure ML-DSA signs toBeSigned = nonceTPM || expiration || cpHashA || policyRef itself
+            // (Part 3 v185, clause 23.3.1, Equation 3) with an empty context: there is no hash.
+            if !key.has(object_attr::SIGN) {
+                return Err(Rc::POLICY_FAIL);
+            }
+            let message = [
+                parameters.nonce,
+                &parameters.expiration.to_be_bytes(),
+                parameters.cp_hash,
+                parameters.policy_ref,
+            ]
+            .concat();
+            if !key.verify_mldsa_message(&message, &[], &signature) {
+                return Err(Rc::POLICY_FAIL);
+            }
+        } else if session.kind != SessionKind::Trial {
             let (fixed, supplied) = match (&key.public.params, &signature) {
                 (PublicParams::Rsa { scheme, .. }, TpmtSignature::Rsassa { hash, .. }) => (
                     *scheme,

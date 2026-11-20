@@ -30,6 +30,7 @@ pub(crate) fn known_answers() -> bool {
         && rsa_known_answers().is_some()
         && rsa3072_known_answers().is_some()
         && mlkem_known_answers().is_some()
+        && mldsa_known_answers().is_some()
 }
 
 // SHA-512, KDFa and HMAC over SHA-384/SHA-512 and the ECDSA verification of SHA-384/SHA-512
@@ -125,6 +126,72 @@ fn mlkem_known_answers() -> Option<()> {
         && sha256(ciphertext.as_slice()) == CIPHERTEXT_SHA256
         && encapsulated.as_slice() == ENCAPSULATED)
         .then_some(())
+}
+
+// NIST ACVP ML-DSA-keyGen-FIPS204 and ML-DSA-sigGen-FIPS204, revision
+// 975de31eb83d87039ec88934fdc47d8c312b892d, ML-DSA-65: keyGen case 26 (seed to public key); sigGen
+// case 41 (external interface, pure, deterministic, with a context) and case 121 (internal
+// interface, external mu, deterministic). The vectors give the expanded private key (FIPS 204
+// `skEncode`), which only `ExpandedSigningKey::from_expanded` reads (deprecated in favour of the
+// seed; the TPM stores seeds). The public keys and signatures are compared by their SHA-256.
+#[allow(deprecated)]
+fn mldsa_known_answers() -> Option<()> {
+    use ml_dsa::common::array::Array;
+    use ml_dsa::common::typenum::U64;
+    use ml_dsa::{ExpandedSigningKey, ExpandedSigningKeyBytes, MlDsa65};
+
+    const KEYGEN_SEED: [u8; 32] =
+        hex("a991fd42b071d49c48ae3e75c647459e0daad1e1ba356a04801912d3294bcff8");
+    const KEYGEN_PUBLIC_SHA256: [u8; 32] =
+        hex("b1a7d0d2f0d7a04b9d5ffccd9bd578864dab4a01cdd7f70a05cd1f4f0672e43a");
+    const CONTEXT: [u8; 11] = hex("73bdbbaa6d36302b2115c5");
+    const PURE_PUBLIC_SHA256: [u8; 32] =
+        hex("580e716a1459c587a0856a20dd808313458b87410645da39e4acd5e5cfe8ed4e");
+    const PURE_SIGNATURE_SHA256: [u8; 32] =
+        hex("f85739f53adb1cf03dacd390cddb586c3c8ba80067113ac4a4f055c58222239e");
+    const MU: [u8; 64] = hex(
+        "5524a9cfa4ccd49dfb40a32fbfca132e14dd58127e556c0f1c517ea0e9494dd96b803217cc34a89eccb25ce151d18f9989f1940cb12065883c76044c6ba05057",
+    );
+    const MU_PUBLIC_SHA256: [u8; 32] =
+        hex("4e44950a67dd34082542fa3f88e6d44a6a63269975ff8d6aa9bf9a2c8e485e7a");
+    const MU_SIGNATURE_SHA256: [u8; 32] =
+        hex("e41e02401edf44357ebc6f5dbcb37464972f187117618ec45233339cad075827");
+
+    let seeded = crate::mldsa::private_from_seed(&KEYGEN_SEED).ok()?;
+    if sha256(&crate::mldsa::public_bytes(&seeded)) != KEYGEN_PUBLIC_SHA256 {
+        return None;
+    }
+    let message = include_bytes!("kat/mldsa65-acvp-pure-msg.bin");
+    let pure = ExpandedSigningKey::<MlDsa65>::from_expanded(
+        &ExpandedSigningKeyBytes::<MlDsa65>::try_from(
+            &include_bytes!("kat/mldsa65-acvp-pure-sk.bin")[..],
+        )
+        .ok()?,
+    );
+    let public = pure.verifying_key().encode().as_slice().to_vec();
+    let signature = pure.sign_deterministic(message, &CONTEXT).ok()?.encode();
+    let mut forged = signature.as_slice().to_vec();
+    forged[0] ^= 1;
+    let pure_ok = sha256(&public) == PURE_PUBLIC_SHA256
+        && sha256(signature.as_slice()) == PURE_SIGNATURE_SHA256
+        && crate::mldsa::verify_message(&public, message, &CONTEXT, signature.as_slice())
+        && !crate::mldsa::verify_message(&public, message, &CONTEXT, &forged)
+        && !crate::mldsa::verify_message(&public, message, &[], signature.as_slice());
+    let by_mu = ExpandedSigningKey::<MlDsa65>::from_expanded(
+        &ExpandedSigningKeyBytes::<MlDsa65>::try_from(
+            &include_bytes!("kat/mldsa65-acvp-mu-sk.bin")[..],
+        )
+        .ok()?,
+    );
+    let public = by_mu.verifying_key().encode().as_slice().to_vec();
+    let signature = by_mu
+        .sign_mu_deterministic(&Array::<u8, U64>::try_from(&MU[..]).ok()?)
+        .encode();
+    let mu_ok = sha256(&public) == MU_PUBLIC_SHA256
+        && sha256(signature.as_slice()) == MU_SIGNATURE_SHA256
+        && crate::mldsa::verify_mu(&public, &MU, signature.as_slice())
+        && !crate::mldsa::verify_mu(&public, &[0; 64], signature.as_slice());
+    (pure_ok && mu_ok).then_some(())
 }
 
 // Fixture DRBG stream independently computed from SP 800-90A using Python hashlib/HMAC.

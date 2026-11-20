@@ -103,7 +103,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 18] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 19] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -144,6 +144,12 @@ pub(crate) const ALGORITHMS: [(u16, u32); 18] = [
     (
         alg::MLKEM,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT,
+    ),
+    // `TPM_ALG_MLDSA` (0x00A1): an asymmetric signing object type (slice 7). NOT VERIFIED: the
+    // attribute bits are our reading of the registry (object type "O", signing "X").
+    (
+        alg::MLDSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT | TPMA_ALGORITHM_SIGNING,
     ),
 ];
 
@@ -206,7 +212,8 @@ impl Tpm {
             // `TPMA_MODES`: not FIPS 140 evaluated.
             (pt::MODES, 0),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
-            (pt::ML_PARAMETER_SETS, 1 << 1), // TPMA_ML_PARAMETER_SET.mlKem_768.
+            // TPMA_ML_PARAMETER_SET: mlKem_768 (bit 1), mlDsa_65 (bit 4) and extMu (bit 6).
+            (pt::ML_PARAMETER_SETS, (1 << 1) | (1 << 4) | (1 << 6)),
             (pt::PERMANENT, self.permanent_attributes()),
             (pt::STARTUP_CLEAR, self.startup_clear_attributes()),
             (pt::HR_NV_INDEX, self.persistent.nv.count() as u32),

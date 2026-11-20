@@ -254,6 +254,8 @@ pub mod alg {
     /// `TPM_ALG_SYMCIPHER`: the object type of a symmetric block cipher key (Part 2 v185, Table 8).
     pub const SYMCIPHER: u16 = 0x0025;
     pub const MLKEM: u16 = 0x00A0;
+    /// `TPM_ALG_MLDSA`: pure ML-DSA, FIPS 204 (Part 2 v185, Table 8). `TPM_ALG_HASH_MLDSA` (0x00A2) is not implemented.
+    pub const MLDSA: u16 = 0x00A1;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;
     pub const CFB: u16 = 0x0043;

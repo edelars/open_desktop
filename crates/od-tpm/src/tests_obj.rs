@@ -307,6 +307,7 @@ pub(super) fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
         Secret::Rsa(k) => crate::crypto::rsa_primes(k).unwrap().to_vec(),
         Secret::Ecc(k) => crate::crypto::ecc_scalar(k).to_vec(),
         Secret::MlKem(k) => crate::kem::private_seed(k).unwrap().to_vec(),
+        Secret::MlDsa(k) => crate::mldsa::private_seed(k).to_vec(),
         Secret::Data(d) => d.to_vec(),
     }
 }
@@ -416,10 +417,11 @@ fn tpmt_public_layout_matches_hand_written_bytes() {
 fn tpmt_public_unmarshal_codes() {
     let good = ecc_sign().to_bytes();
     let parse = |b: &[u8]| TpmtPublic::unmarshal(&mut Reader::new(b)).unwrap_err();
-    // Object type ML-DSA (0x00A1) is not implemented: TPM_RC_TYPE (Table 211).
+    // Object type HashML-DSA (0x00A2) is not implemented: TPM_RC_TYPE (Table 211). ML-DSA
+    // (0x00A1) is implemented since slice 7 (`tests_mldsa.rs`).
     let mut b = good.clone();
     b[0] = 0x00;
-    b[1] = 0xA1;
+    b[1] = 0xA2;
     assert_eq!(parse(&b), Rc::TYPE);
     // nameAlg SHA-1: TPM_RC_HASH (Table 78).
     let mut b = good.clone();
