@@ -1,0 +1,519 @@
+{
+  "scope": "S6-22 pinned x86-64 ELF, conservative static walk and local reference execution",
+  "workload_elf_sha256": "0f23516d73483ad6bf74aaa3774707c518bbfafe6c7d00470b937b2aa76208b2",
+  "disassembler": "Apple LLVM version 21.0.0",
+  "workload_disassembled_rows": 1621,
+  "pinned_elf_sha256": {
+    "busybox": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+    "workloads": "0f23516d73483ad6bf74aaa3774707c518bbfafe6c7d00470b937b2aa76208b2",
+    "ld-linux": "c5e80a563850d6ab5c2f2482e4202d9c1b71fbf44854b8c399e63527202c64e1",
+    "libc": "a3947513a02831ec692ebf13053c07614882ab54a2101fb91a1b15724062ed0c",
+    "sh": "c626229526bb58ec2d0f585f3c3ae1412e6f973b4353385042d11c38d8426917",
+    "sha256sum": "48893b0fb21436b54619db80486e83ef39dfccaf1aefe83dfa00c02d6146e8c0",
+    "sleep": "48893b0fb21436b54619db80486e83ef39dfccaf1aefe83dfa00c02d6146e8c0",
+    "libgcc_s": "9d339ecb409578d6a5d587e6c537a8f9589b8a13fefba30d167433a4b5758bee"
+  },
+  "roots": "ELF entry, named functions, direct branches and calls. Includes compute-only and defensive paths.",
+  "reachable_rows": 1431,
+  "before_issue_574_with_iterative_rep_admission": {
+    "admitted": 1336,
+    "profile": 77,
+    "decode": 18
+  },
+  "after_issue_574": {
+    "admitted": 1430,
+    "profile": 1
+  },
+  "reachable_rejection": {
+    "byte": "f4",
+    "vaddr": "0x1ab5",
+    "function": "_start"
+  },
+  "initial_workload_forms": [
+    {
+      "group": "mem_rmw",
+      "classifier": "profile",
+      "form": "or mem64,imm | REX.W 83/1 | 64:base_only",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange",
+      "example_vaddr": "0x1d0d",
+      "example_bytes": "48 83 0c 24 00",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "mem_rmw",
+      "classifier": "profile",
+      "form": "or mem64,r64 | REX.W 09 | 64:scaled_index",
+      "direct_reachable_rows": 1,
+      "sample_functions": "pin",
+      "example_vaddr": "0x2096",
+      "example_bytes": "48 09 34 c2",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "root_trap",
+      "classifier": "profile",
+      "form": "hlt | - f4 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "_start",
+      "example_vaddr": "0x1ab5",
+      "example_bytes": "f4",
+      "after": "profile_rejects_privileged_hlt"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "adc r64,r64 | REX.W 11 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "main",
+      "example_vaddr": "0x17ff",
+      "example_bytes": "49 11 c6",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "add r32,imm | - 83/0 | -",
+      "direct_reachable_rows": 4,
+      "sample_functions": "main",
+      "example_vaddr": "0x1549",
+      "example_bytes": "83 c2 01",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "add r32,imm | REX 83/0 | -",
+      "direct_reachable_rows": 3,
+      "sample_functions": "exchange_packets, take_turn, replace_mapping",
+      "example_vaddr": "0x23cd",
+      "example_bytes": "41 83 c5 11",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "add r8,r8 | - 00 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x238a",
+      "example_bytes": "00 f0",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "bt r64,r64 | REX.W 0fa3 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "main",
+      "example_vaddr": "0x1541",
+      "example_bytes": "48 0f a3 c6",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "cmp r64,mem64 | REX.W 3b | 64:base_only",
+      "direct_reachable_rows": 1,
+      "sample_functions": "main",
+      "example_vaddr": "0x17e5",
+      "example_bytes": "48 3b 6c 24 10",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "cmp r8,mem8 | REX 3a | 64:base_only",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x23d1",
+      "example_bytes": "44 3a 6c 24 0e",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "imul r32,r32 | - 0faf | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x21b4",
+      "example_bytes": "0f af c7",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "imul r64,r64 | REX.W 0faf | -",
+      "direct_reachable_rows": 3,
+      "sample_functions": "exchange_packets, compute_range",
+      "example_vaddr": "0x239f",
+      "example_bytes": "49 0f af f7",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "imul r64,r64,imm | REX.W 6b | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "main",
+      "example_vaddr": "0x194e",
+      "example_bytes": "48 6b db 30",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "jmp r64 | - ff/4 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "deregister_tm_clones, register_tm_clones",
+      "example_vaddr": "0x1adf",
+      "example_bytes": "ff e0",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "mov mem8,r8 | - 88 | 64:base_only",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x21f3",
+      "example_bytes": "88 44 24 0e",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "movzx r32,r8 | - 0fb6 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2390",
+      "example_bytes": "0f b6 c0",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "rep stosq mem64,r64 | F3 REX.W ab | 64:base_only",
+      "direct_reachable_rows": 2,
+      "sample_functions": "condition, pin",
+      "example_vaddr": "0x1eae",
+      "example_bytes": "f3 48 ab",
+      "after": "existing_iterative_path_when_df_clear"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sar r64 | REX.W d1/7 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "register_tm_clones",
+      "example_vaddr": "0x1b0f",
+      "example_bytes": "48 d1 fe",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "shl r64,r8 | REX.W d3/4 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "pin",
+      "example_vaddr": "0x2093",
+      "example_bytes": "48 d3 e6",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "shr r64,imm | REX.W c1/5 | -",
+      "direct_reachable_rows": 5,
+      "sample_functions": "main, register_tm_clones, pin",
+      "example_vaddr": "0x1535",
+      "example_bytes": "48 c1 ee 06",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sub r32,imm | - 83/5 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "increment_counter, compute_range",
+      "example_vaddr": "0x251a",
+      "example_bytes": "83 e8 02",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sub r32,imm | REX 83/5 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "processes",
+      "example_vaddr": "0x25f2",
+      "example_bytes": "41 83 ed 01",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sub r32,r32 | - 29 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x21be",
+      "example_bytes": "29 fa",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sub r32,r32 | REX 29 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets, take_turn",
+      "example_vaddr": "0x2215",
+      "example_bytes": "44 29 e8",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "sub r64,mem64 | 64 REX.W 2b | 64:absolute",
+      "direct_reachable_rows": 10,
+      "sample_functions": "main, run_workers, exchange",
+      "example_vaddr": "0x168d",
+      "example_bytes": "64 48 2b 04 25 28 00 00 00",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "test mem16,imm | 66 f7/0 | 64:base_only",
+      "direct_reachable_rows": 1,
+      "sample_functions": "processes",
+      "example_vaddr": "0x25e0",
+      "example_bytes": "66 f7 44 24 04 7f ff",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "xchg r64,r64 | REX.W 87 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "main",
+      "example_vaddr": "0x186e",
+      "example_bytes": "48 87 dd",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "scalar",
+      "classifier": "profile",
+      "form": "xor r64,r64 | REX.W 31 | -",
+      "direct_reachable_rows": 5,
+      "sample_functions": "exchange_packets, compute_range",
+      "example_vaddr": "0x2393",
+      "example_bytes": "48 31 f1",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "decode",
+      "form": "movaps mem128,xmm | - 0f29 | 64:base_index",
+      "direct_reachable_rows": 3,
+      "sample_functions": "main",
+      "example_vaddr": "0x180c",
+      "example_bytes": "0f 29 84 04 10 01 00 00",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "decode",
+      "form": "movaps mem128,xmm | - 0f29 | 64:base_only",
+      "direct_reachable_rows": 5,
+      "sample_functions": "mapping",
+      "example_vaddr": "0x1df9",
+      "example_bytes": "0f 29 44 24 20",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "decode",
+      "form": "movdqa xmm,xmm | 66 0f6f | -",
+      "direct_reachable_rows": 7,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2280",
+      "example_bytes": "66 0f 6f d3",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "decode",
+      "form": "movdqa xmm,xmm | 66 REX 0f6f | -",
+      "direct_reachable_rows": 3,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2295",
+      "example_bytes": "66 44 0f 6f d3",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "packuswb xmm,xmm | 66 0f67 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2305",
+      "example_bytes": "66 0f 67 c1",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "packuswb xmm,xmm | 66 REX 0f67 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2312",
+      "example_bytes": "66 41 0f 67 d2",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "paddb xmm,xmm | 66 0ffc | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x230e",
+      "example_bytes": "66 0f fc c5",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "paddd xmm,xmm | 66 0ffe | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x22b7",
+      "example_bytes": "66 0f fe de",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "paddd xmm,xmm | 66 REX 0ffe | -",
+      "direct_reachable_rows": 3,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x2290",
+      "example_bytes": "66 41 0f fe d1",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "pcmpeqd xmm,xmm | 66 0f76 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x21b0",
+      "example_bytes": "66 0f 76 e4",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "psrlw xmm,imm | 66 0f71 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x21b9",
+      "example_bytes": "66 0f 71 d4 08",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "psrlw xmm,imm | 66 REX 0f71 | -",
+      "direct_reachable_rows": 1,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x22ff",
+      "example_bytes": "66 41 0f 71 d2 08",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "punpckhwd xmm,xmm | 66 0f69 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x229e",
+      "example_bytes": "66 0f 69 ca",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "punpckhwd xmm,xmm | 66 REX 0f69 | -",
+      "direct_reachable_rows": 2,
+      "sample_functions": "exchange_packets",
+      "example_vaddr": "0x22cd",
+      "example_bytes": "66 41 0f 69 d2",
+      "after": "profile_admits_form"
+    },
+    {
+      "group": "vector",
+      "classifier": "profile",
+      "form": "pxor xmm,xmm | 66 0fef | -",
+      "direct_reachable_rows": 4,
+      "sample_functions": "main, mapping",
+      "example_vaddr": "0x17a3",
+      "example_bytes": "66 0f ef c0",
+      "after": "profile_admits_form"
+    }
+  ],
+  "local_reference": {
+    "tool": "Debian QEMU user mode 10.0.13, qemu64, one instruction per block",
+    "nonce": "s6-workloads20261119",
+    "passed": [
+      {
+        "case": "counter",
+        "cpus": [
+          2,
+          5
+        ],
+        "checked": 20000
+      },
+      {
+        "case": "condition",
+        "cpus": [
+          2,
+          5
+        ],
+        "checked": 256
+      },
+      {
+        "case": "exchange",
+        "cpus": [
+          2,
+          5
+        ],
+        "checked": 128
+      },
+      {
+        "case": "mapping",
+        "cpus": [
+          2,
+          5
+        ],
+        "checked": 32
+      },
+      {
+        "case": "processes",
+        "cpus": [
+          2,
+          5
+        ],
+        "checked": 32
+      }
+    ],
+    "source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+    "trace_sha256": {
+      "busybox": "a97acd03ebd35fb7b78d1a65d5bd841bdf3869538eb020f8a86d9b0feb449afb",
+      "workloads": "d9fbb19dfcc882b392c5f66ccc2bb8206e7181ce896cb0e80cc67b90c4f792c9",
+      "sh": "f19b66b7732c0ce1f3ad065fbad7c9aa6d2d5c13308843f9f2045a50d1988b91",
+      "sha256sum": "85371be1ccfdd34e90696298d22d54c031ad3c091cd46911c9a2861c06065be8",
+      "sleep": "49479069101402ff4b3c7cacff8ca68ea7a9a826be752d07f50623eb7e256f52"
+    },
+    "limit": "Application runs used the local Linux host kernel and QEMU CPU selection. LinuxDirect RAW acceptance is tracked separately."
+  }
+}

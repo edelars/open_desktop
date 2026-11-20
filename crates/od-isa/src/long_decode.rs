@@ -1102,6 +1102,16 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Exact legacy `0F 29 /r` MOVAPS store to m128 in the S6-22 profile.
+    MovapsStoreMemory {
+        destination: MemoryOperand,
+        source: u8,
+    },
+    /// Exact mandatory-66 `0F 6F /r` MOVDQA XMM-register source form.
+    MovdqaRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only mandatory-66 `0F 28 /r` MOVAPD XMM-to-XMM register form.
     MovapdRegister {
         destination: u8,
@@ -5997,16 +6007,29 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
+                let rex = prefixes.rex.unwrap_or(0);
                 if modrm >> 6 == 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                size = OperandSize::Qword;
-                let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
-                    return Err(self.unsupported(opcode));
-                };
-                Operation::MovdqaLoadMemory {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source,
+                    let legacy_66_register = prefix_bytes[..prefix_count] == [0x66]
+                        || (prefix_count == 2
+                            && prefix_bytes[0] == 0x66
+                            && prefixes.rex == Some(prefix_bytes[1])
+                            && rex & 0x0a == 0);
+                    if !legacy_66_register {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::MovdqaRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
+                    size = OperandSize::Qword;
+                    let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::MovdqaLoadMemory {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source,
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x7e) if f3_xmm_load => {
@@ -8122,12 +8145,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         return Err(self.unsupported(opcode));
                     }
                     let modrm = self.byte()?;
-                    if modrm >> 6 != 3 {
+                    if modrm >> 6 == 3 {
+                        Operation::MovapsReverseRegister {
+                            destination: (modrm & 7) | ((rex & 1) << 3),
+                            source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        }
+                    } else if prefix_count == 0 || (prefix_count == 1 && rex & 0x0a == 0) {
+                        size = OperandSize::Qword;
+                        let Operand::Memory(destination) =
+                            self.rm_operand(modrm, prefixes, size)?
+                        else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        Operation::MovapsStoreMemory {
+                            destination,
+                            source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        }
+                    } else {
                         return Err(self.unsupported(opcode));
-                    }
-                    Operation::MovapsReverseRegister {
-                        destination: (modrm & 7) | ((rex & 1) << 3),
-                        source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     }
                 }
             }
@@ -17379,8 +17414,12 @@ mod tests {
             }
         );
 
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x29, 0x00]).decode().unwrap().operation,
+            Operation::MovapsStoreMemory { source: 0, .. }
+        ));
+
         for bytes in [
-            &[0x0f, 0x29, 0x00][..], // memory
             &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],
             &[0xf2, 0x0f, 0x29, 0xc1][..],
             &[0xf3, 0x0f, 0x29, 0xc1][..],
@@ -33957,6 +33996,66 @@ mod tests {
                     length: 3 + (bytes.len() as u8 - 4)
                 }),
                 "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn s6_22_movaps_store_and_movdqa_register_decode_exact_owned_forms() {
+        for bytes in [
+            &[0x0f, 0x29, 0x44, 0x24, 0x20][..],
+            &[0x0f, 0x29, 0x84, 0x04, 0x10, 0x01, 0x00, 0x00][..],
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert!(matches!(
+                instruction.operation,
+                Operation::MovapsStoreMemory { source: 0, .. }
+            ));
+        }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x6f, 0xd3])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::MovdqaRegister {
+                destination: 2,
+                source: 3,
+            }
+        );
+        assert_eq!(
+            Memory::new(&[0x66, 0x44, 0x0f, 0x6f, 0xd3])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::MovdqaRegister {
+                destination: 10,
+                source: 3,
+            }
+        );
+        assert_eq!(
+            Memory::new(&[0x66, 0x41, 0x0f, 0x6f, 0xd3])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::MovdqaRegister {
+                destination: 2,
+                source: 11,
+            }
+        );
+
+        for bytes in [
+            &[0x66, 0x48, 0x0f, 0x6f, 0xd3][..], // REX.W
+            &[0x66, 0x42, 0x0f, 0x6f, 0xd3][..], // REX.X
+            &[0x66, 0x66, 0x0f, 0x6f, 0xd3][..], // duplicate mandatory prefix
+            &[0x66, 0xf3, 0x0f, 0x6f, 0xd3][..],
+            &[0xf3, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
+            &[0x66, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
+            &[0x48, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
+            &[0x0f, 0x29, 0x44, 0x24][..], // truncated displacement
+        ] {
+            assert!(
+                Memory::new(bytes).decode().is_err(),
+                "unexpected decode for {bytes:02x?}"
             );
         }
     }
