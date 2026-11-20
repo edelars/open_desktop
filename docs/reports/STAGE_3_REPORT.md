@@ -1461,6 +1461,12 @@ Performance results apply to the measured revisions, workloads and timer
 boundaries. The earlier `f5d2b70` update recorded correctness evidence.
 [Benchmark procedures](../testing/BENCHMARKS.md)
 
+S3-35i measured first execution on all 1,010 recovered S3-17 inputs
+on the M1 Pro. The interpreter took about 0.659 ms per sweep. FIFO
+took 8.301–8.318 ms by the three process medians. All 60 scored
+pairs favored the interpreter. Each round passed its own idle gate.
+[S3-35i results and evidence](STAGE_3_S3-35i_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
