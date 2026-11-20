@@ -1786,6 +1786,14 @@ The archived scripts pin the fixture and source and verify effective
 nice −5, matching UID, pair ordering, interval floors and raw hashes.
 [Report, commands and raw evidence](../reports/STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
 
+### S3-32b. Untimed census of admitted IR opportunities
+
+Replay the frozen S3-29l corpus and the five S3-14 FIFO16 fixtures through
+the native admission, publication and execution paths. Match emitted
+bytes and PC maps before inspecting IR. Keep compilation counts,
+current replay visits and archived FIFO16 repeat weights explicit.
+[Census recipe and evidence](../reports/STAGE_3_S3-32b_2026-11-20.md)
+
 ### S3-36g. Warm retained Session on one- and two-RIP loops
 
 The signed release comparison times complete `Session::run` and interpreter

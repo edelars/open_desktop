@@ -1547,6 +1547,13 @@ higher times through the first native return, including fresh publication.
 The baseline remains in use for the measured fixture.
 [Paired S3-32a results and raw evidence](STAGE_3_S3-32a_2026-11-01.md#first-native-return-on-m1-pro-2026-11-19)
 
+S3-32b retains the existing lowering for the two measured eager,
+fixed-home register strata. The census found three eligible W64
+duplicate-read pairs in the helper-pressure FIFO16 fixture and none
+in 1,702 admitted records from the composed corpus. The census counts
+actual compilations and block visits separately.
+[S3-32b census and scoped decision](STAGE_3_S3-32b_2026-11-20.md)
+
 S3-36g measured the retained S0-09 `Session::run` on matched warm inputs.
 At 64 and 4096 iterations with one RIP, the dispatcher took 7.6% and 5.6%
 of the previous JIT time by the median absolute comparison. The one-pass
