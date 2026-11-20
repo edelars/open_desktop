@@ -12,18 +12,19 @@
 //! 2.4. Verified: CAP/VS/INTMS/INTMC/CC/CSTS/NSSR/AQA/ASQ/ACQ and doorbells
 //! (0x1000); CC EN 0, CSS 4, MPS 7, AMS 11, SHN 14, IOSQES 16, IOCQES 20; CSTS
 //! RDY, CFS, SHST; CAP MQES[15:0], TO[31:24], CSS, MPSMIN 48. Everything else
-//! (CAP.CQR bit 16, AER info 0/1, PRP rules, feature defaults, error behaviour,
+//! (AER info 0/1, PRP rules, feature defaults, error behaviour,
 //! which commands are mandatory, `VS` 2.0 versus 2.4) is `NOT VERIFIED`
 //! (`docs/specs/NVME_DEVICE.md` sections 1 and 11).
 
 use super::admin::{self, AerState, ErrorLog, Features};
 use super::backend::NvmeBackend;
 use super::io::{self, IoStats};
+use super::msix::{self, Msix};
 use super::queues::{
-    BusDma, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, SQE_BYTES,
-    Status, SubmissionQueue, encode_cqe,
+    BusDma, CQE_BYTES, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome,
+    SQE_BYTES, Status, SubmissionQueue, encode_cqe,
 };
-use super::{NVME_MMIO_BYTES, NVME_PCI_BAR_BASE};
+use super::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES};
 use crate::pci_ecam::{
     COMMAND_BUS_MASTER, COMMAND_INTX_DISABLE, COMMAND_MEMORY_ENABLE, PciFunction, Type0Config,
 };
@@ -61,6 +62,9 @@ mod reg {
 const CAP_VALUE: u64 = (MAX_QUEUE_ENTRIES as u64 - 1) | (1 << 16) | (1 << 24) | (1 << 37);
 
 const CC_EN: u32 = 1;
+const CC_SHN_MASK: u32 = 0b11 << 14;
+const CC_IOSQES_MASK: u32 = 0xF << 16;
+const CC_IOCQES_MASK: u32 = 0xF << 20;
 /// Writable `CC` bits: EN, CSS, MPS, AMS, SHN, IOSQES, IOCQES (CRIME is not implemented).
 const CC_WRITABLE: u32 = 0x00FF_FFF1;
 const CSTS_RDY: u32 = 1;
@@ -192,7 +196,24 @@ pub(crate) struct NvmeState {
     pub(super) backend: Option<BackendSlot>,
     pub(super) io: IoStats,
     pending: bool,
-    pci: Option<Type0Config>,
+    /// First submission queue slot of the next one-command arbitration step, so that serving one
+    /// command per call stays round robin across queues.
+    rr_next: usize,
+    pci: Option<NvmePci>,
+}
+
+#[derive(Debug)]
+struct NvmePci {
+    config: Type0Config,
+    msix: Msix,
+}
+
+impl NvmePci {
+    fn deliver_pending(&mut self) {
+        if self.config.command() & COMMAND_BUS_MASTER != 0 {
+            self.msix.deliver_pending();
+        }
+    }
 }
 
 /// The attached backend; `Debug` prints only its size (the trait has no `Debug`).
@@ -235,6 +256,7 @@ impl NvmeState {
             backend: None,
             io: IoStats::default(),
             pending: false,
+            rr_next: 0,
             pci: None,
         }
     }
@@ -245,20 +267,38 @@ impl NvmeState {
 
     fn memory_decode_enabled(&self) -> bool {
         self.pci.as_ref().is_none_or(|pci| {
-            pci.command() & COMMAND_MEMORY_ENABLE != 0
-                && pci.memory_bar0_address() == NVME_PCI_BAR_BASE
+            pci.config.command() & COMMAND_MEMORY_ENABLE != 0
+                && pci.config.memory_bar0_address() == NVME_PCI_BAR_BASE
         })
     }
 
     fn dma_enabled(&self) -> bool {
         self.pci
             .as_ref()
-            .is_none_or(|pci| pci.command() & COMMAND_BUS_MASTER != 0)
+            .is_none_or(|pci| pci.config.command() & COMMAND_BUS_MASTER != 0)
+    }
+
+    /// Match Identify Controller to the PCI frontend's published header.
+    pub(super) fn pci_vendor_ids(&mut self) -> (u16, u16) {
+        self.pci.as_mut().map_or((0, 0), |pci| {
+            let vendor = pci.config.config_read(0x00, AccessWidth::Word) as u16;
+            let subsystem = pci.config.config_read(0x2c, AccessWidth::Word) as u16;
+            (vendor, subsystem)
+        })
+    }
+
+    pub(super) fn interrupt_vector_count(&self) -> u16 {
+        if self.pci.as_ref().is_some_and(|pci| pci.msix.enabled()) {
+            QUEUE_SLOTS as u16
+        } else {
+            1
+        }
     }
 
     /// PCIe transport revision 1.4 §3.5.1, pin mode with the single vector 0.
     fn interrupt_pending(&self) -> bool {
-        self.intms & 1 == 0
+        self.interrupt_vector_count() == 1
+            && self.intms & 1 == 0
             && self
                 .cqs
                 .iter()
@@ -266,10 +306,12 @@ impl NvmeState {
                 .any(CompletionQueue::requests_interrupt)
     }
 
-    fn pci_interrupt_line(&self) -> bool {
-        self.pci.as_ref().is_some_and(|pci| {
-            pci.command() & COMMAND_INTX_DISABLE == 0 && self.interrupt_pending()
-        })
+    fn sample_pci_interrupts(&mut self) -> bool {
+        let Some(pci) = &mut self.pci else {
+            return false;
+        };
+        pci.deliver_pending();
+        pci.config.command() & COMMAND_INTX_DISABLE == 0 && self.interrupt_pending()
     }
 
     pub(super) fn set_fatal(&mut self) {
@@ -277,14 +319,16 @@ impl NvmeState {
     }
 
     /// Controller reset (`CC.EN` 1 to 0): queues, features and outstanding
-    /// events are lost; the error log and counters are kept.
+    /// events are lost. Error log entries are cleared, with counters retained.
     fn reset(&mut self) {
         self.sqs = [None; QUEUE_SLOTS];
         self.cqs = [None; QUEUE_SLOTS];
         self.features = Features::default();
         self.aer = AerState::default();
+        self.errors.clear_entries();
         self.csts = 0;
         self.pending = false;
+        self.rr_next = 0;
     }
 
     /// `CC.EN` 0 to 1: validate the configuration and create the admin queues.
@@ -293,18 +337,11 @@ impl NvmeState {
         let css = (cc >> 4) & 0x7;
         let mps = (cc >> 7) & 0xF;
         let ams = (cc >> 11) & 0x7;
-        let iosqes = (cc >> 16) & 0xF;
-        let iocqes = (cc >> 20) & 0xF;
         let sq_entries = (self.aqa & 0xFFF) + 1;
         let cq_entries = ((self.aqa >> 16) & 0xFFF) + 1;
-        // NOT VERIFIED against NVMe Base 2.4: проверка IOSQES/IOCQES при EN=1 против при Create I/O SQ/CQ
-        // (likely deviation: the specification, unconfirmed, checks these fields when an
-        // I/O queue is created, not on enable; NVME_DEVICE.md section 11).
         let valid = css == 0
             && mps == 0
             && ams == 0
-            && iosqes == 6
-            && iocqes == 4
             && (2..=MAX_QUEUE_ENTRIES).contains(&sq_entries)
             && (2..=MAX_QUEUE_ENTRIES).contains(&cq_entries);
         if !valid {
@@ -312,8 +349,16 @@ impl NvmeState {
             return;
         }
         self.sqs[0] = Some(SubmissionQueue::new(self.asq, sq_entries as u16, 0));
-        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true));
+        self.cqs[0] = Some(CompletionQueue::new(self.acq, cq_entries as u16, true, 0));
         self.csts = CSTS_RDY;
+    }
+
+    pub(super) fn io_sq_entry_size_configured(&self) -> bool {
+        self.cc & CC_IOSQES_MASK == SQE_BYTES.ilog2() << 16
+    }
+
+    pub(super) fn io_cq_entry_size_configured(&self) -> bool {
+        self.cc & CC_IOCQES_MASK == CQE_BYTES.ilog2() << 20
     }
 
     /// Controller property span containing `offset`: `(start, length)`; the
@@ -432,9 +477,16 @@ impl NvmeState {
             self.reset();
             return;
         }
-        // Enabled and staying enabled: only the shutdown notification changes.
-        self.cc = (self.cc & !(0b11 << 14)) | (value & (0b11 << 14));
-        if value & (0b11 << 14) != 0 {
+        // Admin queues use fixed entry sizes and do not lock the I/O fields.
+        let mut writable = CC_SHN_MASK;
+        if self.sqs[1..].iter().all(Option::is_none) {
+            writable |= CC_IOSQES_MASK;
+        }
+        if self.cqs[1..].iter().all(Option::is_none) {
+            writable |= CC_IOCQES_MASK;
+        }
+        self.cc = (self.cc & !writable) | (value & writable);
+        if value & CC_SHN_MASK != 0 {
             self.csts = (self.csts & !(0b11 << 2)) | CSTS_SHST_COMPLETE;
         }
     }
@@ -471,9 +523,9 @@ impl NvmeState {
         let value = (value & 0xFFFF) as u16;
         if is_cq {
             match self.cqs[qid].as_mut() {
-                None => admin::report_invalid_doorbell_register(self, qid as u16),
+                None => admin::report_invalid_doorbell_register(self),
                 Some(cq) if value >= cq.entries => {
-                    admin::report_invalid_doorbell_value(self, qid as u16);
+                    admin::report_invalid_doorbell_value(self);
                 }
                 Some(cq) => {
                     cq.head = value;
@@ -482,9 +534,9 @@ impl NvmeState {
             }
         } else {
             match self.sqs[qid].as_mut() {
-                None => admin::report_invalid_doorbell_register(self, qid as u16),
+                None => admin::report_invalid_doorbell_register(self),
                 Some(sq) if value >= sq.entries => {
-                    admin::report_invalid_doorbell_value(self, qid as u16);
+                    admin::report_invalid_doorbell_value(self);
                 }
                 Some(sq) => {
                     sq.tail = value;
@@ -522,6 +574,12 @@ impl NvmeState {
             return false;
         }
         cq.advance_tail();
+        if cq.interrupt_enabled
+            && let Some(pci) = &mut self.pci
+        {
+            // DMA has committed the CQE and the caller checked Bus Master Enable.
+            pci.msix.post(cq.interrupt_vector);
+        }
         true
     }
 
@@ -563,12 +621,15 @@ impl NvmeState {
         if !self.ready() {
             return false;
         }
-        if let Outcome::Done(completion) = outcome {
-            if !completion.status.is_success() {
-                let phase = self.cqs[cqid].is_some_and(|cq| cq.phase);
-                admin::log_command_error(self, slot as u16, &command, completion.status, phase);
-            }
+        if let Outcome::Done(mut completion) = outcome {
+            let error_phase = (!completion.status.is_success()).then(|| {
+                completion.status = completion.status.with_more();
+                self.cqs[cqid].is_some_and(|cq| cq.phase)
+            });
             if self.post(dma, cqid, slot as u16, command.cid, completion) {
+                if let Some(phase) = error_phase {
+                    admin::log_command_error(self, slot as u16, &command, completion.status, phase);
+                }
                 report.completions += 1;
             }
         }
@@ -632,9 +693,15 @@ impl NvmeState {
                 self.pending = true;
                 return report;
             }
-            for slot in 0..QUEUE_SLOTS {
-                while self.ready() && self.run_one(slot, dma, &mut report) {
+            // Round robin with one command per queue, including the admin SQ.
+            for offset in 0..QUEUE_SLOTS {
+                if !self.ready() {
+                    break;
+                }
+                let slot = (self.rr_next + offset) % QUEUE_SLOTS;
+                if self.run_one(slot, dma, &mut report) {
                     if one_item {
+                        self.rr_next = (slot + 1) % QUEUE_SLOTS;
                         self.pending = true;
                         return report;
                     }
@@ -675,20 +742,28 @@ impl PciFunction for NvmePciFunction {
         let mut state = lock(&self.0.state);
         let pending = register & !3 == 0x04 && state.interrupt_pending();
         let pci = state.pci.as_mut().expect("PCI frontend has a PCI config");
-        pci.observe_interrupt(pending);
-        pci.config_read(register, width)
+        pci.config.observe_interrupt(pending);
+        pci.msix
+            .config_read(register, width)
+            .unwrap_or_else(|| pci.config.config_read(register, width))
     }
 
     fn config_write(&mut self, register: u16, width: AccessWidth, value: u32) {
-        lock(&self.0.state)
-            .pci
-            .as_mut()
-            .expect("PCI frontend has a PCI config")
-            .config_write(register, width, value);
+        let mut state = lock(&self.0.state);
+        let pci = state.pci.as_mut().expect("PCI frontend has a PCI config");
+        pci.config.config_write(register, width, value);
+        pci.msix.write_control(register, width, value);
+        pci.deliver_pending();
     }
 }
 
 impl NvmeDevice {
+    pub(crate) fn mmio_endpoint(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+
     /// Creates a powered-off controller (`CSTS.RDY = 0`) and its handle.
     pub fn new_with_handle(config: NvmeConfig) -> Result<(Self, NvmeHandle), NvmeConfigError> {
         config.validate()?;
@@ -703,15 +778,26 @@ impl NvmeDevice {
 
     pub(crate) fn new_pci(
         config: NvmeConfig,
+        lapic: crate::LocalApicHandle,
     ) -> Result<(Self, NvmeHandle, NvmePciFunction), NvmeConfigError> {
         let (device, handle) = Self::new_with_handle(config)?;
         // Reserved test endpoint identity; class/prog-if are the standard NVMe values.
         // The driver binds by class, never a specific hardware vendor or quirk.
-        let mut pci = Type0Config::new(0xD1A6, 0x0008, 0, 0x01_08_02, Some(NVME_MMIO_BYTES as u32))
-            .expect("NVMe has a valid constant class and BAR size");
+        let mut pci = Type0Config::new(
+            0xD1A6,
+            0x0008,
+            0,
+            0x01_08_02,
+            Some(NVME_PCI_BAR_BYTES as u32),
+        )
+        .expect("NVMe has a valid constant class and BAR size");
         pci.configure_64_bit_memory_bar0(NVME_PCI_BAR_BASE);
         pci.configure_inta();
-        lock(&handle.state).pci = Some(pci);
+        pci.set_capability_pointer(msix::CAPABILITY_OFFSET);
+        lock(&handle.state).pci = Some(NvmePci {
+            config: pci,
+            msix: Msix::new(lapic),
+        });
         let function = NvmePciFunction(handle.clone());
         Ok((device, handle, function))
     }
@@ -741,13 +827,14 @@ impl NvmeHandle {
         Ok(())
     }
 
-    pub(crate) fn pci_interrupt_line(&self) -> bool {
-        lock(&self.state).pci_interrupt_line()
+    /// Samples MSI-X and INTx state without waiting for a worker inside the storage provider.
+    pub(crate) fn try_sample_pci_interrupts(&self) -> Option<bool> {
+        self.try_state()
+            .map(|mut state| state.sample_pci_interrupts())
     }
 
-    /// Sample INTx without waiting for a worker inside the storage provider.
-    pub(crate) fn try_pci_interrupt_line(&self) -> Option<bool> {
-        self.try_state().map(|state| state.pci_interrupt_line())
+    pub(crate) fn sample_pci_interrupts(&self) -> bool {
+        lock(&self.state).sample_pci_interrupts()
     }
 
     pub(crate) fn has_pci_transport(&self) -> bool {
@@ -824,8 +911,8 @@ impl NvmeHandle {
     }
 }
 
-impl BusDevice for NvmeDevice {
-    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+impl NvmeDevice {
+    pub(crate) fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -833,13 +920,18 @@ impl BusDevice for NvmeDevice {
         if !state.memory_decode_enabled() {
             return Ok(u64::MAX >> (64 - access.width.bytes() * 8));
         }
+        if access.offset >= msix::TABLE_OFFSET
+            && let Some(pci) = &state.pci
+        {
+            return pci.msix.read_bar(access.offset, access.width);
+        }
         if access.offset >= reg::DOORBELLS {
             return NvmeState::read_doorbell(access.offset);
         }
         state.read_register(access.offset, access.width)
     }
 
-    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+    pub(crate) fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -847,10 +939,27 @@ impl BusDevice for NvmeDevice {
         if !state.memory_decode_enabled() {
             return Ok(());
         }
+        if access.offset >= msix::TABLE_OFFSET
+            && let Some(pci) = &mut state.pci
+        {
+            pci.msix.write_bar(access.offset, access.width, value)?;
+            pci.deliver_pending();
+            return Ok(());
+        }
         if access.offset >= reg::DOORBELLS {
             state.write_doorbell(access.offset, access.width, value)
         } else {
             state.write_register(access.offset, access.width, value)
         }
+    }
+}
+
+impl BusDevice for NvmeDevice {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read_mmio(access)
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.write_mmio(access, value)
     }
 }

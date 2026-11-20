@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
 use od_isa::execute::{
-    self, Cr0Profile, Cr4Profile, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1,
-    PagedCpl0StackProbeV1, PagedProbeExit, PagedProbeRejection,
+    self, Cr0Profile, Cr4Profile, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1,
+    PagedCpl0FirmwareBootV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit,
+    PagedProbeRejection,
 };
 use od_isa::{
-    AccessContext, AccessKind, AccessOrigin, CpuActivity, GuestMemory, InstructionMode,
-    LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, Register, StiShadow,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CpuActivity, GuestMemory,
+    InstructionMode, LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, Register,
+    StiShadow,
 };
 
 const RIP: u64 = 0x4000;
@@ -143,6 +145,14 @@ impl GuestMemory for Memory {
         Ok(())
     }
 
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+    ) -> Result<u64, MemoryError> {
+        self.read_integer(address, context, size)
+    }
     fn atomic_exchange_integer(
         &mut self,
         _: u64,
@@ -22964,6 +22974,137 @@ fn rust_helper_test_rax_rax_is_unsupported_in_cpl3_profile() {
 const TEST_AX_AX: [u8; 3] = [0x66, 0x85, 0xc0];
 
 #[test]
+fn firmware_reads_cr0_and_active_cr3_and_undefines_arithmetic_flags() {
+    let active_cr3 = 0x600000;
+    for (encoding, value) in [([0x0f, 0x20, 0xc0], CR0), ([0x0f, 0x20, 0xd8], active_cr3)] {
+        let mut cpu = state();
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rax as usize] = value;
+        expected.rip += encoding.len() as u64;
+        let result = execute::step_paged_firmware_probe_with_cr3(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut Memory::new(&encoding),
+            &mut Pio::default(),
+            ring0(),
+            od_isa::INTEGER_FLAGS,
+            active_cr3,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (1 << 10) | 2);
+        assert_eq!(cpu, expected);
+    }
+}
+
+#[test]
+fn firmware_dword_xor_accepts_immediate_forms_but_rejects_prefixes() {
+    for (code, register, mask, exact) in [
+        (&[0x35, 0xd0, 0, 0, 0][..], Register::Rax, 0xd0, true),
+        (&[0x67, 0x35, 0xd1, 0, 0, 0][..], Register::Rax, 0xd1, false),
+        (&[0x81, 0xf7, 0xd0, 0, 0, 0][..], Register::Rdi, 0xd0, true),
+        (
+            &[0x81, 0xf6, 0xb4, 0xfa, 0x37, 0][..],
+            Register::Rsi,
+            0x37fab4,
+            true,
+        ),
+        (&[0x81, 0xf1, 0xd0, 0, 0, 0][..], Register::Rcx, 0xd0, true),
+        (&[0x83, 0xf0, 1][..], Register::Rax, 1, true),
+        (&[0x83, 0xf1, 0x53][..], Register::Rcx, 0x53, true),
+        (&[0x83, 0xf3, 0xff][..], Register::Rbx, 0xffff_ffff, true),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[register as usize] = 0xabcdef12_0000_0000 | mask;
+        let mut expected = cpu.clone();
+        let defined = DEFINED | 0x10;
+        if exact {
+            expected.gpr[register as usize] = 0;
+            expected.rflags = (expected.rflags & !0x8c5) | 0x44;
+            expected.rip += code.len() as u64;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            defined,
+        );
+        let (exit, flags) = if exact {
+            (PagedProbeExit::Retired, (defined | 0x8c5) & !0x10)
+        } else {
+            (PagedProbeExit::Unsupported { opcode: 0x35 }, defined)
+        };
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(exact));
+        assert_eq!(result.rflags_defined, flags);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_variable_name_tests_words_without_changing_registers() {
+    for (exact, register) in [
+        (&[0x66, 0x45, 0x85, 0xc0][..], Register::R8),
+        (&[0x66, 0x45, 0x85, 0xc9][..], Register::R9),
+        (&[0x66, 0x45, 0x85, 0xd2][..], Register::R10),
+        (&[0x66, 0x85, 0xed][..], Register::Rbp),
+        (&[0x66, 0x85, 0xd2][..], Register::Rdx),
+        (&[0x66, 0x85, 0xc9][..], Register::Rcx),
+        (&[0x66, 0x85, 0xf6][..], Register::Rsi),
+        (&[0x66, 0x85, 0xff][..], Register::Rdi),
+    ] {
+        for (value, expected_flags) in [(0x8000_0000, 0x44), (0xffff_8000, 0x84), (0x8000_0001, 0)]
+        {
+            let mut memory = Memory::new(exact);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[register as usize] = value;
+            let mut expected = cpu.clone();
+            expected.rflags = (expected.rflags & !0x8c5) | expected_flags;
+            expected.rip += exact.len() as u64;
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED | 0x10,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined & 0x8d5, 0x8c5);
+            assert_eq!(cpu, expected);
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+        }
+    }
+    for neighbor in [
+        &[0x66, 0x45, 0x85, 0xc8][..],
+        &[0x66, 0x45, 0x85, 0xca][..],
+        &[0x66, 0x41, 0x85, 0xc0][..],
+        &[0x66, 0x85, 0xee][..],
+    ] {
+        let mut memory = Memory::new(neighbor);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x85 });
+        assert_eq!(cpu, before);
+    }
+}
+
+#[test]
 fn rust_helper_test_ax_ax_updates_word_logic_flags_without_register_write() {
     const CF: u64 = 1 << 0;
     const PF: u64 = 1 << 2;
@@ -28295,6 +28436,7 @@ fn rust_helper_cmp_bx_imm8_fetch_fault_is_atomic() {
 fn rust_helper_cmp_bx_imm8_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
         (&[0x66, 0x83, 0xfb, 0x04], 0x83),       // different immediate
+        (&[0x66, 0x83, 0xfb, 0x05], 0x83),       // firmware handoff version bound
         (&[0x66, 0x83, 0xfb, 0xff], 0x83),       // sign-extended -1 immediate
         (&[0x66, 0x83, 0xff, 0x03], 0x83),       // CMP DI,3
         (&[0x66, 0x83, 0xeb, 0x03], 0x83),       // SUB BX,3
@@ -39670,55 +39812,43 @@ fn rust_helper_cmp_edi_imm32_0x80_is_unsupported_in_cpl3_profile() {
 }
 
 #[test]
-fn firmware_entry_lea_rdi_rip_disp32_sets_exact_target_only() {
-    let code = [0x48, 0x8d, 0x3d, 0x09, 0x2b, 0, 0];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.gpr = gpr_patterns();
-    cpu.rip = RIP;
-    cpu.gpr[Register::Rdi as usize] = 0x1122_3344_5566_7788;
-    cpu.rflags = 0xd5a;
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let defined = DEFINED & !(1 << 2);
+fn firmware_entry_lea_rip_disp32_accepts_link_values_and_signed_boundaries() {
+    for (modrm, destination, link_displacements) in [
+        (0x3d, Register::Rdi, [0x2b09, 0x2c69]),
+        (0x0d, Register::Rcx, [0x2b02, 0x2c62]),
+    ] {
+        for displacement in link_displacements
+            .into_iter()
+            .chain([i32::MIN, i32::MAX, 0, -1])
+        {
+            let mut code = vec![0x48, 0x8d, modrm];
+            code.extend_from_slice(&displacement.to_le_bytes());
+            let mut memory = Memory::new(&code);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.rip = RIP;
+            cpu.gpr[destination as usize] = 0x1122_3344_5566_7788;
+            cpu.rflags = 0xd5a;
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+            let defined = DEFINED & !(1 << 2);
 
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+            let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
 
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, defined);
-    let mut expected = before;
-    expected.gpr[Register::Rdi as usize] = RIP + code.len() as u64 + 0x2b09;
-    expected.rip += code.len() as u64;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
-}
-
-#[test]
-fn firmware_entry_lea_rcx_rip_disp32_sets_exact_target_only() {
-    let code = [0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.gpr = gpr_patterns();
-    cpu.rip = RIP;
-    cpu.gpr[Register::Rcx as usize] = 0x1122_3344_5566_7788;
-    cpu.rflags = 0xd5a;
-    let before = cpu.clone();
-    let mut pio = Pio::default();
-    let defined = DEFINED & !(1 << 2);
-
-    let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
-
-    assert_eq!(result.exit, PagedProbeExit::Retired);
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(result.rflags_defined, defined);
-    let mut expected = before;
-    expected.gpr[Register::Rcx as usize] = RIP + code.len() as u64 + 0x2b02;
-    expected.rip += code.len() as u64;
-    assert_eq!(cpu, expected);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
-    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            assert_eq!(result.exit, PagedProbeExit::Retired, "disp={displacement}");
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined);
+            let mut expected = before;
+            expected.gpr[destination as usize] = RIP
+                .wrapping_add(code.len() as u64)
+                .wrapping_add_signed(i64::from(displacement));
+            expected.rip += code.len() as u64;
+            assert_eq!(cpu, expected, "disp={displacement}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            assert!(memory.write_addresses.is_empty());
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -39759,9 +39889,7 @@ fn firmware_entry_lea_rcx_fetch_fault_does_not_commit() {
 #[test]
 fn firmware_entry_lea_rcx_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x48, 0x8d, 0x0d, 0x01, 0x2b, 0, 0], 0x8d), // displacement differs
         (&[0x48, 0x8d, 0x15, 0x02, 0x2b, 0, 0], 0x8d), // RDX destination
-        (&[0x48, 0x8d, 0x3d, 0x02, 0x2b, 0, 0], 0x8d), // RDI destination
         (&[0x40, 0x8d, 0x0d, 0x02, 0x2b, 0, 0], 0x8d), // no REX.W
         (&[0x48, 0x8d, 0x0f], 0x8d),                   // register base, not RIP-relative
         (&[0x67, 0x48, 0x8d, 0x0d, 0x02, 0x2b, 0, 0], 0x8d), // address override
@@ -39990,7 +40118,6 @@ fn firmware_entry_lea_fetch_fault_does_not_commit() {
 #[test]
 fn firmware_entry_lea_neighbours_stay_unsupported_without_mutation() {
     let cases: &[(&[u8], u8)] = &[
-        (&[0x48, 0x8d, 0x3d, 0x08, 0x2b, 0, 0], 0x8d), // displacement differs
         (&[0x48, 0x8d, 0x35, 0x09, 0x2b, 0, 0], 0x8d), // RSI destination
         (&[0x48, 0x8d, 0x05, 0x09, 0x2b, 0, 0], 0x8d), // RAX destination
         (&[0x40, 0x8d, 0x3d, 0x09, 0x2b, 0, 0], 0x8d), // no REX.W
@@ -51055,5 +51182,6654 @@ fn plain_dword_xadd_and_cmpxchg_stay_unsupported_in_the_paged_probe_profile() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_mov_imm8_rex_selects_the_decoded_low_byte() {
+    for (rex, opcode, target) in [(0x40, 0xb5, Register::Rbp), (0x41, 0xb2, Register::R10)] {
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let mut expected = cpu.clone();
+        let target = &mut expected.gpr[target as usize];
+        *target = (*target & !0xff) | 0x96;
+        expected.rip += 3;
+        let mut memory = Memory::new(&[rex, opcode, 0x96]);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_mov_imm32_zero_extends_each_destination_and_preserves_flags() {
+    for register in 0..16 {
+        let value = 0xf123_4567u32 + register as u32;
+        let [a, b, c, d] = value.to_le_bytes();
+        let code = [0x41, 0xb8 + (register as u8 & 7), a, b, c, d];
+        let code = if register < 8 { &code[1..] } else { &code };
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[register] = u64::MAX;
+        let mut expected = cpu.clone();
+        expected.gpr[register] = u64::from(value);
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "register {register}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_mov_imm64_preserves_all_immediate_bits() {
+    for register in 0..16 {
+        let value = 0xa1b2_c3d4_8123_4567u64 + register as u64;
+        let mut code = [0; 10];
+        code[0] = 0x48 | u8::from(register >= 8);
+        code[1] = 0xb8 + (register as u8 & 7);
+        code[2..].copy_from_slice(&value.to_le_bytes());
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[register] = value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "register {register}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_mov_qword_sign_extends_c7_immediate() {
+    for (code, register, expected_value) in [
+        (
+            [0x49, 0xc7, 0xc0, 0x00, 0x30, 0x20, 0x00],
+            Register::R8,
+            0x203000,
+        ),
+        (
+            [0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x80],
+            Register::Rbx,
+            0xffff_ffff_8000_0000,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[register as usize] = expected_value;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_extended_imm32_fetch_fault_preserves_destination() {
+    let rip = RIP + 0xffb;
+    let address = rip + 5;
+    let mut memory = memory_with_code_at(&[0x41, 0xbc, 0x02, 0x06, 0], rip);
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(address),
+    };
+    memory.fail_fetch_at = Some((address, MemoryError::Architectural(fault.clone())));
+    let mut cpu = state();
+    cpu.rip = rip;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_call_accepts_signed_rel32_and_pushes_return_address() {
+    for (displacement, target) in [(4i32, RIP + 9), (-8i32, RIP - 3)] {
+        let mut memory = Memory::new(&[
+            0xe8,
+            displacement as u32 as u8,
+            (displacement as u32 >> 8) as u8,
+            (displacement as u32 >> 16) as u8,
+            (displacement as u32 >> 24) as u8,
+        ]);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let flags = cpu.rflags;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cpu.rip, target);
+        assert_eq!(cpu.gpr[Register::Rsp as usize], DATA + 0xff8);
+        assert_eq!(cpu.rflags, flags);
+        let pushed_at = memory.physical(DATA + 0xff8).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(memory.bytes[pushed_at..pushed_at + 8].try_into().unwrap()),
+            RIP + 5
+        );
+        assert_eq!(memory.writes, 1);
+    }
+}
+
+#[test]
+fn firmware_boot_call_fetch_stack_and_noncanonical_faults_are_atomic() {
+    let ring0 = context(InstructionMode::Long64, PrivilegeLevel::Ring0);
+
+    let mut fetch_memory = Memory::new(&[0xe8, 0, 0, 0, 0]);
+    fetch_memory.fail_fetch_at = Some((RIP + 4, page_fault(0x10, RIP + 4)));
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut fetch_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + 4),
+        })
+    );
+    assert_eq!(cpu, before);
+    assert_eq!(fetch_memory.writes, 0);
+
+    let mut stack_memory = Memory::new(&[0xe8, 0, 0, 0, 0]);
+    stack_memory.fail_write = Some(page_fault(0x2, DATA + 0xff8));
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut stack_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x2),
+            linear_address: Some(DATA + 0xff8),
+        })
+    );
+    assert_eq!(cpu, before, "failed push must preserve RSP, RIP and flags");
+    assert_eq!(stack_memory.writes, 1);
+
+    let high_rip = 0x0000_7fff_ffff_fff0;
+    let mut canonical_memory = memory_with_code_at(&[0xe8, 0x20, 0, 0, 0], high_rip);
+    let mut cpu = state();
+    cpu.rip = high_rip;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut canonical_memory,
+        &mut pio,
+        ring0,
+        DEFINED,
+    );
+    assert!(matches!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault { vector: 13, .. })
+    ));
+    assert_eq!(
+        cpu, before,
+        "noncanonical target must be rejected before stack write"
+    );
+    assert_eq!(canonical_memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_direct_jumps_validate_the_signed_target_before_commit() {
+    let boundary = 0x0000_7fff_ffff_fff0;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (code, start, expected_rip, exit) in [
+        (
+            &[0xe9, 0xfc, 0xfc, 0xff, 0xff][..],
+            RIP,
+            RIP - 0x2ff,
+            PagedProbeExit::Retired,
+        ),
+        (&[0xeb, 0xf1][..], RIP, RIP - 13, PagedProbeExit::Retired),
+        (&[0xeb, 0x41][..], RIP, RIP + 0x43, PagedProbeExit::Retired),
+        (
+            &[0xe9, 0x20, 0, 0, 0][..],
+            boundary,
+            boundary,
+            PagedProbeExit::Fault(fault),
+        ),
+    ] {
+        let mut memory = memory_with_code_at(code, start);
+        let mut cpu = state();
+        cpu.rip = start;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rip = expected_rip;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(
+            result.instructions_executed,
+            u64::from(exit == PagedProbeExit::Retired)
+        );
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_pop_qword_commits_both_registers_after_the_stack_read() {
+    let address = DATA + 0x60;
+    let value = 0x0000_0123_4567_89abu64;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for (code, register) in [
+        (&[0x58][..], Register::Rax),
+        (&[0x41, 0x58][..], Register::R8),
+        (&[0x5c][..], Register::Rsp),
+    ] {
+        for (exit, success) in [
+            (PagedProbeExit::Retired, true),
+            (PagedProbeExit::Fault(fault.clone()), false),
+        ] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL + 0x60..DATA_PHYSICAL + 0x68]
+                .copy_from_slice(&value.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[Register::Rsp as usize] = address;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            if success {
+                expected.gpr[Register::Rsp as usize] = address + 8;
+                expected.gpr[register as usize] = value;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(success));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_forms_remain_rejected_by_legacy_profile() {
+    for (bytes, opcode) in [
+        (&[0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39),
+        (&[0x49, 0xd1, 0xef][..], 0xd1),
+        (&[0x8a, 0x1e][..], 0x8a),
+        (&[0x88, 0xd8][..], 0x88),
+        (&[0x44, 0x88, 0xc1][..], 0x88),
+        (&[0x84, 0x84, 0x24, 0x4c, 1, 0, 0][..], 0x84),
+        (&[0x49, 0xc1, 0xc0, 4][..], 0xc1),
+        (&[0x41, 0xff, 0xe1][..], 0xff),
+        (&[0x41, 0xff, 0xe4][..], 0xff),
+        (&[0x0f, 0x01, 0x15, 0x19, 0x40, 0, 0][..], 0x01),
+        (&[0x0f, 0x01, 0x1d, 0x19, 0x40, 0, 0][..], 0x01),
+        (&[0x0f, 0x22, 0xe0][..], 0x22),
+        (&[0x44, 0x0f, 0xb7, 0xd2][..], 0xb7),
+        (&[0x48, 0xcb][..], 0xcb),
+        (&[0x8e, 0xd8][..], 0x8e),
+        (&[0x40, 0xb5, 0x01][..], 0xb5),
+        (&[0x48, 0x83, 0xd0, 0x28][..], 0x83),
+        (&[0x25, 0xff, 0x0f, 0, 0][..], 0x25),
+        (&[0x49, 0x83, 0xda, 0xff][..], 0x83),
+        (&[0x3c, 0xff][..], 0x3c),
+        (&[0x40, 0x20, 0xdd][..], 0x20),
+        (&[0xfd][..], 0xfd),
+        (&[0xf3, 0xa4][..], 0xa4),
+        (&[0xf3, 0x48, 0xa5][..], 0xa5),
+        (&[0x66, 0xc7, 0x00, 0xff, 0xff][..], 0xc7),
+        (&[0x83, 0x7c, 0x24, 0x48, 7][..], 0x83),
+        (&[0x66, 0x41, 0x83, 0xf9, 3][..], 0x83),
+        (&[0x58][..], 0x58),
+        (&[0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6),
+        (&[0x48, 0x89, 0xdf][..], 0x89),
+        (&[0x4d, 0x09, 0xfd][..], 0x09),
+        (&[0xe9, 0xfc, 0xfc, 0xff, 0xff][..], 0xe9),
+        (&[0x48, 0xbe, 0, 0, 0, 0, 0x10, 0, 0, 0][..], 0xbe),
+        (&[0x66, 0x89, 0x58, 0x4c][..], 0x89),
+        (&[0x44, 0x08, 0xd1][..], 0x08),
+        (&[0x89, 0x70, 0x48][..], 0x89),
+        (&[0x0f, 0x93, 0xc1][..], 0x93),
+        (&[0x48, 0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7),
+        (&[0x41, 0x0f, 0xa3, 0xec][..], 0xa3),
+        (&[0x85, 0xc0][..], 0x85),
+        (&[0x41, 0xf6, 0xc2, 2][..], 0xf6),
+        (&[0x48, 0xff, 0xc0][..], 0xff),
+        (&[0x80, 0x7c, 0x2c, 8, 1][..], 0x80),
+        (&[0x80, 0x7c, 0x06, 0x60, 0][..], 0x80),
+        (&[0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),
+        (&[0x41, 0x8b, 0x6c, 0x1b, 0xd8][..], 0x8b),
+        (&[0x4d, 0x8b, 0x7c, 0x1b, 0xe0][..], 0x8b),
+        (&[0x41, 0xbc, 0x02, 0x06, 0, 0][..], 0xbc),
+        (&[0x49, 0x83, 0xc3, 0x28][..], 0x83),
+        (&[0x48, 0x89, 0x3c, 0x24][..], 0x89),
+        (&[0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),
+        (&[0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),
+        (&[0x48, 0x89, 0xc8][..], 0x89),
+        (&[0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0][..], 0xc7),
+        (&[0x89, 0xc9][..], 0x89),
+        (&[0xff, 0x24, 0xcd, 0xb8, 0x26, 0x20, 0][..], 0xff),
+        (&[0xb9, 4, 0, 0, 0][..], 0xb9),
+        (&[0xe8, 0, 0, 0, 0][..], 0xe8),
+        (&[0x72, 0x2c][..], 0x72),
+        (&[0x0f, 0x8e, 0x11, 1, 0, 0][..], 0x8e),
+        (&[0x46, 0x33, 0x24, 0x8d, 0xe0, 0x27, 0x20, 0][..], 0x33),
+        (&[0x46, 0x33, 0x0c, 0xb5, 0xe0, 0x27, 0x20, 0][..], 0x33),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode });
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_cmp_register_and_memory_uses_operand_order_and_width() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    for (code, offset, width, memory_value, register, register_value, flags) in [
+        (
+            &[0x48, 0x39, 0x6c, 0x24, 0x20][..],
+            0x20,
+            8,
+            1u64,
+            Register::Rbp,
+            2,
+            0x095,
+        ),
+        (
+            &[0x3b, 0x43, 0x18][..],
+            0x18,
+            4,
+            8,
+            Register::Rax,
+            0xdead_beef_0000_0007,
+            0x095,
+        ),
+        (
+            &[0x66, 0x39, 0x0b][..],
+            0,
+            2,
+            0x1234,
+            Register::Rcx,
+            0xaabb_ccdd_eeff_1234,
+            0x044,
+        ),
+        (&[0x3a, 0x03][..], 0, 1, 0x7f, Register::Rax, 0x80, 0x810),
+    ] {
+        let address = DATA + offset;
+        let index = DATA_PHYSICAL + offset as usize;
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        };
+        for (exit, success) in [
+            (PagedProbeExit::Retired, true),
+            (PagedProbeExit::Fault(fault.clone()), false),
+        ] {
+            let mut memory = Memory::new(code);
+            memory.bytes[index..index + 8].fill(0xA5);
+            memory.bytes[index..index + width]
+                .copy_from_slice(&memory_value.to_le_bytes()[..width]);
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rbx as usize] = DATA;
+            cpu.gpr[register as usize] = register_value;
+            cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
+            let mut expected = cpu.clone();
+            let initial_defined = DEFINED & !ARITHMETIC_FLAGS;
+            let mut expected_defined = initial_defined;
+            if success {
+                expected.rflags = 0x602 | flags;
+                expected.rip += code.len() as u64;
+                expected_defined |= ARITHMETIC_FLAGS;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                initial_defined,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(success));
+            assert_eq!(result.rflags_defined, expected_defined);
+            assert_eq!(cpu, expected, "{code:02x?}");
+            assert_eq!(memory.read_addresses, [(address, width)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cmp_memory_reads_the_decoded_width_and_commits_flags_on_success() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    for (code, address, width, value, flags) in [
+        (&[0x80, 0x7c, 0x2c, 8, 1][..], DATA + 0x10, 1, 0, 0x95),
+        (&[0x80, 0x7c, 0x06, 0x60, 0][..], DATA + 0x84, 1, 0, 0x44),
+        (&[0x83, 0x7c, 0x24, 0x48, 7][..], DATA + 0x48, 4, 7, 0x44),
+        (
+            &[0x66, 0x81, 0x3b, 0xff, 0xff][..],
+            DATA + 0x90,
+            2,
+            0xffff,
+            0x44,
+        ),
+        (
+            &[0x48, 0x83, 0x3b, 0xff][..],
+            DATA + 0x90,
+            8,
+            u64::MAX,
+            0x44,
+        ),
+    ] {
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        };
+        for exit in [
+            PagedProbeExit::Retired,
+            PagedProbeExit::Fault(fault.clone()),
+        ] {
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rbp as usize] = 8;
+            cpu.gpr[Register::Rsi as usize] = DATA + 0x20;
+            cpu.gpr[Register::Rax as usize] = 4;
+            cpu.gpr[Register::Rbx as usize] = DATA + 0x90;
+            cpu.rflags = 0x602;
+            let mut expected = cpu.clone();
+            let mut expected_defined = DEFINED;
+            let mut memory = Memory::new(code);
+            let offset = DATA_PHYSICAL + (address - DATA) as usize;
+            memory.bytes[offset..offset + 8].fill(0xA5);
+            memory.bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            let retires = exit == PagedProbeExit::Retired;
+            if retires {
+                expected.rflags |= flags;
+                expected_defined |= ARITHMETIC_FLAGS;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retires));
+            assert_eq!(result.rflags_defined, expected_defined);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, width)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_store_byte_writes_only_the_addressed_byte() {
+    let position = DATA_PHYSICAL + 0x10;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(DATA + 0x10),
+    };
+    for exit in [
+        PagedProbeExit::Retired,
+        PagedProbeExit::Fault(fault.clone()),
+    ] {
+        let mut memory = Memory::new(&[0xc6, 0x44, 0x2c, 8, 0x80]);
+        memory.bytes[position - 1..=position + 1].fill(0xa5);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rbp as usize] = 8;
+        let mut expected_cpu = cpu.clone();
+        let mut expected_memory = [0xa5; 3];
+        let retires = exit == PagedProbeExit::Retired;
+        if retires {
+            expected_cpu.rip += 5;
+            expected_memory[1] = 0x80;
+        } else {
+            memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retires));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected_cpu);
+        assert_eq!((memory.reads, memory.writes), (0, 1));
+        assert_eq!(memory.write_addresses, [DATA + 0x10]);
+        assert_eq!(memory.bytes[position - 1..=position + 1], expected_memory);
+    }
+}
+
+#[test]
+fn firmware_boot_immediate_store_uses_the_decoded_width_and_commits_after_write() {
+    for (code, displacement, width, value) in [
+        (&[0x66, 0xc7, 0x00, 0xff, 0xff][..], 0, 2, 0xffff),
+        (
+            &[0xc7, 0x40, 0x30, 0x78, 0x56, 0x34, 0x92][..],
+            0x30,
+            4,
+            0x9234_5678,
+        ),
+        (
+            &[0x48, 0xc7, 0x40, 0x28, 1, 0, 0, 0x80][..],
+            0x28,
+            8,
+            0xffff_ffff_8000_0001u64,
+        ),
+    ] {
+        let address = DATA + displacement;
+        let offset = DATA_PHYSICAL + displacement as usize;
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(address),
+        };
+        for (exit, success) in [
+            (PagedProbeExit::Retired, true),
+            (PagedProbeExit::Fault(fault.clone()), false),
+        ] {
+            let mut memory = Memory::new(code);
+            memory.bytes[offset - 1..=offset + 8].fill(0xA5);
+            let mut cpu = state();
+            cpu.gpr[Register::Rax as usize] = DATA;
+            let mut expected_cpu = cpu.clone();
+            let mut expected_bytes = [0xA5; 10];
+            if success {
+                expected_cpu.rip += code.len() as u64;
+                expected_bytes[1..1 + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            } else {
+                memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(success));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected_cpu);
+            assert_eq!((memory.reads, memory.writes), (0, 1));
+            assert_eq!(memory.write_addresses, [address]);
+            assert_eq!(memory.bytes[offset - 1..=offset + 8], expected_bytes);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_setcc_changes_only_the_decoded_byte_alias() {
+    let initial = 0xaabb_ccdd_eeff_8877;
+    let defined = DEFINED & !1;
+    for (code, register, flags, expected_value) in [
+        (
+            &[0x0f, 0x93, 0xc1][..],
+            Register::Rcx,
+            0x602,
+            0xaabb_ccdd_eeff_8801,
+        ),
+        (
+            &[0x0f, 0x93, 0xc1][..],
+            Register::Rcx,
+            0x603,
+            0xaabb_ccdd_eeff_8800,
+        ),
+        (
+            &[0x0f, 0x94, 0xc4][..],
+            Register::Rax,
+            0x642,
+            0xaabb_ccdd_eeff_0177,
+        ),
+        (
+            &[0x40, 0x0f, 0x95, 0xc4][..],
+            Register::Rsp,
+            0x602,
+            0xaabb_ccdd_eeff_8801,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = initial;
+        cpu.rflags = flags;
+        let mut expected = cpu.clone();
+        expected.gpr[register as usize] = expected_value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_movzx_word_register_clears_the_destination_upper_bits() {
+    let mut memory = Memory::new(&[0x44, 0x0f, 0xb7, 0xd2]);
+    let mut cpu = state();
+    cpu.gpr[Register::Rdx as usize] = 0xaabb_ccdd_eeff_8796;
+    cpu.gpr[Register::R10 as usize] = u64::MAX;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R10 as usize] = 0x8796;
+    expected.rip += 4;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_movzx_reads_the_decoded_width_and_preserves_state_on_fault() {
+    for (code, destination, offset, width, value) in [
+        (
+            &[0x0f, 0xb6, 0x44, 0x24, 0x10][..],
+            Register::Rax,
+            0x10,
+            1,
+            0xe7u64,
+        ),
+        (&[0x0f, 0xb7, 0x17][..], Register::Rdx, 0, 2, 0xed23),
+        (&[0x0f, 0xb7, 0x57, 0x02][..], Register::Rdx, 2, 2, 0xab54),
+        (&[0x0f, 0xb7, 0x47, 0x04][..], Register::Rax, 4, 2, 0x9401),
+    ] {
+        let address = DATA + offset as u64;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        };
+        for (exit, success) in [
+            (PagedProbeExit::Retired, true),
+            (PagedProbeExit::Fault(fault.clone()), false),
+        ] {
+            let mut memory = Memory::new(code);
+            let bytes = DATA_PHYSICAL + offset;
+            memory.bytes[bytes..bytes + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            let mut cpu = state();
+            cpu.gpr[destination as usize] = u64::MAX;
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rdi as usize] = DATA;
+            let mut expected = cpu.clone();
+            if success {
+                expected.gpr[destination as usize] = value;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(success));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, width)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_register_transfers_use_decoded_register_views() {
+    for (code, destination, source, input, expected_value) in [
+        (
+            &[0x88, 0xd8][..],
+            Register::Rax,
+            Register::Rbx,
+            0x8000_0123_4567_89ab,
+            (gpr_patterns()[Register::Rax as usize] & !0xff) | 0xab,
+        ),
+        (
+            &[0x44, 0x88, 0xc1][..],
+            Register::Rcx,
+            Register::R8,
+            0xfedc_ba98_7654_32a5,
+            (gpr_patterns()[Register::Rcx as usize] & !0xff) | 0xa5,
+        ),
+        (
+            &[0x48, 0x89, 0xdf][..],
+            Register::Rdi,
+            Register::Rbx,
+            0x8000_0123_4567_89ab,
+            0x8000_0123_4567_89ab,
+        ),
+        (
+            &[0x4d, 0x8b, 0xef][..],
+            Register::R13,
+            Register::R15,
+            0x9234_5678_9abc_def0,
+            0x9234_5678_9abc_def0,
+        ),
+        (
+            &[0x89, 0xc8][..],
+            Register::Rax,
+            Register::Rcx,
+            0xaabb_ccdd_eeff_807f,
+            0xeeff_807f,
+        ),
+        (
+            &[0x45, 0x8b, 0xcd][..],
+            Register::R9,
+            Register::R13,
+            0xfedc_ba98_7654_3210,
+            0x7654_3210,
+        ),
+        (
+            &[0x0f, 0xb6, 0xc4][..],
+            Register::Rax,
+            Register::Rax,
+            0xaabb_ccdd_eeff_807f,
+            0x80,
+        ),
+        (
+            &[0x40, 0x0f, 0xb6, 0xc4][..],
+            Register::Rax,
+            Register::Rsp,
+            0xaa00_0000_0000_807f,
+            0x7f,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[source as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = expected_value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_reads_diagnostic_bytes_without_changing_upper_register_bits() {
+    let address = DATA + 0x10;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for code in [&[0x8a, 0x1e][..], &[0x8a, 0x1c, 0x07][..]] {
+        for fail in [false, true] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL + 0x10] = 0xab;
+            if fail {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut cpu = state();
+            cpu.gpr[Register::Rsi as usize] = address;
+            cpu.gpr[Register::Rdi as usize] = DATA;
+            cpu.gpr[Register::Rax as usize] = 0x10;
+            cpu.gpr[Register::Rbx as usize] = 0x1234_5678_9abc_def0;
+            let mut expected = cpu.clone();
+            if !fail {
+                expected.gpr[Register::Rbx as usize] = 0x1234_5678_9abc_deab;
+                expected.rip += code.len() as u64;
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(
+                result.exit,
+                if fail {
+                    PagedProbeExit::Fault(fault.clone())
+                } else {
+                    PagedProbeExit::Retired
+                }
+            );
+            assert_eq!(result.instructions_executed, u64::from(!fail));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 1)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_indexed_loads_commit_only_on_read_success() {
+    for (code, destination, offset, width, value) in [
+        (
+            [0x41, 0x8b, 0x6c, 0x1b, 0xd8],
+            Register::Rbp,
+            0x10,
+            4,
+            0x8000_0001u64,
+        ),
+        (
+            [0x4d, 0x8b, 0x7c, 0x1b, 0xe0],
+            Register::R15,
+            0x18,
+            8,
+            0xfeed_beef_8000_0001,
+        ),
+    ] {
+        let address = DATA + offset as u64;
+        let start = DATA_PHYSICAL + offset;
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        };
+        for exit in [
+            PagedProbeExit::Retired,
+            PagedProbeExit::Fault(fault.clone()),
+        ] {
+            let mut memory = Memory::new(&code);
+            memory.bytes[start..start + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[Register::R11 as usize] = DATA + 0x30;
+            cpu.gpr[Register::Rbx as usize] = 8;
+            let mut expected = cpu.clone();
+            let retires = exit == PagedProbeExit::Retired;
+            if retires {
+                expected.gpr[destination as usize] = value;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut pio = Pio::default();
+
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retires));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, width)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_register_arithmetic_uses_the_decoded_width_and_flags() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    let r11 = Register::R11 as usize;
+    let rsi = Register::Rsi as usize;
+    let rax = Register::Rax as usize;
+    let rcx = Register::Rcx as usize;
+    let rbx = Register::Rbx as usize;
+    for (code, destination, input, expected_output, arithmetic_flags) in [
+        (
+            &[0x49, 0x83, 0xc3, 0x28][..],
+            r11,
+            u64::MAX - 0x27,
+            0,
+            0x055,
+        ),
+        (
+            &[0x83, 0xc6, 0xff][..],
+            rsi,
+            0xdead_beef_0000_0001,
+            0,
+            0x055,
+        ),
+        (
+            &[0x48, 0x29, 0xc8][..],
+            rax,
+            0x8000_0000_0000_0000,
+            0x7fff_ffff_ffff_ffff,
+            0x814,
+        ),
+        (
+            &[0x49, 0x83, 0xda, 0xff][..],
+            Register::R10 as usize,
+            0,
+            0,
+            0x055,
+        ),
+        (
+            &[0x49, 0x19, 0xc8][..], // SBB R8,RCX
+            Register::R8 as usize,
+            0,
+            u64::MAX - 1,
+            0x091,
+        ),
+        (&[0x48, 0x39, 0xce][..], rsi, 1, 1, 0x044),
+        (&[0x80, 0xfb, 2][..], rbx, 0xdead_0002, 0xdead_0002, 0x044),
+        (&[0x3c, 0xff][..], rax, 0xdead_00ff, 0xdead_00ff, 0x044),
+        (
+            &[0x83, 0xfb, 5][..],
+            rbx,
+            0xdead_beef_0000_0005,
+            0xdead_beef_0000_0005,
+            0x044,
+        ),
+        (
+            &[0x66, 0x41, 0x83, 0xf9, 3][..],
+            Register::R9 as usize,
+            0xaabb_ccdd_eeff_0003,
+            0xaabb_ccdd_eeff_0003,
+            0x044,
+        ),
+        (
+            &[0x66, 0x83, 0xc0, 0xff][..],
+            rax,
+            0xdead_beef_1234_0001,
+            0xdead_beef_1234_0000,
+            0x055,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[destination] = input;
+        cpu.gpr[rcx] = 1;
+        cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.gpr[destination] = expected_output;
+        expected.rflags = 0x602 | arithmetic_flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let initial_defined = DEFINED & !ARITHMETIC_FLAGS;
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, initial_defined | ARITHMETIC_FLAGS);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_test_byte_reads_the_decoded_register_aliases() {
+    const AF: u64 = 1 << 4;
+    for (code, reg, input, flags) in [
+        (
+            &[0x41, 0xf6, 0xc2, 2][..],
+            Register::R10,
+            0xeedd_ccbb_7766_5502,
+            0x612,
+        ),
+        (
+            &[0xf6, 0xc4, 0x80][..],
+            Register::Rax,
+            0x0000_0000_0000_8000,
+            0x692,
+        ),
+        (
+            &[0x40, 0xf6, 0xc4, 0x80][..],
+            Register::Rsp,
+            0x0000_0000_0000_807f,
+            0x656,
+        ),
+        (
+            &[0xa8, 0x01][..],
+            Register::Rax,
+            0x0000_0000_0000_8001,
+            0x612,
+        ),
+        (
+            &[0x40, 0x84, 0xf1][..],
+            Register::Rsi,
+            0x0123_4567_89ab_cd81,
+            0x696,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0x81;
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED & !AF);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_inc_dec_preserve_cf_and_its_definedness() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    const CF: u64 = 1;
+    for (code, reg, input, result, old_cf, old_cf_defined, flags) in [
+        (
+            &[0x48, 0xff, 0xc0][..],
+            Register::Rax,
+            u64::MAX,
+            0,
+            0,
+            CF,
+            0x054,
+        ),
+        (
+            &[0x49, 0xff, 0xc3][..],
+            Register::R11,
+            0x7fff_ffff_ffff_ffff,
+            0x8000_0000_0000_0000,
+            CF,
+            0,
+            0x894,
+        ),
+        (
+            &[0x48, 0xff, 0xc9][..],
+            Register::Rcx,
+            0x8000_0000_0000_0000,
+            0x7fff_ffff_ffff_ffff,
+            CF,
+            CF,
+            0x814,
+        ),
+        (&[0x49, 0xff, 0xc8][..], Register::R8, 1, 0, 0, 0, 0x044),
+        (
+            &[0xff, 0xcf][..],
+            Register::Rdi,
+            0x1234_5678_8000_0000,
+            0x7fff_ffff,
+            CF,
+            CF,
+            0x814,
+        ),
+        (
+            &[0x41, 0xff, 0xc0][..],
+            Register::R8,
+            u64::MAX,
+            0,
+            CF,
+            0,
+            0x054,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0x602 | (ARITHMETIC_FLAGS & !CF) | old_cf;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = result;
+        expected.rflags = 0x602 | flags | old_cf;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let initial_defined = (DEFINED & !ARITHMETIC_FLAGS) | old_cf_defined;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.rflags_defined,
+            initial_defined | (ARITHMETIC_FLAGS & !CF)
+        );
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_accepts_compiler_nop_padding_without_address_access() {
+    for code in [
+        &[0x90][..],
+        &[0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0][..],
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        let mut expected = cpu.clone();
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_memory_indirect_call_checks_target_before_push() {
+    let next_rip = RIP + 6;
+    let disp = (DATA - next_rip) as u32;
+    let mut code = [0x00; 6];
+    code[..2].copy_from_slice(&[0xff, 0x15]);
+    code[2..].copy_from_slice(&disp.to_le_bytes());
+    const STACK_OFFSET: u64 = 0x100;
+    const TARGET: u64 = 0xffff_8000_0000_1234;
+    let stack_address = DATA + STACK_OFFSET - 8;
+    let stack_offset = stack_address as usize - DATA as usize + DATA_PHYSICAL;
+    let read_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    let write_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(stack_address),
+    };
+    let gp = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (target, read_error, write_error, exit) in [
+        (TARGET, None, None, PagedProbeExit::Retired),
+        (
+            TARGET,
+            Some(read_fault.clone()),
+            None,
+            PagedProbeExit::Fault(read_fault),
+        ),
+        (0x0000_8000_0000_1234, None, None, PagedProbeExit::Fault(gp)),
+        (
+            TARGET,
+            None,
+            Some(write_fault.clone()),
+            PagedProbeExit::Fault(write_fault),
+        ),
+    ] {
+        let can_write = read_error.is_none() && target == TARGET;
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8].copy_from_slice(&target.to_le_bytes());
+        memory.fail_read = read_error.map(MemoryError::Architectural);
+        memory.fail_write = write_error.map(MemoryError::Architectural);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + STACK_OFFSET;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        if retired {
+            expected.rip = TARGET;
+            expected.gpr[Register::Rsp as usize] = stack_address;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA, 8)]);
+        assert_eq!(memory.writes, usize::from(can_write));
+        let expected_value = if retired { next_rip } else { 0 };
+        assert_eq!(
+            memory.bytes[stack_offset..stack_offset + 8],
+            expected_value.to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn firmware_boot_push_qword_saves_original_register_before_updating_rsp() {
+    for (code, register) in [(0x54, Register::Rsp), (0x56, Register::Rsi)] {
+        let mut memory = Memory::new(&[code]);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+        cpu.gpr[Register::Rsi as usize] = 0x0123_4567_abcd_ef01;
+        let mut expected = cpu.clone();
+        expected.rip += 1;
+        expected.gpr[Register::Rsp as usize] -= 8;
+        let value = cpu.gpr[register as usize];
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.writes, 1);
+        assert_eq!(
+            memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100],
+            value.to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn firmware_nvram_push_reads_the_old_rsp_slot_before_writing() {
+    let value = 0x8877_6655_4433_2211u64.to_le_bytes();
+    for (code, source) in [
+        (&[0xff, 0xb4, 0x24, 0xc8, 0, 0, 0][..], 0x1c8),
+        (&[0xff, 0x74, 0x24, 0x68][..], 0x168),
+    ] {
+        for fault_write in [None, Some(false), Some(true)] {
+            let mut memory = Memory::new(code);
+            let source_start = DATA_PHYSICAL + source;
+            let source_address = DATA + source as u64;
+            memory.bytes[source_start..source_start + 8].copy_from_slice(&value);
+            let old_stack = [0x55; 8];
+            memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100].copy_from_slice(&old_stack);
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+            let mut expected = cpu.clone();
+            let exit = if let Some(write) = fault_write {
+                let address = if write { DATA + 0xf8 } else { source_address };
+                let fault = ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(u32::from(write) * 2),
+                    linear_address: Some(address),
+                };
+                if write {
+                    memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+                } else {
+                    memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+                }
+                PagedProbeExit::Fault(fault)
+            } else {
+                expected.gpr[Register::Rsp as usize] -= 8;
+                expected.rip += code.len() as u64;
+                PagedProbeExit::Retired
+            };
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(
+                result.instructions_executed,
+                u64::from(fault_write.is_none())
+            );
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(source_address, 8)]);
+            assert_eq!(memory.writes, usize::from(fault_write != Some(false)));
+            let expected_bytes = if fault_write.is_none() {
+                value
+            } else {
+                old_stack
+            };
+            assert_eq!(
+                memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100],
+                expected_bytes
+            );
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_register_indirect_call_uses_the_extended_register() {
+    let code = [0x41, 0xff, 0xd6]; // CALL R14
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R14 as usize] = RIP + 0x80;
+    cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let before = cpu.clone();
+    let base = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+    assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0xff });
+    assert_eq!(cpu, before);
+
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    let mut expected = before;
+    expected.rip = RIP + 0x80;
+    expected.gpr[Register::Rsp as usize] = DATA + 0xf8;
+    assert_eq!(cpu, expected);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 1);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL + 0xf8..DATA_PHYSICAL + 0x100],
+        (RIP + code.len() as u64).to_le_bytes()
+    );
+}
+
+#[test]
+fn firmware_boot_crc_byte_xor_reads_first_and_preserves_upper_rax() {
+    const AF: u64 = 1 << 4;
+    const PF: u64 = 1 << 2;
+    const ZF: u64 = 1 << 6;
+    const LOGIC_FLAGS: u64 = 0x8c5;
+    let code = [0x42, 0x32, 0x04, 0x09]; // XOR AL,[RCX+R9]
+    let address = DATA + 5;
+    let access_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fault in [None, Some(access_fault)] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 5] = 0xa5;
+        memory.fail_read = fault.clone().map(MemoryError::Architectural);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x1234_4567_89ab_cda5;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::R9 as usize] = 5;
+        cpu.rflags = 2;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if let Some(fault) = fault {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, DEFINED);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::Rax as usize] &= !0xff;
+            expected.rflags |= ZF | PF;
+            assert_eq!(result.rflags_defined, (DEFINED | LOGIC_FLAGS) & !AF);
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_cli_clears_only_if_and_keeps_prefixed_forms_unsupported() {
+    const IF: u64 = 1 << 9;
+    for (code, firmware, exit) in [
+        (&[0xfa][..], true, PagedProbeExit::Retired),
+        (
+            &[0xfa][..],
+            false,
+            PagedProbeExit::Unsupported { opcode: 0xfa },
+        ),
+        (
+            &[0x66, 0xfa][..],
+            true,
+            PagedProbeExit::Unsupported { opcode: 0xfa },
+        ),
+        (
+            &[0xfb][..],
+            false,
+            PagedProbeExit::Unsupported { opcode: 0xfb },
+        ),
+        (
+            &[0x66, 0xfb][..],
+            true,
+            PagedProbeExit::Unsupported { opcode: 0xfb },
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let retires = exit == PagedProbeExit::Retired;
+        if retires {
+            expected.rflags &= !IF;
+            expected.rip += code.len() as u64;
+        }
+        let mut pio = Pio::default();
+        let result = if firmware {
+            execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        } else {
+            execute::step_paged_probe(
+                PagedCpl0ProbeV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        };
+        assert_eq!(result.exit, exit, "{code:02x?}");
+        assert_eq!(result.instructions_executed, u64::from(retires));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_qword_add_from_memory_commits_only_after_read() {
+    let code = [0x48, 0x03, 0x44, 0x24, 0x60];
+    let address = DATA + 0x60;
+    let position = DATA_PHYSICAL + 0x60;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[position..position + 8].copy_from_slice(&1u64.to_le_bytes());
+        if faulted {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rax as usize] = u64::MAX;
+        cpu.rflags = 0x602;
+        let mut expected = cpu.clone();
+        let (expected_exit, expected_defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0x657;
+            expected.gpr[Register::Rax as usize] = 0;
+            (PagedProbeExit::Retired, DEFINED | 0x10)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, expected_defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_dword_add_from_memory_commits_only_after_read() {
+    let code = [0x46, 0x03, 0x4c, 0x06, 0x10];
+    let address = DATA + 0x10;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        let at = DATA_PHYSICAL + 0x10;
+        memory.bytes[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        if faulted {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rsi as usize] = DATA;
+        cpu.gpr[Register::R8 as usize] = 0;
+        cpu.gpr[Register::R9 as usize] = 0x1234_abcd_7fff_ffff;
+        cpu.rflags = 0x602;
+        let mut expected = cpu.clone();
+        let (exit, defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0xe96;
+            expected.gpr[Register::R9 as usize] = 0x8000_0000;
+            (PagedProbeExit::Retired, DEFINED | 0x10)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 4)]);
+        assert_eq!(memory.writes, 0);
+        assert_eq!(memory.bytes[at..at + 4], 1u32.to_le_bytes());
+    }
+}
+
+#[test]
+fn firmware_boot_dword_sub_from_memory_commits_only_after_read() {
+    let code = [0x45, 0x2b, 0x51, 0xec];
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 4].copy_from_slice(&1u32.to_le_bytes());
+        if faulted {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::R9 as usize] = DATA + 0x14;
+        cpu.gpr[Register::R10 as usize] = 0x1234_abcd_8000_0000;
+        cpu.rflags = 0x602;
+        let mut expected = cpu.clone();
+        let (exit, defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0xe16;
+            expected.gpr[Register::R10 as usize] = 0x7fff_ffff;
+            (PagedProbeExit::Retired, DEFINED | 0x10)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA, 4)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_memory_arithmetic_commits_only_after_write() {
+    for (code, register, source, width, offset, initial, result_value, flags) in [
+        (
+            &[0x48, 0x83, 0x44, 0x24, 0x10, 0x09][..],
+            Register::Rax,
+            0,
+            8,
+            0x10,
+            0xff,
+            8u64,
+            0x613,
+        ),
+        (
+            &[0x48, 0x83, 0x44, 0x24, 0x38, 0x09][..],
+            Register::Rax,
+            0,
+            8,
+            0x38,
+            0xff,
+            8,
+            0x613,
+        ),
+        (
+            &[0x48, 0x83, 0x84, 0x24, 0xc0, 0, 0, 0, 2][..],
+            Register::Rax,
+            0,
+            8,
+            0xc0,
+            0xff,
+            1,
+            0x613,
+        ),
+        (
+            &[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..],
+            Register::Rax,
+            0,
+            8,
+            0xc8,
+            0xff,
+            1,
+            0x613,
+        ),
+        (
+            &[0x48, 0x01, 0x44, 0x24, 0x30][..],
+            Register::Rax,
+            1,
+            8,
+            0x30,
+            0xff,
+            0,
+            0x657,
+        ),
+        (
+            &[0x01, 0x7c, 0x24, 0x34][..],
+            Register::Rdi,
+            0xaabb_ccdd_0000_0001,
+            4,
+            0x34,
+            0xff,
+            0,
+            0x657,
+        ),
+        (
+            &[0x48, 0x29, 0x84, 0x24, 0x80, 0, 0, 0][..],
+            Register::Rax,
+            1,
+            8,
+            0x80,
+            0,
+            u64::MAX,
+            0x697,
+        ),
+    ] {
+        let address = DATA + offset as u64;
+        let position = DATA_PHYSICAL + offset;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(address),
+        };
+        for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
+            let mut memory = Memory::new(code);
+            memory.bytes[position - 1..position + width + 1].fill(0xa5);
+            memory.bytes[position..position + width].fill(initial);
+            if fail_read {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            if fail_write {
+                memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[register as usize] = source;
+            cpu.rflags = 0x602;
+            let mut expected = cpu.clone();
+            let mut expected_memory = [0xa5; 10];
+            expected_memory[1..1 + width].fill(initial);
+            let faulted = fail_read || fail_write;
+            let (expected_exit, expected_defined) = if faulted {
+                (PagedProbeExit::Fault(fault.clone()), DEFINED)
+            } else {
+                expected.rip += code.len() as u64;
+                expected.rflags = flags;
+                expected_memory[1..1 + width].copy_from_slice(&result_value.to_le_bytes()[..width]);
+                (PagedProbeExit::Retired, DEFINED | 0x10)
+            };
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, u64::from(!faulted));
+            assert_eq!(result.rflags_defined, expected_defined);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, width)]);
+            assert_eq!(memory.writes, usize::from(!fail_read));
+            assert_eq!(
+                memory.bytes[position - 1..position + width + 1],
+                expected_memory[..width + 2]
+            );
+        }
+    }
+}
+
+#[test]
+fn load_image_region_addition_requires_the_firmware_profile_and_exact_form() {
+    for (code, firmware) in [
+        (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], false),
+        (&[0x48, 0x83, 0x84, 0x24, 0xc0, 0, 0, 0, 2][..], false),
+        (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 3][..], true),
+        (&[0x48, 0x83, 0x84, 0x24, 0xd0, 0, 0, 0, 2][..], true),
+        (&[0x67, 0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], true),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = if firmware {
+            execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        } else {
+            execute::step_paged_probe(
+                PagedCpl0ProbeV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            )
+        };
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x83 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_register_cmov_reads_the_condition_and_preserves_flags() {
+    for (code, dst, src, flags, taken) in [
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            0,
+            true,
+        ),
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            1,
+            false,
+        ),
+        (
+            [0x49, 0x0f, 0x47, 0xc6],
+            Register::Rax,
+            Register::R14,
+            0x40,
+            false,
+        ),
+        (
+            [0x4d, 0x0f, 0x4c, 0xc7],
+            Register::R8,
+            Register::R15,
+            0x800,
+            true,
+        ),
+        (
+            [0x4d, 0x0f, 0x4c, 0xc7],
+            Register::R8,
+            Register::R15,
+            0x880,
+            false,
+        ),
+        (
+            [0x44, 0x0f, 0x44, 0xc1],
+            Register::R8,
+            Register::Rcx,
+            0x40,
+            true,
+        ),
+        (
+            [0x44, 0x0f, 0x44, 0xc1],
+            Register::R8,
+            Register::Rcx,
+            0,
+            false,
+        ),
+    ] {
+        let mut cpu = state();
+        cpu.gpr[dst as usize] = 0x3210_abcd_ffff_ffff;
+        cpu.gpr[src as usize] = 0xfedc_ba98_1234_5678;
+        cpu.rflags = 0x602 | flags;
+        let mut expected = cpu.clone();
+        expected.rip += code.len() as u64;
+        if taken {
+            expected.gpr[dst as usize] = expected.gpr[src as usize];
+        }
+        if code[0] == 0x44 {
+            expected.gpr[dst as usize] = u64::from(expected.gpr[dst as usize] as u32);
+        }
+        let mut memory = Memory::new(&code);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}, flags {flags:#x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_qword_shr_to_memory_updates_flags_only_after_store() {
+    const INITIAL: u64 = 0x1234_5678_9800;
+    const SHIFTED: u64 = 0x1_2345_6789;
+    const ADDRESS: u64 = DATA + 0x50;
+    const AT: usize = DATA_PHYSICAL + 0x50;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(ADDRESS),
+    };
+    for (count, read_error, write_error, exit, value) in [
+        (12, false, false, PagedProbeExit::Retired, SHIFTED),
+        (64, false, false, PagedProbeExit::Retired, INITIAL),
+        (
+            12,
+            true,
+            false,
+            PagedProbeExit::Fault(fault.clone()),
+            INITIAL,
+        ),
+        (
+            12,
+            false,
+            true,
+            PagedProbeExit::Fault(fault.clone()),
+            INITIAL,
+        ),
+    ] {
+        let code = [0x48, 0xc1, 0x6c, 0x24, 0x50, count];
+        let mut memory = Memory::new(&code);
+        memory.bytes[AT..AT + 8].copy_from_slice(&INITIAL.to_le_bytes());
+        if read_error {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        if write_error {
+            memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 0xe02;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        let mut expected_defined = DEFINED;
+        if retired {
+            expected.rip += code.len() as u64;
+            if count == 12 {
+                expected.rflags = 0xe03;
+                expected_defined &= !0x800;
+            }
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(result.rflags_defined, expected_defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(ADDRESS, 8)]);
+        assert_eq!(memory.writes, usize::from(!read_error));
+        assert_eq!(memory.bytes[AT..AT + 8], value.to_le_bytes());
+    }
+}
+
+#[test]
+fn firmware_boot_word_immediate_preserves_the_upper_extended_register() {
+    let code = [0x66, 0x41, 0xbb, 0x01, 0x00];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R11 as usize] = 0xaabb_ccdd_1122_ffff;
+    cpu.rflags = 0xed7;
+    let before = cpu.clone();
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xbb });
+    assert_eq!(cpu, before);
+
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R11 as usize] = 0xaabb_ccdd_1122_0001;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_byte_masks_change_only_the_target_and_logical_flags() {
+    for (code, destination, initial, value, flags) in [
+        (&[0x24, 0x01][..], Register::Rax, 0xe2, 0x00, 0x656),
+        (&[0x24, 0x3f][..], Register::Rax, 0xa7, 0x27, 0x616),
+        (&[0x24, 0x1f][..], Register::Rax, 0xc3, 0x03, 0x616),
+        (&[0x24, 0x0f][..], Register::Rax, 0xe2, 0x02, 0x612),
+        (&[0x0c, 0x03][..], Register::Rax, 0x00, 0x03, 0x616),
+        (&[0x0c, 0x80][..], Register::Rax, 0x05, 0x85, 0x692),
+        (&[0x0c, 0xc0][..], Register::Rax, 0x03, 0xc3, 0x696),
+        (&[0x80, 0xca, 0x80][..], Register::Rdx, 0x35, 0xb5, 0x692),
+        (&[0x80, 0xc9, 0xe0][..], Register::Rcx, 0x01, 0xe1, 0x696),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[destination as usize] = 0x1122_3344_5566_7700 | initial;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = 0x1122_3344_5566_7700 | value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_byte_and_immediate_uses_the_rex_low_byte_alias() {
+    let code = [0x40, 0x80, 0xe5, 0x01];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rbp as usize] = 0x1122_3344_5566_77a7;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rbp as usize] = 0x1122_3344_5566_7701;
+    expected.rflags = 0x612;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED | 0x10,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_qword_xor_accepts_the_sign_extended_immediate_form() {
+    for (immediate, value, flags) in [
+        (0x3f, 0xaabb_ccdd_1122_331b, 0x696),
+        (0xff, 0x5544_3322_eedd_ccdb, 0x616),
+    ] {
+        let code = [0x49, 0x83, 0xf6, immediate];
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::R14 as usize] = 0xaabb_ccdd_1122_3324;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::R14 as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_byte_add_preserves_the_other_register_bytes() {
+    let code = [0x45, 0x00, 0xf7];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R14 as usize] = 0xaabb_ccdd_0000_0001;
+    cpu.gpr[Register::R15 as usize] = 0x1122_3344_5566_77ff;
+    cpu.rflags = 0x602;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R15 as usize] = 0x1122_3344_5566_7700;
+    expected.rflags = 0x657;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED | 0x10);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_byte_add_immediate_changes_only_al_and_arithmetic_flags() {
+    let code = [0x04, 0xfd];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 0x1122_3344_5566_7703;
+    cpu.rflags = 0x602;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rax as usize] = 0x1122_3344_5566_7700;
+    expected.rflags = 0x657;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.rflags_defined, DEFINED | 0x10);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_invocation_stack_probe_reads_before_committing_flags_or_leave() {
+    let instructions = [
+        (&[0x48, 0x85, 0x64, 0x24, 0x08][..], false),
+        (&[0xc9][..], true),
+    ];
+    let value = 0xaabb_ccdd_eeff_8000u64;
+    let address = DATA + 8;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for (code, is_leave) in instructions {
+        for faulted in [false, true] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL + 8..DATA_PHYSICAL + 16]
+                .copy_from_slice(&value.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rbp as usize] = address;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            if faulted {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            } else {
+                expected.rip += code.len() as u64;
+                if is_leave {
+                    expected.gpr[Register::Rsp as usize] = address + 8;
+                    expected.gpr[Register::Rbp as usize] = value;
+                } else {
+                    expected.rflags = 0x616;
+                }
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                od_isa::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                if faulted {
+                    PagedProbeExit::Fault(fault.clone())
+                } else {
+                    PagedProbeExit::Retired
+                }
+            );
+            assert_eq!(result.instructions_executed, u64::from(!faulted));
+            assert_eq!(
+                result.rflags_defined,
+                if !faulted && !is_leave {
+                    DEFINED
+                } else {
+                    od_isa::INTEGER_FLAGS
+                }
+            );
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_invocation_flags_round_trip_and_consume_sti_shadow() {
+    let mut memory = Memory::new(&[0x9c, 0xfb, 0x90, 0x9d]);
+    let mut cpu = state();
+    cpu.rflags = 0x1_0043;
+    cpu.gpr[Register::Rsp as usize] = DATA + 8;
+    let mut pio = Pio::default();
+    let mut step = |cpu: &mut LongModeState, memory: &mut Memory| {
+        execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            cpu,
+            memory,
+            &mut pio,
+            ring0(),
+            2,
+        )
+    };
+
+    assert_eq!(step(&mut cpu, &mut memory).exit, PagedProbeExit::Retired);
+    assert_eq!(cpu.gpr[Register::Rsp as usize], DATA);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8],
+        0x43u64.to_le_bytes()
+    );
+    assert_eq!(cpu.rflags, 0x1_0043);
+
+    assert_eq!(step(&mut cpu, &mut memory).exit, PagedProbeExit::Retired);
+    assert_eq!(cpu.rflags, 0x1_0243);
+    assert_eq!(cpu.sti_shadow, Some(StiShadow::Blocking));
+
+    assert_eq!(step(&mut cpu, &mut memory).exit, PagedProbeExit::Retired);
+    assert_eq!(cpu.sti_shadow, Some(StiShadow::Clear));
+
+    let restored = step(&mut cpu, &mut memory);
+    assert_eq!(restored.exit, PagedProbeExit::Retired);
+    assert_eq!(restored.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert_eq!(cpu.gpr[Register::Rsp as usize], DATA + 8);
+    assert_eq!(cpu.rflags, 0x1_0043);
+    assert_eq!(cpu.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(memory.read_addresses, [(DATA, 8)]);
+    assert_eq!(memory.writes, 1);
+}
+
+#[test]
+fn firmware_boot_invocation_sti_shadow_survives_operand_fault() {
+    let mut memory = Memory::new(&[0xfb, 0x48, 0x8b, 0x03]);
+    let mut cpu = state();
+    cpu.rflags = 2;
+    cpu.gpr[Register::Rbx as usize] = DATA;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+    let mut pio = Pio::default();
+    for expected in [PagedProbeExit::Retired, PagedProbeExit::Fault(fault)] {
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, expected);
+        assert_eq!(cpu.sti_shadow, Some(StiShadow::Blocking));
+        assert_eq!(cpu.rip, RIP + 1);
+    }
+}
+
+#[test]
+fn firmware_boot_invocation_fp_round_trip_and_invalid_mxcsr() {
+    let save = [0x48, 0x0f, 0xae, 0x40, 0x40];
+    let restore = [0x48, 0x0f, 0xae, 0x4b, 0x40];
+    let mut memory = Memory::new(&[save, restore].concat());
+    let mut cpu = state();
+    cpu.cr4 = Some(0x620);
+    cpu.gpr[Register::Rax as usize] = DATA;
+    cpu.gpr[Register::Rbx as usize] = DATA;
+    let mut fp = execute::GuestFpState::initial();
+    fp.x87.control_word = 0x0b7f;
+    fp.sse.mxcsr = 0x3f80;
+    fp.sse.xmm[12] = [0xa5; 16];
+    let mut live_fp = fp.clone();
+    let mut pio = Pio::default();
+    let mut step =
+        |cpu: &mut LongModeState, memory: &mut Memory, live_fp: &mut execute::GuestFpState| {
+            execute::step_paged_firmware_probe_with_guest_fp(
+                PagedCpl0FirmwareBootV1,
+                cpu,
+                memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+                0x10_0000,
+                live_fp,
+                None,
+            )
+        };
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut live_fp).exit,
+        PagedProbeExit::Retired
+    );
+    let area = DATA_PHYSICAL + 0x40;
+    assert_eq!(memory.bytes[area..area + 2], 0x0b7fu16.to_le_bytes());
+    assert_eq!(memory.bytes[area + 24..area + 28], 0x3f80u32.to_le_bytes());
+    assert_eq!(memory.bytes[area + 352..area + 368], [0xa5; 16]);
+
+    let initial = execute::GuestFpState::initial();
+    live_fp = initial.clone();
+    let before = cpu.clone();
+    memory.bytes[area + 27] = 0x80;
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut live_fp).exit,
+        PagedProbeExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(cpu, before);
+    assert_eq!(live_fp, initial);
+
+    memory.bytes[area + 27] = 0;
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut live_fp).exit,
+        PagedProbeExit::Retired
+    );
+    assert_eq!(live_fp, fp);
+    assert!(cpu.x87.is_none() && cpu.sse.is_none());
+    assert_eq!(cpu.rflags, before.rflags);
+}
+
+#[test]
+fn firmware_boot_byte_xor_immediate_changes_only_dl_and_logic_flags() {
+    let code = [0x80, 0xf2, 0x01];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rdx as usize] = 0xabcd_ef12_3456_7801;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rdx as usize] = 0xabcd_ef12_3456_7800;
+    expected.rflags = 0x656;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED | 0x10,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_not_preserves_unwritten_bits_flags_and_profile_boundary() {
+    for (code, register, opcode, inverted) in [
+        (
+            [0x48, 0xf7, 0xd0],
+            Register::Rax,
+            0xf7,
+            0xfedc_ba98_7654_3210,
+        ),
+        (
+            [0x41, 0xf6, 0xd5],
+            Register::R13,
+            0xf6,
+            0x0123_4567_89ab_cd10,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = 0x0123_4567_89ab_cdef;
+        cpu.rflags = 0xed7;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode }
+        );
+        assert_eq!(cpu, before);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu.rip, before.rip + code.len() as u64);
+        assert_eq!(cpu.gpr[register as usize], inverted);
+        assert_eq!(cpu.rflags, before.rflags);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_rol_dword_masks_the_count_and_tracks_defined_flags() {
+    const OF: u64 = 1 << 11;
+    let defined = DEFINED | 0x10;
+    for (count, result, flags, result_defined) in [
+        (0, 0x9234_5678, 0x6d6, defined),
+        (1, 0x2468_acf1, 0xed7, defined),
+        (26, 0xe248_d159, 0x6d7, defined & !OF),
+        (31, 0x491a_2b3c, 0x6d6, defined & !OF),
+        (32, 0x9234_5678, 0x6d6, defined),
+        (33, 0x2468_acf1, 0xed7, defined),
+    ] {
+        let mut memory = Memory::new(&[0xc1, 0xc0, count]);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0xaabb_ccdd_9234_5678;
+        cpu.rflags = 0x6d6;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rax as usize] = result;
+        expected.rflags = flags;
+        expected.rip += 3;
+        let actual = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            defined,
+        );
+        assert_eq!(actual.exit, PagedProbeExit::Retired, "count {count}");
+        assert_eq!(actual.instructions_executed, 1);
+        assert_eq!(actual.rflags_defined, result_defined, "count {count}");
+        assert_eq!(cpu, expected, "count {count}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_bswap_uses_the_register_width_and_preserves_flags() {
+    let defined = DEFINED & !1;
+    for (code, register, swapped) in [
+        (&[0x0f, 0xc8][..], Register::Rax, 0x7856_3412),
+        (&[0x0f, 0xc9][..], Register::Rcx, 0x7856_3412),
+        (&[0x41, 0x0f, 0xc8][..], Register::R8, 0x7856_3412),
+        (
+            &[0x49, 0x0f, 0xcf][..],
+            Register::R15,
+            0x7856_3412_ddcc_bbaa,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = 0xaabb_ccdd_1234_5678;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[register as usize] = swapped;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_bswap_dword_preserves_fetch_fault_and_profile_boundaries() {
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 0xaabb_ccdd_1234_5678;
+    let expected = cpu.clone();
+    let mut memory = Memory::new(&[0x0f, 0xc8]);
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(RIP + 1),
+    };
+    memory.fail_fetch_at = Some((RIP + 1, MemoryError::Architectural(fault.clone())));
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+
+    let mut memory = Memory::new(&[0x0f, 0xc8]);
+    let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xc8 });
+    assert_eq!(cpu, expected);
+    for prefix in [0x66, 0x67] {
+        let mut memory = Memory::new(&[prefix, 0x0f, 0xc8]);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xc8 });
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_dword_test_reads_stack_or_device_flags_once() {
+    for (code, register, offset) in [
+        (
+            &[0xf7, 0x84, 0x24, 0x90, 0, 0, 0, 0, 4, 0, 0][..],
+            Register::Rsp,
+            0x90,
+        ),
+        (&[0xf7, 0x46, 0x08, 0, 4, 0, 0][..], Register::Rsi, 0x08),
+    ] {
+        let address = DATA + offset as u64;
+        for faulted in [false, true] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL + offset..DATA_PHYSICAL + offset + 4]
+                .copy_from_slice(&0x0400u32.to_le_bytes());
+            let fault = ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(address),
+            };
+            if faulted {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let mut cpu = state();
+            cpu.gpr[register as usize] = DATA;
+            let mut expected = cpu.clone();
+            let defined = DEFINED | 0x10;
+            let (exit, flags) = if faulted {
+                (PagedProbeExit::Fault(fault), defined)
+            } else {
+                expected.rflags = (expected.rflags & !0x8c5) | 0x04;
+                expected.rip += code.len() as u64;
+                (PagedProbeExit::Retired, (defined | 0x8c5) & !0x10)
+            };
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                defined,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(!faulted));
+            assert_eq!(result.rflags_defined, flags);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 4)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_byte_test_from_memory_reads_once_and_commits_after_read() {
+    use Register::{R12, Rax, Rsi, Rsp};
+    for (code, displacement, base, source) in [
+        (&[0xf6, 0x44, 0x24, 0x58, 1][..], 0x58, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0x87, 0, 0, 0][..], 0x87, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0xa8, 0, 0, 0][..], 0xa8, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0xd4, 0, 0, 0][..], 0xd4, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0x20, 1, 0, 0][..], 0x120, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0x4c, 1, 0, 0][..], 0x14c, Rsp, Rax),
+        (&[0x84, 0x84, 0x24, 0x5c, 1, 0, 0][..], 0x15c, Rsp, Rax),
+        (&[0x44, 0x84, 0xa6, 0x18, 0, 4, 0][..], 0x40018, Rsi, R12),
+    ] {
+        let address = DATA;
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        };
+        for exit in [
+            PagedProbeExit::Retired,
+            PagedProbeExit::Fault(fault.clone()),
+        ] {
+            let mut memory = Memory::new(code);
+            memory.bytes[DATA_PHYSICAL] = 1;
+            let mut cpu = state();
+            cpu.gpr[base as usize] = address.wrapping_sub(displacement);
+            cpu.gpr[source as usize] = 0xfafe_fafa_0000_0001;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            let retired = exit == PagedProbeExit::Retired;
+            if retired {
+                expected.rflags = 0x612;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED | 0x10,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retired));
+            assert_eq!(
+                result.rflags_defined,
+                if retired { DEFINED } else { DEFINED | 0x10 }
+            );
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 1)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_dword_test_reads_without_writing_and_preserves_read_faults() {
+    let code = [0x85, 0x4c, 0x24, 0x0c];
+    for (value, expected_flags) in [(0, 0x656), (1, 0x612), (0x8000_0000u32, 0x696)] {
+        let mut memory = Memory::new(&code);
+        let at = DATA_PHYSICAL + 0x0c;
+        memory.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = 0xa5a5_5a5a_8000_0001;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rflags = expected_flags;
+        expected.rip += code.len() as u64;
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA + 0x0c, 4)]);
+        assert_eq!(memory.writes, 0);
+        assert_eq!(memory.bytes[at..at + 4], value.to_le_bytes());
+    }
+
+    let mut memory = Memory::new(&code);
+    let page_end = DATA + 0x1000;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(page_end),
+    };
+    memory.fail_read_at = Some((page_end, MemoryError::Architectural(fault.clone())));
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = page_end - 0x0e;
+    cpu.gpr[Register::Rcx as usize] = u64::MAX;
+    let expected = cpu.clone();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED | 0x10,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED | 0x10);
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.read_addresses, [(page_end - 2, 4)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn memory_test_keeps_base_word_and_address_override_unsupported() {
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    let expected = cpu.clone();
+    for code in [
+        &[0x85, 0x4c, 0x24, 0x0c][..],
+        &[0x48, 0x85, 0x4c, 0x24, 0x0c][..],
+    ] {
+        let mut memory = Memory::new(code);
+        let result = step(&mut cpu, &mut memory, &mut Pio::default(), ring0());
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x85 });
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+    }
+
+    for prefix in [0x66, 0x67] {
+        let mut memory = Memory::new(&[prefix, 0x85, 0x4c, 0x24, 0x0c]);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x85 });
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_qword_and_from_memory_masks_all_bits_after_read() {
+    let code = [0x49, 0x23, 0x1b];
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8]
+            .copy_from_slice(&0x8000_0000_0000_0000u64.to_le_bytes());
+        if faulted {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::R11 as usize] = DATA;
+        cpu.gpr[Register::Rbx as usize] = 0xffff_ffff_0000_0001;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let (exit, defined) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED | 0x10)
+        } else {
+            expected.rip += code.len() as u64;
+            expected.rflags = 0x696;
+            expected.gpr[Register::Rbx as usize] = 0x8000_0000_0000_0000;
+            (PagedProbeExit::Retired, DEFINED)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_dword_logic_from_memory_zero_extends_after_read() {
+    let address = DATA + 4;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for (opcode, result, flags) in [(0x23, 0x8000_0000, 0x696), (0x0b, 0x9000_0001, 0x692)] {
+        let code = [opcode, 0x54, 0x24, 0x04]; // AND or OR EDX,[RSP+4]
+        for exit in [
+            PagedProbeExit::Retired,
+            PagedProbeExit::Fault(fault.clone()),
+        ] {
+            let mut memory = Memory::new(&code);
+            let at = DATA_PHYSICAL + 4;
+            let mask = 0x9000_0000u32;
+            memory.bytes[at..at + 4].copy_from_slice(&mask.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rdx as usize] = 0xaabb_ccdd_8000_0001;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            let retired = exit == PagedProbeExit::Retired;
+            if retired {
+                expected.gpr[Register::Rdx as usize] = result;
+                expected.rflags = flags;
+                expected.rip += code.len() as u64;
+            } else {
+                memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED | 0x10,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retired));
+            assert_eq!(
+                result.rflags_defined,
+                if retired { DEFINED } else { DEFINED | 0x10 }
+            );
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 4)]);
+            assert_eq!(memory.writes, 0);
+            assert_eq!(memory.bytes[at..at + 4], mask.to_le_bytes());
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_byte_or_from_ram_preserves_upper_bytes_and_fault_state() {
+    let code = [0x0a, 0x03];
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    for exit in [
+        PagedProbeExit::Retired,
+        PagedProbeExit::Fault(fault.clone()),
+    ] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL] = 1;
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x1234_1111_2222_3380;
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        if retired {
+            expected.gpr[Register::Rax as usize] = 0x1234_1111_2222_3381;
+            expected.rflags = 0x696;
+            expected.rip += code.len() as u64;
+        } else {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(
+            result.rflags_defined,
+            if retired { DEFINED } else { DEFINED | 0x10 }
+        );
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(DATA, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_adc_register_forms_apply_carry_and_width() {
+    for (code, reg, input, output, flags) in [
+        (
+            &[0x80, 0xd2, 0x01][..],
+            Register::Rdx,
+            0xfeed_face_1234_56fe,
+            0xfeed_face_1234_5600,
+            0x657,
+        ),
+        (&[0x49, 0x11, 0xc8][..], Register::R8, u64::MAX, 0, 0x657),
+        (
+            &[0x48, 0x83, 0xd0, 0x28][..],
+            Register::Rax,
+            u64::MAX - 0x28,
+            0,
+            0x657,
+        ),
+        (
+            &[0x13, 0xc3][..],
+            Register::Rax,
+            0xfeed_ffff_7fff_ffff,
+            0x8000_0000,
+            0xe96,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0x603;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = output;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED | 0x10);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_paging_alu_uses_operand_width_and_defined_flags() {
+    const ARITH: u64 = 0x8d5;
+    const MUL_DEFINED: u64 = (DEFINED & !ARITH) | 0x801;
+    for (code, reg, input, value, flags, defined) in [
+        (
+            &[0x48, 0x0f, 0xaf, 0xc1][..],
+            Register::Rax,
+            2,
+            u64::MAX - 1,
+            0x6d6,
+            MUL_DEFINED,
+        ),
+        (
+            &[0x48, 0x0f, 0xaf, 0xc1][..],
+            Register::Rax,
+            1 << 63,
+            1 << 63,
+            0xed7,
+            MUL_DEFINED,
+        ),
+        (
+            &[0xf7, 0xd9][..],
+            Register::Rcx,
+            0xfeed_ffff_8000_0000,
+            0x8000_0000,
+            0xe87,
+            DEFINED | 0x10,
+        ),
+        (
+            &[0x49, 0x81, 0xe3, 0x00, 0xf0, 0xff, 0xff][..],
+            Register::R11,
+            0x8000_0000_0000_1234,
+            0x8000_0000_0000_1000,
+            0x696,
+            DEFINED,
+        ),
+        (
+            &[0x81, 0xe7, 0xff, 0x01, 0x00, 0x00][..],
+            Register::Rdi,
+            0x8421_8421_0000_0200,
+            0,
+            0x656,
+            DEFINED,
+        ),
+        (
+            &[0x48, 0x83, 0xc8, 0x03][..],
+            Register::Rax,
+            0x8000_0000_0000_1000,
+            0x8000_0000_0000_1003,
+            0x696,
+            DEFINED,
+        ),
+        (
+            &[0x48, 0x21, 0xc5][..],
+            Register::Rbp,
+            0x8abc_def0_0100_0201,
+            0x8000_0000_0100_0001,
+            0x692,
+            DEFINED,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = u64::MAX;
+        cpu.gpr[Register::Rax as usize] = 0x8000_0000_01ff_00ff;
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected, "{code:02x?} input={input:#x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_loads_descriptor_registers_without_a_previous_table() {
+    let address = DATA + 0x20;
+    let base = DATA + 0x80;
+    for (modrm, is_idt) in [(0x15, false), (0x1d, true)] {
+        let mut code = vec![0x0f, 0x01, modrm];
+        code.extend_from_slice(&((address - (RIP + 7)) as u32).to_le_bytes());
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address + 8),
+        };
+        for fail in [false, true] {
+            let mut memory = Memory::new(&code);
+            memory.bytes[DATA_PHYSICAL + 0x20..DATA_PHYSICAL + 0x22]
+                .copy_from_slice(&23u16.to_le_bytes());
+            memory.bytes[DATA_PHYSICAL + 0x22..DATA_PHYSICAL + 0x2a]
+                .copy_from_slice(&base.to_le_bytes());
+            if fail {
+                memory.fail_read_at =
+                    Some((address + 8, MemoryError::Architectural(fault.clone())));
+            }
+            let mut cpu = state();
+            let mut expected = cpu.clone();
+            if !fail {
+                if is_idt {
+                    expected.idtr = Some(od_isa::state::Idtr { base, limit: 23 });
+                } else {
+                    expected.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
+                }
+                expected.rip += 7;
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(
+                result.exit,
+                if fail {
+                    PagedProbeExit::Fault(fault.clone())
+                } else {
+                    PagedProbeExit::Retired
+                }
+            );
+            assert_eq!(result.instructions_executed, u64::from(!fail));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8), (address + 2, 8)]);
+            assert_eq!(memory.writes, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cr4_preserves_pae_and_allows_fetch_with_fp_controls() {
+    let fault = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (value, exit) in [
+        (0x620, PagedProbeExit::Retired),
+        (0x600, PagedProbeExit::Fault(fault)),
+        (0x1620, PagedProbeExit::Unsupported { opcode: 0x22 }),
+    ] {
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xe0, 0x90]);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = value;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        if retired {
+            expected.cr4 = Some(value);
+            expected.rip += 3;
+        }
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        let defined = if retired { DEFINED & !0x8d5 } else { DEFINED };
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        if retired {
+            let next = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                defined,
+            );
+            assert_eq!(next.exit, PagedProbeExit::Retired);
+            assert_eq!(cpu.cr4, Some(0x620));
+            assert_eq!(cpu.rip, RIP + 4);
+        }
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_far_return_loads_cs_and_marks_the_gdt_descriptor() {
+    const CODE: u64 = 0x00af_9a00_0000_ffff;
+    let gdt = DATA + 0x80;
+    let rsp = DATA + 0x100;
+    let target = RIP + 0x40;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(gdt + 8),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&[0x48, 0xcb]);
+        for (offset, value) in [(0x88, CODE), (0x100, target), (0x108, 8)] {
+            let offset = DATA_PHYSICAL + offset;
+            memory.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        if fail {
+            memory.fail_write_on = Some((1, MemoryError::Architectural(fault.clone())));
+        }
+        let mut cpu = state();
+        cpu.gdtr = Some(od_isa::state::Gdtr {
+            base: gdt,
+            limit: 23,
+        });
+        cpu.gpr[Register::Rsp as usize] = rsp;
+        let mut expected = cpu.clone();
+        if !fail {
+            expected.rip = target;
+            expected.gpr[Register::Rsp as usize] += 16;
+            expected.cs_selector = Some(8);
+            expected.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9b,
+                flags: 0xa,
+            });
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            if fail {
+                PagedProbeExit::Fault(fault.clone())
+            } else {
+                PagedProbeExit::Retired
+            }
+        );
+        assert_eq!(result.instructions_executed, u64::from(!fail));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(
+            memory.read_addresses,
+            [(rsp, 8), (rsp + 8, 8), (gdt + 8, 8)]
+        );
+        assert_eq!(memory.write_addresses, [gdt + 8]);
+        let descriptor = if fail { CODE } else { CODE | (1 << 40) };
+        assert_eq!(
+            memory.bytes[DATA_PHYSICAL + 0x88..DATA_PHYSICAL + 0x90],
+            descriptor.to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn firmware_boot_loads_data_caches_and_consumes_mov_ss_shadow_once() {
+    const DATA_DESCRIPTOR: u64 = 0x00cf_9200_0000_ffff;
+    let mut memory = Memory::new(&[
+        0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xe0, 0x8e, 0xe8, 0x8e, 0xd0, 0x90,
+    ]);
+    let base = DATA + 0x60;
+    let descriptor = DATA_PHYSICAL + 0x70;
+    memory.bytes[descriptor..descriptor + 8].copy_from_slice(&DATA_DESCRIPTOR.to_le_bytes());
+    let mut cpu = state();
+    cpu.gdtr = Some(od_isa::state::Gdtr { base, limit: 23 });
+    cpu.gpr[Register::Rax as usize] = 0x10;
+    let initial_rflags = cpu.rflags;
+    let mut pio = Pio::default();
+    for next in [RIP + 2, RIP + 4, RIP + 6, RIP + 8, RIP + 10] {
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu.rip, next);
+        assert_eq!(
+            cpu.sti_shadow,
+            Some(if next == RIP + 10 {
+                StiShadow::Blocking
+            } else {
+                StiShadow::Clear
+            })
+        );
+    }
+    assert_eq!(cpu.rflags, initial_rflags);
+    assert_eq!(
+        [
+            cpu.ds_selector,
+            cpu.es_selector,
+            cpu.fs_selector,
+            cpu.gs_selector
+        ],
+        [0x10; 4]
+    );
+    assert_eq!(cpu.ss_selector, Some(0x10));
+    assert!(cpu.ds_cache.is_some() && cpu.es_cache.is_some() && cpu.ss_cache.is_some());
+    assert!(cpu.fs_cache.is_some() && cpu.gs_cache.is_some());
+    assert_eq!(memory.write_addresses, [base + 0x10]);
+
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(cpu.rip),
+    };
+    memory.fail_fetch = Some(MemoryError::Architectural(fault.clone()));
+    let blocked = cpu.clone();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, blocked);
+    memory.fail_fetch = None;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cpu.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(cpu.rip, RIP + 11);
+}
+
+#[test]
+fn firmware_boot_std_sets_only_df() {
+    let mut cpu = state();
+    cpu.rflags = 0x246;
+    let mut expected = cpu.clone();
+    expected.rflags |= 1 << 10;
+    expected.rip += 1;
+    let mut memory = Memory::new(&[0xfd]);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED | (1 << 10));
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_rep_movs_copies_in_order_and_preserves_partial_progress() {
+    for (code, width, backward) in [
+        (&[0xf3, 0xa4][..], 1u64, false),
+        (&[0xf3, 0x48, 0xa5][..], 8, true),
+    ] {
+        let source = DATA + 0x20;
+        let destination = DATA + 0x80;
+        let step = if backward {
+            -(width as i64)
+        } else {
+            width as i64
+        };
+        let second_source = source.wrapping_add_signed(step);
+        let second_destination = destination.wrapping_add_signed(step);
+        let read_fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(second_source),
+        };
+        let write_fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(second_destination),
+        };
+        for (count, exit, completed, reads, writes) in [
+            (0, PagedProbeExit::Retired, 0, 0, 0),
+            (2, PagedProbeExit::Retired, 2, 2, 2),
+            (2, PagedProbeExit::Fault(read_fault.clone()), 1, 2, 1),
+            (2, PagedProbeExit::Fault(write_fault.clone()), 1, 2, 2),
+            (
+                execute::REP_ITERATION_WORK_LIMIT + 1,
+                PagedProbeExit::Unsupported {
+                    opcode: code[code.len() - 1],
+                },
+                0,
+                0,
+                0,
+            ),
+        ] {
+            let mut memory = Memory::new(code);
+            let width = width as usize;
+            for (address, byte) in [(source, 0x31), (second_source, 0x52)] {
+                let offset = memory.physical(address).unwrap();
+                memory.bytes[offset..offset + width].fill(byte);
+            }
+            if exit == PagedProbeExit::Fault(read_fault.clone()) {
+                memory.fail_read_at = Some((
+                    second_source,
+                    MemoryError::Architectural(read_fault.clone()),
+                ));
+            }
+            if exit == PagedProbeExit::Fault(write_fault.clone()) {
+                memory.fail_write_on = Some((2, MemoryError::Architectural(write_fault.clone())));
+            }
+            let rsi = Register::Rsi as usize;
+            let rdi = Register::Rdi as usize;
+            let rcx = Register::Rcx as usize;
+            let mut cpu = state();
+            cpu.gpr[rsi] = source;
+            cpu.gpr[rdi] = destination;
+            cpu.gpr[rcx] = count;
+            if backward {
+                cpu.rflags |= 1 << 10;
+            }
+            let mut expected = cpu.clone();
+            let offset = completed as i64 * step;
+            expected.gpr[rsi] = source.wrapping_add_signed(offset);
+            expected.gpr[rdi] = destination.wrapping_add_signed(offset);
+            expected.gpr[rcx] -= completed;
+            let retired = exit == PagedProbeExit::Retired;
+            if retired {
+                expected.rip += code.len() as u64;
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retired));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(
+                memory.read_addresses,
+                [(source, width), (second_source, width)][..reads]
+            );
+            assert_eq!(
+                memory.write_addresses,
+                [destination, second_destination][..writes]
+            );
+            for (index, (address, byte)) in [(destination, 0x31), (second_destination, 0x52)]
+                .into_iter()
+                .enumerate()
+            {
+                let offset = memory.physical(address).unwrap();
+                let expected_byte = if index < completed as usize { byte } else { 0 };
+                assert_eq!(
+                    memory.bytes[offset..offset + width],
+                    [expected_byte; 8][..width]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_rep_stosq_preserves_progress_on_fault_and_honors_bound() {
+    let code = [0xf3, 0x48, 0xab];
+    let value = 0x1122_3344_5566_7788u64;
+    let start = DATA + 0x10;
+    let second = start - 8;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(second),
+    };
+    for (count, fail_second, exit, completed) in [
+        (0, false, PagedProbeExit::Retired, 0),
+        (2, false, PagedProbeExit::Retired, 2),
+        (2, true, PagedProbeExit::Fault(fault.clone()), 1),
+        (
+            execute::REP_ITERATION_WORK_LIMIT + 1,
+            false,
+            PagedProbeExit::Unsupported { opcode: 0xab },
+            0,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        if fail_second {
+            memory.fail_write_on = Some((2, MemoryError::Architectural(fault.clone())));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rdi as usize] = start;
+        cpu.gpr[Register::Rax as usize] = value;
+        cpu.gpr[Register::Rcx as usize] = count;
+        cpu.rflags |= 1 << 10;
+        let mut expected = cpu.clone();
+        let retired = exit == PagedProbeExit::Retired;
+        expected.gpr[Register::Rdi as usize] -= completed * 8;
+        expected.gpr[Register::Rcx as usize] -= completed;
+        expected.rip += if retired { code.len() as u64 } else { 0 };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(retired));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        let attempts = completed as usize + usize::from(fail_second);
+        assert_eq!(memory.write_addresses, [start, second][..attempts]);
+        for (index, offset) in [0x10, 0x08].into_iter().enumerate() {
+            let position = DATA_PHYSICAL + offset;
+            let expected_value = if index < completed as usize { value } else { 0 };
+            assert_eq!(
+                memory.bytes[position..position + 8],
+                expected_value.to_le_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_tcg2_byte_shift_uses_cl_mask_and_preserves_upper_rax() {
+    let code = [0xd2, 0xe0];
+    for (count, value, defined, architectural_flags) in [
+        (32, 0x81, DEFINED, 0x8c5),
+        (1, 0x02, DEFINED & !0x10, 0x801),
+        (3, 0x08, DEFINED & !0x810, 0),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0xfeed_beef_dead_ba81;
+        cpu.gpr[Register::Rcx as usize] = count;
+        cpu.rflags = 0x8d7;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(
+            cpu.gpr[Register::Rax as usize],
+            0xfeed_beef_dead_ba00 | value
+        );
+        assert_eq!(cpu.gpr[Register::Rcx as usize], count);
+        assert_eq!(cpu.rflags & defined & 0x8d5, architectural_flags);
+        assert_eq!(cpu.rip, RIP + 2);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_shifts_mask_count_and_define_only_architectural_flags() {
+    const ARITHMETIC_FLAGS: u64 = 0x8d5;
+    const SHIFT_DEFINED: u64 = 0x0c5;
+    for (code, reg, input, value, flags, initial_defined, defined) in [
+        (
+            &[0xd0, 0xea][..],
+            Register::Rdx,
+            0x1122_3344_5566_7781,
+            0x1122_3344_5566_7740,
+            0x801,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            &[0x40, 0xd0, 0xef][..],
+            Register::Rdi,
+            0x1122_3344_5566_7701,
+            0x1122_3344_5566_7700,
+            0x045,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            &[0x49, 0xc1, 0xc0, 4][..],
+            Register::R8,
+            0x8000_0000_0000_0001,
+            0x18,
+            0x0d4,
+            ARITHMETIC_FLAGS,
+            ARITHMETIC_FLAGS & !0x800,
+        ),
+        (
+            &[0x48, 0xc1, 0xe9, 0x15][..],
+            Register::Rcx,
+            0x0030_0000,
+            1,
+            0x001,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            &[0x49, 0xd1, 0xef][..],
+            Register::R15,
+            0x8000_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            0x805,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            &[0x49, 0xc1, 0xe8, 0x41][..],
+            Register::R8,
+            0x8000_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            0x805,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            &[0x48, 0xc1, 0xe9, 0x40][..],
+            Register::Rcx,
+            0x8000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+            ARITHMETIC_FLAGS,
+            0x010,
+            0x010,
+        ),
+        (
+            &[0x48, 0xc1, 0xe0, 0x0c][..],
+            Register::Rax,
+            0x12_3456,
+            0x1_2345_6000,
+            0x004,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            &[0x49, 0xc1, 0xe0, 0x01][..],
+            Register::R8,
+            0x4000_0000_0000_0001,
+            0x8000_0000_0000_0002,
+            0x880,
+            0,
+            SHIFT_DEFINED | 0x800,
+        ),
+        (
+            &[0xc1, 0xef, 0x15][..],
+            Register::Rdi,
+            0xfeed_ffff_0030_0000,
+            1,
+            0x001,
+            ARITHMETIC_FLAGS,
+            SHIFT_DEFINED,
+        ),
+        (
+            &[0xc1, 0xef, 0x20][..],
+            Register::Rdi,
+            0xfeed_ffff_8000_0001,
+            0x8000_0001,
+            ARITHMETIC_FLAGS,
+            0x010,
+            0x010,
+        ),
+    ] {
+        let raw_count = code[code.len() - 1];
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0x602 | ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.gpr[reg as usize] = value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            initial_defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let observed_flags = if matches!(raw_count, 0x20 | 0x40) {
+            ARITHMETIC_FLAGS
+        } else {
+            defined
+        };
+        assert_eq!(
+            cpu.rflags & (!ARITHMETIC_FLAGS | observed_flags),
+            0x602 | flags
+        );
+        expected.rflags = cpu.rflags;
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+#[test]
+fn firmware_boot_test_wide_registers_updates_flags_without_writing_operands() {
+    const AF: u64 = 1 << 4;
+    for (code, reg, input, flags) in [
+        (
+            &[0x85, 0xc0][..],
+            Register::Rax,
+            0xaffe_cafe_0000_0000,
+            0x656,
+        ),
+        (
+            &[0x48, 0x85, 0xf6][..],
+            Register::Rsi,
+            0x8000_0000_0000_0000,
+            0x696,
+        ),
+        (
+            &[0xa9, 0xff, 0x0f, 0x00, 0x00][..],
+            Register::Rax,
+            0xabcdef01_0000_1000,
+            0x656,
+        ),
+        (
+            &[0xf7, 0xc2, 0x00, 0x02, 0x00, 0x00][..],
+            Register::Rdx,
+            0xaffe_cafe_0000_0200,
+            0x616,
+        ),
+        (
+            &[0xf7, 0xc2, 0x00, 0x02, 0x00, 0x00][..],
+            Register::Rdx,
+            0xaffe_cafe_0000_0100,
+            0x656,
+        ),
+        (
+            &[0x48, 0xa9, 0x00, 0x00, 0x00, 0x80][..],
+            Register::Rax,
+            0x8000_0000_0000_0000,
+            0x696,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[reg as usize] = input;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_bt_wraps_the_index_within_the_register_width() {
+    const CF: u64 = 1;
+    const AF: u64 = 1 << 4;
+    const BT_UNDEFINED: u64 = 0x894; // OF, SF, AF, PF
+    for (code, destination, index, base, offset, cf) in [
+        (
+            &[0x41, 0x0f, 0xa3, 0xec][..],
+            Register::R12,
+            Register::Rbp,
+            1 << 5,
+            37,
+            CF,
+        ),
+        (
+            &[0x41, 0x0f, 0xa3, 0xec][..],
+            Register::R12,
+            Register::Rbp,
+            1 << 5,
+            u64::MAX,
+            0,
+        ),
+        (
+            &[0x4d, 0x0f, 0xa3, 0xd9][..],
+            Register::R9,
+            Register::R11,
+            1 << 63,
+            127,
+            CF,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = base;
+        cpu.gpr[index as usize] = offset;
+        cpu.rflags = 0xed6 | (cf ^ CF);
+        let mut expected = cpu.clone();
+        expected.rflags = 0xed6 | cf;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            (DEFINED | AF) & !CF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED & !BT_UNDEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_bt_dword_immediate_sets_only_carry() {
+    let code = [0x0f, 0xba, 0xe2, 0x22]; // BT EDX,0x22 (bit 2)
+    for bit in [0, 1] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = 0xfeed_face_0000_0000 | (bit << 2);
+        cpu.rflags = 0xed6 | (bit ^ 1);
+        let mut expected = cpu.clone();
+        expected.rflags = 0xed6 | bit;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | (1 << 4),
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED & !0x894);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_register_xor_clears_the_definedness_of_af() {
+    const AF: u64 = 1 << 4;
+    for (code, destination, expected_output, rflags) in [
+        (&[0x31, 0xdb][..], Register::Rbx, 0, 0x654),
+        (
+            &[0x4d, 0x31, 0xd8][..],
+            Register::R8,
+            0x8000_0000_0000_0000,
+            0x694,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = u64::MAX;
+        cpu.gpr[Register::R11 as usize] = 0x7fff_ffff_ffff_ffff;
+        cpu.rflags = 0xe13;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = expected_output;
+        expected.rflags = rflags | 2;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_or_and_xor_use_the_decoded_width_and_register_aliases() {
+    const AF: u64 = 1 << 4;
+    for (code, destination, input, expected_value, flags) in [
+        (
+            &[0x48, 0x81, 0xf1, 0x73, 0, 0x74, 0][..],
+            Register::Rcx,
+            0xfedc_ba98_0074_0073,
+            0xfedc_ba98_0000_0000,
+            0x696,
+        ),
+        (
+            &[0x40, 0x20, 0xdd][..],
+            Register::Rbp,
+            0xabcdef00_0000_0081,
+            0xabcdef00_0000_0080,
+            0x692,
+        ),
+        (
+            &[0x44, 0x08, 0xd1][..],
+            Register::Rcx,
+            0x1234_5678_9abc_de80,
+            0x1234_5678_9abc_de81,
+            0x696,
+        ),
+        (
+            &[0x0a, 0xc4][..],
+            Register::Rax,
+            0xfedc_ba98_7654_0201,
+            0xfedc_ba98_7654_0203,
+            0x616,
+        ),
+        (
+            &[0x4d, 0x09, 0xfd][..],
+            Register::R13,
+            0x4000_0000_0000_0200,
+            0xc000_0000_0000_0201,
+            0x692,
+        ),
+        (
+            &[0x25, 0xff, 0x0f, 0, 0][..],
+            Register::Rax,
+            0xfeed_babe_f000_0100,
+            0x100,
+            0x616,
+        ),
+        (
+            &[0x0b, 0xc7][..],
+            Register::Rax,
+            0xfedc_ba98_0010_0101,
+            0x0110_0103,
+            0x616,
+        ),
+        (
+            &[0x30, 0xc8][..],
+            Register::Rax,
+            0xfedc_ba98_7654_3204,
+            0xfedc_ba98_7654_3205,
+            0x616,
+        ),
+        (
+            &[0x32, 0xc4][..],
+            Register::Rax,
+            0xfedc_ba98_7654_8001,
+            0xfedc_ba98_7654_8081,
+            0x696,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 1;
+        cpu.gpr[Register::Rbx as usize] = 0x80;
+        cpu.gpr[destination as usize] = input;
+        cpu.gpr[Register::R10 as usize] = 0xface_1122_3344_5501;
+        cpu.gpr[Register::R15 as usize] = 0x8000_0000_0000_0201;
+        cpu.gpr[Register::Rdi as usize] = 0x1234_5678_0100_0003;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = expected_value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED | AF,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_register_stores_use_the_decoded_address_width_and_source() {
+    for (code, source, address, width) in [
+        (&[0x48, 0x89, 0x3c, 0x24][..], Register::Rdi, DATA, 8),
+        (
+            &[0x4f, 0x89, 0xb4, 0xcd, 0xe0, 0xff, 0xff, 0xff][..],
+            Register::R14,
+            DATA + 0x20,
+            8,
+        ),
+        (&[0x89, 0x70, 0x48][..], Register::Rsi, DATA + 0x48, 4),
+        (&[0x66, 0x89, 0x58, 0x4c][..], Register::Rbx, DATA + 0x4c, 2),
+        (&[0x88, 0x44, 0x24, 0x10][..], Register::Rax, DATA + 0x10, 1),
+        (
+            &[0x44, 0x88, 0x5c, 0x24, 0x10][..],
+            Register::R11,
+            DATA + 0x10,
+            1,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let offset = DATA_PHYSICAL + (address - DATA) as usize;
+        memory.bytes[offset - 1..=offset + 8].fill(0xA5);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rax as usize] = DATA;
+        cpu.gpr[Register::R13 as usize] = DATA;
+        cpu.gpr[Register::R9 as usize] = 8;
+        let value = cpu.gpr[source as usize];
+        let mut expected = cpu.clone();
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 1));
+        assert_eq!(memory.write_addresses, [address]);
+        assert_eq!(
+            memory.bytes[offset..offset + width],
+            value.to_le_bytes()[..width]
+        );
+        assert_eq!(memory.bytes[offset - 1], 0xA5);
+        assert_eq!(
+            memory.bytes[offset + width..=offset + 8],
+            [0xA5; 9][width..]
+        );
+    }
+}
+
+#[test]
+fn firmware_boot_register_store_does_not_retire_on_memory_errors() {
+    let stack_store = (&[0x48, 0x89, 0x3c, 0x24][..], Register::Rsp);
+    let data_store = (&[0x48, 0x89, 0x3b][..], Register::Rbx);
+    let dword_store = (&[0x89, 0x33][..], Register::Rbx);
+    let word_store = (&[0x66, 0x89, 0x1b][..], Register::Rbx);
+    let page = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(DATA),
+    };
+    let ss = od_isa::ArchitecturalFault {
+        vector: 12,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    let gp = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    let backend = MemoryError::Unmapped {
+        address: DATA,
+        access: AccessKind::Write,
+    };
+    for ((code, base), base_value, backend_fault, exit, writes) in [
+        (
+            word_store,
+            DATA,
+            Some(MemoryError::Architectural(page.clone())),
+            PagedProbeExit::Fault(page.clone()),
+            1,
+        ),
+        (
+            dword_store,
+            DATA,
+            Some(MemoryError::Architectural(page.clone())),
+            PagedProbeExit::Fault(page.clone()),
+            1,
+        ),
+        (
+            stack_store,
+            DATA,
+            Some(MemoryError::Architectural(page.clone())),
+            PagedProbeExit::Fault(page),
+            1,
+        ),
+        (stack_store, 1 << 47, None, PagedProbeExit::Fault(ss), 0),
+        (data_store, 1 << 47, None, PagedProbeExit::Fault(gp), 0),
+        (
+            stack_store,
+            DATA,
+            Some(backend.clone()),
+            PagedProbeExit::Backend(backend),
+            1,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        memory.fail_write = backend_fault;
+        let bytes = memory.bytes.clone();
+        let mut cpu = state();
+        cpu.gpr[base as usize] = base_value;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, writes));
+        assert_eq!(memory.bytes, bytes);
+    }
+}
+
+#[test]
+fn firmware_boot_lea_uses_an_offset_without_reading_data() {
+    for (code, destination, value) in [
+        (
+            &[0x4c, 0x8d, 0x1c, 0x30][..],
+            Register::R11,
+            (1 << 47) + 0x100,
+        ),
+        (&[0x8d, 0x4d, 0xff][..], Register::Rcx, 0xffff_ffff),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rax as usize] = 1 << 47;
+        cpu.gpr[Register::Rsi as usize] = 0x100;
+        cpu.gpr[Register::Rbp as usize] = 1 << 49;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = value;
+        expected.rip += code.len() as u64;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_executes_alignment_padding_and_parser_cleanup() {
+    let code = [
+        0x0f, 0x1f, 0x44, 0, 0, // NOP [RAX + RAX]
+        0x48, 0x89, 0xc8, // MOV RAX,RCX
+        0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0, // MOV dword [RSP + 0x0f],0
+    ];
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 0x20].fill(0xa5);
+    let mut cpu = state();
+    cpu.gpr = gpr_patterns();
+    cpu.gpr[Register::Rax as usize] = 1 << 46; // The NOP's ignored address is noncanonical.
+    cpu.gpr[Register::Rcx as usize] = 0xfedc_ba98_7654_3210;
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    let mut expected = cpu.clone();
+    let mut pio = Pio::default();
+
+    for (offset, rax, writes) in [
+        (5, 1 << 46, 0),
+        (8, 0xfedc_ba98_7654_3210, 0),
+        (16, 0xfedc_ba98_7654_3210, 1),
+    ] {
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        expected.rip = RIP + offset;
+        expected.gpr[Register::Rax as usize] = rax;
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, writes));
+    }
+    let mut expected_bytes = [0xa5; 0x20];
+    expected_bytes[0x0f..0x13].fill(0);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 0x20],
+        expected_bytes
+    );
+    assert_eq!(memory.write_addresses, [DATA + 0x0f]);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_boot_cleanup_store_preserves_state_on_fault() {
+    let code = [0xc7, 0x44, 0x24, 0x0f, 0, 0, 0, 0];
+    let pf = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(DATA + 0x0f),
+    };
+    let ss = od_isa::ArchitecturalFault {
+        vector: 12,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (rsp, fault, expected_writes) in [(DATA, pf, 1), (1 << 47, ss, 0)] {
+        let mut memory = Memory::new(&code);
+        memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        let bytes = memory.bytes.clone();
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = rsp;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, expected_writes));
+        assert_eq!(memory.bytes, bytes);
+    }
+}
+
+#[test]
+fn firmware_boot_diagnostic_returns_check_canonicality_without_data_access() {
+    let fault = ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    for (modrm, register) in [(0xe1, Register::R9), (0xe4, Register::R12)] {
+        for (target, exit) in [
+            (RIP + 0x10, PagedProbeExit::Retired),
+            (0x0000_8000_0000_0000, PagedProbeExit::Fault(fault.clone())),
+        ] {
+            let mut memory = Memory::new(&[0x41, 0xff, modrm]);
+            let mut cpu = state();
+            cpu.gpr[register as usize] = target;
+            let mut expected = cpu.clone();
+            let retires = exit == PagedProbeExit::Retired;
+            if retires {
+                expected.rip = target;
+            }
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retires));
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cursor_visibility_is_a_tracked_byte_store() {
+    let address = DATA + 5;
+    let displacement = (address - (RIP + 7)) as i32;
+    let [a, b, c, d] = displacement.to_le_bytes();
+    let code = [0x0f, 0x95, 0x05, a, b, c, d];
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(address),
+    };
+    for (flags, expected_byte, fail) in [(0xe97, 1, false), (0xed7, 0, false), (0xe97, 0xa5, true)]
+    {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 4..DATA_PHYSICAL + 7].fill(0xa5);
+        if fail {
+            memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.rflags = flags;
+        let mut expected = cpu.clone();
+        if !fail {
+            expected.rip += 7;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        let exit = if fail {
+            PagedProbeExit::Fault(fault.clone())
+        } else {
+            PagedProbeExit::Retired
+        };
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(!fail));
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 1));
+        assert_eq!(memory.write_addresses, [address]);
+        assert_eq!(
+            &memory.bytes[DATA_PHYSICAL + 4..DATA_PHYSICAL + 7],
+            &[0xa5, expected_byte, 0xa5]
+        );
+    }
+}
+
+#[test]
+fn firmware_boot_console_tail_call_reads_a_qword_without_changing_the_stack() {
+    let code = [0x48, 0xff, 0x61, 0x08];
+    let address = DATA + 8;
+    let value = 0xffff_8000_1234_5678u64;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for exit in [
+        PagedProbeExit::Retired,
+        PagedProbeExit::Fault(fault.clone()),
+    ] {
+        let mut memory = Memory::new(&code);
+        let offset = DATA_PHYSICAL + 8;
+        memory.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        if exit == PagedProbeExit::Retired {
+            expected.rip = value;
+        } else {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(
+            result.instructions_executed,
+            u64::from(exit == PagedProbeExit::Retired)
+        );
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_dispatches_through_the_linked_jump_table() {
+    for (displacement, index, address, target) in [
+        (0x2026b8i32, 3, 0x2026d0, 0x201100u64),
+        (-16, 0x1022, 0x8100, 0xffff_8000_0000_0880),
+    ] {
+        let [a, b, c, d] = displacement.to_le_bytes();
+        let mut memory = Memory::new(&[0x89, 0xc9, 0xff, 0x24, 0xcd, a, b, c, d]);
+        memory.pages.insert(address & !0xfff, DATA_PHYSICAL);
+        let offset = DATA_PHYSICAL + (address & 0xfff) as usize;
+        memory.bytes[offset..offset + 8].copy_from_slice(&target.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0000 | index;
+        cpu.rflags = 0x247;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rcx as usize] = index;
+        let mut pio = Pio::default();
+
+        for (rip, reads) in [(RIP + 2, &[][..]), (target, &[(address, 8)][..])] {
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                DEFINED,
+            );
+            expected.rip = rip;
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, reads);
+            assert_eq!(memory.writes, 0);
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_jump_table_uses_rex_x_to_select_the_extended_index() {
+    let code = [0x42, 0xff, 0x24, 0xc5, 0x00, 0x80, 0, 0];
+    let target = 0xffff_8000_0000_1234u64;
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL + 24..DATA_PHYSICAL + 32].copy_from_slice(&target.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 1;
+    cpu.gpr[Register::R8 as usize] = 3;
+    let mut expected = cpu.clone();
+    expected.rip = target;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.read_addresses, [(DATA + 24, 8)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_jump_table_faults_leave_rip_at_the_jump() {
+    let code = [0xff, 0x24, 0xcd, 0, 0x80, 0, 0];
+    let noncanonical = 1u64 << 47;
+    let gp = od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    let data_fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(DATA),
+    };
+    for (index, fail_read, fault, expected_reads) in [
+        (0, true, data_fault, 1),
+        (0, false, gp.clone(), 1),
+        (1 << 44, false, gp, 0),
+    ] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8].copy_from_slice(&noncanonical.to_le_bytes());
+        if fail_read {
+            memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        }
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = index;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (expected_reads, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_jump_table_fetch_fault_precedes_the_data_read() {
+    let rip = RIP + 0xffa;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(rip + 6),
+    };
+    let mut memory = memory_with_code_at(&[0xff, 0x24, 0xcd, 0, 0x80, 0], rip);
+    memory.fail_fetch_at = Some((rip + 6, MemoryError::Architectural(fault.clone())));
+    let mut cpu = state();
+    cpu.rip = rip;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_cmp_bx_imm8_updates_flags_from_the_low_word() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const AF: u64 = 1 << 4;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+    for (bx, immediate, flags) in [
+        (5, 5, ZF | PF),
+        (1, 0, 0),
+        (0x8000, 0x7f, OF | AF | PF),
+        (0x8000, 0x80, CF | SF),
+        (0x7fff, 0xff, CF | PF | SF | OF),
+    ] {
+        let mut memory = Memory::new(&[0x66, 0x83, 0xfb, immediate]);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rbx as usize] = 0xaabb_ccdd_eeff_0000 | bx;
+        cpu.rflags = 0x202 | ARITHMETIC_FLAGS;
+        let mut expected = cpu.clone();
+        expected.rip += 4;
+        expected.rflags = 0x202 | flags;
+        let mut pio = Pio::default();
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED | ARITHMETIC_FLAGS);
+        assert_eq!(cpu, expected, "BX={bx:#x}, imm8={immediate:#x}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_boot_cmp_bx_imm8_faults_before_retirement() {
+    let rip = RIP + 0xffd;
+    let mut memory = memory_with_code_at(&[0x66, 0x83, 0xfb], rip);
+    memory.fail_fetch_at = Some((rip + 3, page_fault(0x10, rip + 3)));
+    let mut cpu = state();
+    cpu.rip = rip;
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        ring0(),
+        DEFINED,
+    );
+
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(rip + 3),
+        }),
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn firmware_boot_crc_xor_uses_the_linked_table_address() {
+    const AF: u64 = 1 << 4;
+    const PF: u64 = 1 << 2;
+    const SF: u64 = 1 << 7;
+    const LOGIC_DEFINED: u64 = 0x8c5;
+
+    for (modrm, sib, destination, index) in [
+        (0x24, 0x8d, Register::R12, Register::R9),
+        (0x0c, 0xb5, Register::R9, Register::R14),
+    ] {
+        for (displacement, index_value, address) in [
+            (0x202680, 0x2a, 0x202728),
+            (0x2027e0, 0x2a, 0x202888),
+            (-16, 0x2044, 0x8100),
+            (i32::MIN, 0x20002040, 0x8100),
+            (i32::MAX, 1, 0x80000003),
+        ] {
+            let [a, b, c, d] = displacement.to_le_bytes();
+            let code = [0x46, 0x33, modrm, sib, a, b, c, d];
+            let mut memory = Memory::new(&code);
+            memory.pages.insert(address & !0xfff, DATA_PHYSICAL);
+            let offset = DATA_PHYSICAL + (address & 0xfff) as usize;
+            memory.bytes[offset..offset + 4].copy_from_slice(&0x8000_0001u32.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            cpu.gpr[index as usize] = index_value;
+            cpu.gpr[destination as usize] = 0xdead_beef_0000_0001;
+            cpu.rflags = 0x202 | AF | 0x801;
+            let mut expected = cpu.clone();
+            expected.rip += 8;
+            expected.gpr[destination as usize] = 0x8000_0000;
+            expected.rflags = 0x202 | AF | PF | SF;
+            let mut pio = Pio::default();
+
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                ring0(),
+                (DEFINED & !PF) | AF,
+            );
+
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED | LOGIC_DEFINED);
+            assert_eq!(cpu, expected, "disp32={displacement}");
+            assert_eq!(memory.read_addresses, [(address, 4)]);
+            assert_eq!(memory.writes, 0);
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_crc_xor_faults_before_committing_result() {
+    let code = [0x46, 0x33, 0x24, 0x8d, 0xe0, 0x27, 0x20, 0];
+    let data_address = 0x202888;
+    for fetch_fault in [false, true] {
+        let mut cpu = state();
+        cpu.gpr[Register::R9 as usize] = 0x2a;
+        let (mut memory, fault_address, error_code, expected_reads) = if fetch_fault {
+            cpu.rip = RIP + 0xff9;
+            let address = cpu.rip + 7;
+            let mut memory = memory_with_code_at(&code[..7], cpu.rip);
+            memory.fail_fetch_at = Some((address, page_fault(0x10, address)));
+            (memory, address, 0x10, 0)
+        } else {
+            let mut memory = Memory::new(&code);
+            memory.pages.insert(data_address & !0xfff, DATA_PHYSICAL);
+            memory.fail_read_at = Some((data_address, page_fault(0, data_address)));
+            (memory, data_address, 0, 1)
+        };
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(error_code),
+                linear_address: Some(fault_address),
+            }),
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (expected_reads, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn firmware_boot_direct_jcc_uses_flags_and_signed_displacements() {
+    const CF: u64 = 1 << 0;
+    const PF: u64 = 1 << 2;
+    const ZF: u64 = 1 << 6;
+    const SF: u64 = 1 << 7;
+    const OF: u64 = 1 << 11;
+    let flag_cases = [
+        (OF, 0),
+        (0, OF),
+        (CF, 0),
+        (0, CF),
+        (ZF, 0),
+        (0, ZF),
+        (CF, 0),
+        (0, CF),
+        (SF, 0),
+        (0, SF),
+        (PF, 0),
+        (0, PF),
+        (SF, 0),
+        (0, SF),
+        (ZF, 0),
+        (0, ZF),
+    ];
+
+    for (code, (taken_flags, fall_through_flags)) in flag_cases.into_iter().enumerate() {
+        let condition = code as u8;
+        let short = [0x70 | condition, 0xef];
+        let near = [0x0f, 0x80 | condition, 0x11, 1, 0, 0];
+        for (bytes, target) in [(&short[..], RIP - 15), (&near[..], RIP + 0x117)] {
+            for (flags, new_rip) in [
+                (taken_flags, target),
+                (fall_through_flags, RIP + bytes.len() as u64),
+            ] {
+                let mut memory = Memory::new(bytes);
+                let mut cpu = state();
+                cpu.gpr = gpr_patterns();
+                cpu.rflags = 0x202 | flags;
+                let mut expected = cpu.clone();
+                expected.rip = new_rip;
+                let mut pio = Pio::default();
+                let defined = DEFINED & !CF;
+                let result = execute::step_paged_firmware_probe(
+                    PagedCpl0FirmwareBootV1,
+                    &mut cpu,
+                    &mut memory,
+                    &mut pio,
+                    ring0(),
+                    defined,
+                );
+                assert_eq!(result.exit, PagedProbeExit::Retired, "{bytes:02x?}");
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(result.rflags_defined, defined);
+                assert_eq!(cpu, expected, "{bytes:02x?}");
+                assert_eq!((memory.reads, memory.writes), (0, 0));
+                assert!(pio.reads.is_empty() && pio.writes.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_jcc_checks_canonicality_only_for_taken_branch() {
+    let rip = 0x0000_7fff_ffff_fe00;
+    for carry in [0, 1] {
+        let mut memory = memory_with_code_at(&[0x0f, 0x82, 0, 4, 0, 0], rip);
+        let mut cpu = state();
+        cpu.rip = rip;
+        cpu.rflags = 0x202 | carry;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if carry == 1 {
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += 6;
+        }
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_sub_qword_memory_source_commits_only_after_read() {
+    let code = [0x48, 0x2b, 0x44, 0x24, 0x10]; // SUB RAX,[RSP+0x10]
+    let address = DATA + 0x10;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x10..DATA_PHYSICAL + 0x18]
+            .copy_from_slice(&8u64.to_le_bytes());
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 8;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 2;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8d5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::Rax as usize] = 0;
+            expected.rflags = 0x46;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_movsx_byte_sign_extends_into_qword() {
+    let code = [0x48, 0x0f, 0xbe, 0xc0]; // MOVSX RAX,AL
+    for (byte, extended) in [(0x7fu64, 0x7f), (0x80, 0xffff_ffff_ffff_ff80)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x9876_5432_abcd_ef00 | byte;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode: 0xbe }
+        );
+        assert_eq!(cpu, before);
+
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED);
+        let mut expected = before;
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rax as usize] = extended;
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_movzx_word_guid_field_checks_memory_before_committing() {
+    let code = [0x44, 0x0f, 0xb7, 0x5a, 0x04]; // MOVZX R11D,word ptr [RDX+4]
+    let address = DATA + 4;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 4..DATA_PHYSICAL + 6]
+            .copy_from_slice(&0x81ab_u16.to_le_bytes());
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        cpu.gpr[Register::R11 as usize] = 0xdead_beef_1234_5678;
+        let mut expected = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode: 0xb7 }
+        );
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::R11 as usize] = 0x81ab;
+        }
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 2)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_and_byte_source_fault_leaves_register_and_flags_unchanged() {
+    let code = [0x44, 0x22, 0x54, 0x24, 0x08]; // AND R10B,[RSP+8]
+    let address = DATA + 8;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 8] = 0x0f;
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::R10 as usize] = 0xdead_beef_1234_56a5;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 0x803;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8c5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::R10 as usize] = 0xdead_beef_1234_5605;
+            expected.rflags = 6;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_xor_compares_qword_fields_in_fs_and_tcg2_probes() {
+    let stack_xor = &[0x48, 0x33, 0x4c, 0x24, 0x54][..];
+    let accumulator_xor = &[0x48, 0x35, 0xff, 0xff, 0xff, 0xff][..];
+    for (code, register, source, fail) in [
+        (stack_xor, Register::Rcx, Some((Register::Rsp, 0x54)), false),
+        (stack_xor, Register::Rcx, Some((Register::Rsp, 0x54)), true),
+        (accumulator_xor, Register::Rax, None, false),
+        (
+            &[0x48, 0x33, 0x74, 0x24, 0x32],
+            Register::Rsi,
+            Some((Register::Rsp, 0x32)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x32],
+            Register::Rcx,
+            Some((Register::Rsp, 0x32)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x33],
+            Register::Rcx,
+            Some((Register::Rsp, 0x33)),
+            true,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x3a],
+            Register::Rcx,
+            Some((Register::Rsp, 0x3a)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x4c, 0x24, 0x70],
+            Register::Rcx,
+            Some((Register::Rsp, 0x70)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xce, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xce)),
+            false,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xee, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xee)),
+            true,
+        ),
+        (
+            &[0x48, 0x33, 0x94, 0x24, 0xee, 0, 0, 0],
+            Register::Rdx,
+            Some((Register::Rsp, 0xee)),
+            false,
+        ),
+        (
+            &[0x49, 0x33, 0x46, 0x28],
+            Register::Rax,
+            Some((Register::R14, 0x28)),
+            false,
+        ),
+        (
+            &[0x49, 0x33, 0x4e, 0x20],
+            Register::Rcx,
+            Some((Register::R14, 0x20)),
+            true,
+        ),
+        (
+            &[0x49, 0x33, 0x46, 0x34],
+            Register::Rax,
+            Some((Register::R14, 0x34)),
+            false,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = 0x0102_0304_0506_0708;
+        let address = source.map(|(base, offset)| {
+            cpu.gpr[base as usize] = DATA;
+            memory.bytes[DATA_PHYSICAL + offset..DATA_PHYSICAL + offset + 8].fill(0xff);
+            DATA + offset as u64
+        });
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: address,
+        };
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(
+                (result.instructions_executed, result.rflags_defined),
+                (0, DEFINED | 0x10)
+            );
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(
+                (result.instructions_executed, result.rflags_defined),
+                (1, DEFINED)
+            );
+            expected.rip += code.len() as u64;
+            expected.gpr[register as usize] = !expected.gpr[register as usize];
+            expected.rflags = 0x692;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses.len(), usize::from(address.is_some()));
+        if let Some(address) = address {
+            assert_eq!(memory.read_addresses, [(address, 8)]);
+        }
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_tcg2_checks_reserved_flags_with_sign_extended_test_mask() {
+    let code = [0x48, 0xf7, 0xc2, 0xee, 0xff, 0xff, 0xff];
+    for (requested, zero) in [(0x11, true), (0x13, false), (1 << 63, false)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = requested;
+        cpu.rflags = 0x8d7;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu.gpr, before.gpr);
+        assert_eq!(cpu.rip, RIP + code.len() as u64);
+        assert_eq!(cpu.rflags & 0x40 != 0, zero);
+        assert_eq!(cpu.rflags & 0x801, 0);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_tcg2_setcc_stores_exactly_one_byte_or_leaves_state_on_fault() {
+    for (code, offset, set_when_zero) in [
+        (&[0x0f, 0x94, 0x04, 0x24][..], 0, true),
+        (&[0x0f, 0x94, 0x44, 0x24, 0x20][..], 0x20, true),
+        (&[0x0f, 0x94, 0x44, 0x24, 0x3c][..], 0x3c, true),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x18][..], 0x18, false),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x20][..], 0x20, false),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x68][..], 0x68, false),
+        (&[0x0f, 0x95, 0x44, 0x24, 0x70][..], 0x70, false),
+    ] {
+        for fail in [false, true] {
+            let mut memory = Memory::new(code);
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA + 8;
+            cpu.rflags |= 1 << 6;
+            let address = DATA + 8 + offset as u64;
+            let index = DATA_PHYSICAL + 8 + offset;
+            memory.bytes[index - 1..index + 2].fill(0xff);
+            let fault = od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(address),
+            };
+            memory.fail_write = fail.then(|| MemoryError::Architectural(fault.clone()));
+            let mut expected = cpu.clone();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            let value = if fail {
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                assert_eq!(result.instructions_executed, 0);
+                0xff
+            } else {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(result.instructions_executed, 1);
+                expected.rip += code.len() as u64;
+                u8::from(set_when_zero)
+            };
+            assert_eq!(cpu, expected);
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(memory.bytes[index - 1..index + 2], [0xff, value, 0xff]);
+            assert_eq!(memory.write_addresses, [address]);
+            assert_eq!(memory.reads, 0);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cmp_byte_registers_sets_flags_without_writing_operands() {
+    let code = [0x41, 0x38, 0xf8]; // CMP R8B,DIL
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R8 as usize] = 0xdead_beef_1234_5605;
+    cpu.gpr[Register::Rdi as usize] = 0x1234_5678_9abc_de06;
+    cpu.rflags = 2;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0x38 }
+    );
+    assert_eq!(cpu, before);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        2,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 2 | 0x8d5);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    expected.rflags = 0x97;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_inc_byte_preserves_carry_and_the_rest_of_the_register() {
+    let code = [0x41, 0xfe, 0xc1]; // INC R9B
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R9 as usize] = 0xdead_beef_1234_56ff;
+    cpu.rflags = 3;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0xfe }
+    );
+    assert_eq!(cpu, before);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        2,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 2 | 0x8d4);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    expected.gpr[Register::R9 as usize] = 0xdead_beef_1234_5600;
+    expected.rflags = 0x57;
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_or_qword_memory_clears_cf_and_of_and_preserves_source() {
+    let code = [0x48, 0x0b, 0x44, 0x24, 0x68]; // OR RAX,[RSP+0x68]
+    let mut memory = Memory::new(&code);
+    let source = 0x8800_0011_5500_00aau64;
+    memory.bytes[DATA_PHYSICAL + 0x68..DATA_PHYSICAL + 0x70].copy_from_slice(&source.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 0x0011_00ff_00aa_0055;
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.rflags = 0x803;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rax as usize] = 0x8811_00ff_55aa_00ff;
+    expected.rflags = 0x86;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        2,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 2 | 0x8c5);
+    assert_eq!(cpu, expected);
+    assert_eq!(memory.read_addresses, [(DATA + 0x68, 8)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_pe_permission_or_commits_only_after_the_stack_store() {
+    for (code, displacement) in [
+        ([0x09, 0x84, 0x24, 0xb8, 0, 0, 0].as_slice(), 0xb8u64),
+        ([0x09, 0x84, 0x24, 0xd8, 0, 0, 0].as_slice(), 0xd8),
+        ([0x09, 0x84, 0x24, 0xe0, 0, 0, 0].as_slice(), 0xe0),
+        ([0x09, 0x44, 0x24, 0x78].as_slice(), 0x78),
+    ] {
+        let address = DATA + displacement;
+        let start = DATA_PHYSICAL + displacement as usize;
+        let slot = start..start + 4;
+        for failed_write in [None, Some(false), Some(true)] {
+            let mut memory = Memory::new(code);
+            memory.bytes[slot.clone()].copy_from_slice(&0x1111_0100u32.to_le_bytes());
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.gpr[Register::Rax as usize] = 0xfeed_face_8000_0200;
+            cpu.rflags = 0x803;
+            let mut expected = cpu.clone();
+            let mut value = 0x1111_0100u32;
+            let exit = if let Some(write) = failed_write {
+                let fault = ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(2),
+                    linear_address: Some(address),
+                };
+                if write {
+                    memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+                } else {
+                    memory.fail_read = Some(MemoryError::Architectural(fault.clone()));
+                }
+                PagedProbeExit::Fault(fault)
+            } else {
+                expected.rip += code.len() as u64;
+                expected.rflags = 0x86;
+                value = 0x9111_0300;
+                PagedProbeExit::Retired
+            };
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                0x12,
+            );
+            let retired = failed_write.is_none();
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, u64::from(retired));
+            assert_eq!(result.rflags_defined, if retired { 0x8c7 } else { 0x12 });
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.bytes[slot.clone()], value.to_le_bytes());
+            assert_eq!(memory.read_addresses, [(address, 4)]);
+            assert_eq!(memory.writes, usize::from(failed_write != Some(false)));
+        }
+    }
+}
+
+#[test]
+fn firmware_protected_nvram_word_or_preserves_the_upper_register_bits() {
+    let code = [0x66, 0x45, 0x09, 0xfc];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R12 as usize] = 0xfeed_1234_5678_4001;
+    cpu.gpr[Register::R15 as usize] = 0xdead_cafe_dead_8002;
+    cpu.rflags = 0x803;
+    let mut expected = cpu.clone();
+    expected.rip += code.len() as u64;
+    expected.gpr[Register::R12 as usize] = 0xfeed_1234_5678_c003;
+    expected.rflags = 0x86;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        0x12,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, 0x8c7);
+    assert_eq!(cpu, expected);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_rdtsc_reads_the_source_before_committing() {
+    let code = [0x0f, 0x31];
+    let error = MemoryError::Backend("firmware clock overflow".into());
+    let value = 0x9876_5432_fedc_ba98;
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = u64::MAX;
+        cpu.gpr[Register::Rdx as usize] = u64::MAX;
+        let mut expected = cpu.clone();
+        let mut calls = 0;
+        let result = execute::step_paged_firmware_probe_with_cr3_and_rdtsc(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+            0x1000,
+            &mut || {
+                calls += 1;
+                if fail { Err(error.clone()) } else { Ok(value) }
+            },
+        );
+        assert_eq!(calls, 1);
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Backend(error.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += 2;
+            expected.gpr[Register::Rax as usize] = 0xfedc_ba98;
+            expected.gpr[Register::Rdx as usize] = 0x9876_5432;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_rdtsc_does_not_sample_on_fetch_fault_or_prefix() {
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(RIP + 1),
+    };
+    for (code, error, expected_exit) in [
+        (
+            &[0x0f, 0x31][..],
+            Some((RIP + 1, MemoryError::Architectural(fault.clone()))),
+            PagedProbeExit::Fault(fault),
+        ),
+        (
+            &[0x66, 0x0f, 0x31][..],
+            None,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        memory.fail_fetch_at = error;
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut calls = 0;
+        let result = execute::step_paged_firmware_probe_with_cr3_and_rdtsc(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+            0x1000,
+            &mut || {
+                calls += 1;
+                Ok(0)
+            },
+        );
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(calls, 0);
+        assert_eq!(cpu, before);
+    }
+}
+
+#[test]
+fn firmware_boot_dword_imul_ignores_high_register_halves_and_defines_overflow() {
+    let code = [0x41, 0x0f, 0xaf, 0xd0]; // IMUL EDX,R8D
+    for (destination, source, product, flags) in [
+        (640, 480, 307_200, 0x6d6),
+        (0x4000_0000, 2, 0x8000_0000, 0xed7),
+    ] {
+        let mut cpu = state();
+        cpu.gpr[Register::Rdx as usize] = 0xffff_ffff_0000_0000 | destination;
+        cpu.gpr[Register::R8 as usize] = 0xffff_ffff_0000_0000 | source;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rdx as usize] = product;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let mut memory = Memory::new(&code);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_qword_imul_reads_before_updating_destination_and_flags() {
+    let code = [0x4c, 0x0f, 0xaf, 0x74, 0x24, 0x30]; // IMUL R14,[RSP+0x30]
+    let address = DATA + 0x30;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for faulted in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x30..DATA_PHYSICAL + 0x38]
+            .copy_from_slice(&7u64.to_le_bytes());
+        memory.fail_read = faulted.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::R14 as usize] = 3;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let (exit, flags) = if faulted {
+            (PagedProbeExit::Fault(fault.clone()), DEFINED)
+        } else {
+            expected.gpr[Register::R14 as usize] = 21;
+            expected.rflags = 0x6d6;
+            expected.rip += code.len() as u64;
+            (PagedProbeExit::Retired, (DEFINED & !0xd4) | 0x801)
+        };
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, exit);
+        assert_eq!(result.instructions_executed, u64::from(!faulted));
+        assert_eq!(result.rflags_defined, flags);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_word_or_reads_guid_words_and_preserves_high_register_bits() {
+    let code = [0x66, 0x0b, 0x4c, 0x24, 0x04];
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL + 4..DATA_PHYSICAL + 6].copy_from_slice(&0x5000u16.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_8001;
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.rflags = 0xed7;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(memory.read_addresses, [(DATA + 4, 2)]);
+    assert_eq!(cpu.rip, RIP + code.len() as u64);
+    assert_eq!(cpu.gpr[Register::Rcx as usize], 0x1234_5678_9abc_d001);
+    assert_eq!(cpu.rflags, 0x692);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_word_or_combines_file_metadata_and_path_comparisons() {
+    for (code, destination, source) in [
+        ([0x66, 0x44, 0x09, 0xde], Register::Rsi, Register::R11),
+        ([0x66, 0x44, 0x09, 0xd6], Register::Rsi, Register::R10),
+        ([0x66, 0x45, 0x09, 0xf7], Register::R15, Register::R14),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = 0x1234_5678_9abc_8001;
+        cpu.gpr[source as usize] = 0xfeed_face_abcd_0004;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = 0x1234_5678_9abc_8005;
+        expected.rflags = 0x696;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(
+            (result.instructions_executed, result.rflags_defined),
+            (1, DEFINED)
+        );
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_dword_imul_scales_nvme_ready_timeout() {
+    let code = [0x69, 0xf6, 0x50, 0xc3, 0, 0]; // IMUL ESI,ESI,50000
+    let mut cpu = state();
+    cpu.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_00ff;
+    cpu.rflags = 0xed7;
+    let mut memory = Memory::new(&code);
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(cpu.rip, RIP + code.len() as u64);
+    assert_eq!(cpu.gpr[Register::Rsi as usize], 12_750_000);
+    assert_eq!(cpu.rflags, 0x6d6);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_dword_imul_counts_tcg2_memory_descriptors() {
+    for (modrm, destination) in [(0xc9, Register::Rcx), (0xc1, Register::Rax)] {
+        let code = [0x69, modrm, 0xcd, 0xcc, 0, 0];
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0028;
+        cpu.gpr[Register::Rax as usize] = 0xfedc_ba98_7654_3210;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = 0x28 * 0xcccd;
+        expected.rip += code.len() as u64;
+        expected.rflags &= !0x801;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.rflags_defined & 0x8d5, 0x801);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_dword_imul_converts_fat_creation_time() {
+    let code = [0x69, 0xc0, 0x80, 0x96, 0x98, 0x00];
+    for count in [0i32, 1, 99, 214, 215, -1, -215] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0xfedc_ba98_0000_0000 | u64::from(count as u32);
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let product = i64::from(count) * 10_000_000;
+        expected.gpr[Register::Rax as usize] = u64::from(product as u32);
+        expected.rip += code.len() as u64;
+        if i32::try_from(product).is_ok() {
+            expected.rflags &= !0x801;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_fat_time_imul_is_exact_and_fetch_atomic() {
+    let exact = [0x69, 0xc0, 0x80, 0x96, 0x98, 0x00];
+    let initial = state();
+    let mut cpu = initial.clone();
+    let base = step(
+        &mut cpu,
+        &mut Memory::new(&exact),
+        &mut Pio::default(),
+        ring0(),
+    );
+    assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0x69 });
+    assert_eq!(cpu, initial);
+
+    for bytes in [
+        &[0x69, 0xc1, 0x80, 0x96, 0x98, 0x00][..],
+        &[0x69, 0xc8, 0x80, 0x96, 0x98, 0x00],
+        &[0x69, 0x00, 0x80, 0x96, 0x98, 0x00],
+        &[0x69, 0xc0, 0x81, 0x96, 0x98, 0x00],
+        &[0x40, 0x69, 0xc0, 0x80, 0x96, 0x98, 0x00],
+        &[0x67, 0x69, 0xc0, 0x80, 0x96, 0x98, 0x00],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x69 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, initial);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+
+    for byte in 2..6 {
+        let mut memory = Memory::new(&exact);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + byte),
+        };
+        memory.fail_fetch_at = Some((RIP + byte, MemoryError::Architectural(fault.clone())));
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, initial);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_qword_imul_immediate_writes_only_the_truncated_destination() {
+    for (code, source, product, flags) in [
+        (
+            &[0x4d, 0x69, 0xd9, 0x80, 0x96, 0x98, 0][..],
+            3,
+            30_000_000,
+            0x6d6,
+        ),
+        (
+            &[0x4d, 0x69, 0xd9, 0xff, 0xff, 0xff, 0xff][..],
+            1 << 63,
+            1 << 63,
+            0xed7,
+        ),
+        (&[0x4d, 0x6b, 0xd9, 0x38][..], 3, 168, 0x6d6),
+        (&[0x4d, 0x6b, 0xd9, 0xff][..], 3, u64::MAX - 2, 0x6d6),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::R9 as usize] = source;
+        cpu.gpr[Register::R11 as usize] = u64::MAX;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::R11 as usize] = product;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_sbb_qword_reads_memory_before_committing_borrow() {
+    let address = DATA + 0x20;
+    let mut code = [0x48, 0x1b, 0x05, 0, 0, 0, 0]; // SBB RAX,[RIP+disp32]
+    let displacement = (address as i64 - (RIP + code.len() as u64) as i64) as i32;
+    code[3..].copy_from_slice(&displacement.to_le_bytes());
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.rflags = 3;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            2,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, 2);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, 2 | 0x8d5);
+            expected.rip += code.len() as u64;
+            expected.gpr[Register::Rax as usize] = u64::MAX;
+            expected.rflags = 0x97;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_shr_qword_uses_only_the_masked_cl_count() {
+    let code = [0x49, 0xd3, 0xee]; // SHR R14,CL
+    for (count, value, flags, defined) in [
+        (0x10, 0x4_0002, 0xe12, DEFINED & !0x810),
+        (0x50, 0x4_0002, 0xe12, DEFINED & !0x810),
+        (0x40, 0x4_0002_0001, 0xed7, DEFINED | 0x10),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::R14 as usize] = 0x4_0002_0001;
+        cpu.gpr[Register::Rcx as usize] = 0xfeed_face_beef_fe00 | count;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::R14 as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_shr_dword_masks_cl_and_clears_high_destination() {
+    let code = [0x41, 0xd3, 0xe9]; // SHR R9D,CL
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R9 as usize] = 0xdead_beef_8000_0001;
+    cpu.gpr[Register::Rcx as usize] = 0xfeed_face_beef_fe21;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::R9 as usize] = 0x4000_0000;
+    expected.rflags = 0xe17;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED | (1 << 4),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert!(memory.read_addresses.is_empty());
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn firmware_boot_double_qword_shifts_use_the_other_register_and_mask_the_count() {
+    for (code, destination, source, input, source_value, value, flags, defined) in [
+        (
+            [0x4d, 0x0f, 0xac, 0xca, 0x17], // SHRD R10,R9,23
+            Register::R10,
+            Register::R9,
+            0x80_0001,
+            1,
+            0x0200_0000_0001,
+            0xe12,
+            DEFINED & !0x810,
+        ),
+        (
+            [0x48, 0x0f, 0xa4, 0xc2, 0x3a], // SHLD RDX,RAX,58
+            Register::Rdx,
+            Register::Rax,
+            1,
+            0x8000_0000_0000_0040,
+            0x0600_0000_0000_0001,
+            0xe12,
+            DEFINED & !0x810,
+        ),
+        (
+            [0x4d, 0x0f, 0xac, 0xca, 0x40], // SHRD R10,R9,64 (masked to zero)
+            Register::R10,
+            Register::R9,
+            0x80_0001,
+            1,
+            0x80_0001,
+            0xed7,
+            DEFINED | 0x10,
+        ),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[destination as usize] = input;
+        cpu.gpr[source as usize] = source_value;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        expected.gpr[destination as usize] = value;
+        expected.rflags = flags;
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(cpu, expected, "{code:02x?}");
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_unsigned_div_commits_halves_only_when_the_quotient_fits() {
+    let dword = [0x41, 0xf7, 0xf1]; // DIV R9D
+    let qword = [0x49, 0xf7, 0xf1]; // DIV R9
+    let fault = od_isa::ArchitecturalFault {
+        vector: 0,
+        error_code: None,
+        linear_address: None,
+    };
+    for (code, dividend_high, dividend_low, divisor, expected_halves) in [
+        (
+            dword,
+            0x1234_0000_0001,
+            0x4321_0000_0003,
+            0x5678_0000_0005,
+            Some((858_993_459, 4)),
+        ),
+        (qword, 1, 0, 2, Some((1 << 63, 0))),
+        (qword, 0, 1, 0, None),
+        (qword, 2, 0, 2, None),
+    ] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = dividend_low;
+        cpu.gpr[Register::Rdx as usize] = dividend_high;
+        cpu.gpr[Register::R9 as usize] = divisor;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if let Some((quotient, remainder)) = expected_halves {
+            expected.gpr[Register::Rax as usize] = quotient;
+            expected.gpr[Register::Rdx as usize] = remainder;
+            expected.rip += code.len() as u64;
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED & !0x8d5);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, DEFINED);
+        }
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_unsigned_qword_mul_updates_both_implicit_halves_and_flags() {
+    let code = [0x48, 0xf7, 0xe2]; // MUL RDX
+    for (lhs, rhs, low, high) in [(21, 2, 42, 0), (u64::MAX, 2, u64::MAX - 1, 1)] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = lhs;
+        cpu.gpr[Register::Rdx as usize] = rhs;
+        cpu.rflags = 0x0ad7;
+        let mut expected = cpu.clone();
+        expected.gpr[Register::Rax as usize] = low;
+        expected.gpr[Register::Rdx as usize] = high;
+        expected.rflags = if high == 0 { 0x02d6 } else { 0x0ad7 };
+        expected.rip += code.len() as u64;
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_qword_memory_arithmetic_commits_flags_only_after_write() {
+    let address = DATA + 0x30;
+    let position = DATA_PHYSICAL + 0x30;
+    let displacement = (address as i64 - (RIP + 7) as i64) as i32;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(address),
+    };
+    let mut rip_inc = [0x48, 0xff, 0x05, 0, 0, 0, 0];
+    let mut rip_dec = [0x48, 0xff, 0x0d, 0, 0, 0, 0];
+    rip_inc[3..].copy_from_slice(&displacement.to_le_bytes());
+    rip_dec[3..].copy_from_slice(&displacement.to_le_bytes());
+    for (code, written, flags, defined) in [
+        (&rip_inc[..], 0, 0x57, 0x8d6),
+        (&rip_dec[..], u64::MAX - 1, 0x83, 0x8d6),
+        (&[0x48, 0xff, 0x87, 0, 0x12, 0, 0][..], 0, 0x57, 0x8d6), // INC [RDI+0x1200]
+        (&[0x48, 0xff, 0x46, 0x28][..], 0, 0x57, 0x8d6),          // INC [RSI+0x28]
+        (&[0x48, 0x83, 0x54, 0x24, 0x58, 0][..], 0, 0x57, 0x8d7), // ADC [RSP+0x58],0
+    ] {
+        for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
+            let mut memory = Memory::new(code);
+            memory.bytes[position - 1..position + 9].fill(0xff);
+            memory.fail_read = fail_read.then(|| MemoryError::Architectural(fault.clone()));
+            memory.fail_write = fail_write.then(|| MemoryError::Architectural(fault.clone()));
+            let mut cpu = state();
+            cpu.gpr[Register::Rdi as usize] = address - 0x1200;
+            cpu.gpr[Register::Rsp as usize] = address - 0x58;
+            cpu.gpr[Register::Rsi as usize] = address - 0x28;
+            cpu.rflags = 3;
+            let mut expected = cpu.clone();
+            let mut expected_bytes = [0xff; 10];
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                2,
+            );
+            if fail_read || fail_write {
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(result.rflags_defined, 2);
+            } else {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(result.rflags_defined, defined);
+                expected.rip += code.len() as u64;
+                expected.rflags = flags;
+                expected_bytes[1..9].copy_from_slice(&written.to_le_bytes());
+            }
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.read_addresses, [(address, 8)]);
+            assert_eq!(memory.writes, usize::from(!fail_read));
+            assert_eq!(memory.bytes[position - 1..position + 9], expected_bytes);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_fat_directory_cursor_adds_commit_only_after_store() {
+    for (code, offset, size) in [
+        (&[0x41, 0x83, 0x46, 0x28, 0x20][..], 0x28, 4),
+        (&[0x49, 0x83, 0x46, 0x30, 0x20][..], 0x30, 8),
+    ] {
+        let address = DATA + offset as u64;
+        let region = DATA_PHYSICAL + offset - 1..DATA_PHYSICAL + offset + size + 1;
+        let fault = od_isa::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(address),
+        };
+        for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
+            let mut memory = Memory::new(code);
+            let mut bytes = vec![0xff; size + 2];
+            bytes[1] = 0xf0;
+            memory.bytes[region.clone()].copy_from_slice(&bytes);
+            memory.fail_read = fail_read.then(|| MemoryError::Architectural(fault.clone()));
+            memory.fail_write = fail_write.then(|| MemoryError::Architectural(fault.clone()));
+            let mut cpu = state();
+            cpu.gpr[Register::R14 as usize] = DATA;
+            cpu.rflags = 0xed6;
+            let mut expected = cpu.clone();
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            if fail_read || fail_write {
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+                assert_eq!(
+                    (result.instructions_executed, result.rflags_defined),
+                    (0, DEFINED)
+                );
+            } else {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(
+                    (result.instructions_executed, result.rflags_defined),
+                    (1, DEFINED | 0x10)
+                );
+                expected.rip += code.len() as u64;
+                expected.rflags = 0x603;
+                bytes[1..=size].copy_from_slice(&0x10u64.to_le_bytes()[..size]);
+            }
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.bytes[region.clone()], bytes);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_cmov_reads_qword_memory_even_when_condition_is_false() {
+    let code = [0x48, 0x0f, 0x44, 0x4c, 0x24, 0x28]; // CMOVE RCX,[RSP+0x28]
+    let address = DATA + 0x28;
+    let value = 0xdead_beef_1234_5678u64;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for (taken, fail) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x28..DATA_PHYSICAL + 0x30]
+            .copy_from_slice(&value.to_le_bytes());
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0xabcd_0123_7654_89ef;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = if taken { 0x42 } else { 2 };
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.rip += code.len() as u64;
+            if taken {
+                expected.gpr[Register::Rcx as usize] = value;
+            }
+        }
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 8)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_rep_bsf_dword_uses_non_bmi1_semantics() {
+    const ARITHMETIC: u64 = od_isa::INTEGER_FLAGS & !0x402;
+    let code = [0xf3, 0x41, 0x0f, 0xbc, 0xcb]; // REP BSF ECX,R11D
+    for (source, destination, flags) in [
+        (512, 9, 0),
+        (0x1800, 11, 0x4),
+        (0, 0x1234_5678_ffff_ffff, 0x44),
+    ] {
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0x1234_5678_ffff_ffff;
+        cpu.gpr[Register::R11 as usize] = 0xffff_ffff_0000_0000 | source;
+        cpu.rflags = 0x402 | ARITHMETIC;
+        let mut expected = cpu.clone();
+        expected.rip += code.len() as u64;
+        expected.gpr[Register::Rcx as usize] = destination;
+        expected.rflags = 0x402 | flags;
+        let mut memory = Memory::new(&code);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, DEFINED | ARITHMETIC);
+        assert_eq!(cpu, expected);
+        assert!(memory.read_addresses.is_empty());
+    }
+}
+
+#[test]
+fn firmware_boot_movsx_cl_sign_extends_into_eax() {
+    let code = [0x0f, 0xbe, 0xc1]; // MOVSX EAX, CL
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = u64::MAX;
+    cpu.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_de81;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rax as usize] = 0xffff_ff81;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_movsx_oem_byte_from_stack_reads_before_commit() {
+    let code = [0x0f, 0xbe, 0x54, 0x04, 0x40]; // MOVSX EDX,[RSP+RAX+0x40]
+    let address = DATA + 0x43;
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x43..DATA_PHYSICAL + 0x45].copy_from_slice(&[0x8a, 0x12]);
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 3;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = u64::MAX;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            expected.gpr[Register::Rdx as usize] = 0xffff_ff8a;
+            expected.rip += code.len() as u64;
+        }
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_moves_default_path_comparison_byte_without_flags() {
+    let code = [0x88, 0xd1]; // MOV CL,DL
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cd12;
+    cpu.gpr[Register::Rdx as usize] = 0x1122_3344_5566_77a5;
+    cpu.rflags = 0xed7;
+    let mut expected = cpu.clone();
+    expected.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cda5;
+    expected.rip += code.len() as u64;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(
+        (result.instructions_executed, result.rflags_defined),
+        (1, DEFINED)
+    );
+    assert_eq!(cpu, expected);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn firmware_boot_tests_image_loader_byte_spill_without_writing() {
+    let code = [0x84, 0x84, 0x24, 0x7c, 1, 0, 0]; // TEST byte [RSP+0x17c],AL
+    let address = DATA + 0x17c;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(address),
+    };
+    for fail in [false, true] {
+        let mut memory = Memory::new(&code);
+        memory.bytes[DATA_PHYSICAL + 0x17c] = 0x80;
+        memory.fail_read = fail.then(|| MemoryError::Architectural(fault.clone()));
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0x1234_5678_90ab_cd80;
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED | 0x10,
+        );
+        if fail {
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(
+                (result.instructions_executed, result.rflags_defined),
+                (0, DEFINED | 0x10)
+            );
+        } else {
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(
+                (result.instructions_executed, result.rflags_defined),
+                (1, DEFINED)
+            );
+            expected.rip += code.len() as u64;
+            expected.rflags = 0x692;
+        }
+        assert_eq!(cpu, expected);
+        assert_eq!(memory.read_addresses, [(address, 1)]);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn firmware_boot_shifts_image_loader_qword_spill_transactionally() {
+    for (code, displacement) in [
+        ([0x48, 0xd1, 0x6c, 0x24, 0x68].as_slice(), 0x68u8),
+        ([0x48, 0xd1, 0x6c, 0x24, 0x78].as_slice(), 0x78),
+        ([0x48, 0xd1, 0xac, 0x24, 0xa0, 0, 0, 0].as_slice(), 0xa0),
+        ([0x48, 0xd1, 0xac, 0x24, 0xa8, 0, 0, 0].as_slice(), 0xa8),
+    ] {
+        let address = DATA + u64::from(displacement);
+        let position = DATA_PHYSICAL + usize::from(displacement);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(address),
+        };
+        for (fail_read, fail_write) in [(false, false), (true, false), (false, true)] {
+            let mut memory = Memory::new(code);
+            memory.bytes[position - 1..position + 9].fill(0xff);
+            memory.fail_read = fail_read.then(|| MemoryError::Architectural(fault.clone()));
+            memory.fail_write = fail_write.then(|| MemoryError::Architectural(fault.clone()));
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA;
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            let mut expected_memory = [0xff; 10];
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED | 0x10,
+            );
+            if fail_read || fail_write {
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+                assert_eq!(
+                    (result.instructions_executed, result.rflags_defined),
+                    (0, DEFINED | 0x10)
+                );
+            } else {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(
+                    (result.instructions_executed, result.rflags_defined),
+                    (1, DEFINED)
+                );
+                expected.rip += code.len() as u64;
+                expected.rflags = 0xe17;
+                expected_memory[8] = 0x7f;
+            }
+            assert_eq!(cpu, expected);
+            assert_eq!(memory.bytes[position - 1..position + 9], expected_memory);
+        }
+    }
+}
+
+#[test]
+fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
+    for (bytes, opcode) in [
+        (&[0x0f, 0x47, 0x03][..], 0x47),                   // CMOVA EAX,[RBX]
+        (&[0x67, 0x48, 0x0f, 0x47, 0x03][..], 0x47),       // address32 CMOVA RAX,[EBX]
+        (&[0x66, 0x41, 0x0f, 0x47, 0xc6][..], 0x47),       // CMOVA AX,R14W
+        (&[0x67, 0x49, 0x0f, 0x47, 0xc6][..], 0x47),       // address override on CMOVA
+        (&[0x29, 0x6c, 0x24, 0x20][..], 0x29),             // SUB memory,register
+        (&[0x66, 0x2b, 0x44, 0x24, 0x10][..], 0x2b),       // SUB AX,[RSP+0x10]
+        (&[0x67, 0x48, 0x2b, 0x44, 0x24, 0x10][..], 0x2b), // address32 SUB
+        (&[0x67, 0x48, 0x39, 0x6c, 0x24, 0x20][..], 0x39), // address32 CMP
+        (&[0x66, 0x58][..], 0x58),                         // POP AX
+        (&[0x66, 0x56][..], 0x56),                         // PUSH SI
+        (&[0x67, 0x41, 0xff, 0xd6][..], 0xff),             // address override on CALL R14
+        (&[0x8f, 0x00][..], 0x8f),                         // POP [RAX]
+        (&[0x48, 0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // MOVZX qword destination
+        (&[0x67, 0x0f, 0xb7, 0x44, 0x24, 0x4b][..], 0xb7), // address32 MOVZX word source
+        (&[0x48, 0x0f, 0xbe, 0x03][..], 0xbe),             // MOVSX RAX,byte ptr [RBX]
+        (&[0x0f, 0xbe, 0xc0][..], 0xbe),                   // MOVSX EAX,AL
+        (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6), // address32 MOVZX
+        (&[0x48, 0x09, 0x07][..], 0x09),                   // OR qword [RDI],RAX
+        (&[0x66, 0x09, 0xf8][..], 0x09),                   // OR AX,DI
+        (&[0x67, 0xe9, 0xfc, 0xfc, 0xff, 0xff][..], 0xe9), // prefix on JMP
+        (&[0x67, 0x66, 0x89, 0x58, 0x4c][..], 0x89),       // address32 word store
+        (&[0x67, 0x48, 0xbe, 0, 0, 0, 0, 0x10, 0, 0, 0][..], 0xbe), // prefix on MOV r64,imm64
+        (&[0x44, 0x08, 0x11][..], 0x08),                   // OR byte [RCX],R10B
+        (&[0x67, 0x66, 0x0b, 0x03][..], 0x0b),             // address override OR AX,word [EBX]
+        (&[0x0f, 0xaf, 0x10][..], 0xaf),                   // IMUL EDX,dword [RAX]
+        (&[0x67, 0x89, 0x70, 0x48][..], 0x89),             // address32 dword store
+        (&[0x0f, 0x93, 0x01][..], 0x93),                   // SETAE byte [RCX]
+        (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93),             // address prefix on SETAE CL
+        (&[0xc7, 0x48, 0x28, 0x20, 0, 0, 0][..], 0xc7),    // reserved C7 /1
+        (&[0x67, 0x48, 0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7), // address32 store
+        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3),             // BT CX,BX
+        (&[0x0f, 0xab, 0xd9][..], 0xab),                   // BTS ECX,EBX
+        (&[0x0f, 0xa3, 0x13][..], 0xa3),                   // BT [RBX],EDX
+        (&[0x67, 0x85, 0xc0][..], 0x85),                   // address override on TEST
+        (&[0xf6, 0x16][..], 0xf6),                         // NOT byte [RSI]
+        (&[0x48, 0xf7, 0x16][..], 0xf7),                   // NOT qword [RSI]
+        (&[0x48, 0xf7, 0xea][..], 0xf7),                   // IMUL RDX
+        (&[0xf7, 0xe2][..], 0xf7),                         // MUL EDX
+        (&[0x48, 0xf7, 0x22][..], 0xf7),                   // MUL qword [RDX]
+        (&[0x49, 0xf7, 0xf9][..], 0xf7),                   // IDIV R9
+        (&[0x66, 0x41, 0xf7, 0xf1][..], 0xf7),             // DIV R9W
+        (&[0x48, 0xf7, 0x32][..], 0xf7),                   // DIV qword [RDX]
+        (&[0x45, 0x69, 0xd9, 3, 0, 0, 0][..], 0x69),       // IMUL R11D,R9D,3
+        (&[0x45, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11D,R9D,imm8
+        (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69),       // IMUL RDX,[RDX],3
+        (&[0x45, 0x19, 0xd8][..], 0x19),                   // SBB R8D,R11D
+        (&[0x1b, 0x03][..], 0x1b),                         // SBB EAX,[RBX]
+        (&[0x67, 0x48, 0x1b, 0x03][..], 0x1b),             // address32 SBB RAX,[EBX]
+        (&[0x45, 0x0f, 0xac, 0xca, 0x17][..], 0xac),       // SHRD R10D,R9D,23
+        (&[0x48, 0x0f, 0xac, 0x0a, 0x17][..], 0xac),       // SHRD qword [RDX],RCX,23
+        (&[0x4d, 0x0f, 0xad, 0xca][..], 0xad),             // SHRD R10,R9,CL
+        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),          // address override on TEST
+        (&[0x48, 0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST RDX,imm32
+        (&[0xff, 0x03][..], 0xff),                         // INC dword [RBX]
+        (&[0xfe, 0x03][..], 0xfe),                         // INC byte ptr [RBX]
+        (&[0x41, 0xfe, 0xca][..], 0xfe),                   // DEC R10B
+        (&[0xfe, 0xcc][..], 0xfe),                         // DEC AH
+        (&[0x67, 0x48, 0xff, 0x0b][..], 0xff),             // address32 DEC qword [EBX]
+        (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),             // SHL qword [RBX],21
+        (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),             // SHR CX,21
+        (&[0x66, 0xc1, 0xc1, 1][..], 0xc1),                // ROL CX,1
+        (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1),       // address override on SHR
+        (&[0x41, 0xd3, 0xee][..], 0xd3),                   // SHR R14D,CL
+        (&[0x49, 0xd3, 0x2e][..], 0xd3),                   // SHR qword [R14],CL
+        (&[0x49, 0xd3, 0xe6][..], 0xd3),                   // SHL R14,CL
+        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80),       // address32 CMP
+        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),    // address32 store
+        (&[0x48, 0x83, 0x12, 0x28][..], 0x83),             // ADC qword [RDX],0x28
+        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),             // ADD qword [RBX],0x28
+        (&[0x66, 0x03, 0x13][..], 0x03),                   // ADD DX,[RBX]
+        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),             // ADC SI,-1
+        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // segment override
+        (&[0x67, 0x88, 0x58, 0x4c][..], 0x88),             // address32 byte store
+        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // address32 store
+        (&[0x44, 0x88, 0xc0][..], 0x88),                   // MOV AL,R8B
+        (&[0x67, 0x44, 0x88, 0xc1][..], 0x88),             // address32 MOV CL,R8B
+        (&[0x84, 0x84, 0x24, 0x4d, 1, 0, 0][..], 0x84),    // TEST [RSP+0x14d],AL
+        (&[0x8a, 0x3c, 0x24][..], 0x8a),                   // byte load
+        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),       // address32 LEA
+        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),       // FS override on NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),                   // PREFETCHNTA
+        (&[0xc7, 0x54, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // reserved C7 /2
+        (&[0x64, 0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // segment override on dword immediate store
+        (&[0x67, 0x48, 0x89, 0xc9][..], 0x89), // address override on qword register MOV
+        (&[0xff, 0xe1][..], 0xff),             // JMP RCX
+        (&[0x48, 0xff, 0x61, 0x09][..], 0xff), // JMP qword [RCX+9]
+        (&[0x67, 0x48, 0xff, 0x61, 0x08][..], 0xff), // address32 JMP qword [ECX+8]
+        (&[0xff, 0x24, 0xe5, 0xb8, 0x26, 0x20, 0][..], 0xff), // no index
+        (&[0xff, 0x24, 0x8d, 0xb8, 0x26, 0x20, 0][..], 0xff), // scale four
+        (&[0xff, 0xa4, 0xc8, 0xb8, 0x26, 0x20, 0][..], 0xff), // RAX base
+        (&[0x67, 0xff, 0x24, 0xcd, 0xb8, 0x26, 0x20, 0][..], 0xff), // address override
+        (&[0x40, 0xb9, 4, 0, 0, 0][..], 0xb9),
+        (&[0x45, 0xbc, 0x02, 0x06, 0, 0][..], 0xbc),
+        (&[0x66, 0xe8, 0, 0, 0][..], 0xe8),
+        (&[0x48, 0xe8, 0, 0, 0, 0][..], 0xe8),
+        (&[0x66, 0x72, 0x2c][..], 0x72),
+        (&[0x67, 0x66, 0x83, 0xff, 5][..], 0x83), // prefixed CMP DI,imm8
+        (&[0x66, 0x83, 0xd3, 5][..], 0x83),       // ADC BX,imm8
+        (&[0x66, 0x83, 0x03, 5][..], 0x83),       // ADD [RBX],imm8
+        (&[0x66, 0x41, 0x83, 0xdb, 5][..], 0x83), // SBB R11W,imm8
+        (&[0x66, 0x67, 0x83, 0xfb, 5][..], 0x83), // address override
+        (&[0x66, 0x81, 0xd3, 5, 0][..], 0x81),    // ADC BX,imm16
+        (
+            &[0x67, 0x46, 0x33, 0x24, 0x85, 0xe0, 0x27, 0x20, 0][..],
+            0x33,
+        ), // address32 XOR
+        (&[0x66, 0x33, 0x03][..], 0x33),          // XOR AX,[RBX]
+        (&[0x31, 0x03][..], 0x31),                // XOR [RBX],EAX
+        // LOCK ADD, address-size override, and a dword destination.
+        (&[0xf0, 0x48, 0x01, 0x03][..], 0x01),
+        (&[0x67, 0x48, 0x01, 0x03][..], 0x01),
+        (&[0x66, 0x01, 0x03][..], 0x01),
+        // FAT helpers keep neighboring encodings outside the firmware set.
+        (&[0x41, 0x0f, 0xbc, 0xcb][..], 0xbc),
+        (&[0xf3, 0x49, 0x0f, 0xbc, 0xcb][..], 0xbc),
+        (&[0xf3, 0x41, 0x0f, 0xbc, 0x0b][..], 0xbc),
+        (&[0x0f, 0xba, 0x22, 0x02][..], 0xba),
+        (&[0x48, 0x0f, 0xba, 0xe2, 0x02][..], 0xba),
+        (&[0x41, 0x83, 0x46, 0x30, 0x20][..], 0x83),
+        (&[0x49, 0x83, 0x46, 0x30, 0x21][..], 0x83),
+        // Neighboring spills in the SFS image loader remain unsupported.
+        (&[0x84, 0x84, 0x24, 0x78, 1, 0, 0][..], 0x84),
+        (&[0x48, 0xd1, 0x6c, 0x24, 0x48][..], 0xd1),
+        (&[0x48, 0xd1, 0xac, 0x24, 0x68, 0, 0, 0][..], 0xd1),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 0x1000;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "encoding {bytes:02x?}"
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
     }
 }

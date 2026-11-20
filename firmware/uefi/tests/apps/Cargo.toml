@@ -1,0 +1,143 @@
+[package]
+name = "od-firmware-test-apps"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+pkcs7-probe = []
+firmware-bench = []
+
+[dependencies]
+od-firmware = { path = "../.." }
+
+[lib]
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "pkcs7-probe"
+path = "pkcs7-probe/main.rs"
+required-features = ["pkcs7-probe"]
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "acpi"
+path = "acpi/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "firmware-bench"
+path = "bench/main.rs"
+required-features = ["firmware-bench"]
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "gop"
+path = "gop/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "blk"
+path = "blk/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "fs"
+path = "fs/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "hello"
+path = "hello/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "tpm"
+path = "tpm/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "tpm-absent"
+path = "tpm-absent/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "esp-boot-probe"
+path = "esp-boot-probe/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "ebs"
+path = "ebs/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "echo"
+path = "echo/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "vars"
+path = "vars/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "rt"
+path = "rt/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "enroll"
+path = "enroll/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "failure-probe"
+path = "failure-probe/main.rs"
+test = false
+bench = false
+doc = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

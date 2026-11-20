@@ -1,25 +1,29 @@
-//! Session-based parameter encryption (slice C3 of phase B, S7-23): Part 1 v184, clause 19, and the
-//! `symmetric` parameter of `TPM2_StartAuthSession` (Part 2, Table 159).
+//! Session-based parameter encryption (Library v185 Part 1 §18 and the `symmetric` parameter of
+//! `TPM2_StartAuthSession`).
 //!
-//! A session started with `symmetric` = AES-128-CFB (`TPM_ALG_AES`, 128 bits, `TPM_ALG_CFB`) or
+//! A session started with `symmetric` = AES-CFB (`TPM_ALG_AES`, 128 or 256 bits, `TPM_ALG_CFB`) or
 //! XOR (`TPM_ALG_XOR`, hash SHA-256) can carry the `decrypt` and `encrypt` attributes of
 //! `TPMA_SESSION`:
 //! - `decrypt` SET: the first parameter of the command, a sized buffer, arrives encrypted; the
 //!   TPM decrypts its data portion (not its size field) after the authorization check (the
-//!   cpHash is computed over the encrypted parameter, clause 19.1).
+//!   cpHash is computed over the encrypted parameter, §18.1).
 //! - `encrypt` SET: the TPM encrypts the data portion of the first parameter of the response, a
 //!   sized buffer, before it computes the rpHash.
 //!
-//! `sessionValue` is `sessionKey || authValue` of the entity the session authorizes (the binding
-//! is ignored, clause 19.1; the sessions of a command are exactly its authorization sessions).
-//! CFB: `KDFa(SHA-256, sessionValue, "CFB", nonceNewer, nonceOlder, 256)`, the first 16 octets are
-//! the AES key, the next 16 the IV (clause 19.3); XOR: `mask = KDFa(SHA-256, sessionValue, "XOR",
-//! nonceNewer, nonceOlder, 8 * size)` (clauses 19.2 and 9.4.7.3). For a command `nonceNewer` is
+//! `sessionValue` is `sessionKey || authValue` of the authorized entity regardless of binding.
+//! An additional encryption session uses only its `sessionKey` (§18.1).
+//! CFB: `KDFa(authHash, sessionValue, "CFB", nonceNewer, nonceOlder, keyBits + 128)` with the `authHash` of
+//! the session (SHA-256, SHA-384 or SHA-512, step D), the first `keyBits / 8` octets are the AES key, the next
+//! 16 the IV; XOR: `mask = KDFa(authHash, sessionValue, "XOR", nonceNewer, nonceOlder, 8 * size)` (§18.2)
+//! with the `authHash` of the session, as `CryptXORObfuscation(session->authHashAlg, ...)` of the
+//! ms-tpm-20-ref reference implementation does. `StartAuthSession` accepts only SHA-256 as the hash of the
+//! XOR `symmetric` definition, so for a SHA-256 session the mask is the same as before step D, and for a
+//! SHA-384 or SHA-512 session the hash of the mask follows the session, not that definition. For a command `nonceNewer` is
 //! the `nonceCaller` of the session and `nonceOlder` the `nonceTPM` the session had before the
 //! command; for a response `nonceNewer` is the new `nonceTPM` and `nonceOlder` the `nonceCaller`.
 //!
 //! Rules: a session with a NULL symmetric algorithm that asks for encryption is
-//! `TPM_RC_SYMMETRIC` (clause 19.1); at most one session of a command has `decrypt` and at most
+//! `TPM_RC_SYMMETRIC` (§18.1); at most one session of a command has `decrypt` and at most
 //! one has `encrypt`; the attribute on a command whose first parameter (or response parameter) is
 //! not a sized buffer is `TPM_RC_ATTRIBUTES` (see the lists below).
 //!
@@ -28,18 +32,17 @@
 //! second session with the same attribute (the text states the rules, not the code); the lists
 //! [`first_parameter_is_sized`] and [`first_response_parameter_is_sized`] (derived from the
 //! command tables of Part 3: the first parameter being a `TPM2B_*`; `TPM2_StartAuthSession` is
-//! excluded, no test or text confirms an encrypted `nonceCaller`); the codes `TPM_RC_KEY_SIZE`
-//! (AES key size other than 128) and `TPM_RC_HASH` (XOR hash other than SHA-256) of
+//! excluded, no test or text confirms an encrypted `nonceCaller`); the code `TPM_RC_HASH`
+//! (XOR hash other than SHA-256) of
 //! `StartAuthSession` (`TPM_RC_MODE` for a mode other than CFB is named in Part 3, 11.1.1); that
 //! the `authValue` in `sessionValue` has no trailing zeros (as in every authorization
 //! computation); that the attributes of the response acknowledgement keep `decrypt` and
-//! `encrypt` as sent. A session used only for encryption (without an authorized handle) is not
-//! implemented: sessions beyond the authorized handles are `TPM_RC_AUTHSIZE` (`dispatch.rs`).
+//! `encrypt` as sent.
 
 use crate::codes::{alg, cc};
-use crate::crypto::kdfa_sha256;
+use crate::crypto::{HashAlg, kdfa};
 use crate::marshal::Reader;
-use crate::object::aes128_cfb;
+use crate::object::aes_cfb;
 use crate::response::Rc;
 
 /// The symmetric algorithm of a session (`TPMT_SYM_DEF`).
@@ -48,11 +51,12 @@ pub(crate) enum SessionSym {
     Null,
     Xor,
     AesCfb128,
+    AesCfb256,
 }
 
 impl SessionSym {
     /// Parses a `TPMT_SYM_DEF` (parameter 4 of `TPM2_StartAuthSession`): `TPM_ALG_NULL`; XOR with
-    /// its hash (SHA-256); AES with 128 key bits and mode CFB. Anything else is refused with the
+    /// its hash (SHA-256); AES with 128 or 256 key bits and mode CFB. Anything else is refused with the
     /// parameter number 4.
     pub(crate) fn unmarshal(r: &mut Reader<'_>) -> Result<SessionSym, Rc> {
         match r.u16()? {
@@ -62,13 +66,15 @@ impl SessionSym {
                 _ => Err(Rc::HASH.in_param(4)),
             },
             alg::AES => {
-                if r.u16()? != 128 {
-                    return Err(Rc::KEY_SIZE.in_param(4));
-                }
+                let sym = match r.u16()? {
+                    128 => SessionSym::AesCfb128,
+                    256 => SessionSym::AesCfb256,
+                    _ => return Err(Rc::VALUE.in_param(4)),
+                };
                 if r.u16()? != alg::CFB {
                     return Err(Rc::MODE.in_param(4));
                 }
-                Ok(SessionSym::AesCfb128)
+                Ok(sym)
             }
             _ => Err(Rc::SYMMETRIC.in_param(4)),
         }
@@ -80,6 +86,7 @@ impl SessionSym {
             SessionSym::Null => 0,
             SessionSym::Xor => 1,
             SessionSym::AesCfb128 => 2,
+            SessionSym::AesCfb256 => 3,
         }
     }
 
@@ -88,6 +95,7 @@ impl SessionSym {
             0 => Some(SessionSym::Null),
             1 => Some(SessionSym::Xor),
             2 => Some(SessionSym::AesCfb128),
+            3 => Some(SessionSym::AesCfb256),
             _ => None,
         }
     }
@@ -104,27 +112,55 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::HASH_SEQUENCE_START
             | cc::SEQUENCE_UPDATE
             | cc::SEQUENCE_COMPLETE
+            | cc::SIGN_SEQUENCE_START
+            | cc::VERIFY_SEQUENCE_START
+            | cc::SIGN_SEQUENCE_COMPLETE
             | cc::EVENT_SEQUENCE_COMPLETE
             | cc::PCR_EVENT
             | cc::NV_DEFINE_SPACE
             | cc::NV_WRITE
             | cc::NV_EXTEND
             | cc::HIERARCHY_CHANGE_AUTH
+            | cc::SET_PRIMARY_POLICY
+            | cc::START_AUTH_SESSION
             | cc::CREATE_PRIMARY
             | cc::CREATE
             | cc::LOAD
             | cc::LOAD_EXTERNAL
+            | cc::MAKE_CREDENTIAL
+            | cc::ACTIVATE_CREDENTIAL
+            | cc::OBJECT_CHANGE_AUTH
+            | cc::IMPORT
+            | cc::DUPLICATE
             | cc::SIGN
+            | cc::SIGN_DIGEST
+            | cc::DECAPSULATE
             | cc::VERIFY_SIGNATURE
+            | cc::VERIFY_DIGEST_SIGNATURE
             | cc::RSA_ENCRYPT
             | cc::RSA_DECRYPT
             | cc::ECDH_Z_GEN
             | cc::HMAC
+            | cc::HMAC_START
             | cc::QUOTE
             | cc::CERTIFY
+            | cc::CERTIFY_CREATION
+            | cc::NV_CERTIFY
+            | cc::NV_CHANGE_AUTH
             | cc::GET_TIME
+            | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_PCR
             | cc::POLICY_SECRET
+            | cc::POLICY_SIGNED
+            | cc::POLICY_TICKET
+            | cc::POLICY_COUNTER_TIMER
+            | cc::POLICY_NV
+            | cc::POLICY_CP_HASH
+            | cc::POLICY_NAME_HASH
+            | cc::POLICY_DUPLICATION_SELECT
+            | cc::POLICY_AUTHORIZE
+            | cc::POLICY_TEMPLATE
+            | cc::POLICY_PARAMETERS
     )
 }
 
@@ -134,11 +170,16 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
     matches!(
         code,
         cc::GET_RANDOM
+            | cc::ENCAPSULATE
+            | cc::DECAPSULATE
+            | cc::GET_TEST_RESULT
+            | cc::START_AUTH_SESSION
             | cc::HASH
             | cc::SEQUENCE_COMPLETE
             | cc::UNSEAL
             | cc::RSA_ENCRYPT
             | cc::RSA_DECRYPT
+            | cc::ECDH_KEY_GEN
             | cc::ECDH_Z_GEN
             | cc::HMAC
             | cc::NV_READ
@@ -148,19 +189,50 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
             | cc::CREATE_PRIMARY
             | cc::LOAD
             | cc::LOAD_EXTERNAL
+            | cc::MAKE_CREDENTIAL
+            | cc::ACTIVATE_CREDENTIAL
+            | cc::OBJECT_CHANGE_AUTH
+            | cc::IMPORT
+            | cc::DUPLICATE
             | cc::QUOTE
             | cc::CERTIFY
+            | cc::CERTIFY_CREATION
+            | cc::NV_CERTIFY
             | cc::GET_TIME
+            | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_GET_DIGEST
             | cc::POLICY_SECRET
+            | cc::POLICY_SIGNED
     )
+}
+
+/// [`apply_with_hash`] for a session with the `authHash` SHA-256 (the self-test and the unit tests below).
+pub(crate) fn apply(
+    sym: SessionSym,
+    session_value: &[u8],
+    nonce_newer: &[u8],
+    nonce_older: &[u8],
+    params: &mut [u8],
+    encrypt: bool,
+) {
+    apply_with_hash(
+        HashAlg::Sha256,
+        sym,
+        session_value,
+        nonce_newer,
+        nonce_older,
+        params,
+        encrypt,
+    );
 }
 
 /// Encrypts or decrypts the data portion of the sized buffer at the start of `params` in place
 /// (`[size u16][data]`; the size field stays). A buffer whose size field does not fit is left
 /// alone: the command reports its own `TPM_RC_SIZE`. `nonce_newer` and `nonce_older` as in the
-/// module comment.
-pub(crate) fn apply(
+/// module comment; `auth_hash` is the `authHash` of the session (the KDFa hash of AES-CFB and of the
+/// XOR mask).
+pub(crate) fn apply_with_hash(
+    auth_hash: HashAlg,
     sym: SessionSym,
     session_value: &[u8],
     nonce_newer: &[u8],
@@ -179,7 +251,8 @@ pub(crate) fn apply(
     match sym {
         SessionSym::Null => {}
         SessionSym::Xor => {
-            let mask = kdfa_sha256(
+            let mask = kdfa(
+                auth_hash,
                 session_value,
                 b"XOR",
                 nonce_newer,
@@ -190,11 +263,23 @@ pub(crate) fn apply(
                 *d ^= m;
             }
         }
-        SessionSym::AesCfb128 => {
-            let kv = kdfa_sha256(session_value, b"CFB", nonce_newer, nonce_older, 256);
-            let mut iv = [0u8; 16];
-            iv.copy_from_slice(&kv[16..32]);
-            let out = aes128_cfb(&kv[..16], &iv, data, encrypt);
+        SessionSym::AesCfb128 | SessionSym::AesCfb256 => {
+            let key_len = if sym == SessionSym::AesCfb128 { 16 } else { 32 };
+            let kv = kdfa(
+                auth_hash,
+                session_value,
+                b"CFB",
+                nonce_newer,
+                nonce_older,
+                (key_len as u32 + 16) * 8,
+            );
+            let (key, iv) = kv.split_at(key_len);
+            let out = aes_cfb(
+                key,
+                iv.try_into().expect("CFB IV is 16 octets"),
+                data,
+                encrypt,
+            );
             data.copy_from_slice(&out);
         }
     }
@@ -206,12 +291,13 @@ mod tests {
 
     // Independent evidence (2026-11-07): `sessionValue` = "sv-0123456789abcdef", nonceNewer =
     // 16 x 0x11, nonceOlder = 16 x 0x22, plaintext "hello, parameter encryption!" (28 octets).
-    // KDFa(SHA-256, ...) and the XOR mask were computed with Python `hmac`/`hashlib`; the AES-128-CFB
-    // ciphertext with `openssl enc -aes-128-cfb` (key and IV = the two halves of the KDFa output).
+    // Python `hmac`/`hashlib` computed the KDFa outputs (256 bits for AES-128, 384 for AES-256).
+    // `openssl enc` produced the AES-CFB ciphertexts using the derived key and 16-octet IV.
     const SV: &[u8] = b"sv-0123456789abcdef";
     const PLAIN: &[u8] = b"hello, parameter encryption!";
     const XOR_CT: &str = "a2a3bc81404fdde08b7944ee59126e530380fe46a86b584d57a5455d";
-    const CFB_CT: &str = "ee55abb9c4280144b16b0e87a7c8598e95714446b30a543da0a74e2a";
+    const CFB128_CT: &str = "ee55abb9c4280144b16b0e87a7c8598e95714446b30a543da0a74e2a";
+    const CFB256_CT: &str = "5025ed706adbfe1c36e214472cec2265bde977b9c78b3072055c1d96";
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len() / 2)
@@ -228,7 +314,11 @@ mod tests {
     #[test]
     fn xor_and_cfb_match_independent_vectors() {
         let (n, o) = ([0x11u8; 16], [0x22u8; 16]);
-        for (sym, ct) in [(SessionSym::Xor, XOR_CT), (SessionSym::AesCfb128, CFB_CT)] {
+        for (sym, ct) in [
+            (SessionSym::Xor, XOR_CT),
+            (SessionSym::AesCfb128, CFB128_CT),
+            (SessionSym::AesCfb256, CFB256_CT),
+        ] {
             let mut p = sized(PLAIN);
             apply(sym, SV, &n, &o, &mut p, true);
             assert_eq!(&p[..2], &[0, 28], "the size field is not encrypted");
@@ -269,18 +359,25 @@ mod tests {
             Ok(SessionSym::AesCfb128)
         );
         assert_eq!(parse(&[0, 0x0A, 0, 0x04]), Err(Rc::HASH.in_param(4)));
+        assert_eq!(parse(&[0, 0x06, 1, 0, 0, 0x43]), Ok(SessionSym::AesCfb256));
         assert_eq!(
-            parse(&[0, 0x06, 1, 0, 0, 0x43]),
-            Err(Rc::KEY_SIZE.in_param(4))
+            parse(&[0, 0x06, 0, 192, 0, 0x43]),
+            Err(Rc::VALUE.in_param(4))
         );
         assert_eq!(
             parse(&[0, 0x06, 0, 128, 0, 0x44]),
             Err(Rc::MODE.in_param(4))
         );
         assert_eq!(parse(&[0, 0x13]), Err(Rc::SYMMETRIC.in_param(4)));
-        for s in [SessionSym::Null, SessionSym::Xor, SessionSym::AesCfb128] {
-            assert_eq!(SessionSym::from_octet(s.to_octet()), Some(s));
+        for (octet, sym) in [
+            (0, SessionSym::Null),
+            (1, SessionSym::Xor),
+            (2, SessionSym::AesCfb128),
+            (3, SessionSym::AesCfb256),
+        ] {
+            assert_eq!(sym.to_octet(), octet);
+            assert_eq!(SessionSym::from_octet(octet), Some(sym));
         }
-        assert_eq!(SessionSym::from_octet(3), None);
+        assert_eq!(SessionSym::from_octet(4), None);
     }
 }

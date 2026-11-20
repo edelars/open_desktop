@@ -265,7 +265,7 @@ fn absent_devices_are_not_emitted() {
         absent(device_type::PCIE_ECAM),
     ));
     assert!(!only_com.windows(4).any(|w| w == *b"PCI0"));
-    // Devices of S7-14 / S7-22 are never emitted: no RTC (PNP0B00), HPET (PNP0103), TPM.
+    // Base manifests omit RTC, HPET and TPM.
     for table in [
         &only_pci,
         &only_com,

@@ -54,6 +54,7 @@ struct Sqe {
     cdw11: u32,
     cdw12: u32,
     cdw13: u32,
+    cdw14: u32,
 }
 
 impl Sqe {
@@ -96,6 +97,10 @@ impl Sqe {
         self.cdw13 = value;
         self
     }
+    fn cdw14(mut self, value: u32) -> Self {
+        self.cdw14 = value;
+        self
+    }
     fn fuse(mut self, fuse: u8) -> Self {
         self.fuse = fuse;
         self
@@ -118,6 +123,7 @@ impl Sqe {
         raw[44..48].copy_from_slice(&self.cdw11.to_le_bytes());
         raw[48..52].copy_from_slice(&self.cdw12.to_le_bytes());
         raw[52..56].copy_from_slice(&self.cdw13.to_le_bytes());
+        raw[56..60].copy_from_slice(&self.cdw14.to_le_bytes());
         raw
     }
 }
@@ -131,6 +137,7 @@ struct Cqe {
     phase: bool,
     sc: u8,
     sct: u8,
+    more: bool,
     dnr: bool,
 }
 
@@ -146,6 +153,7 @@ impl Cqe {
             phase: (dw(3) >> 16) & 1 == 1,
             sc: ((dw(3) >> 17) & 0xFF) as u8,
             sct: ((dw(3) >> 25) & 0x7) as u8,
+            more: (dw(3) >> 30) & 1 == 1,
             dnr: dw(3) >> 31 == 1,
         }
     }
@@ -247,11 +255,15 @@ impl Rig {
 
     /// Programs AQA/ASQ/ACQ and enables the controller.
     fn enable(&mut self) {
+        self.enable_with_cc(CC_ENABLE);
+    }
+
+    fn enable_with_cc(&mut self, cc: u32) {
         let aqa = u32::from(ADMIN_ENTRIES - 1) | (u32::from(ADMIN_ENTRIES - 1) << 16);
         self.set_dword(0x24, aqa);
         self.write(0x28, AccessWidth::Qword, ASQ).unwrap();
         self.write(0x30, AccessWidth::Qword, ACQ).unwrap();
-        self.set_dword(0x14, CC_ENABLE);
+        self.set_dword(0x14, cc);
         assert_eq!(self.dword(0x1C) & 0b11, 1, "RDY set, CFS clear");
     }
 
@@ -452,13 +464,62 @@ fn enable_sets_rdy_and_disable_clears_it_and_the_queues() {
 }
 
 #[test]
+fn io_entry_sizes_can_be_configured_after_admin_queues_are_ready() {
+    let mut rig = rig();
+    let enable = 1;
+    let sqes = 6 << 16;
+    let cqes = 4 << 20;
+    let unsupported_sqes = 5 << 16;
+    let unsupported_cqes = 3 << 20;
+    let invalid_size = (1, 0x02);
+    let success = (0, 0);
+    let create_cq = Sqe::new(OPC_CREATE_CQ).prp(IO_CQ, 0).cdw(1 | (3 << 16), 1);
+    let create_sq = Sqe::new(OPC_CREATE_SQ)
+        .prp(IO_SQ, 0)
+        .cdw(1 | (3 << 16), 1 | (1 << 16));
+
+    rig.enable_with_cc(enable);
+    let (identify, page) = rig.identify(1, 0);
+    assert_eq!(identify.status(), success);
+    assert_eq!(page[512..514], [0x66, 0x44]);
+    assert_eq!(rig.admin(create_cq).status(), invalid_size);
+    rig.set_dword(0x14, enable | unsupported_cqes);
+    assert_eq!(rig.dword(0x14), enable | unsupported_cqes);
+    assert_eq!(rig.admin(create_cq).status(), invalid_size);
+
+    rig.set_dword(0x14, enable | cqes);
+    assert_eq!(rig.admin(create_cq).status(), success);
+    assert_eq!(rig.admin(create_sq).status(), invalid_size);
+    rig.set_dword(0x14, enable | unsupported_sqes | unsupported_cqes);
+    assert_eq!(rig.dword(0x14), enable | unsupported_sqes | cqes);
+    assert_eq!(rig.admin(create_sq).status(), invalid_size);
+    assert_eq!(rig.dword(0x1C) & 0b11, 1, "RDY set, CFS clear");
+
+    rig.set_dword(0x14, enable | sqes);
+    assert_eq!(rig.admin(create_sq).status(), success);
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), CC_ENABLE);
+
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_SQ).cdw(1, 0)).status(),
+        success
+    );
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), enable | cqes);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_CQ).cdw(1, 0)).status(),
+        success
+    );
+    rig.set_dword(0x14, enable);
+    assert_eq!(rig.dword(0x14), enable);
+}
+
+#[test]
 fn invalid_cc_values_set_cfs_instead_of_rdy() {
     for (name, cc) in [
         ("MPS = 1", CC_ENABLE | (1 << 7)),
         ("CSS = 1", CC_ENABLE | (1 << 4)),
         ("AMS = 1", CC_ENABLE | (1 << 11)),
-        ("IOSQES = 5", (CC_ENABLE & !(0xF << 16)) | (5 << 16)),
-        ("IOCQES = 3", (CC_ENABLE & !(0xF << 20)) | (3 << 20)),
     ] {
         let mut rig = rig();
         rig.set_dword(0x24, 0x000F_000F);
@@ -550,8 +611,9 @@ fn doorbell_value_not_below_the_queue_size_is_logged_and_ignored() {
     let (cqe, page) = rig.log_page(0x01, 4096, 0xFFFF_FFFF, true);
     assert_eq!(cqe.status(), (0, 0));
     assert_eq!(u64_at(&page, 0), 1, "error count");
-    assert_eq!(u16_at(&page, 8), 0, "SQID");
+    assert_eq!(u16_at(&page, 8), u16::MAX, "no command-specific SQID");
     assert_eq!(u16_at(&page, 10), 0xFFFF, "no command id");
+    assert_eq!(u16_at(&page, 14), 0xFFFF, "no command parameter");
     assert_eq!(u32_at(&page, 24), 0xFFFF_FFFF, "no namespace");
 }
 
@@ -601,6 +663,7 @@ fn identify_controller_matches_the_declared_structure_byte_for_byte() {
     expected[258] = 3; // ACL
     expected[259] = 3; // AERL
     expected[260] = 0x03; // FRMW
+    expected[261] = 0x06; // LPA: extended Get Log Page and command effects
     expected[262] = 63; // ELPE
     put(&mut expected, 266, &343u16.to_le_bytes()); // WCTEMP
     put(&mut expected, 268, &358u16.to_le_bytes()); // CCTEMP
@@ -612,6 +675,7 @@ fn identify_controller_matches_the_declared_structure_byte_for_byte() {
     expected[512] = 0x66; // SQES
     expected[513] = 0x44; // CQES
     put(&mut expected, 516, &1u32.to_le_bytes()); // NN
+    expected[525] = 0x04; // VWC: no volatile cache or broadcast Flush
     let nqn = b"nqn.2014-08.org.nvmexpress:uuid:4f70656e-4465-736b-746f-704e564d6553";
     put(&mut expected, 768, nqn); // SUBNQN
     put(&mut expected, 2048, &2500u16.to_le_bytes()); // PSD0.MP
@@ -630,7 +694,8 @@ fn identify_controller_declares_no_unimplemented_capability() {
     assert_eq!(u16_at(&page, 520), 0, "ONCS: only Read, Write, Flush");
     assert_eq!(u16_at(&page, 522), 0, "FUSES: no fused operations");
     assert_eq!(u32_at(&page, 536), 0, "SGLS: SGL not supported");
-    assert_eq!(page[525], 0, "VWC: no volatile write cache");
+    assert_eq!(page[525] & 1, 0, "VWC.VWCP: no volatile write cache");
+    assert_eq!((page[525] >> 1) & 3, 2, "VWC.FB: no broadcast Flush");
     assert_eq!(
         u32_at(&page, 92),
         0,
@@ -701,6 +766,57 @@ fn namespace_descriptor_list_has_nguid_and_command_set() {
         page[25..].iter().all(|&b| b == 0),
         "terminating zero descriptor"
     );
+}
+
+#[test]
+fn identify_nvm_command_set_structures_and_active_list() {
+    let mut rig = Rig::enabled();
+    for (cns, nsid) in [(5, 1), (6, 0)] {
+        let (cqe, page) = rig.identify(cns, nsid);
+        assert_eq!(cqe.status(), (0, 0));
+        assert_eq!(page, vec![0; 4096]);
+
+        rig.mem_write(DATA, &[0xAA; 4096]);
+        let cqe = rig.admin(
+            Sqe::new(OPC_IDENTIFY)
+                .nsid(nsid)
+                .prp(DATA, 0)
+                .cdw(cns, 2 << 24),
+        );
+        assert_eq!(cqe.status(), (0, 0x02), "unsupported CSI for CNS {cns}");
+        assert_eq!(rig.mem_read(DATA, 4096), vec![0xAA; 4096]);
+    }
+
+    for nsid in [0, 1, 2, 0xFFFF_FFFD, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+        let (unfiltered, unfiltered_page) = rig.identify(2, nsid);
+        let (filtered, filtered_page) = rig.identify(7, nsid);
+        assert_eq!(filtered.status(), unfiltered.status());
+        assert_eq!(filtered_page, unfiltered_page);
+    }
+    let unsupported_set = Sqe::new(OPC_IDENTIFY).prp(DATA, 0).cdw(7, 2 << 24);
+    assert_eq!(rig.admin(unsupported_set).status(), (0, 0x02));
+    assert_eq!(rig.identify(6, 1).0.status(), (0, 0x02));
+}
+
+#[test]
+fn identify_common_namespace_reports_readiness() {
+    let (mut with_backend, _) = Rig::with_disk();
+    let mut without_backend = Rig::enabled();
+    for (rig, ready) in [(&mut with_backend, 1), (&mut without_backend, 0)] {
+        let (cqe, page) = rig.identify(8, 1);
+        assert_eq!(cqe.status(), (0, 0));
+        let mut expected = vec![0; 4096];
+        expected[2] = 0x80; // IEKS; no reservation types advertised
+        expected[14] = ready;
+        assert_eq!(page, expected);
+    }
+    for cns in [5, 8] {
+        for nsid in [0, 2, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+            let (cqe, page) = with_backend.identify(cns, nsid);
+            assert_eq!(cqe.status(), (0, 0x0B));
+            assert_eq!(page, vec![0xAA; 4096]);
+        }
+    }
 }
 
 #[test]
@@ -905,6 +1021,78 @@ fn deleting_a_cq_that_a_sq_uses_is_invalid_queue_deletion() {
         "admin CQ"
     );
     rig.create_io_queues();
+}
+
+#[test]
+fn round_robin_visits_admin_and_io_queues_once_per_round() {
+    let mut rig = rig();
+    rig.nvme
+        .attach_backend(Box::new(InMemoryBackend::new(8).unwrap()))
+        .unwrap();
+    rig.enable();
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x01, 0)).status(),
+        (0, 0)
+    );
+    rig.create_io_queues();
+    let sq2 = IO_SQ + 0x1000;
+    let cq2 = IO_CQ + 0x1000;
+    let qsize = 2 | (3 << 16);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_CREATE_CQ).prp(cq2, 0).cdw(qsize, 1))
+            .status(),
+        (0, 0)
+    );
+    assert_eq!(
+        rig.admin(
+            Sqe::new(OPC_CREATE_SQ)
+                .prp(sq2, 0)
+                .cdw(qsize, 1 | (2 << 16))
+        )
+        .status(),
+        (0, 0)
+    );
+
+    let admin_cq = ACQ + u64::from(rig.cq_head) * CQE_BYTES as u64;
+    for index in 0..2u16 {
+        let admin_sqe = ASQ + u64::from(rig.sq_tail + index) * SQE_BYTES as u64;
+        rig.mem_write(
+            admin_sqe,
+            &Sqe::new(OPC_GET_FEATURES).cdw(0x07, 0).raw(0x30 + index),
+        );
+        let offset = u64::from(index) * SQE_BYTES as u64;
+        rig.mem_write(IO_SQ + offset, &Sqe::new(0x00).nsid(1).raw(0x40 + index));
+        rig.mem_write(sq2 + offset, &Sqe::new(0x00).nsid(1).raw(0x50 + index));
+    }
+    rig.set_dword(ADMIN_SQ_DOORBELL, u32::from(rig.sq_tail + 2));
+    rig.set_dword(IO1_SQ_DOORBELL, 2);
+    rig.set_dword(IO1_SQ_DOORBELL + 8, 2);
+
+    let mut committed = Vec::new();
+    let report = rig
+        .nvme
+        .service(&mut rig.bus, |range| committed.push(range.start().get()));
+    let cqe_bytes = CQE_BYTES as u64;
+    assert_eq!((report.commands, report.completions), (6, 6));
+    assert_eq!(
+        committed,
+        [
+            admin_cq,
+            IO_CQ,
+            cq2,
+            admin_cq + cqe_bytes,
+            IO_CQ + cqe_bytes,
+            cq2 + cqe_bytes
+        ]
+    );
+    for (address, cid) in committed
+        .into_iter()
+        .zip([0x30, 0x40, 0x50, 0x31, 0x41, 0x51])
+    {
+        let raw = rig.mem_read(address, CQE_BYTES).try_into().unwrap();
+        let completion = Cqe::parse(&raw);
+        assert_eq!((completion.cid, completion.status()), (cid, (0, 0)));
+    }
 }
 
 #[test]
@@ -1242,10 +1430,14 @@ fn error_information_log_records_failed_commands_newest_first() {
     );
     let (cid_a, a) = rig.admin_try(Sqe::new(0x7F)); // invalid opcode
     let (cid_b, b) = rig.admin_try(Sqe::new(OPC_IDENTIFY).nsid(7).prp(DATA, 0).cdw(0, 0));
-    assert_eq!(a.unwrap().status(), (0, 0x01));
-    assert_eq!(b.unwrap().status(), (0, 0x0B));
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.status(), (0, 0x01));
+    assert_eq!(b.status(), (0, 0x0B));
+    assert!(a.more && b.more);
     let (cqe, page) = rig.log_page(0x01, 4096, 0, true);
     assert_eq!(cqe.status(), (0, 0));
+    assert!(!cqe.more);
     // Entry 0 is the newest error (Identify with NSID 7), entry 1 the opcode.
     assert_eq!(u64_at(&page, 0), 2, "Error Count");
     assert_eq!(u16_at(&page, 8), 0, "SQID");
@@ -1253,8 +1445,10 @@ fn error_information_log_records_failed_commands_newest_first() {
     let status = u16_at(&page, 12);
     assert_eq!((status >> 1) & 0xFF, 0x0B, "SC");
     assert_eq!((status >> 9) & 0x7, 0, "SCT");
+    assert_eq!((status >> 14) & 1, 1, "M");
+    assert_eq!(status & 1, u16::from(b.phase), "P");
     assert_eq!(status >> 15, 1, "DNR");
-    assert_eq!(u16_at(&page, 14), 0xFFFF, "parameter location not tracked");
+    assert_eq!(u16_at(&page, 14), 4, "NSID starts at byte 4, bit 0");
     assert_eq!(u32_at(&page, 24), 7, "NSID of the failed command");
     assert_eq!(u64_at(&page, 64), 1);
     assert_eq!(u16_at(&page, 64 + 10), cid_a);
@@ -1263,6 +1457,87 @@ fn error_information_log_records_failed_commands_newest_first() {
     // A short read returns the prefix.
     let (_, short) = rig.log_page(0x01, 64, 0, true);
     assert_eq!(short, page[..64].to_vec());
+}
+
+#[test]
+fn error_information_log_locates_invalid_command_parameters() {
+    let mut rig = Rig::enabled();
+    let cases = [
+        (Sqe::new(OPC_IDENTIFY).cdw(0x77, 0), (0, 0x02), 40), // CNS
+        (Sqe::new(OPC_IDENTIFY).cdw(6, 2 << 24), (0, 0x02), 47), // CSI
+        (Sqe::new(OPC_IDENTIFY).cdw(1, 0).psdt(1), (0, 0x02), 0x0601), // PSDT
+        (Sqe::new(OPC_CREATE_CQ).cdw(1, 1), (1, 0x02), 42),   // QSIZE
+        (
+            Sqe::new(OPC_SET_FEATURES).cdw(1 | (1 << 31), 0),
+            (0, 0x02),
+            0x072B,
+        ), // SV
+        (
+            Sqe::new(OPC_IDENTIFY).prp(DATA + 2, 0).cdw(1, 0),
+            (0, 0x02),
+            24,
+        ), // PRP1
+        (Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 0x101), (0, 0x02), 45), // AEC bit 8, not bit 0
+    ];
+    for (sqe, status, location) in cases {
+        let cqe = rig.admin(sqe);
+        assert_eq!(cqe.status(), status);
+        assert!(cqe.more);
+        let (_, entry) = rig.log_page(0x01, 64, 0, true);
+        assert_eq!(u16_at(&entry, 14), location);
+        assert_eq!(u64_at(&entry, 16), 0, "admin error has no LBA");
+    }
+}
+
+#[test]
+fn error_information_log_reports_the_first_invalid_lba() {
+    let (mut rig, _) = Rig::with_disk();
+    for (start, nlb, location, lba) in [
+        (DISK_SECTORS - 1, 1, 48, DISK_SECTORS), // NLB extends past NSZE
+        (DISK_SECTORS + 7, 0, 40, DISK_SECTORS + 7), // SLBA outside the namespace
+        (u64::MAX, 1, 40, u64::MAX),             // overflowing range
+    ] {
+        let cqe = rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_A, 0).rw(start, nlb));
+        assert_eq!(cqe.status(), (0, 0x80));
+        assert!(cqe.more);
+        let (_, entry) = rig.log_page(0x01, 64, 0, true);
+        assert_eq!(u16_at(&entry, 8), 1, "I/O SQID");
+        assert_eq!(u16_at(&entry, 14), location);
+        assert_eq!(u64_at(&entry, 16), lba);
+    }
+
+    let cqe = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0).cdw13(7));
+    assert_eq!(cqe.status(), (0, 0x02));
+    let (_, entry) = rig.log_page(0x01, 64, 0, true);
+    assert_eq!(u16_at(&entry, 14), 52, "DSM.AF starts at byte 52, bit 0");
+    assert_eq!(u64_at(&entry, 16), 0, "invalid hint has no failed LBA");
+}
+
+#[test]
+fn controller_reset_clears_error_log_entries_but_keeps_the_counts() {
+    let mut rig = Rig::enabled();
+    assert!(rig.admin(Sqe::new(0x7F)).more);
+    assert_eq!(u64_at(&rig.log_page(0x01, 64, 0, true).1, 0), 1);
+
+    rig.set_dword(0x14, 0);
+    rig.sq_tail = 0;
+    rig.cq_head = 0;
+    rig.cq_phase = true;
+    rig.mem_write(ACQ, &[0; CQE_BYTES * 2]);
+    rig.enable();
+
+    let (_, log) = rig.log_page(0x01, 4096, 0, true);
+    assert!(log.iter().all(|byte| *byte == 0));
+    let (_, smart) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(u64_at(&smart, 176), 1);
+    let (cid, completion) = rig.admin_try(Sqe::new(0x7F));
+    assert!(completion.unwrap().more);
+    let (_, log) = rig.log_page(0x01, 128, 0, true);
+    assert_eq!(u64_at(&log, 0), 2);
+    assert_eq!(u16_at(&log, 10), cid);
+    assert!(log[64..].iter().all(|byte| *byte == 0));
+    let (_, smart) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(u64_at(&smart, 176), 2);
 }
 
 #[test]
@@ -1318,17 +1593,98 @@ fn firmware_slot_log_names_the_active_revision() {
 }
 
 #[test]
-fn log_page_requests_outside_the_defined_pages_are_refused() {
+fn log_discovery_reports_supported_logs_commands_and_features() {
+    let mut rig = Rig::enabled();
+    let (cqe, logs) = rig.log_page(0x00, 1024, 0, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for lid in 0..256 {
+        let supported = matches!(lid, 0x00..=0x03 | 0x05 | 0x12);
+        assert_eq!(u32_at(&logs, lid * 4), u32::from(supported), "LID {lid:#x}");
+    }
+
+    let (cqe, commands) = rig.log_page(0x05, 4096, u32::MAX, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for opcode in 0..256 {
+        let admin = matches!(opcode, 0x00..=0x02 | 0x04..=0x06 | 0x08..=0x0A | 0x0C);
+        assert_eq!(u32_at(&commands, opcode * 4), u32::from(admin));
+        let io_effects = match opcode {
+            0x00 | 0x02 => 1,
+            0x01 => 3,
+            _ => 0,
+        };
+        assert_eq!(u32_at(&commands, 1024 + opcode * 4), io_effects);
+    }
+    assert!(commands[2048..].iter().all(|&byte| byte == 0));
+
+    let (cqe, features) = rig.log_page(0x12, 1024, 0, false);
+    assert_eq!(cqe.status(), (0, 0));
+    for fid in 0..256 {
+        let effects = match fid {
+            0x05 => 1 | (1 << 20), // Error Recovery has namespace scope.
+            0x01 | 0x02 | 0x04 | 0x07..=0x0B => 1 | (1 << 21),
+            _ => 0,
+        };
+        assert_eq!(u32_at(&features, fid * 4), effects, "FID {fid:#x}");
+    }
+}
+
+#[test]
+fn discovery_logs_are_controller_scoped_and_use_byte_offsets() {
+    let mut rig = Rig::enabled();
+    for (lid, offset, entry) in [
+        (0x00, 0x12 * 4, 1),
+        (0x05, 1028, 3),
+        (0x12, 0x05 * 4, 0x100001),
+    ] {
+        let request = Sqe::new(OPC_GET_LOG_PAGE)
+            .prp(DATA, 0)
+            .cdw(lid, 0)
+            .with_offset(offset);
+        assert_eq!(rig.admin(request.nsid(1)).status(), (0, 0x02));
+        assert_eq!(rig.admin(request.cdw14(1 << 23)).status(), (0, 0x02));
+        assert_eq!(rig.admin(request.cdw14(1)).status(), (0, 0x02));
+        // CSI has no effect when CC.CSS selects the NVM command set directly.
+        rig.mem_write(DATA, &[0xAA; 8]);
+        assert_eq!(rig.admin(request.cdw14(0xFF << 24)).status(), (0, 0));
+        let output = rig.mem_read(DATA, 8);
+        assert_eq!(u32_at(&output, 0), entry);
+        assert_eq!(output[4..], [0xAA; 4]);
+    }
+}
+
+#[test]
+fn discovery_log_allows_an_oversized_transfer_within_mdts() {
+    let mut rig = Rig::enabled();
+    rig.mem_write(DATA + 4096, &[0xAA; 8]);
+    let request = Sqe::new(OPC_GET_LOG_PAGE)
+        .prp(DATA, DATA + 4096)
+        .cdw(0x05 | (1024 << 16), 0);
+    assert_eq!(rig.admin(request).status(), (0, 0));
+    assert_eq!(u32_at(&rig.mem_read(DATA, 8), 0), 1);
+    assert_eq!(
+        rig.mem_read(DATA + 4096, 8),
+        [0, 0, 0, 0, 0xAA, 0xAA, 0xAA, 0xAA]
+    );
+    assert_eq!(rig.admin(request.with_offset(4100)).status(), (0, 0x02));
+    assert_eq!(rig.admin(request.cdw(0x05, 4)).status(), (0, 0x02));
+}
+
+#[test]
+fn log_pages_check_supported_id_scope_and_offset() {
     let mut rig = Rig::enabled();
     let (cqe, _) = rig.log_page(0x7F, 512, 0, true);
     assert_eq!(cqe.status(), (1, 0x09), "Invalid Log Page");
-    // Longer than the page, offset past its end, offset not dword aligned.
-    let (cqe, _) = rig.log_page(0x02, 1024, 0, true);
+    let (cqe, _) = rig.log_page(0x01, 64, 1, true);
     assert_eq!(cqe.status(), (0, 0x02));
+    let (cqe, page) = rig.log_page(0x02, 1024, 0, true);
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(u16_at(&page, 1), 300);
+    assert!(page[512..].iter().all(|&byte| byte == 0));
+    // An offset past the end or not aligned to a dword is invalid.
     let long = Sqe::new(OPC_GET_LOG_PAGE)
         .prp(DATA, 0)
         .cdw(0x02 | (1 << 16), 0);
-    assert_eq!(rig.admin(long.with_offset(512)).status(), (0, 0x02));
+    assert_eq!(rig.admin(long.with_offset(516)).status(), (0, 0x02));
     assert_eq!(rig.admin(long.with_offset(2)).status(), (0, 0x02));
 }
 
@@ -1386,6 +1742,83 @@ fn an_event_that_happens_first_completes_the_next_aer_at_once() {
     let (cid, cqe) = rig.admin_try(Sqe::new(OPC_AER));
     let cqe = cqe.expect("queued event completes the request");
     assert_eq!((cqe.cid, cqe.dw0), (cid, 0x0001_0100));
+}
+
+#[test]
+fn composite_temperature_threshold_updates_smart_and_reports_enabled_events() {
+    let mut rig = Rig::enabled();
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!((page[0], u16_at(&page, 1)), (0, 300));
+
+    let (first, pending) = rig.admin_try(Sqe::new(OPC_AER));
+    assert!(pending.is_none());
+    let set_all = (0xF << 16) | 300;
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, set_all))
+            .status(),
+        (0, 0)
+    );
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(page[0], 2, "temperature equals over threshold");
+    assert!(
+        rig.poll_admin().is_none(),
+        "notification disabled by default"
+    );
+    assert_eq!(rig.admin(Sqe::new(OPC_GET_FEATURES).cdw(4, 0)).dw0, 300);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_GET_FEATURES).cdw(4, 0xF << 16))
+            .status(),
+        (0, 0x02),
+        "all-sensors selector is Set-only"
+    );
+    let hysteresis = (1 << 22) | 343;
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, hysteresis))
+            .status(),
+        (0, 0x02),
+        "hysteresis is not advertised"
+    );
+
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 2));
+    let event = rig.poll_admin().expect("enabled temperature event");
+    assert_eq!(
+        (event.cid, event.dw0, event.status()),
+        (first, 0x0002_0101, (0, 0))
+    );
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 343));
+    let (_, page) = rig.log_page(0x02, 512, 0, false);
+    assert_eq!(page[0], 0, "warning cleared after restoring default");
+
+    let (second, pending) = rig.admin_try(Sqe::new(OPC_AER));
+    assert!(pending.is_none());
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, (1 << 20) | 300));
+    let event = rig.poll_admin().expect("under threshold event");
+    assert_eq!((event.cid, event.dw0), (second, 0x0002_0101));
+    let (_, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(page[0], 2, "temperature equals under threshold");
+}
+
+#[test]
+fn log_acknowledgement_clears_only_the_matching_pending_event() {
+    let mut rig = Rig::enabled();
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x0B, 2));
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 300)); // pending SMART
+    rig.set_dword(ADMIN_CQ_DOORBELL, 0xFFFF); // pending Error
+    rig.log_page(0x03, 512, 0, false); // firmware-slot log does not own either event
+    rig.log_page(0x02, 512, 0, true); // keep the SMART event
+    rig.log_page(0x01, 64, 0, false); // clear the Error event before requesting it
+
+    let event = rig.admin(Sqe::new(OPC_AER));
+    assert_eq!(event.dw0, 0x0002_0101);
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 343));
+    rig.log_page(0x02, 512, 0, false); // acknowledge the first SMART event
+    rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(4, 300)); // second pending SMART
+    let (_, page) = rig.log_page(0x02, 512, 0, false); // clear before requesting it
+    assert_eq!(
+        page[0], 2,
+        "acknowledgement does not change the temperature warning"
+    );
+    assert!(rig.admin_try(Sqe::new(OPC_AER)).1.is_none());
 }
 
 #[test]
@@ -1772,18 +2205,42 @@ fn namespace_id_other_than_one_is_invalid_namespace_or_format() {
 }
 
 #[test]
+fn read_write_accept_fua_limited_retry_and_dataset_attributes() {
+    let (mut rig, disk) = Rig::with_disk();
+    let data = pattern(512, 3);
+    rig.mem_write(BUF_A, &data);
+    let write = Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A, 0)
+        .rw(5, 0)
+        .cdw12_bits((3 << 30) | (1 << 20)) // LR, FUA and ignored Write DTYPE
+        .cdw13((0x1234 << 16) | 0xF6); // ignored DSPEC and valid DSM attributes
+    assert_eq!(rig.io(write).status(), (0, 0));
+    assert_eq!(disk.bytes(5, 1), data);
+
+    let read = Sqe::new(OPC_READ)
+        .nsid(1)
+        .prp(BUF_B, 0)
+        .rw(5, 0)
+        .cdw12_bits(3 << 30)
+        .cdw13(0xF8); // access frequency 8 is valid for Read only
+    assert_eq!(rig.io(read).status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_B, 512), data);
+    assert_eq!(disk.flushes(), 0, "FUA uses the write-through backend");
+}
+
+#[test]
 fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
     let (mut rig, disk) = Rig::with_disk();
     rig.mem_write(BUF_A, &[0xEE; 512]);
     let base = || Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0);
     let rejected = [
-        ("FUA", base().cdw12_bits(1 << 30)),
         ("PRCHK", base().cdw12_bits(1 << 26)),
         ("PRACT", base().cdw12_bits(1 << 29)),
-        ("DTYPE", base().cdw12_bits(1 << 20)),
-        ("CDW12 bit 16", base().cdw12_bits(1 << 16)),
-        ("CDW13 bit 8", base().cdw13(1 << 8)),
-        ("DSPEC", base().cdw13(1 << 16)),
+        ("STC", base().cdw12_bits(1 << 24)),
+        ("CETYPE", base().cdw12_bits(1 << 16)),
+        ("reserved CDW13 bit 8", base().cdw13(1 << 8)),
+        ("reserved DSM frequency", base().cdw13(9)),
         ("SGL", base().psdt(1)),
         ("fused", base().fuse(2)),
     ];
@@ -1794,6 +2251,14 @@ fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
             assert_eq!(cqe.status(), (0, 0x02), "{name}, opcode {opcode}");
             assert!(cqe.dnr, "{name}");
         }
+    }
+    assert_eq!(rig.io(base().cdw13(7)).status(), (0, 0x02));
+    for sqe in [base().cdw12_bits(1 << 20), base().cdw13(1 << 16)] {
+        let read = Sqe {
+            opcode: OPC_READ,
+            ..sqe
+        };
+        assert_eq!(rig.io(read).status(), (0, 0x02));
     }
     assert!(disk.bytes(5, 1).iter().all(|&b| b == 0));
     // The same command without the field is accepted.
@@ -1813,7 +2278,7 @@ fn limited_retry_and_dsm_hints_are_accepted_and_ignored() {
     // with other DSM hint values: all succeed and return the data.
     for (name, bits, dsm) in [
         ("LR + FREQ_PREFETCH", 1u32 << 31, 7u32),
-        ("DSM 0xFF", 0, 0xFF),
+        ("DSM 0xF8", 0, 0xF8),
         ("DSM bit 7", 0, 1 << 7),
     ] {
         rig.mem_write(BUF_B, &[0; 8 * 512]);
@@ -1835,7 +2300,7 @@ fn limited_retry_and_dsm_hints_are_accepted_and_ignored() {
         .prp(BUF_C, 0)
         .rw(8, 7)
         .cdw12_bits(1 << 31)
-        .cdw13(7));
+        .cdw13(6));
     assert_eq!(write.status(), (0, 0));
     assert_eq!(disk.bytes(8, 8), second);
 }
@@ -2023,4 +2488,59 @@ fn smart_health_log_counts_host_io_commands_and_data_units() {
     assert_eq!(u64_at(&page, 64), 1, "host read commands");
     assert_eq!(u64_at(&page, 80), 2, "host write commands");
     assert_eq!(u64_at(&page, 176), 1, "the failed read is in the error log");
+}
+
+#[test]
+fn one_command_service_alternates_between_io_queues() {
+    let mut rig = rig();
+    rig.nvme
+        .attach_backend(Box::new(InMemoryBackend::new(8).unwrap()))
+        .unwrap();
+    rig.enable();
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_SET_FEATURES).cdw(0x01, 0)).status(),
+        (0, 0)
+    );
+    rig.create_io_queues();
+    let sq2 = IO_SQ + 0x1000;
+    let cq2 = IO_CQ + 0x1000;
+    let qsize = 2 | (3 << 16);
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_CREATE_CQ).prp(cq2, 0).cdw(qsize, 1))
+            .status(),
+        (0, 0)
+    );
+    assert_eq!(
+        rig.admin(
+            Sqe::new(OPC_CREATE_SQ)
+                .prp(sq2, 0)
+                .cdw(qsize, 1 | (2 << 16))
+        )
+        .status(),
+        (0, 0)
+    );
+    for index in 0..2u16 {
+        let offset = u64::from(index) * SQE_BYTES as u64;
+        rig.mem_write(IO_SQ + offset, &Sqe::new(0x00).nsid(1).raw(0x40 + index));
+        rig.mem_write(sq2 + offset, &Sqe::new(0x00).nsid(1).raw(0x50 + index));
+    }
+    rig.set_dword(IO1_SQ_DOORBELL, 2);
+    rig.set_dword(IO1_SQ_DOORBELL + 8, 2);
+
+    let mut committed = Vec::new();
+    for _ in 0..4 {
+        let report = rig
+            .nvme
+            .try_service_one_pending_ram(rig.bus.physical_memory(), |range| {
+                committed.push(range.start().get())
+            })
+            .unwrap();
+        assert_eq!(report.commands, 1);
+    }
+    let cqe_bytes = CQE_BYTES as u64;
+    assert_eq!(
+        committed,
+        [IO_CQ, cq2, IO_CQ + cqe_bytes, cq2 + cqe_bytes],
+        "a producer on one queue must not starve the other"
+    );
 }

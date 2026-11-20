@@ -8,8 +8,11 @@
 //! with inspect, export/import and salvage on top of it. This crate never
 //! imports `od-host`; a host layer implements [`io::StorageBackend`].
 
+pub mod install_media;
 pub mod io;
 pub mod raw;
+
+mod crc32;
 
 /// CoW v1 commit protocol (S9-08); normative layout since 2026-11-06
 /// (`STORAGE_FORMAT.md` §9).

@@ -17,10 +17,18 @@ pub mod limits {
     pub const PCR_COUNT: usize = 24;
     /// `PCR_SELECT_MIN` = `PCR_SELECT_MAX` = (24 + 7) / 8 (Part 2, formula 2; PTP Table 2: min 3).
     pub const PCR_SELECT_SIZE: usize = 3;
-    /// `HASH_COUNT`: implemented hash algorithms (SHA-256 only in phase A).
-    pub const HASH_COUNT: usize = 1;
-    /// Digest size of the largest implemented hash (SHA-256).
+    /// `HASH_COUNT`: implemented hash algorithms.
+    pub const HASH_COUNT: usize = 2;
+    /// Digest limit for the SHA-256 profile (`crypto::DIGEST`): passwords, hierarchy and policy digests.
+    /// Sessions follow their `authHash` since step D and the policy digests will in step E; objects use the
+    /// digest size of their `nameAlg`. The largest digest of any
+    /// implemented hash is [`MAX_HASH_SIZE`].
     pub const MAX_DIGEST_SIZE: usize = 32;
+    /// `sizeof(TPMU_HA)`: the largest digest of any implemented hash (SHA-512), reported as
+    /// `TPM_PT_MAX_DIGEST`.
+    pub const MAX_HASH_SIZE: usize = 64;
+    /// Largest implemented PCR digest (SHA-384): there is no SHA-512 PCR bank.
+    pub const MAX_PCR_DIGEST_SIZE: usize = 48;
     /// `MAX_2B_BUFFER_SIZE` for `TPM2B_MAX_BUFFER` (Part 2, clause 10.4.8: at least 1024).
     pub const MAX_2B_BUFFER_SIZE: usize = 1024;
     /// `TPM2B_EVENT` limit (Part 2, Table 97).
@@ -29,10 +37,10 @@ pub mod limits {
     pub const MAX_STIR_SIZE: usize = 128;
     /// `TPML_DIGEST` limit (Part 2, Table 123).
     pub const MAX_DIGEST_LIST: usize = 8;
-    /// Largest command and response (ADR-0009, decision 4: CRB buffer of 0xF80 bytes).
-    pub const MAX_COMMAND_SIZE: usize = 3968;
+    /// Largest assembled command. The CRB transport divides it into MMIO-sized chunks.
+    pub const MAX_COMMAND_SIZE: usize = 8192;
     /// Largest response (see [`MAX_COMMAND_SIZE`]).
-    pub const MAX_RESPONSE_SIZE: usize = 3968;
+    pub const MAX_RESPONSE_SIZE: usize = 8192;
     /// Sessions in one command (`TPM_RC_AUTHSIZE` above it).
     pub const MAX_AUTH_SESSIONS: usize = 3;
 }
@@ -167,7 +175,21 @@ impl Writer {
 
 /// Digest size implied by a hash algorithm identifier; `None` if the algorithm is not implemented.
 pub fn digest_size(hash: u16) -> Option<usize> {
-    (hash == alg::SHA256).then_some(32)
+    match hash {
+        alg::SHA256 => Some(32),
+        alg::SHA384 => Some(48),
+        alg::SHA512 => Some(limits::MAX_HASH_SIZE),
+        _ => None,
+    }
+}
+
+/// [`digest_size`] of the hashes that have a PCR bank (SHA-256 and SHA-384); `None` for every
+/// other algorithm, SHA-512 included. `TPMS_PCR_SELECTION` and `TPMT_HA` use it.
+pub fn pcr_digest_size(hash: u16) -> Option<usize> {
+    match hash {
+        alg::SHA256 | alg::SHA384 => digest_size(hash),
+        _ => None,
+    }
 }
 
 /// `TPMS_PCR_SELECTION` (Table 106).
@@ -187,7 +209,7 @@ impl TpmsPcrSelection {
     /// `TPM_RC_HASH` for an unimplemented algorithm, `TPM_RC_VALUE` if `sizeofSelect` is not 3.
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let hash = r.u16()?;
-        if digest_size(hash).is_none() {
+        if pcr_digest_size(hash).is_none() {
             return Err(r.err(Rc::HASH));
         }
         let n = usize::from(r.u8()?);
@@ -251,7 +273,7 @@ impl TpmtHa {
     /// `TPM_RC_HASH` if the algorithm is not implemented (Part 3, clause 22.2).
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let hash = r.u16()?;
-        let Some(n) = digest_size(hash) else {
+        let Some(n) = pcr_digest_size(hash) else {
             return Err(r.err(Rc::HASH));
         };
         Ok(TpmtHa {
@@ -304,13 +326,20 @@ impl TpmlDigest {
     }
 
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_with_limit(r, limits::MAX_PCR_DIGEST_SIZE)
+    }
+
+    pub(crate) fn unmarshal_with_limit(
+        r: &mut Reader<'_>,
+        digest_limit: usize,
+    ) -> Result<Self, Rc> {
         let count = r.u32()? as usize;
         if count > limits::MAX_DIGEST_LIST {
             return Err(r.err(Rc::SIZE));
         }
         let mut digests = Vec::with_capacity(count);
         for _ in 0..count {
-            digests.push(r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec());
+            digests.push(r.tpm2b(digest_limit)?.to_vec());
         }
         Ok(TpmlDigest { digests })
     }
@@ -393,7 +422,7 @@ impl TpmtTkHashcheck {
             return Err(r.err(Rc::TAG));
         }
         let hierarchy = r.u32()?;
-        let digest = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let digest = r.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?.to_vec();
         Ok(TpmtTkHashcheck { hierarchy, digest })
     }
 }
@@ -433,11 +462,20 @@ impl TpmsAuthCommand {
         w.tpm2b(&self.hmac);
     }
 
+    /// Reads a session with nonce and `hmac` of at most 32 octets (the limit of a password, which
+    /// stays one SHA-256 digest whatever the hash of the sessions).
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_up_to(r, limits::MAX_DIGEST_SIZE)
+    }
+
+    /// Reads a session with nonce and `hmac` of at most `max` octets: the authorization area takes
+    /// up to one SHA-512 digest ([`limits::MAX_HASH_SIZE`]), the dispatcher then applies the limit of
+    /// the hash of each session.
+    pub fn unmarshal_up_to(r: &mut Reader<'_>, max: usize) -> Result<Self, Rc> {
         let session_handle = r.u32()?;
-        let nonce = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let nonce = r.tpm2b(max)?.to_vec();
         let attributes = r.u8()?;
-        let hmac = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let hmac = r.tpm2b(max)?.to_vec();
         Ok(TpmsAuthCommand {
             session_handle,
             nonce,
@@ -463,9 +501,9 @@ impl TpmsAuthResponse {
     }
 
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
-        let nonce = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let nonce = r.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         let attributes = r.u8()?;
-        let hmac = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let hmac = r.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         Ok(TpmsAuthResponse {
             nonce,
             attributes,
@@ -588,6 +626,9 @@ impl TpmaCc {
 pub const MAX_RSA_BYTES: usize = 256;
 /// Largest `TPM2B_ECC_PARAMETER` (P-256 only, `MAX_ECC_KEY_BYTES`).
 pub const MAX_ECC_BYTES: usize = 32;
+/// ML-KEM-768 sizes and selector (Part 2 v185, Table 219).
+pub(crate) const MLKEM_768: u16 = 2;
+pub(crate) const MAX_MLKEM_PUBLIC_BYTES: usize = 1184;
 /// Largest `TPM2B_SENSITIVE_DATA` payload of a sealed object (`MAX_SYM_DATA`; Part 3, 12.7.2 limits
 /// `outData` of `TPM2_Unseal` to 128 octets).
 pub const MAX_SYM_DATA: usize = 128;
@@ -605,44 +646,59 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// `TPMT_SYM_DEF_OBJECT` (Table 160), restricted to what slice B can state: NULL, or AES-128 in
-/// CFB mode (the template of a storage key); `object.rs` protects `outPrivate` with it.
+/// `TPMT_SYM_DEF_OBJECT` for NULL and AES-128/256-CFB.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SymDef {
     Null,
     Aes128Cfb,
+    Aes256Cfb,
 }
 
 impl SymDef {
+    pub(crate) fn key_bits(self) -> u16 {
+        match self {
+            Self::Null => 0,
+            Self::Aes128Cfb => 128,
+            Self::Aes256Cfb => 256,
+        }
+    }
+
     pub fn marshal(&self, w: &mut Writer) {
         match self {
             SymDef::Null => w.u16(alg::NULL),
-            SymDef::Aes128Cfb => {
+            SymDef::Aes128Cfb | SymDef::Aes256Cfb => {
                 w.u16(alg::AES);
-                w.u16(128);
+                w.u16(self.key_bits());
                 w.u16(alg::CFB);
             }
         }
     }
 
-    /// `TPM_RC_SYMMETRIC` for another algorithm or key size (Table 81), `TPM_RC_MODE` for a mode
-    /// other than CFB (Table 82).
+    /// `TPM_RC_SYMMETRIC` for another algorithm, `TPM_RC_VALUE` for an unsupported key size
+    /// (Part 2 §11.1.2), and `TPM_RC_MODE` for a mode other than CFB.
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         match r.u16()? {
             alg::NULL => Ok(SymDef::Null),
             alg::AES => {
-                if r.u16()? != 128 {
-                    return Err(r.err(Rc::SYMMETRIC));
-                }
+                let symmetric = match r.u16()? {
+                    128 => SymDef::Aes128Cfb,
+                    256 => SymDef::Aes256Cfb,
+                    _ => return Err(r.err(Rc::VALUE)),
+                };
                 if r.u16()? != alg::CFB {
                     return Err(r.err(Rc::MODE));
                 }
-                Ok(SymDef::Aes128Cfb)
+                Ok(symmetric)
             }
             _ => Err(r.err(Rc::SYMMETRIC)),
         }
     }
 }
+
+/// The hashes of an RSASSA or ECDSA scheme and of a signature (Part 2, Table 78 restricted to the
+/// implemented algorithms). Keys whose scheme names SHA-384/SHA-512 are declared for step 2: a
+/// signature with such a key is `TPM_RC_SCHEME` until support for those hashes appears.
+pub(crate) const SIGNING_HASHES: [u16; 3] = [alg::SHA256, alg::SHA384, alg::SHA512];
 
 /// A signing or asymmetric scheme with its hash (`TPMT_SIG_SCHEME`, `TPMT_RSA_SCHEME`,
 /// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA`,
@@ -672,6 +728,44 @@ impl Scheme {
     /// scheme, Table 199: `TPM_RC_SCHEME` for an ECC scheme). The hash must be SHA-256
     /// (`TPM_RC_HASH`, Table 78).
     pub fn unmarshal(r: &mut Reader<'_>, allowed: &[u16], bad: Rc) -> Result<Self, Rc> {
+        Self::unmarshal_with_hashes(r, allowed, bad, &[alg::SHA256])
+    }
+
+    /// Like [`Scheme::unmarshal`] for the scheme of a public area: RSASSA and ECDSA accept
+    /// [`SIGNING_HASHES`], every other scheme (OAEP, ECDH) SHA-256 only (`TPM_RC_HASH`).
+    ///
+    /// RSASSA/ECDSA with SHA-384 or SHA-512 are declared for step 2 only: `TPM2_TestParms` and
+    /// `TPM2_Create` accept such keys, but signing with them is `TPM_RC_SCHEME` until the
+    /// signing commands support those hashes.
+    pub(crate) fn unmarshal_public(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+    ) -> Result<Self, Rc> {
+        Self::unmarshal_by(r, allowed, bad, |a| {
+            if matches!(a, alg::RSASSA | alg::ECDSA) {
+                &SIGNING_HASHES
+            } else {
+                &[alg::SHA256]
+            }
+        })
+    }
+
+    pub(crate) fn unmarshal_with_hashes(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+        hashes: &[u16],
+    ) -> Result<Self, Rc> {
+        Self::unmarshal_by(r, allowed, bad, |_| hashes)
+    }
+
+    fn unmarshal_by<'h>(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+        hashes_of: impl Fn(u16) -> &'h [u16],
+    ) -> Result<Self, Rc> {
         let a = r.u16()?;
         if a == alg::NULL {
             return Ok(Scheme::NULL);
@@ -686,7 +780,7 @@ impl Scheme {
             });
         }
         let hash = r.u16()?;
-        if hash != alg::SHA256 {
+        if !hashes_of(a).contains(&hash) {
             return Err(r.err(Rc::HASH));
         }
         Ok(Scheme { alg: a, hash })
@@ -709,9 +803,76 @@ pub enum PublicParams {
         scheme: Scheme,
         curve: u16,
     },
+    /// `TPMS_MLKEM_PARMS` (Part 2 v185, Table 232).
+    MlKem {
+        symmetric: SymDef,
+        parameter_set: u16,
+    },
     /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is `TPM_ALG_NULL` (sealed data, or an HMAC
     /// key without a default hash) or `TPM_ALG_HMAC` with SHA-256 (an HMAC key, slice C2).
     KeyedHash { scheme: Scheme },
+}
+
+impl PublicParams {
+    pub(crate) fn unmarshal_type(r: &mut Reader<'_>) -> Result<u16, Rc> {
+        let type_alg = r.u16()?;
+        match type_alg {
+            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM => Ok(type_alg),
+            _ => Err(r.err(Rc::TYPE)),
+        }
+    }
+
+    /// Decodes the parameter union shared by `TPMT_PUBLIC` and `TPMT_PUBLIC_PARMS`.
+    pub(crate) fn unmarshal(r: &mut Reader<'_>, type_alg: u16) -> Result<Self, Rc> {
+        match type_alg {
+            alg::RSA => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let scheme =
+                    Scheme::unmarshal_public(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
+                let key_bits = r.u16()?;
+                if key_bits != 2048 {
+                    return Err(r.err(Rc::VALUE));
+                }
+                Ok(Self::Rsa {
+                    symmetric,
+                    scheme,
+                    key_bits,
+                    exponent: r.u32()?,
+                })
+            }
+            alg::ECC => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let scheme = Scheme::unmarshal_public(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
+                let curve = r.u16()?;
+                if curve != curve::NIST_P256 {
+                    return Err(r.err(Rc::CURVE));
+                }
+                if r.u16()? != alg::NULL {
+                    return Err(r.err(Rc::KDF));
+                }
+                Ok(Self::Ecc {
+                    symmetric,
+                    scheme,
+                    curve,
+                })
+            }
+            alg::KEYEDHASH => Ok(Self::KeyedHash {
+                scheme: Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?,
+            }),
+            alg::MLKEM => {
+                let symmetric = SymDef::unmarshal(r)?;
+                let parameter_set = r.u16()?;
+                if parameter_set != MLKEM_768 {
+                    return Err(r.err(Rc::PARMS));
+                }
+                Ok(Self::MlKem {
+                    symmetric,
+                    parameter_set,
+                })
+            }
+            _ => Err(r.err(Rc::TYPE)),
+        }
+    }
 }
 
 /// `TPMU_PUBLIC_ID` (Table 212).
@@ -719,10 +880,11 @@ pub enum PublicParams {
 pub enum Unique {
     Rsa(Vec<u8>),
     Ecc { x: Vec<u8>, y: Vec<u8> },
+    MlKem(Vec<u8>),
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` (Table 219) of an RSA-2048, ECC P-256 or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -740,6 +902,7 @@ impl TpmtPublic {
             PublicParams::Rsa { .. } => alg::RSA,
             PublicParams::Ecc { .. } => alg::ECC,
             PublicParams::KeyedHash { .. } => alg::KEYEDHASH,
+            PublicParams::MlKem { .. } => alg::MLKEM,
         }
     }
 
@@ -772,9 +935,16 @@ impl TpmtPublic {
                 w.u16(alg::NULL);
             }
             PublicParams::KeyedHash { scheme } => scheme.marshal(w),
+            PublicParams::MlKem {
+                symmetric,
+                parameter_set,
+            } => {
+                symmetric.marshal(w);
+                w.u16(*parameter_set);
+            }
         }
         match &self.unique {
-            Unique::Rsa(n) => w.tpm2b(n),
+            Unique::Rsa(n) | Unique::MlKem(n) => w.tpm2b(n),
             Unique::Ecc { x, y } => {
                 w.tpm2b(x);
                 w.tpm2b(y);
@@ -790,75 +960,38 @@ impl TpmtPublic {
         w.finish()
     }
 
-    /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an object type other than RSA, ECC
-    /// and keyed hash (Table 211), `TPM_RC_HASH` for a `nameAlg` other than SHA-256/NULL
+    /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an unsupported object type,
+    /// `TPM_RC_PARMS` for an unsupported ML-KEM parameter set, `TPM_RC_HASH` for a `nameAlg` other than SHA-256, SHA-384, SHA-512 or NULL
     /// (Table 78), `TPM_RC_RESERVED_BITS` for reserved `TPMA_OBJECT` bits, `TPM_RC_SIZE` for an
-    /// oversized `authPolicy` or `unique`, `TPM_RC_VALUE` for an RSA key size other than 2048 and
+    /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
     /// `TPM_RC_SCHEME` for an ECC scheme (Table 199), `TPM_RC_CURVE` for a curve other than NIST
     /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
     /// and `TPM_RC_MODE` as in [`SymDef::unmarshal`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
-        let type_alg = r.u16()?;
-        if !matches!(type_alg, alg::RSA | alg::ECC | alg::KEYEDHASH) {
-            return Err(r.err(Rc::TYPE));
-        }
+        let type_alg = PublicParams::unmarshal_type(r)?;
         let name_alg = r.u16()?;
-        if name_alg != alg::SHA256 && name_alg != alg::NULL {
-            return Err(r.err(Rc::HASH));
-        }
+        // The digest of nameAlg bounds authPolicy and a keyed-hash unique; NULL keeps one SHA-256
+        // digest (such a template is refused later by the template rules).
+        let digest_limit = match digest_size(name_alg) {
+            Some(size) => size,
+            None if name_alg == alg::NULL => limits::MAX_DIGEST_SIZE,
+            None => return Err(r.err(Rc::HASH)),
+        };
         let attributes = r.u32()?;
         if attributes & object_attr::RESERVED != 0 {
             return Err(r.err(Rc::RESERVED_BITS));
         }
-        let auth_policy = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-        let (params, unique) = match type_alg {
-            alg::RSA => {
-                let symmetric = SymDef::unmarshal(r)?;
-                let scheme =
-                    Scheme::unmarshal(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
-                let key_bits = r.u16()?;
-                if key_bits != 2048 {
-                    return Err(r.err(Rc::VALUE));
-                }
-                let exponent = r.u32()?;
-                let n = r.tpm2b(MAX_RSA_BYTES)?.to_vec();
-                (
-                    PublicParams::Rsa {
-                        symmetric,
-                        scheme,
-                        key_bits,
-                        exponent,
-                    },
-                    Unique::Rsa(n),
-                )
-            }
-            alg::ECC => {
-                let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
-                let curve_id = r.u16()?;
-                if curve_id != curve::NIST_P256 {
-                    return Err(r.err(Rc::CURVE));
-                }
-                if r.u16()? != alg::NULL {
-                    return Err(r.err(Rc::KDF));
-                }
-                let x = r.tpm2b(MAX_ECC_BYTES)?.to_vec();
-                let y = r.tpm2b(MAX_ECC_BYTES)?.to_vec();
-                (
-                    PublicParams::Ecc {
-                        symmetric,
-                        scheme,
-                        curve: curve_id,
-                    },
-                    Unique::Ecc { x, y },
-                )
-            }
-            _ => {
-                let scheme = Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?;
-                let d = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-                (PublicParams::KeyedHash { scheme }, Unique::Digest(d))
-            }
+        let auth_policy = r.tpm2b(digest_limit)?.to_vec();
+        let params = PublicParams::unmarshal(r, type_alg)?;
+        let unique = match params {
+            PublicParams::Rsa { .. } => Unique::Rsa(r.tpm2b(MAX_RSA_BYTES)?.to_vec()),
+            PublicParams::Ecc { .. } => Unique::Ecc {
+                x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
+                y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
+            },
+            PublicParams::KeyedHash { .. } => Unique::Digest(r.tpm2b(digest_limit)?.to_vec()),
+            PublicParams::MlKem { .. } => Unique::MlKem(r.tpm2b(MAX_MLKEM_PUBLIC_BYTES)?.to_vec()),
         };
         Ok(TpmtPublic {
             name_alg,
@@ -894,12 +1027,13 @@ pub struct TpmsSensitiveCreate {
 }
 
 impl TpmsSensitiveCreate {
-    /// `TPM_RC_SIZE` for `userAuth` above one digest or `data` above [`MAX_SYM_DATA`], or when the
-    /// outer size differs from the two inner buffers.
+    /// `TPM_RC_SIZE` for `userAuth` above the largest digest ([`limits::MAX_HASH_SIZE`]; the limit of
+    /// the `nameAlg` of the template is checked by `object::check_creation`) or `data` above
+    /// [`MAX_SYM_DATA`], or when the outer size differs from the two inner buffers.
     pub fn unmarshal_sized(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let n = usize::from(r.u16()?);
         let mut sub = r.sub(n)?;
-        let user_auth = sub.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let user_auth = sub.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         let data = sub.tpm2b(MAX_SYM_DATA)?.to_vec();
         if sub.remaining() != 0 {
             return Err(r.err(Rc::SIZE));
@@ -915,7 +1049,7 @@ impl Drop for TpmsSensitiveCreate {
     }
 }
 
-/// `TPMT_TK_CREATION` and `TPMT_TK_VERIFIED` (Tables 109, 110) for output: a tag, a hierarchy and
+/// `TPMT_TK_CREATION`, `TPMT_TK_VERIFIED` and `TPMT_TK_AUTH` for output: a tag, a hierarchy and
 /// a digest. A NULL ticket has hierarchy `TPM_RH_NULL` and an empty digest.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtTicket {
@@ -962,14 +1096,25 @@ impl TpmtSignature {
     }
 
     /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA and ECDSA, including `TPM_ALG_NULL`
-    /// (Table 84), `TPM_RC_HASH` for a hash other than SHA-256.
+    /// (Table 84), `TPM_RC_HASH` for a hash outside [`SIGNING_HASHES`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_inner(r, false)
+    }
+
+    pub(crate) fn unmarshal_optional(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_inner(r, true)
+    }
+
+    fn unmarshal_inner(r: &mut Reader<'_>, allow_null: bool) -> Result<Self, Rc> {
         let a = r.u16()?;
+        if allow_null && a == alg::NULL {
+            return Ok(Self::Null);
+        }
         if a != alg::RSASSA && a != alg::ECDSA {
             return Err(r.err(Rc::SCHEME));
         }
         let hash = r.u16()?;
-        if hash != alg::SHA256 {
+        if !SIGNING_HASHES.contains(&hash) {
             return Err(r.err(Rc::HASH));
         }
         if a == alg::RSASSA {
@@ -1087,7 +1232,7 @@ mod tests {
             Err(Rc::INSUFFICIENT)
         );
         // count above HASH_COUNT: TPM_RC_SIZE.
-        let bytes = [0, 0, 0, 2];
+        let bytes = [0, 0, 0, 3];
         assert_eq!(
             TpmlPcrSelection::unmarshal(&mut Reader::new(&bytes)),
             Err(Rc::SIZE)
@@ -1129,7 +1274,7 @@ mod tests {
     #[test]
     fn digest_list_and_tpm2b_limits() {
         let l = TpmlDigest {
-            digests: vec![vec![1; 32], vec![2; 32]],
+            digests: vec![vec![1; 32], vec![2; 48]],
         };
         rt(&l, TpmlDigest::marshal, TpmlDigest::unmarshal);
         let mut w = Writer::new();

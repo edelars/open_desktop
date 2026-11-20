@@ -12,9 +12,10 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, define, define_raw, hc, hmac_command, kdfa_256, name_of, nv_attributes, nv_public,
-    nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd, run_hmac, set_auth, shutdown,
-    split_response, start_cmd, start_params, startup, trimmed,
+    Hc, Hs, check_hmac_ack, define, define_raw, hc, hmac_auth_entry, hmac_command, kdfa_256,
+    name_of, nv_attributes, nv_public, nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd,
+    run_hmac, set_auth, shutdown, split_response, start_cmd, start_params, start_session, startup,
+    trimmed,
 };
 use super::tests_c2::{
     FIRMWARE, attest_bytes, ecdsa_parts, h256, hexs, make_child, parse_attestation, qualified,
@@ -24,7 +25,7 @@ use super::tests_obj::*;
 use super::*;
 use crate::StateError;
 use crate::codes::{object_attr as oa, se, session_attr};
-use crate::marshal::Unique;
+use crate::marshal::{SymDef, Unique};
 use crate::nv::attr;
 
 const NV0: u32 = 0x0100_0000;
@@ -68,6 +69,155 @@ fn counter_value(t: &mut Tpm, index: u32) -> u64 {
 
 fn def(t: &mut Tpm, index: u32, attributes: u32, size: u16) -> Vec<u8> {
     define(t, OWNER, index, attributes, size)
+}
+
+fn nv_certify(
+    t: &mut Tpm,
+    handles: [u32; 3],
+    passwords: &[&[u8]],
+    scheme: &[u8],
+    size: u16,
+    offset: u16,
+) -> Vec<u8> {
+    run(
+        t,
+        with_pw(
+            cc::NV_CERTIFY,
+            &handles,
+            passwords,
+            &cat(&[&tpm2b(b"nonce"), scheme, &u16b(size), &u16b(offset)]),
+        ),
+    )
+}
+
+#[test]
+fn nv_certify_signs_a_range_and_the_digest_of_a_large_index() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"kpw", &ecc_sign()));
+    let mut data = vec![0x12; 512];
+    data.extend_from_slice(&[0x34; 188]);
+    let index = NV0 + 1;
+    ok(&def(&mut t, index, OWNER_RW, 700));
+    let handles = [key.handle, OWNER, index];
+    let passwords = &[b"kpw".as_slice(), b"".as_slice()];
+    let scheme = u16b(alg::NULL);
+    err(
+        &nv_certify(&mut t, handles, passwords, &scheme, 0, 0),
+        Rc::NV_UNINITIALIZED,
+    );
+    ok(&nv_write(&mut t, OWNER, index, b"", &data[..512], 0));
+    ok(&nv_write(&mut t, OWNER, index, b"", &data[512..], 512));
+    let (_, name) = nv_read_public(&mut t, index);
+    let (_, clock) = clock_now(&mut t);
+    for (size, offset, tag, payload) in [
+        (16, 508, 0x8014, cat(&[&u16b(508), &tpm2b(&data[508..524])])),
+        (0, 700, 0x8014, cat(&[&u16b(700), &tpm2b(b"")])),
+        (0, 0, 0x801C, tpm2b(&h256(&[&data]))),
+    ] {
+        let response = nv_certify(&mut t, handles, passwords, &scheme, size, offset);
+        let (attest, signature) = parse_attestation(&response);
+        assert_eq!(
+            attest,
+            attest_bytes(
+                tag,
+                &qualified(PLATFORM, &key.name),
+                b"nonce",
+                clock,
+                FIRMWARE,
+                &cat(&[&tpm2b(&name), &payload]),
+            ),
+        );
+        ok(&verify(&mut t, key.handle, &h256(&[&attest]), &signature));
+    }
+    assert_eq!(nv_read_public(&mut t, index).1, name);
+}
+
+#[test]
+fn nv_certify_checks_nv_access_and_requires_a_hash_for_an_unsigned_digest() {
+    let mut t = started();
+    let index = NV0 + 1;
+    let public = nv_public(
+        index,
+        alg::SHA256,
+        attr::AUTHREAD | attr::AUTHWRITE | attr::READ_STCLEAR,
+        b"",
+        520,
+    );
+    ok(&define_raw(&mut t, OWNER, b"", b"nv-pw", &public));
+    let handles = [NULL, index, index];
+    let passwords = &[b"".as_slice(), b"nv-pw".as_slice()];
+    let null = u16b(alg::NULL);
+    let ecdsa = ecc_sig_scheme();
+    ok(&nv_write(&mut t, index, index, b"nv-pw", b"abc", 0));
+    for (handles, passwords, scheme, size, offset, error) in [
+        (
+            [NULL, OWNER, index],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::AUTH_TYPE,
+        ),
+        (
+            [NULL, NULL, index],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::VALUE.in_handle(2),
+        ),
+        (
+            [NULL, OWNER, index + 1],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::HANDLE.in_handle(3),
+        ),
+        (
+            handles,
+            [b"".as_slice(), b"bad".as_slice()],
+            &ecdsa,
+            0,
+            0,
+            Rc::AUTH_FAIL.in_session(2),
+        ),
+        (handles, *passwords, &null, 0, 0, Rc::SCHEME.in_param(2)),
+        (
+            handles,
+            *passwords,
+            &hex("00180010"),
+            0,
+            0,
+            Rc::SCHEME.in_param(2),
+        ),
+        (handles, *passwords, &ecdsa, 513, 0, Rc::VALUE.in_param(3)),
+        (handles, *passwords, &ecdsa, 2, 519, Rc::NV_RANGE),
+    ] {
+        err(
+            &nv_certify(&mut t, handles, &passwords, scheme, size, offset),
+            error,
+        );
+    }
+    let (_, name) = nv_read_public(&mut t, index);
+    let response = nv_certify(&mut t, handles, passwords, &ecdsa, 0, 0);
+    let (attest, signature) = parse_attestation(&response);
+    let expected_digest = h256(&[b"abc", &[0; 517]]);
+    assert_eq!(&attest[..6], &hex("ff544347801c"));
+    assert!(attest.ends_with(&cat(&[&tpm2b(&name), &tpm2b(&expected_digest)])));
+    assert_eq!(signature, null);
+    ok(&nv_cmd(
+        &mut t,
+        cc::NV_READ_LOCK,
+        index,
+        index,
+        b"nv-pw",
+        &[],
+    ));
+    err(
+        &nv_certify(&mut t, handles, passwords, &ecdsa, 0, 0),
+        Rc::NV_LOCKED,
+    );
 }
 
 fn nt_of(attributes: u32) -> u32 {
@@ -187,7 +337,7 @@ fn nv_increment_checks_handles_authorization_locks_and_parameters() {
     );
     err(
         &nv_cmd(&mut t, cc::NV_INCREMENT, idx, idx, b"", &[]),
-        Rc::AUTH_TYPE,
+        Rc::AUTH_UNAVAILABLE,
     );
     // A trailing octet.
     err(
@@ -537,7 +687,10 @@ fn offset_of(haystack: &[u8], needle: &[u8]) -> usize {
 fn counter_bit_field_and_extend_indices_survive_the_snapshot() {
     let t = typed_nv_tpm();
     let snap = t.persistent_snapshot();
-    assert_eq!(u16::from_be_bytes([snap[8], snap[9]]), 3);
+    assert_eq!(
+        u16::from_be_bytes([snap[8], snap[9]]),
+        crate::SNAPSHOT_VERSION
+    );
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();
     assert_eq!(r.persistent_snapshot(), snap, "byte for byte");
     startup(&mut r, 0);
@@ -624,8 +777,9 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
         StateError::BadField,
         "data without WRITTEN",
     );
-    // The counter maximum sits just before the (zero) object count: below a live counter.
-    let max_at = snap.len() - 32 - 1 - 8;
+    // The counter maximum precedes the object count, policies, total reset count, bank mask
+    // and establishment bit, followed by the three seed extensions.
+    let max_at = snap.len() - 32 - 96 - 1 - 1 - 8 - 6 - 1 - 8;
     assert_eq!(&snap[max_at..max_at + 8], &9u64.to_be_bytes());
     let mut b = snap.clone();
     b[max_at..max_at + 8].copy_from_slice(&2u64.to_be_bytes());
@@ -636,7 +790,7 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
     refix(&mut b);
     assert!(Tpm::restore(&b, &entropy).is_ok());
     let mut b = snap.clone();
-    b.drain(max_at..max_at + 8);
+    b.drain(max_at..b.len() - 32);
     refuse(&mut b, StateError::BadLength, "maximum missing");
 }
 
@@ -669,6 +823,194 @@ fn clock_now(t: &mut Tpm) -> (Vec<u8>, (u64, u32, u32)) {
 /// `TPMS_TIME_ATTEST_INFO`: the time info and the firmware version.
 fn time_attested(time_info: &[u8]) -> Vec<u8> {
     cat(&[time_info, &FIRMWARE.to_be_bytes()])
+}
+
+#[test]
+fn clock_set_is_monotonic_authorized_and_survives_a_power_cycle() {
+    const MAX_SET: u64 = 0xffff_0000_0000_0000;
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", b"owner"));
+    ok(&set_auth(&mut t, PLATFORM, b"", b"platform"));
+    pass_time(&mut t, 5);
+    let initial = clock_now(&mut t).0;
+    let set = |t: &mut Tpm, auth, password: &[u8], milliseconds: u64| {
+        run(
+            t,
+            with_pw(
+                cc::CLOCK_SET,
+                &[auth],
+                &[password],
+                &milliseconds.to_be_bytes(),
+            ),
+        )
+    };
+    for invalid in [4_999, MAX_SET + 1] {
+        err(
+            &set(&mut t, OWNER, b"owner", invalid),
+            Rc::VALUE.in_param(1),
+        );
+    }
+    err(
+        &set(&mut t, OWNER, b"bad", 50_000),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    err(
+        &set(&mut t, ENDORSEMENT, b"", 50_000),
+        Rc::VALUE.in_handle(1),
+    );
+    assert_eq!(clock_now(&mut t).0, initial);
+
+    ok(&set(&mut t, OWNER, b"owner", 5_000));
+    assert_eq!(clock_now(&mut t).0, initial);
+    ok(&set(&mut t, OWNER, b"owner", 50_000));
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(clock.0, 50_000);
+    assert_eq!(&info[..8], &5_000u64.to_be_bytes());
+    assert_eq!(&info[16..], &initial[16..], "counters and safe");
+    pass_time(&mut t, 2);
+    assert_eq!(clock_now(&mut t).1.0, 52_000);
+    ok(&set(&mut t, PLATFORM, b"platform", MAX_SET));
+    assert_eq!(clock_now(&mut t).1.0, MAX_SET);
+    pass_time(&mut t, 1);
+    assert_eq!(clock_now(&mut t).1.0, MAX_SET + 1_000);
+
+    let snapshot = t.persistent_snapshot();
+    t.init();
+    let mut restored = Tpm::restore(&snapshot, &[0x41; 48]).unwrap();
+    for after in [&mut t, &mut restored] {
+        startup(after, crate::codes::su::CLEAR);
+        let response = run(after, plain(cc::READ_CLOCK, &[], &[]));
+        let info = params(&response, 0);
+        assert_eq!(&info[8..16], &(MAX_SET + 1_000).to_be_bytes());
+        assert_eq!(&info[..8], &[0; 8], "new power-on cycle");
+        assert_eq!(info[24], 0, "the previous power cycle did not shut down");
+    }
+}
+
+#[test]
+fn clock_rate_adjust_calibrates_both_clocks_and_snapshots_the_elapsed_time() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", b"owner"));
+    ok(&set_auth(&mut t, PLATFORM, b"", b"platform"));
+    t.advance_power_time(1000);
+    let original = clock_now(&mut t).0;
+    for (authorization, password, input, error) in [
+        (ENDORSEMENT, b"".as_slice(), vec![3], Rc::VALUE.in_handle(1)),
+        (
+            OWNER,
+            b"wrong".as_slice(),
+            vec![3],
+            Rc::BAD_AUTH.in_session(1),
+        ),
+        (OWNER, b"owner".as_slice(), vec![4], Rc::VALUE.in_param(1)),
+        (
+            OWNER,
+            b"owner".as_slice(),
+            Vec::new(),
+            Rc::INSUFFICIENT.in_param(1),
+        ),
+        (OWNER, b"owner".as_slice(), vec![0, 0], Rc::SIZE),
+    ] {
+        err(
+            &pw_cmd(
+                &mut t,
+                cc::CLOCK_RATE_ADJUST,
+                &[authorization],
+                password,
+                &input,
+            ),
+            error,
+        );
+    }
+    ok(&pw_cmd(
+        &mut t,
+        cc::CLOCK_RATE_ADJUST,
+        &[PLATFORM],
+        b"platform",
+        &[3],
+    ));
+    assert_eq!(clock_now(&mut t).0, original);
+    t.advance_power_time(101_000);
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(&info[..8], &102_000u64.to_be_bytes());
+    assert_eq!(clock.0, 102_000);
+
+    ok(&pw_cmd(
+        &mut t,
+        cc::CLOCK_SET,
+        &[OWNER],
+        b"owner",
+        &800_000u64.to_be_bytes(),
+    ));
+    assert_eq!(clock_now(&mut t).1.0, 800_000);
+    t.advance_power_time(201_000);
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(&info[..8], &203_000u64.to_be_bytes());
+    assert_eq!(clock.0, 901_000);
+    ok(&pw_cmd(&mut t, cc::CLEAR, &[PLATFORM], b"platform", &[]));
+    assert_eq!(
+        &clock_now(&mut t).0[..16],
+        &cat(&[&203_000u64.to_be_bytes(), &[0; 8]])
+    );
+
+    t.advance_power_time(301_000);
+    let snapshot = t.persistent_snapshot();
+    t.init();
+    let mut restored = Tpm::restore(&snapshot, &[8; 48]).unwrap();
+    for t in [&mut t, &mut restored] {
+        startup(t, crate::codes::su::CLEAR);
+        t.advance_power_time(1_000);
+        let read = run(t, plain(cc::READ_CLOCK, &[], &[]));
+        assert_eq!(
+            &params(&read, 0)[..16],
+            &cat(&[&1_000u64.to_be_bytes(), &102_000u64.to_be_bytes()])
+        );
+    }
+}
+
+#[test]
+fn clock_rate_adjust_accumulates_fractional_time_and_rejects_out_of_range_calibration() {
+    let adjust = |t: &mut Tpm, step: i8| {
+        pw_cmd(t, cc::CLOCK_RATE_ADJUST, &[OWNER], b"", &step.to_be_bytes())
+    };
+    let mut long = started();
+    let mut split = started();
+    ok(&adjust(&mut long, 1));
+    ok(&adjust(&mut split, 1));
+    long.advance_power_time(1_000_000);
+    for elapsed in (1_000..=1_000_000).step_by(1_000) {
+        split.advance_power_time(elapsed);
+    }
+    assert_eq!(clock_now(&mut long).0, clock_now(&mut split).0);
+    assert_eq!(clock_now(&mut long).1.0, 1_000_001);
+    split.advance_power_time(999_950);
+    assert_eq!(clock_now(&mut split).1.0, 1_000_001);
+
+    let mut switched = started();
+    ok(&adjust(&mut switched, 1));
+    switched.advance_power_time(999_999);
+    ok(&adjust(&mut switched, 1));
+    switched.advance_power_time(1_000_000);
+    assert_eq!(clock_now(&mut switched).1.0, 1_000_001);
+
+    for (sign, adjusted_elapsed) in [(1, 115_000), (-1, 85_000)] {
+        let mut t = started();
+        ok(&adjust(&mut t, 2 * sign));
+        ok(&adjust(&mut t, -2 * sign));
+        for _ in 0..15 {
+            ok(&adjust(&mut t, 3 * sign));
+        }
+        err(&adjust(&mut t, sign), Rc::VALUE.in_param(1));
+        ok(&adjust(&mut t, 0));
+        t.advance_power_time(100_000);
+        assert_eq!(clock_now(&mut t).1.0, adjusted_elapsed);
+        ok(&adjust(&mut t, -3 * sign));
+        t.advance_power_time(200_000);
+        assert_eq!(
+            clock_now(&mut t).1.0,
+            adjusted_elapsed + (100_000i32 + 14_000 * i32::from(sign)) as u64
+        );
+    }
 }
 
 const TIME_X: &str = "ef7f114d6b36e22e25103e3ea3f22a7598ed7bf9baca96df4214ca22589601b4";
@@ -1128,8 +1470,9 @@ fn a_null_sign_handle_with_an_hmac_session() {
 
 // -------------------------------------------------------------------- parameter encryption
 
-const AES_SYM: [u8; 6] = [0x00, 0x06, 0x00, 128, 0x00, 0x43];
-const XOR_SYM: [u8; 4] = [0x00, 0x0A, 0x00, 0x0B];
+pub(super) const AES_SYM: [u8; 6] = [0x00, 0x06, 0x00, 128, 0x00, 0x43];
+const AES256_SYM: [u8; 6] = [0x00, 0x06, 0x01, 0x00, 0x00, 0x43];
+pub(super) const XOR_SYM: [u8; 4] = [0x00, 0x0A, 0x00, 0x0B];
 
 /// KDFa for any size (`bits` in the input; the Part 1 counter-mode construction).
 fn kdfa_bits(key: &[u8], label: &[u8], u: &[u8], v: &[u8], bits: u32) -> Vec<u8> {
@@ -1145,7 +1488,7 @@ fn kdfa_bits(key: &[u8], label: &[u8], u: &[u8], v: &[u8], bits: u32) -> Vec<u8>
 }
 
 /// The client side of clause 19: `sessionValue = sessionKey || authValue`.
-fn crypt(
+pub(super) fn crypt(
     sym: &[u8],
     s: &Hs,
     entity_auth: &[u8],
@@ -1156,10 +1499,11 @@ fn crypt(
 ) -> Vec<u8> {
     let mut value = s.key.clone();
     value.extend_from_slice(&trimmed(entity_auth));
-    if sym == AES_SYM {
-        let kv = kdfa_bits(&value, b"CFB", newer, older, 256);
-        let iv: [u8; 16] = kv[16..32].try_into().unwrap();
-        crate::object::aes128_cfb(&kv[..16], &iv, data, encrypt).to_vec()
+    if sym == AES_SYM || sym == AES256_SYM {
+        let key_len = if sym == AES_SYM { 16 } else { 32 };
+        let kv = kdfa_bits(&value, b"CFB", newer, older, (key_len as u32 + 16) * 8);
+        let (key, iv) = kv.split_at(key_len);
+        crate::object::aes_cfb(key, iv.try_into().unwrap(), data, encrypt).to_vec()
     } else {
         let mask = kdfa_bits(&value, b"XOR", newer, older, (data.len() * 8) as u32);
         data.iter().zip(mask).map(|(d, m)| d ^ m).collect()
@@ -1167,14 +1511,18 @@ fn crypt(
 }
 
 /// Starts a session with the given `symmetric` (the start helper of `tests_b` uses NULL).
-fn start_sym(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8]) -> Hs {
+pub(super) fn start_sym(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8]) -> Hs {
+    start_sym_kind(t, bind, bind_auth, sym, se::HMAC)
+}
+
+fn start_sym_kind(t: &mut Tpm, bind: u32, bind_auth: &[u8], sym: &[u8], kind: u8) -> Hs {
     let nonce_caller = [0x44u8; 16];
     let resp = run(
         t,
         start_cmd(
             NULL,
             bind,
-            &start_params(&nonce_caller, &[], se::HMAC, sym, alg::SHA256),
+            &start_params(&nonce_caller, &[], kind, sym, alg::SHA256),
         ),
     );
     ok(&resp);
@@ -1231,7 +1579,7 @@ fn stored(t: &mut Tpm, idx: u32, size: u16) -> Vec<u8> {
 
 #[test]
 fn a_decrypted_command_parameter_reaches_the_command_in_clear() {
-    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
         for bind in [NULL, OWNER] {
             let (mut t, idx) = nv_with_owner_pw();
             let mut s = start_sym(&mut t, bind, OWNER_PW, sym);
@@ -1324,7 +1672,7 @@ fn the_cp_hash_covers_the_encrypted_parameter() {
 
 #[test]
 fn an_encrypted_response_parameter_decrypts_with_the_new_tpm_nonce() {
-    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
         let (mut t, idx) = nv_with_owner_pw();
         ok(&nv_write(&mut t, OWNER, idx, OWNER_PW, PLAIN, 0));
         let name = nv_read_public(&mut t, idx).1;
@@ -1347,6 +1695,48 @@ fn an_encrypted_response_parameter_decrypts_with_the_new_tpm_nonce() {
         let plain = crypt(sym, &s, OWNER_PW, &s.nonce_tpm, &c.nonce_caller, &ct, false);
         assert_eq!(plain, PLAIN, "{sym:?}");
     }
+}
+
+#[test]
+fn policy_use_protects_the_response_and_resets_its_assertions() {
+    const PASSWORD: &[u8] = b"sealed-password";
+    let (mut t, parent) = with_ecc_parent();
+    let mut session = start_sym_kind(&mut t, NULL, b"", &AES_SYM, se::POLICY);
+    let policy_handle = [session.handle];
+    ok(&run(
+        &mut t,
+        plain(cc::POLICY_AUTH_VALUE, &policy_handle, &[]),
+    ));
+    ok(&run(
+        &mut t,
+        plain(cc::POLICY_COMMAND_CODE, &policy_handle, &u32b(cc::UNSEAL)),
+    ));
+    let digest = run(&mut t, plain(cc::POLICY_GET_DIGEST, &policy_handle, &[]));
+    let mut template = sealed();
+    template.auth_policy = Reader::new(params(&digest, 0)).tpm2b(32).unwrap().to_vec();
+    let (object, name, _) = make_child(&mut t, parent, &template, PASSWORD, PLAIN);
+    let mut command = hc(cc::UNSEAL, &[object], Vec::new(), (object, PASSWORD));
+    command.names = vec![name];
+    command.attrs = session_attr::CONTINUE_SESSION | session_attr::ENCRYPT;
+
+    // Check the response HMAC over ciphertext, then decrypt with the returned nonce.
+    let response = run_hmac(&mut t, &mut session, &command);
+    let ciphertext = Reader::new(params(&response, 0)).tpm2b(64).unwrap();
+    assert_ne!(ciphertext, PLAIN);
+    assert_eq!(
+        crypt(
+            &AES_SYM,
+            &session,
+            PASSWORD,
+            &session.nonce_tpm,
+            &command.nonce_caller,
+            ciphertext,
+            false
+        ),
+        PLAIN
+    );
+    let digest = run(&mut t, plain(cc::POLICY_GET_DIGEST, &policy_handle, &[]));
+    assert_eq!(params(&digest, 0), tpm2b(&[0; 32]));
 }
 
 #[test]
@@ -1451,25 +1841,513 @@ fn only_one_session_of_a_command_may_decrypt_and_only_one_encrypt() {
 }
 
 #[test]
-fn a_session_without_an_authorized_handle_is_still_refused() {
-    // An encryption-only session (no handle that it authorizes) is not implemented: more sessions
-    // than authorized handles is TPM_RC_AUTHSIZE.
-    let mut t = started();
-    let s = start_sym(&mut t, NULL, b"", &AES_SYM);
-    let mut area = Vec::new();
-    area.extend_from_slice(&s.handle.to_be_bytes());
-    area.extend_from_slice(&tpm2b(&[0x33; 16]));
-    area.push(session_attr::ENCRYPT);
-    area.extend_from_slice(&tpm2b(&[]));
-    let mut auth = (area.len() as u32).to_be_bytes().to_vec();
-    auth.extend_from_slice(&area);
-    err(
-        &run(
+fn first_certify_hmac_binds_other_parameter_encryption_sessions() {
+    use session_attr::{CONTINUE_SESSION, DECRYPT, ENCRYPT};
+
+    #[derive(Clone, Copy)]
+    enum FirstAuth {
+        Hmac,
+        Password,
+        PolicyHmac,
+        PolicyEmpty,
+    }
+    const OBJECT_PASSWORD: &[u8] = b"objectpw";
+    const SIGNER_PASSWORD: &[u8] = b"signerpw";
+    const QUALIFYING: &[u8] = b"bound-certify";
+
+    for (first_flags, second_flags, first_auth) in [
+        (0, DECRYPT, FirstAuth::Hmac),
+        (0, ENCRYPT, FirstAuth::Hmac),
+        (0, DECRYPT | ENCRYPT, FirstAuth::Hmac),
+        (DECRYPT, ENCRYPT, FirstAuth::Hmac),
+        (ENCRYPT, DECRYPT, FirstAuth::Hmac),
+        (DECRYPT | ENCRYPT, 0, FirstAuth::Hmac),
+        (0, ENCRYPT, FirstAuth::Password),
+        (0, ENCRYPT, FirstAuth::PolicyHmac),
+        (0, ENCRYPT, FirstAuth::PolicyEmpty),
+    ] {
+        let mut t = started();
+        let with_policy = matches!(first_auth, FirstAuth::PolicyHmac | FirstAuth::PolicyEmpty);
+        let first_kind = if with_policy { se::POLICY } else { se::HMAC };
+        let mut first = start_sym_kind(&mut t, NULL, b"", &AES_SYM, first_kind);
+        let mut second = start_sym(&mut t, NULL, b"", &XOR_SYM);
+        let mut object_template = ecc_sign();
+        if with_policy {
+            if matches!(first_auth, FirstAuth::PolicyHmac) {
+                ok(&run(
+                    &mut t,
+                    plain(cc::POLICY_AUTH_VALUE, &[first.handle], &[]),
+                ));
+            }
+            ok(&run(
+                &mut t,
+                plain(cc::POLICY_COMMAND_CODE, &[first.handle], &u32b(cc::CERTIFY)),
+            ));
+            let response = run(&mut t, plain(cc::POLICY_GET_DIGEST, &[first.handle], &[]));
+            object_template.auth_policy = Reader::new(params(&response, 0))
+                .tpm2b(32)
+                .unwrap()
+                .to_vec();
+        }
+        let object = parse_primary(&create_primary(
             &mut t,
-            frame(st::SESSIONS, cc::GET_RANDOM, &[], &auth, &u16b(8)),
+            PLATFORM,
+            OBJECT_PASSWORD,
+            &object_template,
+        ));
+        let key = parse_primary(&create_primary(
+            &mut t,
+            PLATFORM,
+            SIGNER_PASSWORD,
+            &ecc_sign(),
+        ));
+        let handles = [object.handle, key.handle];
+        let mut first_command = hc(
+            cc::CERTIFY,
+            &handles,
+            Vec::new(),
+            (object.handle, OBJECT_PASSWORD),
+        );
+        let mut second_command = hc(
+            cc::CERTIFY,
+            &handles,
+            Vec::new(),
+            (key.handle, SIGNER_PASSWORD),
+        );
+        first_command.attrs = CONTINUE_SESSION | first_flags;
+        second_command.attrs = CONTINUE_SESSION | second_flags;
+        second_command.nonce_caller.fill(0x25);
+        let names = vec![object.name, key.name];
+        let qualifying = if first_flags & DECRYPT != 0 {
+            crypt(
+                &AES_SYM,
+                &first,
+                OBJECT_PASSWORD,
+                &first_command.nonce_caller,
+                &first.nonce_tpm,
+                QUALIFYING,
+                true,
+            )
+        } else if second_flags & DECRYPT != 0 {
+            crypt(
+                &XOR_SYM,
+                &second,
+                SIGNER_PASSWORD,
+                &second_command.nonce_caller,
+                &second.nonce_tpm,
+                QUALIFYING,
+                true,
+            )
+        } else {
+            QUALIFYING.to_vec()
+        };
+        let wire = cat(&[&tpm2b(&qualifying), &u16b(alg::NULL)]);
+        first_command.names = names.clone();
+        second_command.names = names;
+        first_command.params = wire.clone();
+        second_command.params = wire.clone();
+
+        let frame_with_binding = |binding: &[&[u8]]| {
+            let mut area = match first_auth {
+                FirstAuth::Password => cat(&[
+                    &u32b(handle::RS_PW),
+                    &tpm2b(&[]),
+                    &[0],
+                    &tpm2b(OBJECT_PASSWORD),
+                ]),
+                _ => hmac_auth_entry(
+                    &first,
+                    &first_command,
+                    binding,
+                    matches!(first_auth, FirstAuth::PolicyEmpty),
+                    false,
+                ),
+            };
+            area.extend_from_slice(&hmac_auth_entry(
+                &second,
+                &second_command,
+                &[],
+                false,
+                false,
+            ));
+            let area_size = u32b(area.len() as u32);
+            frame(
+                st::SESSIONS,
+                cc::CERTIFY,
+                &handles,
+                &cat(&[&area_size, &area]),
+                &wire,
+            )
+        };
+        let mut binding = Vec::new();
+        if second_flags != 0 && matches!(first_auth, FirstAuth::Hmac | FirstAuth::PolicyHmac) {
+            err(
+                &run(&mut t, frame_with_binding(&[])),
+                Rc::BAD_AUTH.in_session(1),
+            );
+            if second_flags == DECRYPT | ENCRYPT {
+                let duplicated = [second.nonce_tpm.as_slice(); 2];
+                err(
+                    &run(&mut t, frame_with_binding(&duplicated)),
+                    Rc::BAD_AUTH.in_session(1),
+                );
+            }
+            binding.push(second.nonce_tpm.as_slice());
+        }
+        let reply = run(&mut t, frame_with_binding(&binding));
+        let (wire_params, ack) = split_response(&reply, 0);
+        assert_eq!(ack.len(), 2);
+        if matches!(first_auth, FirstAuth::Hmac | FirstAuth::PolicyHmac) {
+            check_hmac_ack(&mut first, &first_command, &wire_params, &ack[0]);
+        } else {
+            assert!(ack[0].2.is_empty());
+        }
+        check_hmac_ack(&mut second, &second_command, &wire_params, &ack[1]);
+        let mut reader = Reader::new(&wire_params);
+        let parameter = reader.tpm2b(1024).unwrap();
+        let attestation = if first_flags & ENCRYPT != 0 {
+            crypt(
+                &AES_SYM,
+                &first,
+                OBJECT_PASSWORD,
+                &first.nonce_tpm,
+                &first_command.nonce_caller,
+                parameter,
+                false,
+            )
+        } else if second_flags & ENCRYPT != 0 {
+            crypt(
+                &XOR_SYM,
+                &second,
+                SIGNER_PASSWORD,
+                &second.nonce_tpm,
+                &second_command.nonce_caller,
+                parameter,
+                false,
+            )
+        } else {
+            parameter.to_vec()
+        };
+        assert!(
+            attestation
+                .windows(QUALIFYING.len())
+                .any(|window| window == QUALIFYING)
+        );
+        let signature = reader.bytes(reader.remaining()).unwrap();
+        ok(&verify(
+            &mut t,
+            key.handle,
+            &h256(&[&attestation]),
+            signature,
+        ));
+    }
+}
+
+#[test]
+fn additional_session_encrypts_only_the_shared_ecdh_point() {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
+        let mut t = started();
+        ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+        let mut session = start_sym(&mut t, OWNER, OWNER_PW, sym);
+        let mut public = ecc(oa::SIGN, SymDef::Null, ECDSA);
+        // With the generator as the input public key, zPoint == pubPoint.
+        public.unique = Unique::Ecc {
+            x: hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"),
+            y: hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"),
+        };
+        let (key, name) = parse_loaded(&load_external(&mut t, &public, NULL));
+        let before = t.persistent_snapshot();
+
+        let mut command = hc(cc::ECDH_KEY_GEN, &[key], Vec::new(), (NULL, b""));
+        command.attrs |= session_attr::ENCRYPT;
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::BAD_AUTH.in_session(1), // A handle number is not the Name of the object.
+        );
+        command.names = vec![name];
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, true)),
+            Rc::BAD_AUTH.in_session(1),
+        );
+
+        command.attrs |= session_attr::DECRYPT;
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::ATTRIBUTES.in_session(1),
+        );
+        command.attrs = session_attr::ENCRYPT; // A failing command did not roll the nonce.
+        let response = run_hmac(&mut t, &mut session, &command);
+        let mut reader = Reader::new(params(&response, 0));
+        let shared = reader.tpm2b(68).unwrap();
+        let public = reader.tpm2b(68).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(public.len(), 68);
+        assert_ne!(shared, public);
+        assert_eq!(
+            crypt(
+                sym,
+                &session,
+                b"",
+                &session.nonce_tpm,
+                &command.nonce_caller,
+                shared,
+                false
+            ),
+            public
+        );
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::reference_session(0),
+        );
+        assert_eq!(t.persistent_snapshot(), before); // Extra HMACs do not touch DA.
+    }
+}
+
+#[test]
+fn additional_policy_session_keeps_its_assertions_and_trial_cannot_encrypt() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut policy = start_sym_kind(&mut t, OWNER, OWNER_PW, &AES_SYM, se::POLICY);
+    let digest = plain(cc::POLICY_GET_DIGEST, &[policy.handle], &[]);
+    ok(&run(
+        &mut t,
+        plain(
+            cc::POLICY_COMMAND_CODE,
+            &[policy.handle],
+            &u32b(cc::CERTIFY),
         ),
-        Rc::AUTHSIZE,
+    ));
+    let before = run(&mut t, digest.clone());
+    let mut command = hc(cc::GET_RANDOM, &[], u16b(8).to_vec(), (NULL, b""));
+    command.attrs |= session_attr::ENCRYPT;
+    ok(&run_hmac(&mut t, &mut policy, &command));
+    assert_eq!(run(&mut t, digest), before);
+
+    let trial = start_sym_kind(&mut t, OWNER, OWNER_PW, &AES_SYM, se::TRIAL);
+    err(
+        &run(&mut t, hmac_command(&trial, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
     );
+    command.attrs = session_attr::CONTINUE_SESSION;
+    err(
+        &run(&mut t, hmac_command(&policy, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
+    );
+}
+
+#[test]
+fn third_session_encrypts_a_response_after_two_authorizations() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let object = parse_primary(&create_primary(&mut t, PLATFORM, b"object", &ecc_sign()));
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"key", &ecc_sign()));
+    let mut first = start_sym(&mut t, NULL, b"", &XOR_SYM);
+    let mut extra = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::CERTIFY,
+        &[object.handle, key.handle],
+        cat(&[&tpm2b(b"qualified"), &u16b(alg::NULL)]),
+        (object.handle, b"object"),
+    );
+    command.names = vec![object.name, key.name];
+    let mut encrypt = hc(
+        command.code,
+        &command.handles,
+        command.params.clone(),
+        (NULL, b""),
+    );
+    encrypt.names = command.names.clone();
+    encrypt.attrs |= session_attr::ENCRYPT;
+    encrypt.nonce_caller.fill(0x55);
+    let first_auth = hmac_auth_entry(&first, &command, &[&extra.nonce_tpm], false, false);
+    let password = auth_area(&[b"key"]);
+    let extra_auth = hmac_auth_entry(&extra, &encrypt, &[], false, false);
+    let request = |with_extra: bool| {
+        let mut area = cat(&[&first_auth, &password[4..]]);
+        if with_extra {
+            area.extend_from_slice(&extra_auth);
+        }
+        let prefix = u32b(area.len() as u32);
+        frame(
+            st::SESSIONS,
+            command.code,
+            &command.handles,
+            &cat(&[&prefix, &area]),
+            &command.params,
+        )
+    };
+    // The first HMAC commits to the extra session nonce.
+    err(&run(&mut t, request(false)), Rc::BAD_AUTH.in_session(1));
+    let response = run(&mut t, request(true));
+    let (parameters, acks) = split_response(&response, 0);
+    assert_eq!(acks.len(), 3);
+    check_hmac_ack(&mut first, &command, &parameters, &acks[0]);
+    assert!(acks[1].0.is_empty() && acks[1].2.is_empty());
+    check_hmac_ack(&mut extra, &encrypt, &parameters, &acks[2]);
+    let ciphertext = Reader::new(&parameters).tpm2b(1024).unwrap();
+    let attest = crypt(
+        &AES_SYM,
+        &extra,
+        b"",
+        &extra.nonce_tpm,
+        &encrypt.nonce_caller,
+        ciphertext,
+        false,
+    );
+    assert_eq!(&attest[..4], &0xff54_4347u32.to_be_bytes());
+}
+
+#[test]
+fn additional_session_decrypts_the_command_and_encrypts_the_response() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut session = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(cc::HASH, &[], Vec::new(), (NULL, b""));
+    command.attrs |= session_attr::DECRYPT | session_attr::ENCRYPT;
+    let input = crypt(
+        &AES_SYM,
+        &session,
+        b"",
+        &command.nonce_caller,
+        &session.nonce_tpm,
+        PLAIN,
+        true,
+    );
+    command.params = cat(&[&tpm2b(&input), &u16b(alg::SHA256), &u32b(NULL)]);
+    let response = run_hmac(&mut t, &mut session, &command);
+    let digest = Reader::new(params(&response, 0)).tpm2b(32).unwrap();
+    assert_eq!(
+        crypt(
+            &AES_SYM,
+            &session,
+            b"",
+            &session.nonce_tpm,
+            &command.nonce_caller,
+            digest,
+            false
+        ),
+        h256(&[PLAIN])
+    );
+}
+
+#[test]
+fn encrypted_set_primary_policy_stores_the_plaintext_digest() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut session = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::SET_PRIMARY_POLICY,
+        &[OWNER],
+        Vec::new(),
+        (OWNER, OWNER_PW),
+    );
+    command.attrs |= session_attr::DECRYPT;
+    let digest = [0x53; 32];
+    let ciphertext = crypt(
+        &AES_SYM,
+        &session,
+        OWNER_PW,
+        &command.nonce_caller,
+        &session.nonce_tpm,
+        &digest,
+        true,
+    );
+    assert_ne!(ciphertext, digest);
+    command.params = cat(&[&tpm2b(&ciphertext), &u16b(alg::SHA256)]);
+    ok(&run_hmac(&mut t, &mut session, &command));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&digest));
+}
+
+#[test]
+fn additional_decrypt_session_protects_policy_cp_hash() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut protection = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let policy = start_session(&mut t, se::POLICY, NULL, b"", &[0x44; 16]);
+    let mut command = hc(
+        cc::POLICY_CP_HASH,
+        &[policy.handle],
+        Vec::new(),
+        (NULL, b""),
+    );
+    command.attrs |= session_attr::DECRYPT;
+    let hash = [0x37; 32];
+    let ciphertext = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &command.nonce_caller,
+        &protection.nonce_tpm,
+        &hash,
+        true,
+    );
+    assert_ne!(ciphertext, hash);
+    command.params = tpm2b(&ciphertext);
+    ok(&run_hmac(&mut t, &mut protection, &command));
+    let r = run(&mut t, plain(cc::POLICY_GET_DIGEST, &[policy.handle], &[]));
+    assert_eq!(
+        Reader::new(params(&r, 0)).tpm2b(32).unwrap(),
+        h256(&[&[0; 32], &[0, 0, 1, 0x6e], &hash])
+    );
+}
+
+#[test]
+fn additional_session_protects_start_auth_session_nonces() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut protection = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::START_AUTH_SESSION,
+        &[NULL, NULL],
+        Vec::new(),
+        (NULL, b""),
+    );
+    command.attrs |= session_attr::DECRYPT | session_attr::ENCRYPT;
+    let nonce_caller = [0x63; 16];
+    let nonce_ciphertext = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &command.nonce_caller,
+        &protection.nonce_tpm,
+        &nonce_caller,
+        true,
+    );
+    command.params = start_params(&nonce_ciphertext, b"", se::HMAC, &XOR_SYM, alg::SHA256);
+    let response = run(&mut t, hmac_command(&protection, &command, false, false));
+    let handle = u32::from_be_bytes(response[10..14].try_into().unwrap());
+    assert_ne!(handle, protection.handle);
+    let (parameters, acks) = split_response(&response, 1);
+    assert_eq!(acks.len(), 1);
+    check_hmac_ack(&mut protection, &command, &parameters, &acks[0]);
+    let ciphertext = Reader::new(&parameters).tpm2b(16).unwrap();
+    let new_nonce = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &protection.nonce_tpm,
+        &command.nonce_caller,
+        ciphertext,
+        false,
+    );
+    let slot = t.sessions.slot_of(handle).unwrap();
+    assert_eq!(t.sessions.get(slot).unwrap().nonce_tpm, new_nonce);
+}
+
+#[test]
+fn get_test_result_allows_encrypt_and_rejects_decrypt() {
+    let mut t = started();
+    let mut session = start_sym(&mut t, NULL, b"", &AES_SYM);
+    let mut command = hc(cc::GET_TEST_RESULT, &[], Vec::new(), (NULL, b""));
+    command.attrs |= session_attr::DECRYPT;
+    err(
+        &run(&mut t, hmac_command(&session, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
+    );
+    command.attrs = session_attr::CONTINUE_SESSION | session_attr::ENCRYPT;
+    let response = run_hmac(&mut t, &mut session, &command);
+    // An empty TPM2B outData still has a clear size. The following result stays clear too.
+    assert_eq!(params(&response, 0), [0; 6]);
 }
 
 #[test]
@@ -1588,7 +2466,8 @@ fn increment_overflow_is_nv_range_and_changes_nothing() {
         .map(|p| at + p + 2)
         .expect("counter data");
     snap[data_at..data_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-    let max_at = snap.len() - 32 - 1 - 8;
+    // Empty policies, reset count, bank mask, establishment and seed extensions follow the table.
+    let max_at = snap.len() - 32 - 96 - 1 - 1 - 8 - 6 - 1 - 8;
     snap[max_at..max_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     refix(&mut snap);
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();

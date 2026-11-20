@@ -16,10 +16,10 @@
 
 use sha2::{Digest, Sha256};
 
-use super::tests_b::{hc, run_hmac, start_hmac};
+use super::tests_b::{hc, pw_cmd, run_hmac, start_hmac};
 use super::*;
 use crate::codes::{curve, object_attr as oa};
-use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
+use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique, Writer};
 use crate::object::{MAX_OBJECTS, MAX_PERSISTENT};
 
 pub(super) const OWNER: u32 = handle::RH_OWNER;
@@ -238,7 +238,7 @@ pub(super) fn parse_primary(resp: &[u8]) -> Primary {
     let handle = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
     let p = params(resp, 1);
     let mut r = Reader::new(p);
-    let public = r.tpm2b(1024).unwrap().to_vec();
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
     let creation = r.tpm2b(1024).unwrap().to_vec();
     let hash = r.tpm2b(64).unwrap().to_vec();
     let ticket = read_ticket(&mut r);
@@ -266,7 +266,7 @@ pub(super) fn parse_child(resp: &[u8]) -> Child {
     let p = params(resp, 0);
     let mut r = Reader::new(p);
     let private = r.tpm2b(1024).unwrap().to_vec();
-    let public = r.tpm2b(1024).unwrap().to_vec();
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
     let creation = r.tpm2b(1024).unwrap().to_vec();
     let hash = r.tpm2b(64).unwrap().to_vec();
     let ticket = read_ticket(&mut r);
@@ -306,6 +306,7 @@ pub(super) fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
     match &t.object(h).unwrap().sensitive.as_ref().unwrap().secret {
         Secret::Rsa(k) => crate::crypto::rsa_primes(k).unwrap().to_vec(),
         Secret::Ecc(k) => crate::crypto::ecc_scalar(k).to_vec(),
+        Secret::MlKem(k) => crate::kem::private_seed(k).unwrap().to_vec(),
         Secret::Data(d) => d.to_vec(),
     }
 }
@@ -327,6 +328,53 @@ pub(super) fn ecc_sig_scheme() -> Vec<u8> {
 
 pub(super) fn rsa_sig_scheme() -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256)])
+}
+
+#[test]
+fn import_accepts_a_single_rsa_prime_and_checks_the_binding() {
+    use crate::object::MAX_PRIVATE;
+    use crate::self_test::{EXT_RSA_N, EXT_RSA_P, EXT_RSA_Q};
+
+    let (mut t, parent) = with_ecc_parent();
+    let mut public = rsa(oa::USER_WITH_AUTH | oa::SIGN, SymDef::Null, RSASSA);
+    public.unique = Unique::Rsa(hex(EXT_RSA_N));
+    let import = |prime: &[u8]| {
+        let sensitive = cat(&[
+            &u16b(alg::RSA),
+            &tpm2b(b"child"),
+            &tpm2b(b""),
+            &tpm2b(prime),
+        ]);
+        let parameters = cat(&[
+            &tpm2b(b""),
+            &tpm2b(&public.to_bytes()),
+            &tpm2b(&tpm2b(&sensitive)),
+            &tpm2b(b""),
+            &u16b(alg::NULL),
+        ]);
+        with_pw(cc::IMPORT, &[parent], &[b"parent-pw"], &parameters)
+    };
+    let prime = hex(EXT_RSA_P);
+    let other = hex(EXT_RSA_Q);
+    let slots = t.objects.free_slots();
+    let reply = run(&mut t, import(&prime));
+    ok(&reply);
+    assert_eq!(t.objects.free_slots(), slots);
+    let mut reader = Reader::new(params(&reply, 0));
+    let private = reader.tpm2b(MAX_PRIVATE).unwrap();
+    reader.finish().unwrap();
+    let reply = load(&mut t, parent, b"parent-pw", private, &public.to_bytes());
+    ok(&reply);
+    let handle = u32::from_be_bytes(reply[10..14].try_into().unwrap());
+    ok(&sign(&mut t, handle, b"child", &DIGEST, &u16b(alg::NULL)));
+    ok(&run(&mut t, import(&other)));
+    err(
+        &run(&mut t, import(&cat(&[&prime, &other]))),
+        Rc::KEY_SIZE.in_param(3),
+    );
+    let mut wrong = prime;
+    wrong[127] ^= 2;
+    err(&run(&mut t, import(&wrong)), Rc::BINDING.in_param(3));
 }
 
 fn null_scheme() -> Vec<u8> {
@@ -387,8 +435,7 @@ fn tpmt_public_unmarshal_codes() {
     let mut b = good.clone();
     b[19] = 0x20;
     assert_eq!(parse(&b), Rc::KDF);
-    // Symmetric algorithm other than NULL/AES-128-CFB: TPM_RC_SYMMETRIC; mode other than CFB:
-    // TPM_RC_MODE.
+    // Unsupported symmetric algorithm, AES key size, and AES mode have distinct errors.
     let mut b = good.clone();
     b[11] = 0x13;
     assert_eq!(parse(&b), Rc::SYMMETRIC);
@@ -398,7 +445,10 @@ fn tpmt_public_unmarshal_codes() {
     assert_eq!(parse(&b), Rc::MODE);
     let mut b = storage;
     b[13] = 0xC0;
-    assert_eq!(parse(&b), Rc::SYMMETRIC);
+    assert_eq!(parse(&b), Rc::VALUE);
+    b[12..14].copy_from_slice(&256u16.to_be_bytes());
+    let aes256 = TpmtPublic::unmarshal(&mut Reader::new(&b)).unwrap();
+    assert_eq!(aes256.to_bytes(), b);
     // Cut off.
     assert_eq!(parse(&good[..good.len() - 1]), Rc::INSUFFICIENT);
     // TPM2B_PUBLIC whose size is not that of the structure: TPM_RC_SIZE.
@@ -587,10 +637,13 @@ fn endorsement_auth_does_not_change_the_ek() {
 }
 
 #[test]
-fn create_primary_in_the_null_hierarchy_has_a_null_ticket() {
+fn create_primary_in_the_null_hierarchy_issues_a_creation_ticket() {
     let mut t = started();
     let pr = parse_primary(&create_primary(&mut t, NULL, b"", &ecc_sign()));
-    assert_eq!(pr.ticket, (0x8021, NULL, vec![]));
+    assert_eq!(
+        (pr.ticket.0, pr.ticket.1, pr.ticket.2.len()),
+        (0x8021, NULL, 32)
+    );
     // Parent of a temporary object: nameAlg NULL, Name and QN the handle of TPM_RH_NULL.
     assert!(contains(&pr.creation, &tpm2b(&NULL.to_be_bytes())));
 }
@@ -623,15 +676,20 @@ fn creation_ticket_is_an_hmac_under_the_hierarchy_proof() {
     let pr = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_sign()));
     // Part 2, Equation (4): HMAC(proof, TPM_ST_CREATION || name || H(creationData)); the proof is
     // derived from the storage seed (`object_cmd.rs`).
-    let seed = t.persistent.owner_seed.to_vec();
-    let proof = kdfa_sha256(&seed, b"ODTPM-SHPROOF", &[], &[], 256);
+    let proof = kdfa_sha256(
+        &t.persistent.owner_seed[..32],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
     let expect = hmac_sha256(&proof, &[&u16b(0x8021), &pr.name, &pr.hash]);
     assert_eq!(pr.ticket.2, expect.to_vec());
     // Another hierarchy has another proof.
     let pl = parse_primary(&create_primary(&mut t, PLATFORM, b"", &ecc_sign()));
     assert_eq!(pl.ticket.1, PLATFORM);
     let pproof = kdfa_sha256(
-        &t.persistent.platform_seed[..],
+        &t.persistent.platform_seed[..32],
         b"ODTPM-PHPROOF",
         &[],
         &[],
@@ -800,10 +858,10 @@ fn create_primary_framing_errors() {
         ),
         Rc::SIZE.in_param(3),
     );
-    // creationPCR with two selections (one bank is implemented).
-    let two = creation_params(b"", b"", &ecc_sign(), b"", &[0, 0, 0, 2]);
+    // creationPCR with more selections than the implemented banks.
+    let too_many = creation_params(b"", b"", &ecc_sign(), b"", &[0, 0, 0, 3]);
     err(
-        &create_primary_raw(&mut t, OWNER, b"", &two),
+        &create_primary_raw(&mut t, OWNER, b"", &too_many),
         Rc::SIZE.in_param(4),
     );
     // TPM2B_SENSITIVE_CREATE whose size does not match its content.
@@ -879,7 +937,7 @@ fn create_load_sign_verify_ecc() {
     assert_eq!(ticket.2.len(), 32);
     // Verified ticket (Part 2, clause 10.7.4): HMAC(proof, TPM_ST_VERIFIED || digest || keyName).
     let proof = crate::crypto::kdfa_sha256(
-        &t.persistent.owner_seed[..],
+        &t.persistent.owner_seed[..32],
         b"ODTPM-SHPROOF",
         &[],
         &[],
@@ -1066,6 +1124,43 @@ fn create_errors() {
         b"",
         &ecc_storage(),
     ));
+}
+
+#[test]
+fn create_requires_fixed_storage_children_to_match_the_parent_cipher() {
+    let storage = |symmetric| {
+        ecc(
+            base() | oa::RESTRICTED | oa::DECRYPT,
+            symmetric,
+            Scheme::NULL,
+        )
+    };
+    for (parent_cipher, other_cipher) in [
+        (SymDef::Aes128Cfb, SymDef::Aes256Cfb),
+        (SymDef::Aes256Cfb, SymDef::Aes128Cfb),
+    ] {
+        let mut t = started();
+        let template = storage(parent_cipher);
+        let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &template)).handle;
+        ok(&create_child(
+            &mut t, parent, b"parent", b"", b"", &template,
+        ));
+
+        let mut mismatched = storage(other_cipher);
+        err(
+            &create_child(&mut t, parent, b"parent", b"", b"", &mismatched),
+            Rc::SYMMETRIC.in_param(2),
+        );
+        mismatched.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+        ok(&create_child(
+            &mut t,
+            parent,
+            b"parent",
+            b"",
+            b"",
+            &mismatched,
+        ));
+    }
 }
 
 #[test]
@@ -1312,7 +1407,7 @@ fn sign_and_verify_errors() {
                 &cat(&[&tpm2b(&DIGEST), &sig]),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
 }
 
@@ -1343,6 +1438,236 @@ fn ecdsa_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
 
 fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256), &tpm2b(sig)])
+}
+
+#[test]
+fn mlkem_encapsulates_with_a_public_only_key_and_decapsulates_with_the_private_key() {
+    let mut t = started();
+    let template = TpmtPublic {
+        name_alg: alg::SHA256,
+        attributes: base() | oa::DECRYPT,
+        auth_policy: vec![],
+        params: PublicParams::MlKem {
+            symmetric: SymDef::Null,
+            parameter_set: 2,
+        },
+        unique: Unique::MlKem(vec![]),
+    };
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"kem key", &template));
+    let mut public = TpmtPublic::unmarshal(&mut Reader::new(&key.public)).unwrap();
+    public.attributes = 0; // Encapsulate needs the public key and no authenticated attributes.
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let encapsulated = run(&mut t, plain(cc::ENCAPSULATE, &[external], &[]));
+    let mut r = Reader::new(params(&encapsulated, 0));
+    let shared = r.tpm2b(32).unwrap();
+    let ciphertext = r.tpm2b(1088).unwrap();
+    assert_eq!((shared.len(), ciphertext.len()), (32, 1088));
+    r.finish().unwrap();
+
+    let decapsulate = |t: &mut Tpm, ciphertext: &[u8], password: &[u8]| {
+        run(
+            t,
+            with_pw(
+                cc::DECAPSULATE,
+                &[key.handle],
+                &[password],
+                &tpm2b(ciphertext),
+            ),
+        )
+    };
+    let reply = decapsulate(&mut t, ciphertext, b"kem key");
+    assert_eq!(params(&reply, 0), tpm2b(shared));
+    err(
+        &decapsulate(&mut t, ciphertext, b"wrong"),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    err(
+        &decapsulate(&mut t, &ciphertext[..1087], b"kem key"),
+        Rc::SIZE.in_param(1),
+    );
+}
+
+#[test]
+fn verify_sequence_tickets_authenticate_the_raw_message_after_a_failed_completion() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"owner key", &ecc_sign()));
+    let input = b"verify through\0two buffers";
+    let digest = Sha256::digest(input);
+    let signature_reply = sign(&mut t, key.handle, b"owner key", &digest, &null_scheme());
+    let signature = params(&signature_reply, 0);
+    let auth = b"verify sequence";
+    let sequence = seq_handle(&run(
+        &mut t,
+        plain(
+            cc::VERIFY_SEQUENCE_START,
+            &[key.handle],
+            &cat(&[&tpm2b(auth), &tpm2b(&[]), &tpm2b(&[])]),
+        ),
+    ));
+    ok(&seq_update(&mut t, sequence, auth, &input[..14]));
+    let complete = |t: &mut Tpm, signature: &[u8]| {
+        run(
+            t,
+            with_pw(
+                cc::VERIFY_SEQUENCE_COMPLETE,
+                &[sequence, key.handle],
+                &[auth],
+                signature,
+            ),
+        )
+    };
+    err(&complete(&mut t, signature), Rc::SIGNATURE);
+    ok(&seq_update(&mut t, sequence, auth, &input[14..]));
+    let reply = complete(&mut t, signature);
+    let proof = crate::crypto::kdfa_sha256(
+        &t.persistent.owner_seed[..32],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
+    let tag = u16b(st::MESSAGE_VERIFIED);
+    let expected = crate::crypto::hmac_sha256(&proof, &[&tag, input, &key.name]);
+    assert_eq!(
+        params(&reply, 0),
+        cat(&[&tag, &u32b(OWNER), &tpm2b(&expected)])
+    );
+    err(&complete(&mut t, signature), Rc::reference_handle(0));
+}
+
+#[test]
+fn restricted_sign_sequence_rejects_a_generated_prefix_without_consuming_the_final_buffer() {
+    let mut t = started();
+    let restricted = ecc(base() | oa::RESTRICTED | oa::SIGN, SymDef::Null, ECDSA);
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"key", &restricted)).handle;
+    let started = run(
+        &mut t,
+        plain(
+            cc::SIGN_SEQUENCE_START,
+            &[key],
+            &cat(&[&tpm2b(b"sequence"), &tpm2b(&[])]),
+        ),
+    );
+    let sequence = seq_handle(&started);
+    ok(&seq_update(&mut t, sequence, b"sequence", b"\xff"));
+    ok(&seq_update(&mut t, sequence, b"sequence", b"TC"));
+    let complete = |t: &mut Tpm, data| {
+        run(
+            t,
+            with_pw(
+                cc::SIGN_SEQUENCE_COMPLETE,
+                &[sequence, key],
+                &[b"sequence", b"key"],
+                &tpm2b(data),
+            ),
+        )
+    };
+    err(&complete(&mut t, b"G"), Rc::VALUE.in_param(1));
+    let reply = complete(&mut t, b"X");
+    let digest = Sha256::digest(b"\xffTCX");
+    ok(&verify(&mut t, key, &digest, params(&reply, 0)));
+    err(&complete(&mut t, b"X"), Rc::reference_handle(0));
+}
+
+#[test]
+fn restricted_sign_digest_requires_a_hashcheck_bound_to_the_first_buffer() {
+    let mut t = started();
+    let message = b"digest signing test";
+    let hashed = run(&mut t, hash_cmd(message, alg::SHA256, OWNER));
+    let (digest, expected_ticket) = digest_and_ticket(&hashed);
+    assert_eq!(digest.as_slice(), &Sha256::digest(message)[..]);
+    assert_eq!(expected_ticket.hierarchy, OWNER);
+    assert_eq!(expected_ticket.digest.len(), 32);
+
+    let restricted = ecc(base() | oa::RESTRICTED | oa::SIGN, SymDef::Null, ECDSA);
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"pw", &restricted)).handle;
+    for first_len in [0, 3, 4] {
+        let sequence = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+        ok(&seq_update(&mut t, sequence, b"", &message[..first_len]));
+        let completed = seq_complete(&mut t, sequence, b"", &message[first_len..], OWNER);
+        let (computed, ticket) = digest_and_ticket(&completed);
+        assert_eq!(computed, digest);
+        let mut w = Writer::new();
+        w.tpm2b(&[]);
+        w.tpm2b(&digest);
+        ticket.marshal(&mut w);
+        let reply = run(
+            &mut t,
+            with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &w.finish()),
+        );
+        if first_len == 4 {
+            assert_eq!(ticket, expected_ticket);
+            ok(&verify(&mut t, key, &digest, params(&reply, 0)));
+        } else {
+            assert_eq!(ticket.hierarchy, NULL);
+            assert!(ticket.digest.is_empty());
+            err(&reply, Rc::TICKET.in_param(3));
+        }
+    }
+}
+
+#[test]
+fn verify_digest_signature_uses_the_fixed_scheme_and_encodes_hash_metadata() {
+    let mut t = started();
+    let digest = hexb(MSG_DIGEST);
+    let rsa_sig = rsassa_signature(&hexb(RSA_SIG));
+    let ecc_sig = ecdsa_signature(&hexb(EC_R), &hexb(EC_S));
+    let verify = |t: &mut Tpm, key, context: &[u8], digest: &[u8], signature: &[u8]| {
+        run(
+            t,
+            plain(
+                cc::VERIFY_DIGEST_SIGNATURE,
+                &[key],
+                &cat(&[&tpm2b(context), &tpm2b(digest), signature]),
+            ),
+        )
+    };
+    let (rsa, _) = parse_loaded(&load_external(&mut t, &ext_rsa_public(), NULL));
+    let reply = verify(&mut t, rsa, &[], &digest, &rsa_sig);
+    assert_eq!(params(&reply, 0), hexb("802740000007000b0000"));
+
+    let (ecc, name) = parse_loaded(&load_external(&mut t, &ext_ecc_public(), OWNER));
+    let reply = verify(&mut t, ecc, &[], &digest, &ecc_sig);
+    let proof = crate::crypto::kdfa_sha256(
+        &t.persistent.owner_seed[..32],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
+    let metadata = u16b(alg::SHA256);
+    let hmac = crate::crypto::hmac_sha256(&proof, &[&u16b(0x8027), &digest, &name, &metadata]);
+    assert_eq!(
+        params(&reply, 0),
+        cat(&[&hexb("802740000001000b"), &tpm2b(&hmac)])
+    );
+    err(
+        &verify(&mut t, ecc, &[], &digest, &rsa_sig),
+        Rc::SCHEME.in_param(3),
+    );
+    err(
+        &verify(&mut t, ecc, &[0], &digest, &ecc_sig),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &verify(&mut t, ecc, &[], &digest[..31], &ecc_sig),
+        Rc::SIZE.in_param(2),
+    );
+    err(
+        &verify(&mut t, ecc, &[], &Sha256::digest(&digest), &ecc_sig),
+        Rc::SIGNATURE,
+    );
+
+    let mut open = ext_ecc_public();
+    let PublicParams::Ecc { scheme, .. } = &mut open.params else {
+        unreachable!()
+    };
+    *scheme = Scheme::NULL;
+    let (open, _) = parse_loaded(&load_external(&mut t, &open, NULL));
+    err(
+        &verify(&mut t, open, &[], &digest, &ecc_sig),
+        Rc::SCHEME.in_handle(1),
+    );
 }
 
 #[test]
@@ -1526,7 +1851,7 @@ fn load_external_errors() {
             &mut t,
             with_pw(cc::LOAD_EXTERNAL, &[], &[b""], &long[..long.len() - 1]),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     assert_eq!(t.objects.free_slots(), MAX_OBJECTS);
 }
@@ -1690,6 +2015,190 @@ fn a_sealed_primary_unseals_after_it_is_created_again() {
 }
 
 // ============================================================================ EvictControl
+
+#[test]
+fn object_change_auth_rewraps_a_persistent_child_without_changing_it() {
+    let mut t = started();
+    let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &ecc_storage()));
+    let parent_alias = 0x8100_0001;
+    ok(&evict(&mut t, OWNER, b"", parent.handle, parent_alias));
+    let mut template = sealed();
+    template.attributes |= oa::NO_DA;
+    let child = parse_child(&create_child(
+        &mut t,
+        parent.handle,
+        b"parent",
+        b"old",
+        b"secret",
+        &template,
+    ));
+    let (loaded, name) = parse_loaded(&load(
+        &mut t,
+        parent.handle,
+        b"parent",
+        &child.private,
+        &child.public,
+    ));
+    let target = 0x8100_0002;
+    ok(&evict(&mut t, OWNER, b"", loaded, target));
+    let before = t.persistent_snapshot();
+    let public = read_public(&mut t, target);
+    let change = |t: &mut Tpm, auth: &[u8]| {
+        pw_cmd(
+            t,
+            cc::OBJECT_CHANGE_AUTH,
+            &[target, parent_alias],
+            b"old",
+            &tpm2b(auth),
+        )
+    };
+    let result = change(&mut t, b"new\0\0");
+    let mut response = Reader::new(params(&result, 0));
+    let private = response.tpm2b(1024).unwrap();
+    response.finish().unwrap();
+    assert_ne!(private, child.private);
+    assert_ne!(params(&result, 0), params(&change(&mut t, b"new\0\0"), 0));
+    err(&change(&mut t, &[1; 33]), Rc::SIZE.in_param(1));
+    err(
+        &run(
+            &mut t,
+            plain(cc::OBJECT_CHANGE_AUTH, &[target, parent_alias], &[0; 2]),
+        ),
+        Rc::AUTH_MISSING,
+    );
+    assert_eq!(t.persistent_snapshot(), before);
+
+    ok(&flush(&mut t, loaded));
+    let (replacement, new_name) = parse_loaded(&load(
+        &mut t,
+        parent_alias,
+        b"parent",
+        private,
+        &child.public,
+    ));
+    assert_eq!(name, new_name);
+    assert_eq!(public, read_public(&mut t, replacement));
+    let unseal = |t: &mut Tpm, handle, auth: &[u8]| pw_cmd(t, cc::UNSEAL, &[handle], auth, &[]);
+    assert_eq!(params(&unseal(&mut t, target, b"old"), 0), tpm2b(b"secret"));
+    assert_eq!(
+        params(&unseal(&mut t, replacement, b"new"), 0),
+        tpm2b(b"secret")
+    );
+    err(&unseal(&mut t, target, b"new"), Rc::BAD_AUTH.in_session(1));
+    err(
+        &unseal(&mut t, replacement, b"old"),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    let mut damaged = private.to_vec();
+    damaged[3] ^= 1;
+    err(
+        &load(&mut t, parent_alias, b"parent", &damaged, &child.public),
+        Rc::INTEGRITY,
+    );
+}
+
+#[test]
+fn object_change_auth_requires_the_original_storage_parent() {
+    let mut t = started();
+    let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &ecc_storage()));
+    let wrong_parent = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &ecc_storage()));
+    let child = parse_child(&create_child(
+        &mut t,
+        parent.handle,
+        b"parent",
+        b"old",
+        b"",
+        &ecc_sign(),
+    ));
+    let (child, _) = parse_loaded(&load(
+        &mut t,
+        parent.handle,
+        b"parent",
+        &child.private,
+        &child.public,
+    ));
+    let change = |t: &mut Tpm, child, parent, auth: &[u8]| {
+        pw_cmd(
+            t,
+            cc::OBJECT_CHANGE_AUTH,
+            &[child, parent],
+            auth,
+            &tpm2b(b""),
+        )
+    };
+    err(
+        &change(&mut t, child, wrong_parent.handle, b"old"),
+        Rc::PARENT,
+    );
+    err(
+        &change(&mut t, wrong_parent.handle, parent.handle, b""),
+        Rc::PARENT,
+    );
+    err(&change(&mut t, child, child, b"old"), Rc::TYPE.in_handle(2));
+    err(&change(&mut t, child, NULL, b"old"), Rc::VALUE.in_handle(2));
+    ok(&flush(&mut t, wrong_parent.handle));
+    let mut public = unmarshal_public(&parent.public);
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    err(
+        &change(&mut t, child, external, b"old"),
+        Rc::TYPE.in_handle(2),
+    );
+    err(
+        &change(&mut t, external, parent.handle, b""),
+        Rc::AUTH_UNAVAILABLE,
+    );
+}
+
+#[test]
+fn object_change_auth_preserves_the_storage_seed_for_existing_descendants() {
+    let mut t = started();
+    let root = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_storage()));
+    let storage = parse_child(&create_child(
+        &mut t,
+        root.handle,
+        b"",
+        b"old",
+        b"",
+        &ecc_storage(),
+    ));
+    let (parent, _) = parse_loaded(&load(
+        &mut t,
+        root.handle,
+        b"",
+        &storage.private,
+        &storage.public,
+    ));
+    let sealed_child = parse_child(&create_child(
+        &mut t,
+        parent,
+        b"old",
+        b"",
+        b"leaf",
+        &sealed(),
+    ));
+    let changed = pw_cmd(
+        &mut t,
+        cc::OBJECT_CHANGE_AUTH,
+        &[parent, root.handle],
+        b"old",
+        &tpm2b(&[7; 32]),
+    );
+    let private = Reader::new(params(&changed, 0)).tpm2b(1024).unwrap();
+    ok(&flush(&mut t, parent));
+    let (parent, _) = parse_loaded(&load(&mut t, root.handle, b"", private, &storage.public));
+    let (leaf, _) = parse_loaded(&load(
+        &mut t,
+        parent,
+        &[7; 32],
+        &sealed_child.private,
+        &sealed_child.public,
+    ));
+    assert_eq!(
+        params(&pw_cmd(&mut t, cc::UNSEAL, &[leaf], b"", &[]), 0),
+        tpm2b(b"leaf")
+    );
+}
 
 #[test]
 fn evict_control_makes_objects_persistent_and_evicts_them() {

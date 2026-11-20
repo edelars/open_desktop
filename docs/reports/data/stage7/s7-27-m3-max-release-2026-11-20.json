@@ -1,0 +1,597 @@
+{
+  "schema_version": 1,
+  "host": {
+    "model": "Mac15,11",
+    "cpu": "Apple M3 Max",
+    "memory": "36 GB",
+    "architecture": "arm64",
+    "macos_version": "26.7.1",
+    "macos_build": "25G241",
+    "python": "3.15.2"
+  },
+  "build": {
+    "profile": "release",
+    "engine": "paged firmware interpreter",
+    "git_head": "cee17ee6cf9557f49869a0a78b2328ad4bceffd2",
+    "source_diff_sha256": "c6f5e0cda353b55b8ab82cec93215ac6a93ca502c58c6b980e43c0d1b412ee62",
+    "benchmark_sources_sha256": {
+      "crates/od-machine/src/firmware_board.rs": "3faeddd64551f64da612b09c6838fc982454856d5e91b042c75793bba378dced",
+      "crates/od-machine/src/paged_probe.rs": "dde2c30f5ff28582410be2575e80e5e9d3b27162fec61bf83e6a7f86b5a7ef11",
+      "firmware/uefi/tests/apps/Cargo.toml": "bef3f9c4d8f4e263d03178a4cc10fcabbf877e8b732c6c8fdf6c294e077df68c",
+      "firmware/uefi/tests/apps/bench/main.rs": "8177deea9c361491a7e4afbc260e131f10f5f828ac8c21a874a7430ecd0ef15b",
+      "tools/bench/firmware_boot_bench.py": "3b26393b0d915bb58248e614027d1fb9e56a3f3ca55a6a6d76bfa2f7bb27ec11",
+      "tools/build/build_firmware.py": "5ff9fd13002b6a4cb80fa2c314fea616970792fedb64be30cfc1d9572c9e1db8",
+      "tools/runner/src/firmware_boot.rs": "0cbbe4554bac88d0f2efc2d0e4302802302ff6d4694413ed0913906a33928ee2"
+    },
+    "runner_sha256": "18b0d95dfe7ddf25367046279b565b6dd54356d11790ba7017c58e3158b603cc",
+    "asset_sha256": {
+      "firmware": "4f65711e236bbeedef25c0938d895eb823e727f7b4afd0a56ead7e2123dbdaeb",
+      "efi_app": "c7cbc28dec7e7ac939be0b1e6bd0e65197741c3582b0dd945142863d8a4579ba",
+      "load_image_payload": "a10f0cec85fd5f9da040a34935be055d909e6f45cbc5f598ca6c6bc2c30bb503",
+      "disk": "a1596ec05ec094bcdc057db8357faeeee5222b1a6a107d013b2502571ba78e37"
+    },
+    "tools": [
+      "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "rust-objcopy: llvm-objcopy, compatible with GNU objcopy"
+    ]
+  },
+  "board": {
+    "ram_bytes": 134217728,
+    "vcpu_count": 1,
+    "nvme": "fixed controller, 512-byte sectors, in-memory backend",
+    "nvram": "fresh legacy bank",
+    "tpm": "fresh CRB, active SHA-256",
+    "quantum_limit": "remaining global instruction budget, ended early by device events",
+    "read_offset": 41943040,
+    "read_bytes": 67108864,
+    "pe_bytes": 1048576,
+    "hash_bytes": 1048576
+  },
+  "case": {
+    "FV": {
+      "rip_sequence": [
+        "0x200040",
+        "0x7f40aa0",
+        "0x7f4002c",
+        "0x7f4002e",
+        "0x7f4002c",
+        "0x7f4002e",
+        "0x7f4002c",
+        "0x7f4002e",
+        "0x7f4002c",
+        "0x7f4002e"
+      ],
+      "budget": 1200000000,
+      "retired": 338906287,
+      "quanta": 36765,
+      "handoff_sha256": "cddaf98b5c030793fcf37faff560db254515ee612644f7bd7f4b4cfc121ad5fe",
+      "tsc_hz": 1000000000
+    },
+    "ESP": {
+      "rip_sequence": [
+        "0x200040",
+        "0x7f36aa0"
+      ],
+      "budget": 1200000000,
+      "retired": 224333702,
+      "quanta": 3954,
+      "handoff_sha256": "eaab15873b6eee34e5100b352f429456d5803e196d96cabf25756a5adf5ca29b",
+      "tsc_hz": 1000000000
+    }
+  },
+  "repeat_count": 10,
+  "series": {
+    "handoff_to_fv_entry": {
+      "discarded_warmup": {
+        "host_ns": 105291999917,
+        "retired": 224558783,
+        "quanta": 3627
+      },
+      "raw": [
+        {
+          "host_ns": 107567326208,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 105708215709,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 108742831167,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 107378091208,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 103134801584,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 106502489625,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 105384858250,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 105306910042,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 107152437292,
+          "retired": 224558783,
+          "quanta": 3627
+        },
+        {
+          "host_ns": 108989619375,
+          "retired": 224558783,
+          "quanta": 3627
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 106586758046.0,
+          "p50": 106827463458.5,
+          "p95": 108989619375,
+          "min": 103134801584,
+          "max": 108989619375,
+          "spread": 5854817791
+        },
+        "retired": {
+          "mean": 224558783.0,
+          "p50": 224558783.0,
+          "p95": 224558783,
+          "min": 224558783,
+          "max": 224558783,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 3627.0,
+          "p50": 3627.0,
+          "p95": 3627,
+          "min": 3627,
+          "max": 3627,
+          "spread": 0
+        }
+      }
+    },
+    "empty": {
+      "discarded_warmup": {
+        "host_ns": 1209,
+        "retired": 3,
+        "quanta": 0
+      },
+      "raw": [
+        {
+          "host_ns": 1375,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1292,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1250,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1375,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1250,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1833,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1708,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1250,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1333,
+          "retired": 3,
+          "quanta": 0
+        },
+        {
+          "host_ns": 1333,
+          "retired": 3,
+          "quanta": 0
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 1399.9,
+          "p50": 1333.0,
+          "p95": 1833,
+          "min": 1250,
+          "max": 1833,
+          "spread": 583
+        },
+        "retired": {
+          "mean": 3.0,
+          "p50": 3.0,
+          "p95": 3,
+          "min": 3,
+          "max": 3,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 0.0,
+          "p50": 0.0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0
+        }
+      }
+    },
+    "read_blocks_64_mib": {
+      "discarded_warmup": {
+        "host_ns": 4391338125,
+        "retired": 4981375,
+        "quanta": 32768
+      },
+      "raw": [
+        {
+          "host_ns": 4469847625,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4398156959,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4409694459,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4491800167,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4200051792,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4299866042,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4474901041,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4417180209,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4434690583,
+          "retired": 4981375,
+          "quanta": 32768
+        },
+        {
+          "host_ns": 4389399333,
+          "retired": 4981375,
+          "quanta": 32768
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 4398558821.0,
+          "p50": 4413437334.0,
+          "p95": 4491800167,
+          "min": 4200051792,
+          "max": 4491800167,
+          "spread": 291748375
+        },
+        "retired": {
+          "mean": 4981375.0,
+          "p50": 4981375.0,
+          "p95": 4981375,
+          "min": 4981375,
+          "max": 4981375,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 32768.0,
+          "p50": 32768.0,
+          "p95": 32768,
+          "min": 32768,
+          "max": 32768,
+          "spread": 0
+        }
+      }
+    },
+    "load_image_1_mib": {
+      "discarded_warmup": {
+        "host_ns": 25619308167,
+        "retired": 54692623,
+        "quanta": 0
+      },
+      "raw": [
+        {
+          "host_ns": 26622172458,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26456335584,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26026025833,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25955145292,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25095574875,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25513663208,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25052701500,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25683023459,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26060961458,
+          "retired": 54692623,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26265443917,
+          "retired": 54692623,
+          "quanta": 0
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 25873104758.4,
+          "p50": 25990585562.5,
+          "p95": 26622172458,
+          "min": 25052701500,
+          "max": 26622172458,
+          "spread": 1569470958
+        },
+        "retired": {
+          "mean": 54692623.0,
+          "p50": 54692623.0,
+          "p95": 54692623,
+          "min": 54692623,
+          "max": 54692623,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 0.0,
+          "p50": 0.0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0
+        }
+      }
+    },
+    "hash_log_extend_1_mib": {
+      "discarded_warmup": {
+        "host_ns": 25395731000,
+        "retired": 54595638,
+        "quanta": 0
+      },
+      "raw": [
+        {
+          "host_ns": 26147605792,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 27009243792,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26149199542,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25716601291,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 24865361125,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25698867750,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25037544083,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 25534479541,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26011444125,
+          "retired": 54595638,
+          "quanta": 0
+        },
+        {
+          "host_ns": 26234755166,
+          "retired": 54595638,
+          "quanta": 0
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 25840510220.7,
+          "p50": 25864022708.0,
+          "p95": 27009243792,
+          "min": 24865361125,
+          "max": 27009243792,
+          "spread": 2143882667
+        },
+        "retired": {
+          "mean": 54595638.0,
+          "p50": 54595638.0,
+          "p95": 54595638,
+          "min": 54595638,
+          "max": 54595638,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 0.0,
+          "p50": 0.0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0
+        }
+      }
+    },
+    "handoff_to_esp_entry": {
+      "discarded_warmup": {
+        "host_ns": 105484060375,
+        "retired": 224299077,
+        "quanta": 3711
+      },
+      "raw": [
+        {
+          "host_ns": 105593272083,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 107903476792,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 105324344291,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 105568994709,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 104477998833,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 106822943333,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 105419206375,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 105504571625,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 109153730375,
+          "retired": 224299077,
+          "quanta": 3711
+        },
+        {
+          "host_ns": 106160408959,
+          "retired": 224299077,
+          "quanta": 3711
+        }
+      ],
+      "summary": {
+        "host_ns": {
+          "mean": 106192894737.5,
+          "p50": 105581133396.0,
+          "p95": 109153730375,
+          "min": 104477998833,
+          "max": 109153730375,
+          "spread": 4675731542
+        },
+        "retired": {
+          "mean": 224299077.0,
+          "p50": 224299077.0,
+          "p95": 224299077,
+          "min": 224299077,
+          "max": 224299077,
+          "spread": 0
+        },
+        "quanta": {
+          "mean": 3711.0,
+          "p50": 3711.0,
+          "p95": 3711,
+          "min": 3711,
+          "max": 3711,
+          "spread": 0
+        }
+      }
+    }
+  }
+}

@@ -12,28 +12,52 @@
 
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
+    pub const NV_UNDEFINE_SPACE_SPECIAL: u32 = 0x0000_011F;
     /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
+    pub const POLICY_NV: u32 = 0x0000_0149;
+    pub const CERTIFY_CREATION: u32 = 0x0000_014A;
     pub const GET_TIME: u32 = 0x0000_014C;
+    pub const GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014D;
     pub const NV_INCREMENT: u32 = 0x0000_0134;
     pub const NV_SET_BITS: u32 = 0x0000_0135;
     pub const NV_EXTEND: u32 = 0x0000_0136;
+    pub const NV_CHANGE_AUTH: u32 = 0x0000_013B;
     pub const POLICY_SECRET: u32 = 0x0000_0151;
+    pub const POLICY_SIGNED: u32 = 0x0000_0160;
     pub const HMAC: u32 = 0x0000_0155;
+    pub const IMPORT: u32 = 0x0000_0156;
+    pub const DUPLICATE: u32 = 0x0000_014B;
+    pub const HMAC_START: u32 = 0x0000_015B;
     pub const QUOTE: u32 = 0x0000_0158;
     pub const CONTEXT_LOAD: u32 = 0x0000_0161;
     pub const CONTEXT_SAVE: u32 = 0x0000_0162;
+    pub const POLICY_AUTHORIZE: u32 = 0x0000_016A;
     pub const POLICY_AUTH_VALUE: u32 = 0x0000_016B;
     pub const POLICY_COMMAND_CODE: u32 = 0x0000_016C;
+    pub const POLICY_COUNTER_TIMER: u32 = 0x0000_016D;
+    pub const POLICY_CP_HASH: u32 = 0x0000_016E;
+    pub const POLICY_LOCALITY: u32 = 0x0000_016F;
+    pub const POLICY_NAME_HASH: u32 = 0x0000_0170;
     pub const POLICY_OR: u32 = 0x0000_0171;
+    pub const POLICY_TICKET: u32 = 0x0000_0172;
     pub const POLICY_PCR: u32 = 0x0000_017F;
     pub const POLICY_RESTART: u32 = 0x0000_0180;
+    pub const NV_CERTIFY: u32 = 0x0000_0184;
     pub const POLICY_GET_DIGEST: u32 = 0x0000_0189;
+    pub const POLICY_DUPLICATION_SELECT: u32 = 0x0000_0188;
+    pub const POLICY_PASSWORD: u32 = 0x0000_018C;
+    pub const POLICY_NV_WRITTEN: u32 = 0x0000_018F;
+    pub const POLICY_TEMPLATE: u32 = 0x0000_0190;
+    pub const POLICY_AUTHORIZE_NV: u32 = 0x0000_0192;
+    pub const POLICY_PARAMETERS: u32 = 0x0000_019C;
     /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
     pub const DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;
     pub const DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013A;
     pub const ECDH_Z_GEN: u32 = 0x0000_0154;
+    pub const ECDH_KEY_GEN: u32 = 0x0000_0163;
+    pub const ECC_PARAMETERS: u32 = 0x0000_0178;
     pub const RSA_DECRYPT: u32 = 0x0000_0159;
     pub const RSA_ENCRYPT: u32 = 0x0000_0174;
     pub const EVICT_CONTROL: u32 = 0x0000_0120;
@@ -41,31 +65,47 @@ pub mod cc {
     pub const NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
     pub const CLEAR: u32 = 0x0000_0126;
     pub const CLEAR_CONTROL: u32 = 0x0000_0127;
+    pub const CLOCK_SET: u32 = 0x0000_0128;
     pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+    pub const SET_PRIMARY_POLICY: u32 = 0x0000_012E;
+    pub const CLOCK_RATE_ADJUST: u32 = 0x0000_0130;
     pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
+    pub const PCR_ALLOCATE: u32 = 0x0000_012B;
     pub const NV_WRITE: u32 = 0x0000_0137;
     pub const NV_WRITE_LOCK: u32 = 0x0000_0138;
     pub const PCR_EVENT: u32 = 0x0000_013C;
     pub const PCR_RESET: u32 = 0x0000_013D;
     pub const SEQUENCE_COMPLETE: u32 = 0x0000_013E;
+    pub const INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
     pub const SELF_TEST: u32 = 0x0000_0143;
     pub const STARTUP: u32 = 0x0000_0144;
     pub const SHUTDOWN: u32 = 0x0000_0145;
     pub const STIR_RANDOM: u32 = 0x0000_0146;
+    pub const ACTIVATE_CREDENTIAL: u32 = 0x0000_0147;
     pub const NV_READ: u32 = 0x0000_014E;
     pub const NV_READ_LOCK: u32 = 0x0000_014F;
+    pub const OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
     pub const CREATE: u32 = 0x0000_0153;
     pub const LOAD: u32 = 0x0000_0157;
     pub const SEQUENCE_UPDATE: u32 = 0x0000_015C;
     pub const SIGN: u32 = 0x0000_015D;
+    pub const SIGN_SEQUENCE_COMPLETE: u32 = 0x0000_01A4;
+    pub const SIGN_DIGEST: u32 = 0x0000_01A6;
+    pub const SIGN_SEQUENCE_START: u32 = 0x0000_01AA;
+    pub const ENCAPSULATE: u32 = 0x0000_01A7;
+    pub const DECAPSULATE: u32 = 0x0000_01A8;
     pub const UNSEAL: u32 = 0x0000_015E;
     pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
     pub const LOAD_EXTERNAL: u32 = 0x0000_0167;
+    pub const MAKE_CREDENTIAL: u32 = 0x0000_0168;
     pub const NV_READ_PUBLIC: u32 = 0x0000_0169;
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const START_AUTH_SESSION: u32 = 0x0000_0176;
     pub const VERIFY_SIGNATURE: u32 = 0x0000_0177;
+    pub const VERIFY_SEQUENCE_COMPLETE: u32 = 0x0000_01A3;
+    pub const VERIFY_DIGEST_SIGNATURE: u32 = 0x0000_01A5;
+    pub const VERIFY_SEQUENCE_START: u32 = 0x0000_01A9;
     pub const GET_CAPABILITY: u32 = 0x0000_017A;
     pub const GET_RANDOM: u32 = 0x0000_017B;
     pub const GET_TEST_RESULT: u32 = 0x0000_017C;
@@ -75,23 +115,31 @@ pub mod cc {
     pub const PCR_EXTEND: u32 = 0x0000_0182;
     pub const EVENT_SEQUENCE_COMPLETE: u32 = 0x0000_0185;
     pub const HASH_SEQUENCE_START: u32 = 0x0000_0186;
+    pub const TEST_PARMS: u32 = 0x0000_018A;
 }
 
 /// Table 23 (v184): `TPM_ST` structure tags.
 pub mod st {
     pub const NO_SESSIONS: u16 = 0x8001;
     pub const SESSIONS: u16 = 0x8002;
-    /// Tickets (Table 23): creation and verified.
+    /// Tickets (Part 2 v185, Table 23).
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
+    pub const MESSAGE_VERIFIED: u16 = 0x8026;
+    pub const DIGEST_VERIFIED: u16 = 0x8027;
     pub const HASHCHECK: u16 = 0x8024;
-    /// Attestation structure tags (Table 23): `TPM2_Certify`, `TPM2_Quote` and `TPM2_GetTime`.
+    /// Attestation structure tags (Table 23).
+    pub const ATTEST_NV: u16 = 0x8014;
+    pub const ATTEST_SESSION_AUDIT: u16 = 0x8016;
     pub const ATTEST_CERTIFY: u16 = 0x8017;
     pub const ATTEST_QUOTE: u16 = 0x8018;
     /// `TPM2_GetTime` (Table 23).
     pub const ATTEST_TIME: u16 = 0x8019;
+    pub const ATTEST_CREATION: u16 = 0x801A;
+    pub const ATTEST_NV_DIGEST: u16 = 0x801C;
     /// Ticket tag of `TPM2_PolicySecret` (Table 23).
     pub const AUTH_SECRET: u16 = 0x8023;
+    pub const AUTH_SIGNED: u16 = 0x8025;
 }
 
 /// Table 26 (v184): `TPM_CAP` capability selectors.
@@ -103,7 +151,9 @@ pub mod cap {
     pub const AUDIT_COMMANDS: u32 = 0x0000_0004;
     pub const PCRS: u32 = 0x0000_0005;
     pub const TPM_PROPERTIES: u32 = 0x0000_0006;
+    pub const PCR_PROPERTIES: u32 = 0x0000_0007;
     pub const ECC_CURVES: u32 = 0x0000_0008;
+    pub const AUTH_POLICIES: u32 = 0x0000_0009;
 }
 
 /// Table 30 (v184): `TPM_PT` property tags (PT_FIXED = 0x100, PT_VAR = 0x200).
@@ -144,6 +194,7 @@ pub mod pt {
     pub const VENDOR_COMMANDS: u32 = FIXED + 43;
     pub const NV_BUFFER_MAX: u32 = FIXED + 44;
     pub const MAX_CAP_BUFFER: u32 = FIXED + 46;
+    pub const ML_PARAMETER_SETS: u32 = FIXED + 49;
     pub const PERMANENT: u32 = VAR;
     pub const STARTUP_CLEAR: u32 = VAR + 1;
     pub const HR_NV_INDEX: u32 = VAR + 2;
@@ -170,6 +221,8 @@ pub mod alg {
     pub const HMAC: u16 = 0x0005;
     pub const KEYEDHASH: u16 = 0x0008;
     pub const SHA256: u16 = 0x000B;
+    pub const SHA384: u16 = 0x000C;
+    pub const SHA512: u16 = 0x000D;
     pub const NULL: u16 = 0x0010;
     pub const RSASSA: u16 = 0x0014;
     /// RSA encryption padding schemes (`TPM2_RSA_Encrypt/Decrypt`) and the ECDH key exchange.
@@ -177,7 +230,9 @@ pub mod alg {
     pub const OAEP: u16 = 0x0017;
     pub const ECDSA: u16 = 0x0018;
     pub const ECDH: u16 = 0x0019;
+    pub const KDF1_SP800_56A: u16 = 0x0020;
     pub const ECC: u16 = 0x0023;
+    pub const MLKEM: u16 = 0x00A0;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;
     pub const CFB: u16 = 0x0043;

@@ -1104,6 +1104,13 @@ impl DisplayDevice {
             DisplayHandle { state },
         )
     }
+    pub(crate) fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        lock(&self.state).read(access)
+    }
+
+    pub(crate) fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        lock(&self.state).write(access, value)
+    }
 }
 
 fn lock(state: &Mutex<DisplayState>) -> std::sync::MutexGuard<'_, DisplayState> {
@@ -1114,11 +1121,11 @@ fn lock(state: &Mutex<DisplayState>) -> std::sync::MutexGuard<'_, DisplayState> 
 
 impl BusDevice for DisplayDevice {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
-        lock(&self.state).read(access)
+        self.read_mmio(access)
     }
 
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
-        lock(&self.state).write(access, value)
+        self.write_mmio(access, value)
     }
 
     fn framebuffer_binding(&self) -> Option<FramebufferBinding> {

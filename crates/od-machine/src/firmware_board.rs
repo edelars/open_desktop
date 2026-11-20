@@ -12,6 +12,7 @@ use crate::console_output_context::{
     UartOutputByteContextSnapshot, UartOutputContextCapture, UartOutputContextDiagnostic,
     capture_frame_chain,
 };
+use crate::crc32::crc32_ieee;
 use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
     RdtscClockReadLedger,
@@ -25,18 +26,22 @@ use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
 use crate::nvme::irq_source::NvmeIoapicIrqSource;
-use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_SLOT};
+use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES, NVME_PCI_SLOT};
+use crate::nvram_device::{
+    NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramConfig, NvramContentsError, NvramDevice, NvramHandle,
+};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::deliver_nmi_at_boundary;
 use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_observed_with_sweep,
 };
-use crate::paged_probe::run_paged_probe_2m_ram;
+use crate::paged_probe::{FirmwareMmio, run_paged_firmware_probe, run_paged_probe_2m_ram};
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::smp_scheduler::{
     BoardSmpHost, Executed, QuantumPolicy, SmpError, SmpScheduler, StopRequest,
 };
+use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmCrb, TpmCrbHandle, TpmPlatformPort};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::{
@@ -124,6 +129,11 @@ const SHADOW_END: u64 = FIRMWARE_LINK_BASE + FIRMWARE_IMAGE_BYTES as u64;
 // Handoff block v1.0 layout (FIRMWARE_BOOT.md section 6).
 const HANDOFF_MAGIC: &[u8; 8] = b"ODHANDOF";
 const HANDOFF_HEADER_BYTES: usize = 0xA0;
+const FV_APP_HANDOFF_HEADER_BYTES: usize = 0xA8;
+const ACPI_HANDOFF_HEADER_BYTES: usize = 0xB0;
+
+/// Charge one virtual execution cycle for each retired instruction on this board.
+pub const FIRMWARE_EXECUTION_CYCLE_NS: u64 = 1;
 const REGION_ENTRY_BYTES: usize = 32;
 const DEVICE_ENTRY_BYTES: usize = 48;
 /// Devices of handoff v1.0; the optional NVMe entry of v1.1 follows them.
@@ -137,6 +147,7 @@ const REGION_RAM: u32 = 1;
 const REGION_RESERVED: u32 = 2;
 const REGION_MMIO: u32 = 3;
 const REGION_ROM: u32 = 4;
+const REGION_NVRAM: u32 = 5;
 const REGION_FRAMEBUFFER: u32 = 6;
 const REGION_HANDOFF: u32 = 7;
 const REGION_BOOT_STACK: u32 = 8;
@@ -152,6 +163,10 @@ const DEV_COM1: usize = 0;
 const DEV_LAPIC: usize = 1;
 const DEV_IOAPIC: usize = 2;
 const DEV_DISPLAY: usize = 3;
+const DEV_NVRAM: usize = 4;
+const DEVICE_CODE_NVRAM: u32 = 5;
+const DEV_TPM: usize = 5;
+const DEVICE_CODE_TPM: u32 = 6;
 /// Device-table index and bus index of the optional NVMe controller (device code 8).
 const DEV_NVME_TABLE: usize = 7;
 const DEVICE_CODE_NVME: u32 = 8;
@@ -163,12 +178,39 @@ const DEVICE_CODE_ACPI_PM: u32 = 9;
 /// RTC/CMOS ports and deterministic UTC base time (handoff v1.4, S7-14).
 const DEVICE_CODE_RTC_CMOS: u32 = 10;
 const HANDOFF_MINOR_RTC: u16 = 4;
+const HANDOFF_MINOR_FV_APP: u16 = 5;
+const HANDOFF_MINOR_FV_APP_VARS: u16 = 6;
+const HANDOFF_MINOR_NVRAM: u16 = 7;
+const HANDOFF_MINOR_FV_APP_RT: u16 = 8;
+const HANDOFF_MINOR_FV_APP_ACPI: u16 = 9;
+const HANDOFF_MINOR_FV_APP_GOP: u16 = 10;
+const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
+const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
+const HANDOFF_MINOR_TPM: u16 = 13;
+const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
+const HANDOFF_MINOR_SECURE_BOOT: u16 = 15;
+const HANDOFF_MINOR_PKCS7: u16 = od_uefi_security::pkcs7::transport::HANDOFF_MINOR;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
 /// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
 const HANDOFF_MINOR_ACPI: u16 = 2;
 const HANDOFF_MINOR_NVME_PCI: u16 = 3;
+
+/// A diagnostic application selected from the built-in firmware volume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum FirmwareFvApp {
+    Hello = 1,
+    Ebs = 2,
+    Vars = 3,
+    Rt = 4,
+    Acpi = 5,
+    Gop = 6,
+    Blk = 7,
+    Fs = 8,
+    Tpm = 9,
+}
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +230,10 @@ pub struct FirmwareBoardConfig {
     /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
     /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
     pub nvme: Option<NvmeConfig>,
+    /// Optional variable device. Its presence uses handoff v1.7 and slot 5.
+    pub nvram: Option<NvramConfig>,
+    /// Optional TPM 2.0 CRB. Requires ACPI and handoff v1.13.
+    pub tpm: Option<TpmConfig>,
     /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
     /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
     pub nvme_pci: bool,
@@ -214,6 +260,8 @@ pub struct FirmwareBoardConfig {
     /// adds handoff device code 10 and requires an image with `handoff_minor_max >= 4`.
     /// This value is explicit configuration; the machine never reads host wall time.
     pub rtc_base_unix_seconds: Option<u64>,
+    /// A present selector requests the handoff v1.5 header extension.
+    pub fv_app: Option<FirmwareFvApp>,
     /// Linux profile (S4-37a1), opt-in. Requires `acpi_pm`, `acpi_tables` and
     /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
     /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
@@ -239,11 +287,14 @@ impl Default for FirmwareBoardConfig {
             system_uuid: [0; 16],
             serial: Vec::new(),
             nvme: None,
+            nvram: None,
+            tpm: None,
             nvme_pci: false,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
             rtc_base_unix_seconds: None,
+            fv_app: None,
             linux_profile: false,
             vcpu_count: 1,
         }
@@ -300,6 +351,8 @@ pub enum FirmwareBoardError {
     },
     Config(&'static str),
     Nvme(NvmeConfigError),
+    Nvram(NvramContentsError),
+    Tpm(od_tpm::StateError),
     BootTablesDoNotFit {
         required_end: u64,
         ram_end: u64,
@@ -345,36 +398,6 @@ impl fmt::Display for FirmwareBoardError {
 }
 
 impl std::error::Error for FirmwareBoardError {}
-
-/// CRC-32 IEEE 802.3, reflected (FIRMWARE_BOOT.md 6.6).
-pub(crate) fn crc32_ieee(parts: &[&[u8]]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
-        let mut index = 0;
-        while index < 256 {
-            let mut value = index as u32;
-            let mut bit = 0;
-            while bit < 8 {
-                value = if value & 1 != 0 {
-                    (value >> 1) ^ 0xEDB8_8320
-                } else {
-                    value >> 1
-                };
-                bit += 1;
-            }
-            table[index] = value;
-            index += 1;
-        }
-        table
-    };
-    let mut crc = 0xFFFF_FFFFu32;
-    for part in parts {
-        for &byte in *part {
-            crc = TABLE[usize::from((crc as u8) ^ byte)] ^ (crc >> 8);
-        }
-    }
-    !crc
-}
 
 /// `N` bytes at `offset`, or `ImageTruncated` when the buffer is too short
 /// (no panic on a malformed buffer).
@@ -482,6 +505,38 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "acpi_tables describes the PM block and needs acpi_pm",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Rt)
+        && !(config.acpi_tables && config.rtc_base_unix_seconds.is_some() && config.nvram.is_some())
+    {
+        return Err(FirmwareBoardError::Config(
+            "rt FV application needs ACPI fixed hardware, RTC and NVRAM",
+        ));
+    }
+    if config.fv_app == Some(FirmwareFvApp::Acpi) && !config.acpi_tables {
+        return Err(FirmwareBoardError::Config(
+            "acpi FV application needs ACPI tables",
+        ));
+    }
+    if config.fv_app == Some(FirmwareFvApp::Gop) && !config.display_enabled {
+        return Err(FirmwareBoardError::Config(
+            "gop FV application needs the primary display",
+        ));
+    }
+    if matches!(config.fv_app, Some(FirmwareFvApp::Blk | FirmwareFvApp::Fs))
+        && (config.nvme.is_none() || config.nvme_pci || config.linux_profile)
+    {
+        return Err(FirmwareBoardError::Config(
+            "storage FV application needs fixed NVMe MMIO",
+        ));
+    }
+    if config.tpm.is_some() && !config.acpi_tables {
+        return Err(FirmwareBoardError::Config("TPM CRB needs ACPI tables"));
+    }
+    if config.fv_app == Some(FirmwareFvApp::Tpm) && config.tpm.is_none() {
+        return Err(FirmwareBoardError::Config(
+            "tpm FV application needs TPM CRB",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
@@ -556,8 +611,8 @@ impl DeviceEntry {
     }
 }
 
-/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM and TPM CRB
-/// are `PRESENT = 0` until S7-10 and S7-22 add them; ECAM is `PRESENT = 0` unless
+/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). The base NVRAM, TPM CRB,
+/// and ECAM slots start absent. ECAM is `PRESENT = 0` unless
 /// `pci_ecam` is set (S4-30c). With `nvme` the table gets the eighth entry,
 /// device code 8 (FIRMWARE_BOOT.md 6.3); with `acpi_tables` the last entry is code 9.
 fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -> Vec<DeviceEntry> {
@@ -589,8 +644,8 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -
         } else {
             DeviceEntry::absent(4)
         },
-        DeviceEntry::absent(5),
-        DeviceEntry::absent(6),
+        DeviceEntry::absent(DEVICE_CODE_NVRAM),
+        DeviceEntry::absent(DEVICE_CODE_TPM),
         DeviceEntry::absent(DEVICE_CODE_ECAM),
     ];
     debug_assert_eq!(devices.len(), BASE_DEVICE_COUNT);
@@ -630,6 +685,23 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
         config.acpi_tables,
         config.display_enabled,
     );
+    if let Some(nvram) = &config.nvram {
+        devices[DEV_NVRAM] = DeviceEntry {
+            flags: DEVICE_PRESENT,
+            base: NVRAM_MMIO_BASE,
+            length: NVRAM_MMIO_BYTES,
+            param0: if nvram.is_protected() { 2 } else { 0 },
+            ..DeviceEntry::absent(DEVICE_CODE_NVRAM)
+        };
+    }
+    if config.tpm.is_some() {
+        devices[DEV_TPM] = DeviceEntry {
+            flags: DEVICE_PRESENT,
+            base: TPM_CRB_BASE,
+            length: TPM_CRB_LEN,
+            ..DeviceEntry::absent(DEVICE_CODE_TPM)
+        };
+    }
     if let Some(base_unix_seconds) = config.rtc_base_unix_seconds {
         devices.push(DeviceEntry {
             code: DEVICE_CODE_RTC_CMOS,
@@ -647,6 +719,7 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
         && nvme.code == DEVICE_CODE_NVME
     {
         nvme.base = NVME_PCI_BAR_BASE;
+        nvme.length = NVME_PCI_BAR_BYTES;
         nvme.gsi = crate::apic_pair::NVME_PIN as u32;
         nvme.irq_flags = 0b11;
         nvme.param0 = u64::from(NVME_PCI_SLOT);
@@ -655,8 +728,28 @@ fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
 }
 
 /// `version_minor` of the handoff block, per FIRMWARE_BOOT.md 6.4.
-fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
-    if devices.iter().any(|d| d.code == DEVICE_CODE_RTC_CMOS) {
+fn handoff_minor(config: &FirmwareBoardConfig, devices: &[DeviceEntry]) -> u16 {
+    if config.nvram.as_ref().is_some_and(NvramConfig::is_protected) {
+        HANDOFF_MINOR_PROTECTED_NVRAM
+    } else if config.tpm.is_some() {
+        HANDOFF_MINOR_TPM
+    } else if config.fv_app == Some(FirmwareFvApp::Fs) {
+        HANDOFF_MINOR_FV_APP_FS
+    } else if config.fv_app == Some(FirmwareFvApp::Blk) {
+        HANDOFF_MINOR_FV_APP_BLK
+    } else if config.fv_app == Some(FirmwareFvApp::Gop) {
+        HANDOFF_MINOR_FV_APP_GOP
+    } else if config.fv_app == Some(FirmwareFvApp::Acpi) {
+        HANDOFF_MINOR_FV_APP_ACPI
+    } else if config.fv_app == Some(FirmwareFvApp::Rt) {
+        HANDOFF_MINOR_FV_APP_RT
+    } else if config.nvram.is_some() {
+        HANDOFF_MINOR_NVRAM
+    } else if config.fv_app == Some(FirmwareFvApp::Vars) {
+        HANDOFF_MINOR_FV_APP_VARS
+    } else if config.fv_app.is_some() {
+        HANDOFF_MINOR_FV_APP
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_RTC_CMOS) {
         HANDOFF_MINOR_RTC
     } else if devices
         .iter()
@@ -888,7 +981,14 @@ fn handoff_regions(
             }
             MemoryRegionKind::Ram => table.push(simple(REGION_RAM, 0, NO_OWNER)),
             MemoryRegionKind::Reserved => table.push(simple(REGION_RESERVED, 0, NO_OWNER)),
-            MemoryRegionKind::Mmio => table.push(simple(REGION_MMIO, 0, owner_of(base))),
+            MemoryRegionKind::Mmio => {
+                let kind = if base == NVRAM_MMIO_BASE {
+                    REGION_NVRAM
+                } else {
+                    REGION_MMIO
+                };
+                table.push(simple(kind, 0, owner_of(base)));
+            }
             MemoryRegionKind::Rom => table.push(simple(REGION_ROM, 0, NO_OWNER)),
             MemoryRegionKind::Framebuffer => {
                 let screen = u32::from(base == DISPLAY_SECOND_FRAMEBUFFER_BASE);
@@ -903,8 +1003,16 @@ fn build_handoff(
     config: &FirmwareBoardConfig,
     devices: &[DeviceEntry],
     regions: &[HandoffRegion],
+    minor: u16,
 ) -> Vec<u8> {
-    let region_table_offset = HANDOFF_HEADER_BYTES;
+    let header_size = if minor >= HANDOFF_MINOR_FV_APP_ACPI {
+        ACPI_HANDOFF_HEADER_BYTES
+    } else if minor >= HANDOFF_MINOR_FV_APP {
+        FV_APP_HANDOFF_HEADER_BYTES
+    } else {
+        HANDOFF_HEADER_BYTES
+    };
+    let region_table_offset = header_size;
     let device_table_offset = region_table_offset + REGION_ENTRY_BYTES * regions.len();
     let total_size = device_table_offset + DEVICE_ENTRY_BYTES * devices.len();
     let mut block = vec![0u8; total_size];
@@ -919,8 +1027,8 @@ fn build_handoff(
     };
     block[..8].copy_from_slice(HANDOFF_MAGIC);
     put16(&mut block, 0x08, 1);
-    put16(&mut block, 0x0A, handoff_minor(devices));
-    put32(&mut block, 0x0C, HANDOFF_HEADER_BYTES as u32);
+    put16(&mut block, 0x0A, minor);
+    put32(&mut block, 0x0C, header_size as u32);
     put32(&mut block, 0x10, total_size as u32);
     // 0x14 crc32 is filled last.
     put32(&mut block, 0x1C, 1);
@@ -935,6 +1043,16 @@ fn build_handoff(
     block[0x48..0x58].copy_from_slice(&config.system_uuid);
     put16(&mut block, 0x58, config.serial.len() as u16);
     block[0x60..0x60 + config.serial.len()].copy_from_slice(&config.serial);
+    if let Some(app) = config.fv_app {
+        put32(&mut block, HANDOFF_HEADER_BYTES, app as u32);
+    }
+    if minor >= HANDOFF_MINOR_FV_APP_ACPI {
+        put32(
+            &mut block,
+            0xA8,
+            (1_000 / FIRMWARE_EXECUTION_CYCLE_NS) as u32,
+        );
+    }
     for (index, region) in regions.iter().enumerate() {
         let at = region_table_offset + index * REGION_ENTRY_BYTES;
         put32(&mut block, at, region.kind);
@@ -1232,7 +1350,11 @@ pub struct LoadedFirmwareBoard {
     vcpus: Vec<Vcpu>,
     uart: Uart16550Handle,
     display: DisplayHandle,
+    display_mmio: Option<DisplayDevice>,
+    nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    nvram: Option<NvramHandle>,
+    tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
     /// The PIT observer of the Linux profile (S4-37a3); `None` without the flag.
     pit: Option<Pit8254Handle>,
@@ -1682,6 +1804,18 @@ impl LoadedFirmwareBoard {
         &mut self.bus
     }
 
+    /// Read the complete fixed ACPI address range in address order for diagnostics.
+    pub fn read_acpi_reservations(&mut self) -> Result<Vec<u8>, FirmwareBoardError> {
+        let mut bytes = vec![0; (FIRMWARE_ACPI_TABLES_BYTES + FIRMWARE_ACPI_FACS_BYTES) as usize];
+        self.bus
+            .read_flat_bytes(
+                GuestPhysicalAddress::new(FIRMWARE_ACPI_TABLES_BASE),
+                &mut bytes,
+            )
+            .map_err(FirmwareBoardError::Bus)?;
+        Ok(bytes)
+    }
+
     /// S4-13d diagnostics: SHA-256 over the bytes of every plain-RAM region in address order,
     /// read-only (the end state of a run, to tell two runs of the same guest apart or equal).
     /// It copies all of RAM into one buffer first (a peak of two to three times the RAM size);
@@ -1912,6 +2046,24 @@ impl LoadedFirmwareBoard {
     /// Handle of the NVMe controller; `None` unless `FirmwareBoardConfig::nvme` was set.
     pub fn nvme(&self) -> Option<NvmeHandle> {
         self.nvme.clone()
+    }
+
+    /// Both committed NVRAM banks, for the owning host between guest quanta.
+    pub fn nvram_snapshot(&self) -> Option<Vec<u8>> {
+        self.nvram.as_ref().map(NvramHandle::nvram_snapshot)
+    }
+
+    /// Snapshot the TPM's persistent state between guest quanta. Contains
+    /// unencrypted secrets and must be protected by the owning host.
+    pub fn tpm_state_snapshot(&self) -> Option<Vec<u8>> {
+        self.tpm
+            .as_ref()
+            .map(|handle| handle.persistent_snapshot(self.clock().now_ns()))
+    }
+
+    /// Trusted platform locality controls for the board's optional CRB TPM.
+    pub fn tpm_platform_port(&self) -> Option<TpmPlatformPort<'_>> {
+        self.tpm.as_ref().map(|tpm| tpm.platform_port(&self.clock))
     }
 
     /// Replaces the board's interrupt source (S4-38L8b). Only tests call it; production code
@@ -2590,7 +2742,14 @@ impl LoadedFirmwareBoard {
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
-        self.run_quantum(false, instruction_budget, stop, committed_write)
+        self.run_quantum(
+            false,
+            false,
+            instruction_budget,
+            stop,
+            committed_write,
+            |_, _| {},
+        )
     }
 
     /// [`Self::run`] with the 4 KiB walker (`large_ram = false`) or with the 2 MiB walk of the
@@ -2599,9 +2758,11 @@ impl LoadedFirmwareBoard {
     fn run_quantum(
         &mut self,
         large_ram: bool,
+        firmware_boot_profile: bool,
         instruction_budget: u64,
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
+        observe: impl FnMut(u64, u64),
     ) -> PagedProbeQuantumReport {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2630,6 +2791,34 @@ impl LoadedFirmwareBoard {
                     .as_mut()
                     .map(|source| source as &mut dyn FnMut() -> u64),
             );
+        }
+        if firmware_boot_profile {
+            let clock = self.clock();
+            let vcpu = &mut self.vcpus[BOOT_VCPU_INDEX];
+            let report = run_paged_firmware_probe(
+                &mut vcpu.state,
+                &mut vcpu.guest_fp,
+                &mut self.bus,
+                FirmwareMmio {
+                    nvram: self.nvram.as_ref(),
+                    display: self.display_mmio.as_ref(),
+                    nvme: self.nvme_mmio.as_ref(),
+                    tpm: self.tpm.as_ref(),
+                },
+                self.page_table_root,
+                FIRMWARE_EFER,
+                context,
+                instruction_budget,
+                INTEGER_FLAGS,
+                stop,
+                committed_write,
+                Some(clock),
+                observe,
+            );
+            if let Some(cr3) = vcpu.state.cr3 {
+                self.page_table_root = cr3;
+            }
+            return report;
         }
         if let Some(tick) = self.rdtsc_tick.clone() {
             let clock = self.clock.clone();
@@ -2786,7 +2975,25 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, FirmwareBoardError> {
-        self.run_boot_with(false, instruction_budget)
+        self.run_boot_with(false, instruction_budget, |_, _, _| {})
+            .map_err(|failure| failure.error)
+    }
+
+    /// Run the firmware interpreter and observe each instruction before fetch.
+    /// The observer receives RIP, the total retired instructions (including
+    /// this quantum), and the completed quanta since this call began.
+    /// Observing an instruction does not imply that it will retire.
+    pub fn run_boot_observed(
+        &mut self,
+        instruction_budget: u64,
+        observe: impl FnMut(u64, u64, u64),
+    ) -> Result<FirmwareRunReport, FirmwareBoardError> {
+        if self.has_linux_profile() {
+            return Err(FirmwareBoardError::Config(
+                "firmware boot observer requires the firmware profile",
+            ));
+        }
+        self.run_boot_with(false, instruction_budget, observe)
             .map_err(|failure| failure.error)
     }
 
@@ -2799,7 +3006,7 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
-        self.run_boot_with(true, instruction_budget)
+        self.run_boot_with(true, instruction_budget, |_, _, _| {})
     }
 
     /// The Linux direct boot through the CPL0 profile set instead of the base probe profile
@@ -3584,7 +3791,9 @@ impl LoadedFirmwareBoard {
         &mut self,
         large_ram: bool,
         instruction_budget: u64,
+        mut observe: impl FnMut(u64, u64, u64),
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
+        let firmware_boot_profile = !large_ram && !self.has_linux_profile();
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
@@ -3615,6 +3824,7 @@ impl LoadedFirmwareBoard {
             let uart = self.uart.clone();
             let report = self.run_quantum(
                 large_ram,
+                firmware_boot_profile,
                 remaining,
                 || {
                     uart.holding_occupied()
@@ -3633,6 +3843,7 @@ impl LoadedFirmwareBoard {
                             .is_some_and(|flag| flag.load(Ordering::Relaxed))
                 },
                 |_| {},
+                |rip, retired_in_quantum| observe(rip, retired + retired_in_quantum, quanta),
             );
             quanta += 1;
             // Doorbell writes only record queue pointers: execute the submitted
@@ -3647,7 +3858,7 @@ impl LoadedFirmwareBoard {
                     self.com1_log.push(byte);
                 }
             }
-            self.advance_time_ns(report.instructions_executed)
+            self.advance_time_ns(report.instructions_executed * FIRMWARE_EXECUTION_CYCLE_NS)
                 .map_err(|error| LinuxRunFailure { error, retired })?;
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
@@ -3735,7 +3946,11 @@ pub(crate) struct AssembledBoard {
     bus: MachineBus,
     uart: Uart16550Handle,
     display: DisplayHandle,
+    display_mmio: Option<DisplayDevice>,
+    nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    nvram: Option<NvramHandle>,
+    tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
     pit: Option<Pit8254Handle>,
     pic_master: Option<Pic8259Handle>,
@@ -3753,6 +3968,71 @@ pub(crate) struct AssembledBoard {
     rdtsc_tick: Option<Arc<AtomicBool>>,
 }
 
+struct FirmwareLayout {
+    devices: Vec<DeviceEntry>,
+    map: MachineMemoryMap,
+    table_pages: u64,
+    minor: u16,
+    handoff: Vec<u8>,
+    nvram: Option<NvramDevice>,
+}
+
+impl FirmwareLayout {
+    fn for_config(
+        config: &FirmwareBoardConfig,
+        secure_boot_minor: u16,
+    ) -> Result<Self, FirmwareBoardError> {
+        validate_config(config)?;
+        let devices = configured_board_devices(config);
+        let map = board_map(config, &devices)?;
+        let table_pages = boot_page_table_count(&map);
+        let page_table_bytes = table_pages * PAGE;
+        let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
+        debug_assert_eq!(FIRMWARE_BOOT_PAGE_TABLES_GPA, SHADOW_END);
+        let tables_end = FIRMWARE_BOOT_PAGE_TABLES_GPA + page_table_bytes;
+        if tables_end > low_end {
+            return Err(FirmwareBoardError::BootTablesDoNotFit {
+                required_end: tables_end,
+                ram_end: low_end,
+            });
+        }
+        let regions = handoff_regions(&map, &devices, page_table_bytes);
+        if regions.len() > MAX_REGIONS {
+            return Err(FirmwareBoardError::TooManyRegions(regions.len()));
+        }
+        let nvram = match config.nvram.as_ref() {
+            None => None,
+            Some(NvramConfig::Empty) => Some(NvramDevice::new()),
+            Some(NvramConfig::Snapshot(bytes)) => {
+                Some(NvramDevice::for_firmware_boot(bytes).map_err(FirmwareBoardError::Nvram)?)
+            }
+        };
+        let minor = if nvram
+            .as_ref()
+            .is_some_and(|device| device.has_protected_store() && !device.secure_boot_disabled())
+        {
+            secure_boot_minor
+        } else {
+            handoff_minor(config, &devices)
+        };
+        let handoff = build_handoff(config, &devices, &regions, minor);
+        Ok(Self {
+            devices,
+            map,
+            table_pages,
+            minor,
+            handoff,
+            nvram,
+        })
+    }
+}
+
+/// Serialize the board's handoff without a ROM. Use the baseline Secure Boot version
+/// until a specific ROM advertises the optional PKCS#7 transport.
+pub fn firmware_handoff_block(config: &FirmwareBoardConfig) -> Result<Vec<u8>, FirmwareBoardError> {
+    Ok(FirmwareLayout::for_config(config, HANDOFF_MINOR_SECURE_BOOT)?.handoff)
+}
+
 /// Assemble the board without touching guest memory (S4-37L4): validate the
 /// configuration, build the memory map, handoff block, boot tables, devices and
 /// bus.
@@ -3763,38 +4043,37 @@ pub(crate) struct AssembledBoard {
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
 pub(crate) fn assemble_board(
     config: &FirmwareBoardConfig,
-    mut pci: PciEcam,
+    pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
-    let devices = configured_board_devices(config);
-    validate_config(config)?;
-    let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
+    let layout = FirmwareLayout::for_config(config, HANDOFF_MINOR_SECURE_BOOT)?;
+    if layout.minor == HANDOFF_MINOR_SECURE_BOOT {
+        return Err(FirmwareBoardError::Nvram(
+            NvramContentsError::ProtectionRequiresFirmware,
+        ));
+    }
+    assemble_board_with_layout(config, pci, pit_clock, apic_timer_clock, layout)
+}
 
-    let map = board_map(config, &devices)?;
-    let table_pages = boot_page_table_count(&map);
+fn assemble_board_with_layout(
+    config: &FirmwareBoardConfig,
+    mut pci: PciEcam,
+    pit_clock: Option<VirtualClockHandle>,
+    apic_timer_clock: Option<VirtualClockHandle>,
+    layout: FirmwareLayout,
+) -> Result<AssembledBoard, FirmwareBoardError> {
+    let FirmwareLayout {
+        devices,
+        map,
+        table_pages,
+        handoff,
+        nvram,
+        ..
+    } = layout;
+    let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
     let page_table_bytes = table_pages * PAGE;
-    let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
     let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
-    // `handoff_regions` still derives the table region from the constant and assumes the
-    // tables start exactly at SHADOW_END. Moving the root requires passing it through there.
-    // A Linux board is assembled through this same path, so the handoff block is built too: the
-    // Linux loader compares its E820 map against it (S4-37L6) before `into_linux_board` drops
-    // the block and replaces the page table root with its own.
-    debug_assert_eq!(page_table_root, FIRMWARE_BOOT_PAGE_TABLES_GPA);
-    debug_assert_eq!(page_table_root, SHADOW_END);
-    let tables_end = page_table_root + page_table_bytes;
-    if tables_end > low_end {
-        return Err(FirmwareBoardError::BootTablesDoNotFit {
-            required_end: tables_end,
-            ram_end: low_end,
-        });
-    }
-    let regions = handoff_regions(&map, &devices, page_table_bytes);
-    if regions.len() > MAX_REGIONS {
-        return Err(FirmwareBoardError::TooManyRegions(regions.len()));
-    }
-    let handoff = build_handoff(config, &devices, &regions);
     let tables = build_boot_tables(&map, page_table_root, table_pages)?;
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
@@ -3822,6 +4101,7 @@ pub(crate) fn assemble_board(
     } else {
         DisplayDevice::new_with_handle()
     };
+    let display_mmio = config.display_enabled.then(|| display_device.clone());
     // Bus order: COM1, LAPIC, IOAPIC, optional display, then NVMe,
     // the optional PCI configuration device and the optional ACPI PM block; the
     // `linux_profile` devices (PIT, port B, 8259 pair, CMOS, 0xED, 0x80) are appended
@@ -3844,19 +4124,50 @@ pub(crate) fn assemble_board(
             device_index: DEV_DISPLAY,
         });
     }
+    let nvram = if let Some(device) = nvram {
+        let handle = device.handle();
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_NVRAM].base),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        Some(handle)
+    } else {
+        None
+    };
+    let tpm = if let Some(initial) = &config.tpm {
+        let device = TpmCrb::new(&initial.entropy, initial.snapshot.as_deref(), clock.clone())
+            .map_err(FirmwareBoardError::Tpm)?;
+        let handle = device.handle();
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_TPM].base),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        Some(handle)
+    } else {
+        None
+    };
     // The device exists on the bus only when the manifest entry is PRESENT.
     let mut nvme = None;
+    let mut nvme_mmio = None;
     if let Some(nvme_config) = &config.nvme
         && devices[DEV_NVME_TABLE].present()
     {
         let (device, handle) = if config.nvme_pci {
             let (device, handle, function) =
-                NvmeDevice::new_pci(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+                NvmeDevice::new_pci(nvme_config.clone(), lapic_handle.clone())
+                    .map_err(FirmwareBoardError::Nvme)?;
             pci.add_function(0, NVME_PCI_SLOT, 0, Box::new(function))
                 .map_err(|_| FirmwareBoardError::Config("NVMe PCI slot is occupied"))?;
             (device, handle)
         } else {
-            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?
+            let (device, handle) = NvmeDevice::new_with_handle(nvme_config.clone())
+                .map_err(FirmwareBoardError::Nvme)?;
+            if !config.linux_profile {
+                nvme_mmio = Some(device.mmio_endpoint());
+            }
+            (device, handle)
         };
         let device_index = bus_devices.len();
         bus_devices.push(Box::new(device));
@@ -3978,7 +4289,11 @@ pub(crate) fn assemble_board(
         bus,
         uart,
         display,
+        display_mmio,
+        nvme_mmio,
         nvme,
+        nvram,
+        tpm,
         acpi_pm,
         pit: pit_handle,
         pic_master: pic_master_handle,
@@ -4022,7 +4337,11 @@ impl AssembledBoard {
             mut bus,
             uart,
             display,
+            display_mmio,
+            nvme_mmio,
             nvme,
+            nvram,
+            tpm,
             acpi_pm,
             pit,
             pic_master,
@@ -4076,7 +4395,11 @@ impl AssembledBoard {
             vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
             display,
+            display_mmio,
+            nvme_mmio,
             nvme,
+            nvram,
+            tpm,
             acpi_pm,
             pit,
             lapic,
@@ -4137,6 +4460,8 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            nvram,
+            tpm,
             acpi_pm,
             pit,
             pic_master,
@@ -4152,7 +4477,11 @@ impl AssembledBoard {
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
             display,
+            display_mmio: None,
+            nvme_mmio: None,
             nvme,
+            nvram,
+            tpm,
             acpi_pm,
             pit,
             lapic,
@@ -4207,14 +4536,33 @@ fn load_firmware_image_inner(
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
-    let entry_offset = validate_image(image, handoff_minor(&devices))?;
+    let entry_offset = validate_image(image, handoff_minor(config, &devices))?;
     if config.nvme_pci {
         return Err(FirmwareBoardError::Config(
             "nvme_pci needs Linux direct boot",
         ));
     }
-    assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
+    let advertised = le_u16(image, 0x2A)?;
+    let secure_boot_minor = if advertised >= HANDOFF_MINOR_PKCS7 {
+        HANDOFF_MINOR_PKCS7
+    } else {
+        HANDOFF_MINOR_SECURE_BOOT
+    };
+    let layout = FirmwareLayout::for_config(config, secure_boot_minor)?;
+    if layout.minor >= HANDOFF_MINOR_SECURE_BOOT && advertised < layout.minor {
+        return Err(FirmwareBoardError::Nvram(
+            NvramContentsError::ProtectionRequiresFirmware,
+        ));
+    }
+    assemble_board_with_layout(config, pci, pit_clock, apic_timer_clock, layout)?
+        .load_firmware(image, entry_offset)
 }
+
+#[cfg(test)]
+mod secure_boot_pcr7_tests;
+
+#[cfg(test)]
+mod failure_smoke_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4225,6 +4573,74 @@ mod tests {
         PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, Type0Config,
     };
     use od_isa::memory::ArchitecturalFault;
+
+    #[test]
+    #[ignore = "requires a locally built firmware ROM and TPM absence probe ESP"]
+    fn firmware_boot_continues_after_tpm_startup_failure() {
+        let rom =
+            std::fs::read(std::env::var_os("OD_TPM_FAILURE_ROM").expect("OD_TPM_FAILURE_ROM"))
+                .unwrap();
+        let esp =
+            std::fs::read(std::env::var_os("OD_TPM_FAILURE_ESP").expect("OD_TPM_FAILURE_ESP"))
+                .unwrap();
+        let setup = NvramDevice::with_secure_boot_keys(crate::SecureBootKeys::SetupMode)
+            .unwrap()
+            .nvram_snapshot();
+        let config = FirmwareBoardConfig {
+            acpi_pm: true,
+            acpi_tables: true,
+            nvme: Some(NvmeConfig::default()),
+            nvram: Some(NvramConfig::Snapshot(setup)),
+            tpm: Some(TpmConfig {
+                entropy: vec![0x55; 48],
+                snapshot: None,
+            }),
+            ..FirmwareBoardConfig::default()
+        };
+        let mut board = load_firmware_image(&rom, &config).unwrap();
+        board.tpm.as_ref().unwrap().fail_startup();
+        board
+            .nvme()
+            .unwrap()
+            .attach_backend(Box::new(crate::InMemoryBackend::from_bytes(esp).unwrap()))
+            .unwrap();
+        let report = board.run_boot(20_000_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        let serial = String::from_utf8_lossy(&report.com1);
+        assert_eq!(
+            serial
+                .matches("OD-FW TPM unavailable: TPM2_Startup returned TPM_RC_FAILURE\r\n")
+                .count(),
+            1,
+            "{serial}"
+        );
+        assert!(
+            serial.ends_with(concat!(
+                "OD-UEFI TPM unavailable: no TCG2 protocol or final events\r\n",
+                "OD-FW no bootable option\r\n",
+                "OD-FW STOP code=0x21 detail=0x0000000000000001\r\n",
+            )),
+            "{serial}"
+        );
+        let acpi = board.read_acpi_reservations().unwrap();
+        assert!(acpi.starts_with(b"RSD PTR "));
+        assert!(acpi.windows(4).any(|bytes| bytes == b"FACP"));
+        for hidden in [b"TPM2".as_slice(), b"TPM0", b"MSFT0101"] {
+            assert!(!acpi.windows(hidden.len()).any(|bytes| bytes == hidden));
+        }
+        let crb = |offset| GuestPhysicalAddress::new(TPM_CRB_BASE + offset);
+        let bus = board.bus_mut();
+        assert_eq!(bus.read_physical(crb(0x0c), AccessWidth::Dword).unwrap(), 0);
+        bus.write_physical(crb(0x08), AccessWidth::Dword, 1, |_| {})
+            .unwrap();
+        assert_eq!(bus.read_physical(crb(0x44), AccessWidth::Dword).unwrap(), 2);
+        bus.write_physical(crb(0x08), AccessWidth::Dword, 2, |_| {})
+            .unwrap();
+        println!(
+            "TPM absent after {} instructions, {} quanta",
+            report.retired, report.quanta
+        );
+    }
 
     // Independent reference for `reference_config()`, generated by a separate
     // script straight from the tables of FIRMWARE_BOOT.md sections 2, 4 and 6
@@ -4715,6 +5131,39 @@ mod tests {
     }
 
     #[test]
+    fn boot_observer_counts_before_fetch_across_quantum_boundaries() {
+        let image = out_byte_image(FIRMWARE_COM1_PORT, b'X');
+        let mut board = load(&image);
+        let entry = board.state().rip;
+        let mut samples = Vec::new();
+        let observed = board
+            .run_boot_observed(4, |rip, retired, quanta| {
+                samples.push((rip, retired, quanta))
+            })
+            .unwrap();
+        assert_eq!(
+            samples,
+            [
+                (entry, 0, 0),
+                (entry + 2, 1, 0),
+                (entry + 6, 2, 0),
+                (entry + 7, 3, 1),
+            ]
+        );
+        assert_eq!(observed.com1, b"X");
+        assert_eq!(observed, load(&image).run_boot(4).unwrap());
+
+        let mut board = load(&image);
+        assert_eq!(
+            board
+                .run_boot_observed(0, |_, _, _| panic!("zero budget"))
+                .unwrap()
+                .retired,
+            0
+        );
+    }
+
+    #[test]
     fn budget_exhaustion_is_reported_and_time_still_advances() {
         // Endless `OUT DX,AL` loop is not expressible; use a two-OUT image and a budget of 2.
         let image = test_image(
@@ -4762,6 +5211,126 @@ mod tests {
         assert_eq!(report.retired, 4);
         assert_eq!(report.com1, b"X");
         assert_eq!(report.virtual_ns, 4);
+    }
+
+    #[test]
+    fn run_boot_selects_the_narrow_handoff_cpu_profile() {
+        // MOV ECX,4; CALL rel32 to HLT, skipping the return-site NOP.
+        let image = test_image(&[0xb9, 4, 0, 0, 0, 0xe8, 1, 0, 0, 0, 0x90, 0xf4], &[]);
+        let mut board = load(&image);
+
+        let diagnostic = board.run(1, || false, |_| {});
+        assert_eq!(
+            diagnostic.exit,
+            PagedProbeExit::Unsupported { opcode: 0xb9 }
+        );
+        assert_eq!(diagnostic.instructions_executed, 0);
+
+        let report = board.run_boot(3).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 3);
+        assert_eq!(board.state().gpr[Register::Rcx as usize], 4);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4c);
+        assert_eq!(
+            board.state().gpr[Register::Rsp as usize],
+            FIRMWARE_BOOT_STACK_TOP - 8
+        );
+    }
+
+    fn firmware_cr3_test_image(root: u64, next: u8) -> Vec<u8> {
+        let mut code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x0f, 0x22, 0xd8, next];
+        code[2..10].copy_from_slice(&root.to_le_bytes());
+        test_image(&code, &[])
+    }
+
+    #[test]
+    fn firmware_mov_cr3_changes_the_next_fetch_in_whole_and_split_quanta() {
+        const ROOT: u64 = 0x15_0000;
+        const CODE_PAGE: u64 = ROOT + 0x4000;
+        let image = firmware_cr3_test_image(ROOT, 0xcc);
+        for split in [false, true] {
+            let mut board = load(&image);
+            for (address, value) in [
+                (ROOT, (ROOT + 0x1000) | 3),
+                (ROOT + 0x1000, (ROOT + 0x2000) | 3),
+                (ROOT + 0x2000 + 8, (ROOT + 0x3000) | 3),
+                (ROOT + 0x3000, CODE_PAGE | 3),
+            ] {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address),
+                        crate::AccessWidth::Qword,
+                        value,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x4d),
+                    crate::AccessWidth::Byte,
+                    0xf4,
+                    |_| {},
+                )
+                .unwrap();
+
+            if split {
+                let first = board.run_boot(2).unwrap();
+                assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+                assert_eq!(first.retired, 2);
+                assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4d);
+                assert_eq!(board.cr3(), ROOT);
+                assert_eq!(board.state().cr3, Some(ROOT));
+            }
+            let halted = board.run_boot(if split { 1 } else { 3 }).unwrap();
+            assert_eq!(halted.exit, PagedProbeExit::Halted);
+            assert_eq!(halted.retired, if split { 1 } else { 3 });
+            assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4e);
+            assert_eq!(board.cr3(), ROOT);
+            assert_eq!(board.state().cr3, Some(ROOT));
+        }
+    }
+
+    #[test]
+    fn firmware_mov_cr3_commits_only_a_valid_write_and_keeps_it_on_a_later_fault() {
+        let mut board = load(&firmware_cr3_test_image(1 << 36, 0xf4));
+        let boot_root = board.cr3();
+        let invalid = board.run_boot(3).unwrap();
+        assert_eq!(invalid.retired, 1);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4a);
+        assert_eq!(
+            invalid.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(board.state().cr3, None);
+        assert_eq!(board.cr3(), boot_root);
+
+        let mut board = load(&firmware_cr3_test_image(boot_root, 0xf4));
+        assert_eq!(board.run_boot(3).unwrap().exit, PagedProbeExit::Halted);
+        assert_eq!(board.state().cr3, Some(boot_root));
+
+        const EMPTY_ROOT: u64 = 0x16_0000;
+        let mut board = load(&firmware_cr3_test_image(EMPTY_ROOT, 0xf4));
+        let faulted = board.run_boot(3).unwrap();
+        assert_eq!(faulted.retired, 2);
+        assert_eq!(board.state().rip, FIRMWARE_LINK_BASE + 0x4d);
+        let expected = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(FIRMWARE_LINK_BASE + 0x4d),
+        };
+        assert_eq!(faulted.exit, PagedProbeExit::Fault(expected.clone()));
+        let page_fault = faulted.page_fault.expect("tracked fetch fault");
+        assert_eq!(page_fault.fault(), &expected);
+        assert_eq!(page_fault.access(), od_isa::AccessKind::Fetch);
+        assert_eq!(board.state().cr3, Some(EMPTY_ROOT));
+        assert_eq!(board.cr3(), EMPTY_ROOT);
     }
 
     #[test]
@@ -5116,6 +5685,169 @@ mod tests {
     }
 
     #[test]
+    fn linux_nvme_msix_masks_completions_and_routes_the_io_vector_to_the_ap() {
+        const ASQ: u64 = 0x10_0000;
+        const ACQ: u64 = 0x11_0000;
+        const IO_SQ: u64 = 0x12_0000;
+        const IO_CQ: u64 = 0x13_0000;
+        const MSE: u64 = 1 << 1;
+        const BME: u64 = 1 << 2;
+        const ADMIN_VECTOR: u8 = 0x59;
+        const IO_VECTOR: u8 = 0x5a;
+        let config = FirmwareBoardConfig {
+            linux_profile: true,
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            nvme: Some(NvmeConfig::default()),
+            nvme_pci: true,
+            vcpu_count: 2,
+            ..FirmwareBoardConfig::default()
+        };
+        let mut board = assemble_board(&config, PciEcam::new(), None, None).unwrap();
+        let bsp = board.lapic.clone();
+        let ap = bsp.for_cpu(1).unwrap();
+        let nvme = board.nvme.as_ref().unwrap().clone();
+        let bus = &mut board.bus;
+        let cfg = |reg| {
+            GuestPhysicalAddress::new(
+                PCI_ECAM_DESCRIPTOR.base + (u64::from(NVME_PCI_SLOT) << 15) + reg,
+            )
+        };
+        let bar = |off| GuestPhysicalAddress::new(NVME_PCI_BAR_BASE + off);
+        let read = |bus: &mut MachineBus, addr, width| bus.read_physical(addr, width).unwrap();
+        let write = |bus: &mut MachineBus, addr, width, value| {
+            bus.write_physical(addr, width, value, |_| {}).unwrap();
+        };
+        let dword = AccessWidth::Dword;
+        let qword = AccessWidth::Qword;
+        assert_ne!(read(bus, cfg(4), dword) & (1 << 20), 0);
+        assert_eq!(read(bus, cfg(0x34), AccessWidth::Byte), 0x50);
+        assert_eq!(read(bus, cfg(0x50), dword), 0x0004_0011);
+        assert_eq!(read(bus, cfg(0x54), dword), 0x2000);
+        assert_eq!(read(bus, cfg(0x58), dword), 0x3000);
+        write(bus, cfg(0x54), dword, 0x1000);
+        assert_eq!(read(bus, cfg(0x54), dword), 0x2000);
+
+        write(bus, cfg(4), dword, MSE | BME);
+        write(bus, cfg(0x53), AccessWidth::Byte, 0xc0);
+        assert_eq!(read(bus, cfg(0x52), AccessWidth::Word), 0xc004);
+        for (offset, destination, vector) in [(0x2000, 0, ADMIN_VECTOR), (0x2010, 1, IO_VECTOR)] {
+            assert_eq!(read(bus, bar(offset + 12), dword), 1);
+            write(bus, bar(offset), qword, 0xfee0_0000 | (destination << 12));
+            write(bus, bar(offset + 8), dword, u64::from(vector));
+        }
+        write(bus, bar(0x200c), dword, 0xffff_fffe);
+        assert_eq!(read(bus, bar(0x200c), dword), 0);
+        write(bus, bar(0x24), dword, 0x000f_000f);
+        write(bus, bar(0x28), qword, ASQ);
+        write(bus, bar(0x30), qword, ACQ);
+        write(bus, bar(0x14), dword, 1 | (6 << 16) | (4 << 20));
+        let put_command =
+            |bus: &mut MachineBus, address, opcode, prp1: u64, cdw10: u32, cdw11: u32| {
+                let mut command = [0; 64];
+                command[0] = opcode;
+                command[24..32].copy_from_slice(&prp1.to_le_bytes());
+                command[40..44].copy_from_slice(&cdw10.to_le_bytes());
+                command[44..48].copy_from_slice(&cdw11.to_le_bytes());
+                bus.write_flat_bytes(GuestPhysicalAddress::new(address), &command, |_| {})
+                    .unwrap();
+            };
+        put_command(bus, ASQ, 0x05, IO_CQ, 1 | (3 << 16), 3 | (1 << 16));
+        put_command(bus, ASQ + 64, 0x01, IO_SQ, 1 | (3 << 16), 1 | (1 << 16));
+        put_command(
+            bus,
+            ASQ + 128,
+            0x05,
+            IO_CQ + 4096,
+            2 | (3 << 16),
+            3 | (5 << 16),
+        );
+        put_command(bus, ASQ + 192, 0x09, 0, 9, (1 << 16) | 1);
+        put_command(bus, ASQ + 256, 0x0a, 0, 9, 1);
+        put_command(bus, ASQ + 320, 0x09, 0, 9, (1 << 16) | 4);
+        write(bus, bar(0x1000), dword, 6);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 6);
+        // Failed commands report More because they generate Error Information entries.
+        let status = GuestPhysicalAddress::new(ACQ + 2 * 16 + 14);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x6108);
+        let features = GuestPhysicalAddress::new(ACQ + 4 * 16);
+        assert_eq!(read(bus, features, dword), 0x0001_0001);
+        let status = GuestPhysicalAddress::new(ACQ + 5 * 16 + 14);
+        assert_eq!(read(bus, status, AccessWidth::Word) >> 1, 0x6002);
+        assert_eq!(read(bus, cfg(4), dword) & (1 << 19), 0, "INTx suppressed");
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            1,
+            "function mask latches admin events"
+        );
+        assert!(!bsp.vector_state(ADMIN_VECTOR).0);
+
+        write(bus, cfg(4), dword, MSE);
+        write(bus, cfg(0x52), AccessWidth::Word, 0x8000);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            1,
+            "BME clear blocks MSI-X delivery"
+        );
+        write(bus, cfg(4), dword, MSE | BME);
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        assert!(bsp.vector_state(ADMIN_VECTOR).0);
+        assert!(!ap.vector_state(ADMIN_VECTOR).0);
+
+        put_command(bus, IO_SQ, 0xff, 0, 0, 0);
+        write(bus, bar(0x1008), dword, 1);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "vector mask latches I/O events"
+        );
+        assert!(!ap.vector_state(IO_VECTOR).0);
+        write(bus, bar(0x100c), dword, 1);
+        write(bus, bar(0x3000), qword, 0);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "read-only PBA is independent of CQ head"
+        );
+        ap.set_global_enabled(false).unwrap();
+        write(bus, bar(0x201c), dword, 0);
+        assert_eq!(
+            read(bus, bar(0x3000), qword),
+            2,
+            "a refused LAPIC edge remains pending"
+        );
+        ap.set_global_enabled(true).unwrap();
+        assert!(!nvme.sample_pci_interrupts());
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        assert!(ap.vector_state(IO_VECTOR).0);
+        assert!(!bsp.vector_state(IO_VECTOR).0);
+
+        write(bus, bar(0x201c), dword, 1);
+        write(bus, bar(0x2018), dword, u64::from(IO_VECTOR + 1));
+        write(bus, bar(0x201c), dword, 0);
+        put_command(bus, IO_SQ + 64, 0xff, 0, 0, 0);
+        write(bus, bar(0x1008), dword, 2);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert!(
+            ap.vector_state(IO_VECTOR + 1).0,
+            "unmasked CQE routes without BSP polling"
+        );
+        assert_eq!(read(bus, bar(0x3000), qword), 0);
+        write(bus, bar(0x100c), dword, 2);
+
+        write(bus, cfg(0x53), AccessWidth::Byte, 0);
+        assert_ne!(
+            read(bus, cfg(4), dword) & (1 << 19),
+            0,
+            "unacknowledged admin CQ resumes INTx"
+        );
+        write(bus, bar(0x1004), dword, 6);
+        assert_eq!(read(bus, cfg(4), dword) & (1 << 19), 0);
+    }
+
+    #[test]
     fn linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes() {
         use crate::bus::SetStepMmio;
         use crate::{AccessWidth, GuestPhysicalAddress};
@@ -5141,7 +5873,7 @@ mod tests {
         // Generated by the independent firmware ACPI builder for this board.
         assert_eq!(
             hex(&config.acpi_manifest_hash().unwrap()),
-            "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+            "94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a",
         );
         let apic = board.lapic.clone();
         let bus = &mut board.bus;
@@ -5166,7 +5898,7 @@ mod tests {
         // Probe both halves of the BAR and restore it as firmware would.
         write(bus, cfg(0x10), u64::from(u32::MAX));
         write(bus, cfg(0x14), u64::from(u32::MAX));
-        assert_eq!(read(bus, cfg(0x10)), 0xffff_e004);
+        assert_eq!(read(bus, cfg(0x10)), 0xffff_c004);
         assert_eq!(read(bus, cfg(0x14)), u64::from(u32::MAX));
         write(bus, cfg(4), MSE);
         assert_eq!(read(bus, bar(0)), u64::from(u32::MAX));
@@ -5196,7 +5928,7 @@ mod tests {
         assert!(
             set_step_io
                 .windows()
-                .contains(&(NVME_PCI_BAR_BASE, NVME_MMIO_BYTES))
+                .contains(&(NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES))
         );
 
         write(bus, bar(0x24), 0x000f_000f);
@@ -5283,6 +6015,25 @@ mod tests {
             0
         );
         assert_eq!(apic.pending(), None);
+
+        // Identify reports the same vendor IDs as Function 0's Type-0 header.
+        const IDENTIFY_DATA: u64 = 0x12_0000;
+        let mut identify = [0u8; 64];
+        identify[0] = 0x06; // Identify.
+        identify[24..32].copy_from_slice(&IDENTIFY_DATA.to_le_bytes());
+        identify[40] = 0x01; // Identify Controller.
+        bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ + 64), &identify, |_| {})
+            .unwrap();
+        write(bus, bar(0x1000), 2);
+        assert_eq!(nvme.service(bus, |_| {}).completions, 1);
+        assert_eq!(read(bus, GuestPhysicalAddress::new(ACQ + 16 + 12)) >> 17, 0);
+        let vendor = read(bus, cfg(0x00)) & 0xFFFF;
+        let subsystem_vendor = read(bus, cfg(0x2c)) & 0xFFFF;
+        assert_ne!(vendor, 0);
+        assert_eq!(
+            read(bus, GuestPhysicalAddress::new(IDENTIFY_DATA)),
+            vendor | (subsystem_vendor << 16)
+        );
     }
 
     #[test]
@@ -5918,6 +6669,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn firmware_rdtsc_counts_retirement_inside_and_across_quanta() {
+        // RDTSC; MOV R8,RAX; STD; RDTSC; HLT.
+        let image = test_image(&[0x0f, 0x31, 0x49, 0x89, 0xc0, 0xfd, 0x0f, 0x31, 0xf4], &[]);
+        let config = FirmwareBoardConfig {
+            tsc_hz: 625_000_000,
+            ..reference_config()
+        };
+        for budget in [1, 16] {
+            let mut board = load_firmware_image(&image, &config).unwrap();
+            board.advance_time_ns(1).unwrap();
+            let mut retired = 0;
+            let mut quanta = 0;
+            loop {
+                let result = board.run_boot(budget).unwrap();
+                retired += result.retired;
+                quanta += result.quanta;
+                if result.exit == PagedProbeExit::Halted {
+                    break;
+                }
+                assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+                assert!(retired < 5);
+            }
+            assert_eq!(retired, 5);
+            assert_eq!(quanta, if budget == 1 { 5 } else { 1 });
+            // Absolute time advances from 1 ns to 4 ns before the second
+            // sample. Independently rounding 3 ns forward would lose a tick.
+            assert_eq!(board.state().gpr[Register::R8 as usize], 0);
+            assert_eq!(board.state().gpr[Register::Rax as usize], 2);
+            assert_eq!(board.state().gpr[Register::Rdx as usize], 0);
+            assert_eq!(board.clock().now_ns(), 6);
+            assert_eq!(board.clock().tsc(), 3);
+        }
+    }
+
+    #[test]
+    fn firmware_rdtsc_projection_overflow_preserves_the_faulting_instruction() {
+        // STD; CLD; RDTSC; HLT. The sample would overflow after two retirees.
+        let image = test_image(&[0xfd, 0xfc, 0x0f, 0x31, 0xf4], &[]);
+        for (hz, now_ns, expected_error) in [
+            (1, u64::MAX - 1, VirtualClockError::TimeOverflow),
+            (
+                2_000_000_000,
+                u64::MAX / 2 - 1,
+                VirtualClockError::TscOverflow,
+            ),
+        ] {
+            let config = FirmwareBoardConfig {
+                tsc_hz: hz,
+                ..reference_config()
+            };
+            let mut board = load_firmware_image(&image, &config).unwrap();
+            board.advance_time_ns(now_ns).unwrap();
+            let clock = board.clock();
+            let before = board.state().clone();
+            assert!(matches!(
+                board.run_boot(4),
+                Err(FirmwareBoardError::Clock(error)) if error == expected_error
+            ));
+            assert_eq!(board.state().rip, before.rip + 2);
+            assert_eq!(board.state().gpr, before.gpr);
+            assert_eq!(board.state().rflags, before.rflags);
+            assert_eq!(board.clock(), clock);
+        }
+    }
+
     // ---- S4-37a2: PM timer port tick (ISSUE-067) ----
 
     /// `MOV DX,0x609; IN AL,DX x reads; HLT`. The base paged probe has no compare
@@ -6139,6 +6956,453 @@ mod tests {
         assert_eq!(
             le_u64(entry, 0x28).unwrap(),
             u64::from(ACPI_RESET_VALUE) | u64::from(ACPI_SLP_TYP_S5) << 8
+        );
+    }
+
+    #[test]
+    fn fv_app_extends_only_selected_boots_and_requires_minor_five_support() {
+        let current_image = test_image(&[0xf4], &[(0x2A, &5u16.to_le_bytes())]);
+        let legacy = load_firmware_image(&current_image, &reference_config()).unwrap();
+        assert_eq!(hex(legacy.handoff_block()), REFERENCE_HANDOFF_HEX);
+
+        for app in [FirmwareFvApp::Hello, FirmwareFvApp::Ebs] {
+            let config = FirmwareBoardConfig {
+                fv_app: Some(app),
+                ..reference_config()
+            };
+            assert!(matches!(
+                load_firmware_image(&minor4_image(&[0xf4]), &config),
+                Err(FirmwareBoardError::ImageHeader {
+                    field: "handoff_minor_max",
+                    value: 4
+                })
+            ));
+            let board = load_firmware_image(&current_image, &config).unwrap();
+            let bytes = board.handoff_block();
+            assert_eq!(le_u16(bytes, 0x0A).unwrap(), 5);
+            assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
+            assert_eq!(le_u32(bytes, 0x30).unwrap(), 0xA8);
+            assert_eq!(le_u32(bytes, 0xA0).unwrap(), app as u32);
+            assert_eq!(le_u32(bytes, 0xA4).unwrap(), 0);
+            assert!(crc_is_valid(bytes));
+        }
+    }
+
+    #[test]
+    fn acpi_selector_seals_the_same_handoff_for_dump_and_boot() {
+        let legacy = test_image(&[0xf4], &[(0x2A, &8u16.to_le_bytes())]);
+        let image = test_image(&[0xf4], &[(0x2A, &9u16.to_le_bytes())]);
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Acpi),
+            acpi_pm: true,
+            acpi_tables: true,
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            pci_ecam: true,
+            tsc_hz: 700_000_000,
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 8
+            })
+        ));
+        let board = load_firmware_image(&image, &config).unwrap();
+        let block = firmware_handoff_block(&config).unwrap();
+        assert_eq!(block, board.handoff_block());
+        assert!(crc_is_valid(&block));
+        assert_eq!(le_u16(&block, 0x0A).unwrap(), 9);
+        assert_eq!(le_u32(&block, 0x0C).unwrap(), 0xB0);
+        assert_eq!(le_u32(&block, 0xA0).unwrap(), 5);
+        assert_eq!(le_u32(&block, 0xA8).unwrap(), 1000);
+        assert_eq!(le_u64(&block, 0x20).unwrap(), 700_000_000);
+        assert_eq!(le_u32(&block, 0xAC).unwrap(), 0);
+        assert_eq!(le_u32(device_entry(&block, 4), 4).unwrap(), 0);
+    }
+
+    #[test]
+    fn measured_firmware_can_read_rom_data_without_enabling_rom_fetch() {
+        // MOV RAX,[RBX]; HLT. The image header occupies ROM at the same base.
+        let image = test_image(&[0x48, 0x8b, 0x03, 0xf4], &[(0x2a, &13u16.to_le_bytes())]);
+        let mut without_tpm = load_firmware_image(&image, &reference_config()).unwrap();
+        without_tpm.state_mut().gpr[Register::Rbx as usize] = FIRMWARE_ROM_BASE;
+        let report = without_tpm.run_boot(2).unwrap();
+        assert_eq!(report.retired, 0);
+        assert!(matches!(
+            report.memory_error,
+            Some(crate::TrackedAccessError::OperandPhysical {
+                source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Rom),
+                ..
+            })
+        ));
+
+        let config = FirmwareBoardConfig {
+            tpm: Some(TpmConfig {
+                entropy: vec![0xf2; 48],
+                snapshot: None,
+            }),
+            acpi_pm: true,
+            acpi_tables: true,
+            ..reference_config()
+        };
+        let mut with_tpm = load_firmware_image(&image, &config).unwrap();
+        with_tpm.state_mut().gpr[Register::Rbx as usize] = FIRMWARE_ROM_BASE;
+        let report = with_tpm.run_boot(3).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(
+            with_tpm.state().gpr[Register::Rax as usize],
+            u64::from_le_bytes(*b"ODFWIMG1")
+        );
+
+        let mut fetch = load_firmware_image(&image, &config).unwrap();
+        fetch.state_mut().rip = FIRMWARE_ROM_BASE + 0x40;
+        let report = fetch.run_boot(1).unwrap();
+        assert_eq!(report.retired, 0);
+        assert!(matches!(
+            report.exit,
+            PagedProbeExit::Fault(ArchitecturalFault { vector: 14, .. })
+        ));
+
+        let mut crossing = load_firmware_image(&image, &config).unwrap();
+        crossing.state_mut().gpr[Register::Rbx as usize] = FIRMWARE_ROM_BASE + 0xffc;
+        let report = crossing.run_boot(1).unwrap();
+        assert_eq!(report.retired, 0);
+        assert!(report.memory_error.is_some());
+
+        let store_image = test_image(&[0x48, 0x89, 0x03, 0xf4], &[(0x2a, &13u16.to_le_bytes())]);
+        let mut store = load_firmware_image(&store_image, &config).unwrap();
+        store.state_mut().gpr[Register::Rbx as usize] = FIRMWARE_ROM_BASE;
+        assert_eq!(store.run_boot(1).unwrap().retired, 0);
+        assert_eq!(
+            store
+                .bus_mut()
+                .read_physical(
+                    GuestPhysicalAddress::new(FIRMWARE_ROM_BASE),
+                    AccessWidth::Qword
+                )
+                .unwrap(),
+            u64::from_le_bytes(*b"ODFWIMG1")
+        );
+    }
+
+    #[test]
+    fn tpm_is_opt_in_with_an_exact_owned_handoff_region_and_snapshot_restore() {
+        let image = test_image(&[0xf4], &[(0x2A, &13u16.to_le_bytes())]);
+        let old = test_image(&[0xf4], &[(0x2A, &12u16.to_le_bytes())]);
+        let tpm = TpmConfig {
+            entropy: vec![0x63; 48],
+            snapshot: None,
+        };
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Tpm),
+            tpm: Some(tpm),
+            acpi_pm: true,
+            acpi_tables: true,
+            ..reference_config()
+        };
+        let default = load_firmware_image(&image, &reference_config()).unwrap();
+        assert!(default.tpm_state_snapshot().is_none());
+        assert!(matches!(
+            load_firmware_image(&old, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 12
+            })
+        ));
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let block = board.handoff_block();
+        assert_eq!(le_u16(block, 0x0a).unwrap(), 13);
+        assert_eq!(le_u32(block, 0xa0).unwrap(), 9);
+        let at = le_u32(block, 0x3c).unwrap() as usize + DEV_TPM * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u32(block, at).unwrap(), DEVICE_CODE_TPM);
+        assert_eq!(le_u32(block, at + 4).unwrap(), DEVICE_PRESENT);
+        assert_eq!(le_u64(block, at + 8).unwrap(), TPM_CRB_BASE);
+        assert_eq!(le_u64(block, at + 16).unwrap(), TPM_CRB_LEN);
+        let start = le_u32(block, 0x30).unwrap() as usize;
+        let count = le_u32(block, 0x34).unwrap() as usize;
+        assert!(
+            block[start..start + count * REGION_ENTRY_BYTES]
+                .chunks_exact(REGION_ENTRY_BYTES)
+                .any(|entry| region_tuple(entry)
+                    == (REGION_MMIO, TPM_CRB_BASE, TPM_CRB_LEN, DEV_TPM as u32))
+        );
+        let reg = GuestPhysicalAddress::new(TPM_CRB_BASE + 8);
+        let status = GuestPhysicalAddress::new(TPM_CRB_BASE + 12);
+        board
+            .bus_mut()
+            .write_physical(reg, AccessWidth::Dword, 1, |_| {})
+            .unwrap();
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(status, AccessWidth::Dword)
+                .unwrap(),
+            1
+        );
+        let snapshot = board.tpm_state_snapshot().unwrap();
+        let restored = FirmwareBoardConfig {
+            tpm: Some(TpmConfig {
+                entropy: vec![0x64; 48],
+                snapshot: Some(snapshot),
+            }),
+            ..config
+        };
+        let mut reopened = load_firmware_image(&image, &restored).unwrap();
+        assert_eq!(
+            reopened
+                .bus_mut()
+                .read_physical(status, AccessWidth::Dword)
+                .unwrap(),
+            0
+        );
+        let reopened_snapshot = zeroize::Zeroizing::new(reopened.tpm_state_snapshot().unwrap());
+        assert!(
+            Some(reopened_snapshot.as_slice())
+                == restored.tpm.as_ref().unwrap().snapshot.as_deref()
+        );
+        let mut broken = restored.clone();
+        broken.tpm.as_mut().unwrap().snapshot.as_mut().unwrap()[0] ^= 1;
+        assert!(matches!(
+            load_firmware_image(&image, &broken),
+            Err(FirmwareBoardError::Tpm(_))
+        ));
+    }
+
+    #[test]
+    fn rt_selector_requires_v18_and_all_runtime_devices() {
+        let legacy = test_image(&[0xf4], &[(0x2A, &7u16.to_le_bytes())]);
+        let image = test_image(&[0xf4], &[(0x2A, &8u16.to_le_bytes())]);
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Rt),
+            acpi_pm: true,
+            acpi_tables: true,
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            nvram: Some(NvramConfig::Empty),
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 7,
+            })
+        ));
+        for missing in [
+            FirmwareBoardConfig {
+                acpi_tables: false,
+                ..config.clone()
+            },
+            FirmwareBoardConfig {
+                rtc_base_unix_seconds: None,
+                ..config.clone()
+            },
+            FirmwareBoardConfig {
+                nvram: None,
+                ..config.clone()
+            },
+        ] {
+            assert!(matches!(
+                load_firmware_image(&image, &missing),
+                Err(FirmwareBoardError::Config(
+                    "rt FV application needs ACPI fixed hardware, RTC and NVRAM"
+                ))
+            ));
+        }
+        let board = load_firmware_image(&image, &config).unwrap();
+        let bytes = board.handoff_block();
+        assert_eq!(le_u16(bytes, 0x0A).unwrap(), 8);
+        assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
+        assert_eq!(le_u32(bytes, 0xA0).unwrap(), 4);
+        assert!(crc_is_valid(bytes));
+    }
+
+    #[test]
+    fn vars_selector_requires_v16_and_encodes_selector_three() {
+        let legacy_image = test_image(&[0xf4], &[(0x2A, &5u16.to_le_bytes())]);
+        let image = test_image(&[0xf4], &[(0x2A, &6u16.to_le_bytes())]);
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Vars),
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&legacy_image, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 5
+            })
+        ));
+        let board = load_firmware_image(&image, &config).unwrap();
+        let bytes = board.handoff_block();
+        assert_eq!(le_u16(bytes, 0x0A).unwrap(), 6);
+        assert_eq!(le_u32(bytes, 0x0C).unwrap(), 0xA8);
+        assert_eq!(le_u32(bytes, 0xA0).unwrap(), 3);
+        assert!(crc_is_valid(bytes));
+    }
+
+    #[test]
+    fn firmware_without_protected_nvram_support_rejects_a_protected_snapshot() {
+        use od_uefi_security::protected::{Flags, HEADER_BYTES, Image};
+
+        let mut store = [0; HEADER_BYTES];
+        Image::write_header(
+            &mut store,
+            Flags {
+                secure_boot_disabled: false,
+                vendor_keys_modified: false,
+            },
+        )
+        .unwrap();
+        let snapshot = NvramDevice::with_protected_store(&store)
+            .unwrap()
+            .nvram_snapshot();
+        let config = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(snapshot)),
+            ..reference_config()
+        };
+        let legacy = test_image(&[0xf4], &[(0x2A, &13u16.to_le_bytes())]);
+        assert!(matches!(
+            load_firmware_image(&legacy, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 13
+            })
+        ));
+        let firmware = test_image(
+            &[0xf4],
+            &[(0x2A, &HANDOFF_MINOR_PROTECTED_NVRAM.to_le_bytes())],
+        );
+        assert!(matches!(
+            load_firmware_image(&firmware, &config),
+            Err(FirmwareBoardError::Nvram(
+                NvramContentsError::ProtectionRequiresFirmware
+            ))
+        ));
+        let enforcing_rom =
+            test_image(&[0xf4], &[(0x2A, &HANDOFF_MINOR_SECURE_BOOT.to_le_bytes())]);
+        let board = load_firmware_image(&enforcing_rom, &config).unwrap();
+        assert_eq!(
+            le_u16(board.handoff_block(), 0x0A).unwrap(),
+            HANDOFF_MINOR_SECURE_BOOT
+        );
+        assert_eq!(
+            firmware_handoff_block(&config).unwrap(),
+            board.handoff_block()
+        );
+        let pkcs7_rom = test_image(&[0xf4], &[(0x2A, &HANDOFF_MINOR_PKCS7.to_le_bytes())]);
+        let board = load_firmware_image(&pkcs7_rom, &config).unwrap();
+        assert_eq!(
+            le_u16(board.handoff_block(), 0x0A).unwrap(),
+            HANDOFF_MINOR_PKCS7
+        );
+        assert!(matches!(
+            assemble_board(&config, PciEcam::new(), None, None),
+            Err(FirmwareBoardError::Nvram(
+                NvramContentsError::ProtectionRequiresFirmware
+            ))
+        ));
+
+        Image::write_header(
+            &mut store,
+            Flags {
+                secure_boot_disabled: true,
+                vendor_keys_modified: false,
+            },
+        )
+        .unwrap();
+        let snapshot = NvramDevice::with_protected_store(&store)
+            .unwrap()
+            .nvram_snapshot();
+        let debug = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(snapshot)),
+            ..config
+        };
+        let board = load_firmware_image(&firmware, &debug).unwrap();
+        let block = board.handoff_block();
+        assert_eq!(le_u16(block, 0x0A).unwrap(), HANDOFF_MINOR_PROTECTED_NVRAM);
+        let device = le_u32(block, 0x3C).unwrap() as usize + DEV_NVRAM * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u64(block, device + 0x20).unwrap(), 2);
+        assert_eq!(le_u64(block, device + 0x28).unwrap(), 0);
+    }
+
+    #[test]
+    fn nvram_is_opt_in_v17_owned_mmio_and_roundtrips_an_independent_board() {
+        let config = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Empty),
+            ..reference_config()
+        };
+        let old = test_image(&[0xf4], &[(0x2A, &6u16.to_le_bytes())]);
+        assert!(matches!(
+            load_firmware_image(&old, &config),
+            Err(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 6
+            })
+        ));
+        assert!(
+            load_firmware_image(&old, &reference_config())
+                .unwrap()
+                .nvram_snapshot()
+                .is_none()
+        );
+        let image = test_image(&[0xf4], &[(0x2A, &7u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let block = board.handoff_block();
+        assert_eq!(le_u16(block, 0x0A).unwrap(), 7);
+        assert_eq!(le_u32(block, 0x0C).unwrap(), 0xA8);
+        assert_eq!(le_u32(block, 0xA0).unwrap(), 0);
+        assert_eq!(le_u32(block, 0x40).unwrap(), 7);
+        let device = le_u32(block, 0x3C).unwrap() as usize + DEV_NVRAM * DEVICE_ENTRY_BYTES;
+        assert_eq!(le_u32(block, device).unwrap(), DEVICE_CODE_NVRAM);
+        assert_eq!(le_u32(block, device + 4).unwrap(), DEVICE_PRESENT);
+        assert_eq!(le_u64(block, device + 8).unwrap(), NVRAM_MMIO_BASE);
+        let start = le_u32(block, 0x30).unwrap() as usize;
+        let count = le_u32(block, 0x34).unwrap() as usize;
+        let table = &block[start..start + count * REGION_ENTRY_BYTES];
+        assert!(
+            table
+                .chunks_exact(REGION_ENTRY_BYTES)
+                .any(|region| region_tuple(region)
+                    == (
+                        REGION_NVRAM,
+                        NVRAM_MMIO_BASE,
+                        NVRAM_MMIO_BYTES,
+                        DEV_NVRAM as u32
+                    ))
+        );
+        assert!(crc_is_valid(block));
+
+        let register = NVRAM_MMIO_BASE + crate::NVRAM_STORE_BYTES as u64;
+        let bus = board.bus_mut();
+        for (address, width, value) in [
+            (register + 4, AccessWidth::Dword, 4),
+            (register + 8, AccessWidth::Dword, 2),
+            (NVRAM_MMIO_BASE, AccessWidth::Dword, 0x7856_3412),
+            (register + 8, AccessWidth::Dword, 3),
+        ] {
+            bus.write_physical(GuestPhysicalAddress::new(address), width, value, |_| {})
+                .unwrap();
+        }
+        let bytes = board.nvram_snapshot().unwrap();
+        let restored = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Snapshot(bytes.clone())),
+            ..config
+        };
+        let mut board = load_firmware_image(&image, &restored).unwrap();
+        assert_eq!(board.nvram_snapshot().unwrap(), bytes);
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(GuestPhysicalAddress::new(register + 16), AccessWidth::Dword)
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(GuestPhysicalAddress::new(register + 12), AccessWidth::Dword)
+                .unwrap(),
+            0
         );
     }
 
@@ -6864,14 +8128,20 @@ mod tests {
     }
 
     #[test]
-    fn rdtsc_without_the_linux_profile_stays_unsupported_without_a_tick() {
+    fn rdtsc_without_the_linux_profile_counts_time_only_in_the_firmware_boot_run() {
         let mut board = load_firmware_image(&rdtsc_image(2), &tables_config()).unwrap();
         assert!(board.rdtsc_tick.is_none());
         assert!(!board.has_linux_profile());
+        let raw = board.run(100, || false, |_| {});
+        assert_eq!(raw.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+        assert_eq!(raw.instructions_executed, 0);
+        assert_eq!(board.clock().now_ns(), 0);
+
         let report = board.run_boot(100).unwrap();
-        assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
-        assert_eq!(report.retired, 0, "Unsupported on the first instruction");
-        assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 3, "RDTSC, RDTSC, HLT");
+        assert_eq!(report.virtual_ns, 3, "one ns per retired instruction");
+        assert_eq!(edx_eax(&board), 1, "second RDTSC after one retirement");
         assert_eq!(report.rdtsc_reads, None);
         assert_eq!(report.rdtsc_reads_by_cpl, None);
         assert_eq!(report.pit_port_b_reads, None);
@@ -7391,6 +8661,133 @@ mod tests {
     }
 
     #[test]
+    fn firmware_nvme_doorbells_complete_admin_and_read_dma_before_the_next_load() {
+        const ASQ: u64 = 0x0700_0000;
+        const IDENTIFY: u64 = 0x0700_2000;
+        const IO_SQ: u64 = 0x0700_3000;
+        const IO_CQ: u64 = 0x0700_4000;
+        const DATA: u64 = 0x0700_5000;
+        let code = [
+            0xb8, 0, 0x10, 0, 0xfc, // mov eax,0xfc001000 (NVMe MMIO)
+            0xb9, 3, 0, 3, 0, // mov ecx,0x00030003
+            0x89, 0x48, 0x24, // mov [rax+AQA],ecx
+            0xb9, 0, 0, 0, 7, // mov ecx,ASQ
+            0x89, 0x48, 0x28, // mov [rax+ASQ.low],ecx
+            0xb9, 0, 0x10, 0, 7, // mov ecx,ACQ
+            0x89, 0x48, 0x30, // mov [rax+ACQ.low],ecx
+            0xb9, 1, 0, 0x46, 0, // mov ecx,0x00460001
+            0x89, 0x48, 0x14, // mov [rax+CC],ecx
+            0x8b, 0x50, 0x1c, // mov edx,[rax+CSTS]
+            0xb9, 3, 0, 0, 0, // mov ecx,3
+            0x89, 0x88, 0, 0x10, 0, 0, // mov [rax+admin SQ tail],ecx
+            0xbe, 0, 0x10, 0, 7, // mov esi,ACQ
+            0x8b, 0x7e, 0x2c, // mov edi,[rsi+2*16+12] (last admin CQE)
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x89, 0x88, 8, 0x10, 0, 0, // mov [rax+I/O SQ tail],ecx
+            0xbe, 0, 0x40, 0, 7, // mov esi,IO_CQ
+            0x8b, 0x4e, 0x0c, // mov ecx,[rsi+12] (first I/O CQE)
+            0xf4,
+        ];
+        let config = FirmwareBoardConfig {
+            nvme: Some(NvmeConfig::default()),
+            ..FirmwareBoardConfig::default()
+        };
+        let image = test_image(&code, &[(0x2a, &1u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let sector: Vec<u8> = (0..512).map(|index| (index % 251) as u8).collect();
+        board
+            .nvme()
+            .unwrap()
+            .attach_backend(Box::new(
+                crate::nvme::InMemoryBackend::from_bytes(sector.clone()).unwrap(),
+            ))
+            .unwrap();
+        for (at, opcode, cid, nsid, prp, cdw10, cdw11) in [
+            (ASQ, 0x06, 0x10u16, 0u32, IDENTIFY, 1u32, 0u32),
+            (ASQ + 64, 0x05, 0x20, 0, IO_CQ, 0x0003_0001, 1),
+            (ASQ + 128, 0x01, 0x30, 0, IO_SQ, 0x0003_0001, 0x0001_0001),
+            (IO_SQ, 0x02, 0x40, 1, DATA, 0, 0),
+        ] {
+            let mut command = [0; 64];
+            command[0] = opcode;
+            command[2..4].copy_from_slice(&cid.to_le_bytes());
+            command[4..8].copy_from_slice(&nsid.to_le_bytes());
+            command[24..32].copy_from_slice(&prp.to_le_bytes());
+            command[40..44].copy_from_slice(&cdw10.to_le_bytes());
+            command[44..48].copy_from_slice(&cdw11.to_le_bytes());
+            board
+                .bus_mut()
+                .write_flat_bytes(GuestPhysicalAddress::new(at), &command, |_| {})
+                .unwrap();
+        }
+        let report = board.run_boot(32).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 19);
+        assert_eq!(report.quanta, 3, "both doorbells end the current quantum");
+        let regs = &board.state().gpr;
+        assert_eq!(regs[Register::Rdx as usize], 1);
+        assert_eq!(regs[Register::Rdi as usize], 0x0001_0030);
+        assert_eq!(regs[Register::Rcx as usize], 0x0001_0040);
+        let mut identify = [0; 4096];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(IDENTIFY), &mut identify)
+            .unwrap();
+        assert_eq!(identify[77], 8, "Identify Controller MDTS");
+        let mut data = [0; 512];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(DATA), &mut data)
+            .unwrap();
+        assert_eq!(data.as_slice(), sector);
+    }
+
+    #[test]
+    fn firmware_display_mmio_commits_the_bound_device_and_publishes_a_frame() {
+        let code = [
+            0xb8, 0, 0, 0, 0xfc, // mov eax,0xfc000000
+            0x8b, 0x10, // mov edx,[rax]
+            0xb9, 0x80, 0x02, 0, 0, // mov ecx,640
+            0x89, 0x48, 0x40, // mov [rax+0x40],ecx
+            0xb9, 0xe0, 0x01, 0, 0, // mov ecx,480
+            0x89, 0x48, 0x44, // mov [rax+0x44],ecx
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x89, 0x48, 0x48, // mov [rax+0x48],ecx
+            0x89, 0x48, 0x4c, // mov [rax+0x4c],ecx
+            0x89, 0x88, 0x80, 0, 0, 0,    // mov [rax+0x80],ecx
+            0xf4, // hlt
+        ];
+        let mut board = load(&test_image(&code, &[]));
+        let report = board.run_boot(32).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 11);
+        assert_eq!(board.state().gpr[Register::Rdx as usize], 0x4246_444f);
+        let display = board.display();
+        let mode = display.current_mode();
+        assert_eq!((mode.width, mode.height, mode.stride), (640, 480, 2560));
+        assert_eq!(display.frame_generation(), 1);
+        assert!(display.has_current_frame());
+    }
+
+    #[test]
+    fn firmware_display_mmio_rejects_a_wide_register_write_before_retirement() {
+        let code = [
+            0xb8, 0, 0, 0, 0xfc, // mov eax,0xfc000000
+            0xb9, 1, 0, 0, 0, // mov ecx,1
+            0x48, 0x89, 0x88, 0x80, 0, 0, 0,    // mov [rax+0x80],rcx
+            0xf4, // hlt
+        ];
+        let mut board = load(&test_image(&code, &[]));
+        let rip = board.state().rip;
+        let report = board.run_boot(32).unwrap();
+        assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+        assert_eq!(report.retired, 2);
+        assert_eq!(board.state().rip, rip + 10);
+        assert_eq!(board.display().frame_generation(), 0);
+        assert!(format!("{:?}", report.memory_error).contains("UnsupportedWidth"));
+    }
+
+    #[test]
     fn configured_rtc_answers_through_board_ports_and_follows_virtual_clock() {
         let config = FirmwareBoardConfig {
             rtc_base_unix_seconds: Some(1_704_067_200), // 2024-01-01 00:00:00 UTC
@@ -7416,6 +8813,97 @@ mod tests {
         board.clock.advance_standalone(61_000_000_000).unwrap();
         assert_eq!(read_cmos(0x02, &mut board), 0x01);
         assert_eq!(read_cmos(0x00, &mut board), 0x01);
+    }
+
+    #[test]
+    fn rtc_reads_cross_uip_and_second_boundaries_in_one_firmware_quantum() {
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            ..reference_config()
+        };
+        let code = [
+            0x66, 0xba, 0x71, 0,    // mov dx,0x71
+            0xec, // in al,dx
+            0x89, 0xc3, // mov ebx,eax
+            0xec, // in al,dx
+            0xf4, // hlt
+        ];
+        let image = minor4_image(&code);
+        for (index, boundary, before, after) in
+            [(0x0a, 999_756_000, 0x26, 0xa6), (0, 1_000_000_000, 0, 1)]
+        {
+            let start = boundary - 2;
+            let load = || {
+                let mut board = load_firmware_image(&image, &config).unwrap();
+                board.advance_time_ns(start).unwrap();
+                board
+                    .bus_mut()
+                    .write_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte, index)
+                    .unwrap();
+                board
+            };
+            let mut whole = load();
+            let report = whole.run_boot(5).unwrap();
+            assert_eq!(report.exit, PagedProbeExit::Halted);
+            assert_eq!((report.retired, report.quanta), (5, 1));
+            assert_eq!(whole.state().gpr[Register::Rbx as usize] as u8, before);
+            assert_eq!(whole.state().gpr[Register::Rax as usize] as u8, after);
+            assert_eq!(report.virtual_ns, start + report.retired);
+
+            let mut split = load();
+            let mut retired = 0;
+            for _ in 0..5 {
+                let quantum = split.run_boot(1).unwrap();
+                retired += quantum.retired;
+                assert_eq!(
+                    quantum.exit,
+                    if retired == 5 {
+                        PagedProbeExit::Halted
+                    } else {
+                        PagedProbeExit::BudgetExhausted
+                    },
+                );
+            }
+            assert_eq!(retired, report.retired);
+            assert_eq!(split.state(), whole.state());
+            assert_eq!(split.clock(), whole.clock());
+        }
+    }
+
+    #[test]
+    fn rtc_timestamp_overflow_does_not_retire_the_port_access() {
+        let config = FirmwareBoardConfig {
+            rtc_base_unix_seconds: Some(1_704_067_200),
+            ..reference_config()
+        };
+        for opcode in [0xec, 0xee] {
+            let code = [0x66, 0xba, 0x71, 0, 0xb0, 0x82, opcode, 0xf4];
+            let mut board = load_firmware_image(&minor4_image(&code), &config).unwrap();
+            let entry = board.state().rip;
+            board.advance_time_ns(u64::MAX).unwrap();
+            board
+                .bus_mut()
+                .write_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte, 0x0b)
+                .unwrap();
+            let report = board.run_quantum(false, true, 8, || false, |_| {}, |_, _| {});
+            assert!(matches!(
+                report.exit,
+                PagedProbeExit::PortIo(BusAccessError::Device {
+                    source: crate::DeviceError::ClockOverflow,
+                    ..
+                })
+            ));
+            assert_eq!(report.instructions_executed, 2);
+            assert_eq!(board.state().rip, entry + 6);
+            assert_eq!(board.state().gpr[Register::Rax as usize] as u8, 0x82);
+            assert_eq!(board.clock().now_ns(), u64::MAX);
+            assert_eq!(
+                board
+                    .bus_mut()
+                    .read_port(PortAddress::new(crate::CMOS_DATA_PORT), AccessWidth::Byte),
+                Ok(2)
+            );
+        }
     }
 
     #[test]

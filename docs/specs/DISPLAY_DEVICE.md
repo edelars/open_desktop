@@ -340,7 +340,14 @@ Host-сторона (`od-host`, S10-04) получает состояние то
 
 ## 11. Соответствие UEFI GOP
 
-`FORMAT = 1` по раскладке байтов совпадает с `PixelBlueGreenRedReserved8BitPerColor` типа `EFI_GRAPHICS_PIXEL_FORMAT` из Graphics Output Protocol в главе «Protocols — Console Support» [UEFI Specification 2.11](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html) (UEFI Forum, декабрь 2024). Там пиксель занимает 32 бита: байт 0 — синий, 1 — зелёный, 2 — красный, 3 — зарезервирован. `STRIDE / 4` соответствует `PixelsPerScanLine` при отсутствии паддинга. Номер подраздела в этой сессии не перепроверен: страница uefi.org вернула HTTP 403. S10-18 сверяет его вместе с разделом «Сопоставление с GOP»: какие режимы публиковать как GOP modes. GOP этим документом не реализуется.
+`FORMAT = 1` соответствует `PixelBlueGreenRedReserved8BitPerColor`.
+Четыре байта пикселя содержат синий, зелёный, красный и зарезервированный
+каналы в этом порядке. `PixelsPerScanLine` равен `STRIDE / 4`.
+GOP публикует список режимов основного экрана из таблицы устройства
+версии 2 (раздел 14.6) в том же порядке. Установка режима и запись через
+`Blt` публикуют кадр записью регистра `FRAME_GENERATION`.
+[Профиль GOP прошивки](UEFI_PROFILE.md#gop),
+[UEFI 2.11, §12.9](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html#graphics-output-protocol).
 
 ## 12. Не входит в версию 1
 

@@ -679,6 +679,10 @@ pub enum RamAccessOperation {
     Read {
         width: AccessWidth,
     },
+    /// An unlocked RMW destination read, translated as a write without setting D.
+    ReadForWrite {
+        width: AccessWidth,
+    },
     /// One bounded 10-byte LIDT/LGDT pseudo-descriptor read from RAM.
     ReadPseudoDescriptor,
     Write {
@@ -702,16 +706,19 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => AccessKind::Fetch,
             Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
-            Self::Write { .. } | Self::AtomicTarget { .. } => AccessKind::Write,
+            Self::Write { .. } | Self::ReadForWrite { .. } | Self::AtomicTarget { .. } => {
+                AccessKind::Write
+            }
         }
     }
 
     const fn width(self) -> u8 {
         match self {
             Self::Fetch => 1,
-            Self::Read { width } | Self::Write { width, .. } | Self::AtomicTarget { width } => {
-                width.bytes()
-            }
+            Self::Read { width }
+            | Self::ReadForWrite { width }
+            | Self::Write { width, .. }
+            | Self::AtomicTarget { width } => width.bytes(),
             Self::ReadPseudoDescriptor => 10,
         }
     }
@@ -1620,6 +1627,7 @@ pub(crate) fn access_long64_4k_with_mmio(
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
+    windows: Option<&[MmioWindow]>,
     mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
 ) -> TrackedAccessReport {
     access_long64_4k_internal(
@@ -1630,7 +1638,7 @@ pub(crate) fn access_long64_4k_with_mmio(
         true,
         Some(&mut mmio),
         false,
-        None,
+        windows,
     )
 }
 
@@ -1960,7 +1968,11 @@ fn access_long64_4k_internal_windowed(
                     <= u128::from(base) + u128::from(size)
         })
     });
-    if is_mmio && (mmio.is_none() || !served) {
+    if is_mmio
+        && (mmio.is_none()
+            || !served
+            || matches!(request.operation, RamAccessOperation::ReadForWrite { .. }))
+    {
         let error = if access == AccessKind::Write {
             TrackedAccessError::DeviceUnavailable { address: physical }
         } else {
@@ -2345,6 +2357,95 @@ fn read_long64_4k_bounded_ram_read_inner(
             });
         }
     };
+    let (first, second, first_len) = walk_bounded_ram_fragments(
+        memory,
+        paging,
+        request,
+        width,
+        access,
+        &mut committed_write,
+        fault_trace,
+    )?;
+    let mut bytes = [0; 8];
+    memory
+        .load_bytes(first.physical, &mut bytes[..usize::from(first_len)])
+        .map_err(|source| TrackedAccessError::OperandPhysical {
+            address: first.physical,
+            source,
+        })?;
+    if let Some(second) = second {
+        memory
+            .load_bytes(
+                second.physical,
+                &mut bytes[usize::from(first_len)..usize::from(width)],
+            )
+            .map_err(|source| TrackedAccessError::OperandPhysical {
+                address: second.physical,
+                source,
+            })?;
+    }
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// A firmware store spanning two 4 KiB leaves. Validate both translations and
+/// physical destinations before setting either Dirty bit or modifying data.
+pub(crate) fn write_long64_4k_bounded_ram(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<(), TrackedAccessError> {
+    let RamAccessOperation::Write { width, value } = request.operation else {
+        return Err(TrackedAccessError::CrossesPage {
+            address: request.address,
+            width: request.operation.width(),
+        });
+    };
+    let (first, second, first_len) = walk_bounded_ram_fragments(
+        memory,
+        paging,
+        request,
+        width.bytes(),
+        AccessKind::Write,
+        &mut committed_write,
+        None,
+    )?;
+
+    for part in [Some(first), second].into_iter().flatten() {
+        commit_leaf_dirty(
+            memory,
+            &mut compare_replace_table_entry,
+            &mut committed_write,
+            part.leaf_level,
+            part.leaf_address,
+            part.leaf_value,
+        )?;
+    }
+    let bytes = value.to_le_bytes();
+    let first_len = usize::from(first_len);
+    let (first_bytes, second_bytes) = bytes[..usize::from(width.bytes())].split_at(first_len);
+    for (part, bytes) in [(Some(first), first_bytes), (second, second_bytes)] {
+        if let Some(part) = part {
+            memory
+                .store_bytes(part.physical, bytes, &mut committed_write)
+                .map_err(|source| TrackedAccessError::OperandPhysical {
+                    address: part.physical,
+                    source,
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn walk_bounded_ram_fragments(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    width: u8,
+    access: AccessKind,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+    mut fault_trace: Option<&mut Option<WalkTrace>>,
+) -> Result<(WalkTranslation, Option<WalkTranslation>, u8), TrackedAccessError> {
     let offset = request.address.0 & 0xfff;
     let first_len = (4096 - offset).min(u64::from(width)) as u8;
     let crosses_page = first_len < width;
@@ -2394,9 +2495,16 @@ fn read_long64_4k_bounded_ram_read_inner(
     let check_data_backed =
         |physical, len| match memory.locate_region_kind(physical, u64::from(len)) {
             Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
+            Ok(MemoryRegionKind::Mmio) if access == AccessKind::Write => {
+                Err(TrackedAccessError::DeviceUnavailable { address: physical })
+            }
             Ok(kind) => Err(TrackedAccessError::OperandPhysical {
                 address: physical,
-                source: MemoryAccessError::UnreadableRegion(kind),
+                source: if access == AccessKind::Write {
+                    MemoryAccessError::ReadOnlyRegion(kind)
+                } else {
+                    MemoryAccessError::UnreadableRegion(kind)
+                },
             }),
             Err(source) => Err(TrackedAccessError::OperandPhysical {
                 address: physical,
@@ -2408,25 +2516,7 @@ fn read_long64_4k_bounded_ram_read_inner(
         check_data_backed(second.physical, second_len)?;
     }
 
-    let mut bytes = [0; 8];
-    memory
-        .load_bytes(first.physical, &mut bytes[..usize::from(first_len)])
-        .map_err(|source| TrackedAccessError::OperandPhysical {
-            address: first.physical,
-            source,
-        })?;
-    if let Some(second) = second {
-        memory
-            .load_bytes(
-                second.physical,
-                &mut bytes[usize::from(first_len)..usize::from(width)],
-            )
-            .map_err(|source| TrackedAccessError::OperandPhysical {
-                address: second.physical,
-                source,
-            })?;
-    }
-    Ok(u64::from_le_bytes(bytes))
+    Ok((first, second, first_len))
 }
 
 #[cfg(test)]
@@ -3318,6 +3408,58 @@ mod tracked_access_tests {
     }
 
     #[test]
+    fn write_intent_read_checks_write_permission_before_accessing_the_operand() {
+        const PHYSICAL: u64 = 0x4abc;
+        const ACCESSED: u64 = 1 << 5;
+        const DIRTY: u64 = 1 << 6;
+        let paging = paging_config(true, true);
+        let width = AccessWidth::Qword;
+        let operand = GuestPhysicalAddress::new(PHYSICAL);
+        let read = request(RamAccessOperation::ReadForWrite { width });
+        for (entry, error_code) in [(0x4006, Some(2)), (0x4005, Some(3)), (0x4007, None)] {
+            let (memory, _) = setup(entry, 0x6000);
+            memory.store_u64(operand, 41, |_| {}).unwrap();
+
+            let mut callbacks = Vec::new();
+            let report =
+                access_long64_4k_ram(&memory, &paging, read, |range| callbacks.push(range));
+            assert!(callbacks.iter().all(|range| range.start() != operand));
+            assert_eq!(memory.load_u64(operand).unwrap(), 41);
+            assert_eq!(entries(&memory)[3] & DIRTY, 0);
+            if let Some(error_code) = error_code {
+                let Err(TrackedAccessError::PageFault { record, .. }) = report.outcome else {
+                    panic!("expected a write-intent page fault");
+                };
+                assert_eq!(
+                    record,
+                    PageFaultRecord::new(RIP, AccessKind::Write, read.context, error_code, LINEAR)
+                );
+            } else {
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Read(41)));
+                assert_eq!(entries(&memory)[3] & ACCESSED, ACCESSED);
+                let write = request(RamAccessOperation::Write { width, value: 42 });
+                let report = access_long64_4k_ram(&memory, &paging, write, |_| {});
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+                assert_eq!(memory.load_u64(operand).unwrap(), 42);
+                assert_eq!(entries(&memory)[3] & DIRTY, DIRTY);
+            }
+        }
+
+        let (memory, _) = setup(0x4007, 0x6000);
+        let before = entries(&memory);
+        let address = GuestLinearAddress::new((LINEAR & !0xfff) + 0xffc);
+        let cross_page = TrackedAccessRequest { address, ..read };
+        let report = access_long64_4k_ram(&memory, &paging, cross_page, |_| {
+            panic!("cross-page preflight must not commit A/D");
+        });
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::CrossesPage { address, width: 8 })
+        );
+        assert_eq!(entries(&memory), before);
+    }
+
+    #[test]
     fn wp_read_then_write_reuses_same_memory_and_preserves_preset_accessed_state() {
         let initial_entries = [0x2005, 0x3005, 0x4005, 0x4005];
         let (mut memory, _) = setup_entries(initial_entries, 0x6000);
@@ -3844,6 +3986,39 @@ mod tracked_access_tests {
             report.outcome,
             Err(TrackedAccessError::OperandPhysical { .. })
         ));
+    }
+
+    #[test]
+    fn firmware_split_store_checks_both_leaves_before_committing_data() {
+        let (memory, _) = setup(0x9007, 0xc000);
+        let paging = paging_config(true, true);
+        let first_leaf = GuestPhysicalAddress::new(0x4020);
+        let second_leaf = GuestPhysicalAddress::new(0x4028);
+        let first_data = GuestPhysicalAddress::new(0x9ffe);
+        let second_data = GuestPhysicalAddress::new(0xb000);
+        let mut request = request(RamAccessOperation::Write {
+            width: AccessWidth::Dword,
+            value: 0x0403_0201,
+        });
+        request.address = GuestLinearAddress::new(0x0000_0080_8060_4ffe);
+        memory.store_u64(second_leaf, 0xb005, |_| {}).unwrap(); // RO
+        let mut commits = Vec::new();
+        let result = write_long64_4k_bounded_ram(&memory, &paging, request, |r| commits.push(r));
+        assert!(matches!(result, Err(TrackedAccessError::PageFault { .. })));
+        assert_eq!(memory.load_u16(first_data).unwrap(), 0);
+        assert_eq!(memory.load_u16(second_data).unwrap(), 0);
+        assert_eq!(memory.load_u64(first_leaf).unwrap() & (1 << 6), 0);
+        assert_eq!(memory.load_u64(second_leaf).unwrap() & (1 << 6), 0);
+        assert!(!logged(&commits).iter().any(|(gpa, _)| *gpa >= 0x9000));
+
+        memory.store_u64(second_leaf, 0xb007, |_| {}).unwrap();
+        commits.clear();
+        write_long64_4k_bounded_ram(&memory, &paging, request, |r| commits.push(r)).unwrap();
+        assert_eq!(memory.load_u16(first_data).unwrap(), 0x0201);
+        assert_eq!(memory.load_u16(second_data).unwrap(), 0x0403);
+        assert_eq!(memory.load_u64(first_leaf).unwrap() & (1 << 6), 1 << 6);
+        assert_eq!(memory.load_u64(second_leaf).unwrap() & (1 << 6), 1 << 6);
+        assert!(logged(&commits).ends_with(&[(0x9ffe, 2), (0xb000, 2)]));
     }
 
     #[test]

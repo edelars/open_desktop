@@ -36,18 +36,26 @@
 
 use zeroize::Zeroizing;
 
-use crate::codes::handle as h;
+use crate::codes::{alg, handle as h};
+use crate::crypto::DIGEST;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
-use crate::marshal::Reader;
+use crate::marshal::{Reader, limits};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
+
+pub(crate) const LEGACY_SEED_BYTES: usize = 32;
+pub(crate) const PRIMARY_SEED_BYTES: usize = 64;
+pub(crate) type PrimarySeed = Zeroizing<[u8; PRIMARY_SEED_BYTES]>;
 
 /// Persistent part of the hierarchy state (survives power cycles).
 pub(crate) struct HierarchyPersistent {
     pub owner_auth: AuthValue,
     pub endorsement_auth: AuthValue,
     pub lockout_auth: AuthValue,
+    pub owner_policy: Option<[u8; DIGEST]>,
+    pub endorsement_policy: Option<[u8; DIGEST]>,
+    pub lockout_policy: Option<[u8; DIGEST]>,
     /// `TPMA_PERMANENT.ownerAuthSet`: `TPM2_HierarchyChangeAuth` ran since the last `TPM2_Clear`.
     pub owner_auth_set: bool,
     pub endorsement_auth_set: bool,
@@ -62,6 +70,9 @@ impl Default for HierarchyPersistent {
             owner_auth: AuthValue::empty(),
             endorsement_auth: AuthValue::empty(),
             lockout_auth: AuthValue::empty(),
+            owner_policy: None,
+            endorsement_policy: None,
+            lockout_policy: None,
             owner_auth_set: false,
             endorsement_auth_set: false,
             lockout_auth_set: false,
@@ -74,33 +85,35 @@ impl Default for HierarchyPersistent {
 #[derive(Clone)]
 pub(crate) struct HierarchyVolatile {
     pub platform_auth: AuthValue,
+    pub platform_policy: Option<[u8; DIGEST]>,
     pub ph_enable: bool,
     pub ph_enable_nv: bool,
     pub sh_enable: bool,
     pub eh_enable: bool,
     /// Null seed: random on every TPM Reset (Part 1, clause 12.4.5); all zero before the first
     /// `Startup`, when no command can use it yet.
-    pub null_seed: Zeroizing<[u8; 32]>,
+    pub null_seed: PrimarySeed,
 }
 
 impl Default for HierarchyVolatile {
     fn default() -> Self {
         HierarchyVolatile {
             platform_auth: AuthValue::empty(),
+            platform_policy: None,
             ph_enable: true,
             ph_enable_nv: true,
             sh_enable: true,
             eh_enable: true,
-            null_seed: Zeroizing::new([0u8; 32]),
+            null_seed: Zeroizing::new([0; PRIMARY_SEED_BYTES]),
         }
     }
 }
 
 impl HierarchyVolatile {
     /// State after a TPM Reset: everything at its default, a fresh Null seed.
-    pub(crate) fn after_reset(null_seed: [u8; 32]) -> HierarchyVolatile {
+    pub(crate) fn after_reset(null_seed: PrimarySeed) -> HierarchyVolatile {
         HierarchyVolatile {
-            null_seed: Zeroizing::new(null_seed),
+            null_seed,
             ..HierarchyVolatile::default()
         }
     }
@@ -131,6 +144,17 @@ pub(crate) fn is_authorization_handle(handle: u32) -> bool {
 }
 
 impl Tpm {
+    /// An explicitly installed primary policy. The empty policy matches no session.
+    pub(crate) fn permanent_auth_policy(&self, handle: u32) -> Option<&[u8; DIGEST]> {
+        match handle {
+            h::RH_PLATFORM => self.hv.platform_policy.as_ref(),
+            h::RH_OWNER => self.persistent.hier.owner_policy.as_ref(),
+            h::RH_ENDORSEMENT => self.persistent.hier.endorsement_policy.as_ref(),
+            h::RH_LOCKOUT => self.persistent.hier.lockout_policy.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Authorization value behind a permanent handle regardless of the hierarchy enables (used
     /// for response HMACs, which are computed after the command may have disabled the hierarchy).
     /// `None` for a handle that is not a hierarchy authorization or `TPM_RH_NULL`.
@@ -237,8 +261,14 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_HierarchyChangeAuth` (Part 3, clause 24.8): the new value is at most one digest
-    /// (32 octets, SHA-256 is the context-integrity hash) and is stored without trailing zeros.
+    /// `TPM2_HierarchyChangeAuth` (Part 3, clause 24.8): the new value is at most 32 octets, whatever
+    /// the `authHash` of the session that authorizes the command, and is stored without trailing zeros.
+    /// The limit is the reference implementation's `CONTEXT_INTEGRITY_HASH_SIZE` (the digest of the
+    /// context-integrity hash, SHA-256 here). It also bounds the authValue that a session bound to a
+    /// hierarchy keeps: `decode_session` (`context.rs`) reads a bound authValue with a limit of 32 octets,
+    /// so a longer value would make the saved context of such a session unloadable. NOT VERIFIED: the text
+    /// of Part 3 gives `TPM_RC_SIZE` for a larger value; that the limit is exactly 32 for every
+    /// `authHash` is taken from the reference implementation.
     /// The response HMAC uses the new value (the dispatcher recomputes it after the command).
     pub(crate) fn cmd_hierarchy_change_auth(
         &mut self,
@@ -246,7 +276,10 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let new_auth = p.tpm2b(crate::marshal::limits::MAX_DIGEST_SIZE)?;
+        let new_auth = p.tpm2b(crate::marshal::limits::MAX_HASH_SIZE)?;
+        if new_auth.len() > DIGEST {
+            return Err(Rc::SIZE.in_param(1));
+        }
         p.finish()?;
         let value = AuthValue::from_slice_trimmed(new_auth).ok_or(Rc::SIZE.in_param(1))?;
         let hp = &mut self.persistent.hier;
@@ -270,27 +303,56 @@ impl Tpm {
         Ok(Output::default())
     }
 
+    /// `TPM2_SetPrimaryPolicy` (Part 3 §24.3). The dispatcher authorizes
+    /// use of the hierarchy with its current authValue or policy.
+    pub(crate) fn cmd_set_primary_policy(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(2);
+        let hash = p.u16()?;
+        p.finish()?;
+        let policy = match hash {
+            alg::NULL if digest.is_empty() => None,
+            alg::NULL => return Err(Rc::SIZE.in_param(1)),
+            alg::SHA256 => Some(digest.try_into().map_err(|_| Rc::SIZE.in_param(1))?),
+            _ => return Err(Rc::HASH.in_param(2)),
+        };
+        match inv.handles[0] {
+            h::RH_PLATFORM => self.hv.platform_policy = policy,
+            h::RH_OWNER => self.persistent.hier.owner_policy = policy,
+            h::RH_ENDORSEMENT => self.persistent.hier.endorsement_policy = policy,
+            h::RH_LOCKOUT => self.persistent.hier.lockout_policy = policy,
+            _ => return Err(Rc::VALUE.in_handle(1)),
+        }
+        Ok(Output::default())
+    }
+
     /// `TPM2_Clear` (Part 3, clause 24.6): removes the Owner's context. `TPM_RC_DISABLED` after
     /// `TPM2_ClearControl`. Effects implemented: new storage seed, `shEnable` and `ehEnable` SET,
-    /// owner, endorsement and lockout authorization values Empty, NV indices without
+    /// owner, endorsement and lockout authorization values and policies Empty, NV indices without
     /// `TPMA_NV_PLATFORMCREATE` deleted, `Clock` zero, `resetCount` and `restartCount` zero,
     /// `safe` YES, `pcrUpdateCounter` incremented, objects of the Storage and Endorsement
-    /// hierarchies flushed, `shProof` and `ehProof` changed (derived from the new seed). Not
-    /// applicable yet: empty policies (no policies).
+    /// hierarchies flushed, `shProof` and `ehProof` changed (derived from the new seed).
     pub(crate) fn cmd_clear(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.finish()?;
         if self.persistent.hier.disable_clear {
             return Err(Rc::DISABLED);
         }
         // The only fallible step goes first so that a failure leaves the TPM unchanged.
-        let new_seed = self.drbg.generate_array().ok_or(Rc::FAILURE)?;
-        self.persistent.owner_seed = Zeroizing::new(new_seed);
+        self.persistent.owner_seed = self.fresh_primary_seed()?;
         self.hv.sh_enable = true;
         self.hv.eh_enable = true;
         let hp = &mut self.persistent.hier;
         hp.owner_auth = AuthValue::empty();
         hp.endorsement_auth = AuthValue::empty();
         hp.lockout_auth = AuthValue::empty();
+        hp.owner_policy = None;
+        hp.endorsement_policy = None;
+        hp.lockout_policy = None;
         hp.owner_auth_set = false;
         hp.endorsement_auth_set = false;
         hp.lockout_auth_set = false;

@@ -21,9 +21,12 @@ impl Rc {
     pub const SEQUENCE: Rc = Rc(RC_VER1 + 0x003);
     /// Slice C2 (Part 2, Table 20): policy sessions and `TPM2_PolicyPCR`.
     pub const POLICY: Rc = Rc(RC_VER1 + 0x026);
+    pub const PCR: Rc = Rc(RC_VER1 + 0x027);
     pub const PCR_CHANGED: Rc = Rc(RC_VER1 + 0x028);
     pub const CPHASH: Rc = Rc(RC_VER1 + 0x051);
+    pub const NO_RESULT: Rc = Rc(RC_VER1 + 0x054);
     pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
+    pub const EXCLUSIVE: Rc = Rc(RC_VER1 + 0x021);
     pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);
     pub const AUTH_MISSING: Rc = Rc(RC_VER1 + 0x025);
     pub const AUTH_UNAVAILABLE: Rc = Rc(RC_VER1 + 0x02F);
@@ -38,6 +41,7 @@ impl Rc {
     pub const NV_UNINITIALIZED: Rc = Rc(RC_VER1 + 0x04A);
     pub const NV_SPACE: Rc = Rc(RC_VER1 + 0x04B);
     pub const NV_DEFINED: Rc = Rc(RC_VER1 + 0x04C);
+    pub const PARENT: Rc = Rc(RC_VER1 + 0x052);
     pub const SENSITIVE: Rc = Rc(RC_VER1 + 0x055);
     pub const NEEDS_TEST: Rc = Rc(RC_VER1 + 0x053);
 
@@ -69,6 +73,8 @@ impl Rc {
     pub const EXPIRED: Rc = Rc(RC_FMT1 + 0x023);
     pub const POLICY_CC: Rc = Rc(RC_FMT1 + 0x024);
     pub const BINDING: Rc = Rc(RC_FMT1 + 0x025);
+    pub const PARMS: Rc = Rc(RC_FMT1 + 0x02A);
+    pub const SIGN_CONTEXT_KEY: Rc = Rc(RC_FMT1 + 0x02D);
     pub const CURVE: Rc = Rc(RC_FMT1 + 0x026);
     pub const ECC_POINT: Rc = Rc(RC_FMT1 + 0x027);
 

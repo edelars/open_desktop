@@ -25,12 +25,22 @@ _start:
     movq    $0x100000, %rax             /* HANDOFF_GPA */
     cmpq    %rax, %rdi
     jne     .Lbad_handoff
-    movq    %rdi, %r8                   /* keep the handoff GPA across the rep stosb */
+    movq    %rdi, %r8                   /* keep the handoff GPA across BSS clearing */
     leaq    __bss_start(%rip), %rdi
-    leaq    __bss_end(%rip), %rcx
-    subq    %rdi, %rcx
+    leaq    __bss_end(%rip), %r10
+    subq    %rdi, %r10
+    shrq    $3, %r10                    /* the linker aligns both ends */
     xorl    %eax, %eax
-    rep stosb
+.Lzero_bss:
+    testq   %r10, %r10
+    jz      .Lbss_done
+    movl    $512, %ecx                  /* at most 4 KiB per REP */
+    cmpq    %rcx, %r10
+    cmovbq  %r10, %rcx
+    subq    %rcx, %r10
+    rep stosq
+    jmp     .Lzero_bss
+.Lbss_done:
     movq    %r8, %rdi                   /* first argument of od_fw_main (System V, internal) */
     call    od_fw_main
     /* od_fw_main never returns; stop if it does. */
@@ -111,3 +121,125 @@ _start:
     .asciz  "\r\n"
 .Lhex_digits:
     .ascii  "0123456789ABCDEF"
+
+
+    .section .data,"aw",@progbits
+    .p2align 3
+    .globl od_fw_gdt
+od_fw_gdt:
+    .quad 0
+    .quad 0x00af9a000000ffff           /* 08: present ring-0 long-mode code */
+    .quad 0x00cf92000000ffff           /* 10: present ring-0 writable data */
+.Lgdt_end:
+
+    .section .rodata,"a",@progbits
+    .p2align 3
+.Lgdtr:
+    .word .Lgdt_end - od_fw_gdt - 1
+    .quad od_fw_gdt
+
+    .section .text,"ax",@progbits
+    .globl od_fw_install_gdt
+    .type od_fw_install_gdt, @function
+od_fw_install_gdt:
+    lgdt    .Lgdtr(%rip)
+    movl    $0x08, %eax
+    pushq   %rax
+    leaq    .Lgdt_reload(%rip), %rax
+    pushq   %rax
+    lretq
+.Lgdt_reload:
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %fs
+    movw    %ax, %gs
+    movw    %ax, %ss
+    nop                               /* consumes the MOV SS interrupt shadow */
+    retq
+    .size od_fw_install_gdt, .-od_fw_install_gdt
+
+
+    .p2align 4
+    .globl od_fw_exception_stubs
+    .type od_fw_exception_stubs, @function
+od_fw_exception_stubs:
+    /* Each entry is ten bytes: MOV EDI,vector and JMP rel32. Using fixed
+       encodings keeps the Rust IDT encoder's vector stride invariant. */
+    .set .Lvector, 0
+    .rept 256
+    .byte 0xbf
+    .long .Lvector
+    .byte 0xe9
+    .long .Lexception_stop - . - 4
+    .set .Lvector, .Lvector + 1
+    .endr
+    .size od_fw_exception_stubs, .-od_fw_exception_stubs
+.Lexception_stop:
+    cld                               /* System V requires DF = 0 at Rust entry */
+    andq    $-16, %rsp
+    callq   od_fw_exception_stop
+    ud2
+/* SysV inputs: context, stack top, EFI entry, ImageHandle, SystemTable. */
+    .section .text,"ax",@progbits
+    .globl od_fw_invoke_image
+    .type od_fw_invoke_image, @function
+od_fw_invoke_image:
+    pushq   %rbx
+    pushq   %rbp
+    pushq   %r12
+    pushq   %r13
+    pushq   %r14
+    pushq   %r15
+    movq    %rdi, %r12
+    movq    %rsp, (%r12)
+    pushfq
+    popq    %rax
+    movq    %rax, 8(%r12)
+    movq    %r12, %rax
+    fxsave64 0x40(%rax)
+
+    movq    %rsi, %rsp
+    subq    $32, %rsp                   /* 16-byte aligned caller home area */
+    leaq    .Lefi_initial_fp(%rip), %rbx
+    fxrstor64 0x40(%rbx)
+    cld
+    sti
+    movq    %rdx, %rax
+    movq    %r8, %rdx                  /* RCX already contains ImageHandle */
+    callq   *%rax
+
+.Lrestore_image_context:
+    movq    %r12, %rbx
+    fxrstor64 0x40(%rbx)
+    movq    (%r12), %rsp
+    movq    8(%r12), %r10
+    pushq   %r10
+    popfq
+    popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %rbp
+    popq    %rbx
+    retq
+    .size od_fw_invoke_image, .-od_fw_invoke_image
+
+/* SysV inputs: an active context and the EFI_STATUS returned to StartImage. */
+    .globl od_fw_exit_image_context
+    .type od_fw_exit_image_context, @function
+od_fw_exit_image_context:
+    movq    %rdi, %r12
+    movq    %rsi, %rax
+    jmp     .Lrestore_image_context
+    .size od_fw_exit_image_context, .-od_fw_exit_image_context
+
+    .section .rodata,"a",@progbits
+    .p2align 4
+.Lefi_initial_fp:
+    .zero   0x40
+    .short  0x037f                     /* FCW */
+    .zero   22
+    .long   0x1f80                     /* MXCSR */
+    .long   0
+    .zero   480

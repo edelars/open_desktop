@@ -24,8 +24,8 @@ use super::tests_b::*;
 use super::tests_obj::*;
 use super::*;
 use crate::StateError;
-use crate::codes::{object_attr as oa, pt};
-use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
+use crate::codes::{curve, object_attr as oa, pt};
+use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique, Writer};
 use sha2::{Digest, Sha256};
 
 fn rsa_decrypt_key(scheme: Scheme) -> TpmtPublic {
@@ -93,12 +93,17 @@ fn ecdh_zgen(t: &mut Tpm, key: u32, pw: &[u8], point: &[u8]) -> Vec<u8> {
 /// `(x, y)` of the `TPM2B_ECC_POINT` of a successful `ECDH_ZGen`.
 fn out_point(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut r = Reader::new(params(resp, 0));
+    let point = read_point(&mut r);
+    r.finish().unwrap();
+    point
+}
+
+fn read_point(r: &mut Reader<'_>) -> (Vec<u8>, Vec<u8>) {
     let n = usize::from(r.u16().unwrap());
     let mut p = r.sub(n).unwrap();
     let x = p.tpm2b(32).unwrap().to_vec();
     let y = p.tpm2b(32).unwrap().to_vec();
     p.finish().unwrap();
-    r.finish().unwrap();
     (x, y)
 }
 
@@ -509,7 +514,7 @@ fn rsa_encryption_command_errors() {
                 &cat(&[&tpm2b(msg), &oaep(), &tpm2b(b"")]),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     err(
         &run(
@@ -574,6 +579,344 @@ fn rsa_private_values_never_leave_the_tpm_through_decrypt() {
 }
 
 // ========================================================================== ECDH
+
+#[test]
+fn ecc_parameters_reports_the_p256_registry_values_and_rejects_unsupported_curves() {
+    let mut t = started();
+    let response = run(
+        &mut t,
+        plain(cc::ECC_PARAMETERS, &[], &u16b(curve::NIST_P256)),
+    );
+    let mut reader = Reader::new(params(&response, 0));
+    for value in [0x0003, 256, 0x0020, 0x000b, 0x0010] {
+        assert_eq!(reader.u16().unwrap(), value);
+    }
+    for expected in [
+        "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+        "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
+        "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
+        "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+        "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+        "01",
+    ] {
+        assert_eq!(reader.tpm2b(32).unwrap(), hex(expected));
+    }
+    reader.finish().unwrap();
+    for id in [0, 4, 0xffff] {
+        err(
+            &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &u16b(id))),
+            Rc::CURVE.in_param(1),
+        );
+    }
+    err(
+        &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &[0])),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+    err(
+        &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &[0, 3, 0])),
+        Rc::SIZE,
+    );
+    for (code, attributes) in [(0x163, 1 << 25), (0x178, 0)] {
+        let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, code, 1));
+        assert_eq!(count, 1);
+        assert_eq!(
+            u32::from_be_bytes(body.try_into().unwrap()),
+            code | attributes
+        );
+    }
+}
+
+#[test]
+fn make_credential_accepts_a_public_only_storage_key_and_opaque_name() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_storage()));
+    let mut public = unmarshal_public(&key.public);
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let before = t.persistent_snapshot();
+    let invoke = |t: &mut Tpm, handle, credential: &[u8], name: &[u8]| {
+        run(
+            t,
+            plain(
+                cc::MAKE_CREDENTIAL,
+                &[handle],
+                &cat(&[&tpm2b(credential), &tpm2b(name)]),
+            ),
+        )
+    };
+    let mut previous_secret = Vec::new();
+    for (credential, name) in [(b"".as_slice(), b"".as_slice()), (&[0x3c; 32], &[0x42; 34])] {
+        let response = invoke(&mut t, external, credential, name);
+        let mut outer = Reader::new(params(&response, 0));
+        let blob = outer.tpm2b(68).unwrap();
+        let secret = outer.tpm2b(68).unwrap();
+        outer.finish().unwrap();
+        assert_eq!(&blob[..2], &[0, 32]);
+        assert_eq!(blob.len(), 34 + 2 + credential.len());
+        assert_eq!(secret.len(), 68);
+        let mut point = Reader::new(secret);
+        let x = point.tpm2b(32).unwrap();
+        let y = point.tpm2b(32).unwrap();
+        point.finish().unwrap();
+        assert!(crate::crypto::ecc_point_valid(x, y));
+        assert_ne!(previous_secret, secret);
+        previous_secret = secret.to_vec();
+    }
+    assert_eq!(t.persistent_snapshot(), before);
+    err(&invoke(&mut t, NULL, b"", b""), Rc::VALUE.in_handle(1));
+    err(
+        &invoke(&mut t, external, &[0; 33], b""),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &invoke(&mut t, external, b"", &[0; 35]),
+        Rc::SIZE.in_param(2),
+    );
+    err(
+        &run(&mut t, plain(cc::MAKE_CREDENTIAL, &[external], &[0])),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+    let signing = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_sign()));
+    err(
+        &invoke(&mut t, signing.handle, b"", b""),
+        Rc::TYPE.in_handle(1),
+    );
+}
+
+#[test]
+fn make_credential_refuses_external_keys_without_storage_parameters() {
+    let mut t = started();
+    let mut public = ext_rsa_encryption_key();
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    for (symmetric, scheme, expected) in [
+        (SymDef::Null, Scheme::NULL, Rc::TYPE.in_handle(1)),
+        (
+            SymDef::Aes128Cfb,
+            Scheme {
+                alg: alg::RSAES,
+                hash: alg::NULL,
+            },
+            Rc::VALUE.in_handle(1),
+        ),
+        (
+            SymDef::Aes128Cfb,
+            Scheme {
+                alg: alg::RSASSA,
+                hash: alg::SHA256,
+            },
+            Rc::VALUE.in_handle(1),
+        ),
+    ] {
+        let PublicParams::Rsa {
+            symmetric: stored_symmetric,
+            scheme: stored_scheme,
+            ..
+        } = &mut public.params
+        else {
+            unreachable!()
+        };
+        *stored_symmetric = symmetric;
+        *stored_scheme = scheme;
+        let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+        err(
+            &run(&mut t, plain(cc::MAKE_CREDENTIAL, &[external], &[0; 4])),
+            expected,
+        );
+        ok(&flush(&mut t, external));
+    }
+}
+
+#[test]
+fn activate_credential_requires_two_private_objects_and_the_bound_name() {
+    for (template, bad_secret) in [
+        (rsa_storage(), Rc::VALUE.in_param(2)),
+        (ecc_storage(), Rc::ECC_POINT.in_param(2)),
+    ] {
+        let mut t = started();
+        let key = parse_primary(&create_primary(&mut t, OWNER, b"key", &template));
+        let activated_template = ecc(base() | oa::SIGN | oa::NO_DA, SymDef::Null, ECDSA);
+        let activated = parse_primary(&create_primary(
+            &mut t,
+            OWNER,
+            b"object",
+            &activated_template,
+        ));
+        let invoke = |t: &mut Tpm, handles: &[u32], passwords: &[&[u8]], parameters: &[u8]| {
+            run(
+                t,
+                with_pw(cc::ACTIVATE_CREDENTIAL, handles, passwords, parameters),
+            )
+        };
+        let handles = [activated.handle, key.handle];
+        let passwords = [b"object".as_slice(), b"key".as_slice()];
+        let before = t.persistent_snapshot();
+        for credential in [b"".as_slice(), &[0x5a; 32]] {
+            let response = run(
+                &mut t,
+                plain(
+                    cc::MAKE_CREDENTIAL,
+                    &[key.handle],
+                    &cat(&[&tpm2b(credential), &tpm2b(&activated.name)]),
+                ),
+            );
+            let wrapped = params(&response, 0);
+            assert_eq!(
+                params(&invoke(&mut t, &handles, &passwords, wrapped), 0),
+                tpm2b(credential)
+            );
+            for offset in [4, 36] {
+                let mut tampered = wrapped.to_vec();
+                tampered[offset] ^= 1;
+                err(
+                    &invoke(&mut t, &handles, &passwords, &tampered),
+                    Rc::INTEGRITY.in_param(1),
+                );
+            }
+            err(
+                &invoke(&mut t, &[key.handle; 2], &[b"key", b"key"], wrapped),
+                Rc::INTEGRITY.in_param(1),
+            );
+            err(
+                &invoke(
+                    &mut t,
+                    &[activated.handle; 2],
+                    &[b"object", b"object"],
+                    wrapped,
+                ),
+                Rc::TYPE.in_handle(2),
+            );
+            err(
+                &invoke(&mut t, &handles, &[b"wrong", b"key"], wrapped),
+                Rc::BAD_AUTH.in_session(1),
+            );
+            let mut input = Reader::new(wrapped);
+            let blob = input.tpm2b(68).unwrap();
+            err(
+                &invoke(
+                    &mut t,
+                    &handles,
+                    &passwords,
+                    &cat(&[&tpm2b(blob), &tpm2b(&[])]),
+                ),
+                bad_secret,
+            );
+        }
+        assert_eq!(t.persistent_snapshot(), before);
+
+        ok(&flush(&mut t, activated.handle));
+        let mut public = unmarshal_public(&activated.public);
+        public.attributes = oa::SIGN;
+        let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+        for handles in [[external, key.handle], [key.handle, external]] {
+            err(
+                &invoke(&mut t, &handles, &[b"key", b"key"], &[0; 4]),
+                Rc::AUTH_UNAVAILABLE,
+            );
+        }
+    }
+}
+
+#[test]
+fn activate_credential_addresses_admin_then_user_authorization() {
+    let mut t = started();
+    let mut storage = ecc_storage();
+    storage.attributes |= oa::ADMIN_WITH_POLICY | oa::NO_DA;
+    storage.auth_policy = vec![1; 32];
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"key", &storage));
+    let mut admin_object = ecc_sign();
+    admin_object.attributes |= oa::ADMIN_WITH_POLICY;
+    admin_object.auth_policy = vec![1; 32];
+    let activated = parse_primary(&create_primary(&mut t, OWNER, b"object", &admin_object));
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"key"],
+                &[0; 4],
+            ),
+        ),
+        Rc::AUTH_TYPE,
+    );
+    ok(&flush(&mut t, activated.handle));
+    let activated = parse_primary(&create_primary(&mut t, OWNER, b"object", &ecc_sign()));
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"wrong"],
+                &[0; 4],
+            ),
+        ),
+        Rc::BAD_AUTH.in_session(2),
+    );
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ACTIVATE_CREDENTIAL,
+                &[activated.handle, key.handle],
+                &[b"object", b"key"],
+                &[0; 4],
+            ),
+        ),
+        Rc::INSUFFICIENT.in_param(1),
+    );
+}
+
+#[test]
+fn ecdh_key_gen_uses_a_public_only_ecc_key_and_returns_fresh_ephemeral_points() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(
+        &mut t,
+        OWNER,
+        b"pw",
+        &ecc_decrypt_key(Scheme::NULL),
+    ));
+    let mut public = unmarshal_public(&key.public);
+    public.attributes = oa::SIGN;
+    let PublicParams::Ecc { scheme, .. } = &mut public.params else {
+        unreachable!()
+    };
+    *scheme = Scheme {
+        alg: alg::ECDSA,
+        hash: alg::SHA256,
+    };
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    let before = t.persistent_snapshot();
+    let request = plain(cc::ECDH_KEY_GEN, &[external], &[]);
+    let mut previous = None;
+    for _ in 0..2 {
+        let response = run(&mut t, request.clone());
+        let mut reader = Reader::new(params(&response, 0));
+        let shared = read_point(&mut reader);
+        let (qx, qy) = read_point(&mut reader);
+        reader.finish().unwrap();
+        let recovered = ecdh_zgen(&mut t, key.handle, b"pw", &ecc_point(&qx, &qy));
+        assert_eq!(shared, out_point(&recovered));
+        let public = (qx, qy);
+        assert_ne!(previous, Some(public.clone()));
+        previous = Some(public);
+    }
+    assert_eq!(t.persistent_snapshot(), before);
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[external], &[0])),
+        Rc::SIZE,
+    );
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[0x80000040], &[])),
+        Rc::reference_handle(0),
+    );
+    let (rsa, _) = parse_loaded(&load_external(&mut t, &ext_rsa_encryption_key(), NULL));
+    err(
+        &run(&mut t, plain(cc::ECDH_KEY_GEN, &[rsa], &[])),
+        Rc::KEY.in_handle(1),
+    );
+}
 
 #[test]
 fn ecdh_zgen_matches_an_independently_computed_shared_point() {
@@ -1500,7 +1843,8 @@ fn snapshot_holds_secrets_in_clear_text_and_says_so() {
             String::from_utf8_lossy(secret)
         );
     }
-    assert!(contains(&snap, &rich.t.persistent.owner_seed[..]));
+    assert!(contains(&snap, &rich.t.persistent.owner_seed[..32]));
+    assert!(contains(&snap, &rich.t.persistent.owner_seed[32..]));
     // `platformAuth` is volatile and does not go into the snapshot.
     assert!(!contains(&snap, b"platformpw"));
     // The Debug output of the TPM and of the errors reveals nothing of it.
@@ -1576,7 +1920,7 @@ fn snapshots_of_another_version_are_refused() {
         u16::from_be_bytes([snap[8], snap[9]]),
         crate::SNAPSHOT_VERSION
     );
-    for v in [0u16, 1, 2, 4, 0x0100, u16::MAX] {
+    for v in [0u16, 1, 2, crate::SNAPSHOT_VERSION + 1, 0x0100, u16::MAX] {
         let mut b = snap.clone();
         b[8..10].copy_from_slice(&v.to_be_bytes());
         assert_eq!(
@@ -1600,6 +1944,73 @@ fn snapshots_of_another_version_are_refused() {
     assert_eq!(
         Tpm::restore(&v1, &[9; 48]).unwrap_err(),
         StateError::UnsupportedVersion(1)
+    );
+}
+
+#[test]
+fn persistent_rsa_snapshot_validates_the_encoded_exponent() {
+    const HANDLE: u32 = 0x8100_0001;
+    let mut t = started();
+    let mut template = rsa_sign();
+    let PublicParams::Rsa { exponent, .. } = &mut template.params else {
+        unreachable!("RSA signing template");
+    };
+    *exponent = 65_537;
+    let primary = parse_primary(&create_primary_raw(
+        &mut t,
+        OWNER,
+        b"",
+        &creation_params(b"rsapw", b"", &template, b"", &NO_PCR),
+    ));
+    ok(&evict(&mut t, OWNER, b"", primary.handle, HANDLE));
+    let snapshot = t.persistent_snapshot();
+    let public_response = read_public(&mut t, HANDLE);
+    let signature = sign(&mut t, HANDLE, b"rsapw", &DIGEST, &rsa_sig_scheme());
+    let mut restored = Tpm::restore(&snapshot, &[9; 48]).unwrap();
+    assert_eq!(restored.persistent_snapshot(), snapshot);
+    startup(&mut restored, 0);
+    assert_eq!(
+        params(&read_public(&mut restored, HANDLE), 0),
+        params(&public_response, 0)
+    );
+    assert_eq!(
+        params(
+            &sign(&mut restored, HANDLE, b"rsapw", &DIGEST, &rsa_sig_scheme()),
+            0
+        ),
+        params(&signature, 0)
+    );
+
+    let object = t.persistent.objects.get(HANDLE).unwrap();
+    let encoded_public = |public: &TpmtPublic| {
+        let mut writer = Writer::new();
+        public.marshal(&mut writer);
+        writer.finish()
+    };
+    let original = encoded_public(&object.public);
+    let mut incompatible = object.public.clone();
+    let PublicParams::Rsa { exponent, .. } = &mut incompatible.params else {
+        unreachable!("persistent RSA key");
+    };
+    *exponent = 3;
+    let sensitive = crate::object::sensitive_to_bytes(
+        object.sensitive.as_ref().unwrap(),
+        alg::RSA,
+        alg::SHA256,
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::object::sensitive_from_bytes(&sensitive, &incompatible),
+        Err(Rc::BINDING)
+    ));
+    let mut invalid_snapshot = snapshot;
+    let offset = offset_of(&invalid_snapshot, &original);
+    invalid_snapshot[offset..offset + original.len()]
+        .copy_from_slice(&encoded_public(&incompatible));
+    refix(&mut invalid_snapshot);
+    assert_eq!(
+        Tpm::restore(&invalid_snapshot, &[9; 48]).unwrap_err(),
+        StateError::BadField
     );
 }
 
@@ -1787,9 +2198,7 @@ const TPM_CT_OAEP_LABEL: &str = "7e83fc32ca5b40957d4cc35fb3dd5ce01222e261c50a57e
 const TPM_CT_RSAES: &str = "526c1adb97f21632075b526bfb6cbeae6a90316e1e3cfce2587605fed4303ac6efd082547492710ae11f2c5f98eaf1cf3096034cc44153de0e91cec82e65d31f1b6032f10e8d650212e29336461627a2aa649dac9f84dbf16ae2ae8ad4c601addf49d80936049706feb378fdc13976ed9be66786fafb2205029ffea9591af9b6c6fc4c8b01c85856fe52c9a35e1b1168dbadb10aa2bedf15c90280e5e65200acbf2a197bb86abc040ab1c617db6fba8568e8ae1ae5339c8c8f7c4e4c1aa113b4417f43c4c4c4465db7c94533c95889ff75bbf4c7be20c7bac782cd7518d80d86e22b4520835d1cda94aad6cc4f78232baa39fef8dcdbb5d03b8cd145ff18c250";
 const RAW_MSG: &str = "000a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc";
 const TPM_CT_RAW: &str = "147c6b32b87704bfe2f9236aec410a60a1d1dc39a734ddfd8b8301d2378dec3c896278a8e7ead1afce0ebd1dbf055d7dbf40b20e0362e4983e24f0ae81cb5d0e13da81ef69c7e51652cc7da3f5c057ec66670446badecc70d3d57a20c967d70371f3e6822efde5753813a41ecb958122eabe1cf46322713300f9c826c88ab1f78b9b4a35ff8f9740c0bd6c1af5d666fa50ad2c9fa40764b8de0f80dadd17c50b9ad554018dc112536966c772d1792ee12fc517a7f2f2000abf5d168748e6339ae5516905b5df4ba9d1aa9fa3fe47575f880ea3bada8c1cce259251c45e8c535d458515692bf19e9cf584b61a0c32b8bba63986da840f7f17039d64943bfbeb31";
-const EXT_RSA_N: &str = "b6b69daba0f0e0d6246da2202df16a574a318e3cfae808680103fc1691dccd0c5c857c3e9bfecf97f7a21adefe26b2252f193ef0ffb69770dc4709e62c591e5ff4fea1a4a74e6df9aaadb9b9e4852d0b249893b1785fdb1f48330c7441fff4dd6a1f24ef3e3f4c10057bbca6ab5cdfe3a01d816cc353dd0b50fa51b25e1a3529d529fb299d3d38b4dadf33b0a6851c6cc7a29c4a63560868f4804ddc5baf1dc709fee622a953c09af5833924dd3efbc8d90a83f69693bb9b5f6ba560df78e895223181c9ac36edca4aec5eeb18d7c7e4d0d8032b13947f0d696f7bc6acaa8c68b58b096b5b8991b103f7afd07bb24592c83516972ff629c7d8a794f98fc98a61";
-const EXT_RSA_P: &str = "f0637c28545965c0d1476b756f530aaad92012ac1101640a07e51d183228d705dd5e6393874c8c7c48653834fc19f425fa80a254a6eecd4d9e38d711dc6c737af5a444cfeca628ecf33589d3e2bba3d2e29bbea69b4eaae595c0364282954fa676d881c8bb06d1ade13a09cf58aea6263c8998396c10a813b9e666b3816ba29f";
-const EXT_RSA_Q: &str = "c294443a6cd262858996540306d90e8606a9b646cc8e497cc09c53a92d26935791087cccb17d762e97871eb114d11a5cd38c39036953cf4ca646c458085c52b3dade50c76ce4b4900f73238cd44a78cf3124d640d0d35558d9a9fda758f6c25984a0147689ae1d6f9b32303e5c3f3208d2980a3c6dd9919603ce33392180b2ff";
+use crate::self_test::{EXT_RSA_N, EXT_RSA_P, EXT_RSA_Q};
 const EXT_CT_RAW: &str = "ac189ad9647c1d2a84ee085617b053ee81e388f0d36491718c840d5a1853dddb12e87281af87d2db7b55d975d08af56794ea4a7ba73190cb11d4d0a681cba6514228b8a55709750a3afcd80e3bc309119d6179f7180692bb4b56be7487f418e24fb8bcdb4cb9576097ba07f425961d90af75d425ee9fabeec703325a21bec0f6df775bcc1f6f2df3f1a4757c93154ca0f036fa09c8ec3da07a59858c3f39b26d11124b19edaeceb37a3dc000bc6106f9dc4fa23ae9b8bbdb34182a2c1094ed6579b9c4219c8406bdbea0552ce3ed20b6549971d8431e7deae6743c71d17a158479e46c785f1ce5673a1b371df55e304c6392abf6341c628e69f5924a29ec0417";
 const TPM_EC_X: &str = "868aae5f959c4bb61a75a462b05c50a4e7db6a604b9573a67f6e1e9344ed64ef";
 const TPM_EC_Y: &str = "f8541ac4bfb4bb4b512331072a4005b5787e4d8778c87eeab8640ff21f53c999";

@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус S7-16: в работе.** Срез A реализует регистры, admin-очереди и Admin-команды. Срез B добавляет `Read`, `Write`, `Flush` поверх backend диска. Для firmware используется фиксированное MMIO с опросом. Для Linux direct boot доступен opt-in PCI endpoint с INTx. Постоянный RAW backend реализован в `od-host` (раздел 14). MSI-X и обязательные log pages из раздела 1 остаются открыты.
+**Статус S7-16: принят минимальный профиль.** Реализованы регистры, admin-очереди и Admin-команды, `Read`, `Write`, `Flush` и подключение backend. Фиксированное firmware MMIO использует опрос. Опциональный PCI endpoint использует INTx и пять MSI-X векторов. Драйвер Linux подтвердил чтение RAW и MSI-X для Admin и I/O. [Гостевая проверка](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux) · [Границы приёмки](../reports/STAGE_7_REPORT.md#границы-приёмки-s7-16).
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -8,7 +8,11 @@
 
 Редакция по плану: NVM Express Base Specification 2.4, NVM Command Set Specification 1.3, NVMe over PCIe Transport Specification 1.4 (ratified 2026-07-31, [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md)).
 
-На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`; в текущей модели их нет. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Полная сверка контроллера остаётся открыта.
+На 2026-11-18 получены [NVMe Base 2.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf) и [PCIe Transport 1.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf). Figure 31 Base 2.4 требует от I/O controller страницы `0x00`, `0x05` и `0x12`. Их форматы и объявление поддержки в Identify Controller сверены по разделу 9.2. §5.3.4 допускает явное и неявное завершение команд удаляемой SQ. §3.5.1 и §3.8.1 PCIe Transport описывают INTx и BAR; §3.8.4 оставляет MSI-X опциональным в стандарте, а план S7-16 включает MSI-X в объём проекта. Сверка принятых функций отражена в разделах по регистрам, очередям, Identify, Features, журналам и I/O.
+
+Перед включением контроллера спецификация требует допустимые значения `CC.AMS`, `CC.MPS` и `CC.CSS`. Figure 41 связывает допустимые `CC.IOSQES` и `CC.IOCQES` с SQES/CQES в Identify Controller. Таблицы статусов Create I/O CQ и Create I/O SQ относят `Invalid Queue Size` к неинициализированному `CC.IOCQES` и `CC.IOSQES` соответственно. Модель проверяет соответствующее поле при обработке каждой команды. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85), [Figure 574](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=554), [Figure 579](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=557), [ISSUE-589](../KNOWN_ISSUES.md#issue-589).
+
+`CAP.CQR` сверено по Figure 36. Бит 16 при значении 1 требует физически непрерывных очередей и PC в Create I/O SQ/CQ. В модели выставлен бит 16, а `queue_geometry` проверяет PC. [NVMe Base 2.4, с. 58](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
 
 При первой сверке 2026-11-07 использовался заголовок Linux `include/linux/nvme.h` (master):
 
@@ -30,15 +34,23 @@
 - смещения Identify Controller и Identify Namespace;
 - смещения Error log, SMART, Firmware Slot log.
 
-**NOT VERIFIED (ни спецификация, ни заголовок Linux не подтверждают):** `CAP.CQR` (бит 16); коды AER info 0 и 1; правила PRP; значения features по умолчанию; поведение при ошибках; обязательность команд; LID `0x00` и `0x05`; `VS` 2.0.0 против 2.4.0. В исходниках в шапках `controller.rs`, `admin.rs`, `queues.rs` оставлено то же разделение. Наименее надёжные места перечислены в разделе 11.
+Сверка обязательных Admin-команд, Identify и features для принятого профиля приведена в разделах 7–9. Подробности по остающимся краевым случаям PRP и статусам собраны в разделе 11.
 
 ## 2. Размещение и handoff block
 
 - **Окно MMIO:** `[0xFC00_1000, 0xFC00_3000)`, 8 KiB (`NVME_MMIO_BASE`, `NVME_MMIO_BYTES`). Регистры — `0x0000..0x1000`, doorbells — с `0x1000`, шаг 4 байта (`CAP.DSTRD = 0`). Выбранный диапазон лежит в зарезервированном «свободном» участке `[0xFC00_1000, 0xFEC0_0000)` ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) 2), сразу за регистрами дисплея, и не меняет число страниц `BOOT_PAGE_TABLES` (тот же блок 2 MiB). После S4-30 окно заменяет BAR0; адрес окна — решение v1, не требование спецификации NVMe.
 - **Handoff block.** В v1.0 поля NVMe нет (коды 8–15 зарезервированы). Поэтому устройство добавляется как запись кода 8 и повышает `version_minor` до 1 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) 6.3–6.4): `PRESENT = 1`, MMIO, `base = 0xFC00_1000`, `length = 0x2000`, `gsi = 0xFFFF_FFFF` (нет IRQ), `irq_flags = 0`, `param0 = param1 = 0`; в таблицу регионов добавляется регион `MMIO` с `owner_device = 7`.
-- **Включается опционально:** `FirmwareBoardConfig::nvme: Option<NvmeConfig>`. По умолчанию `None`: handoff остаётся v1.0 байт в байт (эталон `REFERENCE_HANDOFF_HEX` не менялся), окна нет, `Unmapped`. При `Some` образ обязан объявлять `handoff_minor_max ≥ 1`, иначе загрузка отклоняется (`ImageHeader { field: "handoff_minor_max" }`). Прошивка в репозитории (`firmware/uefi`) пока понимает только minor 0 и NVMe-запись не читает — это работа S7-17.
+- **Включается опционально:** `FirmwareBoardConfig::nvme: Option<NvmeConfig>`. По умолчанию `None`: handoff остаётся v1.0 байт в байт (эталон `REFERENCE_HANDOFF_HEX` не менялся), окна нет, `Unmapped`. При `Some` образ обязан объявлять `handoff_minor_max ≥ 1`, иначе загрузка отклоняется (`ImageHeader { field: "handoff_minor_max" }`). Прошивка использует запись для подключения драйвера и публикации Block I/O, Disk I/O и GPT-разделов. [Профиль хранения](UEFI_PROFILE.md#хранилище).
 - Устройство подключается к шине только когда запись PRESENT; без конфигурации оно не существует и не объявляется.
-- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_6000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. IRQ идёт через level/active-low IOAPIC, учитывает PCI INTx Disable, `INTMS/INTMC` и флаг IEN очереди. Неподтверждённые CQE удерживают линию, запись CQ head снимает запрос после подтверждения всех таких CQE. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера в запущенном госте ещё не проверялась.
+- **Linux direct boot с `nvme_pci`.** Endpoint `00:04.0` (class `010802`) доступен через ECAM и conf1. 64-битный non-prefetchable BAR0/1 занимает `[0xFC00_4000, 0xFC00_8000)`. MMIO разрешено при MSE и запрограммированном адресе этой апертуры, DMA при BME. Адрес вне апертуры выключает декодирование модели. ACPI публикует окно в `PCI0._CRS` и INTA → GSI 16 в `PCI0._PRT`. Этот режим требует Linux execution profile `X8664V1Stage4AApic`. Привязка драйвера, чтение и MSI-X подтверждены в запущенном Linux. [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
+
+### 3.1. Прерывания PCI
+
+С выключенным MSI-X очередь с `IEN = 1` удерживает level/active-low INTA, пока остаются неподтверждённые CQE. На линию влияют PCI Command.INTx Disable и `INTMS/INTMC`. При MSI-X Enable линия INTA снимается на следующей выборке источника. `INTMS/INTMC` управляют только INTA.
+
+MSI-X capability по смещению `0x50` объявляет пять векторов. Таблица из пяти записей по 16 байт расположена с `BAR0 + 0x2000`. PBA расположен с `BAR0 + 0x3000`. Отдельные страницы таблицы и PBA входят в окно PCI. Биты Enable и Function Mask доступны для записи. В каждой табличной записи доступны адрес сообщения, данные и бит Vector Mask. У PBA доступны только чтения. При создании платы все векторы замаскированы, `Enable = Function Mask = 0`, PBA пуст. [PCIe Transport 1.4, §3.8.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=24).
+
+Admin CQ использует вектор 0, I/O CQ выбирает вектор через `IV` в Create I/O CQ. После успешной записи CQE контроллер формирует событие для соответствующего вектора. Function Mask или Vector Mask удерживают его в PBA. Запись CQ head не очищает PBA. Событие отправляется при снятии обеих масок и наличии BME. `CC.EN` сбрасывает очереди, а состояние MSI-X относится к PCI-функции и сохраняется. Поддерживается Fixed доставка edge-triggered в физический xAPIC ID существующего vCPU. Для сообщения вне этого формата, несуществующей цели или отказа LAPIC флаг PBA остаётся установленным. Повторная доставка пробуется при записи конфигурации, записи таблицы и выборке источника PCI IRQ. [PCIe Transport 1.4, §3.5.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=15), [Intel SDM Vol. 3A, Message Signalled Interrupts](https://cdrdv2-public.intel.com/812386/253668-sdm-vol-3a.pdf).
 
 ## 3. Модель обслуживания (DMA)
 
@@ -47,7 +59,7 @@
 - завершение команды видно гостю не сразу после записи в doorbell, а после ближайшего `service`; драйвер, который опрашивает фазовый бит в CQ (прошивка), это допускает; время виртуальной машины между doorbell и completion не моделируется;
 - все команды исполняются полностью внутри одного `service`; поэтому `Abort` никогда не находит команду в работе (раздел 7), а AER — единственный вид команды, который остаётся невыполненным;
 - DMA разрешён только в RAM (`MemoryRegionKind::Ram`); PRP, указывающий в MMIO (в том числе в окно самого NVMe), ROM, framebuffer или вне карты, — `Data Transfer Error` команды, а не доступ и не паника. Записи в RAM сообщают диапазон в `committed_write`, как любые другие записи гостевой RAM.
-- **Разрыв в тестах (не код).** Путь «гость пишет doorbell → квант останавливается по `doorbell_pending` → `service` между квантами» тестом не покрыт. Причина: интерпретатор поддерживает 64-битный `mov [rbx], rcx`, а doorbell — 32-битный регистр (`Dword`), поэтому гость-тест не может записать doorbell. Doorbell гостем end-to-end не тестируется. Покрыто: `service` на стороне хоста (`run_boot_executes_commands_submitted_before_the_guest_starts` — команды, поданные до старта гостя) и запись в doorbell через шину в тестах модуля `nvme`.
+- **Проверка doorbell.** Драйвер Linux публикует команды Admin и I/O через doorbells PCI-профиля. В госте получены завершения и проверено чтение RAW. `run_boot_executes_commands_submitted_before_the_guest_starts` отдельно проверяет в firmware-профиле команды, поданные до старта гостя. [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 - Очередь SQ/CQ в не-RAM (ASQ/ACQ, I/O-очереди) обнаруживается при обращении: ошибка чтения SQE или записи CQE переводит контроллер в `CSTS.CFS = 1`; выход — сброс (`CC.EN = 0`).
 
 ## 4. Регистры контроллера
@@ -58,9 +70,9 @@
 |---|---|---|
 | `0x00` | `CAP` (RO, 64) | `MQES = 1023` (1024 записи); `CQR = 1` (только физически непрерывные очереди); `AMS = 0` (только round robin); `TO = 1` (500 мс; `RDY` меняется синхронно); `DSTRD = 0`; `NSSRS = 0`; `CSS`: бит 37 (NVM command set); `MPSMIN = MPSMAX = 0` (страница 4 KiB); `BPS`, `CPS`, `PMRS`, `CMBS`, `NSSS`, `CRMS` = 0. Значение `0x0000_0020_0101_03FF` |
 | `0x08` | `VS` (RO) | `0x0002_0000` (2.0.0). Заявлена 2.0.0, а не 2.4.0: набор реализованного (раздел 11) не претендует на более новую редакцию |
-| `0x0C` | `INTMS` (RW1S) | Маска pin-based прерываний (запись 1 ставит бит, чтение возвращает маску). Прерывание не доставляется (раздел 11), маска хранится |
+| `0x0C` | `INTMS` (RW1S) | Маска pin-based прерываний. Запись 1 ставит бит, чтение возвращает маску. Бит 0 маскирует INTA в PCI-профиле при выключенном MSI-X |
 | `0x10` | `INTMC` (RW1C) | Запись 1 снимает бит; чтение возвращает ту же маску |
-| `0x14` | `CC` (RW) | Записываемые биты: `EN`, `CSS[6:4]`, `MPS[10:7]`, `AMS[13:11]`, `SHN[15:14]`, `IOSQES[19:16]`, `IOCQES[23:20]`. `CRIME` не реализован. Принимаются только `CSS = 0`, `MPS = 0`, `AMS = 0`, `IOSQES = 6` (SQE 64 байта), `IOCQES = 4` (CQE 16 байт) |
+| `0x14` | `CC` (RW) | Записываемые биты: `EN`, `CSS[6:4]`, `MPS[10:7]`, `AMS[13:11]`, `SHN[15:14]`, `IOSQES[19:16]`, `IOCQES[23:20]`. `CRIME` не реализован. Для включения нужны `CSS = 0`, `MPS = 0` и `AMS = 0`. При создании I/O-очереди поддерживаются `IOSQES = 6` (SQE 64 байта) и `IOCQES = 4` (CQE 16 байт) |
 | `0x1C` | `CSTS` (RO) | `RDY` бит 0, `CFS` бит 1, `SHST[3:2]`; `NSSRO`, `PP` = 0 |
 | `0x20` | `NSSR` | не реализован (`CAP.NSSRS = 0`), чтение 0, запись игнорируется |
 | `0x24` | `AQA` | `ASQS[11:0]` и `ACQS[27:16]`, 0-based; допустимо 2…1024 записей |
@@ -70,9 +82,9 @@
 
 **Включение и сброс.**
 
-- `CC.EN` 0 → 1: проверяются `CSS/MPS/AMS/IOSQES/IOCQES` и размеры `AQA`. Верно — создаются admin SQ/CQ (пустые: `head = tail = 0`, фаза CQ = 1), `CSTS = RDY`. Неверно — `CSTS = CFS`, `RDY = 0`, очереди не создаются (поведение при неверных значениях — NOT VERIFIED, раздел 11). Выход из `CFS` — запись `CC.EN = 0`.
-- `CC.EN` 1 → 0 — сброс контроллера: все очереди, features и невыполненные AER теряются, `CSTS = 0`. Error Information log и счётчики сохраняются.
-- При `CC.EN = 1` меняется только `SHN`. Запись `SHN = 01b/10b` сразу выставляет `CSTS.SHST = 10b` (shutdown complete); состояния «в процессе» нет, так как нечего сбрасывать на носитель.
+- При переходе `CC.EN` 0 → 1 проверяются `CSS/MPS/AMS` и размеры `AQA`. При успехе создаются пустые admin SQ/CQ с записями 64 и 16 байт соответственно, `CSTS = RDY`. При ошибке `CSTS = CFS`, `RDY = 0`, очереди не создаются (поведение при неверных значениях — NOT VERIFIED, раздел 11). Выход из `CFS` — запись `CC.EN = 0`.
+- `CC.EN` 1 → 0 — сброс контроллера. Очереди, features, невыполненные AER и записи Error Information очищаются, `CSTS = 0`. Идентификатор последней ошибки и счётчик SMART сохраняются в экземпляре контроллера. [NVMe Base 2.4, §5.2.13.1.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=244)
+- При `CC.EN = 1` можно записать `SHN` и независимо менять `IOSQES` и `IOCQES`, пока отсутствуют I/O-очереди соответствующего типа. При наличии таких очередей результат изменения поля спецификацией не определён. Модель сохраняет прежнее значение поля до удаления последней очереди этого типа. Запись `SHN = 01b/10b` сразу выставляет `CSTS.SHST = 10b` (shutdown complete).
 - Контроллер не «всегда готов»: до `CC.EN = 1` `RDY = 0`, doorbells возвращают `UnsupportedConfiguration`, `service` ничего не делает.
 
 ## 5. Doorbells
@@ -89,7 +101,7 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 - Команда: `OPC[7:0]`, `FUSE[9:8]`, `PSDT[15:14]`, `CID[31:16]`; `NSID`, `PRP1/PRP2`, `CDW10..13` (`MPTR` и `CDW2/3/14/15` не используются). `FUSE ≠ 0` и `PSDT ≠ 0` (SGL) — `Invalid Field in Command`.
 - CQE: `DW0` — команда-специфично; `DW2`: `SQHD[15:0]` (голова SQ после извлечения команды), `SQID[31:16]`; `DW3`: `CID`, фазовый бит `P` (бит 16), `SC[24:17]`, `SCT[27:25]`, `DNR` (бит 31); `CRD`, `M` = 0.
 - Фазовый бит: CQ создаётся с `P = 1` и с нулевыми записями гостя; контроллер пишет запись целиком одной операцией и переворачивает `P` при каждом проходе `tail` через конец очереди. CQ считается заполненной, когда остаётся один свободный слот (`tail + 1 == head`): `service` перестаёт извлекать команды из SQ этой CQ, пока гость не сдвинет `head` doorbell'ом; запись не затирается.
-- Порядок: admin SQ первой, затем I/O SQ по номеру; внутри очереди — по порядку. Арбитраж round robin с burst 1 (приоритеты WRR не поддержаны).
+- Round robin обслуживает одну команду из каждой готовой SQ за круг, включая Admin SQ. Посещения идут по номеру SQ, порядок команд внутри одной SQ сохраняется. Эффективный burst равен 1 и укладывается в ограничения `Arbitration Burst`. [NVMe Base 2.4, §3.4.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=129)
 - Ошибки команды — статус NVMe в CQE; `DNR = 1` для всех, кроме `Data Transfer Error` (повтор разрешён) — соглашение v1, NOT VERIFIED.
 - **PRP.** Поддержаны `PRP1` со смещением (кратно 4 байтам), `PRP2` как вторая страница или как PRP list (в том числе со смещением внутри страницы), цепочка листов через последний элемент страницы; элементы листа и `PRP2`-страница обязаны быть выровнены по 4 KiB (`PRP Offset Invalid`, SC `0x13`); не более 1024 страниц на команду. Максимум передачи для I/O-команд: `MDTS = 8` (256 страниц, 1 MiB; одна страница PRP list вмещает 512 элементов, цепочка листов для этого размера не нужна). SGL не поддержан (`SGLS = 0`).
 
@@ -104,10 +116,10 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | Opcode | Команда | Поведение и границы |
 |---|---|---|
 | `0x00` | Delete I/O SQ | `CDW10[15:0]` = QID. QID 0, больше 4 или не создана — `Invalid Queue Identifier` (SCT 1, SC `0x01`) |
-| `0x01` | Create I/O SQ | QID — `1..=NSQA+1`, не занят. `CDW10[31:16]` = QSIZE (0-based), `CDW11`: `PC` (бит 0, обязан быть 1), `CQID[31:16]`. Порядок проверок: QID → CQID (нет такой CQ — `Completion Queue Invalid`, SCT 1, SC `0x00`) → размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC = 0` или `PRP1` не выровнен по странице (`Invalid Field`). `QPRIO` игнорируется (WRR нет). Область памяти очереди при создании не проверяется |
+| `0x01` | Create I/O SQ | QID — `1..=NSQA+1`, не занят. `CDW10[31:16]` = QSIZE (0-based), `CDW11`: `PC` (бит 0, обязан быть 1), `CQID[31:16]`. Порядок проверок: QID → CQID (нет такой CQ — `Completion Queue Invalid`, SCT 1, SC `0x00`) → `IOSQES = 6` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC = 0` или `PRP1` не выровнен по странице (`Invalid Field`). `QPRIO` игнорируется (WRR нет). Область памяти очереди при создании не проверяется |
 | `0x02` | Get Log Page | раздел 9 |
 | `0x04` | Delete I/O CQ | как Delete SQ; если к CQ привязана SQ — `Invalid Queue Deletion` (SCT 1, SC `0x0C`) |
-| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят; `CDW11`: `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок: QID → размер → `PC`/выравнивание → `IEN = 1` с `IV ≠ 0` — `Invalid Interrupt Vector` (SCT 1, SC `0x08`; при pin-based вектор один, 0). `IEN` сохраняется, прерывание не доставляется |
+| `0x05` | Create I/O CQ | QID — `1..=NCQA+1`, не занят. `CDW11` содержит `PC` (обязан быть 1), `IEN` (бит 1), `IV[31:16]`. Порядок проверок — QID → `IOCQES = 4` и размер (2…1024, иначе `Invalid Queue Size`, SC `0x02`) → `PC`/выравнивание → при `IEN = 1` допустимый `IV` (`0` в режиме INTx, `0..=4` при MSI-X, иначе `Invalid Interrupt Vector`, SCT 1, SC `0x08`). Профиль firmware MMIO использует опрос |
 | `0x06` | Identify | раздел 8 |
 | `0x08` | Abort | `CDW10`: `SQID[15:0]`, `CID[31:16]`. Несуществующая SQ — `Invalid Field`. Иначе успех с `DW0` бит 0 = 1 (команда не прервана): к моменту исполнения `Abort` все ранее извлечённые команды уже завершены (раздел 3). Лимит одновременных `Abort` объявлен `ACL = 3` и не может быть превышен. Прерывать нечего: команд в работе нет |
 | `0x09` | Set Features | раздел 9 |
@@ -118,7 +130,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 
 ## 8. Identify
 
-`Identify Controller` требует `NSID = 0` (`Invalid Field` при ненулевом NSID); namespace/list CNS применяют правила ниже.
+Обе формы Identify Controller (`0x01`, `0x06`) требуют `NSID = 0` (`Invalid Field` при ненулевом NSID). Формы `0x05`–`0x07` проверяют `CDW11[31:24]` (CSI). Поддержан NVM (`CSI = 0`), другой CSI даёт `Invalid Field in Command`. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=362)
 
 `CDW10[7:0]` = CNS; результат — 4096 байт по PRP, остальное содержимое страницы — нули. Поддержаны:
 
@@ -128,8 +140,12 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | `0x01` | Identify Controller | раздел 8.1 |
 | `0x02` | Список активных NSID | `[1]` при `NSID < 1`, иначе пустой (нули); `NSID ≥ 0xFFFF_FFFE` — `Invalid Namespace or Format` |
 | `0x03` | Список Namespace Identification Descriptor | `NSID = 1`: дескриптор `NIDT = 2` (NGUID, 16 байт), затем `NIDT = 4` (CSI = 0, NVM command set), затем нулевой терминатор |
+| `0x05` | NVM I/O Command Set Specific Identify Namespace | `NSID = 1`. Все поля нулевые для LBA без metadata и protection information. Остальные NSID дают `Invalid Namespace or Format` |
+| `0x06` | NVM I/O Command Set Specific Identify Controller | Все поля нулевые. Дополнительные лимиты и варианты NVM-команд не объявлены |
+| `0x07` | Список активных NSID для NVM | Правила `0x02`, поскольку единственное пространство имён принадлежит NVM |
+| `0x08` | I/O Command Set Independent Identify Namespace | `NSID = 1`. Бит `RESCAP.IEKS` установлен согласно версии, типы резерваций не объявлены. `NSTAT.NRDY = 1` при подключённом backend. Остальные NSID дают `Invalid Namespace or Format` |
 
-Остальные CNS (в том числе I/O-command-set-specific `0x05/0x06/0x1C…`, NVM Set, secondary controller, allocated namespace list) — `Invalid Field in Command`.
+Остальные CNS (в том числе `0x1C`, NVM Set, secondary controller, allocated namespace list) дают `Invalid Field in Command`. [NVM Command Set 1.3, §4.1.5](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=83)
 
 ### 8.1. Identify Controller — объявленные значения
 
@@ -137,7 +153,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 
 | Смещение | Поле | Значение | Смысл |
 |---|---|---|---|
-| 0, 2 | `VID`, `SSVID` | 0 | **PCI vendor ID проекту не выдан**; поле определяется вместе с PCI-привязкой (S4-30). Это зафиксированная заглушка, не значение «по смыслу» |
+| 0, 2 | `VID`, `SSVID` | `0xD1A6`, `0x0000` в PCI-профиле | Значения берутся из PCI Configuration Header. Для фиксированного MMIO-профиля без PCI оба поля равны 0. [NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=366) |
 | 4 | `SN` (20) | `NvmeConfig::serial`, по умолчанию `OD-NVME-0001` + пробелы | ASCII `0x20..=0x7E`, дополнено пробелами |
 | 24 | `MN` (40) | `Open Desktop Virtual NVMe` + пробелы | |
 | 64 | `FR` (8) | `0.1.0` + пробелы | |
@@ -154,7 +170,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | 258 | `ACL` | 3 | четыре `Abort` (0-based) |
 | 259 | `AERL` | 3 | четыре AER (0-based) |
 | 260 | `FRMW` | `0x03` | слот 1 только для чтения; один слот |
-| 261 | `LPA` | 0 | SMART и Firmware Slot log — на весь контроллер; нет Commands Supported and Effects, телеметрии |
+| 261 | `LPA` | `0x06` | Поддерживаются расширенный `NUMD`, байтовый `LPO` и Commands Supported and Effects. `MLPS = 0` допускает страницы `0x00` и `0x12` без объявления областей действия команд в `0x05`. SMART доступен для всего контроллера |
 | 262 | `ELPE` | 63 | 64 записи Error Information log |
 | 263 | `NPSS` | 0 | одно состояние питания |
 | 266, 268 | `WCTEMP`, `CCTEMP` | 343, 358 K | пороги предупреждения и критический |
@@ -164,7 +180,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 | 516 | `NN` | 1 | |
 | 520 | `ONCS` | 0 | необязательных NVM-команд нет: `Read`/`Write`/`Flush` в `ONCS` не объявляются (NOT VERIFIED: какие команды обязательны); Compare, Write Uncorrectable, Dataset Management, Write Zeroes, Verify, Copy — не реализованы |
 | 522 | `FUSES` | 0 | fused-операций нет |
-| 525 | `VWC` | 0 | энергозависимого кэша записи в контроллере нет; `Flush` всё равно вызывает `flush` backend (раздел 13) |
+| 525 | `VWC` | `0x04` | `VWCP = 0`: энергозависимого кэша записи нет. `FB = 10b`: `Flush` с `NSID = 0xFFFF_FFFF` даёт `Invalid Namespace or Format`. С `NSID = 1` вызывается `flush` backend |
 | 536 | `SGLS` | 0 | SGL не поддержан |
 | 768 | `SUBNQN` | `nqn.2014-08.org.nvmexpress:uuid:<UUID>` | UUID из `NvmeConfig::subsystem_uuid`, дополнено нулями |
 | 2048 | `PSD0` | `MP = 2500` (25,00 Вт), задержки 0 | описание единственного состояния питания |
@@ -183,33 +199,38 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 | FID | Feature | Поддержка |
 |---|---|---|
-| `0x01` | Arbitration | хранится (`AB`, `LPW/MPW/HPW`; арбитраж фактически round robin); по умолчанию `AB = 7` |
+| `0x01` | Arbitration | сохраняет `AB`, `LPW/MPW/HPW`; по умолчанию `AB = 7`. Проход round robin выбирает по одной команде на SQ. Приоритеты WRR вне выбранного механизма |
 | `0x02` | Power Management | только `PS = 0`, без workload hint; иное — `Invalid Field` |
-| `0x04` | Temperature Threshold | датчик 0 (composite): порог over (`THSEL = 0`, по умолчанию 343) и under (`THSEL = 1`, по умолчанию 0); `TMPSEL ≠ 0` или `THSEL > 1` — `Invalid Field`; события по порогам не генерируются (температура постоянная) |
+| `0x04` | Temperature Threshold | Единственный датчик composite (`TMPSEL = 0`). Set с `TMPSEL = 0xF` также применяет порог composite. Over (`THSEL = 0`) по умолчанию 343 K, under (`THSEL = 1`) по умолчанию 0 K. Неподдерживаемый селектор или ненулевой `TMPTHH` даёт `Invalid Field`. Достижение или пересечение порога устанавливает `SMART.TTC` |
 | `0x05` | Error Recovery | `TLER[15:0]`, `DULBE` не поддержан (`Invalid Field`); `NSID` — 0, 1 или `0xFFFF_FFFF`, иначе `Invalid Namespace or Format` |
 | `0x07` | Number of Queues | Get — текущее число (по умолчанию 4 SQ и 4 CQ, 0-based `3`, `DW0 = NSQA \| NCQA << 16`); Set — `NSQR/NCQR`, значение больше доступного усекается, `0xFFFF` — `Invalid Field`; после создания любой I/O-очереди — `Command Sequence Error` |
 | `0x08` | Interrupt Coalescing | `THR/TIME` хранятся, на доставку не влияют |
-| `0x09` | Interrupt Vector Configuration | только `IV = 0`, `CD` хранится; иное — `Invalid Field` |
+| `0x09` | Interrupt Vector Configuration | `IV = 0` в режиме INTx, `IV = 0..=4` при MSI-X. Set Features в режиме MSI-X требует I/O CQ с `IEN = 1` и соответствующим вектором. `CD` хранится отдельно для каждого вектора. Get Features возвращает `IV` и `CD` |
 | `0x0A` | Write Atomicity Normal | `DN` хранится |
-| `0x0B` | Asynchronous Event Configuration | допустимы только биты `[7:0]` (SMART/Health critical warning); `OAES = 0` |
+| `0x0B` | Asynchronous Event Configuration | Допустимы биты `[7:0]` SMART/Health critical warning. Бит 1 разрешает событие Temperature Threshold. `OAES = 0` |
 
-Не поддержаны, `Invalid Field`: `0x03` LBA Range Type, `0x06` Volatile Write Cache (`VWC = 0`), `0x0C` APST, `0x0D…0x0F`, `0x80` Software Progress Marker и все остальные.
+Не поддержаны, `Invalid Field`: `0x03` LBA Range Type, `0x06` Volatile Write Cache (`VWC.VWCP = 0`), `0x0C` APST, `0x0D…0x0F`, `0x80` Software Progress Marker и все остальные.
 
 ### 9.2. Get Log Page
 
-`CDW10`: `LID[7:0]`, `RAE` (бит 15), `NUMDL[31:16]`; `CDW11[15:0]` = `NUMDU`; смещение `LPO` — `CDW12/CDW13`, обязано быть кратно 4. Читается `(NUMD + 1) · 4` байт с `LPO`; запрос за пределами страницы — `Invalid Field`. `NSID` для `0x02` и `0x03` — 0 или `0xFFFF_FFFF` (`LPA` бит 0 = 0), иначе `Invalid Field`. Неизвестный `LID` — `Invalid Log Page` (SCT 1, SC `0x09`). Содержимое — настоящее состояние, не нули-заглушки там, где поле имеет смысл:
+Команда читает `(NUMD + 1) · 4` байт с байтового смещения `LPO`. `CDW10` содержит `LID[7:0]`, `RAE` (бит 15) и `NUMDL[31:16]`. `CDW11[15:0]` содержит `NUMDU`. `CDW12/CDW13` задают смещение, кратное 4. Для поддерживаемых страниц допустимы `NSID = 0` и `0xFFFF_FFFF`. `CDW14.OT = 1`, смещение больше размера страницы или длина больше `MDTS` дают `Invalid Field`. Для `0x00`, `0x05` и `0x12` ненулевой `UIDX` также даёт `Invalid Field`. Неизвестный `LID` даёт `Invalid Log Page` (SCT 1, SC `0x09`). Контроллер заполняет нулями участок буфера за концом страницы. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified).
 
 | LID | Страница | Содержимое |
 |---|---|---|
-| `0x01` | Error Information | до 64 записей по 64 байта, новейшая первой. Заводится на каждую команду с ненулевым статусом (кроме событий-doorbell, у них свои записи): `Error Count` (с 1, растёт), `SQID`, `CID`, `Status Field` (`P` из CQE, `SC`, `SCT`, `DNR`), `Parameter Error Location = 0xFFFF` (не отслеживается), `NSID` команды (`0xFFFF_FFFF`, если 0). Неиспользованные записи — нули (`Error Count = 0`) |
-| `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
+| `0x00` | Supported Log Pages (1024) | 256 little-endian `u32`, по одному на LID. `LSUPP = 1` для шести страниц в таблице. Индексы записей как `LPO` и параметры `LIDSP` не объявлены |
+| `0x01` | Error Information | До 64 записей по 64 байта, новейшая первой. Ошибочный CQE со `M = 1` и запись содержат общий статус. Ошибка параметра указывает байт и бит начала поля SQE в `Parameter Error Location`. Если конкретное поле команды неприменимо, значение нулевое. Ошибка doorbell вне команды даёт `SQID = CID = Parameter Error Location = 0xFFFF`. `LBA Out of Range` указывает первый недопустимый LBA. `NSID` берётся из команды (`0xFFFF_FFFF`, если 0). `Error Count` начинается с 1 и после `u64::MAX` начинается снова. Неиспользованные записи нулевые. [NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=245) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76) |
+| `0x02` | SMART / Health Information (512) | `Critical Warning.TTC` определяется порогами FID `0x04`. `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
 | `0x03` | Firmware Slot Information (512) | `AFI = 0x01` (активен слот 1, следующий — нет); `FRS1` = `FR`; слоты 2–7 пусты (нули) |
+| `0x05` | Commands Supported and Effects (4096) | 256 little-endian `u32` для Admin с байта 0 и 256 для NVM I/O с байта 1024. `CSUPP = 1` для реализованных команд, `LBCC = 1` для NVM `Write`. Зарезервированный остаток обнулён |
+| `0x12` | Feature Identifiers Supported and Effects (1024) | 256 little-endian `u32`, по одному на FID. `FSUPP = 1` для реализованных features. `FSP` указывает namespace для Error Recovery и controller для остальных. Зарезервированные поля обнулены |
 
-Чтение с `RAE = 0` снимает маску асинхронного события соответствующего типа (`0x01` — тип 0 «error status», `0x02` — тип 1).
+Успешное чтение с `RAE = 0` очищает Error event для `0x01` и SMART/Health event для `0x02`. Остальные поддержанные журналы не сбрасывают эти события. Поскольку `CC.CSS = 0`, `CSI` не влияет на эти три страницы. [Base 2.4, Figures 204–211](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239), [Figures 216–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=253), [Figures 270–271](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=302), [NVM Command Set 1.3, Figure 92](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=64).
 
 ### 9.3. Асинхронные события
 
-События генерирует только контроллер при ошибочных doorbell (раздел 5): тип 0 (error status), `info` 0 или 1, log page `0x01`. `DW0` completion AER = `тип \| info << 8 \| log_page << 16`. Событие, возникшее без невыполненного AER, ждёт и завершает следующий AER сразу. Пока событие данного типа не «прочитано» (`Get Log Page` с `RAE = 0`), новые события того же типа не передаются (запись в Error Information log всё равно добавляется). Событий SMART/NS-изменений/firmware-активации нет.
+- Ошибочные doorbell создают Error event (тип 0, `info` 0 или 1, `LID = 0x01`).
+- Переход к разрешённому предупреждению `TTC` создаёт SMART/Health event (тип 1, `info = 1`, `LID = 0x02`). Постоянная composite temperature равна 300 K. Порог можно пересечь изменением настройки; включение уведомления при действующем предупреждении тоже создаёт событие.
+- `DW0` completion AER содержит тип, `info << 8` и `LID << 16`. Если AER ещё нет, событие ждёт запроса. Успешное чтение связанного журнала с `RAE = 0` очищает уже доставленное или ожидающее событие. Следующее пересечение порога может создать новое SMART-событие. [NVMe Base 2.4, §5.2.2](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=209)
 
 ## 10. Что не сделано и почему
 
@@ -221,26 +242,25 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Firmware Image Download/Commit | вне scope; `FRMW` объявляет слот 1 только для чтения |
 | Device Self-test, Format NVM, Sanitize, Security Send/Receive, Keep Alive, Directives, Virtualization, Doorbell Buffer Config | вне scope; `Invalid Command Opcode` |
 | SGL | вне scope; `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
-| Доставка прерываний | нет IRQ-маршрута (`gsi = 0xFFFF_FFFF`); `INTMS/INTMC`, `IEN`, `Interrupt Coalescing` хранятся без эффекта; прошивка опрашивает CQ. Pin-based через IOAPIC — отдельная часть S7-16; MSI-X — после S4-30 |
-| PCI-привязка (class `010802`, BAR0, MSI-X) | blocked до S4-30; до неё контроллер виден только прошивке |
-| Supported Log Pages (`LID 0x00`), Commands Supported and Effects (`0x05`), Changed Namespace List, телеметрия | не реализованы; обязательность `0x00` и `0x05` для заявляемой редакции не сверена (раздел 11). `Invalid Log Page` |
+| Прерывания в профиле firmware MMIO | `gsi = 0xFFFF_FFFF`. Прошивка опрашивает CQ |
+| Доставка MSI-X в PCI-профиле | Fixed edge в физический xAPIC ID. Linux подтвердил сообщения обоих используемых векторов через `/proc/interrupts`. Другие форматы сообщений вне принятого профиля |
+| Changed Attached Namespace List, телеметрия | `Invalid Log Page` |
 | Время (`Power On Hours`, `Controller Busy Time`, `TO`) | у устройства нет виртуальных часов; `RDY` выставляется синхронно, объявлено `TO = 1` |
-| `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR, ключевые события температуры | не реализованы; `CAP` не объявляет их |
-| Идентификаторы `VID`, `SSVID`, `IEEE` | нулевые; значения проекту не выданы (раздел 8.1) |
+| `NSSR` (NVM subsystem reset), `CRIME`, CMB, PMR, boot partitions, WRR | вне реализованного профиля; `CAP` их не объявляет |
+| Идентификаторы для поставки | PCI-профиль использует тестовый `VID`, нулевой `SSVID` и нулевой `IEEE`. Тестовый `VID` инициализируется в PCI Configuration Header и отображается в Identify |
 | Моделирование времени исполнения команд | команды завершаются в `service`, без виртуальной задержки |
 
 ## 11. NOT VERIFIED: места, где расхождение наиболее вероятно
 
-Сверка с Linux `nvme.h` (раздел 1) не заменяет сверку с текстом NVMe Base 2.4; NOT VERIFIED остаётся всё, что в разделе 1 не перечислено как сверенное. Особо проверить при сверке:
+Здесь перечислены оставшиеся вопросы для расширения профиля и более широкой проверки соответствия. Приёмка минимального профиля охватывает команды, регистры и сценарии, указанные в плане S7-16. Подтверждённые результаты описаны в соответствующих разделах и отчёте.
 
-- положение и значения полей `CAP` (`MQES`, `CQR`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
-- **вероятное отклонение:** `CSTS.CFS = 1` при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4` (`controller.rs`, `enable`). По спецификации (неподтверждённо) эти поля проверяются при создании I/O-очереди (Create I/O SQ/CQ), а не при включении контроллера; поведение не менялось и не проверялось (`NOT VERIFIED against NVMe Base 2.4: проверка IOSQES/IOCQES при EN=1 против при Create I/O SQ/CQ`);
+- положение и значения полей `CAP` (`MQES`, `TO`, `CSS` бит 37, `MPSMIN/MPSMAX`) и значение `VS` для заявляемой редакции (2.0.0 против 2.4.0; согласовать с `Identify Controller.VER`);
 - битовые поля `CC`, `CSTS`, `AQA` и поведение при недопустимых значениях `CC` (здесь — `CSTS.CFS = 1`, `RDY = 0`) и при записи `AQA/ASQ/ACQ` при `CC.EN = 1` (здесь — `Busy` на шине, без эффекта);
-- смещения и размеры полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`, нужны ли `CNS 0x03` и I/O-command-set-specific CNS для заявляемой редакции;
-- перечень обязательных Admin-команд и обязательных features для контроллера ввода-вывода PCIe (раздел 7, 9.1), значения по умолчанию features (`Arbitration = 7`, порог 343 K), допустимость `SEL ≠ 0`;
+- смещения и размеры остальных полей Identify Controller / Namespace, `FRMW`, `LPA`, `SQES/CQES`, `SUBNQN`, `PSD0`, значение `CNTRLTYPE`. Применимые `CNS 0x00`–`0x03` и `0x05`–`0x08` сверены в Figure 336;
+- подробная сверка `SEL` и сохранения feature-значений при расширении выявленных возможностей. Обязательные Admin-команды и features для принятого контроллера перечислены в разделах 7 и 9.1;
 - коды статусов и их SCT, особенно `PRP Offset Invalid`, `Invalid Interrupt Vector`, `Invalid Queue Deletion`, порядок проверок при создании очередей, `DNR`;
-- формат Error Information log (`Status Field`, `Parameter Error Location`), какие команды в него попадают, поведение при чтении за пределами страницы, обязательность `LID 0x00` и `0x05`;
-- коды событий AER (тип 0, `info` 0 и 1) и правила маскирования до `Get Log Page` с `RAE = 0`;
+- применимость прочих расширенных полей Error Information к отдельным ошибкам и сохранение счётчиков через новый экземпляр контроллера. Проверенные поля `Parameter Error Location` и `LBA` описаны в разделе 9.2;
+- расширенные правила AER для других типов событий вне текущего профиля. Маскирование и `RAE` для Error и SMART описаны в разделе 9.3;
 - ответ `Abort`, когда цель не найдена (`DW0` бит 0 = 1), и поведение при несуществующей SQ;
 - реакция на doorbell несозданной очереди и на значение вне диапазона (здесь — запись принимается, событие и запись в журнал, а не ошибка шины);
 - правила PRP: допустимое смещение `PRP1` и `PRP2`-листа, цепочка листов.
@@ -249,15 +269,13 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 **Открытые вопросы среза A (для ревью и S7-17):**
 
-1. Проверка `IOSQES`/`IOCQES` при `CC.EN = 1` против проверки при Create I/O SQ/CQ (выше, вероятное отклонение).
-2. Supported Log Pages (`LID 0x00`) и Commands Supported and Effects (`LID 0x05`) не реализованы (`Invalid Log Page`); обязательность для заявляемой редакции не сверена — первый кандидат в дефекты.
-3. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
-4. Запись doorbell гостем не покрыта тестом end-to-end (раздел 3).
-5. `CAP.CQR`, коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
+1. `VS = 2.0.0` (и `Identify Controller.VER`) против 2.4.0.
+2. Doorbells проверены в госте в профиле PCI. [Отчёт](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
+3. Коды AER info, правила PRP, умолчания features, поведение при ошибках — NOT VERIFIED (раздел 1).
 
 ## 12. Проверка
 
-`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, три log page, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды; путь «гость пишет doorbell → остановка кванта → `service`» end-to-end не покрыт, раздел 3). Срез B: тесты `nvme/tests.rs` (раздел «I/O») и `nvme/backend.rs`, `nvme/queues.rs` (`read_from_host`): Write → Read через PRP1+PRP2 и PRP list, максимум 1 MiB, Flush, LBA/NSID/NLB/поля/PRP-ошибки, ошибка backend, нет backend, полная CQ, отсутствующая SQ, счётчики SMART. Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
+`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, шесть log pages, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды, проверены ECAM, BAR и PCI-прерывания). Срез B: тесты `nvme/tests.rs` (раздел «I/O») и `nvme/backend.rs`, `nvme/queues.rs` (`read_from_host`): Write → Read через PRP1+PRP2 и PRP list, максимум 1 MiB, Flush, LBA/NSID/NLB/поля/PRP-ошибки, ошибка backend, нет backend, полная CQ, отсутствующая SQ, счётчики SMART. Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
 
 ## 13. Срез B: I/O
 
@@ -265,7 +283,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 
 ### 13.1. Команды
 
-Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с NVMe Base 2.4 / NVM Command Set 1.3. Значения статусов раздела 13.2 (включая `LBA Out of Range` `0x80`, `Namespace Not Ready` `0x82`, `Internal Error` `0x06`) и бит DNR (`0x4000`) тоже сверены с `nvme.h`. **Всё остальное в этом разделе — `NOT VERIFIED against NVMe Base 2.4`:** раскладка полей `Read`/`Write`, DNR для статусов и условия их применения, порядок проверок, поведение `Flush`.
+Раскладка `Read` и `Write` сверена с NVM Command Set 1.3. Для условий и DNR отдельных статусов остаются пункты сверки в разделе 13.5. [Формат Read](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=49) · [Формат Write](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=54)
 
 | Поле | Read / Write |
 |---|---|
@@ -273,13 +291,13 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | `PRP1`, `PRP2` | данные; правила PRP — раздел 6 |
 | `CDW10`, `CDW11` | `SLBA` (младшие, старшие 32 бита) |
 | `CDW12[15:0]` | `NLB`, 0-based: 1…2048 секторов (512 байт … 1 MiB, `MDTS = 8`) |
-| `CDW12[31:16]` | `LR` (бит 31) — подсказка, принимается и игнорируется (Linux ставит её при `REQ_FAILFAST_DEV`/`REQ_RAHEAD`). `FUA` (бит 30), `PRINFO` (26–29), `DTYPE` (20–23) и прочее — не поддержаны: любое ненулевое значение — `Invalid Field` |
-| `CDW13[7:0]` | подсказки Dataset Management (`DSM`: частота доступа, задержка, incompressible) — принимаются и игнорируются (Linux ставит `FREQ_PREFETCH` при `REQ_RAHEAD`); `CDW13[31:8]` (включая `DSPEC`) — `Invalid Field` |
+| `CDW12[31:16]` | `FUA` (бит 30) и `LR` (31) допустимы. Backend работает в режиме write-through, контроллер выполняет одно обращение к backend. Для `Write` `DTYPE` игнорируется при выключенных директивах. Остальные биты должны быть нулевыми |
+| `CDW13` | `DSM[7:0]` содержит подсказки, которые контроллер не использует для оптимизации. `AF[3:0]` допустим от 0 до 8 для `Read` и от 0 до 6 для `Write`. Для `Write` `DSPEC[31:16]` игнорируется при выключенных директивах. Остальные биты должны быть нулевыми |
 | `CDW14`, `CDW15`, `MPTR` | игнорируются: защиты данных (`PRINFO = 0`) и метаданных (`MS = 0`) нет |
 
 `Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
 
-**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) `CDW12[30:16]` ≠ 0 или `CDW13[31:8]` ≠ 0 (`Invalid Field`); `LR` и `CDW13[7:0]` игнорируются → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
+**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) недопустимые биты в `CDW12`/`CDW13` или зарезервированное значение `AF` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
 
 **Передача.** `Read`: чтение из backend, затем запись в память гостя по PRP. `Write`: сначала весь буфер читается из памяти гостя по PRP, потом пишется в backend; при ошибке PRP диск не меняется. Память гостя — только RAM (раздел 3).
 
@@ -302,7 +320,7 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 ### 13.3. Backend и namespace
 
 - `trait NvmeBackend`: `sector_count`, `read_sectors(lba, &mut [u8])`, `write_sectors(lba, &[u8])`, `flush`; буфер — целое число секторов по 512 байт; ошибки — `BackendError` (`OutOfRange`, `Io`, `InvalidSize`), не паника. Контроллер проверяет диапазон сам, но реализация обязана отвергать выход за пределы.
-- `InMemoryBackend` (`new(sectors)`, `from_bytes`, `as_bytes`, `flush_count`) — нулевой вектор фиксированного размера для тестов и мини-образов. **Точка интеграции host-файла:** владелец машины реализует `NvmeBackend` над контрактами `od-storage` (`STORAGE_FORMAT.md`) и передаёт его в `NvmeHandle::attach_backend(Box<dyn NvmeBackend + Send>)`; host-контракт Stage 5 описан в §14. Файлового ввода-вывода в `od-machine` нет. Для текущего `VWC = 0` Stage 5 выбирает write-through: каждый успешный `write_sectors` имеет durable file-data ack до `Ok(())`. `Flush` остаётся поддержанным и всегда вызывает `NvmeBackend::flush`, в том числе при `VWC = 0`. Это фиксирует политику host-интеграции и не меняет регистры, Identify или команды контроллера, которыми владеет `S7-16`.
+- `InMemoryBackend` (`new(sectors)`, `from_bytes`, `as_bytes`, `flush_count`) — нулевой вектор фиксированного размера для тестов и мини-образов. **Точка интеграции host-файла:** владелец машины реализует `NvmeBackend` над контрактами `od-storage` (`STORAGE_FORMAT.md`) и передаёт его в `NvmeHandle::attach_backend(Box<dyn NvmeBackend + Send>)`; host-контракт Stage 5 описан в §14. Файлового ввода-вывода в `od-machine` нет. Для текущего `VWC.VWCP = 0` Stage 5 выбирает write-through: каждый успешный `write_sectors` имеет durable file-data ack до `Ok(())`. `Flush` остаётся поддержанным и всегда вызывает `NvmeBackend::flush`, в том числе при `VWC.VWCP = 0`. Это фиксирует политику host-интеграции и не меняет регистры, Identify или команды контроллера, которыми владеет `S7-16`.
 - `attach_backend`: допустим только пока `CC.EN = 0` (`NvmeAttachError::ControllerEnabled`), backend с нулём секторов — `EmptyBackend`. `NSZE = NCAP = NUSE`, `NVMCAP`, `TNVMCAP` становятся `sector_count()` backend и заменяют `NvmeConfig::namespace_sectors`; Identify Namespace/Controller и проверка диапазона используют одно и то же значение. Заменить backend можно только при выключенном контроллере.
 - **Решение: устройство существует и без backend.** До `attach_backend` контроллер работает (регистры, admin, Identify с размером из `NvmeConfig`), а любая `Read`/`Write`/`Flush` завершается `Namespace Not Ready` (после проверки NSID). Альтернатива — не создавать устройство без backend — отвергнута: `FirmwareBoardConfig::nvme` и handoff остаются как в срезе A, а владелец машины подключает диск позже.
 - **Решение: один формат LBA, 512 байт** (`LBAF0`, `LBADS = 9`). 4 KiB LBA не поддержан и не объявляется (`NLBAF = 0`): 512 байт — единица `od-storage`, GPT S7-17 и размер, который ждут прошивка и `stornvme`.
@@ -312,13 +330,13 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | Что | Статус |
 |---|---|
 | LBA 4 KiB, несколько форматов LBA, Format NVM | не поддержаны (решение выше) |
-| `Dataset Management` (команда), `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode` / `Invalid Field`; `ONCS = 0` |
-| `FUA`, `PRINFO` (защита данных), метаданные | `Invalid Field`; не объявлены. `LR` и подсказки `CDW13[7:0]` принимаются и игнорируются |
+| Команды `Dataset Management`, `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode`. Подсказки DSM в `Read`/`Write` принимаются независимо от `ONCS` |
+| `PRINFO`, `STC` (защита данных), метаданные | формат LBA без метаданных и защиты данных. `PRINFO` и `STC` должны быть нулевыми |
 | Namespace Management, несколько NS, широковещательный `NSID = 0xFFFF_FFFF` | вне scope; Flush на `0xFFFF_FFFF` отвергается |
 | SGL | `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Файловый/CoW backend | вне `od-machine` (`od-storage`) |
-| Прерывания | нет IRQ-маршрута, прошивка опрашивает CQ; `IEN` хранится без эффекта |
-| PCI-привязка | S4-30 |
+| Прерывания | Firmware MMIO опрашивает CQ. PCI использует `IEN` для INTx или MSI-X в границах раздела 3.1 |
+| PCI-привязка | Opt-in Linux direct boot использует класс `010802`, BAR0/1, INTx и MSI-X. FLR отслеживается отдельно в [ISSUE-591](../KNOWN_ISSUES.md#issue-591) |
 | Атомарность записи (`AWUN`/`AWUPF`), `Write Atomicity` | команда в `service` исполняется целиком; гарантии для гостя нет в обозначенных границах, поля не объявлены |
 | Время исполнения, ограничение скорости | нет |
 | I/O без созданной SQ | `Invalid Queue Identifier` невозможна: doorbell несозданной SQ даёт событие среза A (invalid doorbell register); `Invalid Queue Identifier` проверяется на Delete SQ несозданной очереди |
@@ -326,15 +344,14 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 ### 13.5. Открытые вопросы среза B (NOT VERIFIED)
 
 1. Значения `LBA Out of Range` (`0x80`), `Namespace Not Ready` (`0x82`), `Internal Error` (`0x06`) сверены с `nvme.h`; `DNR` для них и условия применения — NOT VERIFIED против NVMe Base 2.4; для отказа backend спецификация, вероятно, предписывает медиа-статусы SCT 2.
-2. Раскладка `CDW12`/`CDW13` Read/Write (позиции `FUA`, `LR`, `PRINFO`, `DTYPE`) и реакция на их ненулевые значения; нужен ли `Invalid Field` для `CDW14/15` при `PRINFO = 0`.
-3. `Flush` с `NSID = 0xFFFF_FFFF` и с `NSID = 0`; поведение `Flush` без volatile write cache (`VWC = 0`).
+2. Точный статус для ненулевых полей защиты данных в `Read`/`Write` при формате LBA без метаданных и защиты данных.
+3. `Flush` с `NSID = 0` и поведение `Flush` без volatile write cache (`VWC.VWCP = 0`). Отказ для `NSID = 0xFFFF_FFFF` сверён с объявленным `VWC.FB = 10b`.
 4. Порядок проверок (`Namespace Not Ready` после `NSID`, до полей), `MDTS`: статус при превышении (`Invalid Field`).
-5. Единицы и округление `Data Units Read/Written` в SMART.
-6. Обязательность `Write Zeroes`/`Dataset Management` для заявляемого профиля и требования `stornvme`/Linux к ним (первые кандидаты в дефекты после сверки).
+5. Округление `Data Units Read/Written` сверено с Figure 213. `Write Zeroes` и `Dataset Management` — необязательные команды выбранного NVM-профиля. Проверка операционной системы Windows относится к S7-32.
 
 ## 14. Постоянный backend на стороне host (S5-02)
 
-**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Он не принимает `S7-16`, не меняет его регистры/Identify/команды и не заменяет end-to-end guest storage/flush gate [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
+**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Приёмка минимального S7-16 описана в начале документа. Сквозная проверка guest storage и `Flush` относится к [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
 
 ### 14.1. Состав и владение
 
@@ -345,10 +362,10 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 
 ### 14.2. Write-through и durable completion
 
-- При объявленном контроллером `VWC = 0` каждая NVMe `Write` должна пройти: host adapter принимает полный backend buffer → проверяет диапазон/512-byte alignment → пишет его в `RawImage` → получает file-data durable acknowledgement из `CheckedStorage::flush_file_durable` → только затем возвращает `Ok(())` из `write_sectors`. Запись без успешного ack всегда возвращает ошибку; `RawImage::write_at` само означает только write completion и durability не подтверждает.
+- При объявленном контроллером `VWC.VWCP = 0` каждая NVMe `Write` должна пройти: host adapter принимает полный backend buffer → проверяет диапазон/512-byte alignment → пишет его в `RawImage` → получает file-data durable acknowledgement из `CheckedStorage::flush_file_durable` → только затем возвращает `Ok(())` из `write_sectors`. Запись без успешного ack всегда возвращает ошибку; `RawImage::write_at` само означает только write completion и durability не подтверждает.
 - Существующая композиция для S5-03: `RawImage::write_aligned` пишет через внутренний `CheckedStorage`; `RawImage::into_storage(self)` передаёт это checked-значение для `flush_file_durable()`. После успешного `DurableAck` host adapter заново создаёт RAW view через `RawImage::reopen_read_write_checked` на том же `CheckedStorage`, с неизменным logical size и block size 512. Этот narrow API сохраняет исходный writer lock и sticky state; при size/geometry validation error он возвращает тот же `CheckedStorage` вместе с `RawError`, чтобы terminal adapter мог удержать owner и не выпустить `LOCK_EX`. Не извлекать backend, не строить новый `CheckedStorage` и не сбрасывать sticky reconcile state при повторной обёртке. Повторное создание RAW view допускается только после успешного `DurableAck`. Если file flush после записи вернул `UnsupportedDurability` (включая `ENOTSUP`) или другую ошибку, операция не получает success, adapter переходит в terminal failed state, а host lifecycle помечает RAW backing quarantined; это не on-disk marker и не разрешает повторный path open. При недетерминированной ошибке `CheckedStorage` остаётся в sticky `ReconcileRequired`. Файл можно использовать снова только после отдельно определённой inspection/reconcile procedure, которая устанавливает состояние затронутых данных; такая процедура для RAW здесь не задаётся, и обычное повторное открытие recovery не является.
-- `NvmeBackend::flush` всегда вызывает `CheckedStorage::flush_file_durable` и возвращает success только при `DurableAck`, даже при `VWC = 0` или отсутствии ранее видимых writes. Отдельная guest `Flush` не является заменой per-Write barrier при `VWC = 0`.
-- `HostFileStorage` объявляет file durability только для writer с lock на macOS; там вызов `flush_file_durable` использует `fcntl(F_FULLFSYNC)` на этом дескрипторе. На не-macOS durability не объявляется, поэтому такая конфигурация не может присоединить persistent backend с `VWC = 0`. Реальное поведение выбранного носителя и end-to-end `F_FULLFSYNC` не подтверждены испытаниями.
+- `NvmeBackend::flush` всегда вызывает `CheckedStorage::flush_file_durable` и возвращает success только при `DurableAck`, даже при `VWC.VWCP = 0` или отсутствии ранее видимых writes. Отдельная guest `Flush` не является заменой per-Write barrier при `VWC.VWCP = 0`.
+- `HostFileStorage` объявляет file durability только для writer с lock на macOS; там вызов `flush_file_durable` использует `fcntl(F_FULLFSYNC)` на этом дескрипторе. На не-macOS durability не объявляется, поэтому такая конфигурация не может присоединить persistent backend с `VWC.VWCP = 0`. Реальное поведение выбранного носителя и end-to-end `F_FULLFSYNC` не подтверждены испытаниями.
 - Код отдельно классифицирует errno `ENOTSUP` как `UnsupportedDurability`, но это защитное предположение: источник не подтверждает этот errno для `F_FULLFSYNC`, фактическое появление ветки не проверено. Если capability/refusal известна до attach (`file_durability = false` либо explicit `UnsupportedDurability` при preflight до guest mutation), persistent VM не запускается: CQE нет, RAW не менялся гостем и не помещается в quarantine. Runtime NVMe `Flush` после attach всегда завершается CQE; explicit `UnsupportedDurability` до любой guest Write/mutation отображается в `Internal Error`, переводит adapter в terminal failed state для этой VM (новые Write/Flush запрещены), но RAW остаётся неизменным и не помещается в quarantine. Если explicit refusal или другая flush ошибка случилась после guest Write/mutation, file-data ack отсутствует, операция неуспешна, adapter terminally fails, RAW помечается host lifecycle как quarantined: возможные bytes нельзя считать сохранёнными, обычное переоткрытие не разрешено. Любой non-explicit flush failure до или после guest writes переводит `CheckedStorage` в sticky `ReconcileRequired`; runtime команда получает `Internal Error`, preflight прерывает запуск без CQE, а RAW остаётся недоступен до отдельной inspection/reconcile. Любой Write error, который мог оставить partial bytes, также переводит adapter в terminal failed state и помещает RAW в quarantine.
 - Durability здесь касается только file contents. Namespace durability для create/rename/directory entry отсутствует (`flush_namespace_durable` → `unsupported`); создание или перемещение image не получает гарантию сохранения имени. Никакая из этих границ не заявляет сохранность при потере питания, kernel panic или отказе накопителя; эти испытания и claims принадлежат Stage 9/S9-39 ([STORAGE_FORMAT.md §7](STORAGE_FORMAT.md#7-host-durability-api--статус-частично-реализовано-не-подтверждено-испытаниями)).
 
@@ -373,4 +390,4 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 
 - S5-03/S5-04 используют один RAW image. CoW-format, snapshot metadata/chain, recovery и alternate disk formats не входят в Stage 5 host adapter; они остаются в Stage 9 (`STORAGE_FORMAT.md`, S9-08…22). Capacity/explicit-zero/discard остаются [S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard), guest-level storage/flush acceptance — [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush), controlled power-loss tests — [S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания). Stage 5 не копирует эти правила в NVMe layer.
 - `NvmeHandle::attach_backend` вызывается только при `CC.EN = 0`; Attach при включённом контроллере остаётся `ControllerEnabled`. До старта гостевого исполнения host adapter проверяет nonzero 512-byte geometry, секторную ёмкость и file-durability capability. Контракт не меняет `VWC`, Identify Namespace/Controller, командный набор, LBA format или error status table, принадлежащие `S7-16`.
-- `VWC = 0` и per-Write ack не гарантируют atomicity многосекторной записи, guest filesystem consistency, namespace persistence или power-loss recovery. Indeterminate flush error либо любой failure после возможной guest mutation переводит backend в terminal failed state и RAW в quarantine до отдельно определённой inspection/reconcile; normal reopen или retry не доказывает, какие bytes durable. Explicit `UnsupportedDurability` до guest mutation тоже terminally fails adapter, но RAW остаётся unchanged и не quarantined. Это согласуется с неизвестным durability scope [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed). Отдельная строка `S9-13` проверяет сквозной guest-storage/flush contract; S5-02/S5-03 описывают и реализуют только host-side prerequisite.
+- `VWC.VWCP = 0` и per-Write ack не гарантируют atomicity многосекторной записи, guest filesystem consistency, namespace persistence или power-loss recovery. Indeterminate flush error либо любой failure после возможной guest mutation переводит backend в terminal failed state и RAW в quarantine до отдельно определённой inspection/reconcile; normal reopen или retry не доказывает, какие bytes durable. Explicit `UnsupportedDurability` до guest mutation тоже terminally fails adapter, но RAW остаётся unchanged и не quarantined. Это согласуется с неизвестным durability scope [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed). Отдельная строка `S9-13` проверяет сквозной guest-storage/flush contract; S5-02/S5-03 описывают и реализуют только host-side prerequisite.

@@ -1,8 +1,9 @@
 # ADR-0009: размещение vTPM, криптографические зависимости, профиль команд, CRB и состояние
 
 - **Дата:** 7 ноября 2026 года.
-- **Статус:** **принят после архитектурного ревью 2026-11-18; замечаний нет** (S7-20). Размещение процессора команд (D8) и семейство криптобиблиотек (D9) — решения владельца от 2026-11-07 ([план этапа 7, §1.1](../plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)); ADR фиксирует их с альтернативами и последствиями. Ревью охватило ADR целиком, включая стабильную цель `rsa =0.10.0` и feature sets; переход текущей реализации с RC на стабильный release остаётся работой S7-23.
-- **Запись ревью:** 2026-11-18 — независимое архитектурное повторное ревью одобрило полный scope ADR без замечаний. S7-20 принят; implementation-level проверки `rsa` migration остаются в S7-23 и S7-24.
+- **Статус:** **принят после архитектурного ревью 2026-11-18; замечаний нет** (S7-20). Размещение процессора команд (D8) и семейство криптобиблиотек (D9) — решения владельца от 2026-11-07 ([план этапа 7, §1.1](../plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)); ADR фиксирует их с альтернативами и последствиями. Ревью охватило ADR целиком, включая стабильную цель `rsa =0.10.0` и feature sets; host-переход с RC на стабильный release выполнен и независимо одобрен в S7-23 2026-11-18; firmware target — S7-24.
+- **Запись ревью:** 2026-11-18 — независимое архитектурное повторное ревью одобрило полный scope ADR без замечаний. S7-20 принят; host migration compatibility checks прошли и независимое ревью одобрило срез; firmware-target integration остаётся в S7-24.
+- **Обновление решения 3:** 2026-11-19 владелец подтвердил PC Client PTP 1.07 как цель S7-23. Расширение цели и проверка фактической поддержки отслеживаются в [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
 - **Номер:** `ADR-0007` и `ADR-0008` зарезервированы планом этапа 11 (транспорт агента S11-20, сетевой backend; см. [карту проекта](../PROJECT_LAYOUT.md)), поэтому первый свободный номер — `0009`.
 - **Связанные документы:** [план этапа 7](../plans/STAGE_7.md) (S7-20…S7-26, S7-30, S7-33, §3, §4.3), [отчёт этапа 7](../reports/STAGE_7_REPORT.md), [виртуальная плата](../specs/VIRTUAL_BOARD.md) (строка «TPM / Secure Boot state», карта адресов), [контракт входа в прошивку](../specs/FIRMWARE_BOOT.md) (окно CRB, поле 6 handoff block), [контракт vTPM](../specs/VTPM.md), [архитектура](../ARCHITECTURE.md) (разделы 3, 7, 9), [карта проекта](../PROJECT_LAYOUT.md), [политика зависимостей](../policies/DEPENDENCIES.md), [ADR-0001](ADR-0001-dependencies-and-boundaries.md), [ADR-0002](ADR-0002-general-purpose-libraries.md), [firmware/AGENTS.md](../../firmware/AGENTS.md), [состояние VM](../specs/VM_STATE.md), [формат хранения](../specs/STORAGE_FORMAT.md), [реестр проблем](../KNOWN_ISSUES.md).
 
@@ -75,9 +76,9 @@
 | `sha1` | `=0.11.0` | SHA-1: банк PCR SHA-1 (если S7-30 подтвердит), HMAC-SHA1 | host, прошивка (S7-22) | да / нет (`alloc` опционален) | MIT OR Apache-2.0 | `default-features = false` | `default-features = false` |
 | `sha2` | `=0.11.1` | SHA-256/SHA-384: PCR, `TPM2_Hash`, KDF, проверка подписи | host, прошивка (S7-22, S7-24) | да / нет | MIT OR Apache-2.0 | `default-features = false` | `default-features = false` |
 | `hmac` | `=0.13.0` | HMAC для сессий, KDFa, HMAC-DRBG | host; прошивка — только транзитивно через `rsa` | да / нет | MIT OR Apache-2.0 | `zeroize` | — |
-| `aes` | `=0.9.4` | AES-128/256: шифрование параметров, симметричные объекты | host | да / нет | MIT OR Apache-2.0 | по умолчанию (features `hazmat` не нужен) | — |
+| `aes` | `=0.9.4` | AES-128/256: шифрование параметров, симметричные объекты | host | да / нет | MIT OR Apache-2.0 | `default-features = false`, `zeroize` | — |
 | `cfb-mode` | `=0.9.1` | режим CFB для AES (Part 1, шифрование параметров) | host | да / нет | MIT OR Apache-2.0 | `default-features = false`, `zeroize` | — |
-| `rsa` | **Selected stable pin: `=0.10.0`. Current S7-23 implementation remains `=0.10.0-rc.22` until its code/API migration and compatibility review.** | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, features `pkcs1v15`, `hazmat`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, features `pkcs1v15`, `encoding` (для разбора RSA public key в PKCS#1 при проверке сертификата) |
+| `rsa` | **Selected stable pin and current host implementation: `=0.10.0` (migration, API/feature compatibility checks, and independent review completed 2026-11-18).** | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, features `pkcs1v15`, `hazmat`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, features `pkcs1v15`, `encoding` (для разбора RSA public key в PKCS#1 при проверке сертификата) |
 | `p256` | `=0.14.0` | ECC NIST P-256: ECDSA, ECDH (`ECDH_ZGen`, KDFe) | host (S7-23) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `arithmetic`, `ecdsa`, `ecdh` | — |
 | `ecdsa` | `=0.17.0` | общий ECDSA (подключается через `p256/ecdsa`; прямая зависимость — только если S7-23 нужна напрямую) | host | да / нет | Apache-2.0 OR MIT | `default-features = false`, `digest` | — |
 | `der` | `=0.8.3` | DER/ASN.1: разбор PKCS#7, X.509, `EFI_SIGNATURE_LIST` с X.509 | прошивка (S7-24); host — если понадобится | да / нет (`alloc` опционален; в firmware-наборе включён) | Apache-2.0 OR MIT | — | `default-features = false`, `alloc`, `oid` |
@@ -90,19 +91,29 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 
 **Лицензии транзитивных пакетов**, отличные от «MIT OR Apache-2.0»: `subtle` — BSD-3-Clause; `flagset` — Apache-2.0; `ff`, `group` — «MIT/Apache-2.0»; `unicode-ident` — «(MIT OR Apache-2.0) AND Unicode-3.0» (proc-macro, в runtime не входит). Политика [DEPENDENCIES.md](../policies/DEPENDENCIES.md) разрешает BSD-3-Clause и Apache-2.0; D9-лицензионный вопрос 5 закрыт 2026-11-18.
 
+### ML-KEM-768 для host S7-23
+
+Для примитива FIPS 203 выбран RustCrypto `ml-kem =0.3.3` из crates.io
+с `default-features = false`, `zeroize` и `hazmat`. TPM получает свежие
+`d`, `z` и `m` собственным HMAC_DRBG. Явная передача `m` позволяет
+обработать исчерпание DRBG как ошибку TPM и воспроизвести ACVP-векторы.
+Форматы объектов TPM, авторизация, транспорты и сохранение остаются здесь.
+Лицензия Apache-2.0 OR MIT. [Пакет и функции](https://docs.rs/crate/ml-kem/0.3.3),
+[FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
+
 ### Условие D9 о constant-time `rsa`
 
-По состоянию на 2026-11-18 RustSec RUSTSEC-2023-0071 указывает `Patched >=0.10.0` (advisory modified 2026-11-08). RustCrypto RSA v0.10.0 release notes от 2026-11-08 сообщают переход на `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations по опубликованному guidance и constant-time validation harness. Это upstream evidence, а не подтверждение поведения текущей интеграции проекта.
+По состоянию на 2026-11-18 RustSec RUSTSEC-2023-0071 указывает `Patched >=0.10.0` (advisory modified 2026-11-08). RustCrypto RSA v0.10.0 release notes от 2026-11-08 сообщают переход на `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations по опубликованному guidance и constant-time validation harness. Это upstream evidence; compatibility-тесты проекта и их ограничения зафиксированы ниже, но они не являются полной constant-time security certification.
 
-Выбранная версия — стабильная `rsa =0.10.0`. Host features: `default-features = false`, `pkcs1v15`, `hazmat` (текущие `od-tpm` команды требуют PKCS#1 v1.5 и raw RSA; OAEP не требует отдельного feature; энтропию предоставляет TPM DRBG). Firmware features: `default-features = false`, `pkcs1v15`, `encoding` (подпись и разбор RSA public key из PKCS#1). `getrandom` и `std` не включаются. Текущая реализация S7-23 по-прежнему использует `=0.10.0-rc.22`; миграция на выбранную стабильную версию и проверка API/feature compatibility ещё не выполнены. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) остаётся открытой до миграции и проверки совместимости. S7-23 отвечает за внедрение этого уже выбранного решения и проверку существующих операций TPM, а не за выбор версии/features. До выполнения этого условия не считать RSA migration или закрытие ISSUE-064 состоявшимися.
+Выбранная версия — стабильная `rsa =0.10.0`. Host features: `default-features = false`, `pkcs1v15`, `hazmat` (текущие `od-tpm` команды требуют PKCS#1 v1.5 и raw RSA; OAEP не требует отдельного feature; энтропию предоставляет TPM DRBG). Firmware features: `default-features = false`, `pkcs1v15`, `encoding` (подпись и разбор RSA public key из PKCS#1). `getrandom` и `std` не включаются. Host `od-tpm` migration to stable `=0.10.0` completed on 2026-11-18 with the selected features; deterministic RSA golden/interoperability tests, all 264 `od-tpm` tests, workspace check and formatting passed. Independent review approved the migration slice on 2026-11-18; [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) is resolved. Firmware-target integration remains S7-24. S7-23 implemented the selected version/features and verified existing TPM operations; this decision record does not claim independent constant-time certification.
 
 Основание первоначального выбора `0.10.0-rc.22`, а не `0.9.10`:
 
 1. `0.9` принадлежит прежнему поколению трейтов (`digest 0.10`, `pkcs1 0.7`, `spki 0.7`, `signature <2.3`) и потребовал бы второй набор семейства рядом с `sha2 0.11`/`der 0.8`/`x509-cert 0.3` (DRY, лишний транзитивный объём).
 2. `0.10` построен на `crypto-bigint`, сопровождающие рекомендуют его, а PKCS#1 v1.5 там включается явным feature `pkcs1v15`.
-3. На момент выбора стабильной ветки 0.10 ещё не было; текущий pin был временным для реализации S7-23. Выход стабильной 0.10.0 снимает это ограничение и требует миграции в рамках S7-23.
+3. На момент первоначального выбора стабильной ветки 0.10 ещё не было; тогдашний pin был временным для реализации S7-23. Выход стабильной 0.10.0 снял ограничение; миграция выполнена 2026-11-18 (см. актуальный статус выше).
 
-Границы риска до миграции: в прошивке выполняются только операции с открытым ключом (проверка подписи). Оставшаяся неопределённость относится к приватным операциям текущей интеграции `od-tpm` на host (`Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import`), где наблюдателем времени может быть гостевой код. Условие закрытия — в ISSUE-064.
+Границы риска, установленные до миграции: в прошивке выполняются только операции с открытым ключом (проверка подписи). Host implementation now uses stable `rsa =0.10.0`; ISSUE-064 was resolved after independent migration review on 2026-11-18. Firmware-target integration remains S7-24.
 
 ### Требования к секретам (открыты для S7-23/S7-24)
 
@@ -122,13 +133,21 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 3. Подтвердить, что `alloc`-зависимые crate'ы (`rsa`, `x509-cert`) работают с аллокатором прошивки (S7-04).
 4. Повторить проверку транзитивного графа `cargo tree` для firmware Cargo.lock и сверить с перечнем выше.
 
+S7-06 подключил `sha2 =0.11.1` для Authenticode. Сборка firmware
+`x86_64-unknown-none --locked --offline` прошла с
+`sha2_backend="soft"` и `default-features = false`.
+Граф активных транзитивных зависимостей зафиксирован в реестре.
+[Реестр зависимостей](../policies/DEPENDENCIES.md#криптографические-библиотеки-vtpm-и-прошивки-s7-20).
+
 ## Решение 3. Профиль команд
 
-- **Цель профиля** — обязательные команды PC Client PTP 1.07 Errata 1.1 (точный перечень по тексту PTP — **не сверено**, сверяет S7-21 для фазы A и S7-23 для фазы B); перечень, нужный Windows, уточняет S7-30.
+- **Цель профиля S7-23** — обязательные требования PC Client PTP 1.07 от 2026-03-23 с применимыми уточнениями Errata 1.1 от 2026-08-27. Фактическая поддержка, условия применимости и пробелы фиксируются по таблицам 3, 4, 16 и разделам 4.6, 4.7, 4.10 и 6. Требования Windows проверяются отдельно по S7-30/S7-32. [PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [Errata 1.1](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf), [инвентарь PTP](../specs/VTPM.md#целевой-профиль-pc-client-ptp-107).
 - **Фаза A (S7-21):** `Startup`/`Shutdown`, `SelfTest`/`GetTestResult`, `GetCapability`, `GetRandom`/`StirRandom`, PCR (`PCR_Read/Extend/Event/Reset`, `PCR_Allocate` — поддержка или отказ записывается), `Hash` и hash/event sequences, `ReadClock`; authorization area с password session `TPM_RS_PW`. Точный список и правила PCR — [S7-21](../plans/STAGE_7.md#s7-21-реализовать-процессор-команд-tpm-20-фаза-a) (DRY: не дублируется здесь).
-- **Фаза B (S7-23):** иерархии Platform/Owner/Endorsement/Null с seeds и auth, RSA/ECC ключи (`CreatePrimary`, `Create`, `Load`, `Sign`, `RSA_Encrypt/Decrypt`, `ECDH_ZGen` …), HMAC- и policy-сессии с шифрованием параметров, NV, `ContextSave/Load` по итогам S7-30, `Quote`/`Certify`, DA, persistent state v1 — [S7-23](../plans/STAGE_7.md#s7-23-реализовать-tpm-20-фаза-b-иерархии-ключи-сессии-nv).
-- **Алгоритмы v1:** SHA-256 (банк PCR обязателен), SHA-1 (банк — по S7-30), SHA-384 (банк — опционально), HMAC, AES-128/256 CFB, RSA-2048, ECC NIST P-256, KDF собственные. RSA-3072, ECC P-384, SM2/SM3/SM4, Camellia в v1 не входят и не показываются в `GetCapability(TPM_CAP_ALGS)`; добавление требует новой зависимости (например, `p384`) и записи в этот ADR. Достаточность набора для минимума PTP 1.07 — **не сверено** (S7-21/S7-30).
-- **Нереализованное:** любая команда вне реализованного профиля → `TPM_RC_COMMAND_CODE`; команда до `Startup` → `TPM_RC_INITIALIZE`; `GetCapability(TPM_CAP_COMMANDS)` перечисляет ровно реализованные команды. Ответ `TPM_RC_SUCCESS` без действия запрещён (план §4.3). Не поддерживаются: field upgrade, attached components, vendor-команды, DRTM-сценарии (localities 2–4, сброс PCR17–22); со стороны TCG2 `SetActivePcrBanks`/`GetResultOfSetActivePcrBanks` → `EFI_UNSUPPORTED` (S7-22). Числовые значения `TPM_RC_*` берутся из Part 2 v185 исполнителем.
+- **Фаза B (S7-23):** иерархии Platform/Owner/Endorsement/Null с seeds и auth, RSA/ECC ключи (`CreatePrimary`, `Create`, `Load`, `Sign`, `RSA_Encrypt/Decrypt`, `ECDH_ZGen` …), HMAC- и policy-сессии с шифрованием параметров, NV, обязательные `ContextSave/Load`, `Quote`/`Certify`, DA, версионный persistent state и расширение до полного обязательного набора PTP — [S7-23](../plans/STAGE_7.md#s7-23-реализовать-tpm-20-фаза-b-иерархии-ключи-сессии-nv).
+- **Криптографическая цель:** весь набор `M` таблиц 3 и 4, включая SHA-256/384/512, AES-128/256-CFB, HMAC, MGF1, XOR, RSASSA/PSS/OAEP, RSA-3072 (с поддержкой действующего RSA-2048), ECDSA/ECDH с NIST P-256 и P-384, ML-KEM и ML-DSA. Первые обязательные PQC parameter sets — ML-KEM-768 и ML-DSA-65. Остальные рекомендованные наборы оцениваются при проверке размеров, ресурсов и совместимости. SHA-1 имеет статус `N` в PTP 1.07 и исключён из целевого профиля TPM. `GetCapability` перечисляет только фактически реализованные алгоритмы, кривые и команды. Подключение библиотек P-384 и PQC сопровождается закреплением версии, features, источника и лицензии по политике проекта и отдельным ревью.
+- **PCR и measured boot:** два включённых по умолчанию банка SHA-256 и SHA-384, по 24 PCR. Сохраняется совместимость SHA-256 с ранее проверенным путём и появляется SHA-384, требуемый PTP. `PCR_Allocate` должен штатно переключать набор банков по правилам §4.7, включая доступные комбинации поддерживаемых hash algorithms и переход на следующем `_TPM_Init`. Firmware публикует фактическую конфигурацию и измеряет каждый активный банк с согласованным replay лога. Текущий фиксированный банк SHA-256 и отказ `PCR_Allocate` описывают существующую реализацию.
+- **Платформа и применимость:** CRB-only с `CapLocality=0` остаётся допустимым целевым вариантом. Таблица 16 требует платформенные `_TPM_INIT` и `_TPM_Hash_Start/Data/End`: их семантика, PCR17 и establishment проверяются через доверенный платформенный путь. Arbitration и Seize дополнительных software localities применяются при выборе `CapLocality=1`. Chunking — опциональный механизм, а транспорт обязан вмещать крупнейшие поддерживаемые команды и ответы. Firmware upgrade по §4.10 входит в цель. Для vTPM предполагается обновление через host lifecycle с проверкой миграции persistent state. Пара `FieldUpgradeStart/Data` обязательна при выборе Library-defined upgrade. Предустановка EK-сертификатов включает отдельные требования §4.6.3 к комплекту сертификатов и остаётся открытой для Windows T-04. [Интерфейс CRB](#решение-4-интерфейс-crb-реализует-s7-22), [Windows EK](../KNOWN_ISSUES.md#issue-598).
+- **Контракт команд:** любая команда вне реализованного профиля возвращает `TPM_RC_COMMAND_CODE`; команда до `Startup` возвращает `TPM_RC_INITIALIZE` там, где того требует Library. Кодирование `TPM_RC_*` соответствует Part 2 v185. Фактические ограничения, включая текущий ответ `EFI_UNSUPPORTED` на TCG2 `SetActivePcrBanks`/`GetResultOfSetActivePcrBanks`, описаны в [VTPM](../specs/VTPM.md). Закрытие команд и их семантики проверяется отдельно от списка кодов.
 - **Соответствие и сертификация TCG не заявляются** (план S7-20 п. 5, [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md)).
 
 ## Решение 4. Интерфейс CRB (реализует S7-22)
@@ -136,7 +155,7 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 - Только CRB по PC Client PTP 1.07 Errata 1.1; FIFO/TIS не реализуется. В ACPI-таблице TPM2 `StartMethod = 7` (CRB); таблица публикуется только при `PRESENT = 1` поля 6 handoff block ([FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), разделы 2 и 6).
 - Окно `[0xFED4_0000, 0xFED4_5000)`: пять страниц 4 KiB, страница `n` — locality `n`. **Функциональна только locality 0.** Запрос других localities (`TPM_LOC_CTRL` requestAccess на страницах 1–4) не удовлетворяется: locality не назначается, команды через них не исполняются. Точные значения регистров страниц 1–4 при чтении и записи S7-22 записывает в `VTPM.md` («CRB»). PCR0 инициализируется startup locality 0 (S7-21).
 - Прерывания не используются: `TPM_CRB_INT_ENABLE`/`INT_STS` не вызывают IRQ (S7-22 записывает поведение регистров); ACPI TPM2 прерываний не объявляет.
-- Регистры страницы locality (смещения от её начала; **по PTP 1.07, не сверено** — S7-22 сверяет с текстом PTP до кода):
+- Регистры страницы locality (смещения от её начала;по PTP 1.07 и errata; поведение в [VTPM.md](../specs/VTPM.md#crb)):
 
 | Смещение | Регистр | Ширина |
 |---|---|---|
@@ -144,7 +163,7 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 | `0x08` | `TPM_LOC_CTRL` | 32 |
 | `0x0C` | `TPM_LOC_STS` | 32 |
 | `0x30` | `TPM_CRB_INTF_ID` (тип интерфейса CRB, возможности; по нему ОС выбирает драйверный путь) | 64 |
-| `0x38` | `TPM_CRB_CTRL_EXT` | 64 |
+| `0x38` | Reserved (PTP 1.07 Table 36), RAZ/WI | 64 |
 | `0x40` | `TPM_CRB_CTRL_REQ` | 32 |
 | `0x44` | `TPM_CRB_CTRL_STS` | 32 |
 | `0x48` | `TPM_CRB_CTRL_CANCEL` | 32 |
@@ -158,8 +177,8 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 | `0x68` | `TPM_CRB_CTRL_RSP_ADDR` | 64 |
 | `0x80` | `TPM_CRB_DATA_BUFFER` (до конца страницы, `0xF80` байт) | — |
 
-- **Буферы (предложение):** один общий буфер команды/ответа в странице locality 0 по смещению `0x80`, `CMD_SIZE = RSP_SIZE = 0xF80` (3968 байт), `CMD_ADDR = RSP_ADDR = 0xFED4_0080`. Отсюда ограничение для S7-21: `TPM_PT_MAX_COMMAND_SIZE` и `TPM_PT_MAX_RESPONSE_SIZE` в `GetCapability` не больше 3968. Минимальный размер буфера по PTP — **не сверено**; если S7-22/S7-30 покажут, что нужен больший буфер, он размещается внутри окна CRB с изменением [FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), а не вне его.
-- **Исполнение:** запись `TPM_CRB_CTRL_START = 1` вызывает процессор `od-tpm` синхронно внутри записи `BusDevice` (контракт шины: проверка до эффекта, затем синхронный эффект) либо отложенно через event queue — выбор и причину записывает S7-22. Ответ кладётся в буфер, `START` сбрасывается; некорректная команда гостя — ответ TPM с `TPM_RC`, не `DeviceError`.
+- **Буферы:** единый device-resident буфер команды и ответа в locality 0. `CMD_SIZE = RSP_SIZE = 0xF80`, `CMD_ADDR = RSP_ADDR = 0xFED4_0080`. Физическое окно содержит 3968 байт. CRB revision 3 и `CapCRBChunk` передают кадры до 8192 байт. Предел покрывает рассчитанный ответ `Certify` в 4031 байт и `NV_Certify` в 4991 байт для ML-DSA-65, SHA-512 и трёх сессий. Значение объявляется через свойства TPM и EFI TCG2. [Контракт CRB](../specs/VTPM.md#crb).
+- **Исполнение:** `nextChunk` накапливает промежуточные части команды. Запись START синхронно передаёт собранный кадр в `od-tpm`, помещает первый чанк ответа в буфер и завершает START. В Completion ответ выдаётся по чанкам и доступен для повтора чтения. Ошибка гостевого кадра или команды кодируется в TPM_RC. Время команды берётся из виртуальных часов платы.
 
 ## Решение 5. Состояние
 
@@ -179,7 +198,7 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 - Срез B S7-23 (2026-11-07) подключил `rsa =0.10.0-rc.22` (`default-features = false`, `pkcs1v15`) и `p256 =0.14.0` (`default-features = false`, `ecdsa`; `ecdh` включит срез C для `ECDH_ZGen`; **срез C1 его не включил** — `ECDH_ZGen` возвращает точку, а не только `x`, и считается умножением `p256` (`arithmetic`), а к `rsa` добавлен feature `hazmat` для «сырого» RSA, см. [DEPENDENCIES.md](../policies/DEPENDENCIES.md)); `ecdsa 0.17.0` и `der 0.8.3` пришли транзитивно, `der`/`spki` как прямые зависимости host-стороны не нужны. `aes =0.9.4` и `cfb-mode =0.9.1` (`default-features = false`, `zeroize`) срез B подключил после ревью: шифрование `outPrivate` и симметричных объектов — AES-128-CFB (подробно в [VTPM.md](../specs/VTPM.md#фаза-b-срез-b-объекты-и-ключи-s7-23)).
 - Прошивка получает криптографию в два шага: `sha1`/`sha2` в S7-22, `rsa`/`der`/`x509-cert`/`spki` в S7-24 — каждый с проверкой сборки по условию выше. Оставлять криптографию прошивки «на потом» нельзя: перечень зафиксирован здесь.
 - Связь с задачами: S7-21 и S7-23 — `od-tpm`; S7-22 — CRB, ACPI TPM2, TCG2, measured boot (PCR0–5) поверх этого профиля; S7-24 — Secure Boot и PCR7 поверх firmware-набора; S7-26 — persistent state переживает сброс, volatile сбрасывается; S7-33 передаёт формат этапу 9; S9-27 — защита ключей и хранение байтов в bundle. Строку «vTPM persistent state» в [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) («state — `od-machine`») уточняет S7-33: процессор и формат — `od-tpm`, выдача — `od-machine`.
-- **Риски на момент подготовки ADR:** (1) приватные RSA-операции текущей реализации не подтверждены как constant-time; stable `>=0.10.0` upstream fix exists, but the current `rc.22` project integration must migrate and be checked in S7-23 ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time)); (2) предрелизный `rsa` — дрейф API между `rc`; (3) сборка SIMD-backend'ов под soft-float target не проверена; (4) профиль может оказаться недостаточным для Windows до S7-30 (провижининг TPM, BitLocker); (5) секреты в выдаваемых байтах state не защищены до S9-27; (6) буфер CRB 3968 байт может оказаться меньше требуемого.
+- **Риски на момент подготовки ADR:** (1) на момент подготовки ADR приватные RSA-операции тогдашней реализации `rc.22` не были подтверждены как constant-time; host migration to stable `=0.10.0` and compatibility checks completed 2026-11-18, with independent review approved 2026-11-18 ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time)); (2) предрелизный `rsa` — дрейф API между `rc`; (3) сборка SIMD-backend'ов под soft-float target не проверена; (4) профиль может оказаться недостаточным для Windows до S7-30 (провижининг TPM, BitLocker); (5) секреты в выдаваемых байтах state не защищены до S9-27; (6) буфер CRB 3968 байт может оказаться меньше требуемого.
 
 ## Открытые вопросы (для S7-21…S7-24)
 
@@ -193,7 +212,7 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 
 ## Условие пересмотра
 
-- S7-23 должен перейти на выбранную стабильную `rsa =0.10.0` с features выше, проверить API/feature compatibility и существующие вызовы, а затем закрыть ISSUE-064 после ревью и проверок. Upstream advisory и release notes дают основание для миграции, но сами по себе не закрывают issue.
+- S7-23 host migration to stable `rsa =0.10.0` with the features above is complete; API/feature compatibility and existing calls passed verification. Independent review approved the migration slice on 2026-11-18 and ISSUE-064 is resolved; any additional security validation remains bounded by the caveats above. Upstream advisory and release notes alone do not close the issue.
 - S7-30 требует алгоритмов или команд вне профиля v1 (RSA-3072, P-384, иной буфер CRB) — дополнить ADR и зависимости.
 - S9-27 требует изоляции секретов на уровне процесса — пересмотреть альтернативу 2 решения 1.
 - Сборка firmware-набора под `x86_64-unknown-none` невозможна ни с одним backend — пересмотреть firmware-часть решения 2 новым решением владельца.

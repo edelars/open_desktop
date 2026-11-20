@@ -12,7 +12,7 @@
 //! `CreatePrimary`, `Create`, `Load`, `LoadExternal`, `ReadPublic`, `Unseal`, `EvictControl`,
 //! `Sign`, `VerifySignature`. Slice C1: `RSA_Encrypt`, `RSA_Decrypt`, `ECDH_ZGen`, dictionary-attack
 //! protection (`DictionaryAttackLockReset`, `DictionaryAttackParameters`) and the full persistent
-//! state (snapshot `ODTPMSTA`, now v3). Slice C2: policy sessions, `ContextSave/Load`, `TPM2_HMAC`,
+//! state (snapshot `ODTPMSTA`, now v4). Slice C2: policy sessions, `ContextSave/Load`, `TPM2_HMAC`,
 //! `Quote`, `Certify`. Slice C3: NV counters, bit fields and extend indices, `TPM2_GetTime`,
 //! `TPM_RH_NULL` as signing handle, parameter encryption (AES-128-CFB and XOR). Everything else
 //! answers `TPM_RC_COMMAND_CODE`.
@@ -29,11 +29,15 @@ pub mod capability;
 pub mod codes;
 pub mod command;
 mod context;
+mod credential;
 pub mod crypto;
 mod da;
 pub mod dispatch;
+mod duplicate;
+pub mod ek;
 pub mod hash;
 pub mod hierarchy;
+mod kem;
 pub mod marshal;
 pub mod nv;
 pub mod object;
@@ -43,6 +47,7 @@ pub mod pcr;
 mod policy;
 pub mod random;
 pub mod response;
+mod self_test;
 pub mod session;
 mod snapshot;
 pub mod startup;

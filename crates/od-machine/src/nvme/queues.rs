@@ -26,20 +26,23 @@ pub(crate) const MAX_QUEUE_ENTRIES: u32 = 1024;
 /// NVMe status: status code type and status code of a completion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Status {
-    pub(crate) sct: u8,
-    pub(crate) sc: u8,
-    pub(crate) dnr: bool,
+    field: u16,
+    parameter_error_location: u16,
 }
 
 impl Status {
     const fn generic(sc: u8, dnr: bool) -> Self {
-        Self { sct: 0, sc, dnr }
+        Self::new(0, sc, dnr)
     }
+
     const fn command_specific(sc: u8) -> Self {
+        Self::new(1, sc, true)
+    }
+
+    const fn new(sct: u8, sc: u8, dnr: bool) -> Self {
         Self {
-            sct: 1,
-            sc,
-            dnr: true,
+            field: ((sc as u16) << 1) | ((sct as u16) << 9) | ((dnr as u16) << 15),
+            parameter_error_location: 0,
         }
     }
 
@@ -67,12 +70,34 @@ impl Status {
     pub(crate) const INVALID_QUEUE_DELETION: Self = Self::command_specific(0x0C);
 
     pub(crate) const fn is_success(self) -> bool {
-        self.sct == 0 && self.sc == 0
+        self.same_code(Self::SUCCESS)
+    }
+
+    pub(super) const fn same_code(self, other: Self) -> bool {
+        const CODE_MASK: u16 = 0x0FFE; // SCT and SC
+        self.field & CODE_MASK == other.field & CODE_MASK
+    }
+
+    pub(super) fn with_more(mut self) -> Self {
+        self.field |= 1 << 14;
+        self
+    }
+
+    /// Records the least significant bit of a parameter in the given SQE dword.
+    pub(super) fn at_field(mut self, dword: u8, bit: u8) -> Self {
+        debug_assert!(usize::from(dword) < SQE_BYTES / 4 && bit < 32);
+        let byte = dword * 4 + bit / 8;
+        self.parameter_error_location = (u16::from(bit % 8) << 8) | u16::from(byte);
+        self
+    }
+
+    pub(super) const fn parameter_error_location(self) -> u16 {
+        self.parameter_error_location
     }
 
     /// Bits `[15:1]` of the CQE `DW3[31:16]` status field (without the phase tag).
     pub(crate) const fn field(self) -> u16 {
-        ((self.sc as u16) | ((self.sct as u16) << 8) | ((self.dnr as u16) << 14)) << 1
+        self.field
     }
 }
 
@@ -103,7 +128,7 @@ pub(crate) enum Outcome {
     Deferred,
 }
 
-/// A decoded 64-byte submission queue entry (common dwords 0, 1, 6-15).
+/// A decoded 64-byte submission queue entry (common dwords 0, 1, and 6–14).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Command {
     pub(crate) opcode: u8,
@@ -117,9 +142,24 @@ pub(crate) struct Command {
     pub(crate) cdw11: u32,
     pub(crate) cdw12: u32,
     pub(crate) cdw13: u32,
+    pub(crate) cdw14: u32,
 }
 
 impl Command {
+    /// Fused operations and SGLs are outside the controller's profile.
+    pub(super) fn unsupported_format(&self) -> Option<Status> {
+        let bit = match (self.fuse, self.psdt) {
+            (0, 0) => return None,
+            (0, _) => 14, // PSDT
+            _ => 8,       // FUSE
+        };
+        Some(Status::INVALID_FIELD.at_field(0, bit))
+    }
+
+    pub(super) fn start_lba(&self) -> u64 {
+        u64::from(self.cdw10) | (u64::from(self.cdw11) << 32)
+    }
+
     pub(crate) fn decode(raw: &[u8; SQE_BYTES]) -> Self {
         let dword = |index: usize| {
             u32::from_le_bytes([
@@ -143,6 +183,7 @@ impl Command {
             cdw11: dword(11),
             cdw12: dword(12),
             cdw13: dword(13),
+            cdw14: dword(14),
         }
     }
 }
@@ -212,10 +253,16 @@ pub(crate) struct CompletionQueue {
     pub(crate) phase: bool,
     /// Interrupt enable (`IEN`); the admin CQ has interrupts enabled implicitly.
     pub(crate) interrupt_enabled: bool,
+    pub(crate) interrupt_vector: u16,
 }
 
 impl CompletionQueue {
-    pub(crate) const fn new(base: u64, entries: u16, interrupt_enabled: bool) -> Self {
+    pub(crate) const fn new(
+        base: u64,
+        entries: u16,
+        interrupt_enabled: bool,
+        interrupt_vector: u16,
+    ) -> Self {
         Self {
             base,
             entries,
@@ -223,6 +270,7 @@ impl CompletionQueue {
             tail: 0,
             phase: true,
             interrupt_enabled,
+            interrupt_vector,
         }
     }
     /// A queue with one free slot left is full: head == tail would be "empty".
@@ -310,7 +358,7 @@ pub(crate) fn prp_segments(
         return Ok(Vec::new());
     }
     if prp1 & 3 != 0 {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(6, 0));
     }
     let mut remaining = len as u64;
     let first = remaining.min(PAGE_BYTES - prp1 % PAGE_BYTES);
@@ -321,14 +369,14 @@ pub(crate) fn prp_segments(
     }
     if remaining <= PAGE_BYTES {
         if !prp2.is_multiple_of(PAGE_BYTES) {
-            return Err(Status::PRP_OFFSET_INVALID);
+            return Err(Status::PRP_OFFSET_INVALID.at_field(8, 0));
         }
         segments.push((prp2, remaining as usize));
         return Ok(segments);
     }
     // PRP2 points to a PRP list; the pointer itself only has to be qword aligned.
     if prp2 & 7 != 0 {
-        return Err(Status::PRP_OFFSET_INVALID);
+        return Err(Status::PRP_OFFSET_INVALID.at_field(8, 0));
     }
     let mut pages_left = remaining.div_ceil(PAGE_BYTES);
     if pages_left > MAX_PRP_PAGES {
@@ -477,7 +525,7 @@ mod tests {
         let mut dma = MockDma::new(1 << 20);
         assert_eq!(
             prp_segments(&mut dma, 0x2E00, 0x9004, 0x400),
-            Err(Status::PRP_OFFSET_INVALID)
+            Err(Status::PRP_OFFSET_INVALID.at_field(8, 0))
         );
     }
 
@@ -549,7 +597,7 @@ mod tests {
         let mut dma = MockDma::new(1 << 20);
         assert_eq!(
             prp_segments(&mut dma, 0x2002, 0, 16),
-            Err(Status::INVALID_FIELD)
+            Err(Status::INVALID_FIELD.at_field(6, 0))
         );
     }
 
@@ -608,7 +656,7 @@ mod tests {
 
     #[test]
     fn completion_queue_flips_the_phase_on_wrap_and_reports_full() {
-        let mut cq = CompletionQueue::new(0x1000, 4, false);
+        let mut cq = CompletionQueue::new(0x1000, 4, false, 0);
         assert!(cq.phase);
         for _ in 0..3 {
             assert!(!cq.is_full());

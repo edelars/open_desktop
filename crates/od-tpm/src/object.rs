@@ -8,7 +8,9 @@
 //! object (`TPM2_LoadExternal`) has a public area only and no authorization value.
 //!
 //! **Types.** RSA-2048 (exponent 65537) with RSASSA-PKCS1-v1_5 and ECC NIST P-256 with ECDSA, both
-//! with SHA-256 as `nameAlg` and signature hash; a keyed-hash object holds sealed data
+//! with SHA-256 as signature hash and SHA-256, SHA-384 or SHA-512 as `nameAlg` (it sets the Name, the
+//! Qualified Name, the digest sizes of `authPolicy`, `authValue`, seed value and keyed-hash
+//! `unique`, and the creation hash and PCR digest); a keyed-hash object holds sealed data
 //! (`TPM2_Unseal`). Storage keys (`restricted` + `decrypt`, no `sign`) can be parents.
 //!
 //! **Primary derivation** (Part 1 v184, clauses 25.6.3 and 25.7: "choice of the entropy generation
@@ -26,17 +28,18 @@
 //!
 //! **Private area.** `outPrivate` follows Part 1 v184, clauses 20.3-20.5: `integrity (TPM2B) ||
 //! symIv (TPM2B) || encSensitive`, with `symKey = KDFa(nameAlg, seedValue(parent), "STORAGE",
-//! Name, NULL, 128)`, `HMACkey = KDFa(nameAlg, seedValue(parent), "INTEGRITY", NULL, NULL, 256)`
+//! Name, NULL, keyBits)`, `HMACkey = KDFa(nameAlg, seedValue(parent), "INTEGRITY", NULL, NULL, 8 * digest size)`, `nameAlg` being
+//! that of the parent,
 //! and `outerHMAC = HMAC(HMACkey, symIv || encSensitive || Name)`, with the integrity checked
-//! before decryption. `encSensitive` is the marshaled `TPM2B_SENSITIVE` encrypted with AES-128 in
-//! CFB mode (full-block feedback; crates `aes` and `cfb-mode`), key `symKey` (16 octets), IV the
+//! before decryption. `encSensitive` is the marshaled `TPM2B_SENSITIVE` encrypted with the
+//! parent's AES-128/256-CFB cipher (full-block feedback). The key is `symKey`; the IV is the
 //! 16-octet `symIv` drawn from the TPM DRBG at `TPM2_Create`. Checked in slice C1 against the text of
 //! Part 1 v184, clauses 20.2-20.5 (the labels, the KDFa inputs, the CFB mode of the parent's
 //! symmetric cipher with a random `symIv`, the outer HMAC over the marshaled `TPM2B_IV`, the
 //! encrypted `size` field of `TPM2B_SENSITIVE`, the integrity value before the IV): the
 //! construction matches; blobs of other TPMs were not tried. An RSA key's sensitive field holds both
 //! primes `p || q` (256 octets), not one prime (a deviation). The authValue is padded with zero
-//! octets to one digest (clause 25.7.3).
+//! octets to one digest of the object's `nameAlg` (clause 25.7.3).
 //!
 //! Secrets (keys, seed values, authValues, sealed data) are wiped on drop and never printed.
 //!
@@ -53,24 +56,26 @@
 //! that has no private part, `TPM_RC_HIERARCHY` for
 //! objects of a disabled hierarchy, the Qualified Name input (`parentQN || Name`, both with their
 //! `nameAlg` prefix), the `creationHash` input (marshaled `TPMS_CREATION_DATA` without a size), the
-//! `name` input of tickets (the Name buffer without a size), the creation PCR digest (SHA-256
+//! `name` input of tickets (the Name buffer without a size), the creation PCR digest (a hash of `nameAlg`
 //! over the selected PCR values in index order; empty when no PCR is selected) and the capacity
 //! limits [`MAX_OBJECTS`] and [`MAX_PERSISTENT`] (choices of this implementation).
 
-use cfb_mode::cipher::KeyIvInit;
+use cfb_mode::cipher::{BlockCipherEncrypt, KeyInit, KeyIvInit};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
-    EccPrivate, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public, ecc_scalar,
-    hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes, rsa_generate, rsa_modulus,
-    rsa_primes,
+    EccPrivate, HashAlg, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public,
+    ecc_scalar, ecc_verify, hash, hmac, hmac_verify, kdfa, kdfa_sha256, rsa_from_one_prime,
+    rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes, rsa_verify_hash,
+    supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
+use crate::kem::{self, KemPrivate};
 use crate::marshal::{
-    MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, SymDef, TpmsSensitiveCreate,
-    TpmtPublic, Unique, Writer, limits,
+    MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, Scheme, SymDef,
+    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, Unique, Writer, limits,
 };
 use crate::pcr::Pcrs;
 use crate::random::Drbg;
@@ -102,6 +107,7 @@ fn object_slot(h: u32) -> Option<usize> {
 pub(crate) enum Secret {
     Rsa(Box<RsaPrivate>),
     Ecc(EccPrivate),
+    MlKem(Box<KemPrivate>),
     /// Sealed data.
     Data(Zeroizing<Vec<u8>>),
 }
@@ -126,24 +132,55 @@ pub(crate) struct Object {
     pub sensitive: Option<Sensitive>,
 }
 
-/// `nameAlg || H(TPMT_PUBLIC)` (Part 1, clause 14).
+/// The hash of an object's `nameAlg`: SHA-256, SHA-384 or SHA-512 for every object that exists
+/// (`check_public` and `check_external_public`); `TPM_RC_HASH` for anything else.
+pub(crate) fn name_hash_alg(name_alg: u16) -> Result<HashAlg, Rc> {
+    HashAlg::from_alg(name_alg).ok_or(Rc::HASH)
+}
+
+/// `nameAlg || H(TPMT_PUBLIC)` (Part 1, clause 14), with the hash of the object's own `nameAlg`. A
+/// `nameAlg` that is no hash (a corrupt context body; no object has one) is named as SHA-256.
 pub(crate) fn name_of(public: &TpmtPublic) -> Vec<u8> {
-    let mut n = alg::SHA256.to_be_bytes().to_vec();
-    n.extend_from_slice(&Sha256::digest(public.to_bytes()));
+    let name_hash = name_hash_alg(public.name_alg).unwrap_or(HashAlg::Sha256);
+    let mut n = name_hash.alg().to_be_bytes().to_vec();
+    n.extend_from_slice(hash(name_hash, &[&public.to_bytes()]).as_slice());
     n
 }
 
-/// `nameAlg || H(parentQN || Name)` (Part 1, clause 24.5).
-fn qualified_name_of(parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
-    let mut qn = alg::SHA256.to_be_bytes().to_vec();
-    let mut h = Sha256::new();
-    h.update(parent_qn);
-    h.update(name);
-    qn.extend_from_slice(&h.finalize());
+/// `nameAlg || H(parentQN || Name)` (Part 1, clause 24.5), with the `nameAlg` of the object whose
+/// Qualified Name it is (the same hash as in its Name).
+pub(crate) fn qualified_name_of(name_alg: u16, parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
+    let name_hash = name_hash_alg(name_alg).unwrap_or(HashAlg::Sha256);
+    let mut qn = name_hash.alg().to_be_bytes().to_vec();
+    qn.extend_from_slice(hash(name_hash, &[parent_qn, name]).as_slice());
     qn
 }
 
 impl Object {
+    /// Verifies a digest with the public key. Each command checks its own usage and scheme rules.
+    /// The hash named by the signature selects the RSASSA padding, and the digest must have
+    /// exactly that hash's width (for ECDSA as well, so the label and the length cannot diverge).
+    pub(crate) fn verify_signature(&self, digest: &[u8], signature: &TpmtSignature) -> bool {
+        let (TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. }) = signature
+        else {
+            return false;
+        };
+        let Some(hash) = HashAlg::from_alg(*hash) else {
+            return false;
+        };
+        if digest.len() != hash.size() {
+            return false;
+        }
+        match (&self.public.unique, signature) {
+            (Unique::Rsa(n), TpmtSignature::Rsassa { sig, .. }) => {
+                rsa_verify_hash(n, hash, digest, sig)
+            }
+            (Unique::Ecc { x, y }, TpmtSignature::Ecdsa { r, s, .. }) => {
+                ecc_verify(x, y, digest, r, s)
+            }
+            _ => false,
+        }
+    }
     /// Builds an object; `parent_qn` is the Qualified Name of the parent, or the hierarchy
     /// handle for a primary (Part 1, clause 24.5).
     pub(crate) fn new(
@@ -157,7 +194,7 @@ impl Object {
             // An external object's Qualified Name is its Name (Part 3, clause 12.3.1).
             name.clone()
         } else {
-            qualified_name_of(parent_qn, &name)
+            qualified_name_of(public.name_alg, parent_qn, &name)
         };
         Object {
             public,
@@ -171,14 +208,23 @@ impl Object {
     pub(crate) fn has(&self, bit: u32) -> bool {
         self.public.attributes & bit != 0
     }
+}
 
-    /// A storage key: an asymmetric `restricted` `decrypt` key that is not a signing key (Part 2,
-    /// clause 8.3.3.13); only such a key can be a parent.
-    pub(crate) fn is_storage(&self) -> bool {
-        is_storage(&self.public)
+impl TpmtPublic {
+    pub(crate) fn storage_parameters(&self) -> Option<(SymDef, Scheme)> {
+        match self.params {
+            PublicParams::Rsa {
+                symmetric, scheme, ..
+            }
+            | PublicParams::Ecc {
+                symmetric, scheme, ..
+            } if is_storage(self) => Some((symmetric, scheme)),
+            _ => None,
+        }
     }
 }
 
+/// A storage key in this profile is a restricted asymmetric decryption key.
 fn is_storage(public: &TpmtPublic) -> bool {
     let a = public.attributes;
     matches!(
@@ -325,15 +371,15 @@ pub(crate) fn check_public(
     parent_enc_dup: bool,
 ) -> Result<(), Rc> {
     let bad = |rc: Rc| rc.in_param(2);
-    if public.name_alg != alg::SHA256 {
+    let Ok(name_hash) = name_hash_alg(public.name_alg) else {
         return Err(bad(Rc::HASH));
-    }
+    };
     let a = public.attributes;
     let set = |bit: u32| a & bit != 0;
     if set(object_attr::FIRMWARE_LIMITED | object_attr::SVN_LIMITED) {
         return Err(bad(Rc::ATTRIBUTES));
     }
-    if !public.auth_policy.is_empty() && public.auth_policy.len() != limits::MAX_DIGEST_SIZE {
+    if !public.auth_policy.is_empty() && public.auth_policy.len() != name_hash.size() {
         return Err(bad(Rc::SIZE));
     }
     // fixedTPM / fixedParent (clause 8.3.3.2) and encryptedDuplication (8.3.3.11).
@@ -380,7 +426,7 @@ pub(crate) fn check_public(
             ..
         } => {
             check_asymmetric_attributes(public, sign, decrypt, restricted)?;
-            if *exponent != 0 && *exponent != 65537 {
+            if !supported_rsa_exponent(*exponent) {
                 return Err(bad(Rc::RANGE));
             }
             check_symmetric(public, *symmetric)?;
@@ -418,6 +464,13 @@ pub(crate) fn check_public(
                 return Err(bad(Rc::SCHEME));
             }
         }
+        PublicParams::MlKem { symmetric, .. } => {
+            // This profile creates unrestricted ML-KEM decryption objects.
+            if sign || !decrypt || restricted || public.attributes & object_attr::X509_SIGN != 0 {
+                return Err(bad(Rc::ATTRIBUTES));
+            }
+            check_symmetric(public, *symmetric)?;
+        }
     }
     Ok(())
 }
@@ -440,14 +493,8 @@ fn check_asymmetric_attributes(
 }
 
 fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
-    // A restricted decryption (storage) key states AES-128-CFB, every other key TPM_ALG_NULL
-    // (Part 2, Tables 215 and 216).
-    let want = if is_storage(public) {
-        SymDef::Aes128Cfb
-    } else {
-        SymDef::Null
-    };
-    if symmetric != want {
+    // Only a restricted RSA/ECC decryption key specifies a storage cipher in this profile.
+    if is_storage(public) != (symmetric != SymDef::Null) {
         return Err(Rc::SYMMETRIC.in_param(2));
     }
     Ok(())
@@ -457,6 +504,10 @@ fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
 /// when `inSensitive.data` is empty (Part 3, clause 12.1.1), and an asymmetric key takes no data
 /// (`TPM_RC_VALUE`, parameter 1).
 pub(crate) fn check_creation(public: &TpmtPublic, sens: &TpmsSensitiveCreate) -> Result<(), Rc> {
+    // `userAuth` is at most one digest of the `nameAlg` (TPM2B_AUTH of the object, Part 1, 25.7.3).
+    if sens.user_auth.len() > name_hash_alg(public.name_alg)?.size() {
+        return Err(Rc::SIZE.in_param(1));
+    }
     let origin = public.attributes & object_attr::SENSITIVE_DATA_ORIGIN != 0;
     match public.params {
         PublicParams::KeyedHash { .. } => {
@@ -493,9 +544,11 @@ pub(crate) struct Derived {
     pub sensitive: Sensitive,
 }
 
-fn new_seed(rng: &mut Drbg) -> Result<Zeroizing<Vec<u8>>, Rc> {
-    let a = rng.generate_array().ok_or(Rc::FAILURE)?;
-    Ok(Zeroizing::new(a.to_vec()))
+/// `size` random octets: one digest of the object's `nameAlg` (32 octets of one DRBG call for SHA-256).
+fn new_seed(rng: &mut Drbg, size: usize) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    let mut seed = Zeroizing::new(vec![0u8; size]);
+    rng.generate(&mut seed).ok_or(Rc::FAILURE)?;
+    Ok(seed)
 }
 
 /// Creates the private and public values of a template from `rng` (the TPM DRBG for an ordinary
@@ -507,12 +560,14 @@ pub(crate) fn derive_object(
     rng: &mut Drbg,
 ) -> Result<Derived, Rc> {
     let mut public = template.clone();
-    let auth = AuthValue::from_slice_trimmed(user_auth).ok_or(Rc::SIZE.in_param(1))?;
+    let name_hash = name_hash_alg(template.name_alg)?;
+    let auth = AuthValue::from_slice_trimmed_up_to(user_auth, name_hash.size())
+        .ok_or(Rc::SIZE.in_param(1))?;
     let storage = is_storage(template);
     let (secret, unique, seed) = match &template.params {
         PublicParams::Rsa { .. } => {
             let seed = if storage {
-                new_seed(rng)?
+                new_seed(rng, name_hash.size())?
             } else {
                 Zeroizing::new(Vec::new())
             };
@@ -522,7 +577,7 @@ pub(crate) fn derive_object(
         }
         PublicParams::Ecc { .. } => {
             let seed = if storage {
-                new_seed(rng)?
+                new_seed(rng, name_hash.size())?
             } else {
                 Zeroizing::new(Vec::new())
             };
@@ -530,19 +585,26 @@ pub(crate) fn derive_object(
             let (x, y) = ecc_public(&key).ok_or(Rc::FAILURE)?;
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }
+        PublicParams::MlKem { .. } => {
+            let key = kem::generated_key(rng)?;
+            let unique = Unique::MlKem(kem::public_bytes(&key));
+            (
+                Secret::MlKem(Box::new(key)),
+                unique,
+                Zeroizing::new(Vec::new()),
+            )
+        }
         PublicParams::KeyedHash { .. } => {
-            let seed = new_seed(rng)?;
+            let seed = new_seed(rng, name_hash.size())?;
             // An HMAC key without caller data is generated: one digest of random octets.
             let data: Zeroizing<Vec<u8>> = if data.is_empty() {
-                new_seed(rng)?
+                new_seed(rng, name_hash.size())?
             } else {
                 Zeroizing::new(data.to_vec())
             };
-            // unique = H(obfuscate || key) (Part 1, Equation 48).
-            let mut h = Sha256::new();
-            h.update(&seed[..]);
-            h.update(&data[..]);
-            let unique = Unique::Digest(h.finalize().to_vec());
+            // unique = H_nameAlg(obfuscate || key) (Part 1, Equation 48).
+            let unique =
+                Unique::Digest(hash(name_hash, &[&seed[..], &data[..]]).as_slice().to_vec());
             (Secret::Data(data), unique, seed)
         }
     };
@@ -564,33 +626,62 @@ pub(crate) fn primary_drbg(seed: &[u8], template: &TpmtPublic, data: &[u8]) -> R
 
 // ------------------------------------------------------------------------------ sensitive area
 
-/// Pads the authValue with zero octets to one digest (Part 1, clause 25.7.3).
-fn padded_auth(a: &AuthValue) -> [u8; limits::MAX_DIGEST_SIZE] {
-    let mut out = [0u8; limits::MAX_DIGEST_SIZE];
+/// Pads the authValue with zero octets to one digest of the `nameAlg` (Part 1, clause 25.7.3).
+fn padded_auth(a: &AuthValue, size: usize) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(vec![0u8; size]);
     out[..a.as_slice().len()].copy_from_slice(a.as_slice());
     out
 }
 
 /// `TPM2B_SENSITIVE` of the object (Table 225): `size || sensitiveType || authValue || seedValue
 /// || sensitive`.
-pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>, Rc> {
+pub(crate) fn sensitive_to_bytes(
+    s: &Sensitive,
+    type_alg: u16,
+    name_alg: u16,
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    sensitive_with_auth(s, type_alg, name_alg, &s.auth, false)
+}
+
+pub(crate) fn sensitive_to_duplicate(
+    sensitive: &Sensitive,
+    type_alg: u16,
+    name_alg: u16,
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    sensitive_with_auth(sensitive, type_alg, name_alg, &sensitive.auth, true)
+}
+
+fn sensitive_with_auth(
+    s: &Sensitive,
+    type_alg: u16,
+    name_alg: u16,
+    auth: &AuthValue,
+    duplicate: bool,
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    let digest = name_hash_alg(name_alg)?.size();
     let secret: Zeroizing<Vec<u8>> = match &s.secret {
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
         Secret::Ecc(k) => ecc_scalar(k),
+        Secret::MlKem(k) => kem::private_seed(k)?,
         Secret::Data(d) => d.clone(),
     };
     // Reserved up front so that the secret is never copied by a reallocation.
     let mut w = Writer {
-        buf: Vec::with_capacity(2 + 2 + 34 + 34 + 2 + MAX_RSA_BYTES + 16),
+        buf: Vec::with_capacity(2 + 2 + 66 + 66 + 2 + MAX_RSA_BYTES + 16),
     };
     let mut body = Writer {
-        buf: Vec::with_capacity(2 + 34 + 34 + 2 + MAX_RSA_BYTES + 16),
+        buf: Vec::with_capacity(2 + 66 + 66 + 2 + MAX_RSA_BYTES + 16),
     };
     body.u16(type_alg);
-    let auth = Zeroizing::new(padded_auth(&s.auth));
+    let auth = padded_auth(auth, digest);
     body.tpm2b(&auth[..]);
     body.tpm2b(&s.seed);
-    body.tpm2b(&secret);
+    let serialized = if duplicate && matches!(s.secret, Secret::Rsa(_)) {
+        &secret[..MAX_RSA_BYTES / 2]
+    } else {
+        &secret[..]
+    };
+    body.tpm2b(serialized);
     w.tpm2b(&body.buf);
     zeroize::Zeroize::zeroize(&mut body.buf);
     Ok(Zeroizing::new(w.buf))
@@ -601,6 +692,18 @@ pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizi
 /// `TPM_RC_KEY_SIZE` for a private value of the wrong size, `TPM_RC_BINDING` if the private value
 /// does not belong to the public area.
 pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
+    read_sensitive(bytes, public, false)
+}
+
+/// A duplication blob carries canonical TPM sensitive fields. The local
+/// private object envelope retains its existing two-prime RSA layout.
+pub(crate) fn sensitive_from_duplicate(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
+    read_sensitive(bytes, public, true)
+}
+
+fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<Sensitive, Rc> {
+    // Authorization value and seed value are at most one digest of the `nameAlg`.
+    let digest = name_hash_alg(public.name_alg)?.size();
     type Raw = (
         u16,
         Zeroizing<Vec<u8>>,
@@ -615,8 +718,8 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
             return Err(Rc::SIZE);
         }
         let t = b.u16()?;
-        let auth = Zeroizing::new(b.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec());
-        let seed = Zeroizing::new(b.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec());
+        let auth = Zeroizing::new(b.tpm2b(digest)?.to_vec());
+        let seed = Zeroizing::new(b.tpm2b(digest)?.to_vec());
         let secret = Zeroizing::new(b.tpm2b(MAX_RSA_BYTES)?.to_vec());
         b.finish()?;
         Ok((t, auth, seed, secret))
@@ -625,30 +728,71 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
     if t != public.type_alg() {
         return Err(Rc::TYPE);
     }
-    let auth = AuthValue::from_slice_trimmed(&auth).ok_or(Rc::SENSITIVE)?;
+    let auth = AuthValue::from_slice_trimmed_up_to(&auth, digest).ok_or(Rc::SENSITIVE)?;
+    if duplicate {
+        let storage = object_attr::RESTRICTED | object_attr::DECRYPT;
+        let required_seed = if matches!(public.params, PublicParams::KeyedHash { .. }) {
+            digest
+        } else if public.attributes & storage == storage {
+            digest / 2
+        } else {
+            0
+        };
+        if seed.len() < required_seed {
+            return Err(Rc::KEY_SIZE);
+        }
+    }
     let secret = match &public.params {
-        PublicParams::Rsa { .. } => {
+        PublicParams::Rsa { exponent, .. } => {
             let Unique::Rsa(n) = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            if secret.len() != MAX_RSA_BYTES {
+            let size = if duplicate {
+                MAX_RSA_BYTES / 2
+            } else {
+                MAX_RSA_BYTES
+            };
+            if secret.len() != size {
                 return Err(Rc::KEY_SIZE);
             }
-            Secret::Rsa(Box::new(rsa_from_primes(&secret, n).ok_or(Rc::BINDING)?))
+            if !supported_rsa_exponent(*exponent) {
+                return Err(Rc::BINDING);
+            }
+            let key = if duplicate {
+                rsa_from_one_prime(&secret, n)
+            } else {
+                rsa_from_primes(&secret, n)
+            };
+            Secret::Rsa(Box::new(key.ok_or(Rc::BINDING)?))
         }
         PublicParams::Ecc { .. } => {
             let Unique::Ecc { x, y } = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            if secret.len() != MAX_ECC_BYTES {
+            if secret.is_empty()
+                || secret.len() > MAX_ECC_BYTES
+                || (!duplicate && secret.len() != MAX_ECC_BYTES)
+            {
                 return Err(Rc::KEY_SIZE);
             }
-            let key = ecc_from_scalar(&secret).ok_or(Rc::BINDING)?;
+            let mut padded = Zeroizing::new([0u8; MAX_ECC_BYTES]);
+            padded[MAX_ECC_BYTES - secret.len()..].copy_from_slice(&secret);
+            let key = ecc_from_scalar(&padded[..]).ok_or(Rc::BINDING)?;
             // The public point must be the scalar's public point (clause 12.2.1).
             if ecc_public(&key).as_ref() != Some(&(x.clone(), y.clone())) {
                 return Err(Rc::BINDING);
             }
             Secret::Ecc(key)
+        }
+        PublicParams::MlKem { .. } => {
+            let Unique::MlKem(public_key) = &public.unique else {
+                return Err(Rc::BINDING);
+            };
+            let key = kem::private_from_seed(&secret).map_err(|_| Rc::KEY_SIZE)?;
+            if kem::public_bytes(&key) != *public_key {
+                return Err(Rc::BINDING);
+            }
+            Secret::MlKem(Box::new(key))
         }
         PublicParams::KeyedHash { .. } => {
             if secret.len() > MAX_SYM_DATA {
@@ -657,10 +801,8 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
             let Unique::Digest(u) = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            let mut h = Sha256::new();
-            h.update(&seed[..]);
-            h.update(&secret[..]);
-            if h.finalize().as_slice() != u.as_slice() {
+            let name_hash = name_hash_alg(public.name_alg)?;
+            if hash(name_hash, &[&seed[..], &secret[..]]).as_slice() != u.as_slice() {
                 return Err(Rc::BINDING);
             }
             Secret::Data(secret)
@@ -671,63 +813,132 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
 
 // ---------------------------------------------------------------------- private area protection
 
-/// AES-128-CFB (full-block feedback, as `TPMT_SYM_DEF_OBJECT` AES/128/CFB states) of `data` under
-/// the 16-octet `sym_key` and `iv`; `encrypt` selects the direction. The result has the length
-/// of `data`.
-pub(crate) fn aes128_cfb(
+/// AES-CFB with full-block feedback and a derived or previously validated 16- or 32-octet key.
+pub(crate) fn aes_cfb(
     sym_key: &[u8],
     iv: &[u8; 16],
     data: &[u8],
     encrypt: bool,
 ) -> Zeroizing<Vec<u8>> {
-    let mut key = Zeroizing::new([0u8; 16]);
-    let n = key.len().min(sym_key.len());
-    key[..n].copy_from_slice(&sym_key[..n]);
     let mut buf = Zeroizing::new(data.to_vec());
-    if encrypt {
-        cfb_mode::Encryptor::<aes::Aes128>::new(&(*key).into(), &(*iv).into()).encrypt(&mut buf);
-    } else {
-        cfb_mode::Decryptor::<aes::Aes128>::new(&(*key).into(), &(*iv).into()).decrypt(&mut buf);
+    match sym_key.len() {
+        16 => crypt_cfb::<aes::Aes128>(sym_key, iv, &mut buf, encrypt),
+        32 => crypt_cfb::<aes::Aes256>(sym_key, iv, &mut buf, encrypt),
+        _ => unreachable!("AES-CFB key size was validated or derived locally"),
     }
     buf
+}
+
+fn crypt_cfb<C: BlockCipherEncrypt + KeyInit>(
+    key: &[u8],
+    iv: &[u8; 16],
+    data: &mut [u8],
+    encrypt: bool,
+) {
+    if encrypt {
+        cfb_mode::Encryptor::<C>::new_from_slices(key, iv)
+            .expect("AES-CFB key and IV sizes")
+            .encrypt(data);
+    } else {
+        cfb_mode::Decryptor::<C>::new_from_slices(key, iv)
+            .expect("AES-CFB key and IV sizes")
+            .decrypt(data);
+    }
 }
 
 /// The contents of a `TPM2B_PRIVATE` for `sensitive` (a `TPM2B_SENSITIVE`) of the object with
 /// `name`, protected under the parent's `seed`: `integrity || symIv || encSensitive` (module
 /// comment).
-pub(crate) fn protect(seed: &[u8], name: &[u8], sensitive: &[u8], iv: &[u8; 16]) -> Vec<u8> {
-    let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    let enc = aes128_cfb(&sym_key, iv, sensitive, true);
-    let hmac_key = kdfa_sha256(seed, b"INTEGRITY", &[], &[], 256);
+fn protect(
+    name_hash: HashAlg,
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    sensitive: &[u8],
+    iv: &[u8; 16],
+) -> Vec<u8> {
+    let enc = storage_cfb(name_hash, seed, symmetric, name, iv, sensitive, true);
+    let hmac_key = integrity_key(name_hash, seed);
     let mut iv_field = Writer::new();
     iv_field.tpm2b(iv);
-    let tag = hmac_sha256(&hmac_key, &[&iv_field.buf, &enc, name]);
+    let tag = hmac(name_hash, &hmac_key, &[&iv_field.buf, &enc, name]);
     let mut out = Writer::new();
-    out.tpm2b(&tag);
+    out.tpm2b(tag.as_slice());
     out.bytes(&iv_field.buf);
     out.bytes(&enc);
     out.finish()
 }
 
+/// `KDFa(nameAlg, seed, "INTEGRITY", NULL, NULL, 8 * digest size)`, `nameAlg` being the parent's.
+fn integrity_key(name_hash: HashAlg, seed: &[u8]) -> Zeroizing<Vec<u8>> {
+    kdfa(
+        name_hash,
+        seed,
+        b"INTEGRITY",
+        &[],
+        &[],
+        (name_hash.size() * 8) as u32,
+    )
+}
+
 /// Verifies the integrity of a private area and decrypts it: `TPM_RC_INTEGRITY` before any
 /// decryption (Part 3, clause 12.2.1), `TPM_RC_SIZE` for a malformed container.
-fn unprotect(seed: &[u8], name: &[u8], blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, Rc> {
+fn unprotect(
+    name_hash: HashAlg,
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    blob: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let mut r = Reader::new(blob);
-    let tag = r.tpm2b(limits::MAX_DIGEST_SIZE).map_err(|_| Rc::SIZE)?;
+    let tag = r.tpm2b(name_hash.size()).map_err(|_| Rc::SIZE)?;
     let iv_bytes = r.tpm2b(16).map_err(|_| Rc::SIZE)?;
     let iv: [u8; 16] = iv_bytes.try_into().map_err(|_| Rc::SIZE)?;
     if r.remaining() == 0 {
         return Err(Rc::SIZE);
     }
     let enc = r.bytes(r.remaining()).map_err(|_| Rc::SIZE)?;
-    let hmac_key = kdfa_sha256(seed, b"INTEGRITY", &[], &[], 256);
+    let hmac_key = integrity_key(name_hash, seed);
     let mut iv_field = Writer::new();
     iv_field.tpm2b(&iv);
-    if !hmac_sha256_verify(&hmac_key, &[&iv_field.buf, enc, name], tag) {
+    if !hmac_verify(name_hash, &hmac_key, &[&iv_field.buf, enc, name], tag) {
         return Err(Rc::INTEGRITY);
     }
-    let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    Ok(aes128_cfb(&sym_key, &iv, enc, false))
+    Ok(storage_cfb(
+        name_hash, seed, symmetric, name, &iv, enc, false,
+    ))
+}
+
+/// Derives the AES-CFB key for a private, duplication or credential wrapper: `KDFa(name_hash,
+/// seed, "STORAGE", Name, NULL, keyBits)`, `name_hash` being the hash of the parent's `nameAlg`.
+/// The caller supplies the cipher of the Storage key and the IV for that wrapper.
+pub(crate) fn storage_cfb(
+    name_hash: HashAlg,
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    iv: &[u8; 16],
+    data: &[u8],
+    encrypt: bool,
+) -> Zeroizing<Vec<u8>> {
+    let key = kdfa(
+        name_hash,
+        seed,
+        b"STORAGE",
+        name,
+        &[],
+        u32::from(symmetric.key_bits()),
+    );
+    aes_cfb(&key, iv, data, encrypt)
+}
+
+/// The storage parent a private area is protected under: its `nameAlg` (the hash of the KDFa and
+/// of the integrity HMAC), its seed value and its storage cipher.
+#[derive(Clone, Copy)]
+pub(crate) struct ParentKey<'a> {
+    pub(crate) name_alg: u16,
+    pub(crate) seed: &'a [u8],
+    pub(crate) symmetric: SymDef,
 }
 
 /// Protects the sensitive area of `obj` for a parent seed (`TPM2_Create`).
@@ -735,21 +946,37 @@ pub(crate) fn private_blob(
     obj_public: &TpmtPublic,
     name: &[u8],
     sensitive: &Sensitive,
-    parent_seed: &[u8],
+    auth: &AuthValue,
+    parent: ParentKey<'_>,
     iv: &[u8; 16],
 ) -> Result<Vec<u8>, Rc> {
-    let bytes = sensitive_to_bytes(sensitive, obj_public.type_alg())?;
-    Ok(protect(parent_seed, name, &bytes, iv))
+    let bytes = sensitive_with_auth(
+        sensitive,
+        obj_public.type_alg(),
+        obj_public.name_alg,
+        auth,
+        false,
+    )?;
+    let name_hash = name_hash_alg(parent.name_alg)?;
+    Ok(protect(
+        name_hash,
+        parent.seed,
+        parent.symmetric,
+        name,
+        &bytes,
+        iv,
+    ))
 }
 
-/// Opens a private blob for `public` under a parent seed (`TPM2_Load`).
+/// Opens a private blob for `public` under a parent (`TPM2_Load`).
 pub(crate) fn open_private(
     public: &TpmtPublic,
-    parent_seed: &[u8],
+    parent: ParentKey<'_>,
     blob: &[u8],
 ) -> Result<Sensitive, Rc> {
     let name = name_of(public);
-    let plain = unprotect(parent_seed, &name, blob)?;
+    let name_hash = name_hash_alg(parent.name_alg)?;
+    let plain = unprotect(name_hash, parent.seed, parent.symmetric, &name, blob)?;
     sensitive_from_bytes(&plain, public)
 }
 
@@ -757,14 +984,15 @@ pub(crate) fn open_private(
 
 /// The checks of `TPM2_LoadExternal` for a public area without a private part: the point of an
 /// ECC key is on the curve (`TPM_RC_ECC_POINT`, Part 3, clause 12.3.1), an RSA modulus is 2048
-/// bits and odd (`TPM_RC_KEY`), the exponent is 65537 (`TPM_RC_RANGE`), `nameAlg` is SHA-256
-/// (`TPM_RC_HASH`), `authPolicy` is empty or one digest (`TPM_RC_SIZE`).
+/// bits and odd (`TPM_RC_KEY`), the exponent is 65537 (`TPM_RC_RANGE`), `nameAlg` is SHA-256,
+/// SHA-384 or SHA-512 (`TPM_RC_HASH`), `authPolicy` is empty or one digest of `nameAlg`
+/// (`TPM_RC_SIZE`).
 pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
     let bad = |rc: Rc| rc.in_param(2);
-    if public.name_alg != alg::SHA256 {
+    let Ok(name_hash) = name_hash_alg(public.name_alg) else {
         return Err(bad(Rc::HASH));
-    }
-    if !public.auth_policy.is_empty() && public.auth_policy.len() != limits::MAX_DIGEST_SIZE {
+    };
+    if !public.auth_policy.is_empty() && public.auth_policy.len() != name_hash.size() {
         return Err(bad(Rc::SIZE));
     }
     let a = public.attributes;
@@ -778,7 +1006,7 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
     }
     match (&public.params, &public.unique) {
         (PublicParams::Rsa { exponent, .. }, Unique::Rsa(n)) => {
-            if *exponent != 0 && *exponent != 65537 {
+            if !supported_rsa_exponent(*exponent) {
                 return Err(bad(Rc::RANGE));
             }
             if n.len() != MAX_RSA_BYTES || n[0] & 0x80 == 0 || n[MAX_RSA_BYTES - 1] & 1 == 0 {
@@ -790,6 +1018,11 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
                 return Err(bad(Rc::ECC_POINT));
             }
         }
+        (PublicParams::MlKem { .. }, Unique::MlKem(key)) => {
+            if !kem::public_encoding_is_valid(key) {
+                return Err(bad(Rc::KEY));
+            }
+        }
         // Sealed data without its private part is of no use; keep the object model simple.
         (PublicParams::KeyedHash { .. }, _) => return Err(bad(Rc::TYPE)),
         _ => return Err(bad(Rc::KEY)),
@@ -799,28 +1032,28 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
 
 // ---------------------------------------------------------------------------------- creation data
 
-/// SHA-256 over the selected PCR values (selection order, ascending index); empty when nothing is
-/// selected (Part 2, Table 246: `pcrDigest.size` is zero for an empty selection).
+/// Hash `name_hash` (that of the created object's `nameAlg`) over the selected PCR values
+/// (selection order, ascending index); empty when nothing is selected (Part 2, Table 246:
+/// `pcrDigest.size` is zero for an empty selection). The PCR banks stay SHA-256 and SHA-384.
 pub(crate) fn creation_pcr_digest(
     pcrs: &Pcrs,
     selection: &crate::marshal::TpmlPcrSelection,
+    name_hash: HashAlg,
 ) -> Vec<u8> {
-    let mut h = Sha256::new();
-    let mut any = false;
-    for sel in &selection.selections {
-        for i in 0..limits::PCR_COUNT {
-            if sel.selects(i)
-                && let Some(v) = pcrs.value(i)
+    let mut values: Vec<&[u8]> = Vec::new();
+    for bank in &selection.selections {
+        for index in 0..limits::PCR_COUNT {
+            if bank.selects(index)
+                && let Some(value) = pcrs.value(bank.hash, index)
             {
-                h.update(v);
-                any = true;
+                values.push(value);
             }
         }
     }
-    if any {
-        h.finalize().to_vec()
-    } else {
+    if values.is_empty() {
         Vec::new()
+    } else {
+        hash(name_hash, &values).as_slice().to_vec()
     }
 }
 
@@ -912,21 +1145,37 @@ mod tests {
 
     #[test]
     fn protect_round_trip_and_tamper() {
+        let symmetric = SymDef::Aes128Cfb;
         let seed = [7u8; 32];
         let name = [9u8; 34];
         let sens = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let blob = protect(&seed, &name, &sens, &[3u8; 16]);
-        assert_eq!(&unprotect(&seed, &name, &blob).unwrap()[..], &sens[..]);
+        let blob = protect(HashAlg::Sha256, &seed, symmetric, &name, &sens, &[3u8; 16]);
+        assert_eq!(
+            &unprotect(HashAlg::Sha256, &seed, symmetric, &name, &blob).unwrap()[..],
+            &sens[..]
+        );
         // Another name, another seed, a flipped octet: integrity failure.
-        assert_eq!(unprotect(&seed, &[8u8; 34], &blob), Err(Rc::INTEGRITY));
-        assert_eq!(unprotect(&[6u8; 32], &name, &blob), Err(Rc::INTEGRITY));
+        assert_eq!(
+            unprotect(HashAlg::Sha256, &seed, symmetric, &[8u8; 34], &blob),
+            Err(Rc::INTEGRITY)
+        );
+        assert_eq!(
+            unprotect(HashAlg::Sha256, &[6u8; 32], symmetric, &name, &blob),
+            Err(Rc::INTEGRITY)
+        );
         let mut bad = blob.clone();
         let last = bad.len() - 1;
         bad[last] ^= 1;
-        assert_eq!(unprotect(&seed, &name, &bad), Err(Rc::INTEGRITY));
+        assert_eq!(
+            unprotect(HashAlg::Sha256, &seed, symmetric, &name, &bad),
+            Err(Rc::INTEGRITY)
+        );
         // The ciphertext does not contain the plaintext.
         assert!(!blob.windows(sens.len()).any(|w| w == &sens[..]));
-        assert_eq!(unprotect(&seed, &name, &[]), Err(Rc::SIZE));
+        assert_eq!(
+            unprotect(HashAlg::Sha256, &seed, symmetric, &name, &[]),
+            Err(Rc::SIZE)
+        );
     }
 
     #[test]
@@ -947,35 +1196,53 @@ mod tests {
             0xfb, 0x4a, 0xc8, 0xa6, 0x45, 0x37, 0xa0, 0xb3, 0xa9, 0x3f, 0xcd, 0xe3, 0xcd, 0xad,
             0x9f, 0x1c, 0xe5, 0x8b,
         ];
-        assert_eq!(&aes128_cfb(&key, &iv, &plain, true)[..], &cipher[..]);
-        assert_eq!(&aes128_cfb(&key, &iv, &cipher, false)[..], &plain[..]);
+        assert_eq!(&aes_cfb(&key, &iv, &plain, true)[..], &cipher[..]);
+        assert_eq!(&aes_cfb(&key, &iv, &cipher, false)[..], &plain[..]);
     }
 
     #[test]
     fn protect_handles_empty_partial_and_maximum_sizes() {
+        let symmetric = SymDef::Aes128Cfb;
         let seed = [7u8; 32];
         let name = [9u8; 34];
         let iv = [3u8; 16];
         // Empty sensitive: the container is rejected (`TPM_RC_SIZE`), nothing to decrypt.
-        let blob = protect(&seed, &name, &[], &iv);
-        assert_eq!(unprotect(&seed, &name, &blob), Err(Rc::SIZE));
+        let blob = protect(HashAlg::Sha256, &seed, symmetric, &name, &[], &iv);
+        assert_eq!(
+            unprotect(HashAlg::Sha256, &seed, symmetric, &name, &blob),
+            Err(Rc::SIZE)
+        );
         // One octet, partial blocks, whole blocks and the largest blob `TPM2B_PRIVATE` holds
         // (integrity 2 + 32, symIv 2 + 16, the rest encSensitive).
         let largest = MAX_PRIVATE - (2 + 32 + 2 + 16);
         for len in [1usize, 15, 16, 17, 100, 256, largest] {
             let sens: Vec<u8> = (0..len).map(|i| (i * 7 + 1) as u8).collect();
-            let blob = protect(&seed, &name, &sens, &iv);
+            let blob = protect(HashAlg::Sha256, &seed, symmetric, &name, &sens, &iv);
             assert_eq!(blob.len(), 52 + len);
-            assert_eq!(&unprotect(&seed, &name, &blob).unwrap()[..], &sens[..]);
+            assert_eq!(
+                &unprotect(HashAlg::Sha256, &seed, symmetric, &name, &blob).unwrap()[..],
+                &sens[..]
+            );
             // Any single flipped octet is caught by the integrity check before decryption.
             for at in [2usize, 40, blob.len() - 1] {
                 let mut bad = blob.clone();
                 bad[at] ^= 0x80;
-                assert_eq!(unprotect(&seed, &name, &bad), Err(Rc::INTEGRITY));
+                assert_eq!(
+                    unprotect(HashAlg::Sha256, &seed, symmetric, &name, &bad),
+                    Err(Rc::INTEGRITY)
+                );
             }
         }
         assert_eq!(
-            protect(&seed, &name, &vec![0u8; largest], &iv).len(),
+            protect(
+                HashAlg::Sha256,
+                &seed,
+                symmetric,
+                &name,
+                &vec![0u8; largest],
+                &iv
+            )
+            .len(),
             MAX_PRIVATE
         );
     }

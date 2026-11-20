@@ -45,9 +45,7 @@
 
 use super::bytes::{copy_at, fill_range, head_mut, sub, tail_mut, tri};
 use super::dsdt::{DsdtError, build_dsdt_with_s5};
-use super::fadt::{
-    FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt, build_fadt_with_rtc,
-};
+use super::fadt::{FACS_LEN, FacsError, FadtAddresses, FadtError, build_facs, build_fadt_with_rtc};
 use super::madt::{MadtError, build_madt};
 use super::manifest::{
     AcpiPmEntry, BoardManifest, DEVICE_ENTRY_SIZE, DeviceEntry, FLAG_PIO, FLAG_PRESENT, GSI_NONE,
@@ -56,6 +54,8 @@ use super::manifest::{
 use super::mcfg::{McfgError, build_mcfg};
 use super::rsdp::{RsdpError, build_rsdp, build_xsdt};
 use super::sha256::sha256;
+use super::table::TableError;
+use super::tpm2::{self, build_tpm2};
 
 pub const BLOB_MAGIC: [u8; 8] = *b"ODACPIB1";
 pub const BLOB_VERSION: u32 = 2;
@@ -74,6 +74,8 @@ pub const ACPI_REGION_BASE: u64 = 0x000E_0000;
 pub const ACPI_REGION_END: u64 = 0x000F_0000;
 /// End of the part for the tables (E820 ACPI reclaim); FACS (NVS) starts here.
 pub const ACPI_RECLAIM_END: u64 = 0x000E_F000;
+/// Scratch space for the current fixed firmware-board manifest and its tables.
+pub const BUILD_CAPACITY: usize = crate::paging::PAGE_BYTES as usize;
 
 /// Domain tag of the manifest hash; the trailing digit is the hash scheme version.
 pub const MANIFEST_HASH_TAG: [u8; 16] = *b"ODACPI-MANIFEST1";
@@ -88,6 +90,7 @@ pub enum BlobError {
     Fadt(FadtError),
     Facs(FacsError),
     Madt(MadtError),
+    Tpm2(TableError),
     /// RSDP or XSDT.
     Rsdp(RsdpError),
     /// The device table has no ACPI fixed hardware entry (type 9).
@@ -136,7 +139,7 @@ pub const fn manifest_hash(devices: &[DeviceEntry]) -> Result<[u8; 32], Manifest
     Ok(sha256(sub(&buf, 0, len)))
 }
 
-/// The bridge and base device manifest (types 1..=8) and the validated PM entry (type 9).
+/// The board manifest (types 1–8 and 10) and the validated PM entry (type 9).
 const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPmEntry), BlobError> {
     let filler = DeviceEntry {
         device_type: 0,
@@ -152,6 +155,7 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     let mut count = 0;
     let mut pm: Option<AcpiPmEntry> = None;
     let mut nvme = None;
+    let mut rtc = None;
     let mut i = 0;
     while i < devices.len() {
         let entry = devices[i];
@@ -160,6 +164,8 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
             pm = Some(tri!(AcpiPmEntry::from_entry(&entry), BlobError::Manifest));
         } else if entry.device_type == device_type::NVME {
             nvme = Some(entry);
+        } else if entry.device_type == device_type::RTC_CMOS {
+            rtc = Some(entry);
         } else if entry.device_type >= 1 && entry.device_type <= 7 && count < 7 {
             base_entries[count] = entry;
             count += 1;
@@ -172,44 +178,13 @@ const fn split_devices(devices: &[DeviceEntry]) -> Result<(BoardManifest, AcpiPm
     if let Some(entry) = nvme {
         manifest = tri!(manifest.with_nvme(&entry), BlobError::Manifest);
     }
+    if let Some(entry) = rtc {
+        manifest = tri!(manifest.with_rtc(entry), BlobError::Manifest);
+    }
     match pm {
         Some(pm) => Ok((manifest, pm)),
         None => Err(BlobError::MissingAcpiPm),
     }
-}
-
-/// Validates and detects the optional v1.4 RTC entry before table construction.
-const fn rtc_present(devices: &[DeviceEntry]) -> Result<bool, BlobError> {
-    let mut present = false;
-    let mut i = 0;
-    while i < devices.len() {
-        let entry = devices[i];
-        i += 1;
-        if entry.device_type != device_type::RTC_CMOS {
-            continue;
-        }
-        if present {
-            return Err(BlobError::Manifest(ManifestError::DeviceTypeNotUnique(
-                device_type::RTC_CMOS,
-            )));
-        }
-        if entry.flags != (FLAG_PRESENT | FLAG_PIO) {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("flags")));
-        }
-        if entry.base != 0x70 || entry.length != 2 {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("ports")));
-        }
-        if entry.gsi != GSI_NONE || entry.irq_flags != 0 || entry.param1 != 0 {
-            return Err(BlobError::Manifest(ManifestError::BadRtc(
-                "reserved fields",
-            )));
-        }
-        if entry.param0 > device_type::MAX_RTC_UNIX_SECONDS {
-            return Err(BlobError::Manifest(ManifestError::BadRtc("base UTC time")));
-        }
-        present = true;
-    }
-    Ok(present)
 }
 
 /// Zeroes the alignment gap after a table of `len` bytes at payload offset `cursor` and returns
@@ -243,14 +218,32 @@ const fn room(out: &[u8], needed: usize) -> Result<(), BlobError> {
 /// MCFG (only with a `PRESENT` PCIe ECAM entry), XSDT; the FACS follows the payload as a
 /// separate segment loaded at 0xE_F000 (see the module comment).
 pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize, BlobError> {
-    let hash = tri!(manifest_hash(devices), BlobError::Manifest);
-    let has_rtc = tri!(rtc_present(devices));
+    Ok(tri!(build_segments::<true>(devices, out)).end)
+}
+
+/// Split points in the serialized blob for the adjacent reclaim and NVS payloads.
+pub(super) struct AcpiSegments {
+    pub(super) payload: usize,
+    pub(super) facs: usize,
+    pub(super) end: usize,
+}
+
+pub(super) const fn build_segments<const PACKAGE: bool>(
+    devices: &[DeviceEntry],
+    out: &mut [u8],
+) -> Result<AcpiSegments, BlobError> {
+    let hash = if PACKAGE {
+        tri!(manifest_hash(devices), BlobError::Manifest)
+    } else {
+        [0; 32]
+    };
     let (manifest, pm) = tri!(split_devices(devices));
     let with_mcfg = match manifest.device(device_type::PCIE_ECAM) {
         Some(ecam) => ecam.is_present(),
         None => false,
     };
-    let table_count = if with_mcfg { 5 } else { 4 };
+    let tpm = manifest.tpm_crb();
+    let table_count = 4 + with_mcfg as usize + tpm.is_some() as usize;
     let payload_offset = align_up(HEADER_LEN + table_count * DIR_ENTRY_LEN, TABLE_ALIGN);
     tri!(room(out, payload_offset + RSDP_SLOT_LEN));
     // Header, directory and the RSDP slot start as zero; the gaps between tables are filled
@@ -301,7 +294,7 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
         build_fadt_with_rtc(
             &pm,
             &addresses,
-            has_rtc,
+            manifest.rtc().is_some(),
             tail_mut(out, payload_offset + cursor),
         ),
         BlobError::Fadt
@@ -327,16 +320,30 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
         cursor = tri!(close_table(out, payload_offset, cursor, mcfg_len));
     }
 
-    // XSDT: FADT, MADT and MCFG, in this order, by their addresses in the payload.
-    let mut entries = [0u64; 3];
+    // XSDT lists FADT, MADT and the optional MCFG and TPM2 in payload order.
+    let mut entries = [0u64; 4];
     entries[0] = ACPI_REGION_BASE + fadt_at as u64;
     entries[1] = ACPI_REGION_BASE + madt_at as u64;
-    let entry_count = if with_mcfg {
+    let mut entry_count = if with_mcfg {
         entries[2] = ACPI_REGION_BASE + mcfg_at as u64;
         3
     } else {
         2
     };
+    if let Some(tpm) = tpm {
+        tri!(room(out, payload_offset + cursor));
+        let tpm_len = tri!(
+            build_tpm2(tpm, tail_mut(out, payload_offset + cursor)),
+            BlobError::Tpm2
+        );
+        signatures[index] = tpm2::SIGNATURE;
+        offsets[index] = cursor as u32;
+        lengths[index] = tpm_len as u32;
+        index += 1;
+        entries[entry_count] = ACPI_REGION_BASE + cursor as u64;
+        entry_count += 1;
+        cursor = tri!(close_table(out, payload_offset, cursor, tpm_len));
+    }
     tri!(room(out, payload_offset + cursor));
     let xsdt_at = cursor;
     let xsdt_len = tri!(
@@ -368,32 +375,38 @@ pub const fn build_blob(devices: &[DeviceEntry], out: &mut [u8]) -> Result<usize
     let facs_len = tri!(build_facs(tail_mut(out, facs_offset)), BlobError::Facs);
     let total_len = facs_offset + facs_len;
     // Anything past `total_len` is not part of the blob and is left alone.
-    let header = head_mut(out, HEADER_LEN);
-    copy_at(header, 0x00, &BLOB_MAGIC);
-    copy_at(header, 0x08, &BLOB_VERSION.to_le_bytes());
-    copy_at(header, 0x0C, &(HEADER_LEN as u32).to_le_bytes());
-    copy_at(header, 0x10, &hash);
-    copy_at(header, 0x30, &ACPI_REGION_BASE.to_le_bytes());
-    copy_at(header, 0x38, &(payload_offset as u32).to_le_bytes());
-    copy_at(header, 0x3C, &(payload_len as u32).to_le_bytes());
-    copy_at(header, 0x40, &ACPI_REGION_BASE.to_le_bytes());
-    copy_at(header, 0x48, &(index as u32).to_le_bytes());
-    copy_at(header, 0x4C, &(total_len as u32).to_le_bytes());
-    copy_at(header, 0x50, &(facs_offset as u32).to_le_bytes());
-    copy_at(header, 0x54, &(facs_len as u32).to_le_bytes());
-    copy_at(header, 0x58, &FACS_ADDRESS.to_le_bytes());
-    let mut i = 0;
-    while i < index {
-        let at = HEADER_LEN + i * DIR_ENTRY_LEN;
-        copy_at(out, at, &signatures[i]);
-        copy_at(out, at + 4, &offsets[i].to_le_bytes());
-        copy_at(out, at + 8, &lengths[i].to_le_bytes());
-        i += 1;
+    if PACKAGE {
+        let header = head_mut(out, HEADER_LEN);
+        copy_at(header, 0x00, &BLOB_MAGIC);
+        copy_at(header, 0x08, &BLOB_VERSION.to_le_bytes());
+        copy_at(header, 0x0C, &(HEADER_LEN as u32).to_le_bytes());
+        copy_at(header, 0x10, &hash);
+        copy_at(header, 0x30, &ACPI_REGION_BASE.to_le_bytes());
+        copy_at(header, 0x38, &(payload_offset as u32).to_le_bytes());
+        copy_at(header, 0x3C, &(payload_len as u32).to_le_bytes());
+        copy_at(header, 0x40, &ACPI_REGION_BASE.to_le_bytes());
+        copy_at(header, 0x48, &(index as u32).to_le_bytes());
+        copy_at(header, 0x4C, &(total_len as u32).to_le_bytes());
+        copy_at(header, 0x50, &(facs_offset as u32).to_le_bytes());
+        copy_at(header, 0x54, &(facs_len as u32).to_le_bytes());
+        copy_at(header, 0x58, &FACS_ADDRESS.to_le_bytes());
+        let mut i = 0;
+        while i < index {
+            let at = HEADER_LEN + i * DIR_ENTRY_LEN;
+            copy_at(out, at, &signatures[i]);
+            copy_at(out, at + 4, &offsets[i].to_le_bytes());
+            copy_at(out, at + 8, &lengths[i].to_le_bytes());
+            i += 1;
+        }
     }
-    Ok(total_len)
+    Ok(AcpiSegments {
+        payload: payload_offset,
+        facs: facs_offset,
+        end: total_len,
+    })
 }
 
-const fn absent(device_type: u32) -> DeviceEntry {
+pub(super) const fn absent(device_type: u32) -> DeviceEntry {
     DeviceEntry {
         device_type,
         flags: 0,
@@ -464,7 +477,7 @@ pub const LINUX_NVME_DEVICES: [DeviceEntry; 9] = [
         gsi: 16,
         irq_flags: IRQ_LEVEL | IRQ_ACTIVE_LOW,
         param0: 4,
-        ..mmio(device_type::NVME, 0xFC00_4000, 0x2000)
+        ..mmio(device_type::NVME, 0xFC00_4000, 0x4000)
     },
     STAGE4_DEVICES[7],
 ];

@@ -18,10 +18,12 @@
 //! need one session in the authorization area, a password session (`TPM_RS_PW`) or an HMAC
 //! session started by `TPM2_StartAuthSession`. An HMAC authorization is checked against the
 //! cpHash of the command and answered with a response HMAC over the rpHash (`session.rs`).
-//! No other sessions (audit, encrypt-only) are accepted: more sessions than authorized handles is
-//! `TPM_RC_AUTHSIZE`. Slice C3: the `decrypt` and `encrypt` attributes of an authorization session
-//! (`paramenc.rs`): the first command parameter is decrypted after the authorization (the cpHash
-//! covers the encrypted bytes), the first response parameter is encrypted before the rpHash. `TPM2_FlushContext` takes no session at all (`TPM_RC_AUTH_CONTEXT`).
+//! Additional sessions can protect parameters without authorizing a handle (Part 3 v185 §5.5).
+//! The first command parameter is decrypted after checking the HMAC over the ciphertext.
+//! The first response parameter is encrypted before computing the rpHash (`paramenc.rs`).
+//! An HMAC session may audit the command and authorize a handle at once (Part 1 rev 01.83,
+//! clauses 18.6.4, 19.6.1 and 20.1, see `classify_sessions`); policy and trial sessions cannot
+//! audit. `TPM2_FlushContext` takes no sessions.
 //! NOT VERIFIED against TPM 2.0 Library v185/v184: the Name of a sequence object in a cpHash is
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
@@ -29,35 +31,38 @@
 //! Slice C1: dictionary-attack protection wraps the authorization check (`da.rs`).
 //! Slice C2: a policy session in the authorization area (handle type `0x03`) is checked by
 //! `policy.rs` (`policy_use_check`) before the HMAC or password of the session is looked at; the
-//! role of the handle (USER, or ADMIN for `objectHandle` of `TPM2_Certify`) decides which object
-//! attribute gates a password or HMAC (Part 3, clause 5.6, steps 5-7): `userWithAuth` CLEAR is
+//! role of the handle decides which object attribute gates a password or HMAC (Part 3,
+//! clause 5.6, steps 5-7): `userWithAuth` CLEAR is
 //! `TPM_RC_POLICY_FAIL` for the USER role, `adminWithPolicy` SET is `TPM_RC_AUTH_TYPE` for the
 //! ADMIN role. The context commands refuse any session (`TPM_RC_AUTH_CONTEXT`).
 //! Slice B of phase B: the Name of a transient or persistent object in a cpHash is its Name
 //! (`nameAlg || H(TPMT_PUBLIC)`), and an object is authorized with its authValue only while it has
-//! a private part (`TPM_RC_AUTH_UNAVAILABLE` otherwise; NOT VERIFIED against TPM 2.0 Library
-//! v185/v184: this code for that case, see `object.rs`). With `userWithAuth` CLEAR a password or
+//! a private part (`TPM_RC_AUTH_UNAVAILABLE` otherwise, as required by Library v185 Part 3
+//! §12.5 for `ActivateCredential`). With `userWithAuth` CLEAR a password or
 //! HMAC for the USER role is `TPM_RC_POLICY_FAIL` (slice C2, above).
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{cc, handle, session_attr, st};
 use crate::command::{HEADER_SIZE, check_password_session, parse_auth_area, parse_header};
-use crate::crypto::DIGEST;
-use crate::da::DaClass;
+use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash};
+use crate::da::{DaClass, DaProtection};
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
+use crate::nv::is_nv_handle;
 use crate::object::is_object_hierarchy;
 use crate::paramenc::{
-    SessionSym, apply as apply_param_encryption, first_parameter_is_sized,
+    SessionSym, apply_with_hash as apply_param_encryption, first_parameter_is_sized,
     first_response_parameter_is_sized,
 };
 use crate::pcr::resolve_pcr_handle;
+use crate::policy::PolicyHashRestriction;
+use crate::policy::PolicyState;
 use crate::response::{Output, Rc, SessionAck, error_response, success_response};
 use crate::session::{
-    authorization_key, check_hmac_session_attributes, response_hmac, verify_command_hmac,
+    SessionKind, authorization_key, check_hmac_session_attributes, response_hmac,
+    verify_command_hmac,
 };
 use crate::state::Tpm;
 
@@ -105,16 +110,20 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 }
 
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
-/// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
-/// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 60] = [
+/// `extensive`, `cHandles`, `rHandle`) are from the command tables of TPM Library Part 3.
+pub(crate) static COMMANDS: [CommandSpec; 101] = [
+    spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
     ext(spec(cc::CLEAR, 1, 1, false, true, false)),
     spec(cc::CLEAR_CONTROL, 1, 1, false, true, false),
+    spec(cc::CLOCK_SET, 1, 1, false, true, false),
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
+    spec(cc::PCR_ALLOCATE, 1, 1, false, true, false),
+    spec(cc::SET_PRIMARY_POLICY, 1, 1, false, true, false),
+    spec(cc::CLOCK_RATE_ADJUST, 1, 1, false, false, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
     spec(cc::NV_INCREMENT, 2, 1, false, true, false),
     spec(cc::NV_SET_BITS, 2, 1, false, true, false),
@@ -123,39 +132,59 @@ pub(crate) static COMMANDS: [CommandSpec; 60] = [
     spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
     spec(cc::DICTIONARY_ATTACK_LOCK_RESET, 1, 1, false, true, false),
     spec(cc::DICTIONARY_ATTACK_PARAMETERS, 1, 1, false, true, false),
+    spec(cc::NV_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
     spec(cc::PCR_RESET, 1, 1, false, true, false),
     spec(cc::SEQUENCE_COMPLETE, 1, 1, false, false, true),
+    spec(cc::INCREMENTAL_SELF_TEST, 0, 0, false, true, false),
     spec(cc::SELF_TEST, 0, 0, false, true, false),
     spec(cc::STARTUP, 0, 0, false, true, false),
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
+    spec(cc::ACTIVATE_CREDENTIAL, 2, 2, false, false, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
+    spec(cc::POLICY_NV, 3, 1, false, false, false),
+    spec(cc::CERTIFY_CREATION, 2, 1, false, false, false),
+    spec(cc::DUPLICATE, 2, 1, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
+    spec(cc::GET_SESSION_AUDIT_DIGEST, 3, 2, false, false, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
     spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
+    spec(cc::OBJECT_CHANGE_AUTH, 2, 1, false, false, false),
     spec(cc::POLICY_SECRET, 2, 1, false, false, false),
     spec(cc::CREATE, 1, 1, false, false, false),
     spec(cc::ECDH_Z_GEN, 1, 1, false, false, false),
     spec(cc::HMAC, 1, 1, false, false, false),
+    spec(cc::IMPORT, 1, 1, false, false, false),
     spec(cc::LOAD, 1, 1, true, false, false),
     spec(cc::QUOTE, 1, 1, false, false, false),
     spec(cc::RSA_DECRYPT, 1, 1, false, false, false),
+    spec(cc::HMAC_START, 1, 1, true, false, false),
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
     spec(cc::SIGN, 1, 1, false, false, false),
     spec(cc::UNSEAL, 1, 1, false, false, false),
+    spec(cc::POLICY_SIGNED, 2, 0, false, false, false),
     spec(cc::CONTEXT_LOAD, 0, 0, true, false, false),
     spec(cc::CONTEXT_SAVE, 1, 0, false, false, false),
+    spec(cc::ECDH_KEY_GEN, 1, 0, false, false, false),
     spec(cc::FLUSH_CONTEXT, 0, 0, false, false, false),
     spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
+    spec(cc::MAKE_CREDENTIAL, 1, 0, false, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
+    spec(cc::POLICY_AUTHORIZE, 1, 0, false, false, false),
     spec(cc::POLICY_AUTH_VALUE, 1, 0, false, false, false),
     spec(cc::POLICY_COMMAND_CODE, 1, 0, false, false, false),
+    spec(cc::POLICY_COUNTER_TIMER, 1, 0, false, false, false),
+    spec(cc::POLICY_CP_HASH, 1, 0, false, false, false),
+    spec(cc::POLICY_LOCALITY, 1, 0, false, false, false),
+    spec(cc::POLICY_NAME_HASH, 1, 0, false, false, false),
     spec(cc::POLICY_OR, 1, 0, false, false, false),
+    spec(cc::POLICY_TICKET, 1, 0, false, false, false),
     spec(cc::READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::RSA_ENCRYPT, 1, 0, false, false, false),
     spec(cc::START_AUTH_SESSION, 2, 0, true, false, false),
     spec(cc::VERIFY_SIGNATURE, 1, 0, false, false, false),
+    spec(cc::ECC_PARAMETERS, 0, 0, false, false, false),
     spec(cc::GET_CAPABILITY, 0, 0, false, false, false),
     spec(cc::GET_RANDOM, 0, 0, false, false, false),
     spec(cc::GET_TEST_RESULT, 0, 0, false, false, false),
@@ -165,14 +194,32 @@ pub(crate) static COMMANDS: [CommandSpec; 60] = [
     spec(cc::POLICY_RESTART, 1, 0, false, false, false),
     spec(cc::READ_CLOCK, 0, 0, false, false, false),
     spec(cc::PCR_EXTEND, 1, 1, false, true, false),
+    spec(cc::NV_CERTIFY, 3, 2, false, false, false),
     spec(cc::EVENT_SEQUENCE_COMPLETE, 2, 2, false, true, true),
     spec(cc::HASH_SEQUENCE_START, 0, 0, true, false, false),
+    spec(cc::POLICY_DUPLICATION_SELECT, 1, 0, false, false, false),
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
+    spec(cc::TEST_PARMS, 0, 0, false, false, false),
+    spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
+    spec(cc::POLICY_NV_WRITTEN, 1, 0, false, false, false),
+    spec(cc::POLICY_TEMPLATE, 1, 0, false, false, false),
+    spec(cc::POLICY_AUTHORIZE_NV, 3, 1, false, false, false),
+    spec(cc::POLICY_PARAMETERS, 1, 0, false, false, false),
+    spec(cc::VERIFY_SEQUENCE_COMPLETE, 2, 1, false, false, true),
+    spec(cc::SIGN_SEQUENCE_COMPLETE, 2, 2, false, false, true),
+    spec(cc::VERIFY_DIGEST_SIGNATURE, 1, 0, false, false, false),
+    spec(cc::SIGN_DIGEST, 1, 1, false, false, false),
+    spec(cc::ENCAPSULATE, 1, 0, false, false, false),
+    spec(cc::DECAPSULATE, 1, 1, false, false, false),
+    spec(cc::VERIFY_SEQUENCE_START, 1, 0, true, false, false),
+    spec(cc::SIGN_SEQUENCE_START, 1, 0, true, false, false),
 ];
+
+pub(crate) type CommandHandles = [u32; 3];
 
 /// What a handler needs besides the parameter reader.
 pub(crate) struct Invocation {
-    pub handles: [u32; 2],
+    pub handles: CommandHandles,
 }
 
 fn lookup(code: u32) -> Option<&'static CommandSpec> {
@@ -201,12 +248,18 @@ fn is_pcr_position(code: u32, i: usize) -> bool {
 fn handle_auth(
     tpm: &Tpm,
     code: u32,
-    handles: &[u32; 2],
+    handles: &CommandHandles,
     i: usize,
-    admin: bool,
+    role: AuthRole,
     policy: bool,
+    da: DaProtection,
 ) -> Result<AuthValue, Rc> {
     let h = handles[i];
+    if let Some(object) = tpm.object(h) {
+        // PolicySecret requires userWithAuth even for policy-based authorization.
+        return tpm.object_auth(object, i, role, policy && code != cc::POLICY_SECRET, da);
+    }
+    tpm.da_check(da)?;
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return Ok(AuthValue::empty());
     }
@@ -218,14 +271,7 @@ fn handle_auth(
             }
             tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
         }
-        // A policy session on an NV index: the indices have no policy access (`POLICYREAD` and
-        // `POLICYWRITE` are refused at definition, Part 3, clause 5.6, step 7).
-        handle::HT_NV_INDEX if policy => Err(Rc::AUTH_UNAVAILABLE),
-        handle::HT_NV_INDEX => tpm.nv_auth(h).ok_or(Rc::HANDLE.in_handle(n)),
-        // Transient (not a sequence) and persistent objects (slice B).
-        handle::HT_TRANSIENT | handle::HT_PERSISTENT if tpm.object(h).is_some() => {
-            tpm.object_auth(h, i, admin, policy)
-        }
+        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, role == AuthRole::Admin, policy),
         _ => {
             let slot = tpm.seq_slot(h, i)?;
             // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
@@ -234,23 +280,43 @@ fn handle_auth(
     }
 }
 
-/// The role of handle number `i` of a command: ADMIN for `objectHandle` of `TPM2_Certify`, USER
-/// for every other authorized handle of the implemented commands.
-fn admin_role(code: u32, i: usize) -> bool {
-    code == cc::CERTIFY && i == 0
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum AuthRole {
+    User,
+    Admin,
+    Dup,
 }
 
-/// The `authPolicy` of the entity behind handle number `i`: that of an object, the Empty Buffer
-/// for everything else (hierarchies have no `authPolicy` without `TPM2_SetPrimaryPolicy`).
-fn handle_auth_policy(tpm: &Tpm, handles: &[u32; 2], i: usize) -> Vec<u8> {
-    tpm.object(handles[i])
-        .map(|o| o.public.auth_policy.clone())
-        .unwrap_or_default()
+fn auth_role(code: u32, i: usize) -> AuthRole {
+    if i != 0 {
+        return AuthRole::User;
+    }
+    match code {
+        cc::CERTIFY
+        | cc::ACTIVATE_CREDENTIAL
+        | cc::OBJECT_CHANGE_AUTH
+        | cc::NV_CHANGE_AUTH
+        | cc::NV_UNDEFINE_SPACE_SPECIAL => AuthRole::Admin,
+        cc::DUPLICATE => AuthRole::Dup,
+        _ => AuthRole::User,
+    }
+}
+
+/// The `authPolicy` installed on the entity, or the empty policy.
+fn handle_auth_policy(tpm: &Tpm, handle: u32) -> &[u8] {
+    if let Some(policy) = tpm.permanent_auth_policy(handle) {
+        return policy;
+    }
+    if let Some(index) = tpm.persistent.nv.get(handle) {
+        return &index.auth_policy;
+    }
+    tpm.object(handle)
+        .map_or(&[], |object| &object.public.auth_policy)
 }
 
 /// DA class of the authorization of handle number `i` of the command (`da.rs`): a PCR and
 /// `TPM_RH_NULL` are exempt.
-fn da_class(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> DaClass {
+fn da_class(tpm: &Tpm, code: u32, handles: &CommandHandles, i: usize) -> DaClass {
     let h = handles[i];
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return DaClass::Exempt;
@@ -260,7 +326,7 @@ fn da_class(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> DaClass {
 
 /// The authorization value for a response HMAC, read after the command ran: the current value
 /// regardless of the enables, the Empty Buffer for an entity that no longer exists.
-fn response_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> AuthValue {
+fn response_auth(tpm: &Tpm, code: u32, handles: &CommandHandles, i: usize) -> AuthValue {
     let h = handles[i];
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return AuthValue::empty();
@@ -289,29 +355,91 @@ pub(crate) fn handle_name(tpm: &Tpm, h: u32) -> Vec<u8> {
     }
 }
 
-/// cpHash of a command (Part 1, clause 16.7): `H(commandCode || Name1 || ... || parameters)`.
+// The per-algorithm caches of cpHash and rpHash are indexed by `HashAlg::index`: the sessions of one
+// command may have different `authHash` values.
+
+/// cpHash of a command (Part 1, clause 16.7), `H(commandCode || Name1 || ... || parameters)`, with
+/// the hash `alg` of the session.
 fn command_parameter_hash(
     tpm: &Tpm,
     spec: &CommandSpec,
-    handles: &[u32; 2],
+    handles: &CommandHandles,
     parameters: &[u8],
-) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    h.update(spec.code.to_be_bytes());
-    for handle in handles.iter().take(usize::from(spec.handles)) {
-        h.update(handle_name(tpm, *handle));
+    alg: HashAlg,
+) -> TpmDigest {
+    let code = spec.code.to_be_bytes();
+    let names = command_names(tpm, spec, handles);
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(names.len() + 2);
+    parts.push(&code);
+    parts.extend(names.iter().map(Vec::as_slice));
+    parts.push(parameters);
+    hash(alg, &parts)
+}
+
+fn command_names(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Vec<Vec<u8>> {
+    handles
+        .iter()
+        .take(usize::from(spec.handles))
+        .map(|handle| handle_name(tpm, *handle))
+        .collect()
+}
+
+fn command_names_hash(
+    tpm: &Tpm,
+    spec: &CommandSpec,
+    handles: &CommandHandles,
+    alg: HashAlg,
+) -> TpmDigest {
+    let names = command_names(tpm, spec, handles);
+    let parts: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
+    hash(alg, &parts)
+}
+
+/// pHash covers the command code and the encoded parameters on the wire.
+fn command_parameters_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDigest {
+    hash(alg, &[&code.to_be_bytes(), parameters])
+}
+
+fn command_template_hash(code: u32, parameters: &[u8], alg: HashAlg) -> Option<TpmDigest> {
+    if !matches!(code, cc::CREATE | cc::CREATE_PRIMARY) {
+        return None;
     }
-    h.update(parameters);
-    h.finalize().into()
+    let mut p = Reader::new(parameters);
+    // inSensitive is first. Parameter encryption preserves its size and leaves
+    // the following inPublic untouched.
+    p.tpm2b(usize::from(u16::MAX)).ok()?;
+    let public = p.tpm2b(usize::from(u16::MAX)).ok()?;
+    Some(hash(alg, &[public]))
 }
 
 /// rpHash of a response (Part 1, clause 16.8): `H(responseCode || commandCode || parameters)`.
-fn response_parameter_hash(code: u32, parameters: &[u8]) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    h.update(Rc::SUCCESS.0.to_be_bytes());
-    h.update(code.to_be_bytes());
-    h.update(parameters);
-    h.finalize().into()
+fn response_parameter_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDigest {
+    hash(
+        alg,
+        &[
+            &Rc::SUCCESS.0.to_be_bytes(),
+            &code.to_be_bytes(),
+            parameters,
+        ],
+    )
+}
+
+/// `parse_auth_area` takes up to one SHA-512 digest of nonce and HMAC in every session; the limit
+/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`, whose password
+/// stays at 32 octets) and a handle that names no loaded session keep the SHA-256 limit of before
+/// hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
+fn check_auth_sizes(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<(), Rc> {
+    for s in sessions {
+        let limit = tpm
+            .sessions
+            .slot_of(s.session_handle)
+            .and_then(|slot| tpm.sessions.get(slot))
+            .map_or(DIGEST, |session| session.auth_hash.size());
+        if s.nonce.len() > limit || s.hmac.len() > limit {
+            return Err(Rc::AUTHSIZE);
+        }
+    }
+    Ok(())
 }
 
 /// How a session of the authorization area is used.
@@ -326,15 +454,35 @@ enum SessionUse {
 }
 
 /// Format checks of the sessions (before any authValue is looked at).
+///
+/// Session audit rules, checked against TCG TPM 2.0 Library Part 1 rev 01.83 (2024-01-25):
+/// - clause 18.6.1, Table 6, notes 1, 2 and 5: a password authorization cannot audit; an HMAC
+///   authorization session can also audit; a policy session cannot audit. The position of the
+///   audit session is free, so the first (authorizing) session may be the audit session;
+/// - clause 18.6.4: `audit` is not allowed in a policy or trial policy session, only one session
+///   of a command can have it SET; `auditExclusive` needs `audit` and an exclusive session at the
+///   start of the command (`TPM_RC_EXCLUSIVE`); `auditReset` needs `audit`;
+/// - clause 19.6.1: "An HMAC session used to authorize can be used as an audit session";
+/// - clause 20.1: a session that was bound loses the bind value when it is first used for audit,
+///   so later authorizations include the authValue in the HMAC key (Equation 21 instead of 22);
+/// - Errata v1.5, item 2.15: a bound session first used for audit and authorization is a case the
+///   reference code got wrong in the response HMAC of the later authorizations.
+///
+/// NOT VERIFIED: the numbering of these clauses in v185 and Part 2 Table 38 (not read); the key of
+/// the response HMAC of the first audited use of a bound session. The code keeps the key of the
+/// command HMAC (clause 19.6.10 gives one key for a command and its response), the bind is
+/// dropped after the response is built.
 fn classify_sessions(
     tpm: &Tpm,
-    code: u32,
+    spec: &CommandSpec,
     sessions: &[TpmsAuthCommand],
-) -> Result<Vec<SessionUse>, Rc> {
+) -> Result<(Vec<SessionUse>, Option<usize>), Rc> {
     let mut uses: Vec<SessionUse> = Vec::with_capacity(sessions.len());
     let (mut decrypting, mut encrypting) = (false, false);
+    let mut audit_index = None;
     for (i, s) in sessions.iter().enumerate() {
         let n = i + 1;
+        let additional = i >= usize::from(spec.auth);
         let hmac_handle = s.session_handle != handle::RS_PW
             && matches!(
                 handle::handle_type(s.session_handle),
@@ -343,6 +491,9 @@ fn classify_sessions(
         if !hmac_handle {
             // Password session, or a handle that names no session at all.
             check_password_session(s, n)?;
+            if additional {
+                return Err(Rc::ATTRIBUTES.in_session(n as u8));
+            }
             uses.push(SessionUse::Password);
             continue;
         }
@@ -369,19 +520,42 @@ fn classify_sessions(
         // command a sized first parameter (response parameter), and only one session of the
         // command may decrypt and one encrypt.
         let num = n as u8;
+        let auditing = s.attributes & session_attr::AUDIT != 0;
+        if auditing {
+            // An HMAC session may audit and authorize a handle in the same command. A policy or
+            // trial session (Part 1 rev 01.83, clause 18.6.1, Table 6 note 5; clause 18.6.4,
+            // `audit`) and a second audit session are `TPM_RC_ATTRIBUTES`.
+            if session.kind != SessionKind::Hmac || audit_index.is_some() {
+                return Err(Rc::ATTRIBUTES.in_session(num));
+            }
+            if s.attributes & session_attr::AUDIT_EXCLUSIVE != 0
+                && tpm.sessions.exclusive_audit != Some(slot)
+            {
+                return Err(Rc::EXCLUSIVE);
+            }
+            audit_index = Some(i);
+        }
+        if additional
+            && (s.attributes
+                & (session_attr::AUDIT | session_attr::DECRYPT | session_attr::ENCRYPT)
+                == 0
+                || session.kind == SessionKind::Trial)
+        {
+            return Err(Rc::ATTRIBUTES.in_session(num));
+        }
         if s.attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) != 0
             && session.symmetric == SessionSym::Null
         {
             return Err(Rc::SYMMETRIC.in_session(num));
         }
         if s.attributes & session_attr::DECRYPT != 0 {
-            if !first_parameter_is_sized(code) || decrypting {
+            if !first_parameter_is_sized(spec.code) || decrypting {
                 return Err(Rc::ATTRIBUTES.in_session(num));
             }
             decrypting = true;
         }
         if s.attributes & session_attr::ENCRYPT != 0 {
-            if !first_response_parameter_is_sized(code) || encrypting {
+            if !first_response_parameter_is_sized(spec.code) || encrypting {
                 return Err(Rc::ATTRIBUTES.in_session(num));
             }
             encrypting = true;
@@ -391,7 +565,7 @@ fn classify_sessions(
             used_auth: true,
         });
     }
-    Ok(uses)
+    Ok((uses, audit_index))
 }
 
 fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
@@ -415,20 +589,19 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     }
 
     let mut r = Reader::new(&command[HEADER_SIZE..]);
-    let mut handles = [0u32; 2];
+    let mut handles = CommandHandles::default();
     for slot in handles.iter_mut().take(usize::from(spec.handles)) {
         *slot = r.u32()?;
     }
     check_handles(tpm, spec, &handles)?;
 
-    // `TPM2_FlushContext` allows no session of any type (Part 3, clause 28.4.1).
+    // The command tables for Startup and context management specify TPM_ST_NO_SESSIONS.
     let with_sessions = header.tag == st::SESSIONS;
-    if with_sessions
-        && matches!(
-            spec.code,
-            cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
-        )
-    {
+    let sessions_allowed = !matches!(
+        spec.code,
+        cc::STARTUP | cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
+    );
+    if with_sessions && !sessions_allowed {
         return Err(Rc::AUTH_CONTEXT);
     }
 
@@ -438,103 +611,185 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     } else {
         Vec::new()
     };
-    // NOT VERIFIED against TPM 2.0 Library v185/v184: TPM_RC_AUTHSIZE при authorizationSize < 9
-    // для SESSIONS. With `TPM_ST_SESSIONS` and `authorizationSize = 0` a command that needs no
-    // authorization (e.g. GetRandom) is served; the behaviour is kept, the spec text was not checked.
+    check_auth_sizes(tpm, &sessions)?;
     let needed = usize::from(spec.auth);
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);
     }
-    if sessions.len() > needed {
-        return Err(Rc::AUTHSIZE);
+    let (mut uses, audit_index) = classify_sessions(tpm, spec, &sessions)?;
+    let mut binding_slots = [None; 2];
+    for (s, usage) in sessions.iter().zip(&uses).skip(1) {
+        let SessionUse::Hmac { slot, .. } = *usage else {
+            continue;
+        };
+        if s.attributes & session_attr::DECRYPT != 0 {
+            // One session can do both. Include its nonce once, in the decrypt position.
+            binding_slots[0] = Some(slot);
+        } else if s.attributes & session_attr::ENCRYPT != 0 {
+            binding_slots[1] = Some(slot);
+        }
     }
-    let mut uses = classify_sessions(tpm, spec.code, &sessions)?;
     let params_start = command.len() - r.remaining();
     let parameters = &command[params_start..];
 
-    // Verify every authorization. cpHash is computed once, with the first HMAC or policy
-    // session's hash (SHA-256 is the only session hash).
-    let mut cp_hash: Option<[u8; DIGEST]> = None;
+    // Verify every authorization. cpHash is computed once per hash of the sessions of the command
+    // (SHA-256, SHA-384, SHA-512), when the first session with that `authHash` needs it.
+    let mut cp_hash: [Option<TpmDigest>; 3] = [None; 3];
     // `authValue` of the entity of each session, for `sessionValue` of parameter encryption.
     let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
-        let admin = admin_role(spec.code, i);
-        let policy_slot = match &uses[i] {
-            SessionUse::Hmac { slot, .. } => tpm
-                .sessions
-                .get(*slot)
-                .filter(|x| x.kind.is_policy())
-                .map(|_| *slot),
+        let authorizes = i < needed;
+        let role = auth_role(spec.code, i);
+        let loaded = match &uses[i] {
+            SessionUse::Hmac { slot, .. } => {
+                tpm.sessions.get(*slot).map(|session| (*slot, session))
+            }
             SessionUse::Password => None,
         };
-        let auth = handle_auth(tpm, spec.code, &handles, i, admin, policy_slot.is_some())?;
+        let policy = loaded.filter(|(_, session)| authorizes && session.kind.is_policy());
+        // Part 3 §5.6 checks DA lockout before role and policy validation for
+        // sessions proving an authValue. A policy without either assertion
+        // does not prove the target's authValue.
+        let target = if authorizes
+            && policy.is_none_or(|(_, session)| {
+                session.kind == SessionKind::Policy
+                    && (session.policy.auth_value_needed || session.policy.password_needed)
+            }) {
+            da_class(tpm, spec.code, &handles, i)
+        } else {
+            DaClass::Exempt
+        };
+        let da = DaProtection {
+            target,
+            bind: loaded
+                .filter(|(_, session)| session.kind != SessionKind::Trial)
+                .map_or(DaClass::Exempt, |(_, session)| session.bind_da),
+        };
+        let policy_slot = policy.map(|(slot, _)| slot);
+        let auth = if authorizes {
+            handle_auth(tpm, spec.code, &handles, i, role, policy_slot.is_some(), da)?
+        } else {
+            tpm.da_check(da)?;
+            AuthValue::empty()
+        };
         entity_auths.push(Zeroizing::new(auth.as_slice().to_vec()));
-        // Dictionary attack protection (`da.rs`): the lockout check comes before the authValue
-        // check (Part 3, clause 5.6); a wrong authValue of a DA-protected entity is
-        // `TPM_RC_AUTH_FAIL` and counts, of any other `TPM_RC_BAD_AUTH` (Part 1, clause 17.6.8).
-        let class = da_class(tpm, spec.code, &handles, i);
         match &mut uses[i] {
             SessionUse::Password => {
-                tpm.da_check(class)?;
                 if !password_matches(&s.hmac, auth.as_slice()) {
-                    return Err(tpm.da_auth_failed(class, n));
+                    return Err(tpm.da_auth_failed(da, n));
                 }
             }
             SessionUse::Hmac { slot, used_auth } => {
-                let cp = *cp_hash
-                    .get_or_insert_with(|| command_parameter_hash(tpm, spec, &handles, parameters));
-                if let Some(pslot) = policy_slot {
+                // A password in the first slot does not move this binding to a later HMAC.
+                let parameter_nonces = if i == 0 {
+                    binding_slots.map(|slot| {
+                        slot.and_then(|slot| tpm.sessions.get(slot))
+                            .map_or(&[][..], |session| session.nonce_tpm.as_slice())
+                    })
+                } else {
+                    [&[][..]; 2]
+                };
+                let alg = tpm
+                    .sessions
+                    .get(*slot)
+                    .map(|session| session.auth_hash)
+                    .ok_or(Rc::reference_session(i))?;
+                let cp = *cp_hash[alg.index()].get_or_insert_with(|| {
+                    command_parameter_hash(tpm, spec, &handles, parameters, alg)
+                });
+                if !authorizes {
+                    let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
+                    if !verify_command_hmac(
+                        session,
+                        session.key.as_slice(),
+                        cp.as_slice(),
+                        &s.nonce,
+                        parameter_nonces,
+                        s.attributes,
+                        &s.hmac,
+                    ) {
+                        return Err(tpm.da_auth_failed(da, n));
+                    }
+                    *used_auth = false;
+                } else if let Some(pslot) = policy_slot {
                     // A policy session: the policy is validated before any HMAC (Part 1, clause
                     // 17.8.3), a policy failure never touches the DA counters.
-                    let policy = handle_auth_policy(tpm, &handles, i);
-                    let (need_auth, need_password) =
-                        tpm.policy_use_check(pslot, spec.code, &cp, &policy, admin, n)?;
+                    let policy = handle_auth_policy(tpm, handles[i]);
+                    let (need_auth, need_password) = tpm.policy_use_check(
+                        pslot,
+                        (spec.code, handles[i]),
+                        |restriction| match restriction {
+                            PolicyHashRestriction::CpHash(expected) => cp == expected,
+                            PolicyHashRestriction::NameHash(expected) => {
+                                command_names_hash(tpm, spec, &handles, alg) == expected
+                            }
+                            PolicyHashRestriction::TemplateHash(expected) => {
+                                command_template_hash(spec.code, parameters, alg)
+                                    .is_some_and(|hash| hash == expected)
+                            }
+                            PolicyHashRestriction::ParametersHash(expected) => {
+                                command_parameters_hash(spec.code, parameters, alg) == expected
+                            }
+                        },
+                        policy,
+                        role != AuthRole::User,
+                        n,
+                    )?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     if need_password {
-                        tpm.da_check(class)?;
                         if !password_matches(&s.hmac, auth.as_slice()) {
-                            return Err(tpm.da_auth_failed(class, n));
+                            return Err(tpm.da_auth_failed(da, n));
                         }
+                        // PolicyPassword proves authValue directly. A nonempty password
+                        // still receives an HMAC, keyed by sessionKey alone (§16.6.16).
                         *used_auth = false;
                     } else if need_auth {
-                        tpm.da_check(class)?;
                         let mut key = Zeroizing::new(session.key.as_slice().to_vec());
                         key.extend_from_slice(auth.as_slice());
                         if s.hmac.is_empty()
                             || !verify_command_hmac(
                                 session,
                                 &key,
-                                &cp,
+                                cp.as_slice(),
                                 &s.nonce,
+                                parameter_nonces,
                                 s.attributes,
                                 &s.hmac,
                             )
                         {
-                            return Err(tpm.da_auth_failed(class, n));
+                            return Err(tpm.da_auth_failed(da, n));
                         }
                         *used_auth = true;
                     } else {
-                        // Only the session key (possibly empty) proves anything: no authValue,
-                        // so no DA.
+                        // Only the session key (possibly empty) proves anything.
+                        // Its bind entity can still contribute DA protection.
                         if !verify_command_hmac(
                             session,
                             session.key.as_slice(),
-                            &cp,
+                            cp.as_slice(),
                             &s.nonce,
+                            parameter_nonces,
                             s.attributes,
                             &s.hmac,
                         ) {
-                            return Err(Rc::BAD_AUTH.in_session(n));
+                            return Err(tpm.da_auth_failed(da, n));
                         }
                         *used_auth = false;
                     }
                 } else {
-                    tpm.da_check(class)?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     let (key, with_auth) = authorization_key(session, handles[i], &auth);
-                    if !verify_command_hmac(session, &key, &cp, &s.nonce, s.attributes, &s.hmac) {
-                        return Err(tpm.da_auth_failed(class, n));
+                    if !verify_command_hmac(
+                        session,
+                        &key,
+                        cp.as_slice(),
+                        &s.nonce,
+                        parameter_nonces,
+                        s.attributes,
+                        &s.hmac,
+                    ) {
+                        return Err(tpm.da_auth_failed(da, n));
                     }
                     *used_auth = with_auth;
                 }
@@ -566,6 +821,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             let mut value = Zeroizing::new(session.key.as_slice().to_vec());
             value.extend_from_slice(&entity_auths[i]);
             apply_param_encryption(
+                session.auth_hash,
                 session.symmetric,
                 &value,
                 &s.nonce,
@@ -582,28 +838,40 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::STARTUP => tpm.cmd_startup(&mut p)?,
         cc::SHUTDOWN => tpm.cmd_shutdown(&mut p)?,
         cc::SELF_TEST => tpm.cmd_self_test(&mut p)?,
+        cc::INCREMENTAL_SELF_TEST => tpm.cmd_incremental_self_test(&mut p)?,
         cc::GET_TEST_RESULT => tpm.cmd_get_test_result(&mut p)?,
         cc::GET_CAPABILITY => tpm.cmd_get_capability(&mut p)?,
+        cc::TEST_PARMS => Tpm::cmd_test_parms(&mut p)?,
         cc::GET_RANDOM => tpm.cmd_get_random(&mut p)?,
         cc::STIR_RANDOM => tpm.cmd_stir_random(&mut p)?,
+        cc::PCR_ALLOCATE => tpm.cmd_pcr_allocate(&mut p)?,
         cc::PCR_READ => tpm.cmd_pcr_read(&mut p)?,
         cc::PCR_EXTEND => tpm.cmd_pcr_extend(&inv, &mut p)?,
         cc::PCR_EVENT => tpm.cmd_pcr_event(&inv, &mut p)?,
         cc::PCR_RESET => tpm.cmd_pcr_reset(&inv, &mut p)?,
         cc::HASH => tpm.cmd_hash(&mut p)?,
         cc::HASH_SEQUENCE_START => tpm.cmd_hash_sequence_start(&mut p)?,
+        cc::VERIFY_SEQUENCE_START => tpm.cmd_verify_sequence_start(&inv, &mut p)?,
+        cc::SIGN_SEQUENCE_START => tpm.cmd_sign_sequence_start(&inv, &mut p)?,
         cc::SEQUENCE_UPDATE => tpm.cmd_sequence_update(&inv, &mut p)?,
         cc::SEQUENCE_COMPLETE => tpm.cmd_sequence_complete(&inv, &mut p)?,
+        cc::VERIFY_SEQUENCE_COMPLETE => tpm.cmd_verify_sequence_complete(&inv, &mut p)?,
+        cc::SIGN_SEQUENCE_COMPLETE => tpm.cmd_sign_sequence_complete(&inv, &mut p)?,
         cc::EVENT_SEQUENCE_COMPLETE => tpm.cmd_event_sequence_complete(&inv, &mut p)?,
         cc::READ_CLOCK => tpm.cmd_read_clock(&mut p)?,
+        cc::CLOCK_SET => tpm.cmd_clock_set(&mut p)?,
+        cc::CLOCK_RATE_ADJUST => tpm.cmd_clock_rate_adjust(&mut p)?,
         cc::HIERARCHY_CONTROL => tpm.cmd_hierarchy_control(&inv, &mut p)?,
         cc::HIERARCHY_CHANGE_AUTH => tpm.cmd_hierarchy_change_auth(&inv, &mut p)?,
+        cc::SET_PRIMARY_POLICY => tpm.cmd_set_primary_policy(&inv, &mut p)?,
         cc::CLEAR => tpm.cmd_clear(&mut p)?,
         cc::CLEAR_CONTROL => tpm.cmd_clear_control(&inv, &mut p)?,
         cc::START_AUTH_SESSION => tpm.cmd_start_auth_session(&inv, &mut p)?,
         cc::FLUSH_CONTEXT => tpm.cmd_flush_context(&mut p)?,
         cc::NV_DEFINE_SPACE => tpm.cmd_nv_define_space(&inv, &mut p)?,
+        cc::NV_CHANGE_AUTH => tpm.cmd_nv_change_auth(&inv, &mut p)?,
         cc::NV_UNDEFINE_SPACE => tpm.cmd_nv_undefine_space(&inv, &mut p)?,
+        cc::NV_UNDEFINE_SPACE_SPECIAL => tpm.cmd_nv_undefine_space_special(&inv, &mut p)?,
         cc::NV_READ_PUBLIC => tpm.cmd_nv_read_public(&inv, &mut p)?,
         cc::NV_WRITE => tpm.cmd_nv_write(&inv, &mut p)?,
         cc::NV_READ => tpm.cmd_nv_read(&inv, &mut p)?,
@@ -613,29 +881,59 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::CREATE => tpm.cmd_create(&inv, &mut p)?,
         cc::LOAD => tpm.cmd_load(&inv, &mut p)?,
         cc::LOAD_EXTERNAL => tpm.cmd_load_external(&mut p)?,
+        cc::MAKE_CREDENTIAL => tpm.cmd_make_credential(&inv, &mut p)?,
+        cc::ACTIVATE_CREDENTIAL => tpm.cmd_activate_credential(&inv, &mut p)?,
+        cc::OBJECT_CHANGE_AUTH => tpm.cmd_object_change_auth(&inv, &mut p)?,
+        cc::DUPLICATE => tpm.cmd_duplicate(&inv, &mut p)?,
+        cc::IMPORT => tpm.cmd_import(&inv, &mut p)?,
         cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
         cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
         cc::SIGN => tpm.cmd_sign(&inv, &mut p)?,
+        cc::SIGN_DIGEST => tpm.cmd_sign_digest(&inv, &mut p)?,
+        cc::ENCAPSULATE => tpm.cmd_encapsulate(&inv, &mut p)?,
+        cc::DECAPSULATE => tpm.cmd_decapsulate(&inv, &mut p)?,
         cc::VERIFY_SIGNATURE => tpm.cmd_verify_signature(&inv, &mut p)?,
+        cc::VERIFY_DIGEST_SIGNATURE => tpm.cmd_verify_digest_signature(&inv, &mut p)?,
         cc::RSA_ENCRYPT => tpm.cmd_rsa_encrypt(&inv, &mut p)?,
         cc::RSA_DECRYPT => tpm.cmd_rsa_decrypt(&inv, &mut p)?,
+        cc::ECDH_KEY_GEN => tpm.cmd_ecdh_key_gen(&inv, &mut p)?,
         cc::ECDH_Z_GEN => tpm.cmd_ecdh_zgen(&inv, &mut p)?,
+        cc::ECC_PARAMETERS => Tpm::cmd_ecc_parameters(&mut p)?,
         cc::DICTIONARY_ATTACK_LOCK_RESET => tpm.cmd_dictionary_attack_lock_reset(&mut p)?,
         cc::DICTIONARY_ATTACK_PARAMETERS => tpm.cmd_dictionary_attack_parameters(&mut p)?,
         cc::POLICY_RESTART => tpm.cmd_policy_restart(&inv, &mut p)?,
         cc::POLICY_PCR => tpm.cmd_policy_pcr(&inv, &mut p)?,
         cc::POLICY_OR => tpm.cmd_policy_or(&inv, &mut p)?,
-        cc::POLICY_AUTH_VALUE => tpm.cmd_policy_auth_value(&inv, &mut p)?,
+        cc::POLICY_AUTH_VALUE | cc::POLICY_PASSWORD => {
+            tpm.cmd_policy_auth_value(&inv, &mut p, spec.code == cc::POLICY_PASSWORD)?
+        }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
+        cc::POLICY_DUPLICATION_SELECT => tpm.cmd_policy_duplication_select(&inv, &mut p)?,
+        cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
+        cc::POLICY_NV => tpm.cmd_policy_nv(&inv, &mut p)?,
+        cc::POLICY_AUTHORIZE_NV => tpm.cmd_policy_authorize_nv(&inv, &mut p)?,
+        cc::POLICY_NV_WRITTEN => tpm.cmd_policy_nv_written(&inv, &mut p)?,
+        cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
+        cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
+            tpm.cmd_policy_hash_restriction(&inv, &mut p, spec.code)?
+        }
+        cc::POLICY_AUTHORIZE => tpm.cmd_policy_authorize(&inv, &mut p)?,
+        cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
         cc::POLICY_SECRET => tpm.cmd_policy_secret(&inv, &mut p)?,
+        cc::POLICY_SIGNED => tpm.cmd_policy_signed(&inv, &mut p)?,
+        cc::POLICY_TICKET => tpm.cmd_policy_ticket(&inv, &mut p)?,
         cc::POLICY_GET_DIGEST => tpm.cmd_policy_get_digest(&inv, &mut p)?,
         cc::CONTEXT_SAVE => tpm.cmd_context_save(&inv, &mut p)?,
         cc::CONTEXT_LOAD => tpm.cmd_context_load(&mut p)?,
         cc::HMAC => tpm.cmd_hmac(&inv, &mut p)?,
+        cc::HMAC_START => tpm.cmd_hmac_start(&inv, &mut p)?,
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
+        cc::CERTIFY_CREATION => tpm.cmd_certify_creation(&inv, &mut p)?,
+        cc::NV_CERTIFY => tpm.cmd_nv_certify(&inv, &mut p)?,
         cc::GET_TIME => tpm.cmd_get_time(&inv, &mut p)?,
+        cc::GET_SESSION_AUDIT_DIGEST => tpm.cmd_get_session_audit_digest(&inv, &mut p)?,
         cc::NV_INCREMENT => tpm.cmd_nv_increment(&inv, &mut p)?,
         cc::NV_EXTEND => tpm.cmd_nv_extend(&inv, &mut p)?,
         cc::NV_SET_BITS => tpm.cmd_nv_set_bits(&inv, &mut p)?,
@@ -656,10 +954,13 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             // authorization entity returns no parameters, so the order cannot show in a result).
             // NOT VERIFIED: the text of Part 1, 19.1 does not say at which moment the authValue is
             // taken for the encryption of a response (VTPM.md, item 59).
-            let now = response_auth(tpm, spec.code, &handles, i);
             let mut value = Zeroizing::new(session.key.as_slice().to_vec());
-            value.extend_from_slice(now.as_slice());
+            if i < needed {
+                let now = response_auth(tpm, spec.code, &handles, i);
+                value.extend_from_slice(now.as_slice());
+            }
             apply_param_encryption(
+                session.auth_hash,
                 session.symmetric,
                 &value,
                 &new_nonces[i],
@@ -670,24 +971,67 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         }
     }
 
-    // Acknowledgements; an HMAC session rolls its nonce and, with `continueSession` CLEAR, ends.
-    let rp_hash = response_parameter_hash(spec.code, &out.params);
+    // Acknowledgements roll the nonce and release sessions that do not continue.
+    // rpHash per hash of the sessions, as cpHash.
+    let mut rp_hash: [Option<TpmDigest>; 3] = [None; 3];
+    let mut rp_for = |alg: HashAlg| -> TpmDigest {
+        *rp_hash[alg.index()]
+            .get_or_insert_with(|| response_parameter_hash(spec.code, &out.params, alg))
+    };
+    if let Some(index) = audit_index {
+        let SessionUse::Hmac { slot, .. } = uses[index] else {
+            unreachable!("the dispatcher accepts only HMAC audit sessions");
+        };
+        let audit_alg = tpm
+            .sessions
+            .get(slot)
+            .map(|session| session.auth_hash)
+            .expect("validated audit session stays loaded");
+        tpm.sessions.extend_audit(
+            slot,
+            sessions[index].attributes & session_attr::AUDIT_RESET != 0,
+            cp_hash[audit_alg.index()]
+                .expect("an audit session computes cpHash")
+                .as_slice(),
+            rp_for(audit_alg).as_slice(),
+        );
+    } else if sessions_allowed {
+        tpm.sessions.exclusive_audit = None;
+    }
     let mut acks: Vec<SessionAck> = Vec::with_capacity(sessions.len());
+    let nonce_time = tpm.time_point();
     for (i, s) in sessions.iter().enumerate() {
         match &uses[i] {
             SessionUse::Password => acks.push(SessionAck::password(s.attributes)),
             SessionUse::Hmac { slot, used_auth } => {
-                let now = response_auth(tpm, spec.code, &handles, i);
                 let nonce = core::mem::take(&mut new_nonces[i]);
+                let mut attributes =
+                    s.attributes & !(session_attr::AUDIT_EXCLUSIVE | session_attr::AUDIT_RESET);
+                if audit_index == Some(i) && tpm.sessions.exclusive_audit == Some(*slot) {
+                    attributes |= session_attr::AUDIT_EXCLUSIVE;
+                }
+                // `used_auth` is the key of the command HMAC (bound entity: sessionKey alone).
+                // The audit of this command has already dropped the binding in `session.bound`,
+                // so the response must not look at it again (Part 1 rev 01.83, clause 19.6.10).
                 let hmac = match tpm.sessions.get(*slot) {
                     // An empty command HMAC is answered with an empty one (clause 17.6.15).
                     Some(session) if !s.hmac.is_empty() => {
                         let mut key = session.key.as_slice().to_vec();
                         if *used_auth {
+                            let now = response_auth(tpm, spec.code, &handles, i);
                             key.extend_from_slice(now.as_slice());
                         }
-                        let tag =
-                            response_hmac(&key, &rp_hash, &nonce, &s.nonce, s.attributes).to_vec();
+                        let alg = session.auth_hash;
+                        let tag = response_hmac(
+                            alg,
+                            &key,
+                            rp_for(alg).as_slice(),
+                            &nonce,
+                            &s.nonce,
+                            attributes,
+                        )
+                        .as_slice()
+                        .to_vec();
                         zeroize::Zeroize::zeroize(&mut key);
                         tag
                     }
@@ -697,10 +1041,18 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     tpm.sessions.release(*slot);
                 } else if let Some(session) = tpm.sessions.get_mut(*slot) {
                     session.nonce_tpm = nonce.clone();
+                    // An authorizing policy session starts a fresh policy after its response is
+                    // protected (Part 1 v185 §16.7). Encryption alone preserves the policy.
+                    if session.kind == SessionKind::Policy {
+                        session.nonce_time = Some(nonce_time);
+                        if i < needed {
+                            session.policy = PolicyState::new(session.auth_hash);
+                        }
+                    }
                 }
                 acks.push(SessionAck {
                     nonce,
-                    attributes: s.attributes,
+                    attributes,
                     hmac,
                 });
             }
@@ -710,7 +1062,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
 }
 
 /// Handle validity (type, loaded) and access control before authorization (Part 1, clause 9.2).
-fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<(), Rc> {
+fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Result<(), Rc> {
     match spec.code {
         cc::PCR_EXTEND | cc::PCR_EVENT => {
             resolve_pcr_handle(handles[0], true, 1)?;
@@ -718,8 +1070,17 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
         cc::PCR_RESET => {
             resolve_pcr_handle(handles[0], false, 1)?;
         }
+        cc::PCR_ALLOCATE => {
+            if handles[0] != handle::RH_PLATFORM {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
         cc::SEQUENCE_UPDATE | cc::SEQUENCE_COMPLETE => {
             tpm.seq_slot(handles[0], 0)?;
+        }
+        cc::SIGN_SEQUENCE_COMPLETE | cc::VERIFY_SEQUENCE_COMPLETE => {
+            tpm.seq_slot(handles[0], 0)?;
+            tpm.check_object_handle(handles[1], 1, false)?;
         }
         cc::EVENT_SEQUENCE_COMPLETE => {
             resolve_pcr_handle(handles[0], true, 1)?;
@@ -734,9 +1095,14 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
-        cc::HIERARCHY_CHANGE_AUTH => {
+        cc::HIERARCHY_CHANGE_AUTH | cc::SET_PRIMARY_POLICY => {
             // `TPMI_RH_HIERARCHY_AUTH` without `TPM_RH_NULL` (Part 3, Table 188).
             if !is_authorization_handle(handles[0]) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
+        cc::CLOCK_SET | cc::CLOCK_RATE_ADJUST => {
+            if !matches!(handles[0], handle::RH_OWNER | handle::RH_PLATFORM) {
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
@@ -754,35 +1120,94 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
             }
         }
         cc::CREATE
+        | cc::IMPORT
         | cc::LOAD
         | cc::READ_PUBLIC
+        | cc::MAKE_CREDENTIAL
         | cc::UNSEAL
         | cc::SIGN
+        | cc::SIGN_DIGEST
+        | cc::ENCAPSULATE
+        | cc::DECAPSULATE
+        | cc::SIGN_SEQUENCE_START
+        | cc::VERIFY_SEQUENCE_START
         | cc::VERIFY_SIGNATURE
+        | cc::VERIFY_DIGEST_SIGNATURE
         | cc::RSA_ENCRYPT
         | cc::RSA_DECRYPT
+        | cc::ECDH_KEY_GEN
         | cc::ECDH_Z_GEN
-        | cc::HMAC => tpm.check_object_handle(handles[0], 0, false)?,
+        | cc::HMAC
+        | cc::HMAC_START => tpm.check_object_handle(handles[0], 0, false)?,
         // `signHandle` may be `TPM_RH_NULL` (Part 3, clause 18.1: `TPMI_DH_OBJECT+`).
         cc::QUOTE => check_sign_handle(tpm, handles[0], 0)?,
+        cc::NV_CERTIFY => {
+            check_sign_handle(tpm, handles[0], 0)?;
+            tpm.check_nv_certify_handles(handles)?;
+        }
+        cc::POLICY_NV | cc::POLICY_AUTHORIZE_NV => tpm.check_policy_nv_handles(handles)?,
+        cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            tpm.check_object_handle(handles[1], 1, false)?;
+        }
+        cc::DUPLICATE => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            if handles[1] != handle::RH_NULL {
+                tpm.check_object_handle(handles[1], 1, false)?;
+            }
+        }
         cc::CERTIFY => {
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
         }
-        cc::GET_TIME => {
+        cc::CERTIFY_CREATION => {
+            check_sign_handle(tpm, handles[0], 0)?;
+            tpm.check_object_handle(handles[1], 1, false)?;
+        }
+        cc::GET_TIME | cc::GET_SESSION_AUDIT_DIGEST => {
             // `TPMI_RH_ENDORSEMENT` (Part 3, Table 99): `TPM_RH_ENDORSEMENT` only.
             if handles[0] != handle::RH_ENDORSEMENT {
                 return Err(Rc::VALUE.in_handle(1));
             }
             check_sign_handle(tpm, handles[1], 1)?;
+            if spec.code == cc::GET_SESSION_AUDIT_DIGEST {
+                if handle::handle_type(handles[2]) != handle::HT_HMAC_SESSION {
+                    return Err(Rc::VALUE.in_handle(3));
+                }
+                tpm.sessions
+                    .slot_of(handles[2])
+                    .ok_or_else(|| Rc::reference_handle(2))?;
+            }
         }
         cc::POLICY_RESTART
         | cc::POLICY_PCR
         | cc::POLICY_OR
+        | cc::POLICY_TICKET
         | cc::POLICY_AUTH_VALUE
+        | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
-        | cc::POLICY_GET_DIGEST => tpm.check_policy_session(handles[0], 0)?,
-        cc::POLICY_SECRET => tpm.check_policy_session(handles[1], 1)?,
+        | cc::POLICY_DUPLICATION_SELECT
+        | cc::POLICY_COUNTER_TIMER
+        | cc::POLICY_NV_WRITTEN
+        | cc::POLICY_CP_HASH
+        | cc::POLICY_NAME_HASH
+        | cc::POLICY_TEMPLATE
+        | cc::POLICY_PARAMETERS
+        | cc::POLICY_AUTHORIZE
+        | cc::POLICY_LOCALITY
+        | cc::POLICY_GET_DIGEST => {
+            tpm.check_policy_session(handles[0], 0)?;
+        }
+        cc::POLICY_SECRET => {
+            if is_nv_handle(handles[0]) {
+                tpm.nv_index_at(handles[0], 1)?;
+            }
+            tpm.check_policy_session(handles[1], 1)?;
+        }
+        cc::POLICY_SIGNED => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            tpm.check_policy_session(handles[1], 1)?;
+        }
         cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {
             // `TPMI_RH_LOCKOUT` (Part 3, Tables 193 and 195): `TPM_RH_LOCKOUT` only.
             if handles[0] != handle::RH_LOCKOUT {
@@ -797,7 +1222,9 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
             tpm.check_object_handle(handles[1], 1, true)?;
         }
         cc::NV_DEFINE_SPACE
+        | cc::NV_CHANGE_AUTH
         | cc::NV_UNDEFINE_SPACE
+        | cc::NV_UNDEFINE_SPACE_SPECIAL
         | cc::NV_READ_PUBLIC
         | cc::NV_WRITE
         | cc::NV_WRITE_LOCK
@@ -826,7 +1253,7 @@ fn check_sign_handle(tpm: &Tpm, h: u32, idx: usize) -> Result<(), Rc> {
 /// hierarchy authorization handle (binding to an object is not implemented).
 /// NOT VERIFIED against TPM 2.0 Library v185/v184: the code `TPM_RC_VALUE` for an object handle
 /// that the TPM could use but this implementation does not.
-fn check_start_auth_session_handles(tpm: &Tpm, handles: &[u32; 2]) -> Result<(), Rc> {
+fn check_start_auth_session_handles(tpm: &Tpm, handles: &CommandHandles) -> Result<(), Rc> {
     let key = handles[0];
     if key != handle::RH_NULL {
         return Err(match handle::handle_type(key) {
@@ -861,10 +1288,10 @@ mod tests {
             prev = c.code;
             assert!(c.auth <= c.handles);
         }
-        // PCR_Allocate (0x12B) and PCR_SetAuthPolicy/Value are not implemented.
-        for code in [0x12Bu32, 0x12C, 0x183] {
+        // PCR_SetAuthPolicy and PCR_SetAuthValue are outside the current profile.
+        for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 60);
+        assert_eq!(COMMANDS.len(), 101);
     }
 }

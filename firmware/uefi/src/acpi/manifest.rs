@@ -41,6 +41,9 @@ pub mod device_type {
     pub const MAX_RTC_UNIX_SECONDS: u64 = 253_402_300_799;
 }
 
+pub const TPM_CRB_BASE: u64 = 0xfed4_0000;
+pub const TPM_CRB_LEN: u64 = 0x5000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManifestError {
     /// A type code outside 1..=7.
@@ -57,6 +60,7 @@ pub enum ManifestError {
     BadAcpiPm(&'static str),
     /// A handoff RTC entry (code 10) that does not match its fixed PIO/time contract.
     BadRtc(&'static str),
+    BadTpmCrb,
     BadPciNvme,
 }
 
@@ -74,7 +78,7 @@ pub struct DeviceEntry {
 }
 
 /// An all-zero entry, the filler of unused slots (`DeviceEntry::default()` is not const).
-const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
+pub(crate) const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
     device_type: 0,
     flags: 0,
     base: 0,
@@ -85,29 +89,40 @@ const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
     param1: 0,
 };
 
-fn le32(bytes: &[u8], at: usize) -> u32 {
+const fn le32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-fn le64(bytes: &[u8], at: usize) -> u64 {
-    let mut raw = [0u8; 8];
-    raw.copy_from_slice(&bytes[at..at + 8]);
-    u64::from_le_bytes(raw)
+const fn le64(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[at],
+        bytes[at + 1],
+        bytes[at + 2],
+        bytes[at + 3],
+        bytes[at + 4],
+        bytes[at + 5],
+        bytes[at + 6],
+        bytes[at + 7],
+    ])
 }
 
 impl DeviceEntry {
     /// Decodes an entry (offsets from FIRMWARE_BOOT.md 6.3: `type` 0x00, `flags` 0x04, `base`
     /// 0x08, `length` 0x10, `gsi` 0x18, `irq_flags` 0x1C, `param0` 0x20, `param1` 0x28).
-    pub fn parse(raw: &[u8; DEVICE_ENTRY_SIZE]) -> Self {
+    pub const fn parse(raw: &[u8; DEVICE_ENTRY_SIZE]) -> Self {
+        Self::read_at(raw, 0)
+    }
+
+    pub(crate) const fn read_at(raw: &[u8], start: usize) -> Self {
         DeviceEntry {
-            device_type: le32(raw, 0x00),
-            flags: le32(raw, 0x04),
-            base: le64(raw, 0x08),
-            length: le64(raw, 0x10),
-            gsi: le32(raw, 0x18),
-            irq_flags: le32(raw, 0x1C),
-            param0: le64(raw, 0x20),
-            param1: le64(raw, 0x28),
+            device_type: le32(raw, start),
+            flags: le32(raw, start + 0x04),
+            base: le64(raw, start + 0x08),
+            length: le64(raw, start + 0x10),
+            gsi: le32(raw, start + 0x18),
+            irq_flags: le32(raw, start + 0x1C),
+            param0: le64(raw, start + 0x20),
+            param1: le64(raw, start + 0x28),
         }
     }
 
@@ -135,11 +150,12 @@ impl DeviceEntry {
     }
 }
 
-/// The seven devices of the handoff block, indexed by type code minus one.
+/// The seven base handoff entries and validated optional devices used by ACPI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoardManifest {
     devices: [DeviceEntry; DEVICE_COUNT],
     pci_nvme: Option<PciNvmeRoute>,
+    rtc: Option<DeviceEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +193,18 @@ impl BoardManifest {
             if entry.irq_flags & !(IRQ_LEVEL | IRQ_ACTIVE_LOW) != 0 {
                 return Err(ManifestError::ReservedIrqFlags(entry.irq_flags));
             }
+            if entry.device_type == device_type::TPM_CRB
+                && entry.is_present()
+                && (entry.flags != FLAG_PRESENT
+                    || entry.base != TPM_CRB_BASE
+                    || entry.length != TPM_CRB_LEN
+                    || entry.gsi != GSI_NONE
+                    || entry.irq_flags != 0
+                    || entry.param0 != 0
+                    || entry.param1 != 0)
+            {
+                return Err(ManifestError::BadTpmCrb);
+            }
             seen[index] = true;
             slots[index] = entry;
         }
@@ -184,7 +212,15 @@ impl BoardManifest {
         Ok(BoardManifest {
             devices: slots,
             pci_nvme: None,
+            rtc: None,
         })
+    }
+
+    pub const fn tpm_crb(&self) -> Option<&DeviceEntry> {
+        match self.device(device_type::TPM_CRB) {
+            Some(entry) if entry.is_present() => Some(entry),
+            _ => None,
+        }
     }
 
     pub(super) const fn with_nvme(mut self, entry: &DeviceEntry) -> Result<Self, ManifestError> {
@@ -233,6 +269,27 @@ impl BoardManifest {
 
     pub(super) const fn pci_nvme(&self) -> Option<PciNvmeRoute> {
         self.pci_nvme
+    }
+
+    pub(super) const fn with_rtc(mut self, entry: DeviceEntry) -> Result<Self, ManifestError> {
+        if entry.flags != (FLAG_PRESENT | FLAG_PIO) {
+            return Err(ManifestError::BadRtc("flags"));
+        }
+        if entry.base != 0x70 || entry.length != 2 {
+            return Err(ManifestError::BadRtc("ports"));
+        }
+        if entry.gsi != GSI_NONE || entry.irq_flags != 0 || entry.param1 != 0 {
+            return Err(ManifestError::BadRtc("reserved fields"));
+        }
+        if entry.param0 > device_type::MAX_RTC_UNIX_SECONDS {
+            return Err(ManifestError::BadRtc("base UTC time"));
+        }
+        self.rtc = Some(entry);
+        Ok(self)
+    }
+
+    pub(super) const fn rtc(&self) -> Option<&DeviceEntry> {
+        self.rtc.as_ref()
     }
 
     /// The entry of a device type (1..=7).
@@ -303,12 +360,17 @@ impl AcpiPmEntry {
         let cnt = ((entry.param0 >> 16) & 0xFFFF) as u32;
         let tmr = ((entry.param0 >> 32) & 0xFFFF) as u32;
         let reset = ((entry.param0 >> 48) & 0xFFFF) as u32;
+        let reset_value = (entry.param1 & 0xFF) as u8;
         let (start, end) = (entry.base as u32, (entry.base + entry.length) as u32);
         if evt < start
             || evt + PM1_EVT_LEN > cnt
             || cnt + PM1_CNT_LEN > tmr
-            || tmr + PM_TMR_LEN > reset
-            || reset + RESET_REG_LEN > end
+            || tmr + PM_TMR_LEN > end
+            || if reset == 0 {
+                reset_value != 0
+            } else {
+                tmr + PM_TMR_LEN > reset || reset + RESET_REG_LEN > end
+            }
         {
             return Err(ManifestError::BadAcpiPm(
                 "registers must lie in the block in the order EVT, CNT, TMR, RESET",
@@ -321,7 +383,7 @@ impl AcpiPmEntry {
             pm1a_cnt_blk: cnt as u16,
             pm_tmr_blk: tmr as u16,
             reset_reg: reset as u16,
-            reset_value: (entry.param1 & 0xFF) as u8,
+            reset_value,
             slp_typ_s5: ((entry.param1 >> 8) & 0xFF) as u8,
             sci_gsi: entry.gsi,
             sci_level: entry.irq_flags & IRQ_LEVEL != 0,
@@ -486,6 +548,20 @@ mod tests {
             param1: 0x0506,
         });
         assert_eq!(PM, Ok(pm));
+    }
+
+    #[test]
+    fn acpi_pm_can_expose_s5_without_a_reset_register() {
+        let mut raw = PM_ENTRY_RAW;
+        raw[0x26..0x29].fill(0);
+        let pm = AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).unwrap();
+        assert_eq!((pm.reset_reg, pm.reset_value, pm.slp_typ_s5), (0, 0, 5));
+        assert_eq!((pm.pm1a_cnt_blk, pm.pm_tmr_blk), (0x604, 0x608));
+        raw[0x28] = 1;
+        assert!(AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).is_err());
+        raw[0x28] = 0;
+        raw[0x10] = 0x0b;
+        assert!(AcpiPmEntry::from_entry(&DeviceEntry::parse(&raw)).is_err());
     }
 
     #[test]

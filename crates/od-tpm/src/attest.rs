@@ -1,17 +1,4 @@
-//! `TPM2_HMAC`, `TPM2_Quote` and `TPM2_Certify` (slice C2 of phase B, S7-23).
-//!
-//! **`TPM2_HMAC`** (Part 3 v184, clause 15.5) computes HMAC-SHA-256 with the key of an unrestricted
-//! keyed-hash object that has `sign` SET (`TPM_RC_KEY` without `sign`, `TPM_RC_TYPE` for another
-//! object type, `TPM_RC_ATTRIBUTES` for a restricted key). The key is created by `TPM2_Create` or
-//! `TPM2_CreatePrimary` from a `KEYEDHASH` template with `sign` and scheme HMAC (SHA-256) or NULL
-//! (`object.rs`): the key bytes come from `inSensitive.data` (at most 128 octets; `sensitiveDataOrigin`
-//! CLEAR) or the TPM generates 32 octets (data empty, `sensitiveDataOrigin` SET). `hashAlg` is the
-//! hash of the key's scheme or NULL, or SHA-256 for a key with a NULL scheme (`TPM_RC_VALUE`, hash
-//! selection matrix of Part 3, Table 75); another algorithm is `TPM_RC_HASH`. The TPM may
-//! implement `TPM2_HMAC` or `TPM2_MAC`, not both (same command code): this TPM implements
-//! `TPM2_HMAC`. The Windows requirement for `TPM2_HMAC` is T-03 of
-//! `docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md` (by Microsoft documentation; use is a hypothesis
-//! until the S7-32 trace).
+//! TPM attestation commands (Part 3, clause 18).
 //!
 //! **Attestation** (Part 3, clauses 18.1, 18.2 and 18.4; Part 2, clauses 10.12.2-10.12.13). The TPM
 //! builds a `TPMS_ATTEST` (`magic` = `TPM_GENERATED_VALUE`, `type`, `qualifiedSigner` = Qualified
@@ -43,22 +30,20 @@
 //! **`signHandle` = `TPM_RH_NULL`** (clause 18.1; `Quote`, `Certify`, `GetTime`): the command does
 //! everything else and the attestation is "signed" with the NULL signature (`TPMT_SIGNATURE` with
 //! `sigAlg` = `TPM_ALG_NULL`, no further fields); `inScheme` must still be a valid signing scheme
-//! (RSASSA, ECDSA or NULL here) but has no effect; the values are obfuscated with the Qualified
+//! (RSASSA, ECDSA or NULL here). Whole-index `NV_Certify` requires an explicit hash in
+//! `inScheme` even for a NULL signer (v185 clause 31.16). Values are obfuscated with the Qualified
 //! Name `TPM_RH_NULL` (clause 18.1: "the QN for TPM_RH_NULL is TPM_RH_NULL"); `qualifiedSigner`
 //! ("Qualified Name of the signing key", Part 2, Table 151) holds the same 4 octets of the handle.
 //! No authorization value exists for `TPM_RH_NULL`: the session is checked
 //! against the empty authValue like for every other use of this handle (`dispatch.rs`).
 //!
-//! Not implemented: `TPM2_CertifyCreation`, `TPM2_GetSessionAuditDigest`,
-//! `TPM2_GetCommandAuditDigest`, `TPM2_NV_Certify`, `TPM2_CertifyX509`, ECDAA and other schemes
-//! (a valid signing scheme other than RSASSA, ECDSA is `TPM_RC_SCHEME`), a non-NULL `TPM2_Sign`
-//! of HMAC keys.
+//! GetCommandAuditDigest and CertifyX509 remain open. RSASSA and ECDSA
+//! are the currently supported attestation signing schemes.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the codes
 //! `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` with a handle number for `x509sign` and non-signing keys of
 //! attestation commands, `TPM_RC_SCHEME` (parameter 2) for a scheme that does not fit the key
-//! type, `TPM_RC_SIZE` for a `qualifyingData` above `TPM2B_DATA`, `TPM_RC_VALUE` (parameter 2,
-//! `TPM2_HMAC`) for the hash selection, `TPM_RC_HASH` for other hash algorithms; the value of
+//! type, `TPM_RC_SIZE` for a `qualifyingData` above `TPM2B_DATA`; the value of
 //! `firmwareVersion` (`TPM_PT_FIRMWARE_VERSION_1 << 32 | _2`); the obfuscation layout; the
 //! `pcrDigest` of an empty PCR selection (SHA-256 of the empty string). Slice C3: that
 //! a NULL signer's `qualifiedSigner` is the 4 octets of `TPM_RH_NULL` and the obfuscation uses
@@ -75,13 +60,14 @@
 use sha2::{Digest, Sha256};
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
-use crate::crypto::{ecc_sign, hmac_sha256, kdfa_sha256, rsa_sign};
+use crate::crypto::{HashAlg, ecc_sign, kdfa_sha256, rsa_sign};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
     limits,
 };
-use crate::object::{Object, Secret, find_object};
+use crate::nv::{NV_BUFFER_MAX, attr as nv_attr};
+use crate::object::{Object, Secret, find_object, is_object_hierarchy};
 use crate::policy::pcr_selection_digest;
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
@@ -98,7 +84,12 @@ const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
 type Signing<'a> = Option<(&'a Object, Scheme)>;
 
 /// The scheme an attestation is signed with (Part 3, clause 18.1) and the checks of the key.
-fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme, Rc> {
+fn attest_scheme(
+    o: &Object,
+    in_scheme: Scheme,
+    handle_no: u8,
+    scheme_no: u8,
+) -> Result<Scheme, Rc> {
     if !o.has(object_attr::SIGN) {
         return Err(Rc::KEY.in_handle(handle_no));
     }
@@ -107,11 +98,13 @@ fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme,
     }
     let key_scheme = match &o.public.params {
         PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-        PublicParams::KeyedHash { .. } => return Err(Rc::KEY.in_handle(handle_no)),
+        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => {
+            return Err(Rc::KEY.in_handle(handle_no));
+        }
     };
     let scheme = if key_scheme.alg != alg::NULL {
         if in_scheme.alg != alg::NULL && in_scheme.alg != key_scheme.alg {
-            return Err(Rc::SCHEME.in_param(2));
+            return Err(Rc::SCHEME.in_param(scheme_no));
         }
         key_scheme
     } else {
@@ -122,7 +115,7 @@ fn attest_scheme(o: &Object, in_scheme: Scheme, handle_no: u8) -> Result<Scheme,
         (PublicParams::Rsa { .. }, alg::RSASSA) | (PublicParams::Ecc { .. }, alg::ECDSA)
     );
     if !fits || scheme.hash != alg::SHA256 {
-        return Err(Rc::SCHEME.in_param(2));
+        return Err(Rc::SCHEME.in_param(scheme_no));
     }
     Ok(scheme)
 }
@@ -138,7 +131,13 @@ fn sign_digest(
     match &sensitive.secret {
         Secret::Rsa(key) => Ok(TpmtSignature::Rsassa {
             hash: scheme.hash,
-            sig: rsa_sign(key, digest, drbg).ok_or(Rc::FAILURE)?,
+            sig: rsa_sign(
+                key,
+                HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?,
+                digest,
+                drbg,
+            )
+            .ok_or(Rc::FAILURE)?,
         }),
         Secret::Ecc(key) => {
             let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;
@@ -148,7 +147,7 @@ fn sign_digest(
                 s,
             })
         }
-        Secret::Data(_) => Err(Rc::KEY.in_handle(1)),
+        Secret::Data(_) | Secret::MlKem(_) => Err(Rc::KEY.in_handle(1)),
     }
 }
 
@@ -156,14 +155,23 @@ impl Tpm {
     /// The signing key of an attestation at handle position `n` (one-based) and its scheme;
     /// `None` for `TPM_RH_NULL` (clause 18.1: the scheme must be a valid signing scheme, which
     /// the parser checked, and has no effect).
-    fn attest_signer(&self, h: u32, in_scheme: Scheme, n: u8) -> Result<Signing<'_>, Rc> {
+    fn attest_signer(
+        &self,
+        h: u32,
+        in_scheme: Scheme,
+        handle_no: u8,
+        scheme_no: u8,
+    ) -> Result<Signing<'_>, Rc> {
         if h == handle::RH_NULL {
             return Ok(None);
         }
         let signer = self
             .object(h)
-            .ok_or(Rc::reference_handle(usize::from(n) - 1))?;
-        Ok(Some((signer, attest_scheme(signer, in_scheme, n)?)))
+            .ok_or(Rc::reference_handle(usize::from(handle_no) - 1))?;
+        Ok(Some((
+            signer,
+            attest_scheme(signer, in_scheme, handle_no, scheme_no)?,
+        )))
     }
 
     /// The marshaled `TPMS_ATTEST` for a signing key `signer` (`None`: `TPM_RH_NULL`), clause
@@ -235,6 +243,46 @@ impl Tpm {
         })
     }
 
+    /// `TPM2_CertifyCreation` (Part 3 v185, clause 18.3).
+    pub(crate) fn cmd_certify_creation(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let creation_hash = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(3);
+        let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
+        p.set_param(4);
+        if p.u16()? != st::CREATION {
+            return Err(p.err(Rc::TAG));
+        }
+        let hierarchy = p.u32()?;
+        if !is_object_hierarchy(hierarchy) {
+            return Err(p.err(Rc::VALUE));
+        }
+        let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+
+        let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 3)?;
+        let object = self.object(inv.handles[1]).ok_or(Rc::reference_handle(1))?;
+        if !self.valid_creation_ticket(&object.name, creation_hash, hierarchy, digest) {
+            return Err(Rc::TICKET.in_param(4));
+        }
+        let mut attested = Writer::new();
+        attested.tpm2b(&object.name);
+        attested.tpm2b(creation_hash);
+        let attest = self.attest_bytes(
+            signing.map(|(object, _)| object),
+            st::ATTEST_CREATION,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(inv.handles[0], signing.map(|(_, scheme)| scheme), attest)
+    }
+
     /// `TPM2_Quote` (Part 3, clause 18.4).
     pub(crate) fn cmd_quote(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
@@ -242,9 +290,10 @@ impl Tpm {
         p.set_param(2);
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.set_param(3);
-        let selection = TpmlPcrSelection::unmarshal(p)?;
+        let mut selection = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
-        let signing = self.attest_signer(inv.handles[0], in_scheme, 1)?;
+        let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 2)?;
+        self.pcrs.filter_selection(&mut selection);
         let mut attested = Writer::new();
         selection.marshal(&mut attested);
         attested.tpm2b(&pcr_selection_digest(&self.pcrs, &selection));
@@ -269,7 +318,7 @@ impl Tpm {
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.finish()?;
         let certified = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         let mut attested = Writer::new();
         attested.tpm2b(&certified.name);
         attested.tpm2b(&certified.qualified_name);
@@ -280,6 +329,103 @@ impl Tpm {
             &attested.buf,
         );
         self.attest_response(inv.handles[1], signing.map(|(_, s)| s), attest)
+    }
+
+    /// `TPM2_NV_Certify` (Part 3 v185, clause 31.16): certify a range or, when both
+    /// size and offset are zero, the digest of the entire NV index.
+    pub(crate) fn cmd_nv_certify(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let in_scheme = Scheme::unmarshal_with_hashes(
+            p,
+            &[alg::RSASSA, alg::ECDSA],
+            Rc::SCHEME,
+            &[alg::SHA256, alg::NULL],
+        )?;
+        p.set_param(3);
+        let size = usize::from(p.u16()?);
+        p.set_param(4);
+        let offset = usize::from(p.u16()?);
+        p.finish()?;
+
+        let sign_handle = inv.handles[0];
+        let whole_index = size == 0 && offset == 0;
+        if whole_index && sign_handle == handle::RH_NULL && in_scheme.hash == alg::NULL {
+            return Err(Rc::SCHEME.in_param(2));
+        }
+        if in_scheme.alg != alg::NULL && in_scheme.hash == alg::NULL {
+            return Err(Rc::HASH.in_param(2));
+        }
+        let signing = self.attest_signer(sign_handle, in_scheme, 1, 2)?;
+        let index = self
+            .persistent
+            .nv
+            .get(inv.handles[2])
+            .ok_or(Rc::HANDLE.in_handle(3))?;
+        if index.attributes & nv_attr::READLOCKED != 0 {
+            return Err(Rc::NV_LOCKED);
+        }
+        if size > NV_BUFFER_MAX {
+            return Err(Rc::VALUE.in_param(3));
+        }
+        let data = index.data.get(offset..offset + size).ok_or(Rc::NV_RANGE)?;
+        let mut attested = Writer::new();
+        attested.tpm2b(&index.name());
+        let attest_type = if whole_index {
+            // SHA-256 is the sole hash of the supported signing schemes.
+            attested.tpm2b(&Sha256::digest(index.data.as_slice()));
+            st::ATTEST_NV_DIGEST
+        } else {
+            attested.u16(offset as u16);
+            attested.tpm2b(data);
+            st::ATTEST_NV
+        };
+        let attest = self.attest_bytes(
+            signing.map(|(o, _)| o),
+            attest_type,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(sign_handle, signing.map(|(_, s)| s), attest)
+    }
+
+    /// `TPM2_GetSessionAuditDigest` (Part 3 v185, clause 18.5). A command that
+    /// audits its own retrieval extends the digest only after this response is built.
+    pub(crate) fn cmd_get_session_audit_digest(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
+        p.finish()?;
+        let slot = self
+            .sessions
+            .slot_of(inv.handles[2])
+            .ok_or_else(|| Rc::reference_handle(2))?;
+        let digest = self
+            .sessions
+            .get(slot)
+            .and_then(|session| session.audit_digest)
+            .ok_or(Rc::TYPE.in_handle(3))?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
+        let mut attested = Writer::new();
+        attested.u8(u8::from(self.sessions.exclusive_audit == Some(slot)));
+        attested.tpm2b(digest.as_slice());
+        let attest = self.attest_bytes(
+            signing.map(|(object, _)| object),
+            st::ATTEST_SESSION_AUDIT,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(inv.handles[1], signing.map(|(_, scheme)| scheme), attest)
     }
 
     /// `TPM2_GetTime` (Part 3, clause 18.7): `privacyAdminHandle` (endorsement, checked by the
@@ -294,7 +440,7 @@ impl Tpm {
         p.set_param(2);
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.finish()?;
-        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         // `TPMS_TIME_ATTEST_INFO`: the clock values in clear (clause 18.7.1, note).
         let mut attested = Writer::new();
         self.time_info().marshal(&mut attested);
@@ -306,46 +452,5 @@ impl Tpm {
             &attested.buf,
         );
         self.attest_response(inv.handles[1], signing.map(|(_, s)| s), attest)
-    }
-
-    /// `TPM2_HMAC` (Part 3, clause 15.5).
-    pub(crate) fn cmd_hmac(&mut self, inv: &Invocation, p: &mut Reader<'_>) -> Result<Output, Rc> {
-        p.set_param(1);
-        let buffer = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
-        p.set_param(2);
-        let hash_alg = p.u16()?;
-        p.finish()?;
-        let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
-        if !o.has(object_attr::SIGN) {
-            return Err(Rc::KEY.in_handle(1));
-        }
-        let PublicParams::KeyedHash { scheme } = &o.public.params else {
-            return Err(Rc::TYPE.in_handle(1));
-        };
-        if o.has(object_attr::RESTRICTED) {
-            return Err(Rc::ATTRIBUTES.in_handle(1));
-        }
-        if hash_alg != alg::SHA256 && hash_alg != alg::NULL {
-            return Err(Rc::HASH.in_param(2));
-        }
-        // Hash selection (Part 3, Table 75): the key's default, or the caller's for a NULL scheme.
-        let ok = if scheme.alg != alg::NULL {
-            hash_alg == alg::NULL || hash_alg == scheme.hash
-        } else {
-            hash_alg == alg::SHA256
-        };
-        if !ok {
-            return Err(Rc::VALUE.in_param(2));
-        }
-        let Some(Secret::Data(key)) = o.sensitive.as_ref().map(|s| &s.secret) else {
-            return Err(Rc::AUTH_UNAVAILABLE);
-        };
-        let mac = hmac_sha256(key, &[buffer]);
-        let mut w = Writer::new();
-        w.tpm2b(&mac);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
     }
 }

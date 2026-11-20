@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::acpi::dsdt::{build_dsdt, validate_dsdt};
+use crate::acpi::fadt::build_fadt;
 use crate::acpi::fadt::{build_facs, validate_facs, validate_fadt};
 use crate::acpi::madt::validate_madt;
 use crate::acpi::manifest::{AcpiPmEntry, BoardManifest, DeviceEntry};
@@ -64,24 +65,49 @@ fn table<'a>(blob: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
 }
 
 #[test]
+fn tpm2_table_and_aml_are_conditional_on_the_same_validated_crb() {
+    let absent = build(&STAGE4_DEVICES, 0xff);
+    assert!(!table(&absent, b"DSDT").windows(8).any(|w| w == b"MSFT0101"));
+    assert!((0..le32(&absent, 0x48) as usize).all(|i| dir_entry(&absent, i).0 != *b"TPM2"));
+
+    let mut devices = STAGE4_DEVICES;
+    devices[5].flags = FLAG_PRESENT;
+    devices[5].base = 0xfed4_0000;
+    devices[5].length = 0x5000;
+    let blob = build(&devices, 0xff);
+    let tpm = table(&blob, b"TPM2");
+    assert_eq!((tpm.len(), tpm[8], byte_sum(tpm)), (52, 6, 0));
+    assert_eq!(le32(tpm, 36), 0);
+    assert_eq!(le64(tpm, 40), 0xfed4_0040);
+    assert_eq!(le32(tpm, 48), 7);
+    let index = (0..le32(&blob, 0x48) as usize)
+        .find(|&i| dir_entry(&blob, i).0 == *b"TPM2")
+        .unwrap();
+    let addr = ACPI_REGION_BASE + dir_entry(&blob, index).1 as u64;
+    assert!(
+        table(&blob, b"XSDT")[36..]
+            .chunks_exact(8)
+            .any(|entry| le64(entry, 0) == addr)
+    );
+    let dsdt = table(&blob, b"DSDT");
+    assert!(dsdt.windows(8).any(|w| w == b"MSFT0101"));
+    assert!(
+        dsdt.windows(12)
+            .any(|w| w == [0x86, 9, 0, 1, 0, 0, 0xd4, 0xfe, 0, 0x50, 0, 0])
+    );
+
+    devices[5].base += 0x1000;
+    assert_eq!(
+        build_blob(&devices, &mut [0; STAGE4_BLOB_CAPACITY]),
+        Err(BlobError::Manifest(ManifestError::BadTpmCrb)),
+    );
+}
+
+#[test]
 fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
     let blob = build(&LINUX_NVME_DEVICES, 0);
     assert_eq!(blob, linux_nvme_blob_bytes::<LINUX_NVME_BLOB_LEN>());
-    let dsdt = table(&blob, b"DSDT");
-    let window = [
-        0x87, 0x17, 0, 0, 0x0c, 1, // DWordMemory, producer, positive decode, fixed, RW.
-        0, 0, 0, 0, // Granularity.
-        0, 0x40, 0, 0xfc, // Minimum.
-        0xff, 0x5f, 0, 0xfc, // Maximum.
-        0, 0, 0, 0, // Translation.
-        0, 0x20, 0, 0, // Length.
-    ];
-    let route = [
-        0x08, b'_', b'P', b'R', b'T', 0x12, 0x0e, 1, 0x12, 0x0b, 4, 0x0c, 0xff, 0xff, 4, 0, 0, 0,
-        0x0a, 16,
-    ];
-    assert!(dsdt.windows(window.len()).any(|bytes| bytes == window));
-    assert!(dsdt.windows(route.len()).any(|bytes| bytes == route));
+    assert_nvme_resources(table(&blob, b"DSDT"));
 
     let mut devices = LINUX_NVME_DEVICES;
     devices[7].base = devices[6].base;
@@ -90,6 +116,23 @@ fn linux_nvme_dsdt_describes_the_bar_and_hardwired_inta() {
         build_blob(&devices, &mut out),
         Err(BlobError::Manifest(ManifestError::BadPciNvme))
     );
+}
+
+fn assert_nvme_resources(dsdt: &[u8]) {
+    let window = [
+        0x87, 0x17, 0, 0, 0x0c, 1, // DWordMemory, producer, positive decode, fixed, RW.
+        0, 0, 0, 0, // Granularity.
+        0, 0x40, 0, 0xfc, // Minimum.
+        0xff, 0x7f, 0, 0xfc, // Maximum.
+        0, 0, 0, 0, // Translation.
+        0, 0x40, 0, 0, // Length.
+    ];
+    let route = [
+        0x08, b'_', b'P', b'R', b'T', 0x12, 0x0e, 1, 0x12, 0x0b, 4, 0x0c, 0xff, 0xff, 4, 0, 0, 0,
+        0x0a, 16,
+    ];
+    assert!(dsdt.windows(window.len()).any(|bytes| bytes == window));
+    assert!(dsdt.windows(route.len()).any(|bytes| bytes == route));
 }
 
 fn table_address(blob: &[u8], signature: &[u8; 4]) -> u64 {
@@ -146,10 +189,9 @@ fn tables_in_the_blob_are_the_runtime_ones() {
 }
 
 #[test]
-fn rtc_handoff_clears_fadt_not_present_and_advertises_century_register() {
-    let mut devices = [DeviceEntry::default(); 9];
-    devices[..STAGE4_DEVICES.len()].copy_from_slice(&STAGE4_DEVICES);
-    devices[8] = DeviceEntry {
+fn rtc_handoff_advertises_the_same_rtc_in_dsdt_and_fadt() {
+    let mut devices = LINUX_NVME_DEVICES.to_vec();
+    devices.push(DeviceEntry {
         device_type: device_type::RTC_CMOS,
         flags: FLAG_PRESENT | FLAG_PIO,
         base: 0x70,
@@ -158,12 +200,36 @@ fn rtc_handoff_clears_fadt_not_present_and_advertises_century_register() {
         irq_flags: 0,
         param0: 1_704_067_200,
         param1: 0,
-    };
+    });
     let blob = build(&devices, 0);
     let fadt = table(&blob, b"FACP");
     assert_eq!(fadt[108], 0x32, "FADT CENTURY points at CMOS register 0x32");
     assert_eq!(le16(fadt, 109) & (1 << 5), 0, "RTC is present");
     assert_eq!(validate_fadt(fadt), Ok(()));
+
+    // Device(RTC0), _HID = EISA PNP0B00, _CRS = two Decode16 ports, EndTag.
+    // ACPI 6.6 §9.14.1, §6.4.2.6 and §20.2.5.4.
+    let rtc = [
+        0x5b, 0x82, 0x22, b'R', b'T', b'C', b'0', 0x08, b'_', b'H', b'I', b'D', 0x0c, 0x41, 0xd0,
+        0x0b, 0x00, 0x08, b'_', b'C', b'R', b'S', 0x11, 0x0d, 0x0a, 0x0a, 0x47, 0x01, 0x70, 0x00,
+        0x70, 0x00, 0x01, 0x02, 0x79, 0x00,
+    ];
+    let dsdt = table(&blob, b"DSDT");
+    assert_eq!(validate_dsdt(dsdt), Ok(()));
+    assert_nvme_resources(dsdt);
+    assert_eq!(
+        dsdt.windows(rtc.len())
+            .filter(|bytes| *bytes == rtc)
+            .count(),
+        1
+    );
+    let without_rtc = build(&LINUX_NVME_DEVICES, 0);
+    assert!(
+        !table(&without_rtc, b"DSDT")
+            .windows(4)
+            .any(|bytes| bytes == b"RTC0")
+    );
+    assert_ne!(le16(table(&without_rtc, b"FACP"), 109) & (1 << 5), 0);
 }
 
 #[test]

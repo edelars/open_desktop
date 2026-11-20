@@ -1,0 +1,27 @@
+{
+  "esp_default": {
+    "transcript": "esp_default_com1.txt",
+    "disk_sha256": "aa2f0482dd6dd617ec30fcb996973b4db4808f617629e85364f0155cc5b0eb29",
+    "nvram_sha256": "d7e5c3d1cb3f67f4f1ce263ee7185efbb48be182667d26bd577afef429555e59"
+  },
+  "esp_missing": {
+    "transcript": "esp_missing_com1.txt",
+    "disk_sha256": "5f4945a7e5d5b76e04afc74aad63ac32b9f7e1765510044a5e062f36050a7ec2",
+    "nvram_sha256": "ec7b04d2c97496006334491d41e8723a6e91968c07697ccbbdf7e54d44ae8968"
+  },
+  "esp_fallback": {
+    "transcript": "esp_fallback_com1.txt",
+    "disk_sha256": "aa2f0482dd6dd617ec30fcb996973b4db4808f617629e85364f0155cc5b0eb29",
+    "nvram_sha256": "14045379e90b425c6d4458de27394dad05cf9ef1bdea555cd4fa2c8055f53bff"
+  },
+  "esp_order": {
+    "transcript": "esp_order_com1.txt",
+    "disk_sha256": "aa2f0482dd6dd617ec30fcb996973b4db4808f617629e85364f0155cc5b0eb29",
+    "nvram_sha256": "9544e28a79f818ab6e39191c72edf1b259e7ba83568a1cfad11cdbab21aadd1e"
+  },
+  "esp_reboot": {
+    "transcript": "esp_reboot_com1.txt",
+    "disk_sha256": "aa2f0482dd6dd617ec30fcb996973b4db4808f617629e85364f0155cc5b0eb29",
+    "nvram_sha256": "0fac751b637bf963025bd83db6a350dfb7c64e304b5b6e5d6058b32a28e18afa"
+  }
+}

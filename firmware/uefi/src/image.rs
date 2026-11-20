@@ -96,30 +96,12 @@ impl ImageHeader {
     }
 }
 
-/// CRC-32 IEEE 802.3, reflected: polynomial `0xEDB8_8320`, init and final XOR `0xFFFF_FFFF`.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    crc32_update(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
-}
+pub use crate::crc32::crc32;
 
-fn crc32_update(mut state: u32, bytes: &[u8]) -> u32 {
-    for &byte in bytes {
-        state ^= u32::from(byte);
-        for _ in 0..8 {
-            state = if state & 1 != 0 {
-                (state >> 1) ^ 0xEDB8_8320
-            } else {
-                state >> 1
-            };
-        }
-    }
-    state
-}
-
-/// CRC-32 of the whole image with the `image_crc32` field treated as zero.
+/// CRC-32 of the whole image with the image CRC field treated as zero.
 pub fn image_crc32(image: &[u8]) -> u32 {
-    let state = crc32_update(0xFFFF_FFFF, &image[..CRC_OFFSET]);
-    let state = crc32_update(state, &[0; 4]);
-    crc32_update(state, &image[CRC_OFFSET + 4..]) ^ 0xFFFF_FFFF
+    assert!(image.len() >= CRC_OFFSET + size_of::<u32>());
+    crate::crc32::with_zeroed_word(image, CRC_OFFSET)
 }
 
 /// Checks a complete in-memory image against the v1 contract and returns its header.
@@ -204,7 +186,7 @@ mod tests {
             link_base: LINK_BASE,
             entry_offset: 0x40,
             handoff_major: HANDOFF_MAJOR,
-            handoff_minor_max: 4,
+            handoff_minor_max: 7,
             flags: 0,
             image_crc32: 0,
         };
@@ -301,14 +283,14 @@ mod tests {
     const REFERENCE_HEADER: [u8; HEADER_SIZE] = [
         0x4F, 0x44, 0x46, 0x57, 0x49, 0x4D, 0x47, 0x31, 0x01, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x00,
+        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x07, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
     ];
 
     /// CRC-32 of `sample_image()`; `tools/build/test_build_firmware.py` builds the same image in
     /// Python and expects the same value.
-    const SAMPLE_IMAGE_CRC32: u32 = 0xA755_3281;
+    const SAMPLE_IMAGE_CRC32: u32 = 0x9971_494B;
 
     #[test]
     fn header_matches_reference_bytes_shared_with_python() {
@@ -319,7 +301,7 @@ mod tests {
             link_base: LINK_BASE,
             entry_offset: 0x40,
             handoff_major: HANDOFF_MAJOR,
-            handoff_minor_max: 4,
+            handoff_minor_max: 7,
             flags: 0,
             image_crc32: 0x1234_5678,
         };

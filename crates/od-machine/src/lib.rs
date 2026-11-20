@@ -8,6 +8,7 @@ mod apic_pair;
 mod bus;
 mod clock_owner;
 mod console_output_context;
+mod crc32;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
@@ -41,6 +42,7 @@ mod litmus_parallel;
 mod local_apic;
 mod lock_wait_metrics;
 mod nvme;
+mod nvram_device;
 mod page_walk;
 mod paged_apic_entry;
 mod paged_descriptor;
@@ -83,6 +85,7 @@ mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
 mod stage6_smp_probe;
+mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -119,10 +122,15 @@ pub use bus::{
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
 };
+pub use nvram_device::{
+    NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_SNAPSHOT_BYTES, NVRAM_STORE_BYTES, NvramConfig,
+    NvramContentsError, NvramDevice, SecureBootKeys,
+};
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
     RtcCmosError,
 };
+pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmPlatformPort};
 
 pub use console_output_context::{
     ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,
@@ -254,10 +262,11 @@ pub use execution_observations::{
 pub use firmware_board::{
     FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
     FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE,
-    FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_HANDOFF_GPA,
-    FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
+    FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_EXECUTION_CYCLE_NS,
+    FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
     FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
-    FirmwareBoardError, FirmwareRunReport, LoadedFirmwareBoard, load_firmware_image,
+    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard,
+    firmware_handoff_block, load_firmware_image,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};

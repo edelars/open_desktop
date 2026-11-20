@@ -1,6 +1,6 @@
 # Таблицы ACPI и SMBIOS из handoff block
 
-**Статус:** документ создан задачей S7-12 [плана этапа 7](../plans/STAGE_7.md#s7-12-реализовать-собственный-aml-кодировщик-и-dsdt-из-manifest) и сейчас содержит разделы «AML и DSDT» (S7-12) и «Состав ACPI-таблиц для Linux-пути этапа 4» (S4-31a). Набор таблиц RSDP, XSDT, FADT (revision 6), FACS, MADT, MCFG и DSDT реализован в срезах S4-31a…g как freestanding-сборка blob v2 (`firmware/uefi/src/acpi/blob.rs`) и проверяется машинным валидатором (`crates/od-machine/src/acpi_blob.rs`); раскладка — в разделе «Blob v2 и раскладка таблиц (S4-31d…g)» ниже. Принятие этих таблиц Linux не проверялось: это S4-38. Разделы по HPET, TPM2 и SMBIOS пишет S7-13; их здесь нет, и эти таблицы не реализованы. Вне blob DSDT не установлена как configuration table UEFI и не проверялась в ОС: это функции над байтами с host-side тестами (уровень 1, [FIRMWARE.md](../testing/FIRMWARE.md)).
+**Статус.** S7-12 определяет AML и DSDT. S4-31 определяет freestanding blob v2. S7-13 использует тот же сериализатор для публикации ACPI из handoff и публикует структуры SMBIOS 3.9 через UEFI System Table. Условия проверки описаны в [плане этапа 7](../plans/STAGE_7.md#s7-13-построить-таблицы-acpi-и-smbios-из-handoff-block).
 
 Раздел «Состав ACPI-таблиц для Linux-пути этапа 4 (S4-31a)» добавлен срезом S4-31a этапа 4 (состав таблиц и сериализатор MCFG).
 
@@ -10,8 +10,8 @@
 
 ### Источники и редакции
 
-- ACPI Specification, главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 8.4 (processor device object), 19.3.4 (EISAID), 5.2.6, 5.2.11.1 и 5.2.12.2 (заголовок таблицы, DSDT, MADT Local APIC).
-- **Редакция фактически прочитанного текста — ACPI 6.4** (HTML-копия `uefi.org/htmlspecs/ACPI_Spec_6_4_html`, полученная через Context7, библиотека `/websites/uefi_htmlspecs_acpi_spec_6_4_html`, 2026-11-07). Страницы ACPI 6.6, на которые ссылается [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) («Нормативные источники и редакции»), на `uefi.org/specs/ACPI/6.6/…` вернули HTTP 403 (curl и WebFetch). Совпадение указанных таблиц и кодировок в 6.6 **не проверено**.
+- Исходные ссылки ACPI 6.4. Главы 20 «ACPI Machine Language (AML) Specification» (грамматика 20.2.2–20.2.5, Table 20.2), 6.4 «Resource Data Types for ACPI» (Tables 6.28, 6.33, 6.37, 6.43, 6.46, 6.47, 6.49, 6.52), 6.2.13 (`_PRT`), 8.4 (processor device object), 19.3.4 (EISAID), 5.2.6, 5.2.11.1 и 5.2.12.2 (заголовок таблицы, DSDT, MADT Local APIC).
+- Исходные эталоны 2026-11-07 получены по ACPI 6.4. Выборочная сверка с ACPI 6.6 и область покрытия описаны ниже.
 - Чужие `.asl`/`.aml`, DSDT QEMU/OVMF/ПК и исходники других кодировщиков не использовались. Опкоды и поля взяты из таблиц спецификации; у каждой константы в `firmware/uefi/src/acpi/aml/opcodes.rs` указан раздел или таблица.
 - Эталонные байты в тестах вычислены вручную по спецификации (конструкты) и независимой Python-программой по тексту ACPI 6.4 (DSDT); скрипт не сохранён, общего кода с Rust у него нет. Для S4-31 prerequisite итоговая DSDT дополнительно разобрана ACPICA `iasl` версии 20260408; это проверка синтаксиса AML, не установка или поведение таблиц в ОС.
 
@@ -44,44 +44,68 @@ DSDT: заголовок 36 байт (Table 5.17: сигнатура `DSDT`, р�
 | `\_SB.PCI0` | запись типа 7 (PCIe ECAM), `PRESENT = 1`, не PIO; окно проходит те же проверки, что MCFG (`EcamWindow::from_entry`, S4-31b) | `_HID` `PNP0A08`, `_CID` `PNP0A03`, `_UID` 0, `_SEG` = сегмент (0), `_BBN` = `start_bus` (0), `_CRS`: `WordBusNumber` (ResourceProducer, MinFixed, MaxFixed) `start_bus..=end_bus` (0..=0), затем `IO(Decode16, 0xCF8, 0xCF8, 1, 8)` (порты conf1 платы S4-30c), `_PRT`: пустой пакет в базовом профиле. В Linux direct boot с PCI NVMe запись типа 8 handoff v1.3 добавляет producer `DWordMemory` для BAR0/1 и INTA → GSI 16 в `_PRT`. [ACPI 6.6 §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table) |
 | `\_SB.ECAM` | та же запись типа 7, `PRESENT = 1` (S4-31b) | `_HID` `PNP0C02` (motherboard resources), `_UID` 0, `_CRS`: `Memory32Fixed(ReadWrite, base, 0x10_0000)` — окно ECAM из записи; выводится после PCI0 и перед COM; нужен для `pci_mmcfg_late_init` (ECAM принимается как зарезервированный ресурс) |
 | `\_SB.COM<n>` | запись типа 1 (COM1), `PRESENT = 1`, `PIO` | имя `COM` + цифра `param0` (1–9), `_HID` `PNP0501`, `_UID` = `param0`, `_CRS`: `IO(Decode16, base, base, 1, length)` (`base` и `length` из записи; `base + length ≤ 0x10000`, `1 ≤ length ≤ 255`) и, если `gsi ≠ 0xFFFF_FFFF`, один `Interrupt(ResourceConsumer, …) {gsi}`; режим и полярность из `irq_flags` (бит 0: 1 = level, 0 = edge; бит 1: 1 = active-low), Exclusive |
+| `\_SB.RTC0` | опциональная запись RTC/CMOS типа 10 (handoff v1.4), `PRESENT = 1`, `PIO` | `_HID` `PNP0B00`, `_CRS` с `IO(Decode16, 0x70, 0x70, 1, 2)`. FADT использует ту же запись для `CENTURY = 0x32` и признака наличия RTC. [ACPI 6.6, §9.14.1](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00) |
 | `\_S5_` | `build_dsdt_with_s5` (S4-31e), поле `slp_typ_s5` записи ACPI PM (тип 9) | `Name(\_S5, Package() { 5, 5, 0, 0 })` в корне после `\_SB`: `SLP_TYPa` = `SLP_TYPb` = 5 (`ACPI_SLP_TYP_S5`), два последних элемента нулевые. `build_dsdt` без `_S5` даёт прежние байты (golden S4-31b) |
 
 Для firmware board v1 COM1 даёт `IO 0x3F8 length 8` и `Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive) {4}` (IRQ4 по FIRMWARE_BOOT.md §6.3; доставки IRQ4 нет, прошивка опрашивает COM1 — это описание ресурса, а не обещание работы прерывания в гостевой ОС).
 
 У `\_SB.PCI0` нет `_ADR`: у устройства должен быть `_HID` или `_ADR`, не оба (исправлено по ревью S7-12; эталон `both` пересчитан).
 
-**Пробел контракта (не выдумано).** Manifest v1.0 не содержит окон I/O и MMIO корневого моста PCIe и маршрутов прерываний PCI. Поэтому `_CRS` PCI0 содержит диапазон шин и порты conf1 `0xCF8..=0xCFF` (S4-31b; это факт платы S4-30c, не окно моста), а `_PRT` пуст (ACPI 6.2.13 допускает пустой `_PRT`: маршрутов нет; текст 6.2.13 не сверен). Такая PCI0 не позволит ОС назначать BAR; окна и маршруты должны появиться в handoff block (повышение `version_minor`, S4-30/S7-13), после чего DSDT получит `DWordMemory`/`QWordMemory`/`IO` из них. Записано в [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes). Запись ECAM имеет `PRESENT = 0` до S4-30, поэтому до него PCI0 в DSDT не выводится.
+**Общие ресурсы PCI0.** Запись ECAM v1.0 передаёт диапазон шин.
+В базовой DSDT _CRS содержит этот диапазон и порты conf1 `0xCF8..=0xCFF`.
+_PRT возвращает пустой пакет, ACPICA сообщает об этом предупреждением.
+В профиле PCI NVMe запись handoff v1.3 передаёт producer MMIO
+`0xFC004000..=0xFC007FFF` и фиксированный маршрут INTA на GSI 16.
+Это все ресурсы единственного PCI-устройства текущей платы. Формат
+апертур и маршрутов дополнительных устройств определяется при их добавлении.
+[ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes), [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
 
 ### Отложено
 
 | Что | Почему не здесь | Кто делает |
 |---|---|---|
-| RTC `PNP0B00`, HPET `PNP0103` | в manifest v1.0 нет их записей (коды 8–15 зарезервированы под S7-14); устройств на плате нет | S7-14 |
+| HPET `PNP0103` | Для HPET требуется подтверждённая потребность и модель устройства. | S7-14 |
 | TPM `MSFT0101`, `_CRS` CRB `0xFED4_0000` | запись типа 6 `PRESENT = 0` до S7-22; CRB-устройства на плате нет | S7-22 |
 | IOAPIC, дисплей, NVRAM в DSDT | описываются таблицами MADT и конфигурацией ОС, а не AML; отдельного решения «описывать ли в DSDT» нет | S7-13 (состав — после S7-30) |
-| Установка DSDT как configuration table, `X_DSDT` в FADT | остальные таблицы — S7-13 | S7-13 |
+| Публикация RSDP через UEFI configuration table | В текущем blob FADT уже указывает на DSDT полем `X_DSDT`. Путь публикации через UEFI относится к S7-13. | S7-13 |
 
-Механизм «устройство есть в manifest» реализован для PCI0 и COM1; для отложенных устройств добавление означает новую запись manifest и новый вывод в `dsdt.rs`, а не изменение кодировщика.
+PCI0, COM1 и RTC0 объявляются по соответствующим записям manifest. Для отложенных устройств потребуются данные manifest и правила вывода в `dsdt.rs`.
 
 ### Валидатор
 
-`validate_dsdt` (`dsdt.rs`) проверяет: длину таблицы (поле `Length` равно числу байтов), сигнатуру, контрольную сумму (Table 5.4/5.17: вся таблица, включая поле контрольной суммы, в сумме по модулю 256 даёт нуль), затем `validate_definition_block`: границы каждого пакета внутри родительского и отсутствие повторяющихся имён объектов в одном Scope. `build_dsdt` вызывает его для собственного результата.
+`validate_dsdt` проверяет длину, сигнатуру и нулевую сумму байтов таблицы
+по модулю 256. Затем `validate_definition_block` проверяет границы пакетов
+в `Scope`, `Device` и данных `Name`, включая вложенные `Package` у `_PRT`,
+и уникальность имён. Лимиты глубины пакетов и пространства имён считаются
+отдельно. Содержимое Buffer, VarPackage и тела Method рассматриваются
+как байты с проверенной длиной. `build_dsdt` вызывает валидатор для своего результата.
 
-### Что не сверено с текстом спецификации
+### Выборочная сверка с ACPI 6.6
 
-- Все значения — по ACPI 6.4, не по 6.6 (см. выше).
-- `ReturnOp` `0xA4`: часть Table 20.2 выше `0x74` источник не вернул. Используется только `Return(integer)` в `Method` (в DSDT методов нет; опкод проверен лишь тестом по значению).
-- QWord Address Space Descriptor: тег `0x8A`, длина 43 и порядок полей взяты по аналогии с проверенными Word (13) и DWord (23); Table 6.45 источник не вернул. В DSDT не используется.
-- Грамматика `DefBuffer := BufferOp PkgLength BufferSize ByteList` и `DefPackage := PackageOp PkgLength NumElements …` не получена дословно; подтверждены фиксированные аргументы в Table 20.2 и правило 5.4.1 (все объекты с явной длиной начинаются с PkgLength).
-- Type Specific Flags для диапазона номеров шин пишутся нулём; таблица флагов для `Resource Type = 2` не получена (для памяти Table 6.49 проверена).
-- General Flags бит 0 дескрипторов адресного пространства Table 6.46/6.47 называет «Ignored»; пишется 0 (ResourceProducer), соответствие ASL `ResourceUsage` не проверено.
-- Контрольная сумма End Tag пишется нулём («0 — проверка считается успешной», Table 6.37); правило вычисления ненулевой суммы макросом `ResourceTemplate` не проверено.
-- Идентификаторы `PNP0A08` (PCIe root bridge) и `PNP0501` (UART 16550) взяты из плана S7-12; в тексте спецификации ACPI они не найдены (реестр PNP/ACPI ID — внешний, `uefi.org/PNP_ACPI_Registry`). `PNP0A03` как PCI root bridge подтверждён примерами ACPI 6.4; `PNP0103` и `PNP0B00` (отложены) не проверялись.
-- Поведение Windows/Linux при чтении этой DSDT не проверялось.
+- Сверены расположение битов и диапазон PkgLength, код ReturnOp
+  и порядок полей Buffer и Package. Выборочная сверка относится
+  к кодированию этих конструкций. [ACPI 6.6, §20.2](https://uefi.org/specs/ACPI/6.6/20_AML_Specification.html)
+- Для QWord Address Space Descriptor сверены тег, минимальная длина и
+  смещения пяти 64-битных полей. Для диапазона номеров шин Type Specific
+  Flags равны нулю по таблице 6.51. В Word и DWord Address Space Descriptor
+  бит 0 General Flags записывается нулём, стандарт помечает его как `Ignored`.
+  Нулевой checksum End Tag допустим по §6.4.2.9.
+  [ACPI 6.6, §6.4](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html)
+- Для фиксированного INTx-маршрута сверены четыре поля пакета,
+  номер функции `0xFFFF` и связь нулевого Source с GSI в Source Index.
+  [ACPI 6.6, §6.2.14](https://uefi.org/specs/ACPI/6.6/06_Device_Configuration.html#prt-pci-routing-table)
+
+- Идентификаторы PCI root `PNP0A08`/`PNP0A03` и последовательного порта
+  `PNP0501` сверены с документацией Microsoft. RTC `PNP0B00` описан в ACPI 6.6.
+  [PCI](https://learn.microsoft.com/en-us/windows-hardware/drivers/pci/accessing-pci-device-configuration-space), [COM](https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/serial-port-driver/), [RTC](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00)
+
+Приёмка загрузки Windows и Linux с этими таблицами относится к S7-31/S7-32.
 
 ### Проверка
 
 `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — модули `acpi::aml::tests` (конструкты, отрицательные случаи), `acpi::dsdt::tests` (эталонные DSDT побайтно, вариации manifest, повреждения), `acpi::manifest::tests`, `acpi::table::tests`. Результат — в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
+
+Повторная сборка обоих профилей, проверка контрольной суммы DSDT и интерпретация _CRS/_PRT через ACPICA описаны в [отчёте S7-12](../reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest).
 
 ## Состав ACPI-таблиц для Linux-пути этапа 4 (S4-31a)
 
@@ -184,3 +208,39 @@ RSDP, XSDT, FADT, FACS, MADT; DSDT с PNP0C02; E820 запись для ECAM; р
 | FACS | `0xE_F000` | вне payload (`facs_offset`, NVS) | 64 |
 
 Порядок таблиц и адреса следуют из кода сборки (16-выравнивание, зазоры нулевые); при другой конфигурации платы (нет ECAM) MCFG отсутствует, и адреса следующих таблиц сдвигаются. XSDT перечисляет FADT, MADT, MCFG (DSDT и FACS в нём нет); RSDP даёт адрес XSDT и нулевой `RsdtAddress`; FADT указывает на DSDT (`DSDT`/`X_DSDT`) и FACS (`FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`, оба `0xE_F000`). FACS не имеет контрольной суммы и не входит в каталог. Открытые вопросы по FADT/FACS и упаковщику — [ISSUE-497…500](../KNOWN_ISSUES.md).
+
+
+## Публикация таблиц UEFI (S7-13)
+
+Прошивка проверяет handoff и строит таблицы ACPI при наличии записи fixed hardware и согласованных с ней диапазонов. RSDP ревизии 2 установлен под `EFI_ACPI_20_TABLE_GUID` и указывает на XSDT. XSDT содержит FADT и MADT, а при наличии ECAM также MCFG. FADT ссылается на DSDT и FACS. Прошивка размещает FACS в `EfiACPIMemoryNVS` по GPA `0xEF000`, остальные байты в `EfiACPIReclaimMemory` начиная с `0xE0000`. Установщик публикует RSDP после заполнения обоих диапазонов.
+
+FADT использует Major Version 6 и байт Minor Version `0x05`, буквальное значение строки Table 5.9 ACPI 6.6. Общее пояснение о синхронности версий таблицы и документа подразумевало бы `0x06`. В истории редакций ACPI 6.6 отдельного изменения этого поля нет. `WBINVD=1` отражает поддержку инструкции в последовательном интерпретаторе с когерентной памятью и без моделируемых dirty cache lines. `X_FIRMWARE_CTRL` и `FIRMWARE_CTRL` указывают на один FACS, OSPM отдаёт приоритет доступному 64-битному адресу. [ACPI 6.6 §5.2.9](https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt), [история редакций ACPI 6.6](https://uefi.org/specs/ACPI/6.6/Frontmatter/Revision_History.html).
+
+MADT описывает один LAPIC и один IOAPIC из manifest, маршрут SCI с параметрами PM-блока и закреплённое для платы отображение IRQ0 на GSI2. `PCAT_COMPAT=0`. DSDT берёт устройства из тех же записей, а MCFG описывает только переданное окно ECAM. HPET и TPM2 требуют подключённых устройств. Для TPM2 точка расширения находится при формировании набора таблиц, реализация принадлежит S7-22.
+
+`SMBIOS3_TABLE_GUID` указывает на физический 64-битный entry point `_SM3_`. Структуры хранятся рядом в выделенной странице `EfiACPIReclaimMemory`. UEFI-указатель и адрес внутри entry point остаются физическими при переходе в виртуальный режим runtime. [UEFI 2.11 §4.6](https://uefi.org/specs/UEFI/2.11/04_EFI_System_Table.html), [DSP0134 3.9 §§5.2.2, 6.2, 7](https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.9.0.pdf).
+
+| Тип | Источник данных |
+|---|---|
+| 0 | Название, дата и версия прошивки Open Desktop, размер ROM, признаки UEFI и виртуальной машины, ACPI по записи PM-блока. TPM описывается Type 43 при подключении устройства. |
+| 1 | UUID в формате SMBIOS byte order и серийный номер дословно из handoff. Для полной проверки обязательных полей профиль передаёт ненулевой UUID. |
+| 2, 3 | Виртуальные плата и корпус, собственные строки и ссылка на handle корпуса. |
+| 4 | Processor ID из `CPUID(1).EAX/EDX` профиля DiagnosticV1, один виртуальный CPU из handoff. Max Speed и Current Speed из `virtual_cpu_mhz` v1.9. В ранних версиях handoff скорость обозначена как неизвестная. |
+| 16, 17 | Один массив и одно устройство виртуальной RAM. Ёмкость включает вырезанные из RAM загрузочные и ACPI reservation. Большие объёмы используют Extended Size. |
+| 19, 20 | Одна пара записей на непрерывный банк RAM и ссылки на массив и устройство. Разрыв между low RAM и RAM выше 4 GiB сохраняется. |
+| 32, 127 | Состояние загрузки и конец таблицы. |
+
+Type 7 опущен по DSP0134 Table 4, так как внешние кэши не моделируются. Ссылки на кэши Type 4 равны `FFFF`. Type 9 опущен, так как у платы нет обновляемых слотов. Тип 20 включён для сценария этапа 7 независимо от его опциональности в DSP0134.
+
+Для сравнения firmware и data-only результата используются один профиль и один запечатанный handoff.
+
+```sh
+od-runner dump-handoff-block --fv-app acpi --out work/stage7/acpi-handoff.bin
+python3 tools/build/build_firmware.py --with-test-apps --out work/stage7/firmware-tests.bin
+od-runner boot-firmware --image work/stage7/firmware-tests.bin --fv-app acpi \
+  --budget 15000000 --com1-out work/stage7/acpi.com1 --acpi-out work/stage7/acpi-guest.bin
+python3 tools/build/build_firmware.py --acpi-blob work/stage7/acpi-handoff.bin \
+  --compare-acpi-guest work/stage7/acpi-guest.bin --out work/stage7/acpi-blob.bin
+```
+
+Ожидаемый код runner для возврата тестового приложения и `STOP 0x21` равен 6. Программа S7-13 читает установленные configuration tables, проверяет указатели и контрольные суммы и исполняет `WBINVD`. Режим `--acpi-blob` вычисляет байты в сборке `x86_64-unknown-none`, а Python извлекает ELF-секцию и проверяет раскладку, контрольные суммы и ссылки. Сравнение охватывает все 64 KiB reclaim и NVS, включая неиспользованное место.

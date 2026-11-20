@@ -5,6 +5,7 @@ mod admin;
 mod backend;
 mod controller;
 mod io;
+mod msix;
 mod queues;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ pub const NVME_MMIO_BYTES: u64 = 0x2000;
 /// The Linux PCI profile reserves one aligned, non-prefetchable BAR0/1 aperture.
 /// Fixed-MMIO firmware uses the separate handoff address above.
 pub(crate) const NVME_PCI_BAR_BASE: u64 = 0xFC00_4000;
+pub(crate) const NVME_PCI_BAR_BYTES: u64 = 0x4000;
 pub(crate) const NVME_PCI_SLOT: u8 = 4;
 
 pub(crate) mod irq_source;

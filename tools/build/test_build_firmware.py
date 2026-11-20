@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 
@@ -52,7 +53,7 @@ class ImageHeaderTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<Q", image, 0)[0], 0x3147_4D49_5746_444F)
         self.assertEqual(struct.unpack_from("<II", image, 0x08), (1, 0x40))
         self.assertEqual(struct.unpack_from("<QQQ", image, 0x10), (0x0040_0000, 0x0020_0000, 0x40))
-        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 4, 0))
+        self.assertEqual(struct.unpack_from("<HHI", image, 0x28), (1, 16, 0))
         self.assertEqual(image[0x34:0x40], bytes(12))
         # code after the header is untouched, the tail is zero padding
         self.assertEqual(image[0x40:0x100], sample_raw()[0x40:])
@@ -113,14 +114,14 @@ class ImageHeaderTest(unittest.TestCase):
 # Python validators are pinned to the same bytes. entry_offset = 0x40, image_crc32 = 0x12345678.
 REFERENCE_HEADER_HEX = (
     "4f444657494d4731" "01000000" "40000000" "0000400000000000" "0000200000000000" "4000000000000000"
-    "0100" "0400" "00000000" "78563412" "000000000000000000000000"
+    "0100" "0700" "00000000" "78563412" "000000000000000000000000"
 )
-SAMPLE_IMAGE_CRC32 = 0xA755_3281
+SAMPLE_IMAGE_CRC32 = 0x9971_494B
 
 
 class CrossValidatorTest(unittest.TestCase):
     def test_header_matches_reference_bytes_checked_by_rust(self) -> None:
-        header = BUILDER.build_header(0x40, 0x1234_5678)
+        header = BUILDER.build_header(0x40, 0x1234_5678, handoff_minor_max=7)
         self.assertEqual(header.hex(), REFERENCE_HEADER_HEX)
         self.assertEqual(len(header), 0x40)
         self.assertEqual(struct.unpack_from("<I", header, 0x30)[0], 0x1234_5678)
@@ -128,10 +129,39 @@ class CrossValidatorTest(unittest.TestCase):
 
     def test_sample_image_crc_matches_value_checked_by_rust(self) -> None:
         raw = bytes(0x40) + bytes([0x90, 0x90, 0x90, 0x90, 0xF4, 0xEB, 0xFD, 0x00])
-        image = BUILDER.assemble_image(raw, 0x40)
+        image = BUILDER.assemble_image(raw, 0x40, handoff_minor_max=7)
         self.assertEqual(BUILDER.image_crc(image), SAMPLE_IMAGE_CRC32)
         self.assertEqual(struct.unpack_from("<I", image, 0x30)[0], SAMPLE_IMAGE_CRC32)
         self.assertEqual(BUILDER.validate_image(image)["image_crc32"], SAMPLE_IMAGE_CRC32)
+
+
+class FirmwareVolumeTest(unittest.TestCase):
+    def test_archive_matches_wire_bytes_and_ignores_input_order(self) -> None:
+        ordered = BUILDER.pack_fv({"a": b"!", "b.efi": b"\x00\xff"})
+        self.assertEqual(ordered, BUILDER.pack_fv({"b.efi": b"\x00\xff", "a": b"!"}))
+        records = b"\x01\x00\x00\x00\x01\x00\x00\x00a!\x05\x00\x00\x00\x02\x00\x00\x00b.efi\x00\xff"
+        header = b"ODFVARC\0\x01\x00\x18\x00\x31\x00\x00\x00\x02\x00\x00\x00"
+        checksum = zlib.crc32(header + bytes(4) + records)
+        self.assertEqual(ordered, header + checksum.to_bytes(4, "little") + records)
+
+    def test_invalid_name_empty_file_and_oversize_fail(self) -> None:
+        for name in ("", ".", "..", "A", "app/path", "app\0", "ё", "a" * 64):
+            with self.subTest(name=name), self.assertRaisesRegex(BuildError, "invalid FV name"):
+                BUILDER.pack_fv({name: b"x"})
+        with self.assertRaisesRegex(BuildError, "empty FV file"):
+            BUILDER.pack_fv({"hello": b""})
+        with self.assertRaisesRegex(BuildError, "ROM capacity"):
+            BUILDER.pack_fv({"hello": bytes(BUILDER.IMAGE_SIZE)})
+
+    def test_with_test_apps_is_available_only_for_a_rom_build(self) -> None:
+        self.assertTrue(BUILDER.parse_args(["--with-test-apps"]).with_test_apps)
+        for other in (["--smoke"], ["--efi-probe", "probe.efi"]):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--with-test-apps", *other],
+                capture_output=True, text=True, cwd=ROOT, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requires a ROM build", result.stderr)
 
 
 class SmokeImageTest(unittest.TestCase):
@@ -139,6 +169,7 @@ class SmokeImageTest(unittest.TestCase):
         image = BUILDER.build_smoke_image()
         self.assertEqual(len(image), 0x0040_0000)
         fields = BUILDER.validate_image(image)
+        self.assertEqual(fields["handoff_minor_max"], 4)
         self.assertEqual(fields["entry_offset"], 0x40)
         # mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
         self.assertEqual(image[0x40:0x48], bytes.fromhex("b058" "66baf803" "ee" "f4"))
@@ -301,6 +332,21 @@ class PeCheckTest(unittest.TestCase):
 
 
 class CommandLineTest(unittest.TestCase):
+    def test_acpi_mode_refuses_to_overwrite_a_hardlinked_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "handoff.bin"
+            output_path = Path(directory) / "output.bin"
+            original = b"handoff sentinel"
+            input_path.write_bytes(original)
+            os.link(input_path, output_path)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--acpi-blob", input_path, "--out", output_path],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("ACPI output and handoff input must be distinct", result.stderr)
+            self.assertEqual(input_path.read_bytes(), original)
+
     def test_missing_tool_exits_nonzero_with_message(self) -> None:
         env = dict(os.environ)
         env["OD_FW_CLANG"] = "/nonexistent/clang"
@@ -317,13 +363,22 @@ class CommandLineTest(unittest.TestCase):
             self.assertFalse((Path(directory) / "fw.bin").exists())
 
 
-@unittest.skipUnless(toolchain_available(), "the firmware toolchain is not installed")
+def probe_toolchain_available() -> bool:
+    try:
+        BUILDER.resolve_probe_tools()
+    except BuildError:
+        return False
+    return True
+
+
+@unittest.skipUnless(toolchain_available() and probe_toolchain_available(), "requires both firmware targets")
 class FullBuildTest(unittest.TestCase):
     def test_build_produces_valid_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "firmware.bin"
+            target_dir = Path(directory) / "target"
             result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--out", str(out)],
+                [sys.executable, str(SCRIPT), "--target-dir", str(target_dir), "--out", str(out)],
                 capture_output=True,
                 text=True,
                 cwd=ROOT,
@@ -338,14 +393,9 @@ class FullBuildTest(unittest.TestCase):
             self.assertIn("size: 0x400000", result.stdout)
             # the entry stub starts with `cld` (0xFC), see firmware/uefi/src/start.S
             self.assertEqual(image[fields["entry_offset"]], 0xFC)
-
-
-def probe_toolchain_available() -> bool:
-    try:
-        BUILDER.resolve_probe_tools()
-    except BuildError:
-        return False
-    return True
+            driver = (target_dir / "runtime" / BUILDER.PROBE_TARGET / "release" / "od-runtime.efi").read_bytes()
+            self.assertEqual(BUILDER.inspect_pe(driver, 12)["subsystem"], 12)
+            self.assertIn(BUILDER.pack_fv({"runtime": driver}), image)
 
 
 @unittest.skipUnless(probe_toolchain_available(), "the x86_64-unknown-uefi target is not installed")
@@ -366,6 +416,36 @@ class EfiProbeBuildTest(unittest.TestCase):
             self.assertEqual(fields["subsystem"], 10)
             self.assertIn(f"sha256: {hashlib.sha256(pe).hexdigest()}", result.stdout)
             self.assertIn("Subsystem=10", result.stdout)
+
+
+@unittest.skipUnless(toolchain_available() and probe_toolchain_available(), "requires both firmware targets")
+class FirmwareVolumeBuildTest(unittest.TestCase):
+    def test_optional_test_apps_are_reproducible_pe_images_linked_into_the_rom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target_dir = Path(directory) / "target"
+            out = Path(directory) / "firmware-with-apps.bin"
+            for build_dir in (target_dir, target_dir.with_name("second-target")):
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--with-test-apps", "--target-dir", str(build_dir), "--out", str(out)],
+                    capture_output=True, text=True, cwd=ROOT, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if build_dir == target_dir:
+                    first_sha256 = hashlib.sha256(out.read_bytes()).hexdigest()
+                else:
+                    self.assertEqual(hashlib.sha256(out.read_bytes()).hexdigest(), first_sha256)
+            app_dir = target_dir / "test-apps" / BUILDER.PROBE_TARGET / "release"
+            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in BUILDER.TEST_APPS}
+            for name, pe in files.items():
+                with self.subTest(name=name):
+                    self.assertEqual(BUILDER.inspect_pe(pe)["subsystem"], 10)
+            driver = target_dir / "runtime" / BUILDER.PROBE_TARGET / "release" / "od-runtime.efi"
+            archive = BUILDER.pack_fv({"runtime": driver.read_bytes(), **files})
+            actual = target_dir / "fv" / hashlib.sha256(archive).hexdigest() / "archive.bin"
+            self.assertEqual(actual.read_bytes(), archive)
+            image = out.read_bytes()
+            BUILDER.validate_image(image)
+            self.assertEqual(image.count(archive), 1)
 
 
 if __name__ == "__main__":

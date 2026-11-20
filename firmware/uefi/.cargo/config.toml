@@ -3,4 +3,5 @@
 [target.x86_64-unknown-none]
 # The image is linked at a fixed address and has no relocations (FIRMWARE_BOOT.md, section 9:
 # the main image is flat, only the RT image is relocatable). The default target model is PIE.
-rustflags = ["-C", "relocation-model=static"]
+# The freestanding target does not support the SHA-NI backend's vector code.
+rustflags = ["-C", "relocation-model=static", "--cfg", 'sha2_backend="soft"']

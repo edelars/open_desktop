@@ -14,6 +14,12 @@ description = "Open Desktop own UEFI firmware (S7-01: build skeleton, not a firm
 [features]
 # Selects the direct Linux PCI NVMe manifest in the data-only ACPI carrier.
 linux-nvme-acpi = []
+handoff-acpi = []
+runtime-driver = []
+
+[dependencies]
+od-uefi-security = { path = "../../crates/od-uefi-security", features = ["protected-nvram"] }
+sha2 = { version = "=0.11.1", default-features = false }
 
 [lib]
 name = "od_firmware"
@@ -32,6 +38,14 @@ doc = false
 [[bin]]
 name = "od-acpi-blob"
 path = "src/acpi_blob_main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "od-runtime"
+path = "src/runtime_main.rs"
+required-features = ["runtime-driver"]
 test = false
 bench = false
 doc = false

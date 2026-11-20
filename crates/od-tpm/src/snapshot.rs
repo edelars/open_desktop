@@ -1,5 +1,8 @@
-//! The payload codec of the persistent-state snapshot `ODTPMSTA` version 3 (slice C1 of phase B,
-//! S7-23, introduced version 2; slice C3 raised it to 3). The header, the SHA-256 check and the
+//! The payload codec of `ODTPMSTA` versions 3 through 8. Version 4 adds the
+//! primary policies of Owner, Endorsement and Lockout. Version 5 adds `totalResetCount`.
+//! Version 6 adds the desired PCR allocation mask. Version 7 adds D-RTM establishment.
+//! Version 8 appends the remaining 32 octets of each persistent Primary Seed.
+//! The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
 //! **Sensitive data.** The payload holds the hierarchy seeds, the authorization values of the
@@ -10,7 +13,7 @@
 //! (two passes: length, then writing), so that no earlier, smaller copy is freed unwiped, wipes the
 //! buffer on drop and never prints it.
 //!
-//! **Not in the payload** (volatile by Part 3, clause 9.3.1 or not state): `platformAuth` (EmptyAuth
+//! **Not in the payload** (volatile by Part 3, clause 9.3.1 or not state): `platformPolicy`, `platformAuth` (EmptyAuth
 //! on every `Startup(CLEAR)`; a restored TPM is in the state after `_TPM_Init`, so `Startup` follows),
 //! the Null seed, the enables, PCR, sessions, transient objects, sequences, the state saved by
 //! `Shutdown(STATE)`, the DRBG, `Time`, the volatile DA timers.
@@ -28,6 +31,9 @@
 //! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16), attributes (u32; bits 7:4 are `TPM_NT`: ordinary, counter, bit field or extend), `authPolicy` (`lv8`), `authValue` (`lv8`), data (`lv16`) | variable |
 //! | NV counter maximum: the largest value any counter has had (u64, slice C3) | 8 |
 //! | persistent objects: count (u8, at most 16), then per object: handle (u32), hierarchy (u32), `TPMT_PUBLIC` (`lv16`), Qualified Name (`lv8`), marshaled `TPM2B_SENSITIVE` (`lv16`) | variable |
+//! | v4 onward: Owner, Endorsement, Lockout policy. Each is `hashAlg` (u16), then 32 octets for SHA-256. NULL has no digest. | 6–102 |
+//! | v5 onward: `totalResetCount` | 8 |
+//! | v6 onward: desired PCR bank mask (SHA-256 bit 0, SHA-384 bit 1) | 1 |
 //!
 //! `decode` rejects, with `StateError::BadField`, a field that is out of range or inconsistent
 //! (a length above its limit, a duplicate or foreign handle, a handle outside the range of its
@@ -45,18 +51,20 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle as h};
+use crate::crypto::DIGEST;
 use crate::da::DaPersistent;
 use crate::hash::AuthValue;
-use crate::hierarchy::HierarchyPersistent;
+use crate::hierarchy::{HierarchyPersistent, LEGACY_SEED_BYTES, PRIMARY_SEED_BYTES, PrimarySeed};
 use crate::marshal::{Reader, TpmtPublic, limits};
 use crate::nv::{MAX_NV_INDEX_SIZE, NvIndex, NvStore};
 use crate::object::{
     MAX_PERSISTENT, Object, PersistentObjects, name_of, sensitive_from_bytes, sensitive_to_bytes,
 };
+use crate::pcr::PcrAllocation;
 use crate::state::{Persistent, StateError};
 
-/// The most octets of a Qualified Name (`nameAlg` and a SHA-256 digest).
-const MAX_QN: usize = 2 + 32;
+/// The most octets of a Qualified Name (`nameAlg` and a SHA-512 digest).
+const MAX_QN: usize = 2 + 64;
 
 /// A payload writer. It runs twice: a counting pass that only sums the length, then a writing pass
 /// into a buffer of exactly that capacity, so the buffer never grows and no earlier, smaller copy of
@@ -183,9 +191,10 @@ pub(crate) fn encode(p: &Persistent, clock_ms: u64) -> Option<Zeroizing<Vec<u8>>
 }
 
 fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
-    e.raw(&p.platform_seed[..]);
-    e.raw(&p.owner_seed[..]);
-    e.raw(&p.endorsement_seed[..]);
+    let seeds = [&p.platform_seed, &p.owner_seed, &p.endorsement_seed];
+    for seed in seeds {
+        e.raw(&seed[..LEGACY_SEED_BYTES]);
+    }
     e.u64(clock_ms);
     e.u32(p.reset_count);
     e.u32(p.restart_count);
@@ -226,29 +235,43 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         e.lv16(&o.public.to_bytes());
         e.lv8(&o.qualified_name);
         let sensitive = o.sensitive.as_ref()?;
-        let bytes = sensitive_to_bytes(sensitive, o.public.type_alg()).ok()?;
+        let bytes = sensitive_to_bytes(sensitive, o.public.type_alg(), o.public.name_alg).ok()?;
         e.lv16(&bytes);
+    }
+    for policy in [&hp.owner_policy, &hp.endorsement_policy, &hp.lockout_policy] {
+        if let Some(digest) = policy {
+            e.u16(alg::SHA256);
+            e.raw(digest);
+        } else {
+            e.u16(alg::NULL);
+        }
+    }
+    e.u64(p.total_reset_count);
+    e.u8(p.pcr_allocation.bits());
+    e.u8(u8::from(p.established));
+    for seed in seeds {
+        e.raw(&seed[LEGACY_SEED_BYTES..]);
     }
     Some(())
 }
 
 /// Parses a payload into persistent state; the payload has been checked against its digest by the
 /// caller.
-pub(crate) fn decode(payload: &[u8]) -> Result<Persistent, StateError> {
-    decode_inner(payload).map_err(StateError::from)
+pub(crate) fn decode(payload: &[u8], version: u16) -> Result<Persistent, StateError> {
+    decode_inner(payload, version).map_err(StateError::from)
 }
 
-fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
+fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
     let mut c = Cur { buf: payload };
-    let seed = |c: &mut Cur<'_>| -> Result<Zeroizing<[u8; 32]>, Bad> {
-        let b = c.take(32).ok_or(Bad::Short)?;
-        let mut s = Zeroizing::new([0u8; 32]);
-        s.copy_from_slice(b);
+    let seed = |c: &mut Cur<'_>| -> Result<PrimarySeed, Bad> {
+        let b = c.take(LEGACY_SEED_BYTES).ok_or(Bad::Short)?;
+        let mut s = Zeroizing::new([0u8; PRIMARY_SEED_BYTES]);
+        s[..LEGACY_SEED_BYTES].copy_from_slice(b);
         Ok(s)
     };
-    let platform_seed = seed(&mut c)?;
-    let owner_seed = seed(&mut c)?;
-    let endorsement_seed = seed(&mut c)?;
+    let mut platform_seed = seed(&mut c)?;
+    let mut owner_seed = seed(&mut c)?;
+    let mut endorsement_seed = seed(&mut c)?;
     let clock_base_ms = c.u64().ok_or(Bad::Short)?;
     let reset_count = c.u32().ok_or(Bad::Short)?;
     let restart_count = c.u32().ok_or(Bad::Short)?;
@@ -267,10 +290,13 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
     if hflags & 0xF0 != 0 {
         return Err(Bad::Field);
     }
-    let hier = HierarchyPersistent {
+    let mut hier = HierarchyPersistent {
         owner_auth,
         endorsement_auth,
         lockout_auth,
+        owner_policy: None,
+        endorsement_policy: None,
+        lockout_policy: None,
         owner_auth_set: hflags & 1 != 0,
         endorsement_auth_set: hflags & 2 != 0,
         lockout_auth_set: hflags & 4 != 0,
@@ -332,7 +358,7 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
         let mut r = Reader::new(public_bytes);
         let public = TpmtPublic::unmarshal(&mut r).map_err(|_| Bad::Field)?;
         r.finish().map_err(|_| Bad::Field)?;
-        if public.name_alg != alg::SHA256 {
+        if !matches!(public.name_alg, alg::SHA256 | alg::SHA384 | alg::SHA512) {
             return Err(Bad::Field);
         }
         let sensitive = sensitive_from_bytes(&sensitive_bytes, &public).map_err(|_| Bad::Field)?;
@@ -348,6 +374,44 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
         ));
     }
     let objects = PersistentObjects::from_items(items).ok_or(Bad::Field)?;
+    if version >= 4 {
+        for policy in [
+            &mut hier.owner_policy,
+            &mut hier.endorsement_policy,
+            &mut hier.lockout_policy,
+        ] {
+            *policy = match c.u16().ok_or(Bad::Short)? {
+                alg::NULL => None,
+                alg::SHA256 => Some(
+                    c.take(DIGEST)
+                        .ok_or(Bad::Short)?
+                        .try_into()
+                        .map_err(|_| Bad::Short)?,
+                ),
+                _ => return Err(Bad::Field),
+            };
+        }
+    }
+    let total_reset_count = if version >= 5 {
+        c.u64().ok_or(Bad::Short)?
+    } else {
+        u64::from(reset_count)
+    };
+    if total_reset_count < u64::from(reset_count) {
+        return Err(Bad::Field);
+    }
+    let pcr_allocation = if version >= 6 {
+        PcrAllocation::from_bits(c.u8().ok_or(Bad::Short)?).ok_or(Bad::Field)?
+    } else {
+        PcrAllocation::default()
+    };
+    let established = version >= 7 && flag(c.u8().ok_or(Bad::Short)?)?;
+    if version >= 8 {
+        for seed in [&mut platform_seed, &mut owner_seed, &mut endorsement_seed] {
+            let tail = &mut seed[LEGACY_SEED_BYTES..];
+            tail.copy_from_slice(c.take(tail.len()).ok_or(Bad::Short)?);
+        }
+    }
     if !c.buf.is_empty() {
         return Err(Bad::Field);
     }
@@ -358,6 +422,9 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
         clock_base_ms,
         reset_count,
         restart_count,
+        total_reset_count,
+        pcr_allocation,
+        established,
         orderly,
         hier,
         da,

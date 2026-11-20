@@ -15,13 +15,15 @@ publish.workspace = true
 # docs/policies/DEPENDENCIES.md).
 # `der`, `spki`, `sha1` of the ADR are not needed by slices B and C1 and are not added.
 [dependencies]
-sha2 = { version = "=0.11.1", default-features = false }
+# Wipe the retained HMAC inner and outer SHA-256 state when a sequence ends.
+sha2 = { version = "=0.11.1", default-features = false, features = ["zeroize"] }
 hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
-rsa = { version = "=0.10.0-rc.22", default-features = false, features = ["pkcs1v15", "hazmat"] }
+rsa = { version = "=0.10.0", default-features = false, features = ["pkcs1v15", "hazmat"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
-aes = { version = "=0.9.4", default-features = false }
+aes = { version = "=0.9.4", default-features = false, features = ["zeroize"] }
 cfb-mode = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+ml-kem = { version = "=0.3.3", default-features = false, features = ["zeroize", "hazmat"] }
 
 [lints]
 workspace = true

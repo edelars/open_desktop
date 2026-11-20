@@ -3045,6 +3045,10 @@ pub struct PagedCpl0PioU8V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0ProbeV1;
 
+/// Explicit opt-in marker for firmware boot's bounded handoff instruction additions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0FirmwareBootV1;
+
 /// Explicit opt-in marker for the paged CPL0 probe with bounded CR3 writes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr3ProbeV1;
@@ -3173,8 +3177,12 @@ pub enum PagedProbeExit<E> {
     Halted,
     Shutdown,
     TranslationContextChange(TranslationContextChange),
-    Unsupported { opcode: u8 },
+    Unsupported {
+        opcode: u8,
+    },
     Fault(ArchitecturalFault),
+    /// A firmware INT3 could not enter its guest handler.
+    FirmwareBreakpointDelivery(crate::interrupt::Cpl0Int3Delivery),
     Backend(MemoryError),
     PortIo(E),
     Rejected(PagedProbeRejection),
@@ -18969,6 +18977,14 @@ impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     fn write(&mut self, a: u64, c: AccessContext, s: &[u8]) -> Result<(), MemoryError> {
         self.inner.write(a, c, s)
     }
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+    ) -> Result<u64, MemoryError> {
+        self.inner.read_for_write_integer(address, context, size)
+    }
     fn atomic_exchange_integer(
         &mut self,
         a: u64,
@@ -19108,6 +19124,16 @@ fn commit_mov_cr3(
     rflags_defined: &mut u64,
 ) -> Result<TranslationContextChange, ArchitecturalFault> {
     let old_cr3 = state.cr3.expect("MOV CR3 profile admission requires CR3");
+    commit_mov_cr3_with_root(state, old_cr3, src, next_rip, rflags_defined)
+}
+
+fn commit_mov_cr3_with_root(
+    state: &mut LongModeState,
+    old_cr3: u64,
+    src: Register,
+    next_rip: u64,
+    rflags_defined: &mut u64,
+) -> Result<TranslationContextChange, ArchitecturalFault> {
     let new_cr3 = state.gpr[src as usize];
     if new_cr3 & !((1u64 << 36) - 1) != 0 {
         return Err(ArchitecturalFault {
@@ -19126,10 +19152,13 @@ fn commit_mov_cr0_wp(
     state: &mut LongModeState,
     next_rip: u64,
     rflags_defined: &mut u64,
+    firmware: bool,
 ) -> Result<TranslationContextChange, ()> {
     let old_cr0 = state.cr0.ok_or(())?;
     let new_cr0 = state.gpr[Register::Rax as usize];
-    if new_cr0 != Cr0Profile::BASE && new_cr0 != (Cr0Profile::BASE & !(1 << 16)) {
+    if (firmware && (new_cr0 ^ old_cr0) & !(1 << 16) != 0)
+        || (!firmware && !Cr0Profile::MovCr3WpLong64V1.accepts(new_cr0))
+    {
         return Err(());
     }
     state.cr0 = Some(new_cr0);
@@ -19269,6 +19298,136 @@ pub fn step_paged_probe<P: crate::PortIo>(
         initial_rflags_defined,
         None,
     )
+}
+
+/// Execute one instruction from the firmware extension of the paged probe.
+/// Machine-owned translation is available with no control-register writes.
+pub fn step_paged_firmware_probe<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Run one firmware instruction with the root used for the instruction's
+/// current fetch and data accesses. The machine consumes the returned
+/// translation-context change before executing the next instruction.
+pub fn step_paged_firmware_probe_with_cr3<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+        None,
+        None,
+    )
+}
+
+/// Run one firmware instruction with the active page-table root and a
+/// time source. A source failure exits through the backend without retiring.
+pub fn step_paged_firmware_probe_with_cr3_and_rdtsc<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+    source: &mut dyn FnMut() -> Result<u64, MemoryError>,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+        None,
+        Some(source),
+    )
+}
+
+/// Execute one firmware instruction using the vCPU's persistent FP context.
+pub fn step_paged_firmware_probe_with_guest_fp<P: crate::PortIo>(
+    _profile: PagedCpl0FirmwareBootV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: u64,
+    fp: &mut GuestFpState,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
+) -> PagedProbeResult<P::Error> {
+    step_paged_firmware_probe_with_context(
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(active_cr3),
+        Some(fp),
+        rdtsc,
+    )
+}
+
+fn step_paged_firmware_probe_with_context<P: crate::PortIo>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    active_cr3: Option<u64>,
+    fp: Option<&mut GuestFpState>,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
+) -> PagedProbeResult<P::Error> {
+    let old_shadow = state.sti_shadow;
+    let result = step_paged_probe_mode(
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        0,
+        true,
+        active_cr3,
+        fp,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        rdtsc,
+    );
+    if result.instructions_executed != 0 && old_shadow == Some(crate::StiShadow::Blocking) {
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+    }
+    result
 }
 
 /// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
@@ -19946,6 +20105,49 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     initial_rflags_defined: u64,
     rdtsc: Option<&mut dyn FnMut() -> u64>,
 ) -> PagedProbeResult<P::Error> {
+    let mut source = rdtsc.map(|source| move || Ok(source()));
+    step_paged_probe_mode(
+        user_mov,
+        user_load_only,
+        allow_stack_forms,
+        allow_cr3,
+        allow_cr0_wp,
+        cr0_mov_only,
+        allow_mov_cr0,
+        efer,
+        false,
+        None,
+        None,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        source
+            .as_mut()
+            .map(|source| source as &mut dyn FnMut() -> Result<u64, MemoryError>),
+    )
+}
+
+fn step_paged_probe_mode<P: crate::PortIo>(
+    user_mov: bool,
+    user_load_only: bool,
+    allow_stack_forms: bool,
+    allow_cr3: bool,
+    allow_cr0_wp: bool,
+    cr0_mov_only: bool,
+    allow_mov_cr0: bool,
+    efer: u64,
+    firmware_boot_profile: bool,
+    firmware_boot_cr3: Option<u64>,
+    firmware_fp: Option<&mut GuestFpState>,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    rdtsc: Option<&mut dyn FnMut() -> Result<u64, MemoryError>>,
+) -> PagedProbeResult<P::Error> {
     let result = |exit, instructions_executed| PagedProbeResult {
         exit,
         instructions_executed,
@@ -19978,7 +20180,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
-    if state.cr3.is_some() != allow_cr3 && !allow_cr0_wp {
+    if let Some(active_cr3) = firmware_boot_cr3 {
+        if active_cr3 >> 36 != 0 || state.cr3.is_some_and(|cpu_cr3| cpu_cr3 != active_cr3) {
+            return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+        }
+    } else if state.cr3.is_some() != allow_cr3 && !allow_cr0_wp {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
     }
     if state.cr0.is_none() || state.cr4.is_none() {
@@ -20002,12 +20208,16 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 value == Cr0Profile::BASE || value == (Cr0Profile::BASE & !(1 << 16))
             })
     } else {
-        state
-            .cr0
-            .is_some_and(|value| Cr0Profile::PagedMovLong64V1.accepts(value))
-            && state
-                .cr4
-                .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
+        state.cr0.is_some_and(|value| {
+            let wp = if firmware_boot_cr3.is_some() {
+                1 << 16
+            } else {
+                0
+            };
+            Cr0Profile::PagedMovLong64V1.accepts(value | wp)
+        }) && state
+            .cr4
+            .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
     };
     if !control_registers_admitted {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
@@ -20024,7 +20234,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if state.sti_shadow.is_none() {
         return reject(PagedProbeRejection::StiShadowMissing);
     }
-    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+    if !firmware_boot_profile && state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
     if user_mov && state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
@@ -20177,25 +20387,1505 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
-        // S7-04: admit only the firmware helper's operand-size-prefixed NOP
-        // (`66 90`) in the base paged profile. This is intentionally local to
-        // this profile and does not widen generic/JIT NOP admission.
-        Operation::Nop
-            if base_profile
-                && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0x90
-                && instruction.length == 2
-                && instruction.operand_size == OperandSize::Word
+        Operation::Cpuid if firmware_boot_profile => {
+            execute_cpuid_leaf(state, CpuidProfile::DiagnosticV1, next_rip);
+        }
+        Operation::Wbinvd if firmware_boot_profile => {
+            // The interpreter executes in order and has no guest data cache.
+            state.rip = next_rip;
+        }
+        // The FAT BPB sector-size check emits REP BSF on a nonzero dword.
+        Operation::BitScan {
+            kind: BitScanKind::Forward,
+            dst,
+            src: Operand::Register(src),
+        } if firmware_boot_profile
+            && instruction.operand_size == OperandSize::Dword
+            && instruction.prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            commit_bit_scan(state, BitScanKind::Forward, dst, state.read(src));
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: the firmware can install descriptor tables for the first time.
+        Operation::LoadGdtr { source } | Operation::LoadIdtr { source }
+            if firmware_boot_profile
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let (base, limit) =
+                match read_pseudo_descriptor_qwords(state, memory, context, next_rip, source) {
+                    Ok(descriptor) => descriptor,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
+                    Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                };
+            if matches!(instruction.operation, Operation::LoadGdtr { .. }) {
+                state.gdtr = Some(crate::state::Gdtr { base, limit });
+            } else {
+                state.idtr = Some(crate::state::Idtr { base, limit });
+            }
+            state.rip = next_rip;
+        }
+        Operation::WriteCr4
+            if firmware_boot_profile
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let value = state.gpr[Register::Rax as usize];
+            if value & Cr4Profile::BASE == 0 {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            }
+            if !Cr4Profile::FpInitLong64V1.accepts(value) {
+                return unsupported();
+            }
+            state.cr4 = Some(value);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
+            };
+        }
+        Operation::Fxsave64RaxDisp8(area) | Operation::Fxrstor64RbxDisp8(area)
+            if firmware_boot_profile
+                && instruction.length == 5
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xae
+                && instruction.address_size == OperandSize::Qword
                 && instruction.prefixes
                     == (Prefixes {
-                        operand_override: true,
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                && area.index.is_none()
+                && area.displacement == 0x40
+                && area.size == OperandSize::Qword
+                && matches!(
+                    (instruction.operation, area.base),
+                    (
+                        Operation::Fxsave64RaxDisp8(_),
+                        AddressBase::Register(Register::Rax)
+                    ) | (
+                        Operation::Fxrstor64RbxDisp8(_),
+                        AddressBase::Register(Register::Rbx)
+                    )
+                ) =>
+        {
+            if state.cr4.unwrap_or_default() & (1 << 9) == 0 {
+                return unsupported();
+            }
+            if state.cr0.unwrap_or_default() & 0xc != 0 {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 7,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            }
+            let address = area.effective_address(state, next_rip);
+            let Some(GuestFpState { x87, sse }) = firmware_fp else {
+                return unsupported();
+            };
+            let operation = if matches!(instruction.operation, Operation::Fxsave64RaxDisp8(_)) {
+                fxsave(
+                    x87,
+                    sse,
+                    memory,
+                    context,
+                    address,
+                    FxsaveLayout::Long64,
+                    true,
+                )
+            } else {
+                read_fxrstor64_narrow(memory, context, address)
+                    .and_then(|image| restore_fxrstor64_image(x87, sse, &image))
+            };
+            if let Err(error) = operation {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::Int3
+            if firmware_boot_profile
+                && state.idtr.is_some()
+                && instruction.length == 1
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            use crate::interrupt::{Cpl0Int3Delivery, deliver_firmware_int3};
+            return match deliver_firmware_int3(state, memory, next_rip, context) {
+                Cpl0Int3Delivery::Delivered { .. } => result(PagedProbeExit::Retired, 1),
+                failure => result(PagedProbeExit::FirmwareBreakpointDelivery(failure), 0),
+            };
+        }
+        Operation::FarReturn
+            if firmware_boot_profile
+                && instruction.length == 2
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    }) =>
+        {
+            match far_return_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+        }
+        operation @ (Operation::LoadNullDsSelector
+        | Operation::LoadNullEsSelector
+        | Operation::LoadNullSsSelector
+        | Operation::LoadFsSelector
+        | Operation::LoadGsSelector)
+            if firmware_boot_profile
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let register = match operation {
+                Operation::LoadNullDsSelector => Cpl0Sreg::Ds,
+                Operation::LoadNullEsSelector => Cpl0Sreg::Es,
+                Operation::LoadNullSsSelector => Cpl0Sreg::Ss,
+                Operation::LoadFsSelector => Cpl0Sreg::Fs,
+                Operation::LoadGsSelector => Cpl0Sreg::Gs,
+                _ => unreachable!("matched a segment load"),
+            };
+            let selector = state.gpr[Register::Rax as usize] as u16;
+            match load_sreg_cpl0(state, memory, context, register, selector, true) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+            if register == Cpl0Sreg::Ss {
+                state.sti_shadow = Some(crate::StiShadow::Blocking);
+            }
+            state.rip = next_rip;
+        }
+        // S7-04: ordinary register arithmetic in the firmware parser uses
+        // the decoder's operand width and sign-extended immediate.
+        operation @ (Operation::Arithmetic {
+            kind:
+                ArithmeticKind::Add
+                | ArithmeticKind::Adc
+                | ArithmeticKind::Sbb
+                | ArithmeticKind::Sub
+                | ArithmeticKind::Cmp
+                | ArithmeticKind::Inc
+                | ArithmeticKind::Dec
+                | ArithmeticKind::Neg,
+            dst: Operand::Register(destination),
+            src: source @ (Operand::Register(_) | Operand::Immediate(_)),
+        }
+        | Operation::Arithmetic {
+            kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Sbb,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Memory(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Register(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Xor | LogicKind::Or | LogicKind::And,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Memory(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::And | LogicKind::Or | LogicKind::Not | LogicKind::Xor,
+            dst: Operand::Register(destination),
+            src: source @ Operand::Immediate(_),
+        }
+        | Operation::Logic {
+            kind: LogicKind::Test,
+            dst: Operand::Register(destination),
+            src: source @ (Operand::Register(_) | Operand::Immediate(_)),
+        }) if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && match operation {
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Inc | ArithmeticKind::Dec,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (
+                            0xff,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
+                    ) || (instruction.opcode.byte == 0xfe
+                        && instruction.operand_size == OperandSize::Byte
+                        && match operation {
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Inc,
+                                ..
+                            } => true,
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Dec,
+                                ..
+                            } => match instruction.prefixes.rex {
+                                None => {
+                                    destination
+                                        == RegisterView::low(Register::Rax, OperandSize::Byte)
+                                }
+                                Some(0x41) => {
+                                    destination
+                                        == RegisterView::low(Register::R9, OperandSize::Byte)
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        })
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Adc,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size, source),
+                        (
+                            0x11 | 0x13,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Register(_)
+                        ) | (
+                            0x83,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Immediate(_)
+                        ) | (0x80, OperandSize::Byte, Operand::Immediate(_))
+                    )
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Sbb,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size, source),
+                        (
+                            0x83,
+                            OperandSize::Dword | OperandSize::Qword,
+                            Operand::Immediate(_)
+                        ) | (0x19, OperandSize::Qword, Operand::Register(_))
+                            | (0x1b, OperandSize::Qword, Operand::Memory(_))
+                    ) || (instruction.opcode.byte == 0x19
+                        && instruction.operand_size == OperandSize::Dword
+                        && source == Operand::Register(destination))
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Neg,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0xf6, OperandSize::Byte) | (0xf7, OperandSize::Dword | OperandSize::Qword)
+                    )
+                }
+                // The console masks UTF-8 bytes. Variable services encode
+                // Boolean values and protected key discriminants.
+                Operation::Logic {
+                    kind,
+                    dst: Operand::Register(destination),
+                    src: Operand::Immediate(immediate),
+                } if instruction.operand_size == OperandSize::Byte
+                    && instruction.prefixes == Prefixes::default()
+                    && match (kind, instruction.opcode.byte, instruction.length, immediate) {
+                        (LogicKind::And, 0x24, 2, 0x01 | 0x0f | 0x1f | 0x3f)
+                        | (LogicKind::Or, 0x0c, 2, 0x01..=0x05 | 0x80 | 0xc0) => {
+                            destination == RegisterView::low(Register::Rax, OperandSize::Byte)
+                        }
+                        (LogicKind::Or, 0x80, 3, 0x80) => {
+                            destination == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                        }
+                        (LogicKind::Or, 0x80, 3, 0xe0) => {
+                            destination == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                        }
+                        _ => false,
+                    } =>
+                {
+                    true
+                }
+                Operation::Logic {
+                    kind: LogicKind::And,
+                    src: Operand::Memory(_),
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x22, OperandSize::Byte) | (0x23, OperandSize::Dword | OperandSize::Qword)
+                ),
+                Operation::Logic {
+                    kind: LogicKind::And,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (
+                            0x21 | 0x23 | 0x25 | 0x81 | 0x83,
+                            OperandSize::Dword | OperandSize::Qword
+                        ) | (0x20 | 0x22 | 0x24 | 0x80, OperandSize::Byte)
+                    )
+                }
+                Operation::Logic {
+                    kind: LogicKind::Test,
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x84 | 0xa8 | 0xf6, OperandSize::Byte)
+                            | (0x85 | 0xa9, OperandSize::Dword | OperandSize::Qword)
+                            | (0xf7, OperandSize::Dword)
+                    ) || (instruction.opcode.byte == 0x85
+                        && instruction.operand_size == OperandSize::Word
+                        && source == Operand::Register(destination))
+                        || (instruction.opcode.byte == 0xf7
+                            && instruction.length == 7
+                            && instruction.prefixes.rex == Some(0x48)
+                            && destination == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                            && source == Operand::Immediate(!0x11))
+                }
+                Operation::Logic {
+                    kind: LogicKind::Or,
+                    src: Operand::Memory(_),
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x0a, OperandSize::Byte)
+                        | (
+                            0x0b,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
+                ),
+                Operation::Logic {
+                    kind: LogicKind::Or,
+                    ..
+                } => {
+                    // File metadata and path parsing combine word comparisons.
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x08 | 0x0a | 0x80, OperandSize::Byte)
+                            | (
+                                0x09 | 0x0b | 0x0d | 0x81 | 0x83,
+                                OperandSize::Dword | OperandSize::Qword
+                            )
+                    ) || (instruction.opcode.byte == 0x09
+                        && instruction.operand_size == OperandSize::Word
+                        && match (instruction.prefixes.rex, source) {
+                            (Some(0x44), Operand::Register(src)) => {
+                                destination == RegisterView::low(Register::Rsi, OperandSize::Word)
+                                    && (src == RegisterView::low(Register::R11, OperandSize::Word)
+                                        || src
+                                            == RegisterView::low(Register::R10, OperandSize::Word))
+                            }
+                            (Some(0x45), Operand::Register(src)) => {
+                                (destination == RegisterView::low(Register::R15, OperandSize::Word)
+                                    && src == RegisterView::low(Register::R14, OperandSize::Word))
+                                    || (instruction.length == 4
+                                        && destination
+                                            == RegisterView::low(Register::R12, OperandSize::Word)
+                                        && src
+                                            == RegisterView::low(Register::R15, OperandSize::Word))
+                            }
+                            _ => false,
+                        })
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Add,
+                    src: Operand::Memory(_),
+                    ..
+                } => {
+                    instruction.opcode.byte == 0x02 && instruction.operand_size == OperandSize::Byte
+                }
+                Operation::Arithmetic {
+                    kind: ArithmeticKind::Sub,
+                    src: Operand::Memory(_),
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x2a, OperandSize::Byte) | (0x2b, OperandSize::Dword | OperandSize::Qword)
+                ),
+                Operation::Arithmetic { .. } => {
+                    matches!(
+                        instruction.operand_size,
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                    ) || matches!(
+                        (operation, instruction.opcode.byte, instruction.operand_size),
+                        (
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Add,
+                                ..
+                            },
+                            0x00 | 0x04 | 0x80,
+                            OperandSize::Byte
+                        ) | (
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Sub,
+                                ..
+                            },
+                            0x28,
+                            OperandSize::Byte
+                        ) | (
+                            Operation::Arithmetic {
+                                kind: ArithmeticKind::Cmp,
+                                ..
+                            },
+                            0x38 | 0x3c | 0x80,
+                            OperandSize::Byte
+                        )
+                    )
+                }
+                Operation::Logic {
+                    kind: LogicKind::Not,
+                    ..
+                } => matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0xf6, OperandSize::Byte) | (0xf7, OperandSize::Dword | OperandSize::Qword)
+                ),
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    src: Operand::Memory(memory),
+                    ..
+                } => match (instruction.opcode.byte, instruction.operand_size) {
+                    (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword) => true,
+                    (0x33, OperandSize::Qword) => {
+                        // The FS and TCG2 probes compare fixed-size fields. The firmware
+                        // SHA-384 compressor also XORs spilled message-schedule words.
+                        memory.address_size == OperandSize::Qword
+                            && memory.index.is_none()
+                            && memory.scale == 1
+                            && match (instruction.prefixes.rex, memory.base) {
+                                (Some(0x48), AddressBase::Register(Register::Rsp)) => {
+                                    (destination
+                                        == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                                        && matches!(
+                                            memory.displacement,
+                                            0x32 | 0x33 | 0x3a | 0x54 | 0x70
+                                        ))
+                                        || (destination
+                                            == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                                            && memory.displacement == 0x32)
+                                        || (destination
+                                            == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                                            && matches!(memory.displacement, 0xce | 0xee))
+                                        || (destination
+                                            == RegisterView::low(Register::Rax, OperandSize::Qword)
+                                            && matches!(memory.displacement, 0x98 | 0x100))
+                                }
+                                (Some(0x4c), AddressBase::Register(Register::Rsp)) => {
+                                    (memory.displacement == 0x108
+                                        && destination
+                                            == RegisterView::low(Register::R12, OperandSize::Qword))
+                                        || (memory.displacement == 0x128
+                                            && destination
+                                                == RegisterView::low(
+                                                    Register::R8,
+                                                    OperandSize::Qword,
+                                                ))
+                                }
+                                (Some(0x49), AddressBase::Register(Register::R14)) => {
+                                    (destination
+                                        == RegisterView::low(Register::Rax, OperandSize::Qword)
+                                        && matches!(memory.displacement, 0x28 | 0x34))
+                                        || (destination
+                                            == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                                            && memory.displacement == 0x20)
+                                }
+                                _ => false,
+                            }
+                    }
+                    _ => false,
+                },
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    src: Operand::Immediate(_),
+                    ..
+                } => {
+                    matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x34 | 0x80, OperandSize::Byte)
+                            | (0x35 | 0x81 | 0x83, OperandSize::Dword)
+                            | (0x35 | 0x81 | 0x83, OperandSize::Qword)
+                    )
+                }
+                Operation::Logic {
+                    kind: LogicKind::Xor,
+                    ..
+                } => {
+                    matches!(
+                        instruction.operand_size,
+                        OperandSize::Dword | OperandSize::Qword
+                    ) || matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x30 | 0x32, OperandSize::Byte)
+                    )
+                }
+                _ => false,
+            }
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    operand_override: instruction.operand_size == OperandSize::Word,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let rhs = match source {
+                Operand::Register(register) => state.read(register),
+                Operand::Immediate(value) => value,
+                Operand::Memory(_) => {
+                    match read_operand(state, memory, context, next_rip, source) {
+                        Ok(value) => value,
+                        Err(MemoryError::Architectural(fault)) => {
+                            return result(PagedProbeExit::Fault(fault), 0);
+                        }
+                        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                    }
+                }
+            };
+            let lhs = state.read(destination);
+            let size = instruction.operand_size;
+            let (value, flags, write_destination) = match operation {
+                Operation::Arithmetic { kind, .. } => {
+                    let (value, flags) = arithmetic_result(size, kind, lhs, rhs, state.rflags);
+                    (value, flags, kind != ArithmeticKind::Cmp)
+                }
+                Operation::Logic { kind, .. } => {
+                    let (value, flags) = logic_result(size, kind, lhs, rhs, state.rflags);
+                    (value, flags, kind != LogicKind::Test)
+                }
+                _ => unreachable!("matched a firmware ALU operation"),
+            };
+            if write_destination {
+                state.write(destination, value);
+            }
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // Firmware also uses fixed multiplies for memory descriptors and FAT timestamps.
+        operation @ (Operation::Imul {
+            dst: destination,
+            src: source @ (Operand::Register(_) | Operand::Memory(_)),
+        }
+        | Operation::ImulImmediate {
+            dst: destination,
+            src: source @ Operand::Register(_),
+            ..
+        }) if firmware_boot_profile
+            && matches!(
+                (instruction.opcode.map, instruction.opcode.byte, operation),
+                (OpcodeMap::Escape0f, 0xaf, Operation::Imul { .. })
+                    | (
+                        OpcodeMap::Primary,
+                        0x69 | 0x6b,
+                        Operation::ImulImmediate { .. }
+                    )
+            )
+            && (instruction.operand_size == OperandSize::Qword
+                || (instruction.operand_size == OperandSize::Dword
+                    && (matches!(
+                        operation,
+                        Operation::Imul {
+                            src: Operand::Register(_),
+                            ..
+                        } | Operation::ImulImmediate {
+                            immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29 | 0xc350,
+                            ..
+                        }
+                    ) || (instruction.opcode.byte == 0x69
+                        && instruction.length == 6
+                        && instruction.prefixes.rex.is_none()
+                        && match operation {
+                            Operation::ImulImmediate {
+                                immediate: 0xcccd, ..
+                            } => {
+                                source
+                                    == Operand::Register(RegisterView::low(
+                                        Register::Rcx,
+                                        OperandSize::Dword,
+                                    ))
+                                    && (destination
+                                        == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                                        || destination
+                                            == RegisterView::low(Register::Rax, OperandSize::Dword))
+                            }
+                            Operation::ImulImmediate {
+                                immediate: 0x0098_9680,
+                                ..
+                            } => {
+                                let eax = RegisterView::low(Register::Rax, OperandSize::Dword);
+                                source == Operand::Register(eax) && destination == eax
+                            }
+                            _ => false,
+                        }))))
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let source = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let (lhs, rhs) = match operation {
+                Operation::ImulImmediate { immediate, .. } => (source, immediate),
+                _ => (state.read(destination), source),
+            };
+            let (value, flags) =
+                multiply_truncated(instruction.operand_size, lhs, rhs, state.rflags);
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // Timer conversion combines the halves of 128-bit products.
+        Operation::Shift {
+            kind: kind @ (ShiftKind::Shld | ShiftKind::Shrd),
+            dst: Operand::Register(destination),
+            source: Some(Operand::Register(source)),
+            count: Operand::Immediate(immediate),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && matches!(instruction.opcode.byte, 0xa4 | 0xac)
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let raw_count = immediate as u8;
+            let (value, flags) = shift_result(
+                OperandSize::Qword,
+                kind,
+                state.read(destination),
+                state.read(source),
+                shift_count(kind, OperandSize::Qword, raw_count),
+                raw_count & 0x3f,
+                state.rflags,
+            );
+            state.write(destination, value);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: page indices use shifts, and the startup diagnostic rotates hex digits.
+        Operation::Shift {
+            kind:
+                kind @ (ShiftKind::Shl
+                | ShiftKind::Shr
+                | ShiftKind::Sar
+                | ShiftKind::Rol
+                | ShiftKind::Ror),
+            dst: destination @ (Operand::Register(_) | Operand::Memory(_)),
+            source: None,
+            count: count_source @ (Operand::Immediate(_) | Operand::Register(_)),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Byte | OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+            )
+            && match (destination, kind, instruction.opcode.byte) {
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr, 0xc1 | 0xd1) => matches!(
+                    instruction.operand_size,
+                    OperandSize::Dword | OperandSize::Qword
+                ),
+                (Operand::Register(register), ShiftKind::Shl, 0xd2) => {
+                    // TPM log replay marks a PCR using SHL AL,CL.
+                    instruction.length == 2
+                        && instruction.prefixes == Prefixes::default()
+                        && register == RegisterView::low(Register::Rax, OperandSize::Byte)
+                        && count_source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Byte,
+                            ))
+                }
+                (Operand::Register(register), ShiftKind::Shr, 0xd0) => {
+                    instruction.operand_size == OperandSize::Byte
+                        && count_source == Operand::Immediate(1)
+                        && match (instruction.length, instruction.prefixes.rex) {
+                            (2, None) => {
+                                register == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                            }
+                            (3, Some(0x40)) => {
+                                register == RegisterView::low(Register::Rdi, OperandSize::Byte)
+                            }
+                            (3, Some(0x41)) => {
+                                register == RegisterView::low(Register::R8, OperandSize::Byte)
+                            }
+                            _ => false,
+                        }
+                }
+                (Operand::Register(register), ShiftKind::Shl | ShiftKind::Shr, 0xd3) => {
+                    (matches!(
+                        (kind, instruction.operand_size),
+                        (ShiftKind::Shl, OperandSize::Dword) | (ShiftKind::Shr, OperandSize::Qword)
+                    ) || (kind == ShiftKind::Shr
+                        && register == RegisterView::low(Register::R9, OperandSize::Dword)
+                        && instruction.prefixes.rex == Some(0x41)))
+                        && count_source
+                            == Operand::Register(RegisterView::low(
+                                Register::Rcx,
+                                OperandSize::Byte,
+                            ))
+                }
+                (Operand::Register(_), ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar, 0xc0) => {
+                    instruction.operand_size == OperandSize::Byte
+                }
+                (Operand::Register(_), ShiftKind::Rol | ShiftKind::Ror, 0xc1) => {
+                    matches!(count_source, Operand::Immediate(_))
+                        && (instruction.operand_size != OperandSize::Word || kind == ShiftKind::Ror)
+                }
+                (Operand::Register(_), ShiftKind::Ror, 0xd1) => {
+                    // The firmware SHA-384 compression rotates qword registers by one bit.
+                    instruction.operand_size == OperandSize::Qword
+                        && count_source == Operand::Immediate(1)
+                }
+                (Operand::Memory(_), ShiftKind::Shr, 0xc1) => {
+                    instruction.operand_size == OperandSize::Qword
+                        && instruction.address_size == OperandSize::Qword
+                }
+                (Operand::Memory(operand), ShiftKind::Shr, 0xd1) => {
+                    // FilePath preparation converts its scratch length from bytes to CHAR16 units.
+                    instruction.operand_size == OperandSize::Qword
+                        && instruction.address_size == OperandSize::Qword
+                        && instruction.prefixes.rex == Some(0x48)
+                        && operand.base == AddressBase::Register(Register::Rsp)
+                        && operand.index.is_none()
+                        && operand.scale == 1
+                        && (operand.displacement == 0x78
+                            || matches!(
+                                (instruction.length, operand.displacement),
+                                (5, 0x68) | (8, 0xa0 | 0xa8)
+                            ))
+                }
+                _ => false,
+            }
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    operand_override: instruction.operand_size == OperandSize::Word,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let raw_count = match count_source {
+                Operand::Immediate(immediate) => immediate as u8,
+                Operand::Register(register) => state.read(register) as u8,
+                _ => unreachable!("firmware shift count is immediate or CL"),
+            };
+            let size = instruction.operand_size;
+            let count = shift_count(kind, size, raw_count);
+            let mask = if size == OperandSize::Qword {
+                0x3f
+            } else {
+                0x1f
+            };
+            let shift =
+                |lhs| shift_result(size, kind, lhs, 0, count, raw_count & mask, state.rflags);
+            let flags = match destination {
+                Operand::Register(register) => {
+                    let (value, flags) = shift(state.read(register));
+                    state.write(register, value);
+                    flags
+                }
+                Operand::Memory(operand) => {
+                    match update_memory_operand(state, memory, context, next_rip, operand, shift) {
+                        Ok(flags) => flags,
+                        Err(MemoryError::Architectural(fault)) => {
+                            return result(PagedProbeExit::Fault(fault), 0);
+                        }
+                        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+                    }
+                }
+                _ => unreachable!("shift destination is a register or memory"),
+            };
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction
+                    .flag_effects_for_count(raw_count)
+                    .apply(initial_rflags_defined),
+            };
+        }
+        // Firmware tests stack spills and dword display status registers in place.
+        Operation::Logic {
+            kind: LogicKind::Test,
+            dst: destination @ Operand::Memory(operand),
+            src: source @ (Operand::Immediate(_) | Operand::Register(_)),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && (matches!(
+                (instruction.opcode.byte, instruction.operand_size, source),
+                (0xf6, OperandSize::Byte, Operand::Immediate(_))
+                    | (0xf7, OperandSize::Dword, Operand::Immediate(_))
+                    | (
+                        0x85,
+                        OperandSize::Dword | OperandSize::Qword,
+                        Operand::Register(_)
+                    )
+            ) || (instruction.opcode.byte == 0x84
+                && instruction.operand_size == OperandSize::Byte
+                && instruction.prefixes.rex.is_none()
+                && source
+                    == Operand::Register(RegisterView::low(Register::Rax, OperandSize::Byte))
+                && operand.base == AddressBase::Register(Register::Rsp)
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0x17c))
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let value = match read_operand(state, memory, context, next_rip, destination) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let mask = match source {
+                Operand::Immediate(value) => value,
+                Operand::Register(register) => state.read(register),
+                _ => unreachable!("matched a firmware TEST source"),
+            };
+            state.rflags = logic_result(
+                instruction.operand_size,
+                LogicKind::Test,
+                value,
+                mask,
+                state.rflags,
+            )
+            .1;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        Operation::Mul {
+            signed: false,
+            operand: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf7
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let (low, high, flags) = multiply_implicit(
+                OperandSize::Qword,
+                false,
+                state.read(source),
+                state.gpr[Register::Rax as usize],
+                state.rflags,
+            );
+            write_implicit_product(state, OperandSize::Qword, low, high);
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // The periodic timer uses the remainder to keep its original phase.
+        Operation::Divide {
+            signed: false,
+            divisor: Operand::Register(divisor),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0xf7
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let size = instruction.operand_size;
+            let Some((quotient, remainder)) = divide_implicit(
+                size,
+                false,
+                state.read(divisor),
+                state.gpr[Register::Rax as usize],
+                state.gpr[Register::Rdx as usize],
+            ) else {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 0,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            };
+            write_implicit_division(state, size, quotient, remainder);
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // These memory destinations have write intent even on a fault before the read.
+        Operation::Arithmetic {
+            kind:
+                kind @ (ArithmeticKind::Add
+                | ArithmeticKind::Adc
+                | ArithmeticKind::Sub
+                | ArithmeticKind::Inc
+                | ArithmeticKind::Dec),
+            dst: Operand::Memory(destination),
+            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 2 | 9 | 0x20)),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && match (kind, source, instruction.operand_size) {
+                (
+                    ArithmeticKind::Add,
+                    Operand::Register(_),
+                    OperandSize::Dword | OperandSize::Qword,
+                ) => instruction.opcode.byte == 0x01,
+                (ArithmeticKind::Adc, Operand::Immediate(0), OperandSize::Qword) => {
+                    // Partition enumeration and firmware SHA-384 count with carry.
+                    instruction.opcode.byte == 0x83
+                }
+                (ArithmeticKind::Add, Operand::Immediate(1), OperandSize::Qword) => {
+                    // SHA-384 increments the low word of its block count for a buffered block.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 9
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(destination.displacement, 0xf0 | 0x1c0)
+                }
+                (ArithmeticKind::Add, Operand::Immediate(9), OperandSize::Qword) => {
+                    // Current firmware advances its default-variable iterator in a stack slot.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 6
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(destination.displacement, 0x10 | 0x38)
+                }
+                (ArithmeticKind::Add, Operand::Immediate(2), OperandSize::Qword) => {
+                    // LoadImage counts the fixup and protected source regions for a caller buffer.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 9
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(destination.displacement, 0xc0 | 0xc8)
+                }
+                (ArithmeticKind::Add, Operand::Immediate(0x20), size) => {
+                    // FAT directory traversal updates the sector and logical cursors in place.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 5
+                        && destination.base == AddressBase::Register(Register::R14)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(
+                            (size, instruction.prefixes.rex, destination.displacement),
+                            (OperandSize::Dword, Some(0x41), 0x28)
+                                | (OperandSize::Qword, Some(0x49), 0x30)
+                        )
+                }
+                (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
+                    instruction.opcode.byte == 0x29
+                }
+                (
+                    ArithmeticKind::Inc | ArithmeticKind::Dec,
+                    Operand::Immediate(1),
+                    OperandSize::Qword,
+                ) => instruction.opcode.byte == 0xff,
+                _ => false,
+            }
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let rhs = match source {
+                Operand::Register(source) => state.read(source),
+                Operand::Immediate(value) => value,
+                _ => unreachable!(),
+            };
+            let arithmetic =
+                update_memory_operand(state, memory, context, next_rip, destination, |lhs| {
+                    arithmetic_result(destination.size, kind, lhs, rhs, state.rflags)
+                });
+            state.rflags = match arithmetic {
+                Ok(flags) => flags,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // The EFI loader merges PE section permissions in a stack slot.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x09
+            && matches!(
+                (instruction.length, destination.displacement),
+                (4, 0x78) | (7, 0xb8 | 0xd8 | 0xe0)
+            )
+            && instruction.prefixes == Prefixes::default()
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Dword
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && source == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+        {
+            let rhs = state.read(source);
+            let updated =
+                update_memory_operand(state, memory, context, next_rip, destination, |lhs| {
+                    logic_result(OperandSize::Dword, LogicKind::Or, lhs, rhs, state.rflags)
+                });
+            state.rflags = match updated {
+                Ok(flags) => flags,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // Firmware CMP with one memory operand and ADD from memory to a register.
+        Operation::Arithmetic { kind, dst, src }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && match (kind, instruction.opcode.byte, instruction.operand_size) {
+                    (ArithmeticKind::Cmp, 0x38 | 0x3a, OperandSize::Byte)
+                    | (
+                        ArithmeticKind::Cmp,
+                        0x39 | 0x3b,
+                        OperandSize::Word | OperandSize::Dword | OperandSize::Qword,
+                    ) => matches!(
+                        (dst, src),
+                        (Operand::Memory(_), Operand::Register(_))
+                            | (Operand::Register(_), Operand::Memory(_))
+                    ),
+                    (ArithmeticKind::Add, 0x03, OperandSize::Dword | OperandSize::Qword) => {
+                        matches!((dst, src), (Operand::Register(_), Operand::Memory(_)))
+                    }
+                    _ => false,
+                }
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            let arithmetic = (|| {
+                let lhs = read_operand(state, memory, context, next_rip, dst)?;
+                let rhs = read_operand(state, memory, context, next_rip, src)?;
+                Ok::<_, MemoryError>(arithmetic_result(
+                    instruction.operand_size,
+                    kind,
+                    lhs,
+                    rhs,
+                    state.rflags,
+                ))
+            })();
+            let (value, flags) = match arithmetic {
+                Ok(result) => result,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            if let (ArithmeticKind::Add, Operand::Register(destination)) = (kind, dst) {
+                state.write(destination, value);
+            }
+            state.rflags = flags;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // SHA-2 uses big-endian message words and a big-endian bit count.
+        Operation::Bswap { dst }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && (0xc8..=0xcf).contains(&instruction.opcode.byte)
+                && matches!(
+                    instruction.operand_size,
+                    OperandSize::Dword | OperandSize::Qword
+                )
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            byte_swap_register(state, dst);
+            state.rip = next_rip;
+        }
+        // S7-04: register BT indexes within the decoded operand width.
+        Operation::Bit {
+            kind: BitKind::Test,
+            dst: Operand::Register(destination),
+            offset,
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && matches!(
+                (instruction.opcode.byte, instruction.operand_size, offset),
+                (0xa3, OperandSize::Dword | OperandSize::Qword, BitOffset::Register(_))
+                    // FAT directory size rounds by testing a remainder bit.
+                    | (0xba, OperandSize::Dword, BitOffset::Immediate(_))
+            )
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            let index = match offset {
+                BitOffset::Register(index) => state.read(index),
+                BitOffset::Immediate(index) => u64::from(index),
+            };
+            let bit = index & (u64::from(operand_width(destination.size())) - 1);
+            let cf = u64::from(state.read(destination) & (1 << bit) != 0);
+            state.rflags = (state.rflags & !crate::CF) | cf;
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
+        // S7-04: set one decoded byte alias from the existing condition evaluator.
+        Operation::SetCondition {
+            condition,
+            dst: Operand::Register(destination),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && matches!(instruction.opcode.byte, 0x90..=0x9f)
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, u64::from(condition.evaluate(state.rflags)));
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // EnableCursor stores the normalized BOOLEAN in the console mode.
+        Operation::SetCondition {
+            condition,
+            dst:
+                destination @ Operand::Memory(MemoryOperand {
+                    base: AddressBase::NextRip,
+                    index: None,
+                    scale: 1,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Byte,
+                    ..
+                }),
+            ..
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x95
+            && instruction.length == 7
+            && instruction.prefixes == Prefixes::default() =>
+        {
+            let value = u64::from(condition.evaluate(state.rflags));
+            if let Err(error) = write_operand(state, memory, context, next_rip, destination, value)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // S7-04: route firmware data transfers through the shared executor.
+        operation @ (Operation::Mov {
+            dst: Operand::Memory(_),
+            src: Operand::Register(_),
+        }
+        | Operation::Mov {
+            dst: Operand::Register(_),
+            src: Operand::Memory(_) | Operand::Register(_),
+        }
+        | Operation::Extend {
+            src: Operand::Memory(_) | Operand::Register(_),
+            signed: false,
+            ..
+        }
+        | Operation::Extend {
+            src: Operand::Register(_) | Operand::Memory(_),
+            signed: true,
+            ..
+        }
+        | Operation::Lea { .. })
+            if firmware_boot_profile
+                && match (instruction.opcode.map, operation) {
+                    (
+                        OpcodeMap::Primary,
+                        Operation::Mov {
+                            dst: Operand::Register(destination),
+                            src: Operand::Register(source),
+                        },
+                    ) => match (instruction.opcode.byte, instruction.operand_size) {
+                        (0x88, OperandSize::Byte) => {
+                            let original = destination
+                                == RegisterView::low(Register::Rax, OperandSize::Byte)
+                                && source == RegisterView::low(Register::Rbx, OperandSize::Byte)
+                                && instruction.prefixes == Prefixes::default();
+                            // Byte transfer emitted by the FV file-path decoder.
+                            let fv_path = destination
+                                == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                                && source == RegisterView::low(Register::R8, OperandSize::Byte)
+                                && instruction.prefixes
+                                    == (Prefixes {
+                                        rex: Some(0x44),
+                                        ..Prefixes::default()
+                                    });
+                            let boot_path = destination
+                                == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                                && source == RegisterView::low(Register::Rdx, OperandSize::Byte)
+                                && instruction.prefixes == Prefixes::default();
+                            original || fv_path || boot_path
+                        }
+                        (0x89 | 0x8b, OperandSize::Dword | OperandSize::Qword) => true,
+                        _ => false,
+                    },
+                    (
+                        OpcodeMap::Primary,
+                        Operation::Mov {
+                            dst: Operand::Register(destination),
+                            src: Operand::Memory(source),
+                        },
+                    ) if instruction.opcode.byte == 0x8a => {
+                        destination == RegisterView::low(Register::Rbx, OperandSize::Byte)
+                            && source.displacement == 0
+                            && source.scale == 1
+                            && matches!(
+                                (source.base, source.index),
+                                (AddressBase::Register(Register::Rsi), None)
+                                    | (AddressBase::Register(Register::Rdi), Some(Register::Rax))
+                            )
+                            && instruction.prefixes == Prefixes::default()
+                    }
+                    (OpcodeMap::Primary, Operation::Extend { signed: true, .. }) => {
+                        instruction.opcode.byte == 0x63
+                            && instruction.operand_size == OperandSize::Qword
+                    }
+                    (OpcodeMap::Primary, _) => matches!(
+                        (instruction.opcode.byte, instruction.operand_size),
+                        (0x88, OperandSize::Byte)
+                            | (
+                                0x89,
+                                OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                            )
+                            | (0x8b | 0x8d, OperandSize::Dword | OperandSize::Qword)
+                    ),
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            dst,
+                            src: Operand::Register(src),
+                            signed: true,
+                        },
+                    ) => {
+                        instruction.opcode.byte == 0xbe
+                            && (instruction.operand_size == OperandSize::Qword
+                                || (instruction.prefixes == Prefixes::default()
+                                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte)))
+                    }
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            dst,
+                            src: Operand::Memory(source),
+                            signed: true,
+                        },
+                    ) => {
+                        // The FAT short-name decoder uses the sign bit of an OEM byte.
+                        instruction.opcode.byte == 0xbe
+                            && instruction.prefixes == Prefixes::default()
+                            && dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                            && source.size == OperandSize::Byte
+                            && source.base == AddressBase::Register(Register::Rsp)
+                            && source.index == Some(Register::Rax)
+                            && source.scale == 1
+                            && source.displacement == 0x40
+                    }
+                    (
+                        OpcodeMap::Escape0f,
+                        Operation::Extend {
+                            src, signed: false, ..
+                        },
+                    ) => {
+                        instruction.operand_size == OperandSize::Dword
+                            && matches!(
+                                (instruction.opcode.byte, src),
+                                (0xb6 | 0xb7, Operand::Register(_) | Operand::Memory(_))
+                            )
+                    }
+                    _ => false,
+                }
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
+                        ..Prefixes::default()
+                    }) =>
+        {
+            if let Err(error) = transfer(state, memory, context, next_rip, operation) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // S7-04: compiler alignment pads use `0F 1F /0`, optionally
+        // padded with operand-size and CS prefixes. No data access occurs.
+        Operation::NopModrm
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x1f
+                && matches!(instruction.prefixes.segment, None | Some(0x2e))
+                && instruction.prefixes
+                    == (Prefixes {
+                        operand_override: instruction.prefixes.operand_override,
+                        segment: instruction.prefixes.segment,
                         ..Prefixes::default()
                     }) =>
         {
             state.rip = next_rip;
         }
+        // S7-04: the firmware compiler also emits bare one-byte alignment pads.
+        // The base profile keeps its exact `66 90` form.
+        Operation::Nop
+            if instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x90
+                && ((firmware_boot_profile
+                    && instruction.length == 1
+                    && instruction.prefixes == Prefixes::default())
+                    || (base_profile
+                        && instruction.length == 2
+                        && instruction.operand_size == OperandSize::Word
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            }))) =>
+        {
+            state.rip = next_rip;
+        }
+        Operation::ReadCr0 | Operation::ReadCr3
+            if firmware_boot_cr3.is_some()
+                && instruction.length == 3
+                && instruction.opcode.byte == 0x20
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.gpr[Register::Rax as usize] = if instruction.operation == Operation::ReadCr0 {
+                state.cr0.expect("admitted CR0")
+            } else {
+                firmware_boot_cr3.expect("active CR3")
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined & !crate::ARITHMETIC_FLAGS,
+            };
+        }
         Operation::WriteCr0
-            if allow_cr0_wp
+            if (allow_cr0_wp || firmware_boot_cr3.is_some())
                 && instruction.length == 3
                 && instruction.opcode.byte == 0x22
                 && instruction.prefixes == Prefixes::default() =>
@@ -20211,7 +21901,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 );
             }
             let mut rflags_defined = initial_rflags_defined;
-            let effect = match commit_mov_cr0_wp(state, next_rip, &mut rflags_defined) {
+            let effect = match commit_mov_cr0_wp(
+                state,
+                next_rip,
+                &mut rflags_defined,
+                firmware_boot_cr3.is_some(),
+            ) {
                 Ok(effect) => effect,
                 Err(()) => return unsupported(),
             };
@@ -20222,13 +21917,22 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             };
         }
         Operation::WriteCr3
-            if allow_cr3
+            if (allow_cr3 || firmware_boot_cr3.is_some())
                 && instruction.length == 3
                 && instruction.opcode.byte == 0x22
                 && instruction.prefixes == Prefixes::default() =>
         {
             let mut rflags_defined = initial_rflags_defined;
-            let effect = match commit_mov_cr3(state, Register::Rax, next_rip, &mut rflags_defined) {
+            let old_cr3 = firmware_boot_cr3
+                .or(state.cr3)
+                .expect("MOV CR3 admission requires an active root");
+            let effect = match commit_mov_cr3_with_root(
+                state,
+                old_cr3,
+                Register::Rax,
+                next_rip,
+                &mut rflags_defined,
+            ) {
                 Ok(effect) => effect,
                 Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
             };
@@ -20238,16 +21942,116 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined,
             };
         }
-        Operation::StackRegister {
-            push: true,
-            register: Register::Rcx,
-        } if allow_stack_forms
-            && instruction.length == 1
-            && instruction.opcode.byte == 0x51
+        Operation::Leave
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0xc9
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            if let Err(error) = leave_stack_frame(state, memory, context) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PushMemory { source }
+            if firmware_boot_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xff
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword
+                && matches!(
+                    (instruction.length, source.displacement),
+                    (7, 0xc8) | (4, 0x68)
+                )
+                && instruction.prefixes == Prefixes::default()
+                && source.base == AddressBase::Register(Register::Rsp)
+                && source.index.is_none()
+                && source.scale == 1 =>
+        {
+            if let Err(error) = push_stack_source(state, memory, context, next_rip, source) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PushFlags
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x9c
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            if let Err(error) = push_stack_flags(state, memory, context, OperandSize::Qword) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::PopFlags
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x9d
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            match popfq_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return unsupported(),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: initial_rflags_defined | (POPFQ_CPL0_FLAGS & crate::INTEGER_FLAGS),
+            };
+        }
+        // S7-24: the firmware PKCS#7 call passes absent and SHA-256 stack arguments.
+        Operation::PushImmediate {
+            value: value @ (0 | 0x20),
+        } if firmware_boot_profile
+            && instruction.length == 2
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x6a
             && instruction.prefixes == Prefixes::default()
             && instruction.operand_size == OperandSize::Qword =>
         {
-            let value = state.gpr[Register::Rcx as usize];
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::StackRegister {
+            push: true,
+            register,
+        } if instruction.operand_size == OperandSize::Qword
+            && ((allow_stack_forms
+                && register == Register::Rcx
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x51
+                && instruction.prefixes == Prefixes::default())
+                || (firmware_boot_profile
+                    && instruction.opcode.map == OpcodeMap::Primary
+                    && matches!(instruction.opcode.byte, 0x50..=0x57)
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: instruction.prefixes.rex,
+                            ..Prefixes::default()
+                        }))) =>
+        {
+            let value = state.gpr[register as usize];
             if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
             {
                 return match error {
@@ -20429,12 +22233,21 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         Operation::StackRegister {
             push: false,
-            register: Register::Rax,
-        } if allow_stack_forms
-            && instruction.length == 1
-            && instruction.opcode.byte == 0x58
-            && instruction.prefixes == Prefixes::default()
-            && instruction.operand_size == OperandSize::Qword =>
+            register,
+        } if instruction.operand_size == OperandSize::Qword
+            && ((allow_stack_forms
+                && register == Register::Rax
+                && instruction.length == 1
+                && instruction.opcode.byte == 0x58
+                && instruction.prefixes == Prefixes::default())
+                || (firmware_boot_profile
+                    && instruction.opcode.map == OpcodeMap::Primary
+                    && matches!(instruction.opcode.byte, 0x58..=0x5f)
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: instruction.prefixes.rex,
+                            ..Prefixes::default()
+                        }))) =>
         {
             let old_rsp = state.gpr[Register::Rsp as usize];
             let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
@@ -20451,8 +22264,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
+            // For POP RSP the popped value replaces the incremented pointer.
             state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
-            state.gpr[Register::Rax as usize] = value;
+            state.gpr[register as usize] = value;
             state.rip = next_rip;
         }
         // S7-04: the helper restores RBX with the exact bare `5B` form. Read
@@ -20844,6 +22658,18 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             state.rip = next_rip;
         }
+        Operation::InDx {
+            size: OperandSize::Word,
+        }
+        | Operation::OutDx {
+            size: OperandSize::Word,
+        } if firmware_boot_profile => match commit_pio_u16(state, &instruction, pio) {
+            PioU8Commit::Retired => {}
+            PioU8Commit::Unsupported { .. } => return unsupported(),
+            PioU8Commit::PortIo { error, .. } => {
+                return result(PagedProbeExit::PortIo(error), 0);
+            }
+        },
         Operation::Hlt
             if instruction.length == 1
                 && instruction.opcode.byte == 0xf4
@@ -20853,16 +22679,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.activity = Some(crate::CpuActivity::Halted);
             return result(PagedProbeExit::Halted, 1);
         }
-        // S7-04: only the exact bare CLD form is admitted by the base probe profile.
-        // It clears DF and makes that flag defined; STD and prefixed forms stay unsupported.
-        Operation::ClearDirectionFlag
+        // S7-04: the firmware clears IF before its final HLT.
+        Operation::Cli
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xfa
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.rflags &= !(1 << 9);
+            state.rip = next_rip;
+        }
+        Operation::Sti
+            if firmware_boot_profile
+                && instruction.length == 1
+                && instruction.opcode.byte == 0xfb
+                && instruction.prefixes == Prefixes::default()
+                && state.sti_shadow.is_some() =>
+        {
+            if state.rflags & (1 << 9) == 0 {
+                state.sti_shadow = Some(crate::StiShadow::Blocking);
+            }
+            state.rflags |= 1 << 9;
+            state.rip = next_rip;
+        }
+        // S7-04: firmware memmove uses STD for overlapping backward copies.
+        Operation::ClearDirectionFlag | Operation::SetDirectionFlag
             if base_profile
                 && instruction.length == 1
                 && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xfc
+                && (instruction.opcode.byte == 0xfc || firmware_boot_profile)
                 && instruction.prefixes == Prefixes::default() =>
         {
-            state.rflags &= !crate::DF;
+            if instruction.operation == Operation::SetDirectionFlag {
+                state.rflags |= crate::DF;
+            } else {
+                state.rflags &= !crate::DF;
+            }
             state.rip = next_rip;
             return PagedProbeResult {
                 exit: PagedProbeExit::Retired,
@@ -20870,27 +22723,59 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::DF,
             };
         }
-        // S7-04: the Rust helper conditionally copies R10D to R14D/R15D with
-        // only `45 0F 44 F2` and `45 0F 44 FA`. Exact ModRM tuples select the
-        // destination; the dword write zero-extends it and leaves flags alone.
+        Operation::ConditionalMove {
+            condition,
+            dst,
+            src: source @ Operand::Memory(address),
+        } if firmware_boot_profile
+            && (instruction.operand_size == OperandSize::Qword
+                || (instruction.operand_size == OperandSize::Dword
+                    && address.base == AddressBase::Register(Register::Rsp)
+                    && address.index.is_none()))
+            && instruction.address_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            match conditional_move(state, memory, context, next_rip, condition, dst, source) {
+                Ok(()) => state.rip = next_rip,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+        }
+        // Register dword and qword CMOVcc in firmware, or the existing exact dword forms.
         Operation::ConditionalMove {
             condition,
             dst: destination,
             src: Operand::Register(source),
-        } if base_profile
-            && condition == ConditionCode::Equal
-            && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0x44
-            && instruction.length == 4
-            && instruction.operand_size == OperandSize::Dword
+        } if (firmware_boot_profile
+            && matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            )
             && instruction.prefixes
                 == (Prefixes {
-                    rex: Some(0x45),
+                    rex: instruction.prefixes.rex,
                     ..Prefixes::default()
-                })
-            && (destination == RegisterView::low(Register::R14, OperandSize::Dword)
-                || destination == RegisterView::low(Register::R15, OperandSize::Dword))
-            && source == RegisterView::low(Register::R10, OperandSize::Dword) =>
+                }))
+            || (base_profile
+                && condition == ConditionCode::Equal
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x44
+                && instruction.length == 4
+                && instruction.operand_size == OperandSize::Dword
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x45),
+                        ..Prefixes::default()
+                    })
+                && (destination == RegisterView::low(Register::R14, OperandSize::Dword)
+                    || destination == RegisterView::low(Register::R15, OperandSize::Dword))
+                && source == RegisterView::low(Register::R10, OperandSize::Dword)) =>
         {
             let value = if condition.evaluate(state.rflags) {
                 state.read(source)
@@ -21004,23 +22889,40 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
-        // S7-04: the helper stores SETNE's result to exactly byte
-        // `[RSP+7]` with `0F 95 44 24 07`. Pin the raw ModRM and decoded SIB
-        // tuple; perform the byte write through GuestMemory and commit RIP only
-        // after the write succeeds. SETNE leaves flags and definedness intact.
+        // S7-04 stores SETNE to [RSP+7]. S7-22 additionally uses SETE [RSP]
+        // and SETNE [RSP+0x20]. Commit RIP only after the exact byte store.
         Operation::SetCondition {
             condition,
             dst: Operand::Memory(destination),
             raw_modrm,
-        } if base_profile
+        } if ((base_profile
             && condition == ConditionCode::NotEqual
-            && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0x95
             && instruction.length == 5
+            && raw_modrm == 0x44
+            && destination.displacement == 7)
+            || (firmware_boot_profile
+                && matches!(
+                    (
+                        condition,
+                        instruction.opcode.byte,
+                        instruction.length,
+                        raw_modrm,
+                        destination.displacement
+                    ),
+                    (ConditionCode::Equal, 0x94, 4, 0x04, 0)
+                        | (ConditionCode::Equal, 0x94, 5, 0x44, 0x20 | 0x3c)
+                        | (
+                            ConditionCode::NotEqual,
+                            0x95,
+                            5,
+                            0x44,
+                            0x18 | 0x20 | 0x68 | 0x70
+                        )
+                )))
+            && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.operand_size == OperandSize::Byte
             && instruction.prefixes == Prefixes::default()
-            && raw_modrm == 0x44
-            && destination.displacement == 7
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
@@ -21930,30 +23832,47 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     | (crate::ARITHMETIC_FLAGS & !crate::AF),
             };
         }
-        // S7-04: exact `40 84 6C 24 07` tests memory at [RSP+7] against BPL.
-        // Read through the tracked operand path, update logical flags only,
-        // and leave memory and every GPR untouched.
+        // Exact byte TEST forms in the base boot probe and FV image loader.
+        // Read through the tracked operand path and update logical flags only.
         Operation::Logic {
             kind: LogicKind::Test,
             dst: Operand::Memory(destination),
             src: Operand::Register(source),
-        } if base_profile
-            && instruction.opcode.map == OpcodeMap::Primary
+        } if instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x84
-            && instruction.length == 5
             && instruction.operand_size == OperandSize::Byte
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x40),
-                    ..Prefixes::default()
-                })
-            && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
-            && destination.displacement == 7
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Byte
-            && source == RegisterView::low(Register::Rbp, OperandSize::Byte) =>
+            && ((destination.base == AddressBase::Register(Register::Rsp)
+                && ((base_profile
+                    && instruction.length == 5
+                    && destination.displacement == 7
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x40),
+                            ..Prefixes::default()
+                        })
+                    && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
+                    || (firmware_boot_profile
+                        && instruction.length == 7
+                        && matches!(
+                            destination.displacement,
+                            0x87 | 0xa8 | 0xd4 | 0x120 | 0x14c | 0x15c
+                        )
+                        && instruction.prefixes == Prefixes::default()
+                        && source == RegisterView::low(Register::Rax, OperandSize::Byte))))
+                || (firmware_boot_profile
+                    && instruction.length == 7
+                    && destination.base == AddressBase::Register(Register::Rsi)
+                    && destination.displacement == 0x40018
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x44),
+                            ..Prefixes::default()
+                        })
+                    && source == RegisterView::low(Register::R12, OperandSize::Byte))) =>
         {
             let lhs = match read_operand(
                 state,
@@ -22457,8 +24376,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: startup/helper use only observed literal conditional branch
-        // encodings, including these exact Jcc forms; other branches stay outside.
+        // S7-04: firmware boot accepts the decoded direct Jcc displacement.
+        // The diagnostic profile retains its literal encodings.
         Operation::Branch {
             condition,
             displacement,
@@ -22562,6 +24481,16 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                                     | 0xb0
                             )
                             | (ConditionCode::Below, 0x82, 0xb7 | 0x19d | 0x230)
+                    ))
+                || (firmware_boot_profile
+                    && matches!(
+                        (
+                            instruction.opcode.map,
+                            instruction.length,
+                            instruction.opcode.byte
+                        ),
+                        (OpcodeMap::Primary, 2, 0x70..=0x7f)
+                            | (OpcodeMap::Escape0f, 6, 0x80..=0x8f)
                     ))) =>
         {
             if condition.evaluate(state.rflags) {
@@ -22580,17 +24509,22 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             }
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: the firmware uses exact short and near JMP encodings.
-        // Validate the signed next-RIP target before committing RIP.
+        // S7-04: the firmware uses short and near JMP. The base probe keeps
+        // its exact encodings. Validate the target before committing RIP.
         Operation::Jump { displacement }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.prefixes == Prefixes::default()
-                && matches!(
-                    (instruction.opcode.byte, instruction.length, displacement),
-                    (0xeb, 2, 0x31) | (0xe9, 5, -0x162 | -0x9a | 0x165)
-                ) =>
+                && ((firmware_boot_profile
+                    && matches!(
+                        (instruction.opcode.byte, instruction.length),
+                        (0xeb, 2) | (0xe9, 5)
+                    ))
+                    || matches!(
+                        (instruction.opcode.byte, instruction.length, displacement),
+                        (0xeb, 2, 0x31) | (0xe9, 5, -0x162 | -0x9a | 0x165)
+                    )) =>
         {
             let target = next_rip.wrapping_add_signed(i64::from(displacement));
             if !canonical(target) {
@@ -22602,33 +24536,133 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = target;
             return result(PagedProbeExit::Retired, 1);
         }
-        // S7-04: firmware and its helper use exact rel32 CALL encodings in
-        // this profile. Reuse CALL's canonical-target and push semantics.
-        Operation::Call { displacement }
-            if base_profile
+        // Linked jump tables, startup returns, and the EFI app's ConOut tail call.
+        Operation::IndirectJump { operand }
+            if firmware_boot_profile
                 && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xe8
-                && instruction.length == 5
-                && instruction.operand_size == OperandSize::Qword
-                && instruction.prefixes == Prefixes::default()
-                && matches!(displacement, 0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad) =>
+                && instruction.opcode.byte == 0xff
+                && match operand {
+                    Operand::Memory(MemoryOperand {
+                        base: AddressBase::None,
+                        index: Some(_),
+                        scale: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                        ..
+                    }) => {
+                        (instruction.length == 7 && instruction.prefixes == Prefixes::default())
+                            || (instruction.length == 8
+                                && instruction.prefixes
+                                    == (Prefixes {
+                                        rex: Some(0x42),
+                                        ..Prefixes::default()
+                                    }))
+                    }
+                    Operand::Memory(MemoryOperand {
+                        base: AddressBase::Register(Register::Rcx),
+                        index: None,
+                        scale: 1,
+                        displacement: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                        ..
+                    }) => {
+                        instruction.length == 4
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: Some(0x48),
+                                    ..Prefixes::default()
+                                })
+                    }
+                    Operand::Register(register) => {
+                        register.size() == OperandSize::Qword
+                            && matches!(
+                                (
+                                    instruction.length,
+                                    instruction.prefixes.rex,
+                                    register.register()
+                                ),
+                                (2, None, Register::Rax)
+                                    | (3, Some(0x41), Register::R8 | Register::R9 | Register::R12)
+                            )
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: instruction.prefixes.rex,
+                                    ..Prefixes::default()
+                                })
+                    }
+                    _ => false,
+                } =>
         {
-            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            let target = match read_operand(state, memory, context, next_rip, operand) {
+                Ok(target) => target,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             if !canonical(target) {
                 let MemoryError::Architectural(fault) = general_protection() else {
                     unreachable!()
                 };
                 return result(PagedProbeExit::Fault(fault), 0);
             }
-            if let Err(error) =
-                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)
-            {
-                return match error {
-                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
-                    error => result(PagedProbeExit::Backend(error), 0),
-                };
-            }
             state.rip = target;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // S7-04: firmware also calls linked routines through qword pointers.
+        // The base profile keeps its exact rel32 forms.
+        operation @ (Operation::Call { .. } | Operation::IndirectCall { .. })
+            if instruction.opcode.map == OpcodeMap::Primary
+                && instruction.operand_size == OperandSize::Qword
+                && match operation {
+                    Operation::Call { displacement } => {
+                        base_profile
+                            && (firmware_boot_profile
+                                || matches!(
+                                    displacement,
+                                    0x183 | 0x224 | 0x28d | 0x579 | 0x859 | 0x8ad
+                                ))
+                            && instruction.opcode.byte == 0xe8
+                            && instruction.length == 5
+                            && instruction.prefixes == Prefixes::default()
+                    }
+                    Operation::IndirectCall { .. } => {
+                        firmware_boot_profile
+                            && instruction.opcode.byte == 0xff
+                            && instruction.address_size == OperandSize::Qword
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: instruction.prefixes.rex,
+                                    ..Prefixes::default()
+                                })
+                    }
+                    _ => false,
+                } =>
+        {
+            let branch = (|| {
+                let target = match operation {
+                    Operation::Call { displacement } => {
+                        next_rip.wrapping_add_signed(i64::from(displacement))
+                    }
+                    Operation::IndirectCall { operand } => {
+                        read_operand(state, memory, context, next_rip, operand)?
+                    }
+                    _ => unreachable!("direct or indirect CALL"),
+                };
+                if !canonical(target) {
+                    return Err(general_protection());
+                }
+                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)?;
+                Ok(target)
+            })();
+            state.rip = match branch {
+                Ok(target) => target,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             return result(PagedProbeExit::Retired, 1);
         }
         // S7-04: exact `01 C0` doubles EAX using dword ADD semantics. The
@@ -23393,6 +25427,22 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
+        // S7-04: `89 C9` clears the high half of the jump-table index.
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x89
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+            && destination == RegisterView::low(Register::Rcx, OperandSize::Dword)
+            && source == destination =>
+        {
+            let value = state.read(source);
+            state.write(destination, value);
+            state.rip = next_rip;
+        }
         // S7-04: exact `49 89 F6` copies qword RSI into R14. Opcode 89 uses
         // r/m as destination; REX.B extends r/m=6 to R14 while reg=6 is RSI.
         Operation::Mov {
@@ -23618,8 +25668,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the helper copies RSI into RAX with exact `48 89 F0`.
-        // Opcode 89 stores the ModRM reg source into the r/m destination.
+        // S7-04: the helper copies RSI into RAX with `48 89 F0`.
+        // The firmware boot path also copies RCX with `48 89 C8`.
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Register(source),
@@ -23634,7 +25684,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     ..Prefixes::default()
                 })
             && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
-            && source == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
+            && (source == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                || (firmware_boot_profile
+                    && source == RegisterView::low(Register::Rcx, OperandSize::Qword))) =>
         {
             let value = state.read(source);
             state.write(destination, value);
@@ -24061,9 +26113,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     .apply(initial_rflags_defined),
             };
         }
-        // S7-04: the firmware entry loads __bss_start into RDI with exactly
-        // `48 8D 3D 09 2B 00 00` (LEA RDI,[RIP+0x2b09]). Reuse the decoder's
-        // next-RIP-relative effective-address calculation without a data read.
+        // S7-04: firmware entry loads link-derived `.bss` boundaries into RDI
+        // and RCX with RIP-relative LEA. The signed disp32 changes with link
+        // layout; keep admission to the exact REX.W/register/addressing shape.
         Operation::Lea { dst, src }
             if base_profile
                 && instruction.opcode.map == OpcodeMap::Primary
@@ -24075,11 +26127,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                         rex: Some(0x48),
                         ..Prefixes::default()
                     })
-                && dst == RegisterView::low(Register::Rdi, OperandSize::Qword)
+                && (dst == RegisterView::low(Register::Rdi, OperandSize::Qword)
+                    || dst == RegisterView::low(Register::Rcx, OperandSize::Qword))
                 && src.base == AddressBase::NextRip
                 && src.index.is_none()
                 && src.scale == 1
-                && src.displacement == 0x2b09
                 && src.address_size == OperandSize::Qword
                 && src.size == OperandSize::Qword =>
         {
@@ -24463,30 +26515,6 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(dst, src.effective_address(state, next_rip));
             state.rip = next_rip;
         }
-        // S7-04: `_start` loads __bss_end into RCX with exactly
-        // `48 8D 0D 02 2B 00 00` (LEA RCX,[RIP+0x2b02]).
-        Operation::Lea { dst, src }
-            if base_profile
-                && instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0x8d
-                && instruction.length == 7
-                && instruction.operand_size == OperandSize::Qword
-                && instruction.prefixes
-                    == (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                && dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                && src.base == AddressBase::NextRip
-                && src.index.is_none()
-                && src.scale == 1
-                && src.displacement == 0x2b02
-                && src.address_size == OperandSize::Qword
-                && src.size == OperandSize::Qword =>
-        {
-            state.write(dst, src.effective_address(state, next_rip));
-            state.rip = next_rip;
-        }
         // S7-04: `_start` clears EAX (`31 C0`) and ECX (`31 C9`); the Rust
         // helper clears R10D (`45 31 D2`) and R11D (`45 31 DB`), combines
         // R14D into R9D (`45 31 F1`), and combines R15D into R14D (`45 31 FE`).
@@ -24577,10 +26605,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: Rust helper exact memory XOR forms `46 33 24 8D 80 26 20 00`
-        // (XOR R12D,[R9*4+0x202680]) and `46 33 0C B5 80 26 20 00`
-        // (XOR R9D,[R14*4+0x202680]). Read through the tracked operand path
-        // before committing destination or flags.
+        // S7-04: the diagnostic handoff CRC uses these exact indexed dword reads.
         Operation::Logic {
             kind: LogicKind::Xor,
             dst: Operand::Register(destination),
@@ -24625,53 +26650,74 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // S7-04: admit only firmware's bare address-size-64 `F3 AA` REP STOSB.
-        // Bound one paged instruction invocation to REP_ITERATION_WORK_LIMIT
-        // stores; larger counts are refused before any memory/state mutation.
-        Operation::RepStos {
-            size: OperandSize::Byte,
-        } if base_profile
-            && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xaa
-            && instruction.length == 2
-            && instruction.address_size == OperandSize::Qword
-            && instruction.prefixes
-                == (Prefixes {
-                    group1: Some(0xf3),
-                    ..Prefixes::default()
-                }) =>
+        // S7-04: the firmware clears pages and moves overlapping allocator metadata
+        // with bounded REP strings. Each successful element commits its indexes.
+        Operation::RepStos { size } | Operation::RepMovs { size }
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Primary
+                && match (instruction.opcode.byte, size, instruction.length) {
+                    (0xaa, OperandSize::Byte, 2) => true,
+                    (0xab | 0xa5, OperandSize::Qword, 3) | (0xa4, OperandSize::Byte, 2) => {
+                        firmware_boot_profile
+                    }
+                    _ => false,
+                }
+                && instruction.address_size == OperandSize::Qword
+                && instruction.prefixes
+                    == (Prefixes {
+                        group1: Some(0xf3),
+                        rex: instruction.prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
         {
             let count = state.gpr[Register::Rcx as usize];
             if count > REP_ITERATION_WORK_LIMIT {
                 return unsupported();
             }
-            while state.gpr[Register::Rcx as usize] != 0 {
-                let destination = Operand::Memory(MemoryOperand {
-                    base: AddressBase::Register(Register::Rdi),
+            let moving = matches!(instruction.operation, Operation::RepMovs { .. });
+            let stride = size.bytes() as i64;
+            let step = if state.rflags & crate::DF == 0 {
+                stride
+            } else {
+                -stride
+            };
+            let operand = |register| {
+                Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(register),
                     index: None,
                     scale: 1,
                     displacement: 0,
                     address_size: OperandSize::Qword,
-                    size: OperandSize::Byte,
-                });
-                let value = state.gpr[Register::Rax as usize] & 0xff;
+                    size,
+                })
+            };
+            let source = operand(Register::Rsi);
+            let destination = operand(Register::Rdi);
+            let store_value = state.gpr[Register::Rax as usize] & size.mask();
+            let memory_failure = |error| match error {
+                MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                error => result(PagedProbeExit::Backend(error), 0),
+            };
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let value = if moving {
+                    match read_operand(state, memory, context, next_rip, source) {
+                        Ok(value) => value,
+                        Err(error) => return memory_failure(error),
+                    }
+                } else {
+                    store_value
+                };
                 if let Err(error) =
                     write_operand(state, memory, context, next_rip, destination, value)
                 {
-                    return match error {
-                        MemoryError::Architectural(fault) => {
-                            result(PagedProbeExit::Fault(fault), 0)
-                        }
-                        error => result(PagedProbeExit::Backend(error), 0),
-                    };
+                    return memory_failure(error);
                 }
-                let step = if state.rflags & crate::DF == 0 {
-                    1
-                } else {
-                    u64::MAX
-                };
+                if moving {
+                    state.gpr[Register::Rsi as usize] =
+                        state.gpr[Register::Rsi as usize].wrapping_add_signed(step);
+                }
                 state.gpr[Register::Rdi as usize] =
-                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+                    state.gpr[Register::Rdi as usize].wrapping_add_signed(step);
                 state.gpr[Register::Rcx as usize] -= 1;
             }
             state.rip = next_rip;
@@ -26327,30 +28373,43 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, state.read(source));
             state.rip = next_rip;
         }
-        // S7-04: the helper initializes one byte with exact
-        // `42 C6 44 04 08 01` (MOV byte ptr [RSP+R8+8],1). REX.X selects R8
-        // as the SIB index; retain the exact byte width/address/immediate and
-        // commit RIP only after the tracked store succeeds.
+        // S7-04: tracked immediate stores initialize firmware state. The base
+        // probe also accepts its exact `42 C6 44 04 08 01` stack form.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xc6
-            && instruction.length == 6
-            && instruction.operand_size == OperandSize::Byte
-            && instruction.prefixes
-                == (Prefixes {
-                    rex: Some(0x42),
-                    ..Prefixes::default()
-                })
-            && destination.size == OperandSize::Byte
             && destination.address_size == OperandSize::Qword
-            && destination.base == AddressBase::Register(Register::Rsp)
-            && destination.index == Some(Register::R8)
-            && destination.scale == 1
-            && destination.displacement == 8
-            && value == 1 =>
+            && destination.size == instruction.operand_size
+            && ((firmware_boot_profile
+                && matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0xc6, OperandSize::Byte)
+                        | (
+                            0xc7,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
+                )
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
+                        ..Prefixes::default()
+                    }))
+                || (instruction.opcode.byte == 0xc6
+                    && instruction.operand_size == OperandSize::Byte
+                    && instruction.length == 6
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x42),
+                            ..Prefixes::default()
+                        })
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.index == Some(Register::R8)
+                    && destination.scale == 1
+                    && destination.displacement == 8
+                    && value == 1)) =>
         {
             if let Err(error) = write_operand(
                 state,
@@ -26370,8 +28429,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         // S7-04/S7-05: exact immediate stores initialize [RDI], clear
         // [RSP+0x10], and write the sign-extended imm32 zero to qword
-        // [RSP+8]. Pin each address/width/value tuple and route the store
-        // through tracked memory.
+        // [RSP+8]. The firmware boot path also clears dword [RSP+0x0f].
+        // Pin each address/width/value tuple and route the store through tracked memory.
         Operation::MovImmediate {
             dst: Operand::Memory(destination),
             value,
@@ -26413,7 +28472,15 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     && destination.size == OperandSize::Qword
                     && value == 0
                     && destination.base == AddressBase::Register(Register::Rsp)
-                    && destination.displacement == 0x08)) =>
+                    && destination.displacement == 0x08)
+                || (firmware_boot_profile
+                    && instruction.length == 8
+                    && instruction.operand_size == OperandSize::Dword
+                    && instruction.prefixes == Prefixes::default()
+                    && destination.size == OperandSize::Dword
+                    && value == 0
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.displacement == 0x0f)) =>
         {
             if let Err(error) = write_operand(
                 state,
@@ -26647,38 +28714,57 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | crate::ARITHMETIC_FLAGS,
             };
         }
-        // S7-04: exact `42 80 7C 04 08 01` compares byte [RSP+R8+8] with 1.
-        // Exact unindexed forms compare bytes at [RSP+9] and [RSP+0xf] with 0
-        // and bytes at [RSP+0xa] through [RSP+0xe] with 1.
-        // Read through the memory adapter before committing flags and RIP.
+        // S7-04: compare a parser field with the decoded immediate. The base
+        // probe retains its exact indexed and unindexed stack forms.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Memory(destination),
-            src: Operand::Immediate(immediate @ (0 | 1)),
+            src: Operand::Immediate(immediate),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0x80
-            && instruction.operand_size == OperandSize::Byte
-            && destination.base == AddressBase::Register(Register::Rsp)
-            && destination.scale == 1
             && destination.address_size == OperandSize::Qword
-            && destination.size == OperandSize::Byte
-            && ((instruction.length == 6
+            && destination.size == instruction.operand_size
+            && ((firmware_boot_profile
+                && matches!(
+                    (instruction.opcode.byte, instruction.operand_size),
+                    (0x80, OperandSize::Byte)
+                        | (
+                            0x81 | 0x83,
+                            OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                        )
+                )
                 && instruction.prefixes
                     == (Prefixes {
-                        rex: Some(0x42),
+                        rex: instruction.prefixes.rex,
+                        operand_override: instruction.operand_size == OperandSize::Word,
                         ..Prefixes::default()
-                    })
-                && destination.index == Some(Register::R8)
-                && destination.displacement == 8
-                && immediate == 1)
-                || (instruction.length == 5
-                    && instruction.prefixes == Prefixes::default()
-                    && destination.index.is_none()
-                    && matches!(
-                        (destination.displacement, immediate),
-                        (9, 0) | (0xa, 1) | (0xb, 1) | (0xc, 1) | (0xd, 1) | (0xe, 1) | (0xf, 0)
-                    ))) =>
+                    }))
+                || (instruction.opcode.byte == 0x80
+                    && instruction.operand_size == OperandSize::Byte
+                    && destination.base == AddressBase::Register(Register::Rsp)
+                    && destination.scale == 1
+                    && ((instruction.length == 6
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(0x42),
+                                ..Prefixes::default()
+                            })
+                        && destination.index == Some(Register::R8)
+                        && destination.displacement == 8
+                        && immediate == 1)
+                        || (instruction.length == 5
+                            && instruction.prefixes == Prefixes::default()
+                            && destination.index.is_none()
+                            && matches!(
+                                (destination.displacement, immediate),
+                                (9, 0)
+                                    | (0xa, 1)
+                                    | (0xb, 1)
+                                    | (0xc, 1)
+                                    | (0xd, 1)
+                                    | (0xe, 1)
+                                    | (0xf, 0)
+                            ))))) =>
         {
             let lhs = match read_operand(
                 state,
@@ -26694,7 +28780,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             };
             let (_, flags) = arithmetic_result(
-                OperandSize::Byte,
+                instruction.operand_size,
                 ArithmeticKind::Cmp,
                 lhs,
                 immediate,
@@ -27284,22 +29370,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         // `41 83 FA 06`, and
         // `R15D,-0x0c` with exact `41 83 FF F4`, `R13D,-1/-0x0c` with exact
         // `41 83 FD FF/F4`, and `R12D,3` with exact `41 83 FC 03`. The decoder
-        // sign-extends imm8. Keep width, prefix, register and immediate tuples exact.
+        // sign-extends imm8. Firmware boot also compares BX against the
+        // handoff version bound selected by the compiler.
         Operation::Arithmetic {
             kind: ArithmeticKind::Cmp,
             dst: Operand::Register(destination),
-            src:
-                Operand::Immediate(
-                    immediate @ (1
-                    | 2
-                    | 3
-                    | 6
-                    | 0x0b
-                    | 0x20
-                    | 0x30
-                    | 0xffff_ffff_ffff_fff4
-                    | 0xffff_ffff_ffff_ffff),
-                ),
+            src: Operand::Immediate(immediate),
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x83
@@ -27340,10 +29416,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     && ((immediate == 1
                         && destination
                             == RegisterView::low(Register::Rdi, OperandSize::Word))
-                        || (immediate == 3
-                            && destination
-                                == RegisterView::low(Register::Rbx, OperandSize::Word))
-                        || (immediate == 2
+                        || ((firmware_boot_profile || matches!(immediate, 2 | 3))
                             && destination
                                 == RegisterView::low(Register::Rbx, OperandSize::Word))))
                 || (instruction.length == 5
@@ -27569,44 +29642,85 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-04: the firmware hands off a 64 KiB block size through EDX.
-        // Admit only `BA 00 00 01 00` in the base profile; writing the dword
-        // view zero-extends into RDX and leaves RFLAGS untouched.
+        // S7-04: load a qword immediate, including sign-extended C7 /0 constants.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && matches!(instruction.opcode.byte, 0xb8..=0xbf | 0xc7)
+            && instruction.operand_size == OperandSize::Qword
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: instruction.prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
+            return result(PagedProbeExit::Retired, 1);
+        }
+        // S7-04: the firmware compiler selects dword constants for any GPR.
+        // The base probe still admits the original fixed handoff size in EDX.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && instruction.opcode.byte == 0xba
-            && instruction.length == 5
+            && matches!(instruction.opcode.byte, 0xb8..=0xbf)
             && instruction.operand_size == OperandSize::Dword
-            && destination == RegisterView::low(Register::Rdx, OperandSize::Dword)
-            && value == 0x0001_0000
-            && instruction.prefixes == Prefixes::default() =>
+            && ((instruction.length == 5
+                && instruction.prefixes == Prefixes::default()
+                && (firmware_boot_profile
+                    || (instruction.opcode.byte == 0xba
+                        && destination
+                            == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                        && value == 0x0001_0000)))
+                || (firmware_boot_profile
+                    && instruction.length == 6
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x41),
+                            ..Prefixes::default()
+                        }))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;
         }
-        // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
-        // `PagedCpl0ProbeV1` profile; every other profile keeps them
-        // unsupported. RFLAGS is not touched.
+        // The base profile admits bare byte and 66-prefixed word immediates.
+        // Firmware also uses REX for low byte aliases and R8W–R15W.
         Operation::MovImmediate {
             dst: Operand::Register(destination),
             value,
         } if base_profile
             && instruction.opcode.map == OpcodeMap::Primary
-            && ((instruction.length == 2
-                && matches!(instruction.opcode.byte, 0xb0..=0xb7)
-                && instruction.prefixes == Prefixes::default()
-                && destination.size() == OperandSize::Byte)
-                || (instruction.length == 4
-                    && matches!(instruction.opcode.byte, 0xb8..=0xbf)
-                    && instruction.prefixes
-                        == (Prefixes {
-                            operand_override: true,
-                            ..Prefixes::default()
-                        })
-                    && destination.size() == OperandSize::Word)) =>
+            && ((matches!(instruction.opcode.byte, 0xb0..=0xb7)
+                && destination.size() == OperandSize::Byte
+                && ((instruction.length == 2 && instruction.prefixes == Prefixes::default())
+                    || (firmware_boot_profile
+                        && instruction.length == 3
+                        && instruction.prefixes.rex.is_some()
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: instruction.prefixes.rex,
+                                ..Prefixes::default()
+                            }))))
+                || (matches!(instruction.opcode.byte, 0xb8..=0xbf)
+                    && destination.size() == OperandSize::Word
+                    && ((instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            }))
+                        || (firmware_boot_profile
+                            && instruction.length == 5
+                            && instruction.prefixes
+                                == (Prefixes {
+                                    rex: Some(0x41),
+                                    operand_override: true,
+                                    ..Prefixes::default()
+                                }))))) =>
         {
             state.write(destination, value);
             state.rip = next_rip;
@@ -27624,7 +29738,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             let Some(source) = rdtsc else {
                 return unsupported();
             };
-            let value = source();
+            let value = match source() {
+                Ok(value) => value,
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
             state.gpr[Register::Rax as usize] = u64::from(value as u32);
             state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
             state.rip = next_rip;
@@ -45249,6 +47366,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::Wbinvd {
+        if context.privilege != PrivilegeLevel::Ring0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        // The interpreter executes in order and has no guest data cache.
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if matches!(instruction.operation, Operation::Cpuid) {
         let Some(cpuid) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
@@ -47260,6 +49389,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
         Operation::Cpuid
+        | Operation::Wbinvd
         | Operation::Rdtsc
         | Operation::Cli
         | Operation::Sti
@@ -50038,6 +52168,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             unreachable!("CR operations commit in their explicit profile path")
         }
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
+        Operation::Wbinvd => unreachable!("WBINVD is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
         Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
         Operation::Sti => unreachable!("STI commits in its profile-gated state path"),
@@ -61684,7 +63815,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector)
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector, false)
                     } else {
                         load_ds_gdt_selector(state, memory, context, selector)
                     };
@@ -61710,7 +63841,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector)
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector, false)
                     } else {
                         load_es_gdt_selector(state, memory, context, selector)
                     };
@@ -61737,7 +63868,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 state.ss_selector = Some(0);
                 state.ss_unusable = true;
             } else {
-                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector) {
+                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector, false) {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(StepOutcome::Unsupported {
@@ -61962,7 +64093,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector)
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector, false)
             } else {
                 load_fs_gdt_selector(state, memory, context, selector)
             };
@@ -61982,7 +64113,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::LoadGsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector)
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector, false)
             } else {
                 load_gs_gdt_selector(state, memory, context, selector)
             };
@@ -62035,19 +64166,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::PushFlags => {
-            // Intel SDM 093 PUSHFW stores the low FLAGS word unchanged, while
-            // PUSHFQ clears VM/RF in the qword image. Neither form modifies
-            // RFLAGS; the selected stack width also controls RSP adjustment.
-            let value = match instruction.operand_size {
-                OperandSize::Word => state.rflags & 0xffff,
-                OperandSize::Qword => state.rflags & 0x00fc_ffff,
-                OperandSize::Byte | OperandSize::Dword => {
-                    unreachable!("long-mode PUSHF supports only word and qword widths")
-                }
-            };
-            if let Err(error) =
-                push_stack_value(state, memory, context, value, instruction.operand_size)
-            {
+            if let Err(error) = push_stack_flags(state, memory, context, instruction.operand_size) {
                 return report_memory_error(error);
             }
         }
@@ -62630,19 +64749,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::PushMemory { source } => {
-            // Resolve and read the complete source with the pre-instruction
-            // state (notably [RSP]), then attempt the bounded write of the
-            // selected word or qword stack item. Neither side commits if
-            // either access faults.
-            let value =
-                match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
-                    Ok(value) => value,
-                    Err(MemoryError::Architectural(fault)) => {
-                        return Ok(StepOutcome::Fault(fault));
-                    }
-                    Err(error) => return Err(error),
-                };
-            if let Err(error) = push_stack_value(state, memory, context, value, source.size) {
+            if let Err(error) = push_stack_source(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
             }
         }
@@ -62682,28 +64789,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && !instruction.prefixes.operand_override
                 && matches!(instruction.prefixes.rex, None | Some(0x48)) =>
         {
-            // S2-50: POPFQ at CPL0 (Intel SDM Vol. 2, POPF/POPFD/POPFQ). IF is
-            // writable because CPL <= IOPL, and IOPL because CPL = 0. RF and VM are
-            // not changed; the layout of the loaded bits is `POPFQ_CPL0_FLAGS`.
-            if state.rflags & POPFQ_CPL0_TF != 0
-                || state.sti_shadow != Some(crate::StiShadow::Clear)
-            {
-                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
-            }
-            let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
-                Ok(address) => address,
+            match popfq_cpl0(state, memory, context) {
+                Ok(true) => {}
+                Ok(false) => return Ok(StepOutcome::Unsupported { opcode: 0x9d }),
                 Err(error) => return report_memory_error(error),
-            };
-            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
-                Ok(value) => value,
-                Err(error) => return report_memory_error(error),
-            };
-            if value & POPFQ_CPL0_TF != 0 {
-                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
             }
-            state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
-            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
         }
         Operation::PopFlags => {
             // This diagnostic slice follows the native user-mode fixture
@@ -62746,35 +64836,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             dst,
             src,
         } => {
-            // CMOVcc performs its source read even when the condition is false.
-            // Resolve/fault the operand before changing any architectural state.
-            let value = match read_operand(state, memory, context, next_rip, src) {
-                Ok(value) => value,
-                Err(MemoryError::Architectural(fault)) => {
-                    return Ok(StepOutcome::Fault(fault));
-                }
+            match conditional_move(state, memory, context, next_rip, condition, dst, src) {
+                Ok(()) => {}
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
                 Err(error) => return Err(error),
-            };
-            if condition.evaluate(state.rflags) {
-                state.write(dst, value);
-            } else if dst.size() == OperandSize::Dword {
-                // In 64-bit mode a 32-bit CMOV destination is zero-extended
-                // even on the false path (Intel SDM CMOVcc operation).
-                let old_low_dword = state.read(dst);
-                state.write(dst, old_low_dword);
             }
         }
         Operation::SignExtendAccumulator { double_width } => {
             sign_extend_accumulator(state, instruction.operand_size, double_width);
         }
         Operation::Bswap { dst } => {
-            let value = state.read(dst);
-            let reversed = match dst.size() {
-                OperandSize::Dword => u64::from((value as u32).swap_bytes()),
-                OperandSize::Qword => value.swap_bytes(),
-                _ => unreachable!("decoder admits only 32- and 64-bit BSWAP"),
-            };
-            state.write(dst, reversed);
+            byte_swap_register(state, dst);
         }
         Operation::Bit { kind, dst, offset } => {
             let size = match dst {
@@ -62840,29 +64912,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
                 Err(error) => return Err(error),
             };
-            let source_size = match src {
-                Operand::Register(view) => view.size(),
-                Operand::Memory(memory) => memory.size,
-                Operand::Immediate(_) => unreachable!("bit-scan source is register or memory"),
-            };
-            let width = operand_width(source_size);
-            let zero = source == 0;
-            if !zero {
-                let index = match kind {
-                    BitScanKind::Forward => source.trailing_zeros(),
-                    BitScanKind::Reverse => width - 1 - (source.leading_zeros() - (64 - width)),
-                };
-                state.write(dst, u64::from(index));
-            }
-            // Intel SDM 093 Vol.2A pp. 3-107, 3-109: ZF indicates zero,
-            // PF indicates even parity of the source, and CF/OF/SF/AF clear.
-            let flags = if zero { crate::ZF } else { 0 }
-                | if source.count_ones() % 2 == 0 {
-                    crate::PF
-                } else {
-                    0
-                };
-            state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS) | flags;
+            commit_bit_scan(state, kind, dst, source);
         }
         Operation::Xadd {
             destination,
@@ -63242,21 +65292,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::Leave => {
-            // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
-            // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
-            // address, #PF otherwise) and only then are RSP and RBP committed; a fault
-            // leaves the state unchanged. RFLAGS and every other register are untouched.
-            let old_rbp = state.gpr[Register::Rbp as usize];
-            let stack_address = match stack_access_address(old_rbp, false, OperandSize::Qword) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
-                Ok(value) => value,
-                Err(error) => return report_memory_error(error),
-            };
-            state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
-            state.gpr[Register::Rbp as usize] = value;
+            if let Err(error) = leave_stack_frame(state, memory, context) {
+                return report_memory_error(error);
+            }
         }
         Operation::FarReturn => {
             return match far_return_cpl0(state, memory, context) {
@@ -63513,6 +65551,25 @@ fn cpl3_scalar_fp_form(instruction: &long_decode::Instruction) -> bool {
         }
         _ => false,
     }
+}
+fn commit_bit_scan(state: &mut LongModeState, kind: BitScanKind, dst: RegisterView, source: u64) {
+    let zero = source == 0;
+    if !zero {
+        let index = match kind {
+            BitScanKind::Forward => source.trailing_zeros(),
+            BitScanKind::Reverse => u64::BITS - 1 - source.leading_zeros(),
+        };
+        state.write(dst, u64::from(index));
+    }
+    // Intel SDM 093 Vol.2A pp. 3-107, 3-109: ZF indicates zero,
+    // PF indicates even parity of the source, and CF/OF/SF/AF clear.
+    let flags = if zero { crate::ZF } else { 0 }
+        | if source.count_ones() % 2 == 0 {
+            crate::PF
+        } else {
+            0
+        };
+    state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS) | flags;
 }
 
 fn operand_width(size: OperandSize) -> u32 {
@@ -66234,6 +68291,7 @@ fn load_sreg_cpl0(
     context: AccessContext,
     register: Cpl0Sreg,
     selector: u16,
+    initialize_cache: bool,
 ) -> Result<bool, MemoryError> {
     let Some(gdtr) = state.gdtr else {
         return Ok(false);
@@ -66245,7 +68303,7 @@ fn load_sreg_cpl0(
         Cpl0Sreg::Fs => state.fs_cache.is_some(),
         Cpl0Sreg::Gs => state.gs_cache.is_some(),
     };
-    if !cache_modeled || selector & 0xfffc == 0 || selector & 4 != 0 {
+    if (!cache_modeled && !initialize_cache) || selector & 0xfffc == 0 || selector & 4 != 0 {
         return Ok(false);
     }
     // CPL is 0 inside the set; the SS selector must carry RPL = CPL.
@@ -66614,6 +68672,16 @@ fn sign_extend_byte_load(dst: RegisterView, value: u64) -> u64 {
     }
 }
 
+fn byte_swap_register(state: &mut LongModeState, destination: RegisterView) {
+    let value = state.read(destination);
+    let reversed = match destination.size() {
+        OperandSize::Dword => u64::from((value as u32).swap_bytes()),
+        OperandSize::Qword => value.swap_bytes(),
+        _ => unreachable!("decoder admits only 32- and 64-bit BSWAP"),
+    };
+    state.write(destination, reversed);
+}
+
 fn sign_extend_accumulator(state: &mut LongModeState, size: OperandSize, double_width: bool) {
     let width = operand_width(size);
     let accumulator = state.read(RegisterView::low(Register::Rax, size));
@@ -66758,6 +68826,18 @@ fn write_implicit_division(
         state.write(RegisterView::low(Register::Rax, size), quotient);
         state.write(RegisterView::low(Register::Rdx, size), remainder);
     }
+}
+
+fn execute_cpuid_leaf(state: &mut LongModeState, profile: CpuidProfile, next_rip: u64) {
+    let result = profile.query(
+        state.gpr[Register::Rax as usize] as u32,
+        state.gpr[Register::Rcx as usize] as u32,
+    );
+    state.gpr[Register::Rax as usize] = u64::from(result.eax);
+    state.gpr[Register::Rbx as usize] = u64::from(result.ebx);
+    state.gpr[Register::Rcx as usize] = u64::from(result.ecx);
+    state.gpr[Register::Rdx as usize] = u64::from(result.edx);
+    state.rip = next_rip;
 }
 
 fn logic_result(
@@ -66998,6 +69078,18 @@ fn stack_access_address(rsp: u64, push: bool, size: OperandSize) -> Result<u64, 
     Ok(address)
 }
 
+fn push_stack_source(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(), MemoryError> {
+    // RSP-relative sources use the stack pointer before the push.
+    let value = read_operand(state, memory, context, next_rip, Operand::Memory(source))?;
+    push_stack_value(state, memory, context, value, source.size)
+}
+
 fn push_stack_value(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -67008,6 +69100,54 @@ fn push_stack_value(
     let address = stack_access_address(state.gpr[Register::Rsp as usize], true, size)?;
     memory.write_integer(address, context, size, value)?;
     state.gpr[Register::Rsp as usize] = address;
+    Ok(())
+}
+
+fn push_stack_flags(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    size: OperandSize,
+) -> Result<(), MemoryError> {
+    // PUSHFQ clears VM and RF in the stored image. PUSHFW uses the low word.
+    let value = match size {
+        OperandSize::Word => state.rflags & 0xffff,
+        OperandSize::Qword => state.rflags & 0x00fc_ffff,
+        OperandSize::Byte | OperandSize::Dword => unreachable!("invalid PUSHF width"),
+    };
+    push_stack_value(state, memory, context, value, size)
+}
+
+fn popfq_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<bool, MemoryError> {
+    if state.rflags & POPFQ_CPL0_TF != 0 || state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return Ok(false);
+    }
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    let stack_address = stack_access_address(old_rsp, false, OperandSize::Qword)?;
+    let value = memory.read_integer(stack_address, context, OperandSize::Qword)?;
+    if value & POPFQ_CPL0_TF != 0 {
+        return Ok(false);
+    }
+    state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
+    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+    Ok(true)
+}
+
+fn leave_stack_frame(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<(), MemoryError> {
+    // Read the old [RBP] first. A stack or page fault commits neither register.
+    let old_rbp = state.gpr[Register::Rbp as usize];
+    let address = stack_access_address(old_rbp, false, OperandSize::Qword)?;
+    let value = memory.read_integer(address, context, OperandSize::Qword)?;
+    state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
+    state.gpr[Register::Rbp as usize] = value;
     Ok(())
 }
 
@@ -68252,6 +70392,18 @@ fn fxrstor64_cpl0(
     context: AccessContext,
     address: u64,
 ) -> Result<(), MemoryError> {
+    let image = read_fxrstor64_narrow(memory, context, address)?;
+    // The cell is borrowed only after every memory callback has returned.
+    let mut fp = cell.borrow_mut();
+    let GuestFpState { x87, sse } = &mut *fp;
+    restore_fxrstor64_image(x87, sse, &image)
+}
+
+fn read_fxrstor64_narrow(
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+) -> Result<[u8; 512], MemoryError> {
     const IMAGE_BYTES: u64 = 512;
     let last = address.checked_add(IMAGE_BYTES - 1);
     if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
@@ -68261,20 +70413,25 @@ fn fxrstor64_cpl0(
     for (index, chunk) in image.chunks_exact_mut(8).enumerate() {
         memory.read(address + (index as u64) * 8, context, chunk)?;
     }
+    Ok(image)
+}
+
+fn restore_fxrstor64_image(
+    x87: &mut crate::state::X87State,
+    sse: &mut crate::state::SseState,
+    image: &[u8; 512],
+) -> Result<(), MemoryError> {
     let loaded_mxcsr = u32::from_le_bytes(image[24..28].try_into().expect("fixed MXCSR field"));
     if loaded_mxcsr & !crate::TARGET_FXSAVE_MXCSR_MASK != 0 {
         return Err(general_protection().into());
     }
-    // The cell is borrowed only after every memory callback has returned.
-    let mut fp = cell.borrow_mut();
-    let mut restored = fp.clone();
     let mut stack = [[0u8; 10]; 8];
     for (logical, slot) in stack.iter_mut().enumerate() {
         slot.copy_from_slice(&image[32 + logical * 16..32 + logical * 16 + 10]);
     }
     apply_fxrstor64_fields(
-        &mut restored.x87,
-        &mut restored.sse,
+        x87,
+        sse,
         image[0..5].try_into().expect("fixed environment field"),
         image[6..16].try_into().expect("fixed environment field"),
         image[16..24].try_into().expect("fixed environment field"),
@@ -68282,7 +70439,6 @@ fn fxrstor64_cpl0(
         &stack,
         image[160..416].try_into().expect("fixed XMM field"),
     );
-    *fp = restored;
     Ok(())
 }
 
@@ -69417,6 +71573,26 @@ fn transfer(
     Ok(())
 }
 
+fn conditional_move(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    condition: ConditionCode,
+    destination: RegisterView,
+    source: Operand,
+) -> Result<(), MemoryError> {
+    // CMOVcc performs its source read even when the condition is false.
+    let value = read_operand(state, memory, context, next_rip, source)?;
+    if condition.evaluate(state.rflags) {
+        state.write(destination, value);
+    } else if destination.size() == OperandSize::Dword {
+        // A false dword CMOV still zero-extends the destination.
+        state.write(destination, state.read(destination));
+    }
+    Ok(())
+}
+
 fn read_operand(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
@@ -69484,6 +71660,23 @@ fn write_operand(
         }
     }
     Ok(())
+}
+
+// Unlocked read-modify-write for a profiled backend. The destination has
+// write intent during the read, and CPU flags are available only after store.
+fn update_memory_operand(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: MemoryOperand,
+    update: impl FnOnce(u64) -> (u64, u64),
+) -> Result<u64, MemoryError> {
+    let address = destination.access_address_48(state, next_rip)?;
+    let old = memory.read_for_write_integer(address, context, destination.size)?;
+    let (value, flags) = update(old);
+    memory.write_integer(address, context, destination.size, value)?;
+    Ok(flags)
 }
 
 /// Width-aware integer arithmetic, using a 128-bit lane for carry/borrow even
@@ -167245,6 +169438,54 @@ mod tests {
     }
 
     #[test]
+    fn wbinvd_retires_without_access_and_respects_privilege_and_lock() {
+        for (code, privilege, expected) in [
+            (
+                &[0x0f, 0x09][..],
+                PrivilegeLevel::Ring0,
+                StepOutcome::Advanced,
+            ),
+            (
+                &[0x0f, 0x09][..],
+                PrivilegeLevel::Ring3,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                &[0xf0, 0x0f, 0x09][..],
+                PrivilegeLevel::Ring0,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+        ] {
+            let mut cpu = LongModeState {
+                rip: 0x1000,
+                rflags: 0xad7,
+                gpr: [0xaa55; 16],
+                ..LongModeState::default()
+            };
+            let mut wanted = cpu.clone();
+            if expected == StepOutcome::Advanced {
+                wanted.rip += 2;
+            }
+            let mut memory = Memory::at(code, 0x1000);
+            let context = AccessContext {
+                privilege,
+                ..AccessContext::default()
+            };
+            assert_eq!(step(&mut cpu, &mut memory, context), Ok(expected));
+            assert_eq!(cpu, wanted);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn cpuid_is_profile_gated_and_preserves_unrelated_state() {
         let code = [0x0f, 0xa2];
         let mut state = LongModeState::default();
@@ -168886,6 +171127,101 @@ mod tests {
         state.activity = Some(crate::CpuActivity::Running);
         state.sti_shadow = Some(crate::StiShadow::Clear);
         state
+    }
+
+    #[test]
+    fn firmware_pkcs7_pushes_only_the_observed_qword_immediates() {
+        struct NoPortIo;
+        impl crate::PortIo for NoPortIo {
+            type Error = ();
+            fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+                Err(())
+            }
+            fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+                Err(())
+            }
+        }
+
+        let stack_state = || {
+            let mut state = paged_lgdt_state(0);
+            state.cr3 = None;
+            state.gpr[Register::Rsp as usize] = 0x1010;
+            state
+        };
+        const DEFINED: u64 = crate::INTEGER_FLAGS & !crate::ZF;
+        for immediate in [0, 0x20] {
+            let mut state = stack_state();
+            let mut expected = state.clone();
+            expected.rip += 2;
+            expected.gpr[Register::Rsp as usize] = 0x1008;
+            let mut memory = Memory::at(&[0x6a, immediate], state.rip);
+            let result = step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut NoPortIo,
+                lgdt_ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(state, expected);
+            assert_eq!(memory.accesses, [(AccessKind::Write, 0x1008, 8)]);
+            assert_eq!(&memory.bytes[8..16], &u64::from(immediate).to_le_bytes());
+        }
+        for code in [&[0x6a, 0xff][..], &[0x66, 0x6a, 0][..], &[0x6a, 0x21][..]] {
+            let mut state = stack_state();
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut NoPortIo,
+                lgdt_ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x6a });
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = stack_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x6a, 0], state.rip);
+        let result = step_paged_probe(
+            PagedCpl0ProbeV1,
+            &mut state,
+            &mut memory,
+            &mut NoPortIo,
+            lgdt_ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x6a });
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = stack_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x6a, 0], state.rip);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(0x1008),
+        };
+        memory.error = Some(MemoryError::Architectural(fault.clone()));
+        memory.error_kind = Some(AccessKind::Write);
+        let result = step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut state,
+            &mut memory,
+            &mut NoPortIo,
+            lgdt_ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 
     #[test]

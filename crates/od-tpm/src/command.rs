@@ -33,7 +33,7 @@ pub const HEADER_SIZE: usize = 10;
 /// Validates the header against the whole command buffer.
 ///
 /// - fewer than 10 octets, or `commandSize` different from the buffer length, or a buffer above
-///   the CRB limit: `TPM_RC_COMMAND_SIZE`;
+///   the maximum assembled command size: `TPM_RC_COMMAND_SIZE`;
 /// - a `tag` other than `TPM_ST_NO_SESSIONS`/`TPM_ST_SESSIONS`: `TPM_RC_TAG` (Part 2, clause 6.6.1,
 ///   for a TPM without TPM 1.2 compatibility).
 pub fn parse_header(cmd: &[u8]) -> Result<Header, Rc> {
@@ -53,15 +53,15 @@ pub fn parse_header(cmd: &[u8]) -> Result<Header, Rc> {
     Ok(Header { tag, size, code })
 }
 
-/// Parses the authorization area that follows the handle area of a `TPM_ST_SESSIONS` command.
-/// `TPM_RC_AUTHSIZE` if `authorizationSize` exceeds the rest of the command, the area holds
-/// more than [`limits::MAX_AUTH_SESSIONS`] sessions or a session is cut off by the area's end.
-// NOT VERIFIED against TPM 2.0 Library v185/v184: TPM_RC_AUTHSIZE при authorizationSize < 9
-// для SESSIONS. `authorizationSize = 0` yields an empty session list here (not an error), so a
-// command without authorizable handles passes; the behaviour is kept, the spec text was not checked.
+/// Parses the authorization area that follows the handle area of a `TPM_ST_SESSIONS` command. A
+/// session takes a nonce and an `hmac` of up to one SHA-512 digest here; the dispatcher narrows the
+/// limit to the hash of each loaded session (`TPM_RC_AUTHSIZE`) and keeps 32 octets for a password
+/// (the password of `TPM_RS_PW` is read here as an `hmac` of up to 64 octets, without narrowing).
+/// Per Part 3 v185 §5.5, the size must cover at least one session header (nine
+/// octets), and the area must contain at most [`limits::MAX_AUTH_SESSIONS`] complete sessions.
 pub fn parse_auth_area(r: &mut Reader<'_>) -> Result<Vec<TpmsAuthCommand>, Rc> {
     let size = r.u32().map_err(|_| Rc::AUTHSIZE)? as usize;
-    if size > r.remaining() {
+    if !(9..=r.remaining()).contains(&size) {
         return Err(Rc::AUTHSIZE);
     }
     let mut area = Reader::new(r.bytes(size)?);
@@ -70,7 +70,10 @@ pub fn parse_auth_area(r: &mut Reader<'_>) -> Result<Vec<TpmsAuthCommand>, Rc> {
         if sessions.len() == limits::MAX_AUTH_SESSIONS {
             return Err(Rc::AUTHSIZE);
         }
-        sessions.push(TpmsAuthCommand::unmarshal(&mut area).map_err(|_| Rc::AUTHSIZE)?);
+        sessions.push(
+            TpmsAuthCommand::unmarshal_up_to(&mut area, limits::MAX_HASH_SIZE)
+                .map_err(|_| Rc::AUTHSIZE)?,
+        );
     }
     Ok(sessions)
 }
@@ -169,13 +172,14 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].hmac, b"x");
         r.finish().unwrap();
-        // Empty area.
-        let mut r = Reader::new(&[0, 0, 0, 0]);
-        assert!(parse_auth_area(&mut r).unwrap().is_empty());
     }
 
     #[test]
     fn auth_area_errors() {
+        assert_eq!(
+            parse_auth_area(&mut Reader::new(&[0, 0, 0, 0])),
+            Err(Rc::AUTHSIZE)
+        );
         // authorizationSize beyond the buffer.
         assert_eq!(
             parse_auth_area(&mut Reader::new(&[0, 0, 0, 9, 1])),

@@ -238,6 +238,7 @@ fn exit_class<E: std::fmt::Debug>(exit: &od_isa::PagedProbeExit<E>) -> &'static 
         TranslationContextChange(_) => "translation_context_change",
         Unsupported { .. } => "unsupported",
         Fault(_) => "fault",
+        FirmwareBreakpointDelivery(_) => "firmware_breakpoint_delivery",
         Backend(_) => "backend_error",
         PortIo(_) => "port_io",
         Rejected(_) => "rejected",

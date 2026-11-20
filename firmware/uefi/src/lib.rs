@@ -11,9 +11,30 @@
 // does not link. S7-04 adds the allocator together with `extern crate alloc`.
 
 pub mod acpi;
+pub mod block;
+pub mod bootmgr;
+pub mod bs;
+pub mod console;
+mod crc32;
+pub mod device_path;
+mod fat;
+pub mod fs;
+pub mod fv;
+pub mod gop;
 pub mod handoff;
+pub mod idt;
 pub mod image;
+pub mod mem;
+mod nvme;
+pub mod paging;
+pub mod pe;
+pub mod rt;
+pub mod secure_boot;
+pub mod smbios;
 pub mod stop;
+pub mod tpm;
+pub mod uefi;
+pub mod var;
 
 /// GPA of the handoff block passed in `RDI` at firmware entry (FIRMWARE_BOOT.md, section 5).
 pub const HANDOFF_GPA: u64 = 0x0010_0000;

@@ -47,6 +47,10 @@ struct Run {
 }
 
 fn invoke(image: &[u8], budget: &str) -> Run {
+    invoke_with_args(image, budget, &[])
+}
+
+fn invoke_with_args(image: &[u8], budget: &str, extra: &[&str]) -> Run {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir();
     let bin = dir.join(format!("od-runner-fw-{}-{id}.bin", std::process::id()));
@@ -59,10 +63,183 @@ fn invoke(image: &[u8], budget: &str) -> Run {
         .arg("--com1-out")
         .arg(&com1)
         .args(["--budget", budget])
+        .args(extra)
         .output()
         .unwrap();
     fs::remove_file(&bin).unwrap();
     Run { output, com1 }
+}
+
+#[test]
+fn fv_app_rejects_invalid_selection_before_launch() {
+    let legacy = image(&[0xf4]);
+    for (extra, error) in [
+        (
+            &["--fv-app", "other"][..],
+            "expected hello, ebs, vars, rt, acpi, gop, blk, fs or tpm",
+        ),
+        (
+            &["--fv-app", "hello", "--fv-app", "ebs"][..],
+            "duplicate option --fv-app",
+        ),
+        (
+            &["--fv-app", "blk"][..],
+            "--fv-app blk requires --nvme-image",
+        ),
+        (&["--fv-app", "fs"][..], "--fv-app fs requires --nvme-image"),
+    ] {
+        let run = invoke_with_args(&legacy, "64", extra);
+        assert_eq!(run.output.status.code(), Some(3));
+        let result = report(&run);
+        assert_eq!(result["status"], "invalid_input");
+        assert!(result["error"]["detail"].as_str().unwrap().contains(error));
+        assert!(!run.com1.exists());
+    }
+}
+
+#[test]
+fn storage_app_requires_a_compatible_rom_and_rejects_nvme_output_alias() {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("od-runner-disk-{}-{id}.raw", std::process::id()));
+    let sector = [0xa5; 512];
+    fs::write(&path, sector).unwrap();
+    for (app, max_minor) in [("blk", 10u16), ("fs", 11)] {
+        let mut rom = image(&[0xf4]);
+        rom[0x2a..0x2c].copy_from_slice(&max_minor.to_le_bytes());
+        rom[0x30..0x34].fill(0);
+        let crc = crc32(&rom);
+        rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+        let run = invoke_with_args(
+            &rom,
+            "64",
+            &["--fv-app", app, "--nvme-image", path.to_str().unwrap()],
+        );
+        assert_eq!(run.output.status.code(), Some(4));
+        let report = report(&run);
+        assert_eq!(report["status"], "loader_error");
+        assert!(
+            report["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("handoff_minor_max")
+        );
+        assert!(!run.com1.exists());
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .args([
+            "boot-firmware",
+            "--image",
+            "unused",
+            "--budget",
+            "64",
+            "--fv-app",
+            "blk",
+            "--nvme-image",
+        ])
+        .arg(&path)
+        .arg("--com1-out")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["error"]["kind"], "paths");
+    assert_eq!(fs::read(&path).unwrap(), sector);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn fv_app_requires_a_compatible_firmware_before_launch() {
+    let legacy = image(&[0xf4]);
+    for app in ["ebs", "rt"] {
+        let run = invoke_with_args(&legacy, "64", &["--fv-app", app]);
+        assert_eq!(run.output.status.code(), Some(4));
+        let result = report(&run);
+        assert_eq!(result["status"], "loader_error");
+        assert!(
+            result["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("handoff_minor_max")
+        );
+        assert!(!run.com1.exists());
+    }
+}
+
+#[test]
+fn nvram_snapshot_round_trips_and_cannot_alias_input() {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("od-runner-nvram-{}-{id}", std::process::id()));
+    let input = base.with_extension("in");
+    let output = base.with_extension("out");
+    let snapshot = od_machine::NvramDevice::new().nvram_snapshot();
+    fs::write(&input, &snapshot).unwrap();
+    let mut rom = image(&[0xf4]);
+    rom[0x2a..0x2c].copy_from_slice(&7u16.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+
+    let input_path = input.to_str().unwrap();
+    let valid = invoke_with_args(
+        &rom,
+        "64",
+        &[
+            "--nvram-in",
+            input_path,
+            "--nvram-out",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(valid.output.status.code(), Some(0));
+    assert_eq!(
+        report(&valid)["nvram_snapshot_sha256"],
+        sha256_hex(&snapshot)
+    );
+    assert_eq!(fs::read(&output).unwrap(), snapshot);
+    let alias = invoke_with_args(
+        &rom,
+        "64",
+        &["--nvram-in", input_path, "--nvram-out", input_path],
+    );
+    assert_eq!(alias.output.status.code(), Some(3));
+    assert_eq!(report(&alias)["error"]["kind"], "paths");
+    assert_eq!(fs::read(&input).unwrap(), snapshot);
+    assert!(!alias.com1.exists());
+
+    fs::write(&input, b"short").unwrap();
+    let truncated = invoke_with_args(&rom, "64", &["--nvram-in", input_path]);
+    assert_eq!(truncated.output.status.code(), Some(3));
+    assert_eq!(report(&truncated)["error"]["kind"], "nvram_in");
+    assert!(!truncated.com1.exists());
+    fs::remove_file(valid.com1).unwrap();
+    fs::remove_file(input).unwrap();
+    fs::remove_file(&output).unwrap();
+
+    let alternate = output.with_extension("OUT");
+    fs::write(&output, b"probe").unwrap();
+    let case_insensitive = alternate.exists();
+    fs::remove_file(&output).unwrap();
+    if case_insensitive {
+        let alias = invoke_with_args(
+            &rom,
+            "64",
+            &[
+                "--fv-app",
+                "vars",
+                "--nvram-out",
+                output.to_str().unwrap(),
+                "--nvram-reboot-out",
+                alternate.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(alias.output.status.code(), Some(3));
+        assert_eq!(report(&alias)["error"]["kind"], "paths");
+        assert_eq!(fs::read(&output).unwrap(), snapshot);
+        fs::remove_file(alias.com1).unwrap();
+        fs::remove_file(output).unwrap();
+    }
 }
 
 fn report(run: &Run) -> Value {

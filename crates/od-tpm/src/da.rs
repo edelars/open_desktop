@@ -101,6 +101,14 @@ pub(crate) enum DaClass {
     Lockout,
 }
 
+/// An authorization can prove the target's secret and use a session whose
+/// key was derived from a different entity's secret.
+#[derive(Clone, Copy)]
+pub(crate) struct DaProtection {
+    pub target: DaClass,
+    pub bind: DaClass,
+}
+
 impl Tpm {
     /// DA is on while `recoveryTime` is not zero (Part 3, 25.3.1).
     fn da_active(&self) -> bool {
@@ -200,28 +208,28 @@ impl Tpm {
 
     /// The lockout check that precedes an authorization (Part 3, clause 5.6, step 3): a
     /// DA-protected authValue is `TPM_RC_LOCKOUT` in lockout; `lockoutAuth` while disabled too.
-    pub(crate) fn da_check(&self, class: DaClass) -> Result<(), Rc> {
-        match class {
-            DaClass::Exempt => Ok(()),
-            DaClass::Protected if self.da_in_lockout() => Err(Rc::LOCKOUT),
-            DaClass::Protected => Ok(()),
-            DaClass::Lockout if !self.persistent.da.lockout_auth_enabled => Err(Rc::LOCKOUT),
-            DaClass::Lockout => Ok(()),
+    pub(crate) fn da_check(&self, protection: DaProtection) -> Result<(), Rc> {
+        let classes = [protection.target, protection.bind];
+        if (classes.contains(&DaClass::Protected) && self.da_in_lockout())
+            || (classes.contains(&DaClass::Lockout) && !self.persistent.da.lockout_auth_enabled)
+        {
+            Err(Rc::LOCKOUT)
+        } else {
+            Ok(())
         }
     }
 
-    /// Records a wrong authValue of an entity of `class` and returns the response code for
-    /// session number `session` (one-based).
-    pub(crate) fn da_auth_failed(&mut self, class: DaClass, session: u8) -> Rc {
+    /// Records a failed proof and returns the response code for the one-based
+    /// session number. LockoutAuth protection has priority when involved.
+    pub(crate) fn da_auth_failed(&mut self, protection: DaProtection, session: u8) -> Rc {
         let now = self.power_ms;
-        match class {
-            DaClass::Exempt => Rc::BAD_AUTH.in_session(session),
-            DaClass::Lockout => {
+        match (protection.target, protection.bind) {
+            (DaClass::Lockout, _) | (_, DaClass::Lockout) => {
                 self.persistent.da.lockout_auth_enabled = false;
                 self.da_v.lockout_fail_ms = now;
                 Rc::AUTH_FAIL.in_session(session)
             }
-            DaClass::Protected => {
+            (DaClass::Protected, _) | (_, DaClass::Protected) => {
                 if !self.da_active() {
                     return Rc::BAD_AUTH.in_session(session);
                 }
@@ -230,11 +238,12 @@ impl Tpm {
                 self.da_v.heal_epoch_ms = now;
                 Rc::AUTH_FAIL.in_session(session)
             }
+            (DaClass::Exempt, DaClass::Exempt) => Rc::BAD_AUTH.in_session(session),
         }
     }
 
-    /// `TPM2_DictionaryAttackLockReset` (Part 3, clause 25.2): `failedTries` to zero (and
-    /// `lockoutAuth` enabled: the command ran, so it was). Authorized by `lockoutAuth`.
+    /// `TPM2_DictionaryAttackLockReset` (Part 3 §25.2): clears failed tries and
+    /// reenables lockoutAuth. The Lockout policy also authorizes recovery.
     pub(crate) fn cmd_dictionary_attack_lock_reset(
         &mut self,
         p: &mut Reader<'_>,

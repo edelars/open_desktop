@@ -26,8 +26,26 @@ pub const STOP_HANDOFF_TSC: u8 = 0x0A;
 pub const STOP_HANDOFF_SERIAL: u8 = 0x0B;
 /// Firmware shadow reservation does not match the linked image range.
 pub const STOP_HANDOFF_SHADOW: u8 = 0x0C;
+/// Handoff firmware-volume application selector is invalid.
+pub const STOP_HANDOFF_FV_APP: u8 = 0x0D;
+/// Unhandled exception delivered through the firmware IDT.
+pub const STOP_EXCEPTION: u8 = 0x10;
+/// The selected application returned and no further boot option is available.
+pub const STOP_NO_BOOT_OPTIONS: u8 = 0x21;
+/// ResetSystem could not stop the machine using the advertised hardware.
+pub const STOP_RESET_UNAVAILABLE: u8 = 0x22;
 /// Internal firmware error (panic handler).
 pub const STOP_INTERNAL: u8 = 0x30;
+/// Firmware-owned page tables could not be prepared.
+pub const STOP_PAGING: u8 = 0x31;
+/// The initial EFI memory map could not be produced.
+pub const STOP_MEMORY_MAP: u8 = 0x32;
+/// The bootstrap page allocator failed.
+pub const STOP_PAGE_ALLOCATOR: u8 = 0x33;
+/// The firmware pool allocator failed its boot verification.
+pub const STOP_POOL_ALLOCATOR: u8 = 0x34;
+/// A private UEFI Boot Services call failed the guest smoke check.
+pub const STOP_BOOT_SERVICES: u8 = 0x35;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";
@@ -52,14 +70,19 @@ pub fn format_stop_line(code: u8, detail: u64) -> [u8; STOP_LINE_LEN] {
         &mut line,
     );
     put(MIDDLE, &mut line);
-    let mut digits = [0u8; 16];
-    for (index, digit) in digits.iter_mut().enumerate() {
-        *digit = HEX[((detail >> (60 - 4 * index)) & 0xF) as usize];
-    }
-    put(&digits, &mut line);
+    put(&fixed_hex(detail), &mut line);
     put(SUFFIX, &mut line);
     debug_assert_eq!(at, STOP_LINE_LEN);
     line
+}
+
+/// Renders 16 upper-case hexadecimal digits without a prefix.
+pub fn fixed_hex(value: u64) -> [u8; 16] {
+    let mut digits = [0u8; 16];
+    for (index, digit) in digits.iter_mut().enumerate() {
+        *digit = HEX[((value >> (60 - 4 * index)) & 0xf) as usize];
+    }
+    digits
 }
 
 #[cfg(test)]

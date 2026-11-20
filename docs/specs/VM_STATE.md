@@ -69,15 +69,17 @@
 
 | Компонент | Код | Статус |
 |---|---|---|
-| UEFI variables | `firmware/uefi/src/` — прошивка без variable store (проверено 2026-11-18) | Отсутствует; этап 7, S7-09/S7-10 ([план](../plans/STAGE_7.md)). Блокирует S9-26 и `full-windows-vm` |
-| vTPM 2.0 | Нет кода ни в одном crate | Отсутствует; этап 7 ([план](../plans/STAGE_7.md)). Блокирует S9-27 и `full-windows-vm` |
+| UEFI variables | `firmware/uefi/src/var/`, `od-machine::NvramDevice` | Снимок двух банков `ODNVBANK` v1/v2, создание платы из байтов и первичная настройка защищённых ключей доступны. Persistence в bundle и согласованный checkpoint входят в S9-26. [Контракт NVRAM](NVRAM_DEVICE.md#host-api) |
+| vTPM 2.0 | `od-tpm`, CRB и host API в `od-machine` | Доступен снимок постоянного состояния `ODTPMSTA` v6 между квантами, включая запрошенное выделение банков PCR. Читаются v3–v6. Восстановление идёт через конфигурацию новой платы. S9-27 определяет шифрование, хранение, согласованный захват и политику отката. [Контракт TPM](VTPM.md#host-api-и-persistence) |
 | Guest agents | `guest/linux/agent/src/`, `guest/windows/agent/src/` — `.gitkeep`; `protocols/guest/` — `.gitkeep` | Отсутствуют; S9-34 опционален |
+
+Контракты в этой таблице отражают текущую реализацию. Для UEFI сохраняются байты зафиксированных банков. Для TPM сохраняются только поля persistent state, а PCR, сессии и прочее состояние работающего экземпляра требуют самостоятельного контракта захвата. Интерфейсы Secure Boot приняты по S7-24. Полный профиль PTP 1.07 проходит S7-23. [Передача форматов и границ](../plans/STAGE_7.md#s7-33-передать-контракты-persistence-этапу-9).
 
 ### 2.5. Вывод S9-01
 
 **Storage-prerequisites (есть в коде, не зависят от §2.2–§2.4).** `od-storage` не импортирует `od-machine`/`od-isa`/`od-jit`/`od-host`. Реализованы: I/O contract и RAW (production), host file backend с exclusive writer lock, `ReadLease`, busy-политика export/repair с `ParentLease` и file-data flush на macOS (`od-host`), fault backend и CoW v1 create/open/parse/transaction/recovery, snapshot-слой с цепочками и compaction, export/import и salvage, CLI image-tool (только `test-support`; обновлено 2026-11-18), storage-замеры S9-40. Не реализованы: namespace durability, repair-подкоманда, интеграция с VMHost.
 
-**Full-VM prerequisites (заблокированы).** S9-13 — нет guest storage device и PCI (S4-30, этап 5). S9-24 — нет единого versioned owner CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)), у RAM нет codec. S9-25 — `BusDevice` без save/load, APIC/IOAPIC/timer отсутствуют (S4-22, S4-23, S4-25…28). S9-26/27 — нет UEFI и vTPM (этап 7). S9-28 — нет safe-point barrier (S4-21). S9-34 — нет guest agents и `protocols/guest`. S9-23 (manifest contract и local tests) можно проектировать заранее, но S9-24…27 требуют реальных owners.
+**Full-VM prerequisites (заблокированы).** S9-13 — нет guest storage device и PCI (S4-30, этап 5). S9-24 — нет единого versioned owner CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)), у RAM нет codec. S9-25 — `BusDevice` без save/load, APIC/IOAPIC/timer отсутствуют (S4-22, S4-23, S4-25…28). S9-26/27 — доступны форматы постоянного состояния и API из §2.4. Нужны защита, политика отката и включение этих owners в согласованную операцию. S9-28 — нет safe-point barrier (S4-21). S9-34 — нет guest agents и `protocols/guest`. S9-23 (manifest contract и local tests) можно проектировать заранее, но S9-24…27 требуют реальных owners.
 
 **Следующий runnable storage slice (обновлено 2026-11-18): итоговый набор S9-42.** S9-43 заблокирован: план требует ревьюера `gpt-6.1-sol`. S9-40 выполнен в доступном объёме ([S9_40_CHAIN_EXPORT_COMPACT.md](../testing/S9_40_CHAIN_EXPORT_COMPACT.md)), формат CoW v1 принят 2026-11-06. Почему не другие срезы: остаток S9-04 требует дисков VMHost (интеграция с VMHost lifecycle; resolver цепочки в VMHost); namespace-часть S9-06 ждёт проверяемого источника ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); S9-13 заблокирован устройством; S9-22: путь RAW → v1 через `import` есть, миграции между версиями CoW нет (второй версии нет).
 

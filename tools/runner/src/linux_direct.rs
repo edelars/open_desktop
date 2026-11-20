@@ -5349,7 +5349,7 @@ mod tests {
         let mut case = Case::new("compute-up", &img, &[], blob);
         let options = &mut case.options;
         options.expected_acpi_manifest_hash =
-            parse_hash("a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af").unwrap();
+            parse_hash("94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a").unwrap();
         options.rootfs_raw = Some("working.raw".into());
         options.s6_compute = Some("1,4097,ec4675d8578a4e14".into());
         options.s6_timing = true;
@@ -5539,7 +5539,7 @@ mod tests {
     fn linux_direct_raw_run_reserves_a_distinct_report_and_uses_image_geometry() {
         use std::os::unix::fs::symlink;
 
-        let expected_manifest = "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af";
+        let expected_manifest = "94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a";
         let blob =
             include_bytes!("../../../tests/fixtures/guest/stage6/smp-init/acpi-nvme-2-vcpus.bin");
         let case = Case::new("disk-smp", &bzimage_with_entry(&[0xf4]), &[], blob);

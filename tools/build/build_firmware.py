@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build the Open Desktop firmware ROM image (S7-01).
 
-Pipeline: `cargo build --target x86_64-unknown-none` in firmware/uefi (build.rs assembles
+The x64 UEFI runtime driver is built first and packed into the firmware volume.
+`cargo build --target x86_64-unknown-none` in firmware/uefi (build.rs assembles
 start.S with the system clang and links with firmware/uefi/linker.ld) -> ELF -> `rust-objcopy -O
 binary` -> flat raw bytes -> ODFWIMG1 header + zero padding to exactly 0x400000 bytes.
 
-The image format is docs/specs/FIRMWARE_BOOT.md, section 3.2. The result of S7-01 is a build
-skeleton that proves the toolchain works; it is not a firmware implementation.
+The image format is docs/specs/FIRMWARE_BOOT.md, section 3.2.
 
 `--efi-probe <path>` is a separate mode: it builds firmware/uefi/probe/efi_probe for
 `x86_64-unknown-uefi`, checks the PE32+ headers (Machine, magic, Subsystem, `.reloc`, base
@@ -28,6 +28,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,9 +47,14 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
+TEST_APPS = ("acpi", "blk", "ebs", "echo", "fs", "gop", "hello", "rt", "tpm", "vars")
+FV_MAGIC = b"ODFVARC\0"
+FV_VERSION = 1
+FV_HEADER_SIZE = 24
 PE_MACHINE_X64 = 0x8664
 PE32_PLUS_MAGIC = 0x20B
 PE_SUBSYSTEM_EFI_APPLICATION = 10
+PE_SUBSYSTEM_EFI_RUNTIME_DRIVER = 12
 PE_DIRECTORY_BASERELOC = 5
 
 IMAGE_MAGIC = b"ODFWIMG1"
@@ -57,7 +63,7 @@ HEADER_SIZE = 0x40
 IMAGE_SIZE = 0x0040_0000
 LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
-HANDOFF_MINOR_MAX = 4
+HANDOFF_MINOR_MAX = 16
 CRC_OFFSET = 0x30
 
 # --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
@@ -79,7 +85,7 @@ def crc32_ieee(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFF_FFFF
 
 
-def build_header(entry_offset: int, crc: int = 0) -> bytes:
+def build_header(entry_offset: int, crc: int = 0, *, handoff_minor_max: int = HANDOFF_MINOR_MAX) -> bytes:
     header = bytearray(HEADER_SIZE)
     struct.pack_into(
         "<8sIIQQQHHII",
@@ -92,7 +98,7 @@ def build_header(entry_offset: int, crc: int = 0) -> bytes:
         LINK_BASE,
         entry_offset,
         HANDOFF_MAJOR,
-        HANDOFF_MINOR_MAX,
+        handoff_minor_max,
         0,
         crc,
     )
@@ -104,7 +110,7 @@ def image_crc(image: bytes) -> int:
     return crc32_ieee(image[:CRC_OFFSET] + b"\0\0\0\0" + image[CRC_OFFSET + 4 :])
 
 
-def assemble_image(raw: bytes, entry_offset: int) -> bytes:
+def assemble_image(raw: bytes, entry_offset: int, *, handoff_minor_max: int = HANDOFF_MINOR_MAX) -> bytes:
     """Put the header in front of the flat bytes and pad to exactly IMAGE_SIZE."""
     if len(raw) <= HEADER_SIZE:
         raise BuildError(f"flat image is only {len(raw):#x} bytes, no code after the {HEADER_SIZE:#x}-byte header")
@@ -116,7 +122,7 @@ def assemble_image(raw: bytes, entry_offset: int) -> bytes:
         raise BuildError(f"entry offset {entry_offset:#x} is outside [{HEADER_SIZE:#x}, {IMAGE_SIZE:#x})")
     image = bytearray(IMAGE_SIZE)
     image[: len(raw)] = raw
-    image[:HEADER_SIZE] = build_header(entry_offset)
+    image[:HEADER_SIZE] = build_header(entry_offset, handoff_minor_max=handoff_minor_max)
     struct.pack_into("<I", image, CRC_OFFSET, image_crc(bytes(image)))
     return bytes(image)
 
@@ -202,11 +208,11 @@ def inspect_elf(elf: bytes) -> tuple[int, int, int]:
 # --- PE32+ checks (EFI probe) ------------------------------------------------------------------
 
 
-def inspect_pe(pe: bytes) -> dict[str, int]:
-    """Check that `pe` is an x86-64 PE32+ EFI application with a base relocation table.
+def inspect_pe(pe: bytes, expected_subsystem: int = PE_SUBSYSTEM_EFI_APPLICATION) -> dict[str, int]:
+    """Check that `pe` is an x86-64 PE32+ EFI image with a base relocation table.
 
-    Checked: MZ/PE signatures, Machine = 0x8664, optional header magic = 0x20B, Subsystem = 10
-    (EFI_APPLICATION), a section named `.reloc` and DataDirectory[5] (Base Relocation Table)
+    Checked: MZ/PE signatures, Machine = 0x8664, optional header magic = 0x20B, the expected
+    subsystem, a section named `.reloc` and DataDirectory[5] (Base Relocation Table)
     pointing inside that section. Returns the decoded fields.
     """
     if len(pe) < 0x40 or pe[:2] != b"MZ":
@@ -228,8 +234,8 @@ def inspect_pe(pe: bytes) -> dict[str, int]:
     if optional_size < 112:
         raise BuildError("PE32+ optional header is shorter than the fixed part")
     subsystem = struct.unpack_from("<H", pe, optional + 68)[0]
-    if subsystem != PE_SUBSYSTEM_EFI_APPLICATION:
-        raise BuildError(f"PE Subsystem is {subsystem}, expected {PE_SUBSYSTEM_EFI_APPLICATION} (EFI_APPLICATION)")
+    if subsystem != expected_subsystem:
+        raise BuildError(f"PE Subsystem is {subsystem}, expected {expected_subsystem}")
     directory_count = struct.unpack_from("<I", pe, optional + 108)[0]
     directory_base = optional + 112
     if directory_count <= PE_DIRECTORY_BASERELOC or directory_base + 8 * directory_count > optional + optional_size:
@@ -256,6 +262,7 @@ def inspect_pe(pe: bytes) -> dict[str, int]:
         "machine": machine,
         "magic": magic,
         "subsystem": subsystem,
+        "entry_rva": struct.unpack_from("<I", pe, optional + 16)[0],
         "sections": section_count,
         "reloc_rva": reloc_rva,
         "reloc_size": reloc_size,
@@ -333,13 +340,40 @@ def resolve_tools(env: Mapping[str, str] | None = None) -> Tools:
 # --- Build ------------------------------------------------------------------------------------
 
 
-def build_elf(tools: Tools, target_dir: Path) -> Path:
+def pack_fv(files: Mapping[str, bytes]) -> bytes:
+    """Pack the built-in firmware volume in sorted name order."""
+    archive = bytearray(FV_HEADER_SIZE)
+    for name, data in sorted(files.items()):
+        if (
+            not 1 <= len(name) <= 63
+            or name in (".", "..")
+            or any(char not in "abcdefghijklmnopqrstuvwxyz0123456789._-" for char in name)
+        ):
+            raise BuildError(f"invalid FV name: {name!r}")
+        if not data:
+            raise BuildError(f"empty FV file: {name}")
+        if len(archive) + 8 + len(name) + len(data) > IMAGE_SIZE:
+            raise BuildError("firmware volume exceeds the ROM capacity")
+        archive.extend(struct.pack("<HHI", len(name), 0, len(data)))
+        archive.extend(name.encode("ascii"))
+        archive.extend(data)
+    struct.pack_into(
+        "<8sHHIII", archive, 0, FV_MAGIC, FV_VERSION, FV_HEADER_SIZE, len(archive), len(files), 0,
+    )
+    struct.pack_into("<I", archive, 20, crc32_ieee(archive))
+    return bytes(archive)
+
+
+def build_elf(tools: Tools, target_dir: Path, *, fv_archive: Path | None = None) -> Path:
     env = dict(tools.tool_env)
     # RUSTFLAGS would replace firmware/uefi/.cargo/config.toml (relocation-model=static).
     env.pop("RUSTFLAGS", None)
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["OD_FW_CLANG"] = str(tools.clang)
+    env.pop("OD_FW_FV_ARCHIVE", None)
+    if fv_archive is not None:
+        env["OD_FW_FV_ARCHIVE"] = str(fv_archive)
     # cwd must be inside firmware/uefi: cargo reads .cargo/config.toml relative to the cwd.
     _run(
         [str(tools.cargo), "build", "--release", "--target", TARGET, "--offline"],
@@ -352,8 +386,10 @@ def build_elf(tools: Tools, target_dir: Path) -> Path:
     return elf
 
 
-def build_image(tools: Tools, target_dir: Path, out: Path) -> tuple[bytes, dict[str, int]]:
-    elf_path = build_elf(tools, target_dir)
+def build_image(
+    tools: Tools, target_dir: Path, out: Path, *, fv_archive: Path | None = None,
+) -> tuple[bytes, dict[str, int]]:
+    elf_path = build_elf(tools, target_dir, fv_archive=fv_archive)
     elf = elf_path.read_bytes()
     entry, offset, filesz = inspect_elf(elf)
     raw_path = elf_path.with_suffix(".raw")
@@ -434,6 +470,57 @@ def build_probe(tools: ProbeTools, target_dir: Path, out: Path) -> tuple[bytes, 
     return pe, fields
 
 
+def build_runtime_driver(tools: ProbeTools, target_dir: Path) -> bytes:
+    env = dict(tools.tool_env)
+    env.pop("RUSTFLAGS", None)
+    env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    _run(
+        [str(tools.cargo), "build", "--release", "--target", PROBE_TARGET,
+         "--bin", "od-runtime", "--features", "runtime-driver", "--locked", "--offline"],
+        env=env,
+        cwd=FIRMWARE_DIR,
+    )
+    artifact = target_dir / PROBE_TARGET / "release" / "od-runtime.efi"
+    if not artifact.is_file():
+        raise BuildError(f"cargo did not produce {artifact}")
+    pe = artifact.read_bytes()
+    inspect_pe(pe, PE_SUBSYSTEM_EFI_RUNTIME_DRIVER)
+    return pe
+
+
+def build_test_apps(tools: ProbeTools, target_dir: Path) -> dict[str, bytes]:
+    env = dict(tools.tool_env)
+    env.pop("RUSTFLAGS", None)
+    env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    _run(
+        [str(tools.cargo), "build", "--release", "--target", PROBE_TARGET, "--locked", "--offline"],
+        env=env,
+        cwd=FIRMWARE_DIR / "tests/apps",
+    )
+    files = {}
+    for name in TEST_APPS:
+        artifact = target_dir / PROBE_TARGET / "release" / f"{name}.efi"
+        if not artifact.is_file():
+            raise BuildError(f"cargo did not produce {artifact}")
+        files[name] = artifact.read_bytes()
+    return files
+
+
+def write_fv_archive(target_dir: Path, archive: bytes) -> Path:
+    archive_dir = target_dir / "fv" / hashlib.sha256(archive).hexdigest()
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    path = archive_dir / "archive.bin"
+    if path.is_file() and path.read_bytes() == archive:
+        return path
+    with tempfile.TemporaryDirectory(dir=archive_dir) as directory:
+        temporary = Path(directory) / path.name
+        temporary.write_bytes(archive)
+        temporary.replace(path)
+    return path
+
+
 def tool_versions(tools: Tools) -> list[str]:
     lines = [
         _run([str(tools.rustc), "--version"], env=tools.tool_env),
@@ -463,6 +550,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "check its headers and write the .efi to PATH",
     )
     parser.add_argument(
+        "--acpi-blob",
+        type=Path,
+        metavar="HANDOFF.BIN",
+        help="build the freestanding data-only ACPI blob for this sealed handoff block",
+    )
+    parser.add_argument(
+        "--compare-acpi-guest",
+        type=Path,
+        metavar="MEMORY.BIN",
+        help="compare an ACPI blob build with the guest reservations from boot-firmware --acpi-out",
+    )
+    parser.add_argument(
         "--smoke",
         action="store_true",
         help="instead of the ROM image: write the minimal smoke image (entry code writes 'X' to COM1) to --out (default: work/stage7/mini.bin, never the real firmware.bin); "
@@ -474,15 +573,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_TARGET_DIR,
         help=f"cargo target directory (default: {DEFAULT_TARGET_DIR.relative_to(ROOT)})",
     )
+    parser.add_argument(
+        "--with-test-apps",
+        action="store_true",
+        help="build and embed the test EFI applications in the firmware volume",
+    )
     args = parser.parse_args(argv)
+    if args.acpi_blob is not None and (args.smoke or args.efi_probe is not None):
+        parser.error("--acpi-blob is a separate build mode")
+    if args.compare_acpi_guest is not None and args.acpi_blob is None:
+        parser.error("--compare-acpi-guest requires --acpi-blob")
+    if args.with_test_apps and (args.smoke or args.efi_probe is not None or args.acpi_blob is not None):
+        parser.error("--with-test-apps requires a ROM build")
     if args.out is None:
         args.out = DEFAULT_SMOKE_OUT if args.smoke else DEFAULT_OUT
+        if args.acpi_blob is not None:
+            args.out = DEFAULT_OUT.with_name("acpi_blob.bin")
     return args
 
 
 def build_smoke_image() -> bytes:
     """The --smoke image: the v1 header followed directly by SMOKE_CODE (entry_offset = header size)."""
-    image = assemble_image(bytes(HEADER_SIZE) + SMOKE_CODE, HEADER_SIZE)
+    # The standalone smoke entry has no path for launching an FV application.
+    image = assemble_image(bytes(HEADER_SIZE) + SMOKE_CODE, HEADER_SIZE, handoff_minor_max=4)
     validate_image(image)
     return image
 
@@ -527,6 +640,37 @@ def main_efi_probe(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.acpi_blob is not None:
+        from build_stage4_acpi_blob import BuildError as AcpiBuildError
+        from build_stage4_acpi_blob import build_elf as build_acpi_elf
+        from build_stage4_acpi_blob import compare_guest_memory, extract_section, parse_blob
+
+        try:
+            if args.out.resolve() == args.acpi_blob.resolve() or (
+                args.out.exists() and args.acpi_blob.exists() and args.out.samefile(args.acpi_blob)
+            ):
+                raise AcpiBuildError("the ACPI output and handoff input must be distinct")
+            elf = build_acpi_elf(args.target_dir.absolute(), handoff=args.acpi_blob)
+            blob = extract_section(elf.read_bytes())
+            metadata = parse_blob(blob)
+            if args.compare_acpi_guest is not None:
+                if args.out.resolve() == args.compare_acpi_guest.resolve() or (
+                    args.out.exists() and args.compare_acpi_guest.exists()
+                    and args.out.samefile(args.compare_acpi_guest)
+                ):
+                    raise AcpiBuildError("the ACPI output and guest-memory input must be distinct")
+                compare_guest_memory(blob, args.compare_acpi_guest.read_bytes(), metadata)
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_bytes(blob)
+        except (AcpiBuildError, OSError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        print(f"ACPI blob: {args.out}")
+        print(f"size: {len(blob):#x} ({len(blob)} bytes)")
+        print(f"sha256: {hashlib.sha256(blob).hexdigest()}")
+        if args.compare_acpi_guest is not None:
+            print("ACPI reclaim and NVS bytes equal guest memory")
+        return 0
     if args.smoke:
         if args.efi_probe is not None:
             print("error: --smoke and --efi-probe are mutually exclusive", file=sys.stderr)
@@ -536,7 +680,13 @@ def main(argv: list[str] | None = None) -> int:
         return main_efi_probe(args)
     try:
         tools = resolve_tools()
-        image, fields = build_image(tools, args.target_dir.absolute(), args.out.absolute())
+        target_dir = args.target_dir.absolute()
+        pe_tools = resolve_probe_tools()
+        fv_files = {"runtime": build_runtime_driver(pe_tools, target_dir / "runtime")}
+        if args.with_test_apps:
+            fv_files.update(build_test_apps(pe_tools, target_dir / "test-apps"))
+        fv_archive = write_fv_archive(target_dir, pack_fv(fv_files))
+        image, fields = build_image(tools, fv_archive.parent, args.out.absolute(), fv_archive=fv_archive)
         versions = tool_versions(tools)
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)

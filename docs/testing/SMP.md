@@ -553,7 +553,7 @@ target/release/od-runner linux-direct \
   --vmlinuz "$kernel" --initramfs "$overlay" \
   --acpi-blob tests/fixtures/guest/stage6/smp-init/acpi-nvme-2-vcpus.bin \
   --expected-vmlinuz-sha256 "$kernel_sha256" --expected-initramfs-sha256 "$overlay_sha256" \
-  --expected-acpi-manifest-hash a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af \
+  --expected-acpi-manifest-hash 94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a \
   --ram-mib 128 --nonce "$nonce" --out "$run_dir/boot.json" \
   --rootfs-raw "$run_dir/working.raw" --run --budget "$budget" \
   --set-cpl0 --cpuid-profile stage4a-apic --user-mode --vcpus 2 --seed 24301

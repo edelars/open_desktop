@@ -2358,7 +2358,7 @@ mod tests {
                 board.local_apic_of(cpu).unwrap().vector_state(vector),
                 (false, false)
             );
-            assert!(!nvme.pci_interrupt_line());
+            assert!(!nvme.sample_pci_interrupts());
             assert!(!nvme.doorbell_pending());
         }
     }

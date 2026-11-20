@@ -1,15 +1,29 @@
-//! Bounded mixed-instruction quantum through the tracked Long64 RAM walker.
+//! Bounded mixed-instruction quantum through the tracked Long64 walker.
 
+#[cfg(test)]
+mod firmware_tests;
+
+use crate::display_device::{DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice};
+use crate::nvme::{NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeDevice};
+use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
+use crate::page_walk::MmioDispatchError;
+use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmCrbHandle};
 use crate::{
-    GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
-    TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
+    DeviceAccess, DeviceError, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
+    IoSpace, Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError,
+    TrackedAccessOutcome, TrackedAccessRequest, VirtualClock,
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1,
-    PagedProbeExit as CpuProbeExit, PagedProbeRejection as CpuProbeRejection,
-    TranslationContextChange, step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_probe,
+    GuestFpState, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0FirmwareBootV1,
+    PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
+    PagedProbeRejection as CpuProbeRejection, TranslationContextChange, step_paged_cr0_wp_probe,
+    step_paged_cr3_probe, step_paged_firmware_probe_with_guest_fp, step_paged_probe,
     step_paged_probe_with_rdtsc, step_paged_stack_probe,
+};
+use od_isa::interrupt::{
+    Cpl0GeneralProtectionDelivery, Cpl0Int3Delivery, Cpl0PageFaultDelivery,
+    deliver_firmware_page_fault, deliver_firmware_synchronous_fault,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -62,6 +76,18 @@ pub enum PagedProbeIntegrationError {
     UnexpectedContextChange {
         effect: TranslationContextChange,
     },
+    FirmwareBreakpointDelivery {
+        failure: Cpl0Int3Delivery,
+    },
+    FirmwarePageFaultDelivery {
+        failure: Cpl0PageFaultDelivery,
+        delivery_fault: Option<PageFaultRecord>,
+    },
+    FirmwareSynchronousFaultDelivery {
+        fault: ArchitecturalFault,
+        failure: Cpl0GeneralProtectionDelivery,
+        delivery_fault: Option<PageFaultRecord>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -111,6 +137,7 @@ pub fn run_paged_probe(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -121,6 +148,7 @@ pub fn run_paged_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -144,6 +172,7 @@ pub fn run_paged_probe_with_rdtsc(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -153,7 +182,142 @@ pub fn run_paged_probe_with_rdtsc(
         rflags_defined,
         stop,
         committed_write,
-        Some(source),
+        Some(ProbeInputs::External(source)),
+        |_, _| {},
+    )
+}
+
+/// Devices whose exact register apertures are available to loaded firmware.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FirmwareMmio<'a> {
+    pub(crate) nvram: Option<&'a NvramHandle>,
+    pub(crate) display: Option<&'a DisplayDevice>,
+    pub(crate) nvme: Option<&'a NvmeDevice>,
+    pub(crate) tpm: Option<&'a TpmCrbHandle>,
+}
+
+impl FirmwareMmio<'_> {
+    fn windows(self) -> &'static [(u64, u64)] {
+        const DISPLAY: (u64, u64) = (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES);
+        const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
+        const NVME: (u64, u64) = (NVME_MMIO_BASE, NVME_MMIO_BYTES);
+        const TPM: (u64, u64) = (TPM_CRB_BASE, TPM_CRB_LEN);
+        const WINDOWS: [&[(u64, u64)]; 16] = [
+            &[],
+            &[DISPLAY],
+            &[NVRAM],
+            &[DISPLAY, NVRAM],
+            &[NVME],
+            &[DISPLAY, NVME],
+            &[NVRAM, NVME],
+            &[DISPLAY, NVRAM, NVME],
+            &[TPM],
+            &[DISPLAY, TPM],
+            &[NVRAM, TPM],
+            &[DISPLAY, NVRAM, TPM],
+            &[NVME, TPM],
+            &[DISPLAY, NVME, TPM],
+            &[NVRAM, NVME, TPM],
+            &[DISPLAY, NVRAM, NVME, TPM],
+        ];
+        let index = usize::from(self.display.is_some())
+            | (usize::from(self.nvram.is_some()) << 1)
+            | (usize::from(self.nvme.is_some()) << 2)
+            | (usize::from(self.tpm.is_some()) << 3);
+        WINDOWS[index]
+    }
+
+    fn access(
+        self,
+        address: GuestPhysicalAddress,
+        operation: RamAccessOperation,
+        sample_time: &dyn Fn() -> Result<u64, crate::DeviceError>,
+    ) -> Result<u64, MmioDispatchError> {
+        if let Some(display) = self.display
+            && (DISPLAY_REGISTERS_BASE..DISPLAY_REGISTERS_BASE + DISPLAY_REGISTERS_BYTES)
+                .contains(&address.get())
+        {
+            return access_device_registers(
+                "display",
+                address.get() - DISPLAY_REGISTERS_BASE,
+                operation,
+                |access| display.read_mmio(access),
+                |access, value| display.write_mmio(access, value),
+            );
+        }
+        if let Some(nvram) = self.nvram
+            && (NVRAM_MMIO_BASE..NVRAM_MMIO_BASE + NVRAM_MMIO_BYTES).contains(&address.get())
+        {
+            return access_device_registers(
+                "NVRAM",
+                address.get() - NVRAM_MMIO_BASE,
+                operation,
+                |access| nvram.read(access),
+                |access, value| nvram.write(access, value),
+            );
+        }
+        if let Some(nvme) = self.nvme
+            && (NVME_MMIO_BASE..NVME_MMIO_BASE + NVME_MMIO_BYTES).contains(&address.get())
+        {
+            return access_device_registers(
+                "NVMe",
+                address.get() - NVME_MMIO_BASE,
+                operation,
+                |access| nvme.read_mmio(access),
+                |access, value| nvme.write_mmio(access, value),
+            );
+        }
+        if let Some(tpm) = self.tpm
+            && (TPM_CRB_BASE..TPM_CRB_BASE + TPM_CRB_LEN).contains(&address.get())
+        {
+            return access_device_registers(
+                "TPM CRB",
+                address.get() - TPM_CRB_BASE,
+                operation,
+                |access| tpm.read(access),
+                |access, value| tpm.write(access, value, sample_time),
+            );
+        }
+        Err(MmioDispatchError::Backend(
+            "unbound firmware MMIO access".into(),
+        ))
+    }
+}
+
+/// Run the firmware instruction profile through the shared 4 KiB tracked walker.
+/// Firmware may switch its active CR3 and enter its installed exception handlers.
+pub(crate) fn run_paged_firmware_probe(
+    state: &mut LongModeState,
+    fp: &mut GuestFpState,
+    bus: &mut MachineBus,
+    mmio: FirmwareMmio<'_>,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    clock: Option<VirtualClock>,
+    observe: impl FnMut(u64, u64),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        true,
+        state,
+        ProbeBus::Exclusive(bus),
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+        Some(ProbeInputs::Firmware { clock, fp, mmio }),
+        observe,
     )
 }
 
@@ -176,6 +340,7 @@ pub fn run_paged_stack_probe(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -186,6 +351,7 @@ pub fn run_paged_stack_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -208,6 +374,7 @@ pub fn run_paged_cr3_probe(
         true,
         false,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         0,
@@ -218,6 +385,7 @@ pub fn run_paged_cr3_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -244,6 +412,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         true,
         false,
         true,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         0,
@@ -254,6 +423,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -280,6 +450,7 @@ pub(crate) fn run_paged_probe_2m_ram(
         false,
         false,
         true,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         cr3,
@@ -289,7 +460,8 @@ pub(crate) fn run_paged_probe_2m_ram(
         rflags_defined,
         stop,
         committed_write,
-        rdtsc,
+        rdtsc.map(ProbeInputs::External),
+        |_, _| {},
     )
 }
 
@@ -311,6 +483,7 @@ pub fn run_paged_cr0_wp_probe(
         false,
         true,
         false,
+        false,
         state,
         ProbeBus::Exclusive(bus),
         0,
@@ -321,6 +494,7 @@ pub fn run_paged_cr0_wp_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -355,6 +529,7 @@ pub fn run_paged_probe_shared(
         false,
         false,
         false,
+        false,
         state,
         ProbeBus::Shared(bus, vcpu),
         cr3,
@@ -365,7 +540,17 @@ pub fn run_paged_probe_shared(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
+}
+
+enum ProbeInputs<'a> {
+    External(&'a mut dyn FnMut() -> u64),
+    Firmware {
+        clock: Option<VirtualClock>,
+        fp: &'a mut GuestFpState,
+        mmio: FirmwareMmio<'a>,
+    },
 }
 
 fn run_paged_probe_inner(
@@ -373,6 +558,7 @@ fn run_paged_probe_inner(
     cpu_cr3_profile: bool,
     cpu_cr0_wp_profile: bool,
     large_ram_profile: bool,
+    firmware_boot_profile: bool,
     state: &mut LongModeState,
     mut bus: ProbeBus<'_>,
     cr3: u64,
@@ -382,13 +568,16 @@ fn run_paged_probe_inner(
     rflags_defined: u64,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
-    mut rdtsc: Option<&mut dyn FnMut() -> u64>,
+    mut inputs: Option<ProbeInputs<'_>>,
+    mut observe: impl FnMut(u64, u64),
 ) -> PagedProbeQuantumReport {
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
     let mut translation_context_changes = Vec::new();
+    let mut fault_delivered_at = None;
     if !cpu_cr3_profile
         && !cpu_cr0_wp_profile
+        && !firmware_boot_profile
         && let Some(value) = state.cr3
     {
         return report(
@@ -482,8 +671,8 @@ fn run_paged_probe_inner(
             );
         }
     }
-    let mut active_paging = if cpu_cr3_profile || cpu_cr0_wp_profile {
-        let cr3 = state.cr3.expect("CPU CR3 presence was checked above");
+    let owns_cr3 = cpu_cr3_profile || cpu_cr0_wp_profile || firmware_boot_profile;
+    let mut active_paging = if let (true, Some(cr3)) = (owns_cr3, state.cr3) {
         match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
             Ok(paging) => Some(paging),
             Err(error) => {
@@ -499,6 +688,12 @@ fn run_paged_probe_inner(
         }
     } else {
         None
+    };
+    let rtc_clock_start_ns = match &inputs {
+        Some(ProbeInputs::Firmware {
+            clock: Some(clock), ..
+        }) => Some(clock.now_ns()),
+        _ => None,
     };
     loop {
         if stop() {
@@ -540,28 +735,30 @@ fn run_paged_probe_inner(
             }
         };
         let instruction_rip = state.rip;
+        observe(instruction_rip, instructions_executed);
         let step = ProbeStep {
             stack_profile,
             cpu_cr3_profile,
             cpu_cr0_wp_profile,
             large_ram_profile,
+            firmware_boot_profile,
             paging,
             instruction_rip,
             context,
             efer,
             rflags_defined: current_rflags_defined,
+            retired_before: instructions_executed,
         };
         let (cpu, page_fault, memory_error) = match &mut bus {
             ProbeBus::Exclusive(bus) => {
                 let (memory, mut pio) = bus.split_for_pio_step();
+                pio.set_firmware_time(rtc_clock_start_ns, step.retired_before);
                 step.run(
                     state,
                     memory,
                     &mut pio,
                     &mut committed_write,
-                    rdtsc
-                        .as_mut()
-                        .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+                    inputs.as_mut(),
                 )
             }
             ProbeBus::Shared(bus, vcpu) => {
@@ -572,9 +769,7 @@ fn run_paged_probe_inner(
                     memory,
                     &mut pio,
                     &mut committed_write,
-                    rdtsc
-                        .as_mut()
-                        .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+                    inputs.as_mut(),
                 )
             }
         };
@@ -614,8 +809,56 @@ fn run_paged_probe_inner(
                 );
             }
             CpuProbeExit::Fault(fault) => {
+                if firmware_boot_profile
+                    && state.idtr.is_some()
+                    && fault_delivered_at != Some(instructions_executed)
+                    && let ProbeBus::Exclusive(bus) = &mut bus
+                {
+                    let (physical_memory, _) = bus.split_for_pio_step();
+                    let mut delivery_memory = step.memory(
+                        physical_memory,
+                        &mut committed_write,
+                        FirmwareMmio::default(),
+                    );
+                    match delivery_memory.deliver_firmware_fault(
+                        state,
+                        &fault,
+                        page_fault.as_ref(),
+                        context,
+                    ) {
+                        Some(Ok(())) => {
+                            // The fault did not retire. Refuse another delivery
+                            // until the handler retires, so a faulting entry cannot spin.
+                            fault_delivered_at = Some(instructions_executed);
+                            continue;
+                        }
+                        Some(Err(error)) => {
+                            return report(
+                                PagedProbeExit::IntegrationError(error),
+                                instructions_executed,
+                                current_rflags_defined,
+                                page_fault,
+                                delivery_memory.memory_error,
+                                &translation_context_changes,
+                            );
+                        }
+                        None => {}
+                    }
+                }
                 return report(
                     PagedProbeExit::Fault(fault),
+                    instructions_executed,
+                    current_rflags_defined,
+                    page_fault,
+                    memory_error,
+                    &translation_context_changes,
+                );
+            }
+            CpuProbeExit::FirmwareBreakpointDelivery(failure) => {
+                return report(
+                    PagedProbeExit::IntegrationError(
+                        PagedProbeIntegrationError::FirmwareBreakpointDelivery { failure },
+                    ),
                     instructions_executed,
                     current_rflags_defined,
                     page_fault,
@@ -696,7 +939,7 @@ fn run_paged_probe_inner(
                         }
                     }
                     TranslationContextChange::Cr0Write { old_cr0, new_cr0 }
-                        if cpu_cr0_wp_profile =>
+                        if cpu_cr0_wp_profile || firmware_boot_profile =>
                     {
                         let active_cr0 = paging.cr0();
                         if old_cr0 != active_cr0 || state.cr0 != Some(new_cr0) {
@@ -716,7 +959,7 @@ fn run_paged_probe_inner(
                                 &translation_context_changes,
                             );
                         }
-                        let cr3 = state.cr3.expect("CPU CR3 was admitted before execution");
+                        let cr3 = paging.cr3();
                         match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
                             Ok(candidate) => candidate,
                             Err(error) => {
@@ -763,35 +1006,54 @@ struct ProbeStep {
     cpu_cr3_profile: bool,
     cpu_cr0_wp_profile: bool,
     large_ram_profile: bool,
+    firmware_boot_profile: bool,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     context: AccessContext,
     efer: u64,
     rflags_defined: u64,
+    retired_before: u64,
 }
 
 impl ProbeStep {
+    fn memory<'a>(
+        &self,
+        memory: &'a crate::PhysicalMemory,
+        committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+        mmio: FirmwareMmio<'a>,
+    ) -> PagedProbeMemory<'a> {
+        PagedProbeMemory {
+            memory,
+            paging: self.paging,
+            instruction_rip: self.instruction_rip,
+            large_ram_profile: self.large_ram_profile,
+            firmware_boot_profile: self.firmware_boot_profile,
+            mmio,
+            mmio_clock: None,
+            retired_before: self.retired_before,
+            committed_write,
+            page_fault: None,
+            memory_error: None,
+        }
+    }
+
     fn run<P: od_isa::PortIo>(
         &self,
         state: &mut LongModeState,
         memory: &crate::PhysicalMemory,
         pio: &mut P,
         committed_write: &mut dyn FnMut(GuestPhysicalRange),
-        rdtsc: Option<&mut dyn FnMut() -> u64>,
+        inputs: Option<&mut ProbeInputs<'_>>,
     ) -> (
         od_isa::PagedProbeResult<P::Error>,
         Option<PageFaultRecord>,
         Option<TrackedAccessError>,
     ) {
-        let mut memory = PagedProbeMemory {
-            memory,
-            paging: self.paging,
-            instruction_rip: self.instruction_rip,
-            large_ram_profile: self.large_ram_profile,
-            committed_write,
-            page_fault: None,
-            memory_error: None,
+        let mmio = match inputs.as_deref() {
+            Some(ProbeInputs::Firmware { mmio, .. }) => *mmio,
+            _ => FirmwareMmio::default(),
         };
+        let mut memory = self.memory(memory, committed_write, mmio);
         let context = AccessContext {
             origin: AccessOrigin::Explicit,
             ..self.context
@@ -827,7 +1089,36 @@ impl ProbeStep {
                 context,
                 self.rflags_defined,
             )
-        } else if let Some(source) = rdtsc {
+        } else if self.firmware_boot_profile {
+            let Some(ProbeInputs::Firmware { clock, fp, .. }) = inputs else {
+                unreachable!("firmware execution uses its vCPU context");
+            };
+            memory.mmio_clock = clock.as_ref().map(VirtualClock::now_ns);
+            let mut sample = clock.as_ref().map(|snapshot| {
+                move || {
+                    let mut clock = *snapshot;
+                    clock
+                        .advance_time_ns(self.retired_before)
+                        .map_err(|error| {
+                            MemoryError::Backend(format!("firmware RDTSC clock: {error:?}"))
+                        })?;
+                    Ok(clock.tsc())
+                }
+            });
+            step_paged_firmware_probe_with_guest_fp(
+                PagedCpl0FirmwareBootV1,
+                state,
+                &mut memory,
+                pio,
+                context,
+                self.rflags_defined,
+                self.paging.cr3(),
+                fp,
+                sample
+                    .as_mut()
+                    .map(|sample| sample as &mut dyn FnMut() -> Result<u64, MemoryError>),
+            )
+        } else if let Some(ProbeInputs::External(source)) = inputs {
             step_paged_probe_with_rdtsc(
                 PagedCpl0ProbeV1,
                 state,
@@ -835,7 +1126,7 @@ impl ProbeStep {
                 pio,
                 context,
                 self.rflags_defined,
-                source,
+                *source,
             )
         } else {
             step_paged_probe(
@@ -850,7 +1141,6 @@ impl ProbeStep {
         (cpu, memory.page_fault, memory.memory_error)
     }
 }
-
 fn report(
     exit: PagedProbeExit,
     instructions_executed: u64,
@@ -874,12 +1164,49 @@ struct PagedProbeMemory<'a> {
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     large_ram_profile: bool,
+    firmware_boot_profile: bool,
+    mmio: FirmwareMmio<'a>,
+    mmio_clock: Option<u64>,
+    retired_before: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
 }
 
 impl PagedProbeMemory<'_> {
+    fn deliver_firmware_fault(
+        &mut self,
+        state: &mut LongModeState,
+        fault: &ArchitecturalFault,
+        original_page_fault: Option<&PageFaultRecord>,
+        context: AccessContext,
+    ) -> Option<Result<(), PagedProbeIntegrationError>> {
+        if fault.vector == 14 {
+            let record = original_page_fault.filter(|record| record.fault() == fault)?;
+            return Some(
+                match deliver_firmware_page_fault(state, self, record, context) {
+                    Cpl0PageFaultDelivery::Delivered { .. } => Ok(()),
+                    failure => Err(PagedProbeIntegrationError::FirmwarePageFaultDelivery {
+                        failure,
+                        delivery_fault: self.page_fault.take(),
+                    }),
+                },
+            );
+        }
+        Some(
+            match deliver_firmware_synchronous_fault(state, self, fault, context)? {
+                Cpl0GeneralProtectionDelivery::Delivered { .. } => Ok(()),
+                failure => Err(
+                    PagedProbeIntegrationError::FirmwareSynchronousFaultDelivery {
+                        fault: fault.clone(),
+                        failure,
+                        delivery_fault: self.page_fault.take(),
+                    },
+                ),
+            },
+        )
+    }
+
     fn access(
         &mut self,
         address: u64,
@@ -889,18 +1216,39 @@ impl PagedProbeMemory<'_> {
         let request = TrackedAccessRequest {
             instruction_rip: self.instruction_rip,
             address: GuestLinearAddress::new(address),
-            context: AccessContext {
-                origin: AccessOrigin::Explicit,
-                ..context
+            context: if self.firmware_boot_profile {
+                context
+            } else {
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                }
             },
             operation,
         };
+        let windows = self.mmio.windows();
         let result = if self.large_ram_profile {
             crate::access_long64_2m_ram(
                 self.memory,
                 &self.paging,
                 request,
                 &mut *self.committed_write,
+            )
+        } else if !windows.is_empty() {
+            crate::page_walk::access_long64_4k_with_mmio(
+                self.memory,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+                Some(windows),
+                |address, _, operation| {
+                    self.mmio.access(address, operation, &|| {
+                        self.mmio_clock
+                            .unwrap_or(0)
+                            .checked_add(self.retired_before)
+                            .ok_or(crate::DeviceError::ClockOverflow)
+                    })
+                },
             )
         } else {
             crate::access_long64_4k_ram(
@@ -912,11 +1260,76 @@ impl PagedProbeMemory<'_> {
         };
         match result.outcome {
             Ok(outcome) => Ok(outcome),
-            Err(TrackedAccessError::PageFault { record, .. }) => {
+            Err(error) => self.handle_access_error(request, error),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn handle_access_error(
+        &mut self,
+        request: TrackedAccessRequest,
+        error: TrackedAccessError,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
+        // Measured firmware reads its immutable ROM, which is never a target
+        // of fetches or writes. Only reuse an already translated whole operand.
+        if self.firmware_boot_profile
+            && self.mmio.tpm.is_some()
+            && !self.large_ram_profile
+            && request.context.origin == AccessOrigin::Explicit
+            && let RamAccessOperation::Read { width } = request.operation
+            && (request.address.get() & 0xfff) + u64::from(width.bytes()) <= 4096
+            && let TrackedAccessError::OperandPhysical {
+                address,
+                source: crate::MemoryAccessError::UnreadableRegion(crate::MemoryRegionKind::Rom),
+            } = &error
+        {
+            let mut bytes = [0; 8];
+            if self
+                .memory
+                .load_bytes(*address, &mut bytes[..usize::from(width.bytes())])
+                .is_ok()
+            {
+                return Ok(TrackedAccessOutcome::Read(u64::from_le_bytes(bytes)));
+            }
+        }
+        let error = if matches!(error, TrackedAccessError::CrossesPage { .. })
+            && self.firmware_boot_profile
+            && !self.large_ram_profile
+            && request.context.origin == AccessOrigin::Explicit
+        {
+            let split = match request.operation {
+                RamAccessOperation::Read { .. } => {
+                    crate::page_walk::read_long64_4k_bounded_ram_read(
+                        self.memory,
+                        &self.paging,
+                        request,
+                        &mut *self.committed_write,
+                    )
+                    .map(TrackedAccessOutcome::Read)
+                }
+                RamAccessOperation::Write { .. } => crate::page_walk::write_long64_4k_bounded_ram(
+                    self.memory,
+                    &self.paging,
+                    request,
+                    &mut *self.committed_write,
+                )
+                .map(|()| TrackedAccessOutcome::Written),
+                _ => Err(error),
+            };
+            match split {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => error,
+            }
+        } else {
+            error
+        };
+        match error {
+            TrackedAccessError::PageFault { record, .. } => {
                 self.page_fault = Some(record.clone());
                 Err(MemoryError::Architectural(record.fault().clone()))
             }
-            Err(error) => {
+            error => {
                 let memory_error =
                     MemoryError::Backend(format!("tracked RAM access failed: {error:?}"));
                 self.memory_error = Some(error);
@@ -924,6 +1337,33 @@ impl PagedProbeMemory<'_> {
             }
         }
     }
+}
+
+// The tracked walker checks that the entire operand is inside the device aperture.
+fn access_device_registers(
+    name: &str,
+    offset: u64,
+    operation: RamAccessOperation,
+    read: impl FnOnce(DeviceAccess) -> Result<u64, DeviceError>,
+    write: impl FnOnce(DeviceAccess, u64) -> Result<(), DeviceError>,
+) -> Result<u64, MmioDispatchError> {
+    let access = |width| DeviceAccess {
+        space: IoSpace::Mmio,
+        offset,
+        width,
+    };
+    let result = match operation {
+        RamAccessOperation::Read { width } => read(access(width)),
+        RamAccessOperation::Write { width, value } => write(access(width), value).map(|()| 0),
+        _ => {
+            return Err(MmioDispatchError::Backend(format!(
+                "{name} accepts only plain data reads and writes"
+            )));
+        }
+    };
+    result.map_err(|error| {
+        MmioDispatchError::Backend(format!("{name} access at {offset:#x}: {error:?}"))
+    })
 }
 
 impl GuestMemory for PagedProbeMemory<'_> {
@@ -993,6 +1433,25 @@ impl GuestMemory for PagedProbeMemory<'_> {
         }
     }
 
+    fn read_for_write_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: od_isa::OperandSize,
+    ) -> Result<u64, MemoryError> {
+        let width = match size {
+            od_isa::OperandSize::Byte => crate::AccessWidth::Byte,
+            od_isa::OperandSize::Word => crate::AccessWidth::Word,
+            od_isa::OperandSize::Dword => crate::AccessWidth::Dword,
+            od_isa::OperandSize::Qword => crate::AccessWidth::Qword,
+        };
+        match self.access(address, context, RamAccessOperation::ReadForWrite { width })? {
+            TrackedAccessOutcome::Read(value) => Ok(value),
+            _ => Err(MemoryError::Backend(
+                "paged probe write-intent read returned a non-read result".into(),
+            )),
+        }
+    }
     fn atomic_exchange_integer(
         &mut self,
         _: u64,

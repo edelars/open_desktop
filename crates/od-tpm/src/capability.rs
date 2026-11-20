@@ -2,9 +2,8 @@
 //!
 //! Supported capabilities: `TPM_CAP_ALGS`, `TPM_CAP_HANDLES`, `TPM_CAP_COMMANDS`,
 //! `TPM_CAP_PP_COMMANDS`, `TPM_CAP_AUDIT_COMMANDS` (both empty: no command needs physical
-//! presence or is audited), `TPM_CAP_PCRS`, `TPM_CAP_TPM_PROPERTIES`. Every other capability
-//! is `TPM_RC_VALUE` (parameter 1); in particular `TPM_CAP_PCR_PROPERTIES` is not implemented
-//! (PTP 1.07, clause 4.7.1 item 4 asks for it; recorded as a deviation in `docs/specs/VTPM.md`).
+//! presence or is audited), `TPM_CAP_PCRS`, `TPM_CAP_PCR_PROPERTIES` and
+//! `TPM_CAP_TPM_PROPERTIES`. An unknown capability returns `TPM_RC_VALUE` (parameter 1).
 //!
 //! `TPM_CAP_COMMANDS` lists exactly the commands of the dispatch table.
 //!
@@ -36,15 +35,16 @@
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
 use crate::codes::{alg, cap, curve, handle, pt, spec};
+use crate::crypto::{DIGEST, supported_rsa_exponent};
 use crate::dispatch::COMMANDS;
 use crate::marshal::{
-    Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING, TPMA_ALGORITHM_HASH,
-    TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING, TPMA_ALGORITHM_SYMMETRIC,
-    TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection, TpmsTaggedProperty, Writer,
-    limits,
+    PublicParams, Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING,
+    TPMA_ALGORITHM_HASH, TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING,
+    TPMA_ALGORITHM_SYMMETRIC, TpmaCc, TpmsAlgProperty, TpmsTaggedProperty, Writer, limits,
 };
 use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
+use crate::pcr::{PcrAttr, pcr_attr};
 use crate::response::{Output, Rc};
 use crate::session::MAX_SESSIONS;
 use crate::state::Tpm;
@@ -60,6 +60,19 @@ struct Entries {
     items: Vec<Vec<u8>>,
 }
 
+// TPM Library v185 Part 2 §6.14 and Table 29. Locality 0 is the only
+// supported locality. This profile exposes no D-RTM, PCR policy or PCR auth.
+type PcrPropertyTest = fn(PcrAttr) -> bool;
+
+fn tagged_pcr_properties() -> [(u32, PcrPropertyTest); 4] {
+    [
+        (0x00, |attr| attr.save),
+        (0x02, |attr| attr.reset_l0),
+        (0x11, |attr| attr.no_increment),
+        (0x12, |_| false),
+    ]
+}
+
 impl Entries {
     fn new() -> Self {
         Entries { items: Vec::new() }
@@ -71,6 +84,49 @@ impl Entries {
         self.items.push(w.finish());
     }
 }
+
+// Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
+// KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
+// (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
+// algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
+// the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
+// are our reading of the "S O" and "E" types.
+pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
+    (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
+    (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
+    (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_XOR` (0x000A, "H S" in Table 11): XOR parameter encryption of a session
+    // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
+    (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
+    (alg::SHA256, TPMA_ALGORITHM_HASH),
+    (alg::SHA384, TPMA_ALGORITHM_HASH),
+    (alg::SHA512, TPMA_ALGORITHM_HASH),
+    (
+        alg::RSASSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
+    ),
+    (
+        alg::RSAES,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
+    ),
+    (
+        alg::OAEP,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING | TPMA_ALGORITHM_HASH,
+    ),
+    (
+        alg::ECDSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
+    ),
+    (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
+    (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
+    (
+        alg::MLKEM,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT,
+    ),
+];
 
 impl Tpm {
     fn active_sessions(&self) -> usize {
@@ -103,7 +159,7 @@ impl Tpm {
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
             (pt::MAX_COMMAND_SIZE, limits::MAX_COMMAND_SIZE as u32),
             (pt::MAX_RESPONSE_SIZE, limits::MAX_RESPONSE_SIZE as u32),
-            (pt::MAX_DIGEST, limits::MAX_DIGEST_SIZE as u32),
+            (pt::MAX_DIGEST, limits::MAX_HASH_SIZE as u32),
             // Platform-specific family: PC Client, level 0, revision 1.07 (PTP 1.07, Table 2).
             (pt::PS_FAMILY_INDICATOR, 1),
             (pt::PS_LEVEL, 0),
@@ -115,6 +171,7 @@ impl Tpm {
             (pt::VENDOR_COMMANDS, 0),
             (pt::NV_BUFFER_MAX, NV_BUFFER_MAX as u32),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
+            (pt::ML_PARAMETER_SETS, 1 << 1), // TPMA_ML_PARAMETER_SET.mlKem_768.
             (pt::PERMANENT, self.permanent_attributes()),
             (pt::STARTUP_CLEAR, self.startup_clear_attributes()),
             (pt::HR_NV_INDEX, self.persistent.nv.count() as u32),
@@ -146,6 +203,25 @@ impl Tpm {
         ]
     }
 
+    /// `TPM2_TestParms` (Part 3 v185 §30.3). There is no public object template or handle.
+    pub(crate) fn cmd_test_parms(p: &mut Reader<'_>) -> Result<Output, Rc> {
+        p.set_param(1);
+        let type_alg = PublicParams::unmarshal_type(p)?;
+        let params = PublicParams::unmarshal(p, type_alg)?;
+        p.finish()?;
+        if let PublicParams::Rsa { exponent, .. } = params
+            && !supported_rsa_exponent(exponent)
+        {
+            return Err(p.err(Rc::RANGE));
+        }
+        if let PublicParams::MlKem { symmetric, .. } = params
+            && symmetric != crate::marshal::SymDef::Null
+        {
+            return Err(p.err(Rc::SYMMETRIC));
+        }
+        Ok(Output::default())
+    }
+
     /// `TPM2_GetCapability`.
     pub(crate) fn cmd_get_capability(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
@@ -161,43 +237,10 @@ impl Tpm {
         match capability {
             cap::ALGS => {
                 entry_size = 6;
-                // Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
-                // KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
-                // (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
-                // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
-                // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
-                // are our reading of the "S O" and "E" types.
-                let algs: [(u16, u32); 13] = [
-                    (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
-                    (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
-                    (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
-                    // `TPM_ALG_XOR` (0x000A, "H S" in Table 11): XOR parameter encryption of a session
-                    // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
-                    (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
-                    (alg::SHA256, TPMA_ALGORITHM_HASH),
-                    (
-                        alg::RSASSA,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
-                    ),
-                    (
-                        alg::RSAES,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
-                    ),
-                    (
-                        alg::OAEP,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING | TPMA_ALGORITHM_HASH,
-                    ),
-                    (
-                        alg::ECDSA,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
-                    ),
-                    (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
-                    (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
-                ];
-                for (a, properties) in algs.into_iter().filter(|(a, _)| u32::from(*a) >= property) {
+                for (a, properties) in ALGORITHMS
+                    .into_iter()
+                    .filter(|(a, _)| u32::from(*a) >= property)
+                {
                     entries.push(|w| TpmsAlgProperty { alg: a, properties }.marshal(w));
                 }
             }
@@ -270,17 +313,31 @@ impl Tpm {
                 let mut w = Writer::new();
                 w.u8(0);
                 w.u32(capability);
-                TpmlPcrSelection {
-                    selections: vec![TpmsPcrSelection {
-                        hash: alg::SHA256,
-                        select: [0xFF; limits::PCR_SELECT_SIZE],
-                    }],
-                }
-                .marshal(&mut w);
+                self.pcrs.allocation().marshal(&mut w);
                 return Ok(Output {
                     handles: Vec::new(),
                     params: w.finish(),
                 });
+            }
+            cap::PCR_PROPERTIES => {
+                // TPMS_TAGGED_PCR_SELECT, Part 2 v185 §10.6: tag, size and bitmap.
+                entry_size = 4 + 1 + limits::PCR_SELECT_SIZE;
+                for (tag, applies) in tagged_pcr_properties() {
+                    if tag < property {
+                        continue;
+                    }
+                    let mut mask = [0; limits::PCR_SELECT_SIZE];
+                    for index in 0..limits::PCR_COUNT {
+                        if applies(pcr_attr(index)) {
+                            mask[index / 8] |= 1 << (index % 8);
+                        }
+                    }
+                    entries.push(|w| {
+                        w.u32(tag);
+                        w.u8(limits::PCR_SELECT_SIZE as u8);
+                        w.bytes(&mask);
+                    });
+                }
             }
             cap::TPM_PROPERTIES => {
                 entry_size = 8;
@@ -295,6 +352,31 @@ impl Tpm {
                             .marshal(w)
                         });
                     }
+                }
+            }
+            cap::AUTH_POLICIES => {
+                if handle::handle_type(property) != handle::HT_PERMANENT {
+                    return Err(Rc::VALUE.in_param(2));
+                }
+                entry_size = 4 + 2 + DIGEST;
+                for hierarchy in [
+                    handle::RH_OWNER,
+                    handle::RH_LOCKOUT,
+                    handle::RH_ENDORSEMENT,
+                    handle::RH_PLATFORM,
+                ]
+                .into_iter()
+                .filter(|&h| h >= property)
+                {
+                    entries.push(|w| {
+                        w.u32(hierarchy);
+                        if let Some(digest) = self.permanent_auth_policy(hierarchy) {
+                            w.u16(alg::SHA256);
+                            w.bytes(digest);
+                        } else {
+                            w.u16(alg::NULL);
+                        }
+                    });
                 }
             }
             _ => return Err(Rc::VALUE.in_param(1)),

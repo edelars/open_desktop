@@ -28,7 +28,7 @@ impl NvmeIoapicIrqSource {
     }
 
     fn sample(&self) -> bool {
-        let Some(level) = self.nvme.try_pci_interrupt_line() else {
+        let Some(level) = self.nvme.try_sample_pci_interrupts() else {
             return false;
         };
         self.publish(level);
@@ -54,7 +54,7 @@ impl BoardIrqSource for NvmeIoapicIrqSource {
     }
 
     fn refresh_device_lines(&self) {
-        self.publish(self.nvme.pci_interrupt_line());
+        self.publish(self.nvme.sample_pci_interrupts());
         self.inner.refresh_device_lines();
     }
 

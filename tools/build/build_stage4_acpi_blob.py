@@ -46,6 +46,7 @@ RSDP_LEN = 36
 FACS_LEN = 64
 ACPI_REGION_BASE = 0xE0000
 FACS_ADDRESS = 0xEF000
+ACPI_REGION_END = 0xF0000
 
 
 class BuildError(Exception):
@@ -69,7 +70,9 @@ def load_build_firmware():
     return module
 
 
-def build_elf(target_dir: Path, *, linux_nvme: bool = False) -> Path:
+def build_elf(
+    target_dir: Path, *, linux_nvme: bool = False, handoff: Path | None = None
+) -> Path:
     bf = load_build_firmware()
     try:
         tools = bf.resolve_tools()
@@ -83,6 +86,9 @@ def build_elf(target_dir: Path, *, linux_nvme: bool = False) -> Path:
         command = [str(tools.cargo), "build", "--release", "--target", TARGET, "--offline", "--bin", BIN_NAME]
         if linux_nvme:
             command.extend(["--features", "linux-nvme-acpi"])
+        if handoff is not None:
+            command.extend(["--features", "handoff-acpi"])
+            env["OD_FW_ACPI_HANDOFF"] = str(handoff.resolve())
         result = subprocess.run(
             command,
             cwd=FIRMWARE_DIR,
@@ -172,23 +178,36 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
         raise BuildError("the FACS segment does not end the blob")
     if load_base != ACPI_REGION_BASE or facs_address != FACS_ADDRESS or rsdp_address != load_base:
         raise BuildError("load base, FACS address or RSDP address is not the contract's")
+    if payload_len < RSDP_LEN or load_base + payload_len > facs_address:
+        raise BuildError("ACPI payload lies outside its reclaim reservation")
+    if facs_address + facs_len > ACPI_REGION_END:
+        raise BuildError("FACS lies outside its NVS reservation")
     facs = blob[facs_offset : facs_offset + facs_len]
     if facs[:4] != b"FACS" or struct.unpack_from("<I", facs, 4)[0] != FACS_LEN:
         raise BuildError("bad FACS signature or length")
     payload = blob[payload_offset : payload_offset + payload_len]
     rsdp = payload[:RSDP_LEN]
-    if rsdp[:8] != b"RSD PTR " or rsdp[15] != 2 or sum(rsdp[:20]) & 0xFF or sum(rsdp) & 0xFF:
+    if (rsdp[:8] != b"RSD PTR " or rsdp[15] != 2
+            or struct.unpack_from("<II", rsdp, 16) != (0, RSDP_LEN)
+            or sum(rsdp[:20]) & 0xFF or sum(rsdp) & 0xFF):
         raise BuildError("RSDP signature, revision or checksum is wrong")
     tables = []
     by_signature: dict[bytes, dict[str, Any]] = {}
+    ranges = []
     for index in range(table_count):
         at = HEADER_LEN + index * DIR_ENTRY_LEN
         signature = blob[at : at + 4]
         offset, length, reserved = struct.unpack_from("<III", blob, at + 4)
         if reserved:
             raise BuildError("directory reserved word is not zero")
-        if length < 36 or offset + length > payload_len:
+        if signature in by_signature:
+            raise BuildError(f"duplicate ACPI table {signature!r}")
+        if offset < 0x40 or offset % 16 or length < 36 or offset + length > payload_len:
             raise BuildError(f"table {signature!r} lies outside the payload")
+        end = offset + length
+        if any(offset < previous_end and previous_start < end for previous_start, previous_end in ranges):
+            raise BuildError(f"table {signature!r} overlaps another ACPI table")
+        ranges.append((offset, end))
         table = payload[offset : offset + length]
         if table[:4] != signature:
             raise BuildError(f"table at payload offset {offset:#x} has another signature than its directory entry")
@@ -211,17 +230,20 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
     if b"XSDT" not in by_signature or by_signature[b"XSDT"]["address"] != xsdt_address:
         raise BuildError("RSDP XsdtAddress is not the XSDT of the blob")
     xsdt = payload[by_signature[b"XSDT"]["payload_offset"] :][: by_signature[b"XSDT"]["length"]]
+    if (len(xsdt) - 36) % 8:
+        raise BuildError("XSDT length cuts off an address")
     listed = [struct.unpack_from("<Q", xsdt, 36 + 8 * i)[0] for i in range((len(xsdt) - 36) // 8)]
     wanted = sorted(t["address"] for t in tables if t["signature"] in ("FACP", "APIC", "MCFG"))
     if sorted(listed) != wanted:
         raise BuildError("XSDT does not list exactly FADT, MADT and MCFG")
-    if b"FACP" not in by_signature or b"DSDT" not in by_signature:
-        raise BuildError("FADT or DSDT is missing")
+    if not {b"FACP", b"DSDT", b"APIC"} <= by_signature.keys():
+        raise BuildError("FADT, DSDT or MADT is missing")
     fadt = payload[by_signature[b"FACP"]["payload_offset"] :][: by_signature[b"FACP"]["length"]]
-    (x_facs,) = struct.unpack_from("<Q", fadt, 132)
-    (x_dsdt,) = struct.unpack_from("<Q", fadt, 140)
-    if x_facs != facs_address or x_dsdt != by_signature[b"DSDT"]["address"]:
-        raise BuildError("FADT X_FIRMWARE_CTRL or X_DSDT does not match the blob")
+    dsdt_address = by_signature[b"DSDT"]["address"]
+    if (len(fadt) < 148
+            or struct.unpack_from("<II", fadt, 36) != (facs_address, dsdt_address)
+            or struct.unpack_from("<QQ", fadt, 132) != (facs_address, dsdt_address)):
+        raise BuildError("FADT FACS or DSDT addresses do not match the blob")
     return {
         "version": version,
         "manifest_hash": manifest_hash.hex(),
@@ -252,6 +274,23 @@ def package(elf_path: Path, out_dir: Path) -> dict[str, Any]:
     (out_dir / f"{OUT_NAME}.bin").write_bytes(blob)
     (out_dir / f"{OUT_NAME}.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return metadata
+
+
+def compare_guest_memory(blob: bytes, guest: bytes, metadata: dict[str, Any]) -> None:
+    """Compare both reservations and the unused zero-filled space between them."""
+    expected = bytearray(ACPI_REGION_END - ACPI_REGION_BASE)
+    payload_offset = metadata["payload_offset"]
+    payload_len = metadata["payload_len"]
+    expected[:payload_len] = blob[payload_offset : payload_offset + payload_len]
+    facs = metadata["facs"]
+    offset = facs["address"] - ACPI_REGION_BASE
+    start = facs["blob_offset"]
+    expected[offset : offset + facs["length"]] = blob[start : start + facs["length"]]
+    if guest != expected:
+        if len(guest) != len(expected):
+            raise BuildError(f"guest ACPI range has {len(guest)} bytes, expected {len(expected)}")
+        mismatch = next(index for index, pair in enumerate(zip(guest, expected)) if pair[0] != pair[1])
+        raise BuildError(f"guest ACPI differs at physical address {ACPI_REGION_BASE + mismatch:#x}")
 
 
 def main() -> int:

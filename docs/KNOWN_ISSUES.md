@@ -1455,16 +1455,12 @@
 - **Суть и последствия (до исправления):** испорченные версия и reserved-байты FACS проходили машинную проверку blob, хотя `validate_facs` в прошивке их отвергал.
 - **Следующий шаг:** нет.
 
-### ISSUE-497 — S4-31e: отступления FADT/FACS от возможных требований не сверены по первоисточнику
+### ISSUE-497 — S4-31e: флаги FADT и двойные указатели FACS
 
-- **Дата обнаружения:** 2026-11-15, ревью S4-31e/g.
-- **Компонент:** `firmware/uefi/src/acpi/fadt.rs` (флаги FADT, `FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`), проверка в `crates/od-machine/src/acpi_blob.rs`.
-- **Статус:** открыта; два пункта, оба «не сверено», подтверждённого дефекта нет.
-- **Суть и последствия:**
-  1. Флаги `WBINVD` и `WBINVD_FLUSH` в FADT равны 0 (в комментарии к `FADT_FLAGS` объяснено тем, что они нужны только для состояний сна S1..S4, которых плата не объявляет). Существует ли для них требование «must be set» в ACPI 6.x и применимо ли оно к плате без сна, по первоисточнику не сверено (текст читался только в редакции 6.4, фрагментами).
-  2. `FIRMWARE_CTRL` и `X_FIRMWARE_CTRL` оба равны `0xE_F000` (адрес FACS); валидатор требует равенства обоих адресу FACS. Спецификация может требовать, чтобы при ненулевом `X_FIRMWARE_CTRL` значение `FIRMWARE_CTRL` игнорировалось или было нулём; обязательность нуля по первоисточнику не сверена. Linux отдаёт приоритет 64-битному адресу (`acpi_tb_select_address`, `tbfadt.c`), поэтому на Linux различия не ожидается, но принятие таблиц Linux ещё не проверялось.
-- **Условия обнаружения:** чтение `fadt.rs` и валидатора ревью; запуск Linux с этими таблицами выполняется в S4-38.
-- **Следующий шаг:** сверить оба пункта с ACPI 6.x (Table 5.10, FADT; FACS) и решить вместе с S4-38 (принятие таблиц Linux); при расхождении исправить `fadt.rs`, golden-байты и валидатор.
+- **Дата обнаружения** 2026-11-15, ревью S4-31e/g.
+- **Компонент** `firmware/uefi/src/acpi/fadt.rs` и `crates/od-isa`.
+- **Статус** закрыта в S7-13. FADT объявляет `WBINVD=1` согласно ACPI 6.6. Интерпретаторы исполняют команду в когерентной модели без гостевого data cache. Контрольная сумма и эталон FADT обновлены.
+- Оба указателя FACS равны `0xEF000`. ACPI 6.6 Table 5.9 отдаёт приоритет доступному 64-битному полю. Прошивка публикует согласованные указатели. [ACPI 6.6 §5.2.9](https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt), [реализация S7-13](specs/ACPI_SMBIOS_TABLES.md#публикация-таблиц-uefi-s7-13).
 
 ### ISSUE-099 — S4-39j: правило зачётности `counted` для stage4a принято решением пользователя без записанного ревью
 
@@ -1897,37 +1893,40 @@ S5-21 residual handoff (2026-11-13): both rootfs and E-inclusive exact inventori
 
 ### ISSUE-066 — S7-16: обязательные log pages и проверка соответствия NVMe
 
-- **Дата обнаружения:** 2026-11-07, при реализации S7-16 (срез A).
-- **Компонент:** `crates/od-machine/src/nvme/`, [NVME_DEVICE.md](specs/NVME_DEVICE.md).
-- **Статус:** открыта.
-- **Обновление (2026-11-18):** I/O `Read/Write/Flush` и постоянный RAW backend реализованы. Figure 31 опубликованной NVMe Base 2.4 подтвердил, что для I/O controller требуются `0x00`, `0x05` и `0x12`. Следующий шаг — реализовать эти страницы с проверкой их данных и закончить сверку S7-16. История первой сверки ниже. [NVME_DEVICE.md §1](specs/NVME_DEVICE.md#1-источники-и-статус-сверки)
-- **Суть и последствия:** текст NVMe Base 2.4, NVM Command Set 1.3 и PCIe Transport 1.4 получить не удалось (страница спецификаций не даёт прямых ссылок, PDF 2.4 не найден, PDF 2.3 не извлекается через `WebFetch` и индексатор). Значения, перечисленные в [NVME_DEVICE.md §1](specs/NVME_DEVICE.md), сверены с заголовком Linux `include/linux/nvme.h` (master, 2026-11-07), **не** с текстом NVMe Base 2.4. NOT VERIFIED остаются: `CAP.CQR` (бит 16), AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00` и `0x05`, `VS` 2.0.0 против 2.4.0. `Read`/`Write`/`Flush` и backend в памяти реализованы в срезе B, но это не подтверждает соответствие значений спецификации. Открыты также: (1) проверка `IOSQES`/`IOCQES` при `CC.EN = 1` (`CFS`) против проверки при Create I/O SQ/CQ — вероятное отклонение (`controller.rs`, `enable`); (2) Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы, обязательность не сверена; (3) `VS = 2.0.0`; (4) путь гостевой записи doorbell end-to-end не покрыт тестом (см. NVME_DEVICE.md §3).
-- **Основание:** [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md), раздел S7-16; NVME_DEVICE.md §1, §10, §11.
-- **Следующий шаг:** получить текст спецификаций и сверить значения, помеченные NOT VERIFIED (NVME_DEVICE.md §11); решить вопрос `IOSQES`/`IOCQES`; покрыть гостевую doorbell-последовательность; после сверки снять пометки `NOT VERIFIED` в исходниках и документе. Кодовые исправления очередей и NSID проверок после первого ревью ожидают независимого повторного ревью; до него S7-16 остаётся `in_progress`.
+- **Дата и компонент.** 2026-11-07, `od-machine`, NVMe I/O controller. Закрыто в заявленном минимальном профиле S7-16.
+- **Исходное расхождение.** Figure 31 Base 2.4 требует для I/O controller страницы Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Ранее профиль предоставлял только `0x01`–`0x03`, и гость не получал сведения о поддерживаемых командах, журналах и features. [NVMe Base 2.4, Figure 31](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=74).
+- **Исправление.** Добавлены три страницы. Тесты через `MachineBus` проверяют все записи, `LPA` в Identify Controller, допустимые `NSID`, смещения и запрос длиннее страницы в пределах `MDTS`. [Контракт Get Log Page](specs/NVME_DEVICE.md#92-get-log-page).
+- **Исправление длины и области действия.** Figure 204 допускает запрос длиной больше страницы. Модель возвращает данные страницы и нулевой хвост в пределах `MDTS` для всех поддерживаемых страниц. Error Information требует controller scope по Figure 209. Тест `log_pages_check_supported_id_scope_and_offset` проверяет чтение 1024 байт со страницы SMART длиной 512 байт и отказ с `Invalid Field` для Error Information при `NSID = 1`. [Base 2.4, с. 213–217](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=239).
+- **Гостевая проверка PCI.** Драйвер Linux `nvme` прочитал 4 096 байт с совпадением по RAW. В `/proc/interrupts` подтверждены MSI-X для Admin и I/O. Поддерживаемый маршрут — Fixed edge с физическим xAPIC ID. [Отчёт](reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
+- **Исправление Error Information.** Ошибочный CQE и соответствующая запись содержат общий бит `More`. Сброс очищает записи, сохраняя идентификатор последней ошибки и суммарный счётчик SMART. У ошибки doorbell без команды `SQID = CID = 0xFFFF`. [Base 2.4, §5.2.13.1.2 и Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=244).
+- **Исправление арбитража.** Контроллер обслуживает по одной команде каждой активной SQ, включая Admin SQ. Тест через `MachineBus` проверяет точный порядок шести CQE из трёх очередей. [Отчёт](reports/STAGE_7_REPORT.md#арбитраж-round-robin).
+- **Исправление Identify.** Добавлены обязательные CNS `0x05`–`0x08` для единственного NVM namespace. Бит `VWC.VWCP` остаётся нулём, `VWC.FB = 10b` явно сообщает об отказе на широковещательный `Flush`. [Отчёт](reports/STAGE_7_REPORT.md#структуры-identify-для-nvm).
+- **Исправление Read/Write.** Команды принимают FUA, LR и допустимые подсказки DSM. FUA использует имеющийся контракт write-through. При выключенных директивах поля DTYPE и DSPEC команды Write игнорируются. [Отчёт](reports/STAGE_7_REPORT.md#поля-read-и-write).
+- **Диагностика команды.** Журнал записывает применимый байт и бит поля SQE и первый недопустимый LBA для `LBA Out of Range`. Для doorbell вне команды `Parameter Error Location = 0xFFFF`. [Отчёт](reports/STAGE_7_REPORT.md#поле-параметра-и-lba-в-журнале-ошибок).
+- **Пороги и события.** Настройки Temperature Threshold влияют на SMART.TTC и условное уведомление AER. Чтение связанного журнала очищает ожидающий AER event при `RAE = 0`. [Отчёт](reports/STAGE_7_REPORT.md#пороги-температуры-и-smart-aer).
+- **Согласованность Identify.** VID и SSVID берутся из PCI Configuration Header. Фиксированный MMIO-профиль сохраняет нулевые значения. [Отчёт](reports/STAGE_7_REPORT.md#идентификаторы-pci-в-identify-controller).
+- **Приёмка.** Ревью минимального профиля подтверждено после гостевого повтора на `74581ed`. Ограничения телеметрии и статусных полей описаны в [NVME_DEVICE.md](specs/NVME_DEVICE.md#11-not-verified-места-где-расхождение-наиболее-вероятно). FLR для полного PCIe-профиля отслеживается в [ISSUE-591](#issue-591).
 
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
-### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes
+### ISSUE-065 — S7-12: общие окна и маршруты PCI в DSDT
 
-- **Ревью S7-12 (2026-11-18):** ограниченное качество реализованного AML/DSDT профиля одобрено независимым ревью; ISSUE-065 остаётся открытой, поскольку CRS/PRT gap подтверждён и не исправлялся. Suite evidence: 165 тестов прошло. ACPI 6.6 и точность кодировок не проверены; RTC/HPET/S5 (S7-14), TPM (S7-22) и поведение Windows/Linux остаются вне подтверждённого объёма.
-- **Дата обнаружения:** 2026-11-07.
-- **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
-- **Статус:** открыта; ограничение контракта, не runtime-дефект (без флага платы `pci_ecam` код 7 остаётся `PRESENT = 0` и PCI0 не выводится; с флагом `pci_ecam` (S4-30c) код 7 — `PRESENT = 1`, DSDT выводит `PCI0` с одним `WordBusNumber` и пустым `_PRT`, и это ограничение становится достижимым; MCFG, `_CRS` с окнами, host bridge и функции — S4-31/S4-38/S7).
-- **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
-- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна HPET и ACPI fixed hardware «не назначены, S7-14»); окно ECAM выбрано в S4-30a, под флагом `pci_ecam` код 7 `PRESENT = 1` (S4-30c, MACHINE_CONTRACT.md); тесты `dsdt_for_pci_root_and_com1_matches_the_independent_reference` и `ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted`.
-- **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.
-- **Обновление (2026-11-18):** закрыта часть описания для Linux direct PCI NVMe. Handoff v1.3 передаёт апертуру и INTA, AML через `iasl` и `acpiexec` показал producer MMIO `0xFC00_4000..=0xFC00_5FFF` и GSI 16. Общие окна и маршруты для будущих устройств и привязка драйвера Linux остаются открытыми. [Отчёт S5-09…11](reports/STAGE_5_REPORT.md#s5-09-11-pci-nvme-and-scenario-gates)
+- **Дата обнаружения и статус.** 2026-11-07, устранено для профилей текущей платы 2026-11-18. Компоненты — handoff block и сериализатор AML устройства PCI0.
+- **Исходное ограничение.** Запись PCIe ECAM v1.0 передаёт базу, длину, сегмент и диапазон шин. Она не передаёт апертуры для назначения BAR и маршруты INTx. Базовая DSDT описывает диапазон шин и порты конфигурации conf1. Для неё _PRT пуст.
+- **Результат.** Базовый профиль содержит шину 0 и порты conf1. У него отсутствуют PCI endpoints, поэтому _PRT пуст. Единственный endpoint PCI NVMe передаёт через handoff v1.3 producer MMIO `0xFC004000..=0xFC007FFF` и маршрут INTA на GSI 16 для устройства 4 и любой функции. ACPICA подтвердила оба поля в профиле NVMe и в совместном профиле NVMe с RTC. [Отчёт проверки S7-12](reports/STAGE_7_REPORT.md#s7-12-aml-кодировщик-и-dsdt-из-manifest)
+- **Граница.** При появлении новых PCI endpoints их окна и маршруты потребуется передать через handoff и проверить по ресурсам платы.
 
 <a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>
 
-### ISSUE-064 — Current `rsa` integration still needs stable constant-time migration (RUSTSEC-2023-0071)
+### ISSUE-064 — RSA constant-time migration (RUSTSEC-2023-0071)
 
 - **Дата обнаружения:** 2026-11-07.
 - **Компонент:** `crates/od-tpm/` (`src/crypto.rs`: `rsa_sign`, `rsa_generate`; приватные RSA-операции фазы B, S7-23); выбор зависимости — [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md#условие-d9-о-constant-time-rsa).
-- **Статус:** открыта; stable fix доступен upstream, однако реализация проекта ещё не мигрирована. **Код, использующий `rsa`, есть со срезом B S7-23 (2026-11-07, ожидает ревью):** `TPM2_Sign` с RSA-ключом и генерация RSA-ключей в `CreatePrimary`/`Create`; **со срезом C1 (2026-11-07, ожидает ревью) появилась `TPM2_RSA_Decrypt`** (RSAES, OAEP и «сырой» RSA; приватная операция `rsa` с blinding от DRBG — тот же модуль и те же риски). До миграции с `=0.10.0-rc.22` риск текущей реализации остаётся; upstream release notes не являются проверкой текущей интеграции.
-- **Суть и последствия:** D9 требует для приватных операций RSA на host версию `rsa` с constant-time арифметикой. RustSec RUSTSEC-2023-0071 (Marvin, утечка приватного ключа по времени) указывает `Patched >=0.10.0`; advisory modified 2026-11-08. RustCrypto RSA v0.10.0 release notes от 2026-11-08 описывают hardening приватных операций и constant-time validation harness. В репозитории S7-23 всё ещё использует `=0.10.0-rc.22`. Marvin — атака именно на расшифровку RSAES PKCS#1 v1.5 по времени ответа; приватные операции, требующие миграции/проверки совместимости, включают `TPM2_Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import` и генерацию ключей. Проверка подписи в прошивке (операция с открытым ключом) не затронута.
+- **Статус:** решена 2026-11-18 после stable migration, compatibility-проверок и независимого review. `od-tpm` перешёл с `rsa =0.10.0-rc.22` на `=0.10.0` с требуемыми features; миграционный срез одобрен как commit-ready. Приватные операции `TPM2_Sign`, RSA-генерация в `CreatePrimary`/`Create` и `TPM2_RSA_Decrypt` (RSAES, OAEP, raw RSA; blinding получает DRBG) используют эту версию. Это закрывает выбранное условие D9; полной самостоятельной constant-time certification проект не заявляет. Firmware-target проверка остаётся S7-24.
+- **Суть и последствия:** D9 требует для приватных операций RSA на host версию `rsa` с constant-time арифметикой. RustSec RUSTSEC-2023-0071 (Marvin, утечка приватного ключа по времени) указывает `Patched >=0.10.0`; advisory modified 2026-11-08. RustCrypto RSA v0.10.0 release notes от 2026-11-08 описывают hardening приватных операций и constant-time validation harness. На момент обнаружения в репозитории использовался `=0.10.0-rc.22`; версия миграции зафиксирована ниже. Marvin — атака именно на расшифровку RSAES PKCS#1 v1.5 по времени ответа; приватные RSA операции, входящие в область этого issue, включают `TPM2_Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import` и генерацию ключей. Проверка подписи в прошивке (операция с открытым ключом) не затронута.
+- **Выполнено 2026-11-18:** `rsa` закреплён на `=0.10.0` с `default-features = false`, `pkcs1v15`, `hazmat`; lockfile обновлён (`rsa 0.10.0`, `crypto-bigint 0.7.11`). `cargo test -p od-tpm` прошёл 264 теста, включая детерминированные RSA key/signature golden проверки и внешнюю RSA interop для encrypt/decrypt; `cargo check --workspace --all-targets --offline` и `cargo fmt --all -- --check` прошли. Stable API/features совместимы без изменений вызовов. Это доказывает интеграционную совместимость, но не сертифицирует constant-time поведение. Независимое ревью 2026-11-18 одобрило миграционный срез; замечаний к миграции не осталось.
 - **Основание:** [RustSec RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) (modified 2026-11-08, `Patched >=0.10.0`); [RustCrypto RSA v0.10.0 release notes](https://github.com/RustCrypto/RSA/releases/tag/v0.10.0) (2026-11-08); текущая версия проекта зафиксирована в [DEPENDENCIES.md](policies/DEPENDENCIES.md) и Cargo-манифесте. Upstream statements do not prove project-level compatibility or security review.
-- **Следующий шаг:** в рамках S7-23 внедрить выбранную в ADR стабильную `rsa =0.10.0` (host: `default-features = false`, `pkcs1v15`, `hazmat`), проверить API/features и совместимость приватных RSA-вызовов, затем выполнить требуемые проверки и independent review. Согласовать `DEPENDENCIES.md` с выбранным target. Закрыть ISSUE-064 только после завершения и ревью миграции; сохранить статус S7-23 `in_progress` до выполнения всех его критериев.
+- **Результат:** миграция и review завершены. Host manifest использует `default-features = false`, `pkcs1v15`, `hazmat`; firmware target features `pkcs1v15` и `encoding` проверяются в S7-24. Остальные S7-23 критерии остаются `in_progress`.
 
 <a id="issue-063-s4-secondary-page-fault-requires-double-fault-delivery"></a>
 
@@ -6233,24 +6232,23 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата обнаружения:** 2026-11-18, firmware runner after ISSUE-495.
 - **Компонент:** paged CPL0 CPU profile (`crates/od-isa/`), firmware at `0x201939`.
-- **Статус:** CPU-profile срез ISSUE-496 принят после независимого ревью без замечаний и закоммичен (`161de07`); подтверждение продолжения S7-04 runner остаётся открытым до появления образа. Это ограничение повторного запуска ISSUE-496 не блокирует приёмку S7-03, который прошёл независимое ревью без замечаний.
+- **Статус:** закрыто. Реализация `161de07` принята независимым ревью. Повторный прогон 2026-11-18 подтвердил переход через `0x201939` на исходном образе.
 - **Суть и последствия:** the base firmware CPU profile stops on exact `74 15` (JZ rel8 +0x15).
 - **Основание:** on image SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe` and budget 20000, the runner reports `Unsupported { opcode: 116 }` after 10,350 retired instructions at RIP `0x201939`. COM1 is empty. Bytes at the link-base shadow are `74 15`.
 - **Результат реализации:** только displacement `+0x15` добавлен к существующему allowlist `JZ rel8`; opcode variants, prefixes, neighboring displacements, CPL3 and other-profile isolation остаются unsupported.
-- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Только повторное подтверждение дальнейшего S7-04 runner frontier не выполнено: указанный в отчёте образ `/private/tmp/od-fw-s7-04-issue256.bin` отсутствует в текущей среде. Это внешнее ограничение артефакта, не дефект реализации и не незавершённый review S7-03.
+- **Проверка:** пять focused `rust_helper_jz_rel8` tests pass, включая оба значения ZF, taken-target canonicality, atomic displacement fetch fault, neighbors and profile isolation. Образ `/private/tmp/od-fw-s7-04-issue256.bin` найден и сверён по SHA-256. При бюджете 20 000 runner выполнил 10 351 инструкцию и остановился на `0F 1F 44 00 00` по `0x20193b`. COM1 пуст.
 - **Ревью:** независимое ревью одобрило срез без замечаний; коммит `161de07` содержит реализацию, тесты и эту запись.
-- **Следующий шаг:** повторить firmware runner на образе с SHA-256 `9517c0603eb6a4c25ea813b42cff5f45a4a612264b7ff14a4c0b4b1c3348febe`, если он доступен, и отметить фактическое продолжение исполнения.
+- **Результат зафиксирован** в [отчёте этапа 7](reports/STAGE_7_REPORT.md#issue-496--exact-jz-rel8-0x15).
 
 <a id="issue-509-s7-14-rtc-interrupts-and-intra-quantum-time"></a>
 
 ### ISSUE-509 — S7-14: RTC interrupts and intra-quantum time
 
-- **Дата обнаружения:** 2026-11-18, при реализации RTC/CMOS.
-- **Компонент:** `od-machine` RTC/CMOS (`crates/od-machine/src/rtc_cmos.rs`) and board execution timing.
-- **Статус:** открыта; RTC/CMOS calendar slice implemented, interrupt routing and quantum integration are deferred.
-- **Суть и последствия:** RTC status C always reads zero; periodic, alarm and update-ended interrupt flags/IRQ8 delivery are not modeled. The calendar advances from the shared virtual clock, which is observed at I/O accesses. If guest execution stays in one instruction quantum, RTC UIP/second rollover is not observed during that quantum; firmware/Linux polling loops that expect time to advance inside the quantum can stall.
-- **Основание:** current RTC implementation explicitly has no interrupt route, status C returns zero, and timestamp is derived from `VirtualClockHandle::snapshot()`. No guest OS RTC polling fixture has been run for this slice.
-- **Следующий шаг:** coordinate with S4-38/S7-30 execution timing and interrupt scope; when enabling guest polling, advance/pump virtual time within a quantum and implement only the RTC interrupt semantics required by the accepted platform profile. Keep HPET tracked separately in S7-14.
+- **Дата обнаружения** 2026-11-18, календарный срез S7-14.
+- **Компонент** `od-machine`, RTC/CMOS и модель времени исполнения firmware.
+- **Статус** временная часть firmware-пути закрыта 2026-11-19. Гость проверен по обе стороны границ UIP и секунды внутри одного кванта. Те же чтения при пошаговом начислении времени дали одинаковое состояние. SET и запись календаря используют время соответствующего доступа.
+- **Условие для продолжения** RTC status C возвращает 0. Периодические, alarm и update-ended IRQ требуют подтверждённого потребителя. Переходы времени port polling внутри кванта проверены на firmware-пути.
+- **Следующий шаг** при подтверждении потребителя зафиксировать нужный тип IRQ и маршрут IRQ8 и добавить гостевое доказательство для выбранного профиля. [Результаты S7-14](reports/STAGE_7_REPORT.md#s7-14--точность-rtc-внутри-кванта).
 
 <a id="issue-510-s7-21-phase-a-acceptance-scope"></a>
 
@@ -6259,13 +6257,13 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата обнаружения:** 2026-11-18, during independent full review of S7-21 phase A.
 - **Компонент:** `crates/od-tpm/`, phase-A command processor and its TPM/PTP profile claims.
 - **Статус:** открытая запись ограничений; phase-A implementation scope принят после independent review 2026-11-18 (264 tests), но полное соответствие TPM/PTP не заявляется. Эта запись не отменяет scoped acceptance S7-21.
-- **Суть и последствия:** `TPM2_PCR_Allocate` возвращает `TPM_RC_COMMAND_CODE`, хотя PC Client PTP 1.07 относит её к mandatory; поддержан только PCR SHA-256 bank (SHA-1 запрещён PTP, SHA-384/SHA-512 отмечены mandatory); `TPM_CAP_PCR_PROPERTIES` не реализована и назначена S7-22. TPM 2.0 Library v185 недоступна (HTTP 403), проверки опираются на доступные части v184 и частично сверенный PTP 1.07; TCG/TPM compliance не подтверждена. HMAC_DRBG совпадает с независимыми Python vectors, но его соответствие тексту SP 800-90A и NIST CAVP vectors не проверялось. Исходная самописная HMAC на SHA-256 была заменена на `hmac` в S7-23; эта замена не подтверждает соответствие DRBG стандартным validation vectors.
+- **Суть и последствия:** В фазе A отсутствовал `TPM2_PCR_Allocate`. S7-23 добавил команду и подтвердил выделение банков SHA-256 и SHA-384 через CRB и нативную загрузку; `TPM_CAP_PCR_PROPERTIES` реализована в S7-22 для locality 0, включая `RESET_L0` и пагинацию. Этот ответ сверен по опубликованной TPM Library Part 2 v185. Проверки исходного среза S7-21 опирались на v184 и частично сверенный PTP 1.07; TCG/TPM compliance не подтверждена. HMAC_DRBG совпадает с независимыми Python vectors, но его соответствие тексту SP 800-90A и NIST CAVP vectors не проверялось. Исходная самописная HMAC на SHA-256 была заменена на `hmac` в S7-23; эта замена не подтверждает соответствие DRBG стандартным validation vectors.
 - **Основание:** S7-21 phase-A report and review record in [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md#s7-21-процессор-команд-tpm-20-фаза-a); implementation contract, limitations, source availability and `NOT VERIFIED` list in [VTPM.md](specs/VTPM.md#источники-и-сверка); plan acceptance is explicitly scoped in [STAGE_7.md](plans/STAGE_7.md).
-- **Следующий шаг:** S7-22 реализует либо документирует оставшийся ответ `TPM_CAP_PCR_PROPERTIES`; перед расширением PCR bank/profile сверить требования с доступной редакцией PTP and Windows evidence in S7-30. Если Library v185 станет доступна, проверить отмеченные `NOT VERIFIED` области. При доработке DRBG выполнить проверку по SP 800-90A и применимым NIST vectors либо явно оставить ограничение и основание. Не представлять scoped phase-A acceptance как compliance, и не закрывать эту запись без решения по перечисленным требованиям/ограничениям.
+- **Следующий шаг:** Перед расширением PCR bank/profile сверить требования с PTP и гостевыми проверками S7-30. По доступной Library v185 проверить оставшиеся области `NOT VERIFIED`. При доработке DRBG выполнить проверку по SP 800-90A и применимым NIST vectors либо явно оставить ограничение и основание. Не представлять scoped phase-A acceptance как compliance, и не закрывать эту запись без решения по перечисленным требованиям/ограничениям.
 
 <a id="issue-511-s7-30-windows-media-unavailable-for-guid-scan"></a>
 
-### ISSUE-511 — S7-30: Windows media unavailable for static GUID search
+### ISSUE-511 — S7-30: Windows media evidence blocker (resolved)
 
 - **Дата обнаружения:** 2026-11-18, при повторной проверке deliverables S7-30.
 - **Компонент:** аудит Windows firmware boot path и fixture `tests/fixtures/firmware/windows_media_manifest.json`.
@@ -6845,3 +6843,193 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Основание** подписанный клиент на `ef44df6` с обработкой `SIGPIPE` по умолчанию завершался сигналом 13 после принудительного закрытия читающего дескриптора и явного STOP. Обычное уведомление ранее в том же процессе прошло.
 - **Проверка** исправленный клиент получил `INVALID_STATE` с нетронутым выходным буфером, уничтожил сессию и создал новую. Для обычных вызовов клиент обязан держать читающий дескриптор открытым до возврата `wait`. [Нативная проверка и воспроизведение](reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md#native-c-client-and-a-lost-notification-reader-2026-11-19)
 - **Повтор на M1 Pro** исходный клиент завершился по SIGPIPE, исправленный прошёл на macOS 14.6.1. Отдельный сценарий `EMFILE` проверил `ALLOCATION_FAILED` и восстановление при большем ID на обеих сборках. [Результаты](reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md#confirmation-on-m1-pro)
+- **Статус:** решена 2026-11-18; ISO hash, доступные binaries и конечный статический GUID scan подтверждены. Независимый review принял статический аудит S7-30 2026-11-18.
+- **Суть и последствия:** пользовательский ISO доступен вне Git; его размер и SHA-256 повторно проверены. `bootx64.efi`, `bootmgfw.efi` и `winload.efi` из обоих `boot.wim` индексов извлечены во временный каталог и статически просканированы по 18 опубликованным UEFI/TCG GUID-кандидатам. В кандидаты включены все U-11/U-12 протоколы; Decompress/EBC не найдены, Simple Text Input Ex найден. EBC отмечен только как условный протокол, не обязательный с UEFI 2.8, если не реализован. Две копии `winload.efi` (3 358 408 байт) идентичны, SHA-256 `1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda`. Совпадения и отсутствия записаны в manifest. Статическое присутствие GUID само по себе не доказывает, что загрузчик находит или использует протокол. Runtime trace относится к S7-32 и в этой задаче не подтверждён.
+- **Основание:** read-only `shasum -a 256`/`stat` по `/Users/senya/projects/open_desktop/iso/Windows11_Client_x64_en-us_26300_9457.iso`; `7zz 26.05` извлёк boot EFI-файлы и WIM в `/private/tmp/open-desktop-s730`, затем только `Windows/System32/winload.efi` из индексов 1 и 2 во временные подкаталоги; `cmp` подтвердил одинаковые boot EFI и winload файлы. `7zz l -slt` перечислил полные пути обоих WIM-индексов (1: 25 797, 2: 26 332 path records) и оба содержат `Windows/System32/winload.efi`; Python `uuid.UUID(...).bytes_le` raw-byte search и offsets сохранены в `tests/fixtures/firmware/windows_media_manifest.json`. Audit items A8/A11 и §10.2/10.12 [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md) содержат пределы проверки.
+- **Результат закрытия:** media evidence blocker устранён и отражён в [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md), [windows_media_manifest.json](../tests/fixtures/firmware/windows_media_manifest.json) и S7-30 отчёте. Не закрывает и не подразумевает фактические runtime обращения; трассу протоколов, ACPI и TPM выполняет S7-32. ISO и Windows binaries в Git не добавлялись.
+
+### ISSUE-582 — S7-04: остановка свежего ROM на смещениях границ BSS
+
+- **Дата и компонент:** 2026-11-18, базовый paged CPL0 CPU-профиль.
+- **Причина:** старый допуск проверял точные значения `disp32` у двух инструкций `LEA` из `_start`. Свежая сборка (SHA-256 `ea4cf5eb7d1d679c1c8df272f8ca9e0b69624c0b907ebda371265b26373916f4`) использует `0x2c69` и `0x2c62` вместо `0x2b09` и `0x2b02`. Runner останавливался на `0x200050` после пяти инструкций.
+- **Статус:** устранено для этих двух форм. Знаковое смещение теперь декодируется для `LEA RDI,[RIP+disp32]` и `LEA RCX,[RIP+disp32]` в базовом профиле.
+- **Проверка:** свежий ROM прошёл оба `LEA` и остановился в Rust-точке входа после 18 инструкций. Оставшиеся остановки приведены в [ISSUE-583](#issue-583).
+
+<a id="issue-583"></a>
+
+### ISSUE-583 — S7-04: остановки ROM до вывода результата проверки handoff
+
+- **Дата и компонент:** 2026-11-18, `boot-firmware` и базовый paged CPL0 CPU-профиль.
+- **Статус.** Закрыто для запуска существующего ядра до строки успешного разбора handoff и `HLT`.
+- **Воспроизведение до исправления.** Свежий ROM `ea4cf5eb…16f4` после 16 221 инструкции и исторический ROM `9517c060…febe` после 16 232 инструкций останавливались на `89 C8` (`MOV EAX,ECX`, RIP `0x200244`) перед первым байтом строки COM1.
+- **Проверка.** Оба ROM вывели `OD-FW S7-04 handoff validated` с CRLF и завершились `HLT` после 16 617 и 16 628 инструкций. Дальнейшая приёмка S7-04 включает собственную среду исполнения, карту памяти и аллокатор. [Отчёт проверки](reports/STAGE_7_REPORT.md#s7-04--успешный-разбор-handoff-и-hlt).
+
+
+<a id="issue-584"></a>
+
+### ISSUE-584 — S7-23: состояние policy-сессии сохраняется после успешной авторизации
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, завершение авторизации policy-сессией из среза C2. Закрыто.
+- **Основание.** До исправления `continueSession = 1` сохранял `PolicyState` между командами. TPM требует возвращать значения policy-контекста к начальным после успешной авторизации. [TPM Library v185 Part 1, §§16.7.1 и 16.7.8](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf#page=139).
+- **Исправление и проверка.** Успешная команда формирует защищённый ответ и сбрасывает assertions продолжаемой авторизующей policy-сессии. Тесты проверяют нулевой digest, новый nonce, повторную настройку assertions, HMAC и шифрование ответа, ошибки параметров и второй авторизации, освобождение сессии и `ContextSave/Load`. Отдельная целевая сессия `PolicySecret` сохраняет добавленный assertion. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-585"></a>
+
+### ISSUE-585 — S7-23: HMAC первой авторизации с шифрованием в отдельной сессии
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, HMAC и шифрование параметров в срезе C3. Закрыто.
+- **Основание.** HMAC первой авторизации не учитывал TPM nonce другой encrypt/decrypt-сессии, и корректные команды отклонялись. [TPM Library v185 Part 1, §16.6.5, Equation 17](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf#page=119).
+- **Исправление и проверка.** Первый HMAC команды учитывает прежние TPM nonce других сессий в порядке decrypt, encrypt, по одному на сессию. Тест `Certify` покрывает обе роли, общую сессию на две роли, первый пароль, обычный и policy HMAC, пустой policy HMAC и отказы при пропуске или повторе nonce. Проверяются HMAC ответа, расшифрованные параметры и подпись. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-586"></a>
+
+### ISSUE-586 — S7-23: параметры шифрования контекста объекта повторяются после TPM Reset
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, сохранение контекстов объектов из среза C2. Закрыто.
+- **Основание.** До исправления ключ и IV зависели от proof иерархии, sequence и savedHandle. Постоянный proof и повторение sequence после сброса позволяли повторение параметров шифрования. TPM Library требует обновлять ключ шифрования контекстов при Reset. [TPM Library v185 Part 3, §9.3.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=43).
+- **Исправление и проверка.** Вывод параметров шифрования использует новый `resetValue` в каждом TPM Reset. Тест проверяет изменение шифротекста при повторном сохранении того же объекта после Reset и успешную загрузку исходного контекста после Restart и Resume. [Контракт TPM](specs/VTPM.md), [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-587"></a>
+
+### ISSUE-587 — S7-23: snapshot может восстановить RSA-ключ с несогласованной публичной частью
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, восстановление persistent objects из snapshot. Закрыто.
+- **Основание.** В `312546d` декодер принимал произвольный RSA exponent, а закрытый ключ восстанавливался с exponent 65537. `ReadPublic` мог объявить exponent, которому не соответствовали подписи и расшифрование.
+- **Исправление и проверка.** Общая проверка связи закрытой и публичной частей принимает кодировки `0` и `65537`. Иной exponent возвращает `TPM_RC_BINDING`, а `Tpm::restore` отклоняет snapshot с `StateError::BadField`. Тесты сохраняют обе допустимые кодировки и проверяют `ReadPublic`, подпись и отказ с несовместимым exponent. [Snapshot v3](specs/VTPM.md), [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-588"></a>
+
+### ISSUE-588 — S7-23: PCR Update Counter обнуляется при TPM Restart
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, обработка TPM Restart и сохранение policy-контекста. Закрыто.
+- **Основание.** Ветка Restart создавала `Pcrs::new()` с нулевым счётчиком и сохраняла контексты сессий. Примечание §9.3.1 сохраняет основу PCR Update Counter. §22.1 включает `TPM2_Startup` в команды, при которых сброс учитываемых PCR увеличивает счётчик. [TPM Library v185 Part 3, §§9.3.1 и 22.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=192).
+- **Исправление и проверка.** Restart и Resume начинают с сохранённого счётчика. Одна успешная `Startup` добавляет единицу, если она инициализирует учитываемые PCR. При Reset сохраняется начало отсчёта с нуля. Проверки через `PCR_Read` сверяют значения и счётчики всех трёх путей. При загрузке сохранённой policy-сессии счётчик защищает от использования PCR assertion предыдущего поколения. [Контракт TPM](specs/VTPM.md#pcr), [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-589"></a>
+
+### ISSUE-589 — S7-16: размеры записей I/O-очередей проверяются при включении контроллера
+
+- **Дата и компонент.** 2026-11-18, `od-machine`, NVMe Controller Configuration и Create I/O SQ/CQ. Закрыто.
+- **Основание.** В `0411d82` функция `enable` выставляла CFS при `IOSQES != 6` или `IOCQES != 4`, а `write_cc` теряла запись этих полей после включения. При допустимых AMS, MPS, CSS и admin-очередях драйвер не мог выполнить Identify перед настройкой I/O-очередей. Base 2.4 относит ошибки неинициализированных полей к Create I/O SQ/CQ. [NVMe Base 2.4, с. 59–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=85).
+- **Исправление и проверка.** Модель запускает admin-очереди с нулевыми полями, сохраняет запись размеров после включения и проверяет соответствующее поле в Create I/O SQ/CQ. Регрессионный тест проходит через Identify, ошибки `Invalid Queue Size`, создание и удаление I/O-очередей. [Контракт CC](specs/NVME_DEVICE.md#4-регистры-контроллера), [отчёт S7-16](reports/STAGE_7_REPORT.md#настройка-размеров-записей-io-очередей).
+
+<a id="issue-590"></a>
+
+### ISSUE-590 — S7-23: допустимые authHandle в PolicySecret
+
+- **Дата и компонент.** 2026-11-18, `od-tpm`, проверка `authHandle` команды `PolicySecret`. Закрыто.
+- **Основание и последствие.** TPM Library требует `userWithAuth = SET` у обычного объекта и `TPMA_NV_AUTHREAD = SET` у поддерживаемых непиновых NV-индексов. Ранее policy-авторизация объекта и парольная авторизация индекса могли пройти при сброшенном бите. [TPM Library v185 Part 3, §23.4.1, Table 146](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=218).
+- **Исправление и проверка.** На этапе получения `authValue` обычный объект проходит общую проверку `userWithAuth`, а NV-индекс — проверку `AUTHREAD`. Тесты проверяют отказ и сохранение digest при сброшенном бите, успех при выставленном бите и авторизацию иерархий. [Отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--реализация-и-проверки-фазы-b).
+
+<a id="issue-591"></a>
+
+### ISSUE-591 — NVMe PCIe: отсутствует Function Level Reset
+
+- **Дата и компонент.** 2026-11-18, `od-machine`, PCI-профиль NVMe. Открыто.
+- **Основание и последствие.** Цепочка PCI capabilities содержит MSI-X. PCI Express Device Capabilities для FLR и обработка Initiate FLR отсутствуют. Для полного NVMe over PCIe Transport 1.4 требуется Function Level Reset. Принятый S7-16 охватывает минимальную модель регистров, очередей и прерываний. [PCIe Transport 1.4, §3.8.5.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=26).
+- **Следующий шаг.** Реализовать capability и согласовать сброс PCI-функции с очередями, MSI-X и backend при расширении PCIe-профиля. Проверить чтение capability и reset через обычный гостевой путь PCI.
+
+<a id="issue-592"></a>
+
+### ISSUE-592 — S7-04: активация собственных таблиц и стека прошивки
+
+- **Дата и компонент.** 2026-11-18, UEFI и paged firmware CPU-профиль. Закрыто.
+- **Исправление и проверка.** После подготовки таблиц гостевой `MOV CR3` переключает root, продолжение выполняется на собственном стеке. Запуски с 128 и 256 MiB подтвердили новые CR3/RSP, строку `page tables active`, `HLT` и `#PF` при чтении guard. Разные инструкции по одному VA проверены в одном кванте и через границу квантов. Возврат временного резерва в карту UEFI входит в следующий срез карты памяти. [Отчёт проверки](reports/STAGE_7_REPORT.md#s7-04--активация-собственных-таблиц-и-стека).
+
+<a id="issue-593"></a>
+
+### ISSUE-593 — S7-04: собственные GDT/IDT и состояние CPU для EFI
+
+- **Дата и компонент.** 2026-11-18, UEFI и paged firmware CPU-профиль. Решено 2026-11-19 для S7-04.
+- **Результат.** ROM устанавливает собственные GDT, селекторы, IDT и `CR4=0x620`. Через эту IDT на 128 и 256 МиБ проверены `INT3`, `#UD`, `#NP`, `#SS`, `#GP` и чтение guard с `#PF`. Каждая проба вывела вектор в строке останова `0x10` и завершилась на `HLT`. Синхронный вход после `MOV SS` снял shadow. Отказ доставки оставляет исходное исключение и причину отказа в отчёте кванта. [Результаты проверки](reports/STAGE_7_REPORT.md#s7-04--остальные-синхронные-исключения-и-приёмка). [Контракт CPU](specs/FIRMWARE_BOOT.md#7-решение-2-состояние-cpu-при-вызове-efi-образа).
+
+<a id="issue-594"></a>
+
+### ISSUE-594 — S7-06: гостевой парсер PE останавливается на TEST с операндом из памяти
+
+- **Дата и компонент.** 2026-11-19, профили UEFI и `PagedCpl0FirmwareBootV1`.
+- **Наблюдение.** В пробный ROM добавлен вызов парсера PE32+ над образом Rust `x86_64-unknown-uefi` после диагностики таблиц. При 128 МиБ исполнение остановилось с `Unsupported { opcode: 133 }` на RIP `0x20d6e3` после 3 018 350 инструкций. ELF показывает `85 4c 24 0c`, `test dword ptr [rsp+0xc], ecx`. На host тот же образ прошёл парсинг, полный прогон дайджеста дал совпадение с Python.
+- **Статус и проверка.** Решено 2026-11-19. Прошивочный профиль принимает наблюдаемые формы `TEST m32,r32`, `AND r32,m32` и `ADD r32,m32`. Тесты сверили флаги, значения регистров, одно чтение и сохранение состояния при отказе, включая переход через границу страницы для `TEST`. Тот же ROM напечатал `OD-FW Authenticode parsed`. Гостевое хеширование отслеживается в ISSUE-595. [Отчёт](reports/STAGE_7_REPORT.md#s7-06--гостевой-парсер-pe32).
+
+<a id="issue-595"></a>
+
+### ISSUE-595 — S7-06: гостевой SHA-256 останавливается на BSWAP
+
+- **Дата и компонент.** 2026-11-19, программный backend RustCrypto SHA-2 и `PagedCpl0FirmwareBootV1`.
+- **Наблюдение.** После успешного парсинга в пробном ROM Authenticode входит в `sha2::sha256::compress256`. При 128 МиБ исполнение остановилось после 3 019 351 инструкций на `0f c8` (`bswap eax`, RIP `0x2164d7`) с `Unsupported { opcode: 200 }`. Тот же файл на host дал дайджест, совпавший с Python.
+- **Статус и проверка.** Решено 2026-11-19. Прошивочный профиль исполнил операции программного SHA-256. Межстраничное чтение проверено на несмежных read-only страницах и с отказом второй страницы. Тот же ROM напечатал `OD-FW Authenticode matches reference` после сравнения 32 байтов с расчётом Python и дошёл до `HLT`. [Отчёт](reports/STAGE_7_REPORT.md#s7-06--гостевой-дайджест-authenticode).
+
+<a id="issue-596"></a>
+
+### ISSUE-596 — SMP: единичный StaleSafePoint при снятии снимка
+
+- **Дата и компонент.** 2026-11-19, `od-machine`, параллельная остановка vCPU перед снимком.
+- **Наблюдение.** В первом полном `cargo test -p od-machine --offline` при проверке S7-06 тест `a_parallel_run_stopped_at_a_random_moment_is_reset_restored_and_finished_in_the_interleaved_mode` завершился `Scheduler("StaleSafePoint")` при seed 0 и quantum 7. Отказ произошёл до reset/restore на фоне параллельных тестов runner. Отдельный повтор того же теста прошёл. [Тест](../crates/od-machine/tests/stage6_smp_probe.rs), [контракт снимка](testing/SMP.md).
+- **Статус и следующий шаг.** Наблюдение открыто. Ревью подтвердило, что тест использует `Cpl0ProfileSet`, а новые формы S7-06 допускает отдельный прошивочный профиль. Для установления причины нужен повтор под сопоставимой нагрузкой с данными остановки, `StopAck` и состоянием vCPU.
+
+
+<a id="issue-597"></a>
+
+### ISSUE-597 — S7-13: обязательные поля SMBIOS унаследованных профилей handoff
+
+- **Дата обнаружения** 2026-11-19, сверка SMBIOS 3.9 Table 4.
+- **Компонент** Firmware board handoff и SMBIOS Type 1/Type 4.
+- **Статус** открыта для производственной конфигурации. Тестовый профиль `acpi` v1.9 передаёт ненулевой тестовый UUID, serial и номинальную частоту vCPU.
+- **Условие** в v1.0–v1.8 поля номинальной частоты нет. Если владелец платы оставляет UUID нулевым, прошивка публикует исходное значение. Эти профили сохраняют прежнюю совместимость handoff и не удовлетворяют одноимённым обязательным полям DSP0134 §6.2.
+- **Следующий шаг** при подключении производственной идентичности платы передавать устойчивый UUID и версию handoff с номинальной частотой, затем проверить поля на обычном OS boot path. [Формат](specs/ACPI_SMBIOS_TABLES.md#публикация-таблиц-uefi-s7-13), [DSP0134 3.9 §6.2](https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.9.0.pdf).
+
+<a id="issue-598"></a>
+
+### ISSUE-598 — S7-23: доверие Windows к EK и профиль команд Windows TBS
+
+- **Дата и компонент.** 2026-11-19, `od-tpm`, Windows TPM provisioning и attestation (T-04, K-05…K-10).
+- **Наблюдение.** Новый `Tpm::new` оставляет EK certificate NV-индексы неопределёнными. Host-проверка обоих legacy EK подтвердила цепочку временного тестового CA и сохранение DER. Для применения в Windows нужен издатель с доверенной целевой средой цепочкой, а для новых профилей требуется определить требования к High Range и алгоритмам PTP. До первого Windows TBS trace фактический набор команд provisioning, BitLocker, Windows Hello и attestation неизвестен. [Проверки EK](reports/STAGE_7_REPORT.md#s7-23--шаблоны-ek-и-nv), [Windows T-04](specs/WINDOWS_PLATFORM_REQUIREMENTS.md).
+- **Статус и следующий шаг.** Открыто. Определить допустимого издателя и нужные шаблоны для целевого Windows-профиля, выпустить и проверить соответствие сертификата фактическому EK в host provisioning. При запуске S7-32 зафиксировать коды команд и результаты Windows TBS, включая использование `ActivateCredential`/`MakeCredential` и потребность в командах вне реализованного профиля. Проверить, что Windows получает сертификат и доверяет цепочке.
+
+<a id="issue-599"></a>
+
+### ISSUE-599 — S7-23: неполный набор обязательных команд PTP 1.07
+
+- **Дата и компонент.** 2026-11-19, `od-tpm`, `TPM_CAP_COMMANDS` и приёмка фазы B.
+- **Основание.** Независимое ревью сравнило объявленные 60 команд с §5.2, таблица 16 PC Client PTP 1.07. В исходном наборе отсутствовали `ActivateCredential`/`MakeCredential`, `Duplicate`/`Import`, `ObjectChangeAuth`, `PolicySigned`, `PolicyTicket`, `PolicyNV` и `PolicyNameHash`. `PCR_Allocate` в текущем профиле отклоняется. [PC Client PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md), [VTPM](specs/VTPM.md).
+- **Статус и следующий шаг.** Открыто. 2026-11-19 владелец подтвердил расширение ADR до PTP 1.07. Из исходных 41 отсутствующей команды добавлены `TestParms`, `ECC_Parameters`, `ECDH_KeyGen`, `GetSessionAuditDigest`, `CertifyCreation`, `HMAC_Start`, `PolicyCpHash`, `PolicyLocality`, `PolicyPassword`, `NV_Certify`, `ClockSet`, `MakeCredential`, `ActivateCredential`, `ObjectChangeAuth`, `PolicyNameHash`, `PolicyAuthorize`, `PolicyTemplate`, `PolicyParameters`, `SetPrimaryPolicy`, `PolicyCounterTimer` и `PolicyNV`. Добавлены `PolicyNvWritten`, `PolicyAuthorizeNV`, `NV_ChangeAuth`, `NV_UndefineSpaceSpecial` и `ClockRateAdjust`. Включена собственная policy-авторизация NV через `POLICYREAD`/`POLICYWRITE`. `PolicySecret` реализует оба знака `expiration`, а `PolicyTicket` проверяет выданные билеты. Snapshot v5 сохраняет `totalResetCount`. `PolicySigned` добавлена для RSA-2048 и P-256. `IncrementalSelfTest` возвращает список оставшихся проверок текущего профиля, которые завершаются при `Startup`. TPM и TCG2 используют SHA-256 и SHA-384. `PCR_Allocate` меняет выделение целых банков после `_TPM_Init`, сохраняет его в snapshot v6 и проверен при загрузке с каждым банком. `Import` проверен с внешним RSA-OAEP и ECC/KDFe, включая канонический RSA-дубликат с одним множителем. `Duplicate` требует политику роли DUP и прошёл проверку с NULL, RSA и ECC родителями. `PolicyDuplicationSelect` проверен через CRB с привязкой двух Name, восстановлением контекста и `PolicyAuthorize`. `VerifyDigestSignature` и приём `DIGEST_VERIFIED` в `PolicyAuthorize` проверены по внешним подписям и HMAC. `SignDigest` и `HASHCHECK` проверены с restricted RSA-2048 и P-256. Реализована потоковая подпись `SignSequenceStart`/`SignSequenceComplete` с авторизацией последовательности и ключа. Реализованы потоковая проверка подписи и билет `MESSAGE_VERIFIED`. Смена proof выбранной иерархии во время потока ограничивает завершение под этой иерархией. Платформенный H-CRTM измеряет PCR0 и PCR17 и сохраняет establishment в snapshot v7. Гостевой запуск D-RTM требует доверенного производителя сигналов. В snapshot v8 расширены Primary Seeds для целевых AES-256/PQC. Размер proof для новых профилей требует отдельной сверки с Part 1 §11.5 и совместимостью билетов. Объявлены все 101 кода. ML-KEM-768 проверен для unrestricted объектов, включая ACVP и OpenSSL. Остаются restricted ML-KEM Storage parent, labeled KEM, ML-DSA и глубокая проверка объявленных команд, включая сохранение и восстановление sequence-контекстов. Аудит дополнительной HMAC-сессией и аттестация проверены через CRB. Совмещение аудита и авторизации одной HMAC-сессией реализовано (срез S7-23): сессия с `audit` может авторизовать handle в любой позиции, policy- и trial-сессия с `audit` остаётся `TPM_RC_ATTRIBUTES`. Первый аудит привязанной сессии отвечает ключом команды, затем привязка снимается и `authValue` входит в ключ. Правила сверены с Part 1 rev 01.83 §§18.6.1, 18.6.4, 19.6.1, 19.6.10, 20.1 и Errata 1.5, п. 2.15; тесты `session_audit_*` в `crates/od-tpm/src/tests_session_audit.rs`, раздел [VTPM](specs/VTPM.md#аудит-сессий-и-аттестация). NOT VERIFIED: нумерация в v185, Part 2 Table 38 и ключ ответа при первом аудите привязанной сессии (текст не определяет его однозначно). Дополнительные сессии шифрования проверены для `ECDH_KeyGen` и общего dispatcher. Целевая DA-проверка выполняется перед проверкой роли и условий политики по Part 3 §5.6. Проверено через CRB. Для привязки к иерархиям сессия сохраняет DA-класс, включая использование policy и аудит. Через CRB проверены отдельные условия Lockout и целевой сущности. Привязка к объектам и NV, salted-сессии и проверка DA с ними остаются открытыми. AES-256-CFB проверен для сессий, Storage keys, дублирования и credential. Срез hash agility, шаги A–B: SHA-384/SHA-512 закрыты как криптопримитивы, в `TPM_CAP_ALGS`, `Hash`/`HashSequenceStart`/`SequenceComplete`, `GetRandom` (до 64 октетов) и `TPM_PT_MAX_DIGEST` = 64; открыты шаги C–E (`nameAlg`, объекты, `authHash` сессий, контексты, политики, snapshot), salted-сессии, P-384, RSA-3072, SYMCIPHER, ML-DSA, ORDERLY/PIN, свойства Table 2 и §4.10. Доработать обязательные варианты алгоритмов, включая самостоятельные объекты SYMCIPHER, RSA-3072, P-384, SHA-384/512, restricted ML-KEM и ML-DSA, переключение банков PCR и upgrade. CRB revision 3 и EFI TCG2 поддерживают кадры до 8192 байт. Полные ответы с ML-DSA предстоит проверить в рамках поддержки алгоритма. Отдельно сверить `TPM_PT_CLOCK_UPDATE` (интервал фиксации NV в миллисекундах), который пока не публикуется. Для остальных путей генерации P-256 сверить требование дополнительных случайных битов из Library v185 Part 1 §44.6. Текущая генерация вне MakeCredential использует rejection sampling. [Инвентарь и проверки](specs/VTPM.md#целевой-профиль-pc-client-ptp-107).
+
+<a id="issue-600"></a>
+
+### ISSUE-600 — S7-24: граница защиты переменных Secure Boot в NVRAM
+
+- **Дата и компонент.** 2026-11-19, `NvramDevice`, runtime variable services, платформа UEFI.
+- **Основание.** До защищённого формата v2 прямой путь MMIO `WRITE` → `FLUSH` проверял только CRC и принимал новый снимок целиком. Такой контракт позволял бы заменить или удалить `PK` и `dbx` прямой записью мимо проверки Auth2 в `SetVariable`. UEFI требует защищённое от подмены хранение этих переменных. [NVRAM](specs/NVRAM_DEVICE.md#устройство), [UEFI 2.11 §§32.3 и 32.7](https://uefi.org/specs/UEFI/2.11/32_Secure_Boot_and_Driver_Signing.html).
+- **Статус и следующий шаг.** Защищённое хранение и `SetVariable` подтверждены в отладочном профиле v1.14. В `ODNVBANK` v2 обычный `WRITE`/`FLUSH` сохраняет защищённые записи и режим. `AUTH_UPDATE` проверяет текущий PK/KEK и watermark и коммитит активный банк. Нативно подтверждены Auth2 до и после EBS и после `SetVirtualAddressMap`. В handoff v1.15 реализованы проверка внешних образов и привязка к PCR7. Проба S7-25 подтвердила обновление `dbx` под текущим KEK в UserMode, отказ уже загруженному PE и отказ после холодного старта. Replay PCR7 подтвердил точную запись нового `dbx`. Для восстановления живого состояния с firmware RAM сохранить volatile-счётчик политики вместе с состоянием устройства при реализации S9-26. [Формат v2](specs/NVRAM_DEVICE.md#защищённый-формат-v2), [проверки](reports/STAGE_7_REPORT.md#s7-24--защищённые-переменные-uefi-runtime).
+
+<a id="issue-601"></a>
+
+### ISSUE-601 — S7-24: PKCS7 Verify Protocol
+
+- **Дата и компонент.** 2026-11-19, UEFI image services и Secure Boot.
+- **Основание.** UEFI 2.11 §2.6.2 включает PKCS7 Verify Protocol в требования к реализации Secure Boot. Сервисы проверки подписи для Auth2 и PE не публикуют интерфейс `EFI_PKCS7_VERIFY_PROTOCOL` для EFI-приложений. [UEFI 2.11](https://uefi.org/sites/default/files/resources/UEFI_Spec_Final_2.11.pdf).
+- **Статус.** Решена 2026-11-20 в профиле RSA-2048/SHA-256. Handoff v1.16 публикует `VerifyBuffer` и `VerifySignature` с указателями на списки вызывающей стороны. Нативный подписанный EFI-пробник подтвердил копирование, статусы доверия и доверенный RFC 3161 до даты отзыва. Требование §7.4.1 о таблице отказов подтверждено гостевой проверкой `LoadImage` и `StartImage`. [Гостевая проверка](reports/STAGE_7_REPORT.md#s7-24--efi-pkcs7-verify-protocol), [профиль Secure Boot](specs/UEFI_PROFILE.md#secure-boot).
+
+<a id="issue-602"></a>
+
+### ISSUE-602 — S7-35: официальный ISO требует обработки большого WIM
+
+- **Дата и компонент.** 2026-11-20, подготовка установочного носителя на host.
+- **Основание.** Исходный ISO из S7-30 занимает 9 047 330 816 байт. Повторное чтение каталога `7zz l -slt` показало `sources/install.wim` размером 8 155 984 950 байт при лимите одного файла FAT32 в 4 294 967 295 байт. В образе используется UDF. [Аудит](specs/WINDOWS_PLATFORM_REQUIREMENTS.md#1-носитель-и-цепочка-загрузки-наблюдения-в-iso).
+- **Статус и проверка.** Исправлено 2026-11-20, S7-35 принята. Импорт официального ISO автоматически создал FAT32 с тремя частями SWM. Сверены все 100 998 строк ресурсов и порядок метаданных 11 образов. `wimlib` независимо подтвердил SHA-1 ресурсов при чтении смонтированного диска. Запуск Windows до Setup проверяется в S7-32. [ADR-0012](decisions/ADR-0012-install-media-transport.md), [отчёт](reports/STAGE_7_REPORT.md#s7-35--официальный-носитель-windows-и-swm).
+
+<a id="issue-603"></a>
+
+### ISSUE-603 — S7-35: ненулевое время создания файла FAT в прошивке
+
+- **Дата и компонент.** 2026-11-20, `EFI_FILE_INFO` и профиль интерпретатора UEFI.
+- **Основание.** Опубликованный в пробном FAT32 ESP `BOOTX64.EFI` с `DIR_CrtDate = 0x0021` (1 января 1980) останавливает stock ROM SHA-256 `5af3d62142548920a855cef9ccb9fa0a8b822dfa4914091cfb69a32367ec9c77` на RIP `0x22d472`. Точные байты `69 C0 80 96 98 00` умножают сотые секунды на десять миллионов в `fs::info::file_info`. Runner сообщает `Unsupported { opcode: 105 }` без ошибки памяти.
+- **Статус.** Решена 2026-11-20. Точная форма допущена в firmware-профиле. Соседние формы и базовый профиль её по-прежнему отклоняют. Системная проба запустила тот же stock ROM с FAT32 `BOOTX64.EFI`, время создания которого задано как 1980-01-01 00:00:00,270. `hello` выполнился за 4 415 208 инструкций и 3 305 квантов. [Проверка](reports/STAGE_7_REPORT.md#s7-35--время-создания-файла-fat).
+
+<a id="issue-604"></a>
+
+### ISSUE-604 — S7-23: XOR с операндом памяти в EFI-пробе TPM
+
+- **Дата и компонент.** 2026-11-20, профиль исполнения EFI-приложений в `od-isa`.
+- **Основание.** В прогоне новой CRB-пробы из FV runner подтвердил доставку кадра на 4991 байт и проверку event log, затем остановился на RIP `0x7F50514` с `Unsupported { opcode: 51 }`. В `tpm.efi` по RVA `0x2514` находятся байты `48 33 94 24 7A 01 00 00` для `xor rdx, qword ptr [rsp + 0x17a]`. LLVM выбрал эту форму для сравнения полей ответа `TPM2_PCR_Read`.
+- **Статус и следующий шаг.** Открыто для декодера. EFI-проба сравнивает поля ответа отдельными байтовыми чтениями. Прогоны из FV и с ESP завершились успешно. При расширении набора инструкций проверить обычную форму `REX.W 33 /r` с источником из памяти в профиле EFI. [Отчёт CRB](reports/STAGE_7_REPORT.md#s7-23--crb-chunking).

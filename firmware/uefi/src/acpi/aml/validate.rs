@@ -1,16 +1,14 @@
-//! Structural validation of a finished definition block: every package stays inside its parent
-//! and no object name repeats within one scope. It parses only the subset the builder emits
-//! (Scope, Device, Name, Method at term level; data objects inside Name) and rejects any other
-//! opcode; it is not an AML interpreter. It checks only package bounds and repeated names. It does
-//! NOT parse the contents of `Buffer` / `ResourceTemplate`, the `NumElements` of `Package`, or the
-//! body of `Method` (that is the scope of plan item 3 of S7-12).
+//! Checks namespace names and package bounds in the builder's definition blocks (S7-12).
+//! The validator walks Scope and Device term lists and Name data objects, including nested
+//! fixed-size Package elements. Buffer payloads, VarPackage and Method bodies stay opaque.
 
 use super::AmlError;
+use super::builder::MAX_NEST;
 use super::encoder::decode_pkg_length;
 use super::names::{AbsPath, AmlName, MAX_SEGS, Registry};
 use super::opcodes::{
     BUFFER_OP, BYTE_PREFIX, DEVICE_OP_SUFFIX, DWORD_PREFIX, EXT_OP_PREFIX, METHOD_OP, NAME_OP,
-    ONE_OP, ONES_OP, PACKAGE_OP, QWORD_PREFIX, SCOPE_OP, STRING_PREFIX, VAR_PACKAGE_OP,
+    ONE_OP, ONES_OP, PACKAGE_OP, QWORD_PREFIX, ROOT_CHAR, SCOPE_OP, STRING_PREFIX, VAR_PACKAGE_OP,
     WORD_PREFIX, ZERO_OP,
 };
 use crate::acpi::bytes::{sub, tri};
@@ -92,7 +90,7 @@ const fn walk(
             NAME_OP => {
                 let (name, used) = tri!(AmlName::decode(sub(buf, at + 1, buf.len())));
                 tri!(register(scope, &name, registry));
-                at = tri!(skip_data_object(buf, at + 1 + used));
+                at = tri!(skip_data_object(buf, at + 1 + used, 0));
             }
             other => return Err(AmlError::UnsupportedOpcode(other)),
         }
@@ -114,7 +112,7 @@ const fn register(
 }
 
 /// Returns the offset just past the data object that starts at `at`.
-const fn skip_data_object(buf: &[u8], at: usize) -> Result<usize, AmlError> {
+const fn skip_data_object(buf: &[u8], at: usize, package_depth: usize) -> Result<usize, AmlError> {
     if at >= buf.len() {
         return Err(AmlError::Truncated);
     }
@@ -134,7 +132,30 @@ const fn skip_data_object(buf: &[u8], at: usize) -> Result<usize, AmlError> {
             }
             Ok(nul + 1)
         }
-        BUFFER_OP | PACKAGE_OP | VAR_PACKAGE_OP => match package_bounds(buf, at + 1) {
+        ROOT_CHAR => {
+            let (name, used) = tri!(AmlName::decode(sub(buf, at, buf.len())));
+            if name.segs().is_empty() {
+                return Err(AmlError::EmptyName);
+            }
+            Ok(at + used)
+        }
+        PACKAGE_OP => {
+            if package_depth >= MAX_NEST {
+                return Err(AmlError::TooDeep);
+            }
+            let (start, end) = tri!(package_bounds(buf, at + 1));
+            if start == end {
+                return Err(AmlError::Truncated);
+            }
+            // Skip NumElements; the body contains the encoded initializers.
+            let package = sub(buf, start + 1, end);
+            let mut next = 0;
+            while next < package.len() {
+                next = tri!(skip_data_object(package, next, package_depth + 1));
+            }
+            Ok(end)
+        }
+        BUFFER_OP | VAR_PACKAGE_OP => match package_bounds(buf, at + 1) {
             Ok((_, end)) => Ok(end),
             Err(error) => Err(error),
         },

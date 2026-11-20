@@ -3431,8 +3431,17 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   ROM `[0xFFC0_0000, 2^32)`, framebuffer экрана 0 (и экрана 1 при
   `second_screen`), `Mmio` регистров дисплея, IOAPIC и Local APIC, порт COM1
   `0x3F8` (8 портов). Одна и та же таблица из семи записей строит шину, окна карты
-  и устройства handoff block. NVRAM, TPM CRB, ECAM (по умолчанию; с флагом `pci_ecam` — S4-30c, ниже) — записи с `PRESENT = 0`, в
-  карту и на шину не добавляются.
+  и устройства handoff block. У NVRAM, TPM CRB и ECAM по умолчанию `PRESENT = 0`. Такие устройства не добавляются в карту или на шину.
+- **TPM CRB (S7-22).** Опция `FirmwareBoardConfig::tpm` включает MMIO
+  `[0xFED4_0000, 0xFED4_5000)`, строку устройства 6 и handoff v1.13 с ACPI.
+  Обычная шина и firmware-путь работают с одним состоянием устройства. Синхронный
+  START выполняет одну команду из внутреннего буфера через `od-tpm`.
+  Регистровые и временные проверки завершаются до эффекта. Ошибка команды
+  кодируется в ответе TPM. Firmware берёт абсолютное время инструкции из
+  начала кванта и счётчика уже завершённых инструкций, обычная шина снимает
+  текущее время платы. На хосте `tpm_state_snapshot()` возвращает секретный
+  ODTPMSTA v6 с запрошенным выделением банков PCR и часами до текущей границы. Восстановление — при создании
+  платы из проверенного снимка и свежей энтропии владельца. [CRB и снимок](VTPM.md#crb).
 - **Образ.** Принимается только образ ровно `0x0040_0000` байт с заголовком v1
   (FIRMWARE_BOOT.md 3.2): magic, `format_version`, `header_size`, `image_size`,
   `link_base`, `entry_offset ∈ [0x40, image_size)`, `handoff_major = 1`,
@@ -3502,11 +3511,13 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 - Fetch из ROM — `#PF`, error code `0x11`, адрес fetch (тест
   `instruction_fetch_from_rom_is_a_page_fault_by_nx`); backend-ошибка не
   возникает, пока листья ROM помечены NX.
-- Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
+- Не реализованы: повторное копирование shadow при сбросе (S7-26),
   ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
-  NVMe: PCI-привязка и прерывания (S7-16: срезы A и B выполнены, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
   UUID/серийного номера из командной строки runner (используются значения по
   умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
+  Базовый firmware-профиль NVMe использует фиксированное MMIO. Опциональная
+  PCI-привязка описана ниже в разделе «NVMe controller».
 - Расширение handoff block (новые поля и устройства) повышает `version_minor`
   по правилам раздела 6.4 FIRMWARE_BOOT.md; машина выдаёт v1.0 и принимает образы
   с любым `handoff_minor_max`; v1.1 (запись NVMe) — только при `FirmwareBoardConfig::nvme = Some(..)`
@@ -3517,15 +3528,24 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 `python3 -m unittest tools/build/test_build_firmware.py`; методика —
 [FIRMWARE.md](../testing/FIRMWARE.md).
 
+## Устройство NVRAM
+
+`FirmwareBoardConfig::nvram` подключает окно `[0xFF00_0000, 0xFF04_1000)` как `Mmio`. В handoff v1.7 устройство 5 владеет регионом типа `NVRAM`. Плата хранит два банка в `NvramDevice`. Содержимое банка остаётся непрозрачным для машины. [Регистры, банки и Host API](NVRAM_DEVICE.md).
+
+Квант прошивки передаёт простые чтения и записи через 4-КиБ страничный walker только для этого окна. Полный операнд должен помещаться в регион. Для прочих MMIO-окон действует прежний отказ. Выборка инструкции, чтение псевдодескриптора, read-for-write и locked-доступ через это окно не поддерживаются.
+
+`NvramDevice` возвращает `UnsupportedSpace` для PIO, `UnsupportedWidth` при ширине регистра кроме dword, `Misaligned` для невыровненного регистра и `CrossesRegister` на границе данных и регистров. Неизвестное смещение и выход за диапазон передачи дают `UnknownOffset`. Чтение окна без READ даёт `Busy`, запись без WRITE — `ReadOnly`. Запись в `STATUS` и `ACTIVE_LEN` запрещена, чтение `CMD` даёт `WriteOnly`. Ошибка доступа сохраняет состояние устройства. Ошибки команд после корректной записи в `CMD` сообщаются через `STATUS`.
+
+Хост получает снимок между квантами. Повторная загрузка может создать плату с тем же ROM и восстановленным снимком NVRAM. Управление общим сбросом платы относится к S7-26, сохранение снимка в VM bundle — к S9-26.
+
 ## NVMe controller (S7-16, срезы A и B)
 
-**Статус: срезы A (управление) и B (ввод-вывод `Read`, `Write`, `Flush`) реализованы
-исполнителем, ожидают ревью.** Контракт устройства,
-регистры, команды, границы, разрывы и значения без сверки со спецификацией —
-[NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
+**Статус.** Минимальный S7-16 принят. Реализованы управление и ввод-вывод
+`Read`, `Write`, `Flush`. В opt-in PCI-профиле подтверждены чтение и MSI-X
+в запущенном Linux. Контракт устройства и его границы описаны отдельно.
+Код находится в `crates/od-machine/src/nvme/`. [NVME_DEVICE.md](NVME_DEVICE.md) · [Гостевой прогон](../reports/STAGE_7_REPORT.md#чтение-raw-и-msi-x-в-linux).
 
-- **Шина.** Контроллер — `BusDevice` на одном `Mmio`-регионе `[0xFC00_1000, +0x2000)`
-  (`NVME_MMIO_BASE`, `NVME_MMIO_BYTES`), как дисплей; `MachineBus` не менялся.
+- **Шина.** В firmware-профиле контроллер занимает регион `[0xFC00_1000, 0xFC00_3000)`. В PCI-профиле `MachineBus` открывает BAR0/1 `[0xFC00_4000, 0xFC00_8000)` через MMIO, включая таблицу MSI-X и PBA.
   Ошибки доступа к окну — `DeviceError` по классам контракта шины:
   `UnsupportedWidth` (байт, слово, `Qword` на doorbell), `Misaligned`,
   `CrossesRegister` (`Qword` через границу регистров), `ReadOnly`, `WriteOnly`
@@ -3539,6 +3559,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   проходят через `committed_write`. PRP в MMIO, ROM, framebuffer и вне карты —
   статус `Data Transfer Error` команды, не доступ и не паника. Обращение к очереди
   не в RAM — `CSTS.CFS`.
+- **Прерывания.** PCI-профиль доставляет INTA через IOAPIC, а MSI-X — напрямую в IRR целевого Local APIC после записи CQE. Фиксированный MMIO-профиль использует опрос. [Контракт прерываний NVMe](NVME_DEVICE.md#31-прерывания-pci).
 - **Плата.** `FirmwareBoardConfig::nvme: Option<NvmeConfig>` (по умолчанию `None`):
   при `Some` в таблицу устройств handoff block добавляется запись кода 8 (`version_minor = 1`),
   в карту — регион `Mmio`, на шину — устройство; `LoadedFirmwareBoard::nvme()` отдаёт handle;
@@ -3698,6 +3719,8 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 **Источник и профиль.** Основной источник register semantics: Motorola Semiconductor Technical Data, *MC146818 Real-Time Clock Plus RAM (RTC)*, MC146818/D, ADI856R3 (1988), [datasheet PDF](https://pccomponents.com/datasheets/MOTO-MC146818.PDF). Модель покрывает выбранный register interface only; она не эмулирует oscillator/divider, SQW, DST, battery backup, alarm comparison or periodic/alarm/update IRQ. Alarm bytes are readable/writable storage only; status C is always zero. For reset-selected 32.768 kHz, UIP asserts 244 µs before the virtual-second boundary and stays high through the 1.984 ms update cycle from Table 6. The datasheet has a discrepancy: an earlier access-window paragraph says 1,948 µs, but the Update Cycle prose and Table 6 say 1,984 µs; this model follows the latter. Alternate divider/time-base writes do not retime UIP.
 
 **Порты и поведение.** В absent-режиме `0x70` (индекс) и `0x71` (данные) занимают одну привязку длиной 2 (`0x72/0x73` не привязаны); чтение — `0xFF`, запись игнорируется. При настроенном RTC `RtcCmos` занимает ту же привязку и реализует CMOS index, бит NMI-disable (бит 7), календарные регистры и RAM через data-порт. Только байтовый PIO доступ допустим. Источник — явный `rtc_base_unix_seconds` из handoff; часы используют shared `VirtualClock`, BCD/24-hour — reset default, поддержаны binary/12-hour, SET freeze/rebase, century `0x32` и календарный rollover. Status C всегда 0; RTC periodic/alarm/update interrupts не подключены (ISSUE-509). `0xED` остаётся отдельным absent/sink портом длиной 1.
+
+**Время RTC при загрузке прошивки.** Байтовый доступ к данным RTC на `0x71` получает время начала кванта плюс число завершённых до этой инструкции циклов vCPU. UIP, чтение календаря, SET и запись календаря используют одну такую отметку на доступ. Диагностический PIO вне исполнения гостя читает текущее значение общих часов. Продвижение общих часов по завершении кванта начисляет каждый цикл один раз. При переполнении времени байтовый доступ к RTC завершается с `DeviceError::ClockOverflow` до изменения регистра или завершения инструкции. [Контракт кванта](FIRMWARE_BOOT.md#8-решение-3-модель-таймеров-и-событий).
 
 **Политика ширин.** Только байт. Слово, dword и qword на устройстве — `DeviceError::UnsupportedWidth` без эффекта; MMIO — `UnsupportedSpace`; смещение за привязкой — `UnknownOffset`. Основание: единая политика PIO-устройств модели (8259, UART, conf1 отказывают, а не выдумывают значение), Linux на этих портах использует только `inb`/`outb`; обращение шире байта означает, что гость делает то, что модель не аудировала, и остановка информативнее выдуманного `0xFFFF`. На шине: слово на `0x70` доходит до устройства (`Device{UnsupportedWidth}`), слово на `0x71`, dword на `0x70` и любое широкое обращение к `0xED` пересекают границу привязки — `BusAccessError::CrossesRegion` до устройства, qword — `UnsupportedWidth` на шине.
 

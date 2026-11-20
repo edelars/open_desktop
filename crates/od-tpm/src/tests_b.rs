@@ -176,7 +176,13 @@ pub(super) struct Hc {
     pub(super) entity_after: Vec<u8>,
 }
 
-pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
+pub(super) fn hmac_auth_entry(
+    s: &Hs,
+    c: &Hc,
+    parameter_nonces: &[&[u8]],
+    empty_hmac: bool,
+    corrupt: bool,
+) -> Vec<u8> {
     let mut cp = Sha256::new();
     cp.update(c.code.to_be_bytes());
     for n in &c.names {
@@ -196,6 +202,9 @@ pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> V
     let mut data = cp.to_vec();
     data.extend_from_slice(&c.nonce_caller);
     data.extend_from_slice(&s.nonce_tpm);
+    for nonce in parameter_nonces {
+        data.extend_from_slice(nonce);
+    }
     data.push(c.attrs);
     let mut mac = crate::crypto::hmac_sha256(&key, &[&data]).to_vec();
     if corrupt {
@@ -209,6 +218,11 @@ pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> V
     area.extend_from_slice(&tpm2b(&c.nonce_caller));
     area.push(c.attrs);
     area.extend_from_slice(&tpm2b(&mac));
+    area
+}
+
+pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
+    let area = hmac_auth_entry(s, c, &[], empty_hmac, corrupt);
     let mut auth_area = (area.len() as u32).to_be_bytes().to_vec();
     auth_area.extend_from_slice(&area);
     frame(st::SESSIONS, c.code, &c.handles, &auth_area, &c.params)
@@ -243,14 +257,19 @@ pub(super) fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
     }
     let (params, acks) = split_response(&resp, 0);
     assert_eq!(acks.len(), 1);
-    let (nonce, attrs, hmac) = &acks[0];
+    check_hmac_ack(s, c, &params, &acks[0]);
+    resp
+}
+
+pub(super) fn check_hmac_ack(s: &mut Hs, c: &Hc, params: &[u8], ack: &Ack) {
+    let (nonce, attrs, hmac) = ack;
     assert_eq!(nonce.len(), s.nonce_tpm.len());
     assert_ne!(nonce, &s.nonce_tpm, "the TPM rolls its nonce");
     assert_eq!(*attrs, c.attrs);
     let mut rp = Sha256::new();
     rp.update(0u32.to_be_bytes());
     rp.update(c.code.to_be_bytes());
-    rp.update(&params);
+    rp.update(params);
     let mut data = rp.finalize().to_vec();
     data.extend_from_slice(nonce);
     data.extend_from_slice(&c.nonce_caller);
@@ -270,7 +289,6 @@ pub(super) fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
         "response HMAC"
     );
     s.nonce_tpm = nonce.clone();
-    resp
 }
 
 pub(super) fn hc(code: u32, handles: &[u32], params: Vec<u8>, entity: (u32, &[u8])) -> Hc {
@@ -473,7 +491,7 @@ fn hierarchy_change_auth_errors() {
                 &tpm2b(b"a"),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(2),
     );
     let area = {
         let mut a = Vec::new();
@@ -955,11 +973,11 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
             Rc::VALUE.in_param(3),
         );
     }
-    // Parameter encryption (slice C3): AES-128-CFB and XOR(SHA-256) are accepted; every other
-    // `TPMT_SYM_DEF` is refused with parameter number 4.
+    // AES-128/256-CFB and XOR(SHA-256) are accepted. Unsupported parameters report index 4.
     let aes = cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0043)]);
+    let aes256 = cat(&[&u16b(0x0006), &u16b(256), &u16b(0x0043)]);
     let xor = cat(&[&u16b(0x000A), &u16b(alg::SHA256)]);
-    for sym in [&aes[..], &xor[..]] {
+    for sym in [&aes[..], &aes256[..], &xor[..]] {
         let r = run(
             &mut t,
             start_cmd(
@@ -975,10 +993,7 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
         ));
     }
     for (sym, expect) in [
-        (
-            cat(&[&u16b(0x0006), &u16b(256), &u16b(0x0043)]),
-            Rc::KEY_SIZE,
-        ),
+        (cat(&[&u16b(0x0006), &u16b(192), &u16b(0x0043)]), Rc::VALUE),
         (cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0044)]), Rc::MODE),
         (cat(&[&u16b(0x000A), &u16b(0x0004)]), Rc::HASH),
         (u16b(0x0013), Rc::SYMMETRIC),
@@ -1055,7 +1070,7 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
                 &good,
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     // No session was created by any of the failures.
     assert!(handles_of(&mut t, 0x0200_0000).is_empty());
@@ -1174,9 +1189,10 @@ fn flush_context_flushes_sessions_and_sequence_objects_and_refuses_the_rest() {
 }
 
 /// The whole exchange pinned against values computed independently with Python `hmac`/`hashlib`
-/// (SP 800-90A HMAC_DRBG as in `random.rs`, KDFa and Equations 17, 18, 20-22 of Part 1 v184):
-/// owner password, an unbound session that changes ownerAuth (response HMAC under the NEW value),
-/// then a session bound to the owner that changes it again with the session key alone.
+/// (SP 800-90A HMAC_DRBG as in `random.rs`, KDFa and Equations 17, 18, 20-22 of Part 1 v184).
+/// The first nonce follows four hierarchy seed requests and the 16-byte Time epoch request.
+/// An unbound session changes ownerAuth and the response HMAC uses the new value. A session
+/// bound to the owner changes ownerAuth again with the session key alone.
 #[test]
 fn hmac_session_exchange_matches_independent_python_values() {
     let mut t = started();
@@ -1197,12 +1213,12 @@ fn hmac_session_exchange_matches_independent_python_values() {
     );
     assert_eq!(
         &resp[14..],
-        &tpm2b(&hex("a6780a72c7f12919629982405d094398"))[..]
+        &tpm2b(&hex("3f64e53032fbb062370276a9b143893b"))[..]
     );
     let s = Hs {
         handle: 0x0200_0000,
         key: Vec::new(),
-        nonce_tpm: hex("a6780a72c7f12919629982405d094398"),
+        nonce_tpm: hex("3f64e53032fbb062370276a9b143893b"),
         bound: None,
     };
     let mut c = hc(
@@ -1215,16 +1231,16 @@ fn hmac_session_exchange_matches_independent_python_values() {
     c.entity_after = b"second".to_vec();
     let cmd = hmac_command(&s, &c, false, false);
     // The HMAC inside the command is the independent value.
-    let tag = hex("d06a7a1617be4e6ee38c9497284f72cc251529818df82aff1dd01ff2c102fb26");
+    let tag = hex("facb1af9e427f22b7ecf483769688b8fcd5a4dd60168588839a57790c443735a");
     assert!(cmd.windows(32).any(|w| w == &tag[..]));
     let resp = run(&mut t, cmd);
     let (params, acks) = split_response(&resp, 0);
     assert!(params.is_empty());
-    assert_eq!(acks[0].0, hex("3f64e53032fbb062370276a9b143893b"));
+    assert_eq!(acks[0].0, hex("40dfabbb2ce0a1e4be5ea5e06355c692"));
     assert_eq!(acks[0].1, 1);
     assert_eq!(
         acks[0].2,
-        hex("da7f61439dc667a5ac5148a4943460d72528db2cc1a87f5dc59fdc8f8dfed1c3")
+        hex("9393404381cfbbff174ff4161c2e7ea06bbb5f8f514c2e67f73efc9728a9fd8d")
     );
 
     // Session bound to the owner (authValue "second").
@@ -1238,13 +1254,13 @@ fn hmac_session_exchange_matches_independent_python_values() {
     );
     assert_eq!(
         &resp[14..],
-        &tpm2b(&hex("40dfabbb2ce0a1e4be5ea5e06355c692"))[..]
+        &tpm2b(&hex("7b3c1bf8fd90bc408f7cd7822ce5562d"))[..]
     );
-    let key = hex("3902877e4f28822bf73899081c62b8b1eb03bdc7776e8cb60760b18897abe5f4");
+    let key = hex("7fe11abce9a6bb58c4379ef135fe108f250196352f91869391561b3e580baf45");
     let s = Hs {
         handle: 0x0200_0001,
         key: key.clone(),
-        nonce_tpm: hex("40dfabbb2ce0a1e4be5ea5e06355c692"),
+        nonce_tpm: hex("7b3c1bf8fd90bc408f7cd7822ce5562d"),
         bound: Some((OWNER, b"second".to_vec())),
     };
     // The client model derives the same session key as the independent computation.
@@ -1258,15 +1274,15 @@ fn hmac_session_exchange_matches_independent_python_values() {
     c.nonce_caller = vec![0x0d; 16];
     c.entity_after = b"third".to_vec();
     let cmd = hmac_command(&s, &c, false, false);
-    let tag = hex("990ad4ac5e075386c8401b03314d93f1eedc1ac58bf5dd88e819efb01b116675");
+    let tag = hex("8b528c713cd421eaf86b5994ca99fa64356886cb430566633d18c346e18f8903");
     assert!(cmd.windows(32).any(|w| w == &tag[..]));
     let resp = run(&mut t, cmd);
     let (_, acks) = split_response(&resp, 0);
-    assert_eq!(acks[0].0, hex("7b3c1bf8fd90bc408f7cd7822ce5562d"));
+    assert_eq!(acks[0].0, hex("37590366375cea7b6973867acb3652dd"));
     // Bound to the entity: the response HMAC key is the session key alone, also after the change.
     assert_eq!(
         acks[0].2,
-        hex("fd4358d5230aec5cb0178adbfa16462970315de2a7d636e4ffe70946a01ed8cc")
+        hex("e0e47c9dd83555d0a5df82de018936c82f0b6bed0fc2d732c0419d7a88ee006f")
     );
     ok(&set_auth(&mut t, OWNER, b"third", b""));
 }
@@ -1336,7 +1352,7 @@ fn hmac_session_authorization_rules() {
     for (bits, expect) in [
         (session_attr::DECRYPT, Rc::SYMMETRIC.in_session(1)),
         (session_attr::ENCRYPT, Rc::SYMMETRIC.in_session(1)),
-        (session_attr::AUDIT, Rc::ATTRIBUTES.in_session(1)),
+        // `audit` itself is allowed on an HMAC session that authorizes (tests_session_audit).
         (session_attr::AUDIT_EXCLUSIVE, Rc::ATTRIBUTES.in_session(1)),
         (session_attr::AUDIT_RESET, Rc::ATTRIBUTES.in_session(1)),
         (0x08, Rc::ATTRIBUTES.in_session(1)),
@@ -1672,8 +1688,6 @@ fn nv_define_space_errors() {
         OWNER_RW | 0x80,                 // TPM_NT_PIN_FAIL
         OWNER_RW | 0x90,                 // TPM_NT_PIN_PASS
         OWNER_RW | 0x30,                 // reserved TPM_NT
-        OWNER_RW | attr::POLICYREAD,
-        OWNER_RW | attr::POLICYWRITE,
         OWNER_RW | attr::POLICY_DELETE,
         OWNER_RW | attr::GLOBALLOCK,
         OWNER_RW | attr::ORDERLY,
@@ -1909,7 +1923,10 @@ fn nv_read_write_errors() {
     );
     err(&nv_read(&mut t, PLATFORM, idx, b"", 1, 0), Rc::AUTH_TYPE);
     // The index as its own authorization needs AUTHWRITE/AUTHREAD.
-    err(&nv_write(&mut t, idx, idx, b"", &[1], 0), Rc::AUTH_TYPE);
+    err(
+        &nv_write(&mut t, idx, idx, b"", &[1], 0),
+        Rc::AUTH_UNAVAILABLE,
+    );
     // Another index as authorization handle: TPM_RC_NV_AUTHORIZATION.
     ok(&define(
         &mut t,
@@ -2331,8 +2348,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 60 commands less EvictControl (0x120).
-    assert_eq!(count, 59);
+    // From 0x121 on: 101 commands less NV_UndefineSpaceSpecial and EvictControl.
+    assert_eq!(count, 99);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
@@ -2341,16 +2358,28 @@ fn capability_commands_report_the_extensive_and_nv_attributes() {
     // {NV E} with one handle.
     assert_eq!(of(0x121), 0x121 | 1 << 22 | 1 << 23 | 1 << 25);
     assert_eq!(of(0x126), 0x126 | 1 << 22 | 1 << 23 | 1 << 25);
+    assert_eq!(of(0x12B), 0x0240_012B);
     // {NV} with one handle.
     assert_eq!(of(0x129), 0x129 | 1 << 22 | 1 << 25);
     // StartAuthSession: two handles and a handle in the response.
     assert_eq!(of(0x176), 0x176 | 2 << 25 | 1 << 28);
+    assert_eq!(of(0x14A), 0x14A | 2 << 25);
+    assert_eq!(of(0x14D), 0x14D | 3 << 25);
+    assert_eq!(of(0x15B), 0x15B | 1 << 25 | 1 << 28);
     // NV_Read: two handles, no NV write; NV_Write: {NV}.
     assert_eq!(of(0x14E), 0x14E | 2 << 25);
     assert_eq!(of(0x137), 0x137 | 1 << 22 | 2 << 25);
     // FlushContext and NV_ReadPublic.
     assert_eq!(of(0x165), 0x165);
     assert_eq!(of(0x169), 0x169 | 1 << 25);
+    assert_eq!(of(0x1A5), 0x0200_01A5);
+    assert_eq!(of(0x1A6), 0x0200_01A6);
+    assert_eq!(of(0x1A4), 0x0500_01A4);
+    assert_eq!(of(0x1AA), 0x1200_01AA);
+    assert_eq!(of(0x1A3), 0x0500_01A3);
+    assert_eq!(of(0x1A9), 0x1200_01A9);
+    assert_eq!(of(0x1A7), 0x0200_01A7);
+    assert_eq!(of(0x1A8), 0x0200_01A8);
 }
 
 #[test]

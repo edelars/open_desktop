@@ -35,12 +35,11 @@ impl std::error::Error for BackendError {}
 /// implementation must still reject an out-of-range access with
 /// [`BackendError::OutOfRange`] instead of panicking.
 ///
-/// Durability requirement: the controller reports `VWC = 0` (no volatile
-/// write cache), so guest drivers send no `Flush` and guest data must be
-/// durable by the time `write_sectors` returns (write-through). Either the
-/// backend guarantees that, or the integration must declare `VWC = 1` and
-/// implement `Flush`. The choice is an open question for the `od-storage`
-/// integration.
+/// The controller reports `VWC.VWCP = 0` (no volatile write cache). The
+/// backend must write through to its medium and read from that medium, with
+/// no device-side data cache. For a persistent backend, the write must be
+/// durable before `write_sectors` succeeds, including for FUA requests.
+/// `InMemoryBackend` models the medium with a vector for tests.
 pub trait NvmeBackend {
     fn sector_count(&self) -> u64;
     /// Fills `buffer` (a whole number of sectors) from `lba` on.

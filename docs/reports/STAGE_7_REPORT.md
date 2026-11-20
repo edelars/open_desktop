@@ -1,6 +1,9 @@
 # Этап 7. Отчёт: собственные UEFI, ACPI и платформа для Windows
 
-Статус отчёта: **промежуточный. Этап 7 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и проверками на ветке `feat/s9-stage` (исходная точка — коммит `bacffa0`, план этапа 7). Приняты отдельные задачи S7-00 (документационный scope и границы), S7-02 (архитектурный контракт), S7-03 (host-side ROM/image/handoff slice), S7-20 (архитектурное решение vTPM) и S7-21 (процессор команд TPM 2.0, только reviewed phase-A scope); все пять прошли соответствующее независимое ревью 2026-11-18, без приёмки этапа 7 целиком. Правило статусов: задача, выполненная исполнителем, — `in_progress`, пока её task-specific evidence не проверено ревьюером и checkbox в плане не отмечен (`STAGE_7.md` §0). В работе остаются S7-01, S7-04, S7-12, S7-14, S7-16, S7-23 (только срез A) и S7-30; остальные задачи S7-NN не начаты. S7-12 получила одобрение ограниченного профиля, но не принята целиком; срез RTC/CMOS S7-14 и срезы NVMe S7-16 прошли ревью, но сами задачи остаются открытыми по незавершённому объёму. Само наличие плана, отчёта или записей в карте проекта не закрывает задачу: принятие каждой задачи подтверждается её конкретными доказательствами и ревью, а этап остаётся промежуточным до выполнения всех критериев.
+Отчёт промежуточный. Он фиксирует проверки и независимое ревью на
+ветках `feat/s9-stage` и `codex2` с плана в коммите `bacffa0`. Сводка
+ниже отражает принятие отдельных задач. По §0 плана задача остаётся
+`in_progress` до проверки её результатов ревьюером и отметки в плане.
 
 Связанные документы: [план этапа 7](../plans/STAGE_7.md), [этап 7 дорожной карты](../ROADMAP.md#этап-7-собственные-uefi-acpi-и-платформа-для-windows), [виртуальная плата](../specs/VIRTUAL_BOARD.md), [состояние VM](../specs/VM_STATE.md), [реестр проблем](../KNOWN_ISSUES.md), [отчёт этапа 9](STAGE_9_REPORT.md), [отчёт этапа 11](STAGE_11_REPORT.md).
 
@@ -10,50 +13,50 @@
 
 | Статус | Количество | Задачи |
 |---|---|---|
-| Принято | 5 | S7-00 (коммит `c1ae3dd`; полное независимое ревью scope 2026-11-18 одобрило без замечаний); S7-02 (коммит `9d89aac`; архитектурное ревью 2026-11-18 одобрило полный scope); S7-03 (принята после независимого ревью 2026-11-18); S7-20 (ADR-0009 принят после полного архитектурного повторного ревью 2026-11-18 без замечаний); S7-21 (phase-A command processor scope принят после независимого ревью 2026-11-18, 264 теста; TPM/PTP compliance не заявляется) |
-| `in_progress` | 7 | S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-04 (длинный paged-probe runner-срез продолжается; подробности в строке задачи); S7-12 (ограниченное качество реализации принято независимым ревью 2026-11-18; задача остаётся незакрытой); S7-14 (RTC/CMOS срез принят независимым ревью, коммит `330ea41`; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты); S7-16 (NVMe A/B, исправления по ревью приняты, коммит `f0e2b61`; PCI-привязка — S4-30, прерывания и сверка Base 2.4 остаются открыты); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; стабильная `rsa =0.10.0` ещё не внедрена, S7-23 не принимается целиком); S7-30 (аудит подготовлен, ожидает архитектурного ревью, коммита нет) |
-| `not_started` | 26 | остальные задачи, см. таблицу ниже |
+| Принято | 28 | S7-24 (Secure Boot и PKCS7 Verify Protocol); S7-29 (приёмка G1–G3); S7-28 (отказы без TPM и Secure Boot); S7-25 (Secure Boot на собственных EFI-приложениях); S7-22 (CRB, TPM2 и измеренная загрузка из FV/ESP); S7-19 (boot manager и загрузка с ESP); S7-18 (FAT и гостевое чтение ESP); S7-17 (NVMe Block/Disk I/O, GPT и резервная копия); S7-15 (GOP и побайтное сравнение кадра); S7-14 (RTC и точность PIO внутри кванта); S7-13 (ACPI/SMBIOS из handoff и побайтное сравнение с freestanding blob); S7-11 (Runtime Services при неидентичном отображении и аппаратный Shutdown); S7-10 (банки NVRAM и повторная загрузка в одном процессе); S7-09 (переменные UEFI, формат снимка и гостевой сценарий); S7-08 (сквозной запуск `hello` и `ebs` из FV с эталонами COM1); S7-07 (Simple Text Input/Output на COM1 и гостевые проверки); S7-06 (загрузка PE32+ из FV и из буфера, Authenticode, запуск и выгрузка, Device Path); S7-05 (таблицы UEFI и ядро Boot Services); S7-04 (ядро и гостевые проверки, `302ffe5`); S7-01 (сборочная схема `426c98a` принята независимым архитектурным ревью 2026-11-18); S7-00 (коммит `c1ae3dd`; полное независимое ревью scope 2026-11-18 одобрило без замечаний); S7-02 (коммит `9d89aac`; архитектурное ревью 2026-11-18 одобрило полный scope); S7-03 (принята после независимого ревью 2026-11-18); S7-12 (AML/DSDT текущей платы, 176 тестов и ACPICA); S7-16 (минимальный NVMe, Linux Read и MSI-X подтверждены); S7-20 (ADR-0009 принят после полного архитектурного повторного ревью 2026-11-18 без замечаний); S7-21 (phase-A command processor scope принят после независимого ревью 2026-11-18, 264 теста; TPM/PTP compliance не заявляется); S7-30 (статический media/GUID audit принят независимым review 2026-11-18; runtime trace назначен S7-32) |
+| `in_progress` | 2 | S7-23 (расширение PTP 1.07), S7-33 (передача контрактов persistence) |
+| `not_started` | 8 | остальные задачи, см. таблицу ниже |
 
-В плане отмечены принятые S7-00, S7-02, S7-03, S7-20 и S7-21; остальные чекбоксы отмечаются только после соответствующего ревью по `STAGE_7.md` §0.
+В плане отмечены принятые S7-00, S7-01, S7-02, S7-03, S7-04, S7-05, S7-06, S7-07, S7-08, S7-09, S7-10, S7-11, S7-12, S7-13, S7-14, S7-15, S7-16, S7-17, S7-18, S7-19, S7-20, S7-21, S7-22, S7-24, S7-25, S7-28, S7-29 и S7-30.
 
 ## 2. Таблица задач
 
 | Задача | Статус | Коммит | Ревью | Комментарий |
 |---|---|---|---|---|
 | S7-00 | accepted | `c1ae3dd` | Независимое ревью полного scope 2026-11-18: одобрено без замечаний | Scope, отчёт этапа, обновление платы и карты, запись переноса пунктов roadmap; первоначальный отчёт перечислял все 38 задач как `not_started`; D1/D2 записаны в отчёте и roadmap. |
-| S7-01 | in_progress | `426c98a` | — | Сборка прошивки и EFI-приложений, host-side тесты, методика (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита на момент записи нет; каркас основного образа и доказательство сборки PE32+ probe; тестовые EFI-приложения — S7-06, боевой RT-образ и размещение в FV — S7-11) |
+| S7-01 | accepted | `426c98a` | Независимое архитектурное ревью `gpt-6.1-sol` / `high` 2026-11-18: одобрено без существенных замечаний | Сборка ROM, PE32+ EFI probe и тесты host-side. Граница отдельного RT-драйвера согласована с S7-02. |
 | S7-02 | accepted | `68cca38` | Архитектурное ревью 2026-11-18: одобрено без оставшихся замечаний | Контракт входа: окна, handoff, manifest платы, ABI/состояние вызова, таймеры, ROM, RT relocation. Непроверенная сверка UEFI §2.3.4 (включая FCW/MXCSR) остаётся задачей S7-05; гостевое paged-чтение ROM вне v1; handoff reservations — backing RAM subranges, поскольку `Reserved` не имеет backing. |
 | S7-03 | accepted | — | Независимое ревью одобрило, 2026-11-18 | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner; blocker снят реализацией допуска `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. разделы 5 и S7-03. |
-| S7-04 | in_progress | `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93`, `ebb9ef0`, `571dcc5`, `63d55e1`, `9aff40f`, `743f381`, `9d336c1`, `346948b`, `976c7e2`, `315d5d8`, `331c81b`, `d2aedac`, `83a3b1e`, `8e1b25d`, `fd422dd`, `a9c5566`, `01b4a72`, `a33dd5e`, `832276d`, `1529954`, `46e1792`, `1016c25`, `e16e880`, `d584420`, `652c3a8`, `7bf7a91`, `5afb70b` | previous slices reviewed and committed; ISSUE-178 and ISSUE-179 committed; ISSUE-180 and ISSUE-181 committed; ISSUE-182 committed; ISSUE-183 and ISSUE-184 committed; ISSUE-185 through ISSUE-203 committed; ISSUE-204 committed; ISSUE-205 and ISSUE-206 committed; ISSUE-207 committed `4cf38f4`; ISSUE-208 committed `7c9258c`; ISSUE-209 committed `389f5a7`; ISSUE-210 committed `e16e880`; ISSUE-211 committed `d584420`; ISSUE-212 committed `652c3a8`; ISSUE-213 committed `7bf7a91`; ISSUE-214 committed `5afb70b`; ISSUE-215 committed `466fb9c`; ISSUE-216 reviewed/committed `edc52c9`; ISSUE-217 reviewed/committed `deead7c`; ISSUE-218 reviewed/committed `1020422`; ISSUE-219 committed `4a2ea9a`; ISSUE-220 independently reviewed and committed `1070a35`; ISSUE-221 independently reviewed and committed `3b62438` | handoff parser connected; base profile admits exact `8B 4E 0C`/`8B 4E 10` tracked dword reads, exact `81 F9 A0 00 00 00` (`CMP ECX,0xa0`), `89 CD` (`MOV EBP,ECX`), `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), `81 FF 61 FF 00 00` (`CMP EDI,0xff61`), `40 0F 92 C7` (`SETB DIL`), `48 39 EA` (`CMP RDX,RBP`), and `41 0F 93 C0` (`SETAE R8B`), plus exact `41 20 F8` (`AND R8B,DIL`) and `40 F6 C5 07` (`TEST BPL,7`), plus `40 0F 94 C7` (`SETZ DIL`) and `41 84 F8` (`TEST R8B,DIL`), plus `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`) and `0F B7 CB` (`MOVZX ECX,BX`) plus exact `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`) and `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`) and `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`) plus exact `45 31 D2` (`XOR R10D,R10D`) and `45 31 DB` (`XOR R11D,R11D`), `66 90` (NOP), `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`), exact `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`), `4D 89 DF` (`MOV R15,R11`), `4D 21 C7` (`AND R15,R8`), `45 89 CC` (`MOV R12D,R9D`), `45 89 E1` (`MOV R9D,R12D`), `41 C1 E9 08` (`SHR R9D,8`), `45 31 FE` (`XOR R14D,R15D`), exact SIB `46 33 0C B5 80 26 20 00` (`XOR R9D,dword ptr [R14*4+0x202680]`), exact `49 83 C3 02` (`ADD R11,2`), exact `4C 39 DD` (`CMP RBP,R11`), plus `41 C1 EC 08` (`SHR R12D,8`), plus `49 83 FF 14` (`CMP R15,0x14`) and `45 0F 44 F2` (`CMOVZ R14D,R10D`) and `45 0F 44 FA` (`CMOVZ R15D,R10D`) and `45 0F B6 C9` (`MOVZX R9D,R9B`) and `45 31 F1` (`XOR R9D,R14D`); exact JNZ `75 AE` and `75 4A`, exact `NOT R9D` (`41 F7 D1`), `CMP EDI,R9D` (`44 39 CF`), `JNZ rel8 +0x4A` (`75 4A`) and `MOV R14D,dword ptr [RSI+0x34]` (`44 8B 76 34`) and exact `CMP EDI,0x20` (`83 FF 20`) and `44 8B 7E 30` (`MOV R15D,dword ptr [RSI+0x30]`, ISSUE-199), exact `4C 01 FF` (`ADD RDI,R15`, ISSUE-207) and exact `48 39 EF` (`CMP RDI,RBP`, ISSUE-208), exact `77 3D` (`JA rel8 +0x3d`, ISSUE-209), exact `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`, ISSUE-210), `44 8B 66 40` (`MOV R12D,dword ptr [RSI+0x40]`, ISSUE-211), `44 8B 46 44` (`MOV R8D,dword ptr [RSI+0x44]`, ISSUE-212), `85 C9` (`TEST ECX,ECX`, ISSUE-213), `74 35` (`JZ rel8 +0x35`, ISSUE-214) and `41 83 FC 07` (`CMP R12D,7`, ISSUE-215) are admitted; runner retired 8902 instructions and stopped at `41 F6 C5 07` (`TEST R13B,7`, ISSUE-220, RIP `0x200f23`); exact `48 89 74 24 10` (`MOV [RSP+0x10],RSI`, ISSUE-219), `48 89 54 24 30` (`MOV [RSP+0x30],RDX`, ISSUE-218), `41 83 F8 30` (`CMP R8D,0x30`, ISSUE-217) and `74 D0` (`JZ rel8 -0x30`, ISSUE-216) are admitted; ISSUE-200, ISSUE-202 through ISSUE-205 are admitted and committed, ISSUE-206 is admitted and committed; ISSUE-207 is admitted and committed; ISSUE-208 is admitted and committed; ISSUE-209 is admitted and committed; ISSUE-210 is admitted and committed; ISSUE-211 is admitted and committed; ISSUE-212 is admitted and committed; ISSUE-213 is admitted and committed; ISSUE-214 is admitted and committed; ISSUE-215 is admitted and committed `466fb9c`; ISSUE-216 is admitted and committed `edc52c9`; ISSUE-217 is admitted and committed `deead7c`; ISSUE-218 is admitted and committed `1020422`; ISSUE-219 is admitted, independently reviewed and committed `4a2ea9a`; ISSUE-220 (`41 F6 C5 07`, `TEST R13B,7`) is admitted and committed `1070a35`; ISSUE-221 (`74 59`, `JZ rel8 +0x59`) is admitted and committed `3b62438`; ISSUE-222 (`48 89 44 24 08`, `MOV [RSP+8],RAX`) is admitted and committed `31887b9`; ISSUE-223 (`41 81 FD A0 00 00 00`, `CMP R13D,0xA0`) is admitted and committed `fe92cfd`; ISSUE-224 (`72 2A`, `JB/JNAE rel8 +0x2a`) is admitted and committed `597bf68`; ISSUE-225 (`4B 8D 04 64`, `LEA RAX,[R12+R12*2]`) is admitted and committed `313369c`; ISSUE-226 (`48 C1 E0 04`, `SHL RAX,4`) is admitted and committed `f16d39c`; ISSUE-227 (`4C 01 E8`, `ADD RAX,R13`) is admitted and committed `180e6f3`; ISSUE-228 (`48 39 E8`, `CMP RAX,RBP`) is admitted and committed `530446f`; ISSUE-229 (`77 1A`, `JA rel8 +0x1a`) is admitted and independently approved; ISSUE-230 (`4C 39 EF`, `CMP RDI,R13`) is admitted narrowly and independently approved; ISSUE-231 (`76 22`, `JBE rel8 +0x22`) is admitted narrowly and independently approved; ISSUE-232 (`89 1C 24`, `MOV dword ptr [RSP],EBX`) is admitted narrowly and independently approved; ISSUE-239 (`E8 79 05 00 00`, `CALL rel32 +0x579`) is admitted narrowly with tracked qword return-RIP push and A/D/WP fault evidence; ISSUE-240 (`50`, `PUSH RAX`) is admitted narrowly with tracked qword stack write and A/D/WP fault evidence; ISSUE-241 (`4D 85 C0`, `TEST R8,R8`) is admitted narrowly with qword logical flag and AF-undefinedness coverage; ISSUE-242 (`0F 84 49 01 00 00`, `JZ rel32 +0x149`) is admitted narrowly with signed rel32, flag-preservation, taken-only canonicality and fetch-fault evidence; ISSUE-243 (`48 89 F0`, `MOV RAX,RSI`) is admitted and independently reviewed with no findings; ISSUE-244 (`48 8D 71 04`, `LEA RSI,[RCX+4]`) is admitted narrowly and independently reviewed with no findings; ISSUE-245 (`48 39 D6`, `CMP RSI,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-246 (`0F 87 CD 02 00 00`, `JA rel32 +0x2cd`) is admitted narrowly and independently reviewed with no findings; ISSUE-247 (`4C 8D 51 08`, `LEA R10,[RCX+8]`) is admitted narrowly and independently reviewed with no findings; ISSUE-248 (`49 39 D2`, `CMP R10,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-249 (`0F 87 D7 02 00 00`, `JA rel32 +0x2d7`) is implemented narrowly, independently reviewed with no findings; ISSUE-250 (`48 8D 71 10`, `LEA RSI,[RCX+0x10]`) is implemented narrowly independently reviewed with no findings; the runner retires 8,940 and stops at `0F 87 E4 02 00 00` (`JA rel32 +0x2e4`, ISSUE-251, RIP `0x201598`); ISSUE-238 (`4D 89 E1`, `MOV R9,R12`) is admitted and independently reviewed and approved with no findings; ISSUE-237 (`4D 89 F0`, `MOV R8,R14`) is admitted and independently reviewed and approved with no findings; ISSUE-236 (`4C 89 F9`, `MOV RCX,R15`) is admitted and independently reviewed and approved with no findings; ISSUE-235 (`48 8B 54 24 30`, `MOV RDX,qword ptr [RSP+0x30]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-234 (`48 8B 74 24 10`, `MOV RSI,qword ptr [RSP+0x10]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-233 (`48 8D 7C 24 18`, `LEA RDI,[RSP+0x18]`) is admitted and independently reviewed and approved with no findings |
-| S7-05 | not_started | — | — | System Table, Boot Services, база протоколов, события, `ExitBootServices` |
-| S7-06 | not_started | — | — | PE/COFF loader, Authenticode-дайджест, `LoadImage`/`StartImage`/`Exit`, Loaded Image, Device Path |
-| S7-07 | not_started | — | — | Консоль: Simple Text Output/Input на COM1, ConIn/ConOut/StdErr |
-| S7-08 | not_started | — | — | Первый сквозной срез: встроенные приложения → COM1 → эталон |
-| S7-09 | not_started | — | — | Variable services (volatile) и versioned store codec |
-| S7-10 | not_started | — | — | NVRAM-устройство в `od-machine`, драйвер прошивки, NV-переменные через сброс |
-| S7-11 | not_started | — | — | Runtime Services: время, `SetVirtualAddressMap`, `ResetSystem`, RT-переменные |
-| S7-12 | in_progress | — | Принято ограниченное качество реализации, 2026-11-18 | Независимое ревью одобрило ограниченный профиль; 165 тестов прошли. DSDT только для PCI0/COM1; CRS/PRT ограничены [ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes); RTC/HPET/S5 и TPM отложены на S7-14/S7-22; поведения Windows/Linux нет; ACPI 6.6 и кодировки не сверены. См. [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt). |
-| S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
-| S7-14 | in_progress | `330ea41` | Независимое ревью RTC/CMOS-среза одобрило, замечаний нет | Опциональный RTC/CMOS из handoff v1.4, shared `VirtualClock`, календарные регистры и documented fidelity limits; HPET, IRQ/квантовая интеграция и guest evidence остаются открыты. См. подробности ниже и [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time). |
-| S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | in_progress | `f0e2b61` | Независимое повторное ревью одобрило исправления без замечаний | Срезы A/B и Delete SQ/NSID fixes приняты в ограниченном объёме; PCI-привязка — S4-30, прерывания не реализованы, сверка NVMe Base 2.4 остаётся открытой. |
-| S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
-| S7-18 | not_started | — | — | Собственная FAT и Simple File System |
-| S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
-| S7-20 | accepted | — | Полное архитектурное повторное ревью 2026-11-18 одобрило без замечаний | ADR-0009: размещение vTPM, криптозависимости host и `no_std` прошивки (включая stable `rsa =0.10.0` с feature sets), профиль команд, CRB и состояние. Плановый чекбокс отмечен; implementation migration остаётся prerequisite S7-23, но не блокирует S7-20. |
-| S7-21 | accepted | — | Независимое полное ревью 2026-11-18 одобрило phase-A command processor scope без замечаний | Фаза A принята в ограниченном объёме; `cargo test -p od-tpm --offline` — 264 теста. Это не подтверждает TPM Library/PTP compliance. Открытые caveats: `PCR_Allocate` отказана, реализован только SHA-256 PCR bank, `TPM_CAP_PCR_PROPERTIES` передана S7-22, Library v185 недоступна (сверка по v184), PTP 1.07 сверена частично, HMAC_DRBG не валидирован по тексту SP 800-90A/CAVP; см. [VTPM.md](../specs/VTPM.md#источники-и-сверка) и [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope). |
-| S7-22 | not_started | — | — | CRB-устройство, таблица TPM2, `EFI_TCG2_PROTOCOL`, measured boot и event log (PCR0–5) |
-| S7-23 | in_progress (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1, C2 и C3 выполнены исполнителем, ожидают ревью, коммита нет; EK-шаблоны и сертификат EK ждут решения владельца; stable `rsa =0.10.0` migration/compatibility remains required; S7-23 НЕ принимается до разрешения этих условий) | `435d7f6` (срез A) | — | TPM фаза B: иерархии, ключи RSA/ECC, сессии, NV, persistent state v1. **Срез A** (иерархии Platform/Owner/Endorsement/Null, HMAC-сессии, база NV; `hmac =0.13.0`; 133 теста) — коммит `435d7f6`, ожидает ревью; **срез B выполнен исполнителем** (объекты и ключи RSA-2048/ECC P-256: `CreatePrimary`, `Create`, `Load`, `LoadExternal`, `ReadPublic`, `Unseal`, `EvictControl`, `Sign`, `VerifySignature`; `rsa =0.10.0-rc.22`, `p256 =0.14.0`; 171 тест), ожидает ревью, коммита нет; **срез C1 выполнен исполнителем** (`RSA_Encrypt`, `RSA_Decrypt` (RSAES, OAEP, NULL), `ECDH_ZGen`, DA — `DictionaryAttackLockReset`/`DictionaryAttackParameters`, snapshot `ODTPMSTA` v2 с auth иерархий, NV и persistent-объектами; 199 тестов), ожидает ревью, коммита нет; **срез C2 выполнен исполнителем** (policy-сессии и 7 команд `Policy*`, `ContextSave/Load` для объектов и сессий, `TPM2_HMAC` с keyed-hash ключами (RFC 4231), `Quote`, `Certify` с проверкой подписи внешним Python; 232 теста), ожидает ревью, коммита нет; **срез C3 выполнен исполнителем** (NV `TPM_NT_COUNTER`/`BITS`/`EXTEND` с `NV_Increment`/`SetBits`/`Extend`, `TPM2_GetTime`, `signHandle` = `TPM_RH_NULL` у `Quote`/`Certify`/`GetTime`, шифрование параметров сессий AES-128-CFB и XOR, snapshot v3 вместо v2; 264 теста), ожидает ревью, коммита нет; **не сделано:** шаблоны и сертификат EK (ждут решения владельца), `PolicySecret` с `expiration` ≠ 0, `PolicySigned/PolicyNV/PolicyLocality/PolicyPassword` и др., `SetPrimaryPolicy`, шифрование параметров сессией без авторизуемого handle — [VTPM.md](../specs/VTPM.md#фаза-b-срез-c1-rsa_encryptdecrypt-ecdh_zgen-da-persistent-state-v2-s7-23) |
-| S7-24 | not_started | — | — | Secure Boot: authenticated variables, PK/KEK/db/dbx, Authenticode в `LoadImage`, PCR7 |
-| S7-25 | not_started | — | — | Проверка Secure Boot и отказов TPM/Secure Boot на собственных приложениях |
+| S7-04 | accepted | `d33af47`, `55a63ad`, `8d1b394`, `1355b74`, `4cb966c`, `1715a6b`, `e1ef0f1`, `6553d56`, `d5d6e22`, `b219d0e`, `7bb0108`, `dd57771`, `717fed3`, `e32436b`, `9439e93`, `ebb9ef0`, `571dcc5`, `63d55e1`, `9aff40f`, `743f381`, `9d336c1`, `346948b`, `976c7e2`, `315d5d8`, `331c81b`, `d2aedac`, `83a3b1e`, `8e1b25d`, `fd422dd`, `a9c5566`, `01b4a72`, `a33dd5e`, `832276d`, `1529954`, `46e1792`, `1016c25`, `e16e880`, `d584420`, `652c3a8`, `7bf7a91`, `5afb70b` | Принято 2026-11-19 после независимого архитектурного и кодового ревью Sol High. previous slices reviewed and committed; ISSUE-178 and ISSUE-179 committed; ISSUE-180 and ISSUE-181 committed; ISSUE-182 committed; ISSUE-183 and ISSUE-184 committed; ISSUE-185 through ISSUE-203 committed; ISSUE-204 committed; ISSUE-205 and ISSUE-206 committed; ISSUE-207 committed `4cf38f4`; ISSUE-208 committed `7c9258c`; ISSUE-209 committed `389f5a7`; ISSUE-210 committed `e16e880`; ISSUE-211 committed `d584420`; ISSUE-212 committed `652c3a8`; ISSUE-213 committed `7bf7a91`; ISSUE-214 committed `5afb70b`; ISSUE-215 committed `466fb9c`; ISSUE-216 reviewed/committed `edc52c9`; ISSUE-217 reviewed/committed `deead7c`; ISSUE-218 reviewed/committed `1020422`; ISSUE-219 committed `4a2ea9a`; ISSUE-220 independently reviewed and committed `1070a35`; ISSUE-221 independently reviewed and committed `3b62438` | На 128 и 256 МиБ подтверждены вход, свои таблицы, memory map, аллокаторы, исключения и COM1. Вывод совпадает с эталоном. [Приёмка](#s7-04--остальные-синхронные-исключения-и-приёмка). История допуска инструкций: handoff parser connected; base profile admits exact `8B 4E 0C`/`8B 4E 10` tracked dword reads, exact `81 F9 A0 00 00 00` (`CMP ECX,0xa0`), `89 CD` (`MOV EBP,ECX`), `8D B9 60 FF FF FF` (`LEA EDI,[RCX-0xA0]`), `81 FF 61 FF 00 00` (`CMP EDI,0xff61`), `40 0F 92 C7` (`SETB DIL`), `48 39 EA` (`CMP RDX,RBP`), and `41 0F 93 C0` (`SETAE R8B`), plus exact `41 20 F8` (`AND R8B,DIL`) and `40 F6 C5 07` (`TEST BPL,7`), plus `40 0F 94 C7` (`SETZ DIL`) and `41 84 F8` (`TEST R8B,DIL`), plus `0F 84 B4 00 00 00` (`JZ rel32 +0xB4`) and `0F B7 CB` (`MOVZX ECX,BX`) plus exact `49 B8 FC FF FF FF FF FF FF 7F` (`MOV R8,0x7ffffffffffffffc`) and `8B 7E 14` (`MOV EDI,dword ptr [RSI+0x14]`) and `41 B9 FF FF FF FF` (`MOV R9D,0xffffffff`) plus exact `45 31 D2` (`XOR R10D,R10D`) and `45 31 DB` (`XOR R11D,R11D`), `66 90` (NOP), `46 0F B6 34 1E` (`MOVZX R14D,byte ptr [RSI+R11]`), exact `46 0F B6 7C 1E 01` (`MOVZX R15D,byte ptr [RSI+R11+1]`), `4D 89 DF` (`MOV R15,R11`), `4D 21 C7` (`AND R15,R8`), `45 89 CC` (`MOV R12D,R9D`), `45 89 E1` (`MOV R9D,R12D`), `41 C1 E9 08` (`SHR R9D,8`), `45 31 FE` (`XOR R14D,R15D`), exact SIB `46 33 0C B5 80 26 20 00` (`XOR R9D,dword ptr [R14*4+0x202680]`), exact `49 83 C3 02` (`ADD R11,2`), exact `4C 39 DD` (`CMP RBP,R11`), plus `41 C1 EC 08` (`SHR R12D,8`), plus `49 83 FF 14` (`CMP R15,0x14`) and `45 0F 44 F2` (`CMOVZ R14D,R10D`) and `45 0F 44 FA` (`CMOVZ R15D,R10D`) and `45 0F B6 C9` (`MOVZX R9D,R9B`) and `45 31 F1` (`XOR R9D,R14D`); exact JNZ `75 AE` and `75 4A`, exact `NOT R9D` (`41 F7 D1`), `CMP EDI,R9D` (`44 39 CF`), `JNZ rel8 +0x4A` (`75 4A`) and `MOV R14D,dword ptr [RSI+0x34]` (`44 8B 76 34`) and exact `CMP EDI,0x20` (`83 FF 20`) and `44 8B 7E 30` (`MOV R15D,dword ptr [RSI+0x30]`, ISSUE-199), exact `4C 01 FF` (`ADD RDI,R15`, ISSUE-207) and exact `48 39 EF` (`CMP RDI,RBP`, ISSUE-208), exact `77 3D` (`JA rel8 +0x3d`, ISSUE-209), exact `44 8B 6E 3C` (`MOV R13D,dword ptr [RSI+0x3c]`, ISSUE-210), `44 8B 66 40` (`MOV R12D,dword ptr [RSI+0x40]`, ISSUE-211), `44 8B 46 44` (`MOV R8D,dword ptr [RSI+0x44]`, ISSUE-212), `85 C9` (`TEST ECX,ECX`, ISSUE-213), `74 35` (`JZ rel8 +0x35`, ISSUE-214) and `41 83 FC 07` (`CMP R12D,7`, ISSUE-215) are admitted; runner retired 8902 instructions and stopped at `41 F6 C5 07` (`TEST R13B,7`, ISSUE-220, RIP `0x200f23`); exact `48 89 74 24 10` (`MOV [RSP+0x10],RSI`, ISSUE-219), `48 89 54 24 30` (`MOV [RSP+0x30],RDX`, ISSUE-218), `41 83 F8 30` (`CMP R8D,0x30`, ISSUE-217) and `74 D0` (`JZ rel8 -0x30`, ISSUE-216) are admitted; ISSUE-200, ISSUE-202 through ISSUE-205 are admitted and committed, ISSUE-206 is admitted and committed; ISSUE-207 is admitted and committed; ISSUE-208 is admitted and committed; ISSUE-209 is admitted and committed; ISSUE-210 is admitted and committed; ISSUE-211 is admitted and committed; ISSUE-212 is admitted and committed; ISSUE-213 is admitted and committed; ISSUE-214 is admitted and committed; ISSUE-215 is admitted and committed `466fb9c`; ISSUE-216 is admitted and committed `edc52c9`; ISSUE-217 is admitted and committed `deead7c`; ISSUE-218 is admitted and committed `1020422`; ISSUE-219 is admitted, independently reviewed and committed `4a2ea9a`; ISSUE-220 (`41 F6 C5 07`, `TEST R13B,7`) is admitted and committed `1070a35`; ISSUE-221 (`74 59`, `JZ rel8 +0x59`) is admitted and committed `3b62438`; ISSUE-222 (`48 89 44 24 08`, `MOV [RSP+8],RAX`) is admitted and committed `31887b9`; ISSUE-223 (`41 81 FD A0 00 00 00`, `CMP R13D,0xA0`) is admitted and committed `fe92cfd`; ISSUE-224 (`72 2A`, `JB/JNAE rel8 +0x2a`) is admitted and committed `597bf68`; ISSUE-225 (`4B 8D 04 64`, `LEA RAX,[R12+R12*2]`) is admitted and committed `313369c`; ISSUE-226 (`48 C1 E0 04`, `SHL RAX,4`) is admitted and committed `f16d39c`; ISSUE-227 (`4C 01 E8`, `ADD RAX,R13`) is admitted and committed `180e6f3`; ISSUE-228 (`48 39 E8`, `CMP RAX,RBP`) is admitted and committed `530446f`; ISSUE-229 (`77 1A`, `JA rel8 +0x1a`) is admitted and independently approved; ISSUE-230 (`4C 39 EF`, `CMP RDI,R13`) is admitted narrowly and independently approved; ISSUE-231 (`76 22`, `JBE rel8 +0x22`) is admitted narrowly and independently approved; ISSUE-232 (`89 1C 24`, `MOV dword ptr [RSP],EBX`) is admitted narrowly and independently approved; ISSUE-239 (`E8 79 05 00 00`, `CALL rel32 +0x579`) is admitted narrowly with tracked qword return-RIP push and A/D/WP fault evidence; ISSUE-240 (`50`, `PUSH RAX`) is admitted narrowly with tracked qword stack write and A/D/WP fault evidence; ISSUE-241 (`4D 85 C0`, `TEST R8,R8`) is admitted narrowly with qword logical flag and AF-undefinedness coverage; ISSUE-242 (`0F 84 49 01 00 00`, `JZ rel32 +0x149`) is admitted narrowly with signed rel32, flag-preservation, taken-only canonicality and fetch-fault evidence; ISSUE-243 (`48 89 F0`, `MOV RAX,RSI`) is admitted and independently reviewed with no findings; ISSUE-244 (`48 8D 71 04`, `LEA RSI,[RCX+4]`) is admitted narrowly and independently reviewed with no findings; ISSUE-245 (`48 39 D6`, `CMP RSI,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-246 (`0F 87 CD 02 00 00`, `JA rel32 +0x2cd`) is admitted narrowly and independently reviewed with no findings; ISSUE-247 (`4C 8D 51 08`, `LEA R10,[RCX+8]`) is admitted narrowly and independently reviewed with no findings; ISSUE-248 (`49 39 D2`, `CMP R10,RDX`) is admitted narrowly and independently reviewed with no findings; ISSUE-249 (`0F 87 D7 02 00 00`, `JA rel32 +0x2d7`) is implemented narrowly, independently reviewed with no findings; ISSUE-250 (`48 8D 71 10`, `LEA RSI,[RCX+0x10]`) is implemented narrowly independently reviewed with no findings; the runner retires 8,940 and stops at `0F 87 E4 02 00 00` (`JA rel32 +0x2e4`, ISSUE-251, RIP `0x201598`); ISSUE-238 (`4D 89 E1`, `MOV R9,R12`) is admitted and independently reviewed and approved with no findings; ISSUE-237 (`4D 89 F0`, `MOV R8,R14`) is admitted and independently reviewed and approved with no findings; ISSUE-236 (`4C 89 F9`, `MOV RCX,R15`) is admitted and independently reviewed and approved with no findings; ISSUE-235 (`48 8B 54 24 30`, `MOV RDX,qword ptr [RSP+0x30]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-234 (`48 8B 74 24 10`, `MOV RSI,qword ptr [RSP+0x10]`) is admitted narrowly and independently reviewed and approved with no findings; ISSUE-233 (`48 8D 7C 24 18`, `LEA RDI,[RSP+0x18]`) is admitted and independently reviewed and approved with no findings |
+| S7-05 | accepted | `9341724` … `8bad85d`, [закрывающий срез ABI](#s7-05--завершение-abi-таблиц-uefi) | Срезы и завершение задачи прошли независимое ревью `gpt-6.1-sol` high | Из гостя проверены таблицы, память, протоколы, уведомления, таймеры, события, watchdog и `ExitBootServices`. |
+| S7-06 | accepted | [парсер PE32+](#s7-06--парсер-pe32), [дайджест Authenticode в госте](#s7-06--гостевой-дайджест-authenticode), [архив и приложения](#s7-06--архив-fv-и-тестовые-приложения), [физический LoadImage](#s7-06--физический-loadimage), [StartImage и Exit](#s7-06--startimage-и-exit), [выгрузка драйвера и изменения базы handles](#s7-06--выгрузка-драйвера-и-изменения-базы-handles), [Device Path Utilities](#s7-06--device-path-utilities), [загрузка по FV Device Path](#s7-06--загрузка-по-device-path-встроенного-fv) | Код и результаты одобрены на независимом ревью `gpt-6.1-sol` high | `hello` и `ebs` загружаются из FV. Проверены повреждённый PE, владение путями, выгрузка и Authenticode. |
+| S7-07 | accepted | [Консоль COM1](#s7-07--консоль-com1) | Код и гостевые результаты одобрены на независимом ревью `gpt-6.1-sol` high | Проверены `ConIn`, `ConOut`, `StdErr`, UTF-8, таймеры и `echo` через `WaitForKey`. |
+| S7-08 | accepted | [Сквозной запуск из FV](#s7-08--сквозной-запуск-из-fv) | Код и результаты одобрены на независимом ревью `gpt-6.1-sol` High | По пять прогонов `hello` и `ebs` из одного ROM с точными эталонами COM1 |
+| S7-09 | accepted | [Переменные UEFI и формат снимка](#s7-09--переменные-uefi-и-формат-снимка) | Код и результаты одобрены на независимом ревью `gpt-6.1-sol` High | `vars` прошёл сценарий сервисов, запись из EBS callback проверена в снимке |
+| S7-10 | accepted | [NVRAM и повторная загрузка](#s7-10--nvram-и-повторная-загрузка) | Код и результаты одобрены на независимом ревью `gpt-6.1-sol` High | Две загрузки из одного ROM, значение прочитано из восстановленного снимка |
+| S7-11 | accepted | [Runtime Services после EBS](#s7-11-runtime-services-после-exitbootservices) | Код и результаты одобрены на независимом ревью `gpt-6.1-sol` High | Пять одинаковых прогонов с виртуальными вызовами и аппаратным `Shutdown`. |
+| S7-12 | accepted | `0df7dff`, `6c91e58` | Полное независимое ревью Sol High одобрило текущую плату | 176 тестов и ACPICA-диагностика трёх профилей. [Приёмочная проверка](#приёмочная-проверка-текущих-профилей). |
+| S7-13 | accepted | [ACPI и SMBIOS из handoff](#s7-13--acpi-и-smbios-из-handoff-block) | Код и функциональные результаты одобрены на независимом ревью `gpt-6.1-sol` High | Пять одинаковых гостевых прогонов и побайтное сравнение всех 64 КиБ ACPI |
+| S7-14 | accepted | `330ea41`, [точность RTC внутри кванта](#s7-14--точность-rtc-внутри-кванта) | Независимое кодовое ревью и сверка результатов `gpt-6.1-sol` High | Гостевой переход UIP и секунды, `GetTime` / `SetTime`, условные HPET и IRQ8 |
+| S7-15 | accepted | — | Независимое кодовое ревью и приёмка `gpt-6.1-sol` / `high` 2026-11-19, замечания сняты | GOP основного дисплея, четыре операции Blt, пять кадров без отличий и сохранение режима после EBS. [Результаты](#s7-15--gop-на-основном-дисплее). |
+| S7-16 | accepted | `74581ed` | Независимое архитектурное и кодовые ревью Sol High, подтверждён точный гостевой повтор | Минимальный NVMe для фиксированного MMIO и PCI. Linux прочитал 4 096 байт и получил MSI-X для Admin и I/O. Закрыты ISSUE-589 и ISSUE-066 в принятом профиле. FLR отслеживается в [ISSUE-591](../KNOWN_ISSUES.md#issue-591). [Гостевой прогон](#чтение-raw-и-msi-x-в-linux). |
+| S7-17 | accepted | — | Независимое кодовое ревью и приёмка `gpt-6.1-sol` / `high` 2026-11-19, замечания сняты | Block I/O, Disk I/O, GPT-разделы и резервная копия через реальные MMIO и DMA. [Результаты](#s7-17--nvme-и-gpt-в-uefi). |
+| S7-18 | accepted | [FAT и Simple File System](#s7-18--чтение-fat-и-simple-file-system) | Независимые ревью кода и функциональная приёмка Sol High одобрили задачу | Собственное чтение FAT12/16/32. Три гостевые пробы прочитали README.TXT с ESP через NVMe. |
+| S7-19 | accepted | [Boot manager и загрузка с ESP](#s7-19--boot-manager-и-загрузка-с-esp) | Независимые ревью кода и приёмка Sol High одобрили задачу | Stock ROM запускает EFI с NVMe ESP. Гость подтвердил `BootNext`, `BootOrder`, `LoadOptions`, fallback и повторную загрузку со снимком. |
+| S7-20 | accepted | — | Полное архитектурное повторное ревью 2026-11-18 одобрило без замечаний | ADR-0009: размещение vTPM, криптозависимости host и `no_std` прошивки (включая stable `rsa =0.10.0` с feature sets), профиль команд, CRB и состояние. Плановый чекбокс отмечен. Миграция host выполнена в S7-23 коммитом `d00aa7a`. |
+| S7-21 | accepted | — | Независимое полное ревью 2026-11-18 одобрило phase-A command processor scope без замечаний | Фаза A принята в ограниченном объёме; `cargo test -p od-tpm --offline` — 264 теста. Это не подтверждает TPM Library/PTP compliance. Открытые caveats: `PCR_Allocate` отказана, реализован только SHA-256 PCR bank, `TPM_CAP_PCR_PROPERTIES` добавлена в S7-22; исходная сверка фазы A выполнена по v184, PTP 1.07 сверена частично, HMAC_DRBG не валидирован по тексту SP 800-90A/CAVP; см. [VTPM.md](../specs/VTPM.md#источники-и-сверка) и [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope). |
+| S7-22 | accepted | [CRB, TCG2 и measured boot](#s7-22--crb-tcg2-и-measured-boot) | Независимые ревью кода и приёмка Sol High | Гость из FV и с NVMe ESP подтвердил PCR0/1/4/5, GetRandom и retained Final Events после EBS. |
+| S7-23 | in_progress | `435d7f6`, `454f351`, `46f0300`, `2da9887`, `9c7f46c`, `d00aa7a`, `93bbf76`, `666ca78`, `15697ab` | [Срезы и проверки](#s7-23--реализация-и-проверки-фазы-b), [шаблоны EK и NV](#s7-23--шаблоны-ek-и-nv), [TestParms](#s7-23--проверка-параметров-testparms), [аудит сессий](#s7-23--аудит-сессий-и-getsessionauditdigest), [аттестация создания](#s7-23--certifycreation), [потоковый HMAC](#s7-23--hmac_start), [привязка политики](#s7-23--policycphash-и-policylocality) | Legacy EK и тестовое хранение DER проверены. `TestParms`, `ECC_Parameters` и `ECDH_KeyGen` добавлены для текущих алгоритмов. Дополнительные сессии шифрования подтверждены. Открыты 33 обязательных кода и варианты объявленных команд, производственный издатель и Windows TBS. [ISSUE-599](../KNOWN_ISSUES.md#issue-599), [ISSUE-598](../KNOWN_ISSUES.md#issue-598). |
+| S7-24 | accepted | `82155d2`, `4b5aca8`, `7730001`, `bd0592f`, `5b843b0`, этот коммит | `gpt-6.1-sol` / `high`, 2026-11-20. [Гостевые проверки](#s7-24--efi-pkcs7-verify-protocol) | Защищённые переменные, проверка PE и PCR7, таблица отказов и PKCS7 Verify Protocol приняты для профиля этапа 7. |
+| S7-25 | accepted | `e7df723`, `93490b2`, `4ee0010`, `3f8d50d`, `8225c73`, `fb19031` | [Итоговая приёмка](#s7-25--приёмка-системных-сценариев) | Проверены девять сценариев на собственных образах, точные значения PCR7 и отказы в обычной загрузке. Независимое Sol High одобрило итоговый набор. |
 | S7-26 | not_started | — | — | Сброс и перезагрузка: `ResetSystem` → сброс машины, NVRAM/TPM переживают сброс |
 | S7-27 | not_started | — | — | Измерения пути загрузки |
-| S7-28 | not_started | — | — | Отказы без TPM/Secure Boot: handoff, NVRAM, PE, GPT, FAT, отсутствующий диск, EBS |
-| S7-29 | not_started | — | — | Промежуточное ревью и приёмка gates G1–G3 |
-| S7-30 | in_progress | — | Архитектурное ревью ожидает выполнения | Аудит фактических требований Windows boot path к прошивке и платформе; коммита и принятия нет. См. [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md). |
+| S7-28 | accepted | [Нативные проверки](#s7-28--отказы-без-tpm-и-secure-boot) | Архитектура, код и пробы одобрены Sol High | Три прохода без TPM/Secure Boot. Подтверждены все сценарии, включая восстановление legacy NVRAM и S5 без reset register. |
+| S7-29 | accepted | этот коммит | `gpt-6.1-sol` / `high`, 2026-11-20 | G1–G3 приняты. Четыре smoke-набора прошли на чистом экспорте; аппаратные Reset и Shutdown наблюдались в runner. |
+| S7-30 | accepted | — | Независимое review 2026-11-18: статический media/GUID аудит принят; status docs согласованы и проверены | ISO и доступные boot binaries проверены; GUID scan выполнен по 18 кандидатам, включая `winload.efi` обоих WIM индексов. Runtime protocol/variable/TPM use не выводится и проверяется в S7-32. См. [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md). |
 | S7-31 | not_started | — | — | Linux через собственную UEFI |
 | S7-32 | not_started | — | — | Установочный образ Windows через собственную UEFI до экрана Setup |
-| S7-33 | not_started | — | — | Передача контрактов persistence этапу 9 (S9-26, S9-27) |
+| S7-33 | in_progress | этот коммит | `gpt-6.1-sol` / `high`, 2026-11-20 | Описаны доступные форматы и API. Итоговая приёмка ждёт S7-23. |
 | S7-34 | not_started | — | — | USB HID клавиатура прошивки для `ConIn` |
 | S7-35 | not_started | — | — | Транспорт установочного носителя: El Torito/UDF или конвертация — решение и реализация |
 | S7-40 | not_started | — | — | Независимое итоговое ревью ступеней 1–6 |
@@ -79,13 +82,33 @@
 - **D6 (2026-11-07). Режим по умолчанию.** Новая VM — UserMode с enrolled `PK/KEK/db/dbx`, `SecureBoot=1`. SetupMode или отключённый Secure Boot — явная настройка для отладки; загрузка Windows (S7-32) и прохождение gates в таком режиме — обход по §4.4 плана, в приёмку не входят; собственные сценарии S7-25 в SetupMode (enroll, отказы) — проверка, а не обход. Переносит: S7-24, S7-25, S7-32.
 - **D7 (2026-11-07). Срок действия X.509.** `notBefore`/`notAfter` не проверяются ни при проверке подписи образа, ни при проверке authenticated variables: у прошивки нет доверенного времени, а на 2026-11-07 KEK CA 2011, UEFI CA 2011 и Windows Production PCA 2011 уже истекли. Отзыв — только через `dbx`. Время используется только для монотонности `TimeStamp` authenticated variables. Переносит: S7-24 (модуль `x509_policy`).
 - **D8 (2026-11-07). Размещение процессора команд vTPM.** Новый crate `crates/od-tpm/`: чистая логика TPM 2.0 без шины и устройств, зависимость `od-machine → od-tpm`; CRB-устройство остаётся в `od-machine`. Карту проекта обновляет S7-20. Переносит: S7-20 (ADR vTPM, `PROJECT_LAYOUT.md`).
-- **D9 (2026-11-07; security evidence refreshed 2026-11-18). Криптобиблиотеки.** Одно семейство RustCrypto на host и в `no_std` прошивке: `sha1`, `sha2`, `hmac`, `aes`, `cfb-mode`, `rsa`, `p256`/`ecdsa`, `der`, `x509-cert`, `spki` (MIT/Apache-2.0, pure Rust, `no_std`+`alloc` для прошивки). Собственные: протокол TPM, KDFa/KDFe, HMAC-DRBG, логика PKCS#7/Authenticode, политика цепочки сертификатов. Условие: для приватных операций RSA на host брать версию `rsa` с constant-time арифметикой. RustSec RUSTSEC-2023-0071 now lists `Patched >=0.10.0`; ADR-0009 selects stable `rsa =0.10.0` with exact host/firmware feature sets. Current S7-23 code still uses `=0.10.0-rc.22`; migration and compatibility review remain required, and [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) stays open until then. Точные версии, features и транзитивные зависимости фиксирует S7-20 в `DEPENDENCIES.md`. Переносит: S7-20 (ADR vTPM, `DEPENDENCIES.md`).
+- **D9 (2026-11-07; security evidence refreshed 2026-11-18). Криптобиблиотеки.** Одно семейство RustCrypto на host и в `no_std` прошивке: `sha1`, `sha2`, `hmac`, `aes`, `cfb-mode`, `rsa`, `p256`/`ecdsa`, `der`, `x509-cert`, `spki` (MIT/Apache-2.0, pure Rust, `no_std`+`alloc` для прошивки). Собственные: протокол TPM, KDFa/KDFe, HMAC-DRBG, логика PKCS#7/Authenticode, политика цепочки сертификатов. Условие: для приватных операций RSA на host брать версию `rsa` с constant-time арифметикой. RustSec RUSTSEC-2023-0071 now lists `Patched >=0.10.0`; ADR-0009 selects stable `rsa =0.10.0` with exact host/firmware feature sets. Host migration to `=0.10.0`, compatibility checks, and independent review completed 2026-11-18; [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) is resolved. Точные версии, features и транзитивные зависимости фиксирует S7-20 в `DEPENDENCIES.md`. Переносит: S7-20 (ADR vTPM, `DEPENDENCIES.md`).
 
 Перенос пунктов roadmap этапа 7 (D1, D2) записан также в [`ROADMAP.md`](../ROADMAP.md#этап-7-собственные-uefi-acpi-и-платформа-для-windows) под абзацем этапа 7. План этапа 8 пока не существует; ссылка на него добавится, когда он появится.
 
 ### S7-01. Сборка прошивки и host-side тесты
 
-Статус `in_progress`: выполнено исполнителем, ожидает ревью; коммита и ревью нет. Это каркас сборки, а не прошивка: образ не загружался и не исполнялся в машине.
+Сборочная схема, введённая коммитом `426c98a`, повторно проверена 2026-11-18
+на ветке `codex2` (база `d00aa7a`, Apple Silicon, Rust 1.99.0, Apple clang 21.0.0).
+Независимое архитектурное ревью `gpt-6.1-sol` / `high` одобрило сборочную и
+тестовую схему и актуализированную документацию. Существенных замечаний нет.
+
+- Сборка ROM дала 4 194 304 байта, вход `0x200040`, CRC-32 `0x0859e25d`,
+  SHA-256 `ea4cf5eb7d1d679c1c8df272f8ca9e0b69624c0b907ebda371265b26373916f4`.
+- Сборка EFI probe дала 3072 байта, `Machine=0x8664`, `Subsystem=10`, каталог
+  `.reloc` по RVA `0x4000` размером `0xC`.
+- `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — 172 теста.
+  `python3 -m unittest tools/build/test_build_firmware.py` — 26 тестов.
+  `cargo check --workspace --all-targets --offline` — успешно.
+- `python3 tools/check_layout.py` показывает те же 46 известных отсутствующих
+  ссылок на локальные артефакты `work/`. Список ошибок совпадает с базой.
+
+Способ сборки ROM и отдельного RT-драйвера согласован с
+[контрактом S7-02](../specs/FIRMWARE_BOOT.md). Прогон S7-01 проверяет форматы
+и host-side логику. Исполнение ROM и загрузку EFI-приложений покрывают
+приёмочные проверки последующих задач этапа 7.
+
+Ниже приведены сведения об исходной реализации и проверке 2026-11-07.
 
 Создано: `firmware/uefi/` (`Cargo.toml`, `Cargo.lock`, `build.rs`, `linker.ld`, `.cargo/config.toml`, `.gitignore`, `README.md`, `src/{lib,image,stop,main}.rs`, `src/start.S`), `firmware/uefi/probe/efi_probe/` (`Cargo.toml`, `Cargo.lock`, `.gitignore`, `src/main.rs`), `tools/build/build_firmware.py`, `tools/build/test_build_firmware.py`, `docs/testing/FIRMWARE.md`. Изменены: корневой `Cargo.toml` (`exclude = ["firmware/uefi"]`; без него cargo отказывает: `current package believes it's in a workspace`), `docs/PROJECT_LAYOUT.md` (абзац в «Неочевидные границы»), строка статуса S7-01 в плане. Удалён `firmware/uefi/src/.gitkeep` (в каталоге появились файлы, правило 5 карты проекта).
 
@@ -128,7 +151,7 @@
 
 - План (S7-02, п. 1) предлагает пометить handoff block в карте как `Reserved`. В `physical_memory.rs` регион `Reserved` не имеет backing и отклоняет чтение, а доступ через границу регионов отклоняется (`AccessCrossesRegion`). Поэтому handoff block и остальные boot reservations — поддиапазоны одного региона `Ram`, «зарезервированные» типом в handoff block и в UEFI memory map (`EfiReservedMemoryType` для handoff block).
 - План называет строку `VIRTUAL_BOARD.md` «Boot path»; в файле она называется «Загрузочный путь» — изменена она.
-- Решение 4 собирает RT-образ штатным target `x86_64-unknown-uefi`, тогда как S7-01, п. 1 запрещает этот target «для самой прошивки». В документе это уточнено (запрет — для основного образа ROM); уточнение вынесено на ревью и должно попасть в README S7-01.
+- Решение 4 собирает RT-образ штатным target `x86_64-unknown-uefi`, тогда как S7-01, п. 1 запрещает этот target «для самой прошивки». Обновление S7-01 закрепило границу ROM и RT-драйвера в плане и README.
 - Запись `MOV CR4` с OSFXSR/OSXMMEXCPT допущена в `CPU_CONTRACT.md` только профилем `FpInitLong64V1` (S2-25b); исполнение в paged-сессии не подтверждено — возможный blocker S7-04, записан в `FIRMWARE_BOOT.md`, раздел 7.
 - Переход на селекторы прошивки (`CS = 0x08` через `LRETQ`/`IRETQ`, `SS/DS/ES/FS/GS = 0x10`) в paged Long64 не поддержан: `LRETQ` и `MOV DS/ES` есть только как локальные профили `od-isa`, `MOV FS/GS` — только CPL3, `MOV SS` нет, paged `IRETQ` — только узкие профили S4-19e1/S4-20a. Записано как blocker S7-04 в `FIRMWARE_BOOT.md`, раздел 7.
 - Консоль COM1: перенос holding → shift в `uart16550.rs` делает только вызывающий; чтобы строки останова не терялись при большом кванте, выбран контракт «квант заканчивается на записи THR» через существующий STOP-предикат (`FIRMWARE_BOOT.md`, раздел 11; реализуют S7-03 и S7-07).
@@ -179,13 +202,13 @@
 
 ### S7-20. ADR vTPM: размещение, криптозависимости, профиль, CRB, состояние
 
-Статус `accepted`: полное архитектурное повторное ревью 2026-11-18 одобрило ADR-0009 без замечаний; чекбокс S7-20 в плане отмечен. Изменены: [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (номер 0009; 0007 и 0008 зарезервированы планом этапа 11), [VTPM.md](../specs/VTPM.md), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) (ISSUE-064), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md), строка статуса S7-20 в плане. Стабильный `rsa =0.10.0` выбран; текущая миграция `od-tpm` с `=0.10.0-rc.22` и проверка совместимости остаются S7-23, а сборка firmware target — S7-24. S7-20 не утверждает, что реализация/миграция выполнена.
+Статус `accepted`: полное архитектурное повторное ревью 2026-11-18 одобрило ADR-0009 без замечаний; чекбокс S7-20 в плане отмечен. Изменены: [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (номер 0009; 0007 и 0008 зарезервированы планом этапа 11), [VTPM.md](../specs/VTPM.md), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) (ISSUE-064), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md), строка статуса S7-20 в плане. Стабильный `rsa =0.10.0` выбран и внедрён в `od-tpm` в рамках S7-23 2026-11-18; host compatibility checks и независимое ревью прошли (ISSUE-064). Сборка firmware target остаётся в S7-24. На момент завершения S7-20 в ADR была зафиксирована цель миграции; реализация появилась позднее в отдельном срезе S7-23.
 
 Записано:
 
 - **Размещение (D8):** `crates/od-tpm/` — процессор команд и состояние без шины; CRB — `od-machine`; выдача байтов state — `od-machine` public API; альтернативы «модуль в `od-machine`», «отдельный процесс», «TPM в прошивке», «готовая реализация» отклонены с причинами.
-- **Криптография (D9):** 11 crate'ов с версиями, лицензиями, `no_std`/`alloc`, features для host и прошивки и транзитивным графом (52 пакета для объединённого набора, 30 для firmware-набора). ADR выбирает стабильную `rsa =0.10.0`; current implementation remains `=0.10.0-rc.22` pending migration.
-- **Условие D9 о `rsa`:** upstream RustSec RUSTSEC-2023-0071 modified 2026-11-08 now lists `Patched >=0.10.0`; RustCrypto RSA v0.10.0 release notes (2026-11-08) describe constant-time hardening. ADR fixes the target pin to `=0.10.0` with host features `pkcs1v15`,`hazmat` and firmware features `pkcs1v15`,`encoding`. Current S7-23 implementation remains `=0.10.0-rc.22`; code/API migration and compatibility checks are a prerequisite within S7-23, which implements the selected decision. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) remains open until the project migration is reviewed. S7-20 architecture review is complete; implementation and security validation are still pending under S7-23/S7-24.
+- **Криптография (D9):** 11 crate'ов с версиями, лицензиями, `no_std`/`alloc`, features для host и прошивки и транзитивным графом (52 пакета для объединённого набора, 30 для firmware-набора). ADR chooses stable `rsa =0.10.0`; host migration and compatibility checks completed and independent review approved 2026-11-18.
+- **Условие D9 о `rsa`:** upstream RustSec RUSTSEC-2023-0071 modified 2026-11-08 now lists `Patched >=0.10.0`; RustCrypto RSA v0.10.0 release notes (2026-11-08) describe constant-time hardening. ADR fixes the target pin to `=0.10.0` with host features `pkcs1v15`,`hazmat` and firmware features `pkcs1v15`,`encoding`. Host S7-23 migration to `=0.10.0`, compatibility checks, and independent review completed 2026-11-18. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) is resolved. Firmware-target integration remains under S7-24; upstream documentation and interoperability tests do not constitute a complete constant-time security validation.
 - **Профиль, CRB, состояние:** фазы A/B со ссылками на S7-21/S7-23, `TPM_RC_COMMAND_CODE` для команд вне профиля; CRB только locality 0, без прерываний, буфер `0xF80` байт по смещению `0x80` (предложение); persistent/volatile, DRBG не сохраняется, список никогда не логируемых данных.
 
 Проверено: версии, лицензии, features и прямые зависимости — crates.io API 2026-11-07; `#![no_std]` и обязательность `alloc` — чтением `src/lib.rs` скачанных crate'ов; транзитивный граф — `cargo tree -e normal` во временных проектах вне репозитория; advisory — `rustsec/advisory-db`. `python3 tools/check_layout.py` — 45 ошибок (не выросло); `git diff --check` чист; относительные ссылки и якоря в новых записях ведут на существующие файлы и заголовки.
@@ -210,11 +233,64 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Исправления по ревью: копия `authValue` sequence-объекта в обычный `Vec` при проверке пароля убрана: `handle_auth` возвращает `AuthValue` (буфер фиксированного размера, стирается при `Drop`); поля seed'ов `Persistent` — `pub(crate)`; ограничение HMAC на 32-октетный ключ DRBG прокомментировано.
 
-### S7-23. TPM 2.0, фаза B (срезы A, B, C1, C2 и C3 выполнены, S7-23 не принимается до решения по EK)
+### S7-23 — реализация и проверки фазы B
 
-Статус `in_progress`: срез A — коммит `435d7f6`, ожидает ревью; срез B выполнен исполнителем (Claude Sonnet), ожидает ревью, коммита нет (раздел «Срез B» ниже); срез C1 выполнен исполнителем (Claude Sonnet), ожидает ревью, коммита нет (раздел «Срез C1» ниже); срез C2 выполнен исполнителем (Claude Sonnet), ожидает ревью, коммита нет (раздел «Срез C2» ниже); срез C3 выполнен исполнителем (Claude Sonnet), ожидает ревью, коммита нет (раздел «Срез C3» ниже). Задача разбита оркестратором на срезы: **A** — иерархии, HMAC-сессии, NV-база, замена самописного HMAC крейтом `hmac` (выполнен); **B** — ключи RSA/ECC и команды с объектами (выполнен; policy-сессии и шифрование параметров перенесены в срез C); **C** — разбит на **C1** (RSA/ECDH, DA, persistent state v2; выполнен) и **C2** (policy-сессии, контексты, `TPM2_HMAC`, `Quote`, `Certify`; выполнен); **C3** (NV counter/bits/extend, `GetTime`, NULL `signHandle`, шифрование параметров, snapshot v3; выполнен); за пределами C3 остаются шаблоны EK и сертификат EK (ждут решения владельца проекта). Чекбокс задачи в плане не отмечен.
+#### RSA stable migration (2026-11-18)
 
-**S7-23 НЕ принимается до решения по EK.** Срезы A, B, C1, C2 и C3 выполнены и ожидают ревью; остался обязательный пункт плана: шаблоны EK по TCG EK Credential Profile и сертификат EK (T-04) — ждут решения владельца проекта (редакция профиля, источник сертификата). DA-защита (lockout) реализована в срезе C1; в срезах A и B ошибка авторизации всегда была `TPM_RC_BAD_AUTH` без счётчика попыток.
+Changed `crates/od-tpm/Cargo.toml` from `rsa =0.10.0-rc.22` to `=0.10.0`, preserving `default-features = false` and enabling exactly `pkcs1v15` and `hazmat`. Firmware has no direct `rsa` dependency; its ADR-selected `pkcs1v15`/`encoding` feature integration remains S7-24. `Cargo.lock` now resolves `rsa 0.10.0` and `crypto-bigint 0.7.11`. No call-site changes were needed.
+
+Evidence: `cargo test -p od-tpm` passed **264/264 tests**, including deterministic RSA primary-key golden checks, RSASSA-PKCS1-v1_5/SHA-256 golden signatures, and external RSA encrypt/decrypt interoperability for OAEP, RSAES-PKCS1-v1_5, and raw RSA. `cargo check --workspace --all-targets --offline` and `cargo fmt --all -- --check` passed. Independent review approved the migration slice on 2026-11-18. Commit `d00aa7a` records the result. These integration tests do not certify constant-time behavior. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) is resolved.
+
+Задача S7-23 остаётся открытой. Для завершения требуется решение владельца
+по редакции TCG EK Credential Profile и источнику сертификата EK (T-04).
+Открытые результаты ревью перечислены по срезам ниже.
+
+| Срез | Исходный коммит | Объём |
+|---|---|---|
+| A | `435d7f6` | Иерархии, HMAC-сессии и базовые операции NV. Sol High одобрил заявленный объём. |
+| B | `454f351` | Объекты RSA/ECC, создание ключей, подпись и проверка. Ревью завершено без новых дефектов в объёме среза. |
+| C1 | `46f0300` | RSA/ECDH, защита от перебора (DA), snapshot v2. Закрыт [ISSUE-587](../KNOWN_ISSUES.md#issue-587). |
+| C2 | `2da9887` | Политики, контексты, HMAC, Quote и Certify. Закрыты [ISSUE-584](../KNOWN_ISSUES.md#issue-584), [ISSUE-586](../KNOWN_ISSUES.md#issue-586), [ISSUE-588](../KNOWN_ISSUES.md#issue-588) и [ISSUE-590](../KNOWN_ISSUES.md#issue-590). |
+| C3 | `9c7f46c` | NV counter/bits/extend, GetTime, шифрование параметров, snapshot v3. Закрыт [ISSUE-585](../KNOWN_ISSUES.md#issue-585). |
+
+
+На `312546d` команда `cargo test -p od-tpm --offline` прошла 264 теста.
+Независимые ревью `gpt-6.1-sol` / `high` проверили срезы A–C3
+в текущем состоянии ветки. Ревьюеры A и B/C1 повторили прогон тестов.
+В срезе A проверены иерархии, HMAC-сессии и базовый NV, включая
+изменения этих компонентов в последующих срезах. Спецификационные вопросы точных кодов
+ошибок, bound/response HMAC, Startup и GetCapability перечислены в
+[VTPM.md](../specs/VTPM.md). В C1–C3 выявлены расхождения в восстановлении
+RSA, состоянии policy-сессий, защите контекстов и HMAC с несколькими
+сессиями. Сверка с TCG охватывала конкретные разделы, указанные в реестре.
+
+Восстановление RSA теперь проверяет соответствие exponent публичной части закрытому ключу с exponent `65537`. Тесты через `Tpm::restore` проверяют побайтовое сохранение snapshot и ответ `ReadPublic`, включая Name и Qualified Name, для допустимых кодировок `0` и `65537`. Подпись совпадает после восстановления. Несовместимый exponent отклоняется на общем пути декодирования `TPM2B_SENSITIVE` и при чтении snapshot. [Контракт TPM](../specs/VTPM.md), [ISSUE-587](../KNOWN_ISSUES.md#issue-587).
+
+`cargo test -p od-tpm --offline` прошёл с 265 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило исправление и повторило целевой регрессионный тест. Открытых замечаний к ISSUE-587 нет.
+
+Продолжаемая policy-сессия получает новый `nonceTPM` и начальные значения `PolicyState` после формирования защищённого ответа на команду, которую она успешно авторизовала. Тесты покрывают ответ с HMAC и AES-шифрованием, ошибки параметров и второй авторизации, повторное построение assertions и `ContextSave/Load` после сброса. В `PolicySecret` проверены сброс авторизующей сессии и обновление отдельной целевой. [ISSUE-584](../KNOWN_ISSUES.md#issue-584), [ISSUE-590](../KNOWN_ISSUES.md#issue-590).
+
+`cargo test -p od-tpm --offline` прошёл с 266 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило исправление. Открытых замечаний к ISSUE-584 нет.
+
+`PolicySecret` проверяет `userWithAuth` обычных объектов и `AUTHREAD` обычных NV-индексов. Тесты проверяют, что при отказе digest обеих policy-сессий сохраняется, а подходящий `authHandle` позволяет сформировать assertion. Существующие тесты авторизации иерархий прошли. [ISSUE-590](../KNOWN_ISSUES.md#issue-590).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 267 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило изменение и повторило четыре теста `policy_secret_`.
+
+Тесты `PCR_Read` показывают исходный счётчик для Reset и сохранённый счётчик с единичным обновлением для Restart и Resume. Отдельный тест сохраняет policy-сессию до использования, восстанавливает её через `ContextLoad` и проверяет `TPM_RC_PCR_CHANGED` после Startup. `PolicyRestart` позволяет построить assertion в новом поколении. [ISSUE-588](../KNOWN_ISSUES.md#issue-588).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 268 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило изменение счётчика и проверку сохранённых policy assertions.
+
+Шифрование TPM-контекстов теперь выводит ключ и IV из proof иерархии и `resetValue`. Тест повторно создаёт тот же primary key после Reset и проверяет изменение шифротекста при совпадающих заголовках и sensitive body. Исходный контекст загружается после Restart и Resume. После Reset его загрузка отклоняется, а новый контекст загружается. [ISSUE-586](../KNOWN_ISSUES.md#issue-586).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 269 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез и повторило семь тестов контекстов.
+
+Первая HMAC-авторизация команды теперь включает прежние TPM nonce других сессий `decrypt`/`encrypt`. Тест через `Certify` проверяет отдельные и совмещённые роли, первый пароль, policy-сессии, отказы при отсутствующем и повторённом nonce, HMAC над шифротекстом ответа и проверку подписи после расшифровки. [ISSUE-585](../KNOWN_ISSUES.md#issue-585).
+
+Полный `cargo test -p od-tpm --offline` прошёл с 270 успешными тестами. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез.
+
+Далее приведены результаты и ограничения, зафиксированные при исходной
+реализации срезов A–C3 7 ноября 2026 года. Актуальные итоги независимых
+ревью перечислены выше.
 
 Изменены (срез A): `crates/od-tpm/` (`Cargo.toml`, `README.md`, новые модули `src/{crypto,hierarchy,session,nv}.rs` и `src/tests_b.rs`; изменены `lib,codes,marshal,command,response,dispatch,startup,capability,random,pcr,hash,state,tests`), `Cargo.lock`, [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез A», NOT VERIFIED 12–20, «Отклонения»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md) (строка `crates/od-tpm/src/`), [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (одна фраза в «Последствиях»: feature `alloc` у `zeroize`), строка статуса S7-23 в плане и в этом отчёте.
 
@@ -230,7 +306,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Не проверено: **текст Library v185 недоступен** (HTTP 403), сверка с v184 (Part 1: 9.4.10.2, 11.2–11.5, 12.4.5, 14, 16.6–16.8, 17.6; Part 2: Tables 20, 25, 30, 36, 40, 42, 43, 58–70, 159, 227–235; Part 3: 9.3.1, 11.1, 24.2, 24.6–24.8, 28.4, 30.2, 31.1–31.14; PTP 1.07: Table 2, Table 12, 4.6.2). Все коды ошибок и детали, которых открытый текст не называет, перечислены в [VTPM.md](../specs/VTPM.md#не-сверено-с-текстом-not-verified), пп. 12–20, и помечены `NOT VERIFIED` в исходниках (`hierarchy.rs`, `session.rs`, `nv.rs`, `dispatch.rs`, `capability.rs`). Сборка под `x86_64-unknown-none` не проверялась (crate host-only). Независимое ревью не выполнено. Требования ADR-0009 к секретам: seeds, `authValue`, ключи сессий, данные NV и выход KDFa хранятся в стираемых при `Drop` типах (`zeroize`), HMAC сравнивается за постоянное время (`Mac::verify_slice`), пароль и `authValue` — без ранних выходов; `Debug` ни одного нового типа не печатает секрет (тест). Условие constant-time для RSA (ISSUE-064) к срезу A не относится: приватных RSA-операций нет.
 
-#### Срез B (объекты и ключи), выполнен исполнителем, ожидает ревью, коммита нет
+#### Срез B (объекты и ключи)
 
 Изменены: `crates/od-tpm/` (`Cargo.toml`; новые модули `src/object.rs`, `src/object_cmd.rs`, `src/tests_obj.rs`; изменены `lib,codes,response,marshal,crypto,dispatch,state,startup,hierarchy,session,capability,tests,tests_b`), `Cargo.lock`, [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез B», NOT VERIFIED 21–32, «Отклонения», «Состояние»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) (ISSUE-064), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), `crates/od-tpm/README.md`, строка статуса S7-23 в плане и в этом отчёте.
 
@@ -238,11 +314,11 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Зависимости: `rsa =0.10.0-rc.22` (`default-features = false`, `pkcs1v15`), `p256 =0.14.0` (`default-features = false`, `ecdsa`); оба и их 16 новых транзитивных пакетов получены `cargo fetch` (в офлайн-кеше не было); дальше `--offline` проходит. `der`, `spki`, `aes`, `cfb-mode`, `sha1`, `x509-cert` в срезе B не нужны и не добавлены. Подробности и лицензии — [DEPENDENCIES.md](../policies/DEPENDENCIES.md).
 
-Ограничения и отклонения (подробно в VTPM.md): (1) **`outPrivate` не использует AES** — шифрование потоком KDFa вместо AES-128-CFB (при этом шаблон storage key называет AES-128-CFB); блобы не совместимы с другими TPM; RSA хранится как `p ‖ q`; формат блоба не стабилен до среза C. (2) Primary выводится собственным алгоритмом (Part 1 называет это «vendor option»), поиск простых RSA — алгоритм `rsa`/`crypto-primes` при зафиксированных версиях: смена версии может изменить RSA-primary. (3) `Hash`/`SequenceComplete` выдают только NULL-тикеты: restricted signing key не может подписать (`TPM_RC_TICKET`). (4) Policy-сессии нет: объекты с `userWithAuth` CLEAR создаются, но не авторизуются (`TPM_RC_AUTH_UNAVAILABLE`). (5) Persistent-объекты только в памяти, в snapshot не входят. (6) Приватный RSA использует `rsa =0.10.0-rc.22`; upstream stable fix `>=0.10.0` теперь доступен, но проект ещё не мигрировал. [ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) остаётся открытой; stable migration и совместимость — обязательное условие S7-23. (7) Все коды ответа, которых открытый текст v184 не называет (Part 4 недоступна), — `NOT VERIFIED` (VTPM.md, пп. 21–32, и комментарии в `object.rs`, `object_cmd.rs`, `marshal.rs`, `dispatch.rs`, `capability.rs`). Не сделано (срез C): `RSA_Encrypt/Decrypt`, `ECDH_ZGen`, `ContextSave/Load`, DA, persistent state v1, policy-сессии, шифрование параметров, EK, `Quote/Certify/GetTime`, `TPM2_HMAC`, `ObjectChangeAuth`.
+Ограничения и отклонения (подробно в VTPM.md): (1) **`outPrivate` не использует AES** — шифрование потоком KDFa вместо AES-128-CFB (при этом шаблон storage key называет AES-128-CFB); блобы не совместимы с другими TPM; RSA хранится как `p ‖ q`; формат блоба не стабилен до среза C. (2) Primary выводится собственным алгоритмом (Part 1 называет это «vendor option»), поиск простых RSA — алгоритм `rsa`/`crypto-primes` при зафиксированных версиях: смена версии может изменить RSA-primary. (3) `Hash`/`SequenceComplete` выдают только NULL-тикеты: restricted signing key не может подписать (`TPM_RC_TICKET`). (4) Policy-сессии нет: объекты с `userWithAuth` CLEAR создаются, но не авторизуются (`TPM_RC_AUTH_UNAVAILABLE`). (5) Persistent-объекты только в памяти, в snapshot не входят. (6) На дату исходного среза (2026-11-07) приватный RSA использовал `rsa =0.10.0-rc.22`; host migration, compatibility checks and independent review completed 2026-11-18 ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time), resolved). (7) Все коды ответа, которых открытый текст v184 не называет (Part 4 недоступна), — `NOT VERIFIED` (VTPM.md, пп. 21–32, и комментарии в `object.rs`, `object_cmd.rs`, `marshal.rs`, `dispatch.rs`, `capability.rs`). Не сделано (срез C): `RSA_Encrypt/Decrypt`, `ECDH_ZGen`, `ContextSave/Load`, DA, persistent state v1, policy-сессии, шифрование параметров, EK, `Quote/Certify/GetTime`, `TPM2_HMAC`, `ObjectChangeAuth`.
 
 Проверено (2026-11-07): `cargo test -p od-tpm --offline` — 171 тест проходит (было 133); независимые эталоны: RSA-2048 и ECDSA P-256 подписи OpenSSL 4.1.0 проходят `LoadExternal` → `VerifySignature`, их корректность подтверждена Python (`pow`, аффинная проверка ECDSA); подписи эталонных primary-ключей (ECC, RSA) проверены тем же кодом Python и закреплены тестом; байты `TPMT_PUBLIC` написаны вручную по Part 2. Прочие проверки (`clippy`, `fmt`, `cargo check --workspace`, `check_layout.py`, `git diff --check`) — в итоговом отчёте исполнителя. Не проверено: текст Library v185 недоступен (сверка по v184, Part 4 не использовалась); сборка под `x86_64-unknown-none` не проверялась; независимое ревью не выполнено; constant-time RSA и ECDSA не проверялись (ISSUE-064; для ECDSA — заявление поставщика).
 
-#### Срез C1 (RSA_Encrypt/Decrypt, ECDH_ZGen, DA, persistent state v2), выполнен исполнителем, ожидает ревью, коммита нет
+#### Срез C1 (RSA_Encrypt/Decrypt, ECDH_ZGen, DA, persistent state v2)
 
 Изменены: `crates/od-tpm/` (`Cargo.toml` — feature `hazmat` у `rsa`; новые модули `src/asym.rs`, `src/da.rs`, `src/snapshot.rs`, `src/tests_c1.rs`; изменены `lib,codes,response,marshal,object,crypto,dispatch,state,startup,hierarchy,nv,capability,tests,tests_b,tests_obj`; `README.md`), [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез C1», формат snapshot v2, NOT VERIFIED 35–44, «Отклонения», исправление записи «Part 1 недоступна»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (одна фраза), [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) (ISSUE-064: появилась `RSA_Decrypt`), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), строка статуса S7-23 в плане и в этом отчёте.
 
@@ -250,11 +326,11 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Зависимости: новых пакетов нет, `Cargo.lock` не менялся. `rsa =0.10.0-rc.22` — добавлен feature `hazmat` («сырой» RSA; OAEP и RSAES доступны без feature). `p256 =0.14.0` — feature `ecdh` **не включён** (ADR-0009 его называет): `ECDH_ZGen` возвращает точку, а `ecdh::diffie_hellman` даёт только `x`; умножение точки — `arithmetic` (входит в `ecdsa`).
 
-Отклонения и ограничения: RSAES-расшифровка — implicit rejection `rsa` вместо `TPM_RC_VALUE`; DA защищает только объекты, NV-индексы и `lockoutAuth` (а не все иерархии: так в Part 1, 17.8.1); объекты платформенной иерархии и индексы `PLATFORMCREATE` из DA исключены; значения DA по умолчанию — выбор; `platformAuth` в snapshot не входит (volatile по Part 3, 9.3.1); не реализованы policy-сессии, шифрование параметров, EK, `ContextSave/Load`, `Quote/Certify/GetTime`, `TPM2_HMAC` (срез C2). Приватный RSA всё ещё работает через текущий `rsa =0.10.0-rc.22`; upstream stable fix `>=0.10.0` доступен, но проектная миграция и совместимость не проверены. ISSUE-064 остаётся открытой; миграция — prerequisite S7-23.
+Отклонения и ограничения: RSAES-расшифровка — implicit rejection `rsa` вместо `TPM_RC_VALUE`; DA защищает только объекты, NV-индексы и `lockoutAuth` (а не все иерархии: так в Part 1, 17.8.1); объекты платформенной иерархии и индексы `PLATFORMCREATE` из DA исключены; значения DA по умолчанию — выбор; `platformAuth` в snapshot не входит (volatile по Part 3, 9.3.1); не реализованы policy-сессии, шифрование параметров, EK, `ContextSave/Load`, `Quote/Certify/GetTime`, `TPM2_HMAC` (срез C2). На дату среза (2026-11-07) приватный RSA работал через `rsa =0.10.0-rc.22`; stable host migration, compatibility checks and independent review completed 2026-11-18; ISSUE-064 is resolved.
 
 Проверено (2026-11-07): `cargo test -p od-tpm --offline` — 199 тестов проходят (было 174: минус один устаревший тест snapshot, плюс 1 unit-тест `da.rs` и 25 тестов `src/tests_c1.rs`); независимые эталоны: шифртексты RSAES/OAEP (с меткой и без) и «сырой» RSA, сделанные Python (`hashlib`, `pow`, padding проверен `openssl pkeyutl` в обе стороны), расшифрованы TPM; шифртексты TPM расшифрованы `openssl pkeyutl -decrypt` (OpenSSL 4.1.0); общая точка ECDH, вычисленная Python (аффинная арифметика P-256 с закрытым ключом OpenSSL, `openssl pkeyutl -derive` дал тот же `x`), совпала с `ECDH_ZGen`. Не проверено: текст Library v185 недоступен (сверка по v184, Part 4 не использовалась); пометки `NOT VERIFIED` — VTPM.md, пп. 35–44; сборка под `x86_64-unknown-none` не проверялась; независимое ревью не выполнено; constant-time RSA и ECDH не проверялись.
 
-#### Срез C2 (policy-сессии, ContextSave/Load, TPM2_HMAC, Quote, Certify), выполнен исполнителем, ожидает ревью, коммита нет
+#### Срез C2 (policy-сессии, ContextSave/Load, TPM2_HMAC, Quote, Certify)
 
 Изменены: `crates/od-tpm/` (новые модули `src/policy.rs`, `src/context.rs`, `src/attest.rs`, `src/tests_c2.rs`; изменены `lib,codes,response,marshal,object,object_cmd,session,dispatch,state,startup,capability,tests,tests_b,tests_obj`; `README.md`), [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез C2», NOT VERIFIED 45–52, «Отклонения», «Источники и сверка»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md) (запись «новых пакетов нет»), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), строка статуса S7-23 в плане и в этом отчёте.
 
@@ -266,7 +342,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Проверено (2026-11-07): `cargo test -p od-tpm --offline` — 232 теста проходят (было 202); независимые эталоны: digest policy (Python `hashlib`), HMAC-SHA-256 RFC 4231 (Python `hmac`), подпись `Quote` (ECDSA P-256, аффинная арифметика Python, детерминированная подпись закреплена) и `Certify` (RSASSA, `pow` против EMSA-PKCS1-v1_5); структуры `TPMS_ATTEST` собраны в тестах побайтно по Part 2. Не проверено: текст Library v185 недоступен (сверка по v184, Part 4 не использовалась; пометки `NOT VERIFIED` — VTPM.md, пп. 45–52); сборка под `x86_64-unknown-none` не проверялась; независимое ревью не выполнено; constant-time RSA и ECDSA не проверялись (ISSUE-064).
 
-#### Срез C3 (NV counter/bits/extend, GetTime, signHandle NULL, шифрование параметров, snapshot v3), выполнен исполнителем, ожидает ревью, коммита нет
+#### Срез C3 (NV counter/bits/extend, GetTime, signHandle NULL, шифрование параметров, snapshot v3)
 
 Изменены: `crates/od-tpm/` (новый модуль `src/paramenc.rs`, новый `src/tests_c3.rs`; изменены `lib,codes,marshal,nv,attest,session,context,dispatch,snapshot,state,capability,policy` (только комментарий), `tests,tests_b,tests_c1,tests_c2`; `README.md`), [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез C3», NOT VERIFIED 53–58, формат snapshot v3, «Источники и сверка»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md) (запись «новых пакетов нет»), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md), строка статуса S7-23 в [STAGE_7.md](../plans/STAGE_7.md), этот отчёт.
 
@@ -280,7 +356,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-30. Аудит требований Windows boot path
 
-Статус `in_progress`: аудит и manifest подготовлены, но статический GUID scan не выполнен, поэтому приёмка ожидает доступного media source, повторной проверки и архитектурного ревью. Новые/обновлённые артефакты: [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md), [GUEST_REQUIREMENTS.md](../specs/GUEST_REQUIREMENTS.md) (ссылка), [windows_media_manifest.json](../../tests/fixtures/firmware/windows_media_manifest.json), ссылки на audit IDs в задачах S7-13/14/23/24, этот отчёт и ISSUE-511. Коммита S7-30 нет; ISO и Windows boot binaries отсутствуют в текущем workspace. Manifest сохраняет прежние metadata с `available=false`/`reverified=false`; эти значения не являются новым проверенным экспериментом. `PROJECT_LAYOUT.md` не менялся: документ и fixture-путь уже предусмотрены картой.
+Статус `accepted` после независимого review 2026-11-18 для статического media/GUID-аудита. ISO SHA-256 перепроверен; `bootx64.efi`, `bootmgfw.efi` и `winload.efi` из обоих `boot.wim` индексов извлечены только во временный каталог и просканированы по 18 GUID-кандидатам. WIM copies `winload.efi` (каждая 3 358 408 байт) имеют одинаковый SHA-256 `1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda` и byte-identical содержимое. ISSUE-511 закрыта как устранённый media-evidence blocker. Изменены [WINDOWS_PLATFORM_REQUIREMENTS.md](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md), [windows_media_manifest.json](../../tests/fixtures/firmware/windows_media_manifest.json), ISSUE-511, план и этот отчёт; ссылки на audit IDs в задачах S7-13/14/23/24 были добавлены ранее. Финальные status-document edits ожидают отдельного docs review/коммита. ISO и извлечённые бинарные файлы остаются вне Git. Runtime use не выводится; трасса загрузчика остаётся назначенной S7-32.
 
 Записано: 113 пунктов с источником, статусом и задачей плана — подтверждено 19, по документации Microsoft 62, гипотеза — не проверено 18, источник не найден 14 (подсчёт по первому статусу строки). Трасса реального загрузчика не снята (прошивки нет): все фактические обращения `bootmgfw.efi`/`winload.efi` к протоколам, переменным и TPM — гипотеза до S7-32; список команд TPM (K-01…K-11) — гипотеза, кроме опубликованного требования `TPM2_HMAC`.
 
@@ -292,9 +368,9 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 - `install.wim` (8 155 984 950 байт) не помещается одним файлом в FAT32 — вход S7-35.
 - Для large pages, HPET, запуска AP, SSE4.2/POPCNT, `OsIndications` источник не найден.
 
-Проверено: `python3 tools/check_layout.py` — 45 ошибок (не выросло); `git diff --check` чист; относительные ссылки изменённых файлов ведут на существующие файлы. ISO читался только листингом `7zz l` и потоками `7zz e -so` в память (заголовки PE/WIM/FAT, boot catalog, SHA-256), без извлечения на диск и без запуска.
+Проверено: ISO SHA-256 `bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650`, размер 9 047 330 816; `bootx64.efi` и `bootmgfw.efi` — 3 087 400 байт, SHA-256 `4bb32c300df0815d8b6c54a0d3793ae1d78fcdc07f8e2b9f831289b2eb109092`, `cmp` подтвердил идентичность. Из каждого WIM индекса извлечён `Windows/System32/winload.efi` (3 358 408 байт, SHA-256 `1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda`); обе копии идентичны. Статическое сканирование Python `uuid.UUID(...).bytes_le` по 18 кандидатам обнаружило в `winload.efi` Loaded Image `0x2be6b8`, Device Path `0x2be558` и `0x2d84c0`, GOP `0x2be6f8`, Block I/O `0x2be708`, Simple File System `0x2c5000`, Partition Info `0x2c5010`, RNG `0x2be778`, TCG2 `0x30d968`, Simple Text Input Ex `0x2be5f8`; 9 кандидатов без совпадений, включая Decompress и EBC. В `bootx64.efi`/`bootmgfw.efi` также найден Simple Text Input Ex `0xc858`; EBC support отсутствует в проектном profile и не требуется с UEFI 2.8, если не реализована, но отличие от Microsoft M3/непроверенная применимость SoC-требования к x64 явно сохранены в аудите. GUID scan — наличие байтов, не свидетельство runtime use. `7zz l -slt` перечислил оба WIM индекса (25 797 и 26 332 path records); извлечены только две целевые winload копии в каталог вне Git, Windows binaries не запускались.
 
-Не проверено: тексты UEFI 2.11 и ACPI 6.6 (uefi.org — HTTP 403), тексты TCG (открыты только страницы ресурсов), страница Microsoft «Secure MOR implementation» (HTTP 404), документ WHCP; статический поиск известных GUID протоколов в `bootx64.efi`/`bootmgfw.efi`/`winload.efi` не выполнен, так как эти бинарные файлы и выбранный ISO отсутствуют в текущем workspace. Fixture [manifest](../../tests/fixtures/firmware/windows_media_manifest.json) создан из metadata, уже записанных в `SUPPORT_MATRIX.md` и audit item A7; полный ISO SHA-256 и PE binary hash для данного среза не пересчитывались. Связи задач S7-13/14/23/24 к соответствующим audit IDs добавлены в план.
+Не проверено: полный текст UEFI 2.11 (лишь GUID-определения в указанных разделах прочитаны), ACPI 6.6 (uefi.org — HTTP 403), текущие errata TCG и Library v185, страница Microsoft «Secure MOR implementation» (HTTP 404), документ WHCP. Статический GUID search конечного списка не устанавливает runtime use; фактические обращения загрузчика к протоколам, чтение переменных и TPM-команды, а также гостевая загрузка остаются непроверенными и относятся к S7-32. Fixture [manifest](../../tests/fixtures/firmware/windows_media_manifest.json) содержит проверяемые hashes, кандидаты GUID, источники, offsets и команды/метод воспроизведения.
 
 Решение для владельца и ревью плана (план не правился, §6, строка S7-32; правится только отчёт):
 
@@ -308,7 +384,97 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-12. AML-кодировщик и DSDT из manifest
 
-Статус `in_progress`: независимое ревью 2026-11-18 приняло качество реализованного ограниченного профиля; задача целиком не закрыта. 165 профильных тестов прошли. Коммита реализации в этом worktree нет. Контракт, источники, перечень отложенного и не сверенных мест — [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt).
+Статус `accepted` для текущей платы. Исходный сериализатор включён в
+ветку коммитом `0df7dff`, RTC0 добавлен коммитом `6c91e58`.
+
+#### Повторная проверка 2026-11-18
+
+На `994aaf9` прошли 172 теста `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`.
+Гостевой сериализатор пересобран штатным `tools/build/build_stage4_acpi_blob.py`
+для обоих профилей. Повторить сборку из корня можно так.
+
+```sh
+od_s712_check=$(mktemp -d)
+python3 tools/build/build_stage4_acpi_blob.py --output-dir "$od_s712_check/default" --target-dir "$od_s712_check/target"
+python3 tools/build/build_stage4_acpi_blob.py --linux-nvme --output-dir "$od_s712_check/nvme" --target-dir "$od_s712_check/target"
+```
+
+Из каждого blob извлечена DSDT. Начало таблицы вычислено как сумма
+`payload_offset` blob и `payload_offset` записи DSDT в JSON. Длина из
+заголовка, сумма байтов по модулю 256 и SHA-256 сверены с метаданными.
+Таблицы разобраны `iasl -d DSDT.aml` и загружены `acpiexec` версии 20260408.
+В последнем выполнены `evaluate` для _PRT, _CRS, _S5 и UID CPU0 и
+`resources` для PCI0.
+
+| Профиль | DSDT | _CRS PCI0 | _PRT PCI0 |
+|---|---:|---|---|
+| Базовый | 273 байта, SHA-256 `3739c910…764c2` | Шина 0, conf1 `0xCF8..=0xCFF` | Пустой пакет |
+| PCI NVMe | 311 байт, SHA-256 `2a5ce89c…78719` | Те же ресурсы и producer MMIO `0xFC004000..=0xFC005FFF` | Устройство 4, любая функция, INTA, фиксированный GSI 16 |
+
+В обеих таблицах UID CPU0 равен 0, _S5 возвращает `{5,5,0,0}`.
+ACPICA предупреждает о пустом _PRT в базовой таблице. Сообщение о
+четырёх outstanding cache allocations при завершении утилиты
+повторяется у обоих артефактов с `-b quit`. Проверки фиксируют
+декодирование этих AML-объектов. Прогон кода гостевой ОС остаётся
+проверкой S7-31/S7-32. Сверенные поля и оставшиеся допущения описаны в
+[ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md#выборочная-сверка-с-acpi-66).
+
+#### RTC в DSDT
+
+DSDT публикует `\_SB.RTC0` только при наличии валидной записи RTC/CMOS
+из handoff v1.4. Запись `DeviceEntry` с кодом 10 проходит общую проверку
+для DSDT и FADT до сериализации. `_HID` обозначает `PNP0B00`, `_CRS`
+указывает PIO `0x70–0x71`. В записи handoff нет маршрута IRQ8.
+[ACPI 6.6, §9.14.1](https://uefi.org/specs/ACPI/6.6/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#pc-at-compatible-rtc-cmos-devices-pnp0b00)
+
+Прошли 172 теста firmware. Эталон проверяет байты RTC0, контрольную сумму,
+FADT и отсутствие RTC0 при отсутствии записи. Для диагностики из blob,
+вычисленного `build_blob` в константе Rust для `STAGE4_DEVICES` с кодом 10,
+извлечена DSDT. `acpiexec` прочитала `_HID` `PNP0B00` и Decode16,
+минимум `0x70`, максимум `0x70`, длину 2. Из базового blob запрос
+`\_SB.RTC0._HID` вернул `AE_NOT_FOUND`.
+
+Базовый freestanding blob совпал побайтно с результатом host-сборки.
+Freestanding blob для PCI NVMe без RTC совпал с предыдущим артефактом.
+Форматирование и `git diff --check` прошли. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез без замечаний.
+
+#### Приёмочная проверка текущих профилей
+
+Валидатор проверяет границы вложенных `Package` в данных `Name`. Тест
+повреждает внутренний `PkgLength` при корректной внешней длине и наличии
+следующего объекта. Валидатор возвращает `BadPkgLength`. Проверены
+отсутствующий байт `NumElements`, максимальная глубина пакетов в корне и
+внутри `Scope`/`Device`, а также абсолютные ссылки внутри пакетов.
+Сериализатор сохранил прежние байты базового
+и PCI NVMe blob. [Контракт валидатора](../specs/ACPI_SMBIOS_TABLES.md#валидатор)
+
+Прошли 176 тестов `od-firmware`. Штатный `build_stage4_acpi_blob.py`
+собрал freestanding артефакты базового и PCI NVMe профилей. Третий
+blob получен константным вызовом `build_blob` для `LINUX_NVME_DEVICES`
+с добавленной записью RTC v1.4. Во всех трёх DSDT подтверждены длина,
+нулевая сумма байтов и декодирование ACPICA `acpiexec` 20260408.
+
+| Профиль | DSDT | PCI0 `_CRS` и `_PRT` | RTC0 |
+|---|---|---|---|
+| Базовый | 273 байта, `3739c910…764c2` | Шина 0, conf1 `0xCF8..=0xCFF`, пустой `_PRT` | Отсутствует |
+| PCI NVMe | 311 байт, `45c8f05b…bbe99` | Дополнительно `0xFC004000..=0xFC007FFF` и INTA устройства 4 на GSI 16 | Отсутствует |
+| PCI NVMe и RTC | 347 байт, `d5ef1fe0…d081a` | Те же апертура и маршрут | `PNP0B00`, Decode16 `0x70`, длина 2 |
+
+Во всех профилях `_S5` возвращает `{5, 5, 0, 0}`, UID CPU0 равен 0.
+[ISSUE-065](../KNOWN_ISSUES.md#issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes)
+закрыт для текущей платы. HPET и TPM CRB отсутствуют в проверенных
+manifest. Их объявления относятся к задачам устройств S7-14 и S7-22.
+Приёмка гостевых ОС относится к S7-31/S7-32.
+
+Независимое полное ревью `gpt-6.1-sol` / `high` приняло S7-12 после
+разделения лимитов глубины пакетов и пространства имён. Ревьюер повторил
+176 тестов, оставшихся замечаний нет. Форматирование, workspace check и
+`git diff --check` прошли. Graphify обновлён.
+
+#### История исходного среза
+
+Сведения ниже относятся к исходным результатам 2026-11-07.
 
 Создано (`firmware/uefi/src/acpi/`): `aml/{opcodes,names,encoder,resource,builder,validate}.rs` (кодировщик без `alloc`, интерпретатора нет), `manifest.rs` (`BoardManifest` по таблице устройств FIRMWARE_BOOT.md §6.3), `table.rs` (заголовок SDT, контрольная сумма, `validate_table`), `dsdt.rs` (`build_dsdt`, `validate_dsdt`), тесты `aml/tests.rs`, `dsdt/tests.rs` и модульные тесты `manifest.rs`/`table.rs`. Cargo-зависимости не добавлялись; `crates/` и контракты не менялись.
 
@@ -331,7 +497,301 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез A)
 
-Статус: `in_progress`. **Срезы A и B реализованы; подтверждённые замечания первого ревью исправлены и ожидают независимого повторного ревью. Коммита реализации пока нет; прерывания не реализованы.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+Статус `in_progress`. Исходные срезы A/B входят в ветку коммитами
+`ba9692c` и `e44566c`. Контракт описан в [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+
+#### Повторная сверка NVMe Base 2.4
+
+На `0411d82` сверены `CAP.CQR` и `CC.IOSQES`/`CC.IOCQES`.
+Проверка физической непрерывности поддержанных очередей соответствует
+установленному CQR. Проверка размеров записей при включении контроллера
+блокирует admin path в случае, для которого Base 2.4 задаёт отказ Create I/O SQ/CQ.
+Найденное расхождение записано как [ISSUE-589](../KNOWN_ISSUES.md#issue-589).
+[NVMe Base 2.4, с. 58–60](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=84)
+
+- `cargo test -p od-machine --lib nvme:: --offline` — 75 тестов прошли.
+  На исходном коммите один из них закреплял раннее выставление CFS.
+- `cargo test -p od-machine --lib doorbell_pending_stops_quantum_then_host_services_before_the_next_quantum --offline` —
+  тест прошёл. Фикстура записывает doorbell со стороны host и проверяет
+  остановку кванта и обслуживание DMA.
+- `cargo test -p od-machine --lib linux_nvme_pci_bar_decode_bus_master_and_intx_follow_guest_register_writes --offline` —
+  тест прошёл. Он проверяет PCI config space, BAR, DMA и INTx на модели платы
+  через MachineBus. Исполнение драйвера прошивки остаётся проверкой S7-17.
+- Полный `cargo test -p od-machine --offline` завершился успешно. Прошло 2 120 тестов. Ещё 15 помечены `ignored`.
+
+#### Настройка размеров записей I/O-очередей
+
+`CC.EN` запускает admin SQ и CQ с фиксированными размерами записей. После включения можно независимо настроить `CC.IOSQES` и `CC.IOCQES`, пока отсутствуют очереди соответствующего типа. Create I/O CQ и Create I/O SQ проверяют своё поле с учётом допустимых значений в Identify Controller. При недопустимом размере команда возвращает `Invalid Queue Size`, контроллер остаётся готовым. Проверка каждого поля следует таблице статусов соответствующей команды. [Контракт NVMe](../specs/NVME_DEVICE.md#4-регистры-контроллера), [ISSUE-589](../KNOWN_ISSUES.md#issue-589).
+
+Тест `io_entry_sizes_can_be_configured_after_admin_queues_are_ready` выполняет Identify с нулевыми полями, проверяет ошибки Create при нулевых и неподдерживаемых значениях и создаёт очереди после записи правильных размеров. Тест также проверяет сохранение размера при существующей очереди и возможность записи после удаления последней очереди данного типа.
+
+Полный `cargo test -p od-machine --offline` прошёл. Всего 2 121 тест, включая 76 тестов NVMe. Ещё 15 помечены `ignored`. Проверка `cargo check --workspace --all-targets --offline` прошла. Граф кода обновлён.
+
+Независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез после уточнения доставки прерываний в описании Create I/O CQ. Открытых замечаний к срезу нет.
+
+#### Обязательные страницы Get Log Page
+
+Добавлены Supported Log Pages (`0x00`), Commands Supported and Effects (`0x05`) и Feature Identifiers Supported and Effects (`0x12`). Identify Controller объявляет поддержку байтовых смещений и страницы эффектов команд (`LPA = 0x06`). По запросу драйвера страницы возвращают набор поддерживаемых журналов, Admin/NVM команд и FID. Для NVM `Write` установлен эффект `LBCC`, а область действия Error Recovery указана как namespace. [Контракт Get Log Page](../specs/NVME_DEVICE.md#92-get-log-page).
+
+Тесты через `MachineBus` сравнивают все записи и зарезервированные поля, проверяют `LPA` побайтно, валидируют NSID, байтовое смещение, `OT` и `UIDX`. Запрос длиннее страницы `0x05` использует второй PRP и получает нулевой хвост. Запрос выше `MDTS` отклоняется. То же правило длины применяется к `0x01`–`0x03`. Тесты проверяют нулевой хвост при чтении SMART и отказ при чтении Error Information с `NSID = 1`. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified).
+
+В `cargo test -p od-machine --offline` прошли 2 124 теста, включая 79 тестов NVMe. Ещё 15 помечены `ignored`. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline` и `git diff --check` прошли. Граф кода обновлён. Повторное независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило итоговый код. Открытых замечаний к срезу нет.
+
+#### MSI-X в PCI-профиле
+
+PCI capability объявляет пять MSI-X векторов. PCI BAR, карта шины и `PCI0._CRS` описывают одно окно `[0xFC00_4000, 0xFC00_8000)`. Таблица MSI-X и PBA находятся в отдельных страницах окна. Доставка Fixed edge использует физический xAPIC ID vCPU. Уведомление возникает после записи CQE. Function Mask и Vector Mask удерживают уведомления в PBA. При выключении MSI-X PCI-функция снова использует level INTx. [Контракт прерываний NVMe](../specs/NVME_DEVICE.md#31-прерывания-pci).
+
+`linux_nvme_msix_masks_completions_and_routes_the_io_vector_to_the_ap` проверяет PCI capability, маски и BME, PBA после записи CQ head, повтор после отказа LAPIC, проверку `IV`, FID `0x09`, доставку I/O вектора в IRR второго vCPU без опроса BSP и возврат к INTx. Сборка freestanding ACPI blob профиля `--linux-nvme` дала hash манифеста `94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a`, совпавший с хешем карты host. Проверка живого гостевого драйвера остаётся открыта. [ISSUE-066](../KNOWN_ISSUES.md#issue-066-s7-16-nvme-spec-values-not-verified).
+
+В полном прогоне `od-machine` прошли 2 125 тестов, 15 помечены `ignored`. В `od-firmware` прошли 172 теста. ACPICA выполнил `_CRS` и `_PRT` для нового DSDT и подтвердил диапазон `0xFC00_4000..=0xFC00_7FFF` и GSI 16. Workspace check, форматирование и `git diff --check` прошли. Graphify обновлён. Повторное независимое ревью `gpt-6.1-sol` с уровнем рассуждения `high` одобрило срез. Открытых замечаний к изменению нет.
+
+#### Записи журнала Error Information
+
+Контроллер выставляет `M` в ошибочном CQE при публикации записи журнала.
+Запись получает то же слово статуса, включая фазу. Ошибка doorbell
+вне конкретной команды имеет `SQID = CID = 0xFFFF`. Сброс через `CC.EN`
+очищает записи, сохраняет последний идентификатор и счётчик SMART.
+Тесты через `MachineBus` проверяют эти поля, нулевой журнал после сброса
+и продолжение обеих последовательностей после включения.
+[NVMe Base 2.4, §5.2.13.1.2 и Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=244)
+
+Контроль обычных завершений использовал release `od-runner s5-nvme-stand`
+на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0. Обе версии, включая базу
+`9f8c8f3`, прошли Identify, настройку очередей и цикл Write/Read/Flush
+с совпадающими данными. Каждый запуск открывал новый временный RAW
+на 8 секторов. Учтены 20 пар с чередованием порядка после первой пары.
+Замер включает запуск процесса, сборку платы и файловый ввод-вывод.
+Параллельно шёл Linux-прогон S7-16.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 34,75 | 38,36 | 29,93–39,07 |
+| После изменения | 34,71 | 39,56 | 30,86–53,87 |
+
+Диапазоны перекрываются. Серия измеряет время работы всего стенда.
+
+Полный пакет `od-machine` прошёл 2 126 тестов, 15 помечены `ignored`.
+Форматирование, workspace check и `git diff --check` прошли. Graphify
+обновлён. Независимое ревью `gpt-6.1-sol` / `high` одобрило срез и
+повторило три целевые проверки, включая MSI-X с новым словом статуса.
+
+#### Арбитраж round robin
+
+Сервис посещает Admin SQ и I/O SQ по кругу с равным приоритетом.
+За посещение обрабатывается одна команда, что укладывается в каждое
+значение `Arbitration Burst`. Тест с `AB = 0` одновременно публикует
+по две команды в Admin SQ, I/O SQ1 и I/O SQ2. Порядок DMA-записей
+CQE соответствует двум полным кругам. [NVMe Base 2.4, §3.4.4](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=129)
+
+На Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 измерены release-сборки
+`od-machine` с одной и четырьмя I/O SQ. Через `MachineBus` подавались
+`Flush` к in-memory backend из 64 секторов. За запуск выполнялись 512
+вызовов `NvmeHandle::service` по 512 команд на очередь, глубина очередей
+1 024. Суммировалось только время сервисных вызовов. В каждом пакете
+сверялись число команд, число завершений и статус последнего CQE каждой
+очереди. Учтены 20 запусков каждой реализации с меняющимся порядком
+после первого набора. Параллельно шёл гостевой прогон S7-16.
+
+| Реализация | 1 SQ медиана / p95, нс на CQE | 4 SQ медиана / p95, нс на CQE |
+|---|---:|---:|
+| База `6d5728b` | 43,87 / 45,91 | 43,20 / 45,25 |
+| Обход очередей по кругу | 47,36 / 50,08 | 42,73 / 45,00 |
+| Обход с отдельной веткой для одной активной SQ | 46,25 / 48,02 | 45,70 / 47,18 |
+
+Для одной очереди итоговый обход добавляет около 3,5 нс на завершение по
+медиане в этом стенде. Отдельная ветка вернула около 1,1 нс при одной SQ
+и прибавила около 3,0 нс при четырёх относительно обычного обхода.
+Выбран обычный обход с одинаковыми правилами для всех заданных очередей.
+
+`cargo test -p od-machine --offline` — 2 127 пройденных проверок и 15
+игнорируемых. Форматирование, офлайн-проверка всех целей workspace и
+обновление Graphify прошли. Проверка структуры вернула прежние 46
+диагностик об отсутствующих локальных артефактах `work/`. Независимое
+ревью `gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
+
+#### Структуры Identify для NVM
+
+Добавлены все обязательные варианты Identify для текущего набора команд NVM.
+`0x05` и `0x06` возвращают страницы без необязательных полей, `0x07` возвращает
+список активных NSID для NVM, а `0x08` сообщает готовность NSID 1 при
+подключённом backend. Тесты проверяют байты всех четырёх страниц, неизвестный
+CSI, границы NSID и сохранение DMA-буфера при отказе. [NVMe Base 2.4, §5.2.14](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=362) · [NVM Command Set 1.3, §4.1.5](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=83)
+
+В Identify Controller байт VWC равен `0x04`. `VWCP = 0` сообщает об
+отсутствии энергозависимого кэша записи, `FB = 10b` соответствует
+`Invalid Namespace or Format` при `Flush` для `NSID = 0xFFFF_FFFF`.
+[NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=400)
+
+Независимое ревью `gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
+Целевой прогон Identify дал 10 успешных тестов. Полный `od-machine` дал
+2 129 успешных тестов и 15 игнорируемых. Форматирование и офлайн-проверка
+всех целей workspace прошли. Graphify обновлён. Проверка структуры вернула
+прежние 46 диагностик об отсутствующих локальных артефактах `work/`.
+
+#### Поля Read и Write
+
+`Read` и `Write` принимают FUA, LR и допустимые подсказки DSM. Backend
+постоянного RAW подтверждает долговечность до успешного завершения каждой
+записи. Контроллер читает через тот же backend и выполняет одно обращение к
+нему на команду. При выключенных директивах `Write` игнорирует DTYPE и DSPEC.
+Зарезервированные частоты DSM отклоняются. Регрессии проверяют запись и
+чтение тех же 512 байт с флагами, границы `AF` и отказ на поля, относящиеся
+к другим возможностям. [NVM Command Set 1.3, Figures 54–55, 71–72](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=49) · [NVMe Base 2.4, §8.1.9](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=643)
+
+На Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 сравнили release-сборки на
+`Read` по 512 байт через `MachineBus` и in-memory backend. Каждая серия
+содержала 128 сервисных вызовов по 512 команд на очередь при глубине 1 024.
+Секторы 0–63 обходились по кругу. После каждого пакета проверялись число
+команд и завершений, статус последнего CQE каждой очереди и 512 байт
+возвращённого шаблона. Время сервисных вызовов измерили в 20 сериях на
+сценарий после прогрева, меняя порядок. Параллельно шли гостевой прогон и
+тесты workspace.
+
+| Сценарий | 1 SQ медиана / p95, нс на CQE | 4 SQ медиана / p95, нс на CQE |
+|---|---:|---:|
+| База `7d56bd6`, без флагов | 272,55 / 326,36 | 269,02 / 294,81 |
+| Изменение, без флагов | 275,19 / 321,40 | 274,20 / 299,10 |
+| Изменение, FUA + LR + `DSM=0xF8` | 272,61 / 326,52 | 275,27 / 297,04 |
+
+В этом стенде медиана обычного чтения выросла примерно на 1–2%. Путь с
+флагами не добавляет backend-вызовов. Замер не оценивает задержки RAW на
+физическом носителе.
+
+Полный `od-machine` дал 2 130 успешных тестов и 15 игнорируемых. В
+`persistent_nvme::tests` прошли 17 тестов, включая подтверждение записи и
+ошибки durable ack. Форматирование и офлайн-проверка всех целей workspace
+прошли. Graphify обновлён. Проверка структуры вернула прежние 46 диагностик
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` (`high`) одобрило изменение без замечаний.
+
+#### Поле параметра и LBA в журнале ошибок
+
+Для ошибок параметров журнал Error Information получает байт и бит из
+проверки, которая выбрала статус. Некомандная ошибка doorbell сохраняет
+`Parameter Error Location = 0xFFFF`. При `LBA Out of Range` журнал
+указывает `SLBA`, если начало диапазона уже за пределами пространства имён,
+или `NSZE`, если диапазон пересекает конец. Для общей ошибки backend,
+которая не указывает конкретный блок, поле LBA остаётся нулевым.
+[NVMe Base 2.4, Figure 212](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=245) · [NVM Command Set 1.3, Figure 110](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-Revision-1.3-Ratified-2026.07.31.pdf#page=76)
+
+Тесты читают запись через Get Log Page и проверяют байтовое представление
+`CNS`, `CSI`, `PSDT`, `QSIZE`, `SV`, `PRP1`, `NSID`, `DSM.AF`, отсутствие
+параметра у doorbell и три случая выхода LBA за границы, включая переполнение.
+Независимое ревью `gpt-6.1-sol` (`high`) выявило неверное место параметра
+Async Event Configuration при смеси допустимых и отклонённых битов.
+Добавлена регрессия `0x101`, которая проверяет байт 45 и бит 0. Повторное
+ревью одобрило правку без оставшихся замечаний.
+
+На той же машине и на том же стенде Read с FUA, LR и `DSM=0xF8` выполнили
+20 перемешанных сравнений с `dfb5068` после прогрева. Параллельно работали
+тесты и гостевой прогон. Медианы отличаются примерно на 1%, а изменения
+p95 разнонаправлены.
+
+| Состояние | 1 SQ медиана / p95, нс на CQE | 4 SQ медиана / p95, нс на CQE |
+|---|---:|---:|
+| `dfb5068` | 275,10 / 325,67 | 271,48 / 349,43 |
+| С полями PEL и LBA | 277,98 / 334,79 | 273,55 / 332,20 |
+
+Полный `od-machine` дал 2 132 успешных теста и 15 игнорируемых.
+Форматирование, офлайн-проверка всех целей workspace и Graphify прошли.
+Проверка структуры вернула прежние 46 диагностик об отсутствующих локальных
+артефактах `work/`.
+
+#### Пороги температуры и SMART AER
+
+SMART показывает `TTC` при равенстве или выходе за один из порогов
+composite temperature. Модель сообщает 300 K. Set Features допускает
+`TMPSEL = 0xF` для единственного датчика. Get Features проверяет конкретный
+датчик. При `TMPTHMH = 0` ненулевой гистерезис отклоняется.
+[NVMe Base 2.4, §5.2.30.1.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=488)
+
+При включённом `AEC.SHCW` переход к действующему предупреждению создаёт
+SMART AER типа 1, `info = 1`, `LID = 0x02`. Успешный Get Log Page с
+`RAE = 0` очищает только событие соответствующего журнала, включая событие,
+для которого AER ещё не поступил. Тесты проверяют оба порога, режим без
+уведомления, повторное событие, независимость Error и SMART и поведение RAE.
+[NVMe Base 2.4, §5.2.2 и Figure 154](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=209)
+
+Полный `od-machine` дал 2 134 успешных теста и 15 игнорируемых.
+Форматирование, офлайн-проверка всех целей workspace и Graphify прошли.
+Проверка структуры сохранила прежние 46 диагностик о локальных артефактах
+`work/`. Независимое ревью `gpt-6.1-sol` (`high`) одобрило код, повторило
+98 проверок NVMe и уточнило номера страниц PDF.
+
+#### Идентификаторы PCI в Identify Controller
+
+В PCI-профиле Identify Controller использует VID и SSVID из того же
+Configuration Header, который читает гость. Текущий диагностический VID
+равен `0xD1A6`, SSVID равен 0. Без PCI оба поля равны 0. Тест платы
+сравнивает значения, прочитанные через ECAM, с первыми четырьмя байтами
+результата Identify Controller в гостевой RAM. Запрос подаётся через
+очередь и doorbell в BAR.
+[NVMe Base 2.4, Figure 338](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.4-Ratified-2026.07.31.pdf#page=366)
+
+Полный `od-machine` дал 2 134 успешных теста и 15 игнорируемых.
+Форматирование, офлайн-проверка всех целей workspace и Graphify прошли.
+Проверка структуры сохранила прежние 46 диагностик о локальных артефактах
+`work/`. Независимое ревью `gpt-6.1-sol` (`high`) одобрило изменение.
+
+#### Чтение RAW и MSI-X в Linux
+
+Испытание загрузило Ubuntu `7.0.0-38-generic` через
+`load_linux_direct_board_with_nvme` и `run_linux_direct_board_set_user_mode`.
+Плата получила 128 MiB RAM, CPUID `X8664V1Stage4AApic`, ACPI для PCI NVMe
+и единственный RAW-образ на 4 194 304 сектора, открытый на чтение.
+Использованы существующие входы S5 и собственный диагностический initramfs.
+
+| Вход | SHA-256 |
+|---|---|
+| `vmlinuz-7.0.0-38-generic` | `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e` |
+| Диагностический initramfs | `fc08946150d3e1f874bf074b42caa124a04a9f16f74600bc07585b67bf8ee6a5` |
+| RAW | `c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895` |
+| ACPI blob | `c8a7b01fc1cc95e79bc0cab74a22d059bbac76634bf783760efbd4b3a303d389` |
+| ACPI manifest | `94ddada367e48ff19c2b79879797829214b533fa97e4ba20a8128c222e6c615a` |
+
+Параметры диагностики ядра включали `rdinit=/s7-probe`, `nokaslr`,
+`8250.nr_uarts=1`, `highres=off` и `nohz=off`. Программа `s7-probe` открывает
+пять модулей из исходного initramfs и вызывает `finit_module` в порядке
+`hkdf`, `nvme-auth`, `nvme-keyring`, `nvme-core`, `nvme`. Она монтирует devtmpfs
+и procfs, открывает `/dev/nvme0n1`, читает первые 4 096 байт, сравнивает их
+с байтами исходного RAW и выдаёт в COM1 счётчики из `/proc/interrupts`.
+
+В первом полном прогоне на реализации round robin `ffea446` драйвер
+определил `0000:00:04.0` и создал `1/0/0 default/read/poll queues`.
+Контроллер сообщил `CSTS.RDY = 1`, MSI-X capability изменился с
+`0x00040011` на `0x80040011`. Байты совпали. Linux сообщил 8 прерываний
+`nvme0q0` и 3 прерывания `nvme0q1`, обе строки `PCI-MSIX-0000:00:04.0`.
+Следующий прогон повторил сценарий на коде `74581ed`.
+
+Финальный повтор на `74581ed` подтвердил те же критерии к моменту
+выборки после 2 799 896 572 выполненных инструкций. Получены
+`CSTS.RDY = 1`, MSI-X `0x80040011` и `OD_S7_PROBE disk bytes matched 4096`.
+Счётчики CPU0 составили 7 для `nvme0q0` (IRQ 24)
+и 3 для `nvme0q1` (IRQ 25), обе очереди `PCI-MSIX`.
+Гость напечатал `OD_S7_PROBE end irq audit`. SHA-256 release-обёртки
+`90fdc5e390e3152e2b97ceb6132281755d78b043177d68e42809eba6cd5cdc9e`.
+
+Запись и `Flush` проверены в `od-machine`, а успешная запись и ошибки
+durable ack отдельно проверены в `od-host::persistent_nvme`. Чтение из
+гостя выполнено через PCIe в Linux direct boot. Приёмки UEFI Block I/O,
+загрузки Windows и сквозной устойчивости постоянного носителя идут по
+S7-17, S7-32 и S9-13 соответственно.
+
+#### Границы приёмки S7-16
+
+Независимое архитектурное ревью `gpt-6.1-sol` (`high`) одобрило минимальный
+профиль после успешного гостевого повтора. Кодовая версия приёмки —
+`74581ed`. В ней прошли 2 134 теста `od-machine`, 15 игнорируемых. Устройство
+и DMA принадлежат `od-machine`, файловый backend подключает `od-host` через
+`NvmeBackend`. Фиксированный firmware MMIO работает с опросом. PCI-профиль
+поддерживает INTx и пять MSI-X векторов Fixed edge с физическим xAPIC ID.
+Стенд использует диагностический VID `0xD1A6`, постоянную температуру и
+ограниченные временные поля SMART. FLR остаётся отдельным разрывом полного
+PCIe Transport 1.4. [ISSUE-591](../KNOWN_ISSUES.md#issue-591).
+
+#### История исходного среза A
+
+Ниже сохранены результаты исходной реализации среза A в ноябре 2026 года. Актуальная сверка CC/CAP приведена выше.
 
 Создано: `docs/specs/NVME_DEVICE.md`; `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend,tests}.rs`. Изменено: `firmware_board.rs` (`FirmwareBoardConfig::nvme`, запись device code 8, `LoadedFirmwareBoard::nvme()`, `run_boot` обслуживает контроллер), `lib.rs` (экспорты), `FIRMWARE_BOOT.md` (§2, §6.3), `MACHINE_CONTRACT.md` (раздел «NVMe controller»), `VIRTUAL_BOARD.md` (строка «Boot storage»), `STAGE_7.md` (статус S7-16).
 
@@ -346,7 +806,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 - **Нет I/O `Read`/`Write`/`Flush` — разрыв с обязательными командами NVM command set (срез B).** Сейчас I/O-команда завершается `Invalid Command Opcode`; контроллер диск не читает. `NvmeBackend` — только интерфейс без реализации. Доказательство для S7-17 и этапа 5 срезом A не получено.
 - **Значения сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с текстом NVMe Base 2.4.** Текст NVMe Base 2.4 (и Command Set 1.3, PCIe Transport 1.4) получить не удалось: страница спецификаций не содержит прямых ссылок, PDF 2.4 по предполагаемому адресу — 404, PDF 2.3 из архива `WebFetch` не принял (больше 10 MiB), индексатор вернул сырые потоки PDF без текста. Сверено с заголовком Linux: регистры и doorbells, биты CC/CSTS/CAP (MQES, TO, CSS, MPSMIN), admin-opcode и I/O Flush/Write/Read, CNS 0–3, FID, LID 0x01–0x03, статусы, смещения Identify и log pages. NOT VERIFIED: `CAP.CQR`, AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00`/`0x05`, `VS` 2.0 против 2.4 (NVME_DEVICE.md §1 и §11, шапки файлов). Заявлена версия `VS = 2.0.0`, а не 2.4.0.
-- **Открытый вопрос (вероятное отклонение).** `CSTS.CFS` выставляется при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4` (`controller.rs`, `enable`); по спецификации (неподтверждённо) эти поля проверяются при создании I/O-очереди, а не при включении. Поведение и тесты не менялись; помечено в коде и NVME_DEVICE.md §11.
+- Исходный срез выставлял `CSTS.CFS` при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4`. Отклонение подтверждено сверкой Base 2.4 и исправлено. [Настройка размеров записей I/O-очередей](#настройка-размеров-записей-io-очередей).
 - **Разрыв в тестах.** Путь «гость пишет doorbell → квант останавливается по `doorbell_pending` → `service` между квантами» тестом не покрыт: интерпретатор поддерживает 64-битный `mov [rbx], rcx`, а doorbell — 32-битный (`Dword`), поэтому запись doorbell гостем end-to-end не тестируется. На host-стороне `service` покрыт (`run_boot_executes_commands_submitted_before_the_guest_starts`). Код не менялся (NVME_DEVICE.md §3, §12).
 - `VID`, `SSVID`, `IEEE` = 0 (PCI vendor ID и OUI проекту не выданы); `Power On Hours` и `Controller Busy Time` = 0 (у устройства нет времени); Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы — их обязательность не сверена. Это открытые вопросы среза A (первый кандидат в дефекты, вместе с `VS = 2.0.0`; NVME_DEVICE.md §11).
 - Прерывания не доставляются (`gsi = 0xFFFF_FFFF`, `INTMS/INTMC`, `IEN`, coalescing хранятся без эффекта); контроллер виден только прошивке (PCI-привязка blocked до S4-30), ОС его не найдут — S7-31, S7-32 остаются blocked.
@@ -385,7 +845,6 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 - Задачи S7-15, S7-16, S7-31, S7-32, S7-34 зависят от других этапов и задач (S10-03, S4-30, этапы 5 и 6, xHCI-модель платы); см. зависимости в плане, §6.
 - Внешние блокеры по колонке «Зависимости» плана, §6: S7-26 — blocked до S4-21 (lifecycle vCPU); S7-16 — PCI-привязка blocked до S4-30; S7-31 — blocked до этапа 5 и до PCI-привязки S7-16 (S4-30); S7-32 — blocked до PCI-привязки S7-16 (S4-30), S4-10 (2 MiB страницы) и этапа 6 (2 vCPU), плюс зависит от S7-35, а S7-34 — по итогам S7-30.
 - Решения D8–D9 записаны в ADR-0009 (S7-20 принят после архитектурного ревью 2026-11-18); D3–D7 ещё не воплощены в ADR — это делает S7-24.
-- S7-01 п.1 нужно уточнить: target `x86_64-unknown-uefi` допустим для RT-образа (EFI-драйвера), запрет касается основного образа ROM — решение S7-02, подтвердить при ревью S7-01.
 
 ## 5. Решение S7-03 (blocker)
 
@@ -2891,11 +3350,2784 @@ The base `PagedCpl0ProbeV1` admits only exact short JZ displacement `+0x15`
 outcomes, flags and definedness, taken-target canonicality, atomic displacement
 fetch fault, neighboring encodings, CPL3 and other-profile isolation.
 Independent review approved the implementation with no findings; commit
-`161de07` contains the implementation and focused tests. The S7-04 firmware
-image recorded for prior steps was unavailable at
-`/private/tmp/od-fw-s7-04-issue256.bin`, so a confirming runner continuation
-could not be collected in this environment; see
-[ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15).
+`161de07` contains the implementation and focused tests. On 2026-11-18
+the original ROM became available at `/private/tmp/od-fw-s7-04-issue256.bin`.
+Its SHA-256 matched the recorded `9517c060…febe`. With a 20,000-instruction
+budget, the runner passed the JZ at `0x201939` and stopped after 10,351
+instructions at `0x20193b` on the five-byte NOP `0F 1F 44 00 00`.
+COM1 was empty. [ISSUE-496](../KNOWN_ISSUES.md#issue-496-s7-04-exact-jz-rel8-0x15-frontier-74-15) is closed.
+
+### S7-04 — RIP-relative LEA для границ BSS
+
+Свежая сборка ROM освободилась от зависимости двух инструкций `_start` от
+раскладки линковки. Базовый `PagedCpl0ProbeV1` допускает знаковое `disp32`
+для `48 8D 3D disp32` и `48 8D 0D disp32`. Обе формы используют прежнее
+вычисление адреса через следующий RIP. Обновляются регистр назначения и
+RIP. Значения флагов и их определённость сохраняются. Прочие формы и
+профили сохраняют прежние ограничения.
+
+Для воспроизведения текущего прогона используйте команды из корня рабочей копии.
+
+```sh
+python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
+cargo run --offline -p od-runner -- boot-firmware --image work/stage7/firmware.bin --com1-out work/stage7/firmware_com1.txt --budget 20000
+```
+
+| Образ | До изменения | После изменения |
+|---|---|---|
+| Свежий `ea4cf5eb…16f4` | 5 инструкций, `0x200050`, `48 8D 3D 69 2C 00 00` | 18 инструкций, `0x20020c`, `B9 04 00 00 00` (`MOV ECX,4`) |
+| Исторический `9517c060…febe` | 10 351 инструкция, `0x20193b`, `0F 1F 44 00 00` (NOP) | 10 351 инструкция, тот же RIP и NOP |
+
+В обоих прогонах после изменения итог `Unsupported`, COM1 пуст.
+S7-04 остаётся в работе. Дальнейшие остановки описаны в
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583).
+
+Парный замер выполнен на Apple M3 Max (14 ядер), macOS 26.7.1,
+Rust 1.99.0. Обе версии runner собраны по очереди в одном checkout командой
+`cargo build --release --offline -p od-runner`. Вторая отличается от
+`1fc0a61` изменением допуска LEA. Для каждой версии использован исторический
+образ из ISSUE-496 и `--budget 10351`. Все прогоны исчерпали бюджет на
+`0x20193b` с пустым COM1. Засекалось полное время процесса. Первую пару
+отбросили, в следующих 20 парах порядок версий чередовался.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 41,24 | 41,96 | 40,21–42,43 |
+| После изменения | 41,02 | 42,29 | 40,11–43,36 |
+
+Разница медиан укладывается в наблюдаемый разброс. Вариант принят ради
+корректной работы с линковочными смещениями.
+
+- `cargo test --offline -p od-isa` — 6 003 теста, включая 1 578 тестов
+  paged probe. Покрыты обе раскладки, границы `i32`, нецелевые формы,
+  ошибка выборки последнего байта и изоляция профилей.
+- `cargo test --offline -p od-machine --lib firmware_board::tests` —
+  102 теста. `cargo test --offline -p od-runner --test firmware_boot_cli` —
+  5 тестов. `cargo check --workspace --all-targets --offline` и
+  `cargo fmt --all -- --check` прошли.
+- Независимое архитектурное ревью и ревью изменений
+  `gpt-6.1-sol` / `high` одобрили ограниченный допуск и результаты
+  проверок. Замечаний нет. `graphify update .` завершился успешно.
+
+### S7-04 — Операнды входа прошивки
+
+`LoadedFirmwareBoard::run_boot` выбирает `PagedCpl0FirmwareBootV1` для
+платы без Linux-профиля. Выбор происходит до выборки инструкции.
+Новый режим добавляет `B9 imm32` и `E8 rel32` для передачи версии
+handoff block и вызова парсера. Чтение инструкции, 4 KiB paging и фиксация
+состояния идут через действующий paged probe. Диагностический запуск платы
+сохраняет прежний список допуска, Linux-профиль сохраняет маршрут RDTSC.
+
+Повторный `boot-firmware` с бюджетом 20 000 и теми же образами показал
+следующие остановки. COM1 пуст в обоих случаях.
+
+| ROM | Выполнено инструкций | RIP | Инструкция |
+|---|---:|---|---|
+| Свежий `ea4cf5eb…16f4` | 45 | `0x200d5b` | `66 83 FB 05` (`CMP BX,5`) в парсере handoff |
+| Исторический `9517c060…febe` | 10 351 | `0x20193b` | `0F 1F 44 00 00` (NOP) |
+
+Свежая сборка прошла `MOV ECX,4` и оба ближайших вызова Rust. Статус
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583) остаётся открытым, пока основной
+образ останавливается в парсере. Критерии S7-04 ещё не выполнены.
+
+В ходе ревью восстановлен прежний допуск `MOV EDX,0x10000` и сохранён
+источник времени для Linux-профиля. Обе регрессии воспроизведены тестами;
+эти две правки выполнены локально с разрешения пользователя после
+отклонения нового запуска `gpt-6-luna` автоматической проверкой.
+
+- `cargo test --offline -p od-isa` — 6 008 тестов, включая 1 583 теста
+  paged probe. В новых тестах проверены обе формы, ошибки выборки и
+  записи в стек, неканоническая цель и изоляция прежнего режима.
+- `cargo test --offline -p od-machine --lib firmware_board::tests` —
+  103 теста. `cargo test --offline -p od-runner --test firmware_boot_cli` —
+  5 тестов. `cargo check --workspace --all-targets --offline` и
+  `cargo fmt --all -- --check` прошли. `graphify update .` завершился успешно.
+
+Повторный парный release-замер использовал те же хост, исторический образ,
+бюджет, контроль результата и порядок прогонов, что и замер LEA выше.
+База — `82756bc`. Для каждого исполняемого файла учтено 20 измерений после
+первого прогона. Обе версии исчерпали бюджет на `0x20193b` с пустым COM1.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 40,17 | 42,99 | 39,10–44,67 |
+| После изменения | 40,77 | 44,68 | 38,90–45,88 |
+
+Наблюдаемые диапазоны перекрываются. Новые формы допущены ради
+воспроизводимости запуска, для оценки малых различий времени этих
+замеров недостаточно.
+
+Независимое ревью `gpt-6.1-sol` / `high` после обеих правок одобрило код, тесты и отчёт. Замечаний нет.
+
+### S7-04 — Сравнение версии и CRC в парсере handoff
+
+Режим загрузки прошивки принимает знаковый `imm8` в `CMP BX`, знаковые
+смещения таблицы CRC у двух существующих индексированных XOR и прямые
+Jcc без префиксов. Вычисления выполняют действующие декодер, арифметика
+и paged memory. Прежний список допусков диагностических и Linux-профилей
+сохранён. [Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-сравнение-версии-и-разбор-handoff)
+
+При бюджете 20 000 свежий ROM `ea4cf5eb…16f4` показал следующие
+остановки. Команды сборки и запуска те же, что в проверке RIP-relative LEA.
+
+| Изменение | Выполнено инструкций | Следующая инструкция |
+|---|---:|---|
+| База `0f212bb` | 45 | `CMP BX,5` по `0x200d5b` |
+| CMP со знаковым `imm8` | 82 | XOR с таблицей CRC по `0x200e2b` |
+| Смещение таблицы CRC | 8 885 | `JB rel8` по `0x200ee7` |
+| Прямые Jcc | 8 894 | `89 C9` (`MOV ECX,ECX`) по `0x200f04` |
+
+Исторический ROM `9517c060…febe` повторил контрольный результат.
+Он остановился после 10 351 инструкции на `0F 1F 44 00 00` по
+`0x20193b`. COM1 пуст в обоих прогонах. Оставшийся фронтир записан в
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583).
+
+- `cargo test --offline -p od-isa` — 6 014 тестов, включая 1 589
+  paged probe. Проверены знаковые границы CMP и XOR, обе формы чтения
+  CRC, все 16 условий Jcc, каноничность взятой цели и изоляция профилей.
+  Ошибки при выборке и чтении данных оставляют архитектурное состояние
+  инструкции без изменений.
+- `cargo test --offline -p od-machine --lib firmware_board::tests` — 103
+  теста, `cargo test --offline -p od-runner --test firmware_boot_cli` — 5 тестов.
+  `cargo check --workspace --all-targets --offline` и
+  `cargo fmt --all -- --check` прошли.
+- Повторная сборка ROM дала прежний SHA-256. `graphify update .` обновил граф кода.
+
+В парном release-замере сравнивались `0f212bb` и текущий код.
+Использованы прежние Apple M3 Max, macOS 26.7.1, Rust 1.99.0, исторический
+ROM и бюджет 10 351. Обе сборки выполнены с `cargo build --release --offline
+-p od-runner` в одном checkout. Обе версии исчерпали бюджет на
+`0x20193b` с пустым COM1. Первая пара отброшена, порядок чередовался
+в 20 следующих парах.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 42,65 | 44,48 | 40,96–47,61 |
+| После изменения | 42,40 | 43,74 | 40,84–44,00 |
+
+Диапазоны перекрываются. Допуск изменён для работы с операндами
+текущего ROM. Этой серии недостаточно для оценки малых изменений времени.
+
+Независимое ревью `gpt-6.1-sol` / `high` одобрило код и отчёт без оставшихся замечаний.
+
+### S7-04 — Переход через таблицу handoff
+
+Режим загрузки прошивки допускает `MOV ECX,ECX` для обнуления старшей
+половины индекса и `JMP qword ptr [RCX * 8 + disp32]` для выбора
+обработчика. Косвенный переход использует обычное paged-чтение qword
+и проверяет каноничность цели до записи RIP. Целевые тесты проверили
+положительное и отрицательное `disp32`, сохранение регистров и флагов,
+ошибки выборки и чтения, неканонические адреса и изоляцию диагностики.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-переход-через-таблицу-handoff)
+
+Команды запуска те же, что в проверке RIP-relative LEA. При бюджете
+20 000 свежий ROM `ea4cf5eb…16f4` прошёл обе инструкции и остановился
+после 9 858 инструкций на `48 89 C8` (`MOV RAX,RCX`) по `0x20124e`.
+На базе `e6e47e1` он останавливался после 8 894 инструкций по `0x200f04`.
+Исторический ROM `9517c060…febe` повторил остановку на NOP по `0x20193b`
+после 10 351 инструкции. COM1 пуст. [ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном release-замере обе версии запускались на Apple M3 Max с macOS
+26.7.1 и Rust 1.99.0, на свежем ROM и с бюджетом 8 894. В каждом запуске
+подтверждены исчерпание бюджета, RIP `0x200f04` и пустой COM1. Прогоны
+чередовались, первая пара отброшена, учтены следующие 20 пар.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 41,00 | 42,04 | 39,88–42,24 |
+| После изменения | 40,59 | 41,83 | 39,97–42,01 |
+
+Диапазоны перекрываются. Linux-прогон S7-16 шёл в фоне на протяжении
+серии. Замер контролирует стоимость прежнего пути при одинаковой работе.
+
+Прошли 6 017 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез без замечаний.
+
+### S7-04 — Выравнивание и запись в стек
+
+В тестах для firmware-профиля `0F 1F /0` без префиксов прошёл с
+неканоническим адресом игнорируемого операнда и без чтения данных.
+`48 89 C8` скопировал все биты RCX. Запись `C7 44 24 0F 00 00 00 00`
+изменила четыре байта стека. При #SS и #PF регистры, RIP, флаги и данные
+сохранились. Проверены соседние формы и диагностика.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-выравнивание-и-запись-в-стек)
+
+Команды запуска совпадают с проверкой RIP-relative LEA, бюджет 20 000.
+База CPU — `84721f3`. COM1 пуст во всех прогонах.
+
+| Образ | До изменения | После изменения |
+|---|---|---|
+| Свежий `ea4cf5eb…16f4` | 9 858, RIP `0x20124e` | 9 864, `48 89 3C 24` (`MOV qword ptr [RSP],RDI`) по `0x201270` |
+| Исторический `9517c060…febe` | 10 351, RIP `0x20193b` | 10 352, `80 7C 06 60 00` (`CMP byte ptr [RSI+RAX+0x60],0`) по `0x201940` |
+
+Оставшиеся остановки зарегистрированы в [ISSUE-583](../KNOWN_ISSUES.md#issue-583).
+В парном замере на Apple M3 Max, macOS 26.7.1, Rust 1.99.0 обе release-сборки
+исчерпали бюджет 9 858 на свежем ROM и остановились по `0x20124e`. Учтены
+20 пар с чередованием порядка после первой пары. Параллельно выполнялся
+Linux-прогон S7-16. Наблюдаемые диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 43,17 | 50,31 | 41,09–50,37 |
+| После изменения | 43,54 | 51,28 | 41,00–54,78 |
+
+Прошли 6 019 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез без замечаний.
+
+### S7-04 — Qword MOV и LEA
+
+Firmware-профиль использует общий `transfer` для qword MOV из регистра
+в память и LEA с 64-битной адресацией. Тесты проверили запись в `[RSP]`,
+расширенные регистры REX и знаковый `disp32` в SIB-адресе, ошибки #SS,
+#GP, #PF и отказ backend, а также LEA с неканоническим результатом.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-qword-mov-и-lea-с-адресом-из-декодера)
+
+Команды запуска совпадают с проверкой RIP-relative LEA. При бюджете
+20 000 свежий ROM `ea4cf5eb…16f4` исполняет `MOV qword ptr [RSP],RDI`
+и `LEA R11,[RAX+RSI]`. Он останавливается после 9 866 инструкций на
+`49 83 C3 28` (`ADD R11,0x28`) по `0x201278`. База `c54beb3` остановилась
+после 9 864 инструкций по `0x201270`. Исторический ROM повторил стоп
+по `0x201940` после 10 352 инструкций. COM1 пуст во всех прогонах.
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном замере Apple M3 Max, macOS 26.7.1, Rust 1.99.0 обе release-сборки
+на свежем ROM исчерпали бюджет 9 864 по `0x201270`. Учтены 20 пар после
+первой с чередованием порядка. Linux-прогон S7-16 шёл параллельно.
+Диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 45,06 | 47,41 | 43,40–47,87 |
+| После изменения | 44,75 | 48,17 | 43,00–48,86 |
+
+Прошли 6 022 теста `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез и повторило три
+целевых теста qword transfer.
+
+### S7-04 — Регистровые ADD, SUB, CMP и XOR
+
+Firmware-профиль выполняет регистровые dword/qword `ADD`, `SUB`, `CMP` и
+`XOR` через существующие арифметические помощники. Проверены знаковый
+immediate, перенос, переполнение, обнуление верхних 32 бит после записи,
+сохранение назначения CMP и переход AF в неопределённое состояние для XOR.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-регистровые-add-sub-cmp-и-xor)
+
+В `boot-firmware` с бюджетом 20 000 свежий ROM `ea4cf5eb…16f4` прошёл
+`ADD R11,0x28` и `XOR EBX,EBX`. Он остановился после 9 870 инструкций
+по `0x201286` на `41 BC 02 06 00 00` (`MOV R12D,0x602`). База `a0ed745`
+остановилась после 9 866 инструкций по `0x201278`. Исторический ROM
+повторил 10 352 инструкции до `0x201940`. COM1 пуст в обоих образах.
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном release-замере на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0
+использованы свежий ROM и бюджет 9 866. Обе версии исчерпали бюджет на
+`0x201278`. После первой пары учтены 20 пар с чередованием порядка.
+Linux-прогон S7-16 шёл параллельно. Диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 41,42 | 42,45 | 38,77–42,67 |
+| После изменения | 41,07 | 41,83 | 38,77–41,86 |
+
+Прошли 6 024 теста `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило код и сверило отчёт.
+
+### S7-04 — MOV imm32 во все dword-регистры
+
+Firmware-профиль допускает обычные кодировки `B8+r imm32` и REX.B
+для R8D–R15D. Проверены 16 регистров, полное состояние до и после MOV,
+отказ выборки последнего байта и изоляция диагностических профилей.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-mov-imm32-во-все-dword-регистры)
+
+При бюджете 20 000 свежий ROM `ea4cf5eb…16f4` прошёл `MOV R12D,0x602`
+по `0x201286` и остановился после 9 892 инструкций по `0x2012e4` на
+`41 8B 6C 1B D8` (`MOV EBP,dword ptr [R11+RBX-0x28]`). База CPU
+`b1adbab` остановилась после 9 870 инструкций по `0x201286`. Исторический
+образ повторил 10 352 инструкции до `0x201940`. COM1 пуст в обоих образах.
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном release-замере на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 обе
+версии исчерпали бюджет 9 870 на свежем ROM по `0x201286`. Учтены 20 пар
+с чередованием после первой пары. Linux-прогон S7-16 шёл параллельно.
+Диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 48,07 | 59,99 | 43,92–60,40 |
+| После изменения | 46,62 | 59,91 | 44,21–62,19 |
+
+Прошли 6 025 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез и повторило оба
+целевых теста MOV.
+
+### S7-04 — Загрузка полей handoff и dword LEA
+
+Firmware-профиль исполняет `8B /r` через общий `transfer` для dword и
+qword. Тесты проверяют число прочитанных байтов, SIB с отрицательным
+смещением, zero-extension dword и сохранение состояния при #PF.
+Dword LEA сокращает смещение без чтения данных.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-загрузка-полей-handoff-и-dword-lea)
+
+При бюджете 20 000 базовый `abcabdb` остановился после 9 892 инструкций
+на `0x2012e4`. Свежий ROM `ea4cf5eb…16f4` с изменением остановился
+после 9 903 инструкций по `0x201337` на `80 7C 2C 08 01`
+(`CMP byte ptr [RSP+RBP+8],1`). Исторический образ повторил 10 352
+инструкции до `0x201940`. COM1 пуст в обоих образах.
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном release-замере на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 обе
+версии исчерпали бюджет 9 892 на свежем ROM по `0x2012e4`. Учтены 20 пар
+с чередованием после первой пары. Linux-прогон S7-16 шёл параллельно.
+Диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 43,25 | 43,97 | 41,61–44,85 |
+| После изменения | 43,23 | 43,77 | 42,43–43,96 |
+
+Прошли 6 026 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило код и сверило отчёт.
+
+### S7-04 — Байтовые операции в парсере handoff
+
+Firmware-профиль исполняет обычные байтовые `CMP r/m8,imm8` и
+`MOV r/m8,imm8` с операндом в памяти. Для двух фактических SIB-форм
+проверены ширина чтения, флаги сравнения и ошибка #PF. Тест записи
+проверяет соседние байты, флаги и сохранение состояния при отказе.
+[Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-04-байтовые-cmp-и-mov-с-immediate)
+
+При бюджете 20 000 оба образа прошли байтовое сравнение. COM1 пуст.
+
+| Образ | До изменения `3cee911` | После изменения |
+|---|---|---|
+| Свежий `ea4cf5eb…16f4` | 9 903, RIP `0x201337` | 9 910, `41 F6 C2 02` (`TEST R10B,2`) по `0x20135a` |
+| Исторический `9517c060…febe` | 10 352, RIP `0x201940` | 10 354, `48 FF C0` (`INC RAX`) по `0x201947` |
+
+[ISSUE-583](../KNOWN_ISSUES.md#issue-583)
+
+В парном release-замере на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 обе
+версии исчерпали бюджет 9 903 на свежем ROM по `0x201337`. Учтены 20 пар
+с чередованием после первой пары. Linux-прогон S7-16 шёл параллельно.
+Диапазоны перекрываются.
+
+| Версия | Медиана, мс | p95, мс | Мин.–макс., мс |
+|---|---:|---:|---:|
+| До изменения | 42,08 | 43,26 | 41,32–43,55 |
+| После изменения | 41,98 | 42,78 | 40,74–43,58 |
+
+Прошли 6 028 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и workspace check. Graphify обновлён.
+Независимое ревью `gpt-6.1-sol` / `high` одобрило срез и повторило оба
+целевых теста с ошибками #PF.
+
+## S7-04 — байтовый TEST и qword INC
+
+Профиль `PagedCpl0FirmwareBootV1` исполняет регистровые `F6 /0 ib` и
+`REX.W FF /0`. `TEST` читает декодированный byte-регистр, обновляет
+флаги и оставляет AF неопределённым. `INC` записывает qword и сохраняет
+значение и определённость CF. Используются общие функции ALU.
+Проверки покрывают R10B, различие AH/SPL без REX и с REX, переход через
+границу `2^64`, знаковое переполнение и ограничения профиля.
+
+При release-бюджете 20 000 оба ROM продвинулись до следующей неподдержанной
+инструкции. В обоих случаях COM1 пуст.
+
+| ROM | До изменения | После изменения |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 9 910, `TEST R10B,2` | 9 914, `41 0F A3 EC` (`BT R12D,EBP`) по `0x201369` |
+| Исторический `9517c060…febe` | 10 354, `INC RAX` | 10 673, `85 C0` (`TEST EAX,EAX`) по `0x201953` |
+
+Парный замер выполнен на Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 на
+одной базе `4a3e5b5`. Сравнивались release `od-runner boot-firmware`
+на свежем ROM при бюджете 9 910, одинаковых RIP `0x20135a` и пустом COM1.
+В 20 чередующихся парах после прогрева медиана и p95 составили
+42,33 и 43,84 мс до изменения и 42,14 и 43,13 мс после. Разница мала
+относительно наблюдавшегося разброса.
+
+Прошли 6 030 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Изменение прошло независимое ревью
+`gpt-6.1-sol` (`high`).
+
+## S7-04 — регистровые BT и широкий TEST
+
+`PagedCpl0FirmwareBootV1` исполняет регистровые `0F A3 /r` и `85 /r`
+шириной dword и qword. `BT` берёт индекс по модулю ширины регистра и
+помещает выбранный бит в CF. `ZF` сохраняется, определённость OF, SF, AF
+и PF снимается по общей таблице эффектов. `TEST` обновляет логические флаги
+по обоим регистрам, используя декодированную ширину. Тесты проверяют
+отсутствие записи в GPR, индекс выше ширины, отрицательный индекс,
+отказ для соседних форм и отказ в базовом профиле.
+
+При бюджете 20 000 release-образа получили следующие точки остановки. COM1
+в обоих прогонах пуст.
+
+| ROM | До изменения | После изменения |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 9 914, `BT R12D,EBP` | 9 932, `0F 93 C1` (`SETAE CL`) по `0x2013e4` |
+| Исторический `9517c060…febe` | 10 673, `TEST EAX,EAX` | 10 713, `48 C7 40 28 20 00 00 00` (`MOV qword ptr [RAX+0x28],0x20`) по `0x201074` |
+
+На Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 сравнили release `od-runner`
+с предыдущим срезом при бюджете 9 914. Обе сборки заканчивают в `0x201369`
+с пустым COM1. В 20 чередующихся парах после прогрева медиана и p95 составили
+43,25 и 45,45 мс до изменения и 43,02 и 45,34 мс после. Диапазоны результатов
+перекрываются.
+
+Прошли 6 032 теста `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило точки остановки и замеры.
+
+## S7-04 — регистровые SETcc и qword запись immediate
+
+В `PagedCpl0FirmwareBootV1` регистровые `SETcc` вычисляют условие общей
+функцией и записывают только выбранный byte alias. `REX.W C7 /0 id`
+записывает в память знаково расширенный immediate через тот же tracked
+путь, что и байтовый `MOV`. Тесты проверяют обе ветви `SETAE`, AH/SPL,
+соседние байты памяти и откат `RIP` и данных при `#PF`. Отдельные тесты
+ограничивают новые формы профилем прошивки.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 9 932, `SETAE CL` | 9 933, `44 08 D1` (`OR CL,R10B`) по `0x2013e7` |
+| Исторический `9517c060…febe` | 10 713, qword MOV immediate | 10 717, `89 70 48` (`MOV dword ptr [RAX+0x48],ESI`) по `0x20108c` |
+
+COM1 пуст. На том же release-стенде при бюджете 9 932 и одинаковой точке
+`0x2013e4` выполнены 20 чередующихся пар после прогрева. Медиана и p95
+составили 40,98 и 43,77 мс до изменения и 41,44 и 44,43 мс после. Изменение
+медианы около 1%, диапазоны измерений перекрываются.
+
+Прошли 6 034 теста `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — байтовый OR и dword-запись из регистра
+
+Профиль прошивки выполняет регистровые `OR r8,r8` (`08 /r`, `0A /r`)
+через общую ALU и `89 /r` dword store через существующий tracked transfer.
+Проверены байтовые псевдонимы R10B, CL, AH и AL, определённость флагов,
+границы записи четырёх и восьми байт, откат при `#PF` и ограничения
+базового профиля.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 9 933, `OR CL,R10B` | 9 993, `48 BE 00 00 00 00 10 00 00 00` (`MOV RSI,0x1000000000`) по `0x20147a` |
+| Исторический `9517c060…febe` | 10 717, `MOV [RAX+0x48],ESI` | 10 718, `66 89 58 4C` (`MOV [RAX+0x4c],BX`) по `0x20108f` |
+
+COM1 пуст. На том же release-стенде при бюджете 9 933 и точке `0x2013e7`
+выполнены 20 чередующихся пар после прогрева. Медиана и p95 составили
+40,24 и 42,40 мс до изменения и 40,50 и 42,56 мс после. Диапазоны замеров
+перекрываются.
+
+Прошли 6 035 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — MOV imm64 и word-запись из регистра
+
+Профиль прошивки исполняет `REX.W B8+rd io` и сохраняет все 64 бита
+immediate. Тест проверяет запись во все 16 GPR и сохранение флагов.
+`66 89 /r` с адресом размером 64 бита проходит через tracked transfer.
+Проверены ровно два изменённых байта, сохранение соседних байтов и откат
+при `#PF`. Тесты dword и qword сохраняют прежние сценарии.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 9 993, `MOV RSI,0x1000000000` | 10 168, `4D 09 FD` (`OR R13,R15`) по `0x201382` |
+| Исторический `9517c060…febe` | 10 718, `MOV [RAX+0x4c],BX` | 10 719, `E9 FC FC FF FF` (`JMP 0x200d94`) по `0x201093` |
+
+COM1 пуст. На том же release-стенде при бюджете 9 993 и точке `0x20147a`
+выполнены 20 чередующихся пар после прогрева. Медиана и p95 составили
+43,17 и 44,48 мс до изменения и 43,70 и 44,78 мс после. Диапазоны замеров
+перекрываются.
+
+Прошли 6 036 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — широкий OR и прямой JMP
+
+`PagedCpl0FirmwareBootV1` поддерживает регистровый `OR` в формах `09 /r`
+и `0B /r` с dword или qword. Общая ALU обновляет логические флаги и
+снимает определённость AF. Прямые `EB` и `E9` используют знаковое смещение
+от следующего `RIP`. Неканоническая цель возвращает `#GP(0)` до изменения
+состояния. Регрессии покрывают REX, dword zero-extension, знаковые переходы,
+отказы для соседних форм и прежнюю границу базового профиля.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 10 168, `OR R13,R15` | 10 299, `0F B6 44 24 10` (`MOVZX EAX,byte ptr [RSP+0x10]`) по `0x20154d` |
+| Исторический `9517c060…febe` | 10 719, `JMP 0x200d94` | 10 802, `48 89 DF` (`MOV RDI,RBX`) по `0x2006ec` |
+
+COM1 пуст. На том же release-стенде при бюджете 10 168 и точке `0x201382`
+выполнены 20 чередующихся пар после прогрева. Медиана и p95 составили
+46,77 и 52,10 мс до изменения и 47,05 и 52,64 мс после. Диапазоны замеров
+перекрываются.
+
+Прошли 6 037 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — байтовый MOVZX и qword MOV между регистрами
+
+В профиле прошивки `0F B6 /r` читает один байт из регистра или памяти и
+записывает нулевое расширение в dword-регистр. `89 /r` и `8B /r` копируют
+qword между регистрами. Формы проходят через общий transfer executor.
+Регрессии проверяют AH/SPL, расширенные регистры, обе формы qword MOV,
+точную ширину чтения, сохранение флагов и состояние при `#PF`.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 10 299, байтовый MOVZX | 10 309, `66 41 83 F9 03` (`CMP R9W,3`) по `0x201575` |
+| Исторический `9517c060…febe` | 10 802, `MOV RDI,RBX` | 10 836, `58` (`POP RAX`) по `0x201a35` |
+
+COM1 пуст. На том же release-стенде при бюджете 10 299 и точке `0x20154d`
+выполнены 20 чередующихся пар после прогрева. Медиана и p95 составили
+40,74 и 42,18 мс до изменения и 40,49 и 41,16 мс после. Диапазоны замеров
+перекрываются.
+
+Прошли 6 039 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — word-арифметика и qword POP
+
+Профиль прошивки исполняет регистровые `ADD`, `SUB` и `CMP` с `66` и
+word-операндами. Общая ALU вычисляет флаги для 16 бит и сохраняет старшие
+биты регистра при записи. `POP r64` использует проверку стекового адреса и
+чтение qword. Изменения RSP, приёмника и RIP происходят после чтения.
+Проверены RAX, R8, RSP, флаги, `#PF` и прежние границы legacy-профиля.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 10 309, `CMP R9W,3` | 10 313, `66 C7 00 FF FF` (`MOV word ptr [RAX],0xffff`) по `0x201680` |
+| Исторический `9517c060…febe` | 10 836, `POP RAX` | 10 838, `83 7C 24 48 07` (`CMP dword ptr [RSP+0x48],7`) по `0x2006f7` |
+
+COM1 пуст. На том же release-стенде при бюджете 10 309 и точке `0x201575`
+выполнены 20 чередующихся пар после прогрева. Медиана и p95 составили
+41,43 и 42,62 мс до изменения и 41,24 и 43,63 мс после. Диапазоны замеров
+перекрываются.
+
+Прошли 6 040 тестов `od-isa`, 104 теста `firmware_board::tests`, 5 тестов
+`firmware_boot_cli`, форматирование и офлайн-проверка всех целей workspace.
+Graphify обновлён. Проверка структуры сохранила прежние 46 диагностик о
+локальных артефактах `work/`. Независимое ревью `gpt-6.1-sol` (`high`)
+одобрило код и сверило трассы и замеры.
+
+## S7-04 — сравнение и запись immediate в памяти
+
+В профиле прошивки `C7 /0` пишет в память word, dword или qword.
+Сравнение `CMP [mem],imm` в формах `80 /7`, `81 /7` и `83 /7` читает
+декодированную ширину и обновляет флаги через общую ALU. Регрессии проверяют
+все ширины сравнения, знаковое расширение qword immediate, соседние байты
+записи и сохранение состояния при `#PF`. Сохраняются 64-битная адресация и
+точные legacy-формы из старого профиля.
+
+| ROM | До изменения | После изменения при бюджете 20 000 |
+|---|---:|---|
+| Свежий `ea4cf5eb…16f4` | 10 313, `MOV word ptr [RAX],0xffff` | 11 394, `48 39 6C 24 20` (`CMP qword ptr [RSP+0x20],RBP`) по `0x2007b0` |
+| Исторический `9517c060…febe` | 10 838, `CMP dword ptr [RSP+0x48],7` | 11 405, та же инструкция по `0x2007b0` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 10 313
+и точке `0x201680` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 47,14 и 49,46 мс до изменения и 46,93 и 49,61 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 040 тестов, `firmware_board::tests` — 104,
+`firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежний набор из
+46 замечаний об отсутствующих локальных артефактах `work/`.
+Независимое ревью `gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — CMP между памятью и регистром
+
+Профиль прошивки выполняет `CMP` между памятью и регистром в обоих
+порядках операндов для byte, word, dword и qword с 64-битной адресацией.
+Общая ALU вычисляет флаги после чтения операнда. Проверки охватывают
+оба порядка операндов, все четыре ширины, отсутствие записи в память, сохранение
+регистров, RIP и флагов при `#PF`, а также ограничения CPU-профилей.
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 11 394 | 13 037 | `48 FF C9` (`DEC RCX`) по `0x200974` |
+| Исторический `9517c060…febe` | 11 405 | 13 048 | `48 FF C9` (`DEC RCX`) по `0x200974` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 11 394
+и RIP `0x2007b0` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 56,88 и 62,41 мс до изменения и 57,28 и 61,91 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 041 тест, `firmware_board::tests` — 104,
+`firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено, замечание к отчёту исправлено и перепроверено.
+
+### S7-04 — qword DEC и SHR
+
+Профиль прошивки поддерживает `DEC r64` и `SHR r64,imm8`. `DEC` использует
+общую ALU и сохраняет CF и его определённость. `SHR` маскирует счётчик
+до шести бит, применяет общую семантику сдвига и определяет флаги по
+эффективному счётчику. Проверены исходные кодировки из ROM, расширенные
+регистры, переполнение `DEC`, а также сдвиги на 21, на 1 и на 0 после маски.
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 13 037 | 13 043 | `49 0F 47 C6` (`CMOVA RAX,R14`) по `0x200987` |
+| Исторический `9517c060…febe` | 13 048 | 13 054 | `49 0F 47 C6` (`CMOVA RAX,R14`) по `0x200987` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 13 037
+и RIP `0x200974` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 43,69 и 44,97 мс до изменения и 43,84 и 44,49 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 042 теста, `firmware_board::tests` — 104,
+`firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — qword CMOVcc между регистрами
+
+Профиль прошивки выполняет qword `CMOVcc` между регистрами. При истинном
+условии переносится полное 64-битное значение. Флаги и их определённость
+сохраняются при обоих исходах. Проверены `CMOVA` из ROM с ZF и CF и `CMOVL`
+с SF и OF. Точные dword-формы прежних профилей сохранены.
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 13 043 | 14 324 | `48 01 44 24 30` (`ADD qword ptr [RSP+0x30],RAX`) по `0x200a5c` |
+| Исторический `9517c060…febe` | 13 054 | 14 335 | `48 01 44 24 30` (`ADD qword ptr [RSP+0x30],RAX`) по `0x200a5c` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 13 043
+и RIP `0x200987` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 41,51 и 43,36 мс до изменения и 41,67 и 42,92 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 043 теста, `firmware_board::tests` — 104,
+`firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — qword ADD с назначением в памяти
+
+Профиль прошивки выполняет `ADD r/m64,r64` с назначением в памяти и
+64-битной адресацией, в пределах одной страницы. Tracked walk читает
+исходный qword с проверкой права на запись. При `#PF` в отчёте
+сохраняется `AccessKind::Write` и `W/R=1`. Запись результата устанавливает
+D. Флаги и RIP обновляются после успешной записи. Префикс `LOCK` и
+пересечение границы страницы остаются вне этого профиля.
+
+На мини-образах `boot-firmware` подтверждены выполнение до `HLT` на RAM,
+`#PF` с кодами `0x02` и `0x03` на отсутствующей странице и ROM,
+`CrossesPage` на границе и `DeviceUnavailable` на MMIO. Тесты CPU и
+page walk отдельно проверяют содержимое операнда, RFLAGS, RIP и D.
+Определение бита ошибки W/R приведено в [Intel SDM, том 3A, §4.7](https://cdrdv2-public.intel.com/874249/253668-090-sdm-vol-3a.pdf).
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 14 324 | 14 951 | `48 03 44 24 60` (`ADD RAX,qword ptr [RSP+0x60]`) по `0x200afe` |
+| Исторический `9517c060…febe` | 14 335 | 14 962 | `48 03 44 24 60` (`ADD RAX,qword ptr [RSP+0x60]`) по `0x200afe` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 14 324
+и RIP `0x200a5c` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 46,46 и 48,92 мс до изменения и 46,17 и 47,85 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 044 теста, весь `od-machine` — 2 135 прошли,
+15 пропущены, `firmware_boot_cli` — 5. Форматирование, проверка сборки
+workspace и обновление Graphify прошли. Проверка структуры дала прежние
+46 замечаний об отсутствующих локальных артефактах `work/`.
+Независимое ревью `gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — qword ADD из памяти и SHL
+
+Профиль прошивки выполняет `ADD r64,[mem]` с 64-битной адресацией
+и `SHL r64,imm8`. ADD читает qword, затем обновляет регистр и флаги
+через общую ALU. Сдвиг использует ту же обработку счётчика и
+определённости флагов, что и qword SHR. Проверены перенос при
+сложении, сохранение состояния при `#PF`, сдвиги на 12 и на 1
+с проверкой OF для единичного сдвига.
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 14 951 | 16 153 | `30 C8` (`XOR AL,CL`) по `0x200c50` |
+| Исторический `9517c060…febe` | 14 962 | 16 164 | `30 C8` (`XOR AL,CL`) по `0x200c50` |
+
+COM1 пуст в обоих прогонах. На том же release-стенде при бюджете 14 951
+и RIP `0x200afe` выполнены 20 чередующихся пар после прогрева. Медиана
+и p95 составили 46,44 и 49,36 мс до изменения и 46,73 и 49,38 мс после.
+Диапазоны замеров перекрываются.
+
+Проверки: `od-isa` — 6 045 тестов, `firmware_board::tests` — 104,
+`firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — байтовые XOR и TEST AL
+
+Профиль прошивки выполняет байтовый `XOR` между регистрами и
+`TEST AL,imm8`. Общая логика флагов соответствует ширине операнда.
+Проверены обе кодировки `XOR`, чтение `AH` и сохранение старших битов
+регистра назначения. `TEST` сохраняет `RAX` при обновлении флагов.
+
+| ROM | Инструкций до изменения | Инструкций после изменения при бюджете 20 000 | Остановка после изменения |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 16 153 | 16 221 | `89 C8` (`MOV EAX,ECX`) по `0x200244` |
+| Исторический `9517c060…febe` | 16 164 | 16 232 | `89 C8` (`MOV EAX,ECX`) по `0x200244` |
+
+Оба ROM прошли разбор handoff и вошли в цикл печати строки успеха.
+Остановка происходит перед первым `OUT DX,AL` для этой строки, COM1 пуст.
+На том же release-стенде при бюджете 16 153 и RIP `0x200c50` выполнены
+20 чередующихся пар после прогрева. Медиана и p95 составили 48,06 и
+58,76 мс до изменения и 48,69 и 54,74 мс после. Диапазоны перекрываются.
+
+В `od-isa` прошли 6 045 тестов, в `firmware_board::tests` — 104,
+в `firmware_boot_cli` — 5. Форматирование, проверка сборки workspace и
+обновление Graphify прошли. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — успешный разбор handoff и HLT
+
+Firmware-профиль выполняет dword `MOV` между регистрами с обнулением
+верхней половины назначения, dword `INC`/`DEC` в цикле COM1 и bare `CLI`
+перед `HLT`. `INC`/`DEC` сохраняют CF и его определённость. `CLI` очищает
+только IF. Тесты проверяют регистровые кодировки, сохранение состояния
+и изоляцию `CLI` от базового профиля и `STI`.
+
+| ROM | Инструкций до изменения | Инструкций до HLT при бюджете 20 000 | RIP после HLT |
+|---|---:|---:|---|
+| Свежий `ea4cf5eb…16f4` | 16 221 | 16 617 | `0x200272` |
+| Исторический `9517c060…febe` | 16 232 | 16 628 | `0x200272` |
+
+В обоих запусках `boot-firmware` вернул `halted` и записал ровно 31 байт
+`OD-FW S7-04 handoff validated\r\n`. Проверка сравнивала весь файл COM1
+с ожидаемыми байтами. Этот результат закрывает ISSUE-583. Приёмка S7-04
+ещё включает переход на собственную среду исполнения, аллокатор,
+карту памяти и полный эталонный вывод ядра.
+
+```sh
+python3 tools/build/build_firmware.py --out work/stage7/firmware.bin
+cargo run --release --offline -p od-runner -- boot-firmware \
+  --image work/stage7/firmware.bin --com1-out work/stage7/handoff-com1.txt --budget 20000
+```
+
+На том же release-стенде при бюджете 16 221 и RIP `0x200244` выполнены
+20 чередующихся пар после прогрева. Медиана и p95 составили 44,78 и
+46,23 мс до изменения и 44,21 и 45,64 мс после. Диапазоны перекрываются.
+
+Повторная сборка ROM дала исходный SHA-256 `ea4cf5eb…16f4`. Повтор обоих
+запусков с release-раннером из рабочего дерева подтвердил transcript,
+RIP и число инструкций. В `od-isa` прошли 6 046 тестов, в
+`firmware_board::tests` — 104, в `firmware_boot_cli` — 5, в UEFI — 176.
+Форматирование, проверка workspace и обновление Graphify прошли.
+Проверка структуры дала прежние 46 замечаний об отсутствии локальных
+артефактов `work/`. Независимое ревью `gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — константы для подготовки таблиц
+
+Профиль прошивки выполняет `C7 /0` с назначением в `r64` и расширяет
+`imm32` со знаком. Форма `A9` выполняет `TEST EAX,imm32` и
+`TEST RAX,imm32` с прежней семантикой флагов. Тесты охватывают оба знака
+констант, расширенный регистр, обе ширины `TEST` и сохранение регистров
+при тестировании.
+
+На рабочем прототипе таблиц (`ffcd1cd8…fce4`) при бюджете 80 000
+базовый release-раннер вывел строку handoff и после 17 243 инструкций
+остановился на `49 C7 C0 00 30 20 00` по `0x2001ac`. После изменения
+раннер выполнил 17 271 инструкцию и остановился на `66 66 66 2E 0F 1F
+84 00 00 00 00 00` по `0x200784`. Прототип используется в проверке
+этого среза. Два опубликованных ранее результата handoff и `HLT`
+воспроизвелись побайтно с изменённым раннером.
+
+В 20 чередующихся release-парах при бюджете 17 243 на прототипе
+медиана и p95 составили 45,44 и 46,94 мс до изменения и 45,28 и
+47,17 мс после. Диапазоны перекрываются.
+
+Прошли 6 047 тестов `od-isa`, 104 теста `firmware_board::tests`,
+5 тестов `firmware_boot_cli`, форматирование, проверка сборки workspace и
+обновление Graphify. Проверка структуры дала прежние 46 замечаний
+об отсутствии локальных артефактов `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — выравнивание и косвенный вызов при подготовке таблиц
+
+Профиль прошивки выполняет `0F 1F /0` с префиксами размера операнда
+и CS для выравнивания. Декодируется полная длина, обращений по адресу
+операнда нет. `CALL qword ptr [mem]` читает цель и проверяет её
+каноничность до записи адреса возврата. Тесты проверяют отказ чтения,
+неканоническую цель, отказ записи стека и успешный вызов.
+
+Прототип `ffcd1cd8…fce4` с прежним раннером остановился после 17 271
+инструкции на префиксном NOP по `0x200784`. Изменённый release-раннер
+выполнил 17 525 и остановился на `48 0F AF C1` (`IMUL RAX,RCX`) по
+`0x202db4` внутри `memset`. При бюджете 80 000 оба сохранили 31 байт
+строки handoff. Два ранее подтверждённых ROM в этом раннере повторили
+точную строку COM1 и `HLT` после 16 617 и 16 628 инструкций.
+
+В 20 чередующихся release-парах при бюджете 17 271 на прототипе
+медиана и p95 составили 45,32 и 48,56 мс до изменения и 45,33 и
+46,79 мс после. Диапазоны перекрываются.
+
+Прошли 6 049 тестов `od-isa`, 104 теста `firmware_board::tests`,
+5 тестов `firmware_boot_cli`, форматирование, проверка сборки workspace и
+обновление Graphify. Проверка структуры дала прежние 46 замечаний
+об отсутствии локальных артефактов `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — подготовка собственных таблиц и стека
+
+Прошивка строит собственные четырёхуровневые таблицы 4 KiB из handoff.
+Она выбирает первый подходящий обычный RAM-диапазон выше нижнего 1 MiB.
+Резерв содержит таблицы, guard 4 KiB и стек 256 KiB. Карта сохраняет
+identity mapping областей handoff. У shadow-кода, `.rodata` и writable
+shadow раздельные права. ROM и handoff имеют `P|NX`, RAM и окна устройств
+имеют `P|RW|NX`, дыры и guard пропускаются. Таблицы очищаются по одной
+странице, `REP STOSQ` укладывается в существующий лимит 1 024 итерации.
+
+Для скомпилированных Rust-кода и `memset` firmware-профиль использует
+общую семантику `IMUL`, `NEG`, `AND`, `OR` и dword `SHL`/`SHR`.
+Тесты покрывают знаки, ширину, определённость флагов, частичный прогресс
+`REP STOSQ` при исключении и превышение лимита. Host-тесты построения
+карты проверяют минимальный и разреженный набор регионов вплоть до
+последней страницы 36-битного физического пространства.
+
+Свежий ROM с SHA-256 `ffcd1cd8f3cb7ea99d80e234c2ac5a9de66c96bec730936c8800152d1cd7fce4`
+прошёл на двух конфигурациях. После гостевого `HLT` независимый обход
+записей в RAM сверил права кода, `.rodata`, данных, стека, ROM,
+фреймбуфера и MMIO, а также отсутствие guard и дыры.
+
+| RAM | Инструкций до HLT | Новых страниц таблиц | Новый root | Guard |
+|---:|---:|---:|---:|---:|
+| 128 MiB | 2 867 982 | 91 | `0x150000` | `0x1ab000` |
+| 256 MiB | 5 033 118 | 155 | `0x69b000` | `0x736000` |
+
+Ровно две строки с CRLF записаны в COM1 на обеих конфигурациях.
+
+```text
+OD-FW S7-04 handoff validated
+OD-FW S7-04 page tables prepared
+```
+
+Стандартный запуск `boot-firmware` с бюджетом 6 000 000 подтвердил
+128 MiB, `halted` и RIP `0x200352` трижды. Стартовый `CR3 = 0x600000`
+действовал до остановки. Активация нового root и стека отслеживается в
+[ISSUE-592](../KNOWN_ISSUES.md#issue-592).
+
+В 20 чередующихся release-парах на одном ROM при бюджете 17 525
+медиана и p95 составили 44,98 и 47,17 мс до изменения CPU-профиля и
+44,54 и 47,39 мс после. Диапазоны перекрываются. Ранние ROM снова
+дошли до `HLT` с точной строкой handoff.
+
+Прошли 178 тестов UEFI, 26 тестов сборщика ROM, 6 051 тест `od-isa`,
+104 теста платы и 5 CLI-тестов. Прошли форматирование обоих Rust-проектов,
+проверка сборки workspace и обновление Graphify. Проверка структуры дала
+прежние 46 замечаний об отсутствии локальных артефактов `work/`.
+Независимые ревью полного diff и архитектуры размещения на
+`gpt-6.1-sol` high завершены без замечаний.
+
+### S7-04 — активация собственных таблиц и стека
+
+Firmware-квант передаёт процессору действующий root. Первый bare
+`MOV CR3,RAX` использует стартовые таблицы для fetch, коммитит новый
+root и отдаёт `Cr3Write` циклу исполнения. Следующие fetch и data
+access используют новые таблицы 4 KiB, в том числе после границы
+кванта. Запись того же значения CR3 тоже коммитится. Запрещённый бит
+адреса даёт `#GP` до коммита. Если валидный root приводит к `#PF`
+на следующем fetch, коммит CR3 сохраняется.
+
+Прошивка переключает CR3, ставит RSP на вершину нового стека и делает
+`CALL` с выравниванием System V. Продолжение выводит строку `page tables active`
+и останавливается на `CLI; HLT`.
+
+| RAM | Инструкций до HLT | CR3 | RSP после HLT | Guard |
+|---:|---:|---:|---:|---:|
+| 128 MiB | 2 868 426 | `0x150000` | `0x1ebff8` | `0x1ab000` |
+| 256 MiB | 5 033 562 | `0x69b000` | `0x776ff8` | `0x736000` |
+
+Точный release-раннер запустил ROM с SHA-256
+`9bb2c6b160f72244c22f29ff4289e2cf5b06ca192cf2b659f7efc9874eec99b4`.
+`boot-firmware` при бюджете 6 000 000 подтвердил `halted`, RIP `0x200202`
+и ровно 97 байт трёх строк с CRLF. На обоих размерах отдельная проверка
+сверила CR3, RSP и записи страниц. После остановки она возобновила
+исполнение на странице кода с тестовым чтением из guard и получила
+`#PF` с кодом `0x00`, правильными CR2 и saved RIP.
+
+Тест платы отображает разные инструкции по одному VA до и после
+`MOV CR3` и проверяет цель fetch при целом и разделённом кванте.
+ISSUE-592 закрыт. Собственная GDT/IDT, карта UEFI и аллокатор входят
+в дальнейшую приёмку S7-04. [ISSUE-593](../KNOWN_ISSUES.md#issue-593).
+
+Базовый release-раннер на новом ROM остановился после 2 868 003
+инструкций перед `MOV CR3,RAX` по `0x20049b` с двумя строками COM1.
+В 20 чередующихся release-парах после прогрева оба раннера выполняли
+один и тот же прежний ROM `ffcd1cd8…fce4` до `HLT` и выводили те же
+две строки COM1. Все прогоны выполнили 2 867 982 инструкции при бюджете
+6 000 000. Медиана и p95 составили 1 375,33 и 1 465,73 мс до изменения,
+1 376,67 и 1 419,54 мс после. Диапазоны замеров перекрываются.
+
+Прошли 6 051 тест `od-isa`, 2 137 тестов `od-machine` при 15 пропущенных,
+5 CLI-тестов, 178 тестов UEFI и 26 тестов сборщика ROM. Форматирование,
+проверка workspace и обновление Graphify прошли. Проверка структуры
+дала прежние 46 замечаний об отсутствии локальных артефактов `work/`.
+Независимое ревью `gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — начальная карта памяти UEFI
+
+После перехода на собственные CR3 и RSP прошивка строит начальный массив
+`EFI_MEMORY_DESCRIPTOR` с MapKey 1 и печатает его в COM1. Старый резерв
+таблиц становится `EfiConventionalMemory`. Новые таблицы, стек и буфер
+карты относятся к `EfiBootServicesData`, а guard — к зарезервированной
+памяти. Два прохода построителя проверяют фактическое число записей до
+заполнения. ABI, ёмкость буфера, границы диапазонов, sparse RAM и атрибуты
+устройств покрыты тестами. [Профиль карты](../specs/UEFI_PROFILE.md#начальная-карта-памяти).
+
+Скомпилированный путь использует регистровый `ADC`, байтовые `TEST` и `OR`,
+qword `SHR` с назначением в памяти, переход через масштабируемый индекс,
+байтовую запись `MOV` и bare `NOP`. Узкие тесты проверяют выбор регистров,
+маски флагов, ширину обращения и сохранение архитектурного состояния
+при fault. `SHR` использует тот же write-intent путь, что и `ADD` с
+назначением в памяти.
+
+ROM с SHA-256 `e5bec1e735003602708fc9c2bfea5be8d677db0a86803593039b970d26a92793`
+на release-раннере завершился на `HLT` с RIP `0x200352`.
+
+| RAM | Инструкций до HLT | CR3 | Дескрипторов | Байт COM1 |
+|---:|---:|---:|---:|---:|
+| 128 MiB | 2 995 779 | `0x150000` | 17 | 2 032 |
+| 256 MiB | 5 226 595 | `0x69b000` | 17 | 2 032 |
+
+Независимая проверка разобрала фактические строки COM1. Она сверила каждую
+запись с байтами handoff, границами секций ELF и физическим размещением
+таблиц и стека. Обе карты полностью совпали с ожидаемыми диапазонами
+и атрибутами. Публикация ABI Boot Services относится к S7-05.
+
+Базовый CPU-профиль на новом ROM остановился на `ADC R8,RCX` по
+`0x2038bd` после 2 972 422 инструкций. Для сравнения производительности
+оба release-раннера 20 раз чередовались на прежнем ROM `9bb2c6b1…99b4`
+после прогрева. Каждый прогон дал 2 868 426 инструкций, три исходные
+строки COM1 и `HLT` при бюджете 6 000 000. Медиана и p95 составили
+1 333,56 и 1 425,23 мс до изменения и 1 343,61 и 1 392,06 мс после.
+Диапазоны замеров перекрываются.
+
+Прошли 6 056 тестов `od-isa`, 106 тестов платы, 5 CLI-тестов,
+181 тест UEFI, 26 тестов сборщика ROM, форматирование обоих Rust-проектов
+и проверка workspace. Graphify обновлён. Проверка структуры дала те же
+46 замечаний об отсутствующих локальных артефактах `work/`.
+Полное и архитектурное ревью `gpt-6.1-sol` high завершены без замечаний.
+
+### S7-04 — выделение страниц
+
+Аллокатор ведёт отсортированную карту с отдельными признаками владения.
+Поддержаны `AnyPages`, `MaxAddress` с включительной границей и `Address`.
+Освобождение восстанавливает conventional RAM и допускает часть выделения
+или смежные выделения. Тесты проверяют защиту занятых при старте диапазонов,
+повторное освобождение, разделение и объединение записей, типы RuntimeServices
+и сохранение карты при исчерпании ёмкости либо ключа.
+[Профиль аллокатора](../specs/UEFI_PROFILE.md#выделение-страниц).
+
+После переключения CR3 ROM выделяет страницы во всех трёх режимах, пишет
+шаблоны в прежний root и верхнюю RAM-страницу и читает их обратно. Попытки
+освободить активный root и повторно вернуть страницу дают ошибку с прежним
+ключом. Три выделения и три освобождения изменяют `MapKey` с 1 до 7.
+Проверка с хоста сверила оба шаблона в физической памяти и все 17 начальных
+дескрипторов с handoff и границами секций ELF.
+
+ROM с SHA-256 `c22472f9f7b2e8827c2de1c126da5c87b18961f47b84d17a8712f86dd530b7be`
+завершился на `HLT` по `0x200882`.
+
+| RAM | Инструкций до HLT | CR3 | GPA верхней страницы | Байт COM1 |
+|---:|---:|---:|---:|---:|
+| 128 MiB | 3 000 600 | `0x150000` | `0x7fff000` | 2 092 |
+| 256 MiB | 5 231 454 | `0x69b000` | `0xffff000` | 2 092 |
+
+Для скомпилированного пути добавлены firmware-формы сдвига на единицу,
+`SBB` с immediate, байтовых `CMP` и `AND`, а также `STD` и
+`REP MOVSB/MOVSQ` для перемещения записей карты. Тесты REP сверяют оба
+направления, нулевой счётчик, лимит и состояние после faults источника
+и назначения. Предыдущий release-раннер на этом ROM остановился на
+`SHR R15,1` по `0x204ce6` после 2 995 902 инструкций.
+
+Два release-раннера чередовались после прогрева на предыдущем ROM
+`e5bec1e7…2793` с бюджетом 6 000 000 инструкций. Каждый из 20 парных
+прогонов сохранил 2 995 779 инструкций, прежний COM1 и `HLT`.
+Медиана и p95 составили 1 450,79 и 1 582,48 мс до изменения и
+1 460,44 и 1 496,52 мс после. Диапазоны перекрываются.
+
+Прошли 6 058 тестов `od-isa`, 121 тест платы, 5 CLI-тестов, 185 тестов UEFI,
+26 тестов сборщика ROM, форматирование обоих Rust-проектов и проверка
+workspace. Graphify обновлён. Проверка структуры дала те же 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено без замечаний.
+
+### S7-04 — выделение pool
+
+Pool выделяет смежные страницы из той же карты. Тип владения защищает
+диапазон от `FreePages`. Поиск точного начала блока предшествует чтению
+заголовка, данные заголовка проверяются относительно карты. Тесты покрывают
+размеры на границе страницы, размещение в странице 0, тип RuntimeServices,
+соседние блоки, неверные и повторные освобождения, повреждение заголовка
+и сохранение карты и backing при отказах.
+[Профиль pool](../specs/UEFI_PROFILE.md#выделение-pool).
+
+ROM выделил блоки на одной и двух страницах. Проверки с хоста подтвердили
+три 64-битных значения в RAM, включая последние восемь байт второго блока.
+Отказ `FreePages` для блока pool, отказ при смещённом указателе и повторное
+освобождение сохранили ключ. Два выделения и два освобождения изменили
+`MapKey` с 7 до 11. Все 17 начальных дескрипторов совпали с handoff и ELF.
+
+ROM с SHA-256 `b527e6d79056a7679fe8243e1496b341e3ba3a61c28311f62668f5568dacb168`
+завершился на `HLT` по `0x200e02`.
+
+| RAM | Инструкций до HLT | CR3 | Байт COM1 |
+|---:|---:|---:|---:|
+| 128 MiB | 3 004 228 | `0x150000` | 2 152 |
+| 256 MiB | 5 235 155 | `0x69b000` | 2 152 |
+
+Новые firmware-формы `MOV r8,imm8` с REX, `ADC r/m,imm8` с регистром
+в назначении и `AND accum,imm32` используют общую семантику. Прежний
+release-раннер остановился на `MOV BPL,1` после 2 996 530 инструкций по
+`0x20541b`.
+
+Два release-раннера чередовались после прогрева на предыдущем ROM
+`c22472f9…7be` с бюджетом 6 000 000 инструкций. Все 20 пар сохранили
+3 000 600 инструкций, прежний COM1 и `HLT`. Медиана и p95 составили
+1 470,23 и 1 513,01 мс до изменения и 1 472,99 и 1 557,11 мс после.
+Диапазоны перекрываются.
+
+Прошли 6 059 тестов `od-isa`, 121 тест платы, 5 CLI-тестов, 188 тестов UEFI,
+26 тестов сборщика ROM, форматирование обоих Rust-проектов и проверка
+workspace. Graphify обновлён. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое ревью
+`gpt-6.1-sol` high завершено. Уточнён комментарий к тесту отказа для
+`ADC` с операндом в памяти.
+
+### S7-04 — собственная GDT и селекторы
+
+После включения собственных CR3 и RSP прошивка выполняет `LGDT`, меняет
+CS через `LRETQ` и загружает SS, DS, ES, FS и GS. Выполнение использует
+общие операции CPU для псевдодескриптора, возврата и загрузки сегментов.
+Тесты покрывают первую загрузку из немоделируемого состояния,
+отказы чтения и записи дескрипторов, а также сохранение interrupt shadow
+до следующей выполненной инструкции. [Контракт CPU](../specs/FIRMWARE_BOOT.md#7-решение-2-состояние-cpu-при-вызове-efi-образа).
+
+Хост проверил GDTR `base=0x209000, limit=23`, `CS=0x08`, остальные
+селекторы `0x10`, скрытые кеши, нулевые FS/GS base и биты Accessed
+у обоих дескрипторов в RAM. В отдельном прогоне граница вызовов
+`run_boot` прошла между `MOV SS` и `NOP` по `0x207539`.
+На обеих конфигурациях следующий шаг снял shadow, а суммарный COM1,
+число инструкций и конечное CPU-состояние совпали с цельным прогоном.
+
+ROM с SHA-256 `6800239f6ebc6f413c5eeee60764db4dbe1302d93310a91aa45720f6be970a67`
+завершился на `HLT` по `0x200e42`.
+
+| RAM | Инструкций до HLT | CR3 | Байт COM1 |
+|---:|---:|---:|---:|
+| 128 MiB | 3 004 557 | `0x150000` | 2 176 |
+| 256 MiB | 5 235 484 | `0x69b000` | 2 176 |
+
+Прежний release-раннер остановился на `LGDT` по `0x207514` после
+2 954 449 инструкций. На предыдущем ROM `b527e6d7…b168` все 20
+прогретых пар сохранили 3 004 228 инструкций, прежний COM1 и `HLT`
+при бюджете 6 000 000 инструкций. Медиана и p95 составили 1 450,25
+и 1 488,44 мс до изменения и 1 458,52 и 1 511,15 мс после.
+Диапазоны перекрываются.
+
+Прошли 6 062 теста `od-isa`, 121 тест платы, 5 CLI-тестов, 188 тестов UEFI,
+26 тестов сборщика ROM, форматирование обоих Rust-проектов и проверка
+workspace. Graphify обновлён. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Независимое архитектурное
+и кодовое ревью `gpt-6.1-sol` high завершены без замечаний.
+
+### S7-04 — собственная IDT и CR4
+
+Прошивка строит 256 present interrupt gates с DPL 0 и IST 0 в writable
+shadow, загружает IDTR и одной инструкцией устанавливает `CR4=0x620`.
+Каждый вектор имеет собственный 10-байтовый stub, который передаёт номер
+вектора общему обработчику. Общая точка очищает DF, выравнивает RSP
+и передаёт управление Rust для останова `0x10`. Отключение PAE
+в Long64 вызывает `#GP(0)`. Для очистки BSS до входа в Rust используется
+`REP STOSQ` блоками до 4 КиБ.
+[Контракт CPU](../specs/FIRMWARE_BOOT.md#7-решение-2-состояние-cpu-при-вызове-efi-образа).
+
+Хост проверил `IDTR.base=0x20a020`, `IDTR.limit=4095`, поля и целевые
+адреса всех 256 gates, номер вектора в каждом stub и общий переход к `CLD`.
+Разбиение на кванты по одной инструкции подтвердило продолжение после
+`LIDT` и `MOV CR4`. Результирующие CPU-состояние, COM1 и число инструкций
+совпали с цельным запуском. Доставка исключений остаётся в
+[ISSUE-593](../KNOWN_ISSUES.md#issue-593).
+
+ROM с SHA-256 `6f030f5558dbd4775f8ad4e66242c64673c63bf353edb4b5d72bd65d8a121939`
+завершился на `HLT` по `0x200f62`.
+
+| RAM | Инструкций до HLT | CR3 | Байт COM1 |
+|---:|---:|---:|---:|
+| 128 MiB | 3 007 940 | `0x150000` | 2 208 |
+| 256 MiB | 5 238 867 | `0x69b000` | 2 208 |
+
+Прежний release-раннер остановился на `MOVZX R10D,DX` по `0x2003f0`
+после 2 954 792 инструкций. В firmware-профиле эта форма использует
+общую операцию расширения и сохраняет флаги.
+
+После прогрева 20 парных прогонов обоих release-раннеров на предыдущем
+ROM `6800239f…0a67` дали 3 004 557 инструкций, прежний COM1 и `HLT`
+при бюджете 6 000 000. Медиана и p95 составили 1 479,94 и 1 810,60 мс
+до изменения и 1 466,74 и 1 794,01 мс после. Диапазоны перекрываются.
+
+Прошли 6 064 теста `od-isa`, 121 тест платы, 5 CLI-тестов, 189 тестов UEFI,
+26 тестов сборщика ROM, форматирование обоих Rust-проектов и проверка
+workspace. Graphify обновлён. Проверка структуры дала прежние 46 замечаний
+об отсутствующих локальных артефактах `work/`. Архитектурное и кодовое ревью
+`gpt-6.1-sol` high завершены. По замечанию ревью добавлен `CLD` перед общим
+Rust-обработчиком, исправление повторно одобрено.
+
+### S7-04 — доставка BP и PF
+
+Firmware-исполнитель доставляет `INT3` через общую CPL0-семантику.
+Для исходного `#PF` квант использует совпадающую запись страничного
+walk и тот же 4 KiB адаптер. Чтение IDT/GDT и запись кадра сохраняют
+назначение обращения. Успешный `INT3` завершает одну инструкцию.
+Доставка `#PF` сохраняет RIP сбойной инструкции и обновляет CR2
+без её retirement.
+
+В случае отказа доставки исходный fault и fault при входе доступны
+отдельно. Если следующий fetch обработчика тоже даёт `#PF` до первой
+выполненной инструкции, квант возвращает этот fault. До установки
+IDTR `INT3` остаётся неподдерживаемым, а страничный fault возвращается
+хосту. Остальные исключения firmware-профиля отслеживаются в
+[ISSUE-593](../KNOWN_ISSUES.md#issue-593).
+
+ROM `6f030f55…1939` дошёл до собственной IDT и `CR4=0x620`.
+Контрольный запуск подставлял в shadow две вызывающие последовательности
+после установки таблиц. `STD; INT3` сохранил DF в кадре и RIP `0x20047b`.
+Stub вектора 3 по `0x20769e` вывел код `0x10` и вектор `3`.
+После входа в Rust фактический DF был нулевым. Чтение guard сохранило
+RIP `0x200479`, код ошибки 0 и прежнее значение RAX, записало CR2 и
+перешло к stub вектора 14 по `0x20770c`.
+
+| RAM | CR2 при чтении guard | Итог BP и PF |
+|---:|---:|---|
+| 128 MiB | `0x1ab000` | `OD-FW STOP code=0x10`, соответствующий вектор, `HLT` по `0x203442` |
+| 256 MiB | `0x736000` | `OD-FW STOP code=0x10`, соответствующий вектор, `HLT` по `0x203442` |
+
+Четыре машинных теста проверяют границы бюджета, кадр и счётчик инструкций,
+отказ чтения IDT с сохранением обоих адресов fault, ограниченный выход при
+ошибке fetch обработчика и поведение до IDTR. Прошли 2 141 тест
+`od-machine` (15 ignored), 6 064 теста `od-isa`, 5 CLI-тестов,
+форматирование и проверка workspace. Graphify обновлён. Проверка структуры
+дала прежние 46 замечаний об отсутствующих локальных артефактах `work/`.
+
+Первый чистый замер на обычной загрузке дал рост медианы на 4,7%.
+Подготовка доставки `#PF` перенесена в ветку исходного fault.
+Повторная проверка ROM дала прежние кадры и вывод COM1. В итоговых
+20 парах на том же ROM оба release-раннера выполнили 3 007 940 инструкций,
+выдали 2 208 байт COM1 и дошли до `HLT` при бюджете 6 000 000.
+Медиана и p95 составили 1 478,24 и 1 772,24 мс до изменения и
+1 525,08 и 1 836,35 мс после. Диапазоны перекрываются.
+Независимое архитектурное и кодовое ревью `gpt-6.1-sol` high завершены
+без замечаний. Перенос подготовки доставки повторно одобрен.
+
+### S7-04 — версия прошивки и COM1
+
+`serial::try_read` опрашивает LSR и читает RBR только при `DR=1`.
+ROM печатает версию Cargo при запуске и один доступный байт RX перед
+`HLT`. Инициализация 8N1 и опрос THRE сохранены. [Контракт COM1](../specs/FIRMWARE_BOOT.md#11-консоль-com1).
+
+ROM `e0c2e30ec724ff40277253e03f3546acbc796e08786c18c5311e16f11a68f647`
+прошёл с пустым приёмником и с `0xA5`, поданным через handle UART.
+После чтения приёмник пуст, а транскрипт отличается только дополнительной
+строкой `OD-FW S7-04 COM1 RX byte=0x00000000000000A5`.
+Все 17 дескрипторов повторно сверены с handoff и границами ELF.
+
+| RAM | Инструкций до HLT, RX пуст | Инструкций до HLT, RX A5 |
+|---:|---:|---:|
+| 128 MiB | 3 008 218 | 3 008 743 |
+| 256 MiB | 5 239 145 | 5 239 670 |
+
+Все прогоны остановились на `HLT` по `0x2011d2`. Вывод с пустым
+приёмником содержит 2 229 байт и 26 строк CRLF. Он совпадает побайтно
+с `boot_core_com1.txt` для платы по умолчанию. С байтом RX получено
+2 274 байта. [Команда проверки эталона](../testing/FIRMWARE.md#что-проверяет-s7-04-ядро-прошивки).
+
+Прошли 189 тестов UEFI, 26 тестов сборщика ROM, 5 CLI-тестов и
+форматирование. Graphify обновлён. Проверка структуры даёт прежние
+46 замечаний об отсутствующих локальных артефактах `work/`.
+Независимое ревью `gpt-6.1-sol` high одобрило код и эталон.
+
+### S7-04 — остальные синхронные исключения и приёмка
+
+Установленная IDT принимает все синхронные векторы, которые выдают
+инструкции текущего firmware-профиля. Для `#UD`, `#NP`, `#SS` и
+`#GP` используется общий CPL0-путь построения кадра. RIP указывает
+на сбойную инструкцию, RF выставлен в сохранённых флагах. Код ошибки
+сохраняется в кадре при наличии. CR2 сохраняется для этих четырёх
+векторов. Успешный вход после `MOV SS` снимает shadow. При отказе
+исходное исключение, ошибка доставки и состояние CPU сохраняются
+для отчёта. [Контракт CPU](../specs/FIRMWARE_BOOT.md#7-решение-2-состояние-cpu-при-вызове-efi-образа).
+
+На 128 и 256 МиБ ROM `e0c2e30e…f647` отдельно проверен с каждым
+исключением после установки собственных таблиц. Для каждой пробы
+сверены кадр, номер вектора, прежние RAX и CR4 и останов `0x10`
+на `HLT` по `0x2036b2`.
+
+| Вектор | Стимул | Код ошибки в кадре |
+|---:|---|---:|
+| 6 | `UD2` | — |
+| 11 | `MOV DS,AX` при снятом Present дескриптора | `0x10` |
+| 12 | `MOV SS,AX` при снятом Present дескриптора | `0x10` |
+| 13 | `MOV CR4,RAX` со снятым PAE | `0` |
+
+`UD2` непосредственно после `MOV SS` также дошёл до обработчика с
+сохранённым RIP сбойной инструкции. Проверка переходов отдельно
+покрывает `INT3` и `#PF` и сравнивает отказ доставки с успешным входом.
+[Проверка BP и PF](#s7-04--доставка-bp-и-pf).
+
+Диагностика раннего входа проверена с неверным RDI, magic и версией
+handoff. Для неё допущены стеконезависимые переходы на R9/R12,
+поворот qword, байтовые MOV и точные словные MOVZX для чтения ошибки
+парсера. Они переиспользуют общую семантику CPU. Все три сценария
+выдали соответствующие коды `0x01`, `0x02`, `0x03` на COM1 и `HLT`.
+
+На обычной загрузке того же ROM оба release-раннера дали
+3 008 218 инструкций, 2 229 байт COM1 и `HLT` по `0x2011d2`.
+После прогрева выполнено 20 парных прогонов при бюджете 6 000 000.
+Медиана и p95 составили 1 522,25 и 1 882,31 мс до изменения и
+1 528,61 и 1 639,50 мс после. Диапазоны перекрываются.
+
+Финальный release-раннер на том же ROM повторно выдал 2 229 байт,
+побайтно совпадающих с эталоном `boot_core_com1.txt` на момент приёмки S7-04. Прошли 2 144 теста
+`od-machine` (15 ignored), 6 066 тестов `od-isa`, 5 CLI-тестов,
+189 тестов UEFI, 26 тестов сборщика ROM, форматирование обоих Rust-проектов
+и проверка workspace. Graphify обновлён. Проверка структуры дала прежние
+46 замечаний об отсутствующих локальных артефактах `work/`.
+Независимое архитектурное и кодовое ревью `gpt-6.1-sol` high завершены
+без замечаний. После исправления ранней диагностики код проверен повторно.
+[Эталон загрузки](../testing/FIRMWARE.md#что-проверяет-s7-04-ядро-прошивки).
+
+### S7-05 — таблицы UEFI и утилиты Boot Services
+
+Гостевой ROM строит три диагностические таблицы UEFI x64 2.11. Гость
+загружает адреса `SetMem`, `CopyMem` и `CalculateCrc32` из фактической
+Boot Services через указатель в System Table. Проверяются заполнение
+буфера, копирование из отдельного буфера и сдвиг с перекрытием, затем
+печатается адрес System Table в гостевой RAM. Собственный ABI, размеры и
+границы таблиц описаны в [профиле UEFI](../specs/UEFI_PROFILE.md#таблицы-uefi-и-boot-services).
+
+ROM SHA-256 `603bc0f24c499a34f4ad602dd2de287789f84b509bf5478bbc5db0ffa103de70`.
+При 128 и 256 МиБ release-машина дошла до `HLT` по `0x201412` за
+3 015 946 и 5 246 873 инструкций. При 128 МиБ первые 2 229 байт COM1
+совпали с эталоном S7-04. К ним добавилась одна строка, новое ожидаемое
+значение 2 297 байт. Из физической RAM после останова считаны полные таблицы.
+Python `zlib.crc32` отдельно проверил каждую контрольную сумму с нулевым
+полем CRC. Слоты утилит сверены с адресами символов в ELF. Проверены
+сигнатуры, размеры, редакция, нулевые поля, имя в UTF-16LE и указатели.
+
+| RAM, МиБ | System Table | CRC System Table | CRC Boot Services | CRC Runtime Services |
+|---|---|---|---|---|
+| 128 | `0x1ea690` | `0x67795215` | `0x0b93f285` | `0x529320ab` |
+| 256 | `0x775690` | `0x83dfab26` | `0x0b93f285` | `0x529320ab` |
+
+Вычисления используют уже существующие семантики paged-исполнителя.
+Гостевой профиль допускает регистровые `CMOVcc r32,r32` и
+`CALL r64`, `PUSH r64`, `NOT r32`, а также byte/dword `XOR` из памяти
+в регистр. Базовый paged-профиль сохраняет прежние допуски.
+
+В обоих прогонах с подачей байта `0xa5` через UART он считался ровно один
+раз. Вывод становился длиннее на 45 байт за счёт строки RX перед строкой
+Boot Services. Прошли 6 069 тестов `od-isa`, 2 144 теста `od-machine`
+(15 ignored), 5 CLI-тестов, 195 тестов firmware и 26 тестов сборщика.
+Проверены форматирование и сборка workspace, Graphify обновлён. Проверка
+структуры воспроизвела прежние 46 замечаний к отсутствующим локальным
+артефактам `work/`. Повторное независимое ревью не оставило замечаний.
+
+На Apple M3 Max с macOS 26.7.1 и Rust 1.99.0 сравнили два
+release-раннера на одном принятом ROM S7-04 (`e0c2e30e…`), при 128 МиБ
+и бюджете 6 млн инструкций. После одной прогревочной пары обе версии
+запускались ещё по 20 раз с чередованием порядка. Во всех запусках
+совпали RIP останова, 3 008 218 инструкций и полные 2 229 байт COM1.
+Медиана и p95 составили 1 504,49 и 1 544,93 мс до изменения и
+1 499,77 и 1 584,88 мс после него. Диапазоны перекрылись, а изменение
+медианы на 0,31% укладывается в разброс.
+
+### S7-05 — сервисы памяти UEFI
+
+Пять функций памяти доступны из диагностической Boot Services. Аллокатор
+BSP владеет дескрипторами и признаками владения в статических данных
+прошивки. `GetMemoryMap` снимает копию без выделений. Повторный вход
+проверяется до получения эксклюзивной ссылки. Тесты на host проверили
+нехватку буфера, сохранение выходных параметров на ошибках, OEM-тип,
+верхнюю границу адреса, отказ повторного входа и статусы крупных запросов.
+По замечаниям независимого ревью типы Conventional и MMIO Port Space
+сохраняются в карте, а поиск свободного диапазона учитывает владение.
+Ненулевой запрос выше ёмкости профиля даёт `EFI_OUT_OF_RESOURCES`.
+[Контракт сервисов](../specs/UEFI_PROFILE.md#сервисы-памяти).
+
+ROM SHA-256 `3aac6114e818518a75bbc0cdd01728cad2c60b5ef652afea34dac6085e7316ba`.
+При 128 и 256 МиБ release-машина остановилась по `HLT` по адресу
+`0x2013d2` после 3 021 287 и 5 252 356 инструкций. Гость вызвал все
+пять функций памяти через указатели таблицы. Снимок до аллокаций вернул
+`MapKey = 0x0b`, после выделения страниц и pool — `0x0d`, после
+освобождения — `0x0f`. Ошибки точного повторного выделения и повторного
+освобождения ключ не меняли. Блок pool расположен вне выделенных страниц,
+хотя оба диапазона помечены Conventional.
+
+По физической RAM и символам ELF независимо сверены восемь действующих
+указателей Boot Services и CRC-32 всех таблиц. Для 128 и 256 МиБ CRC
+System Table составили `0xfc9accfe` и `0x1d552534`. CRC Boot Services
+`0x399ced79` и Runtime Services `0x529320ab` одинаковы. Независимый
+расчёт из handoff и границ ELF воспроизвёл все 17 записей карты. Эталон
+по умолчанию составляет 2 363 байта и 28 строк CRLF. Подача байта `0xa5`
+добавляет ровно 45 байт диагностики RX и сохраняет исход успешного сценария.
+
+В гостевом профиле допущены `MOVSX r64,r8` с регистровым источником и
+`SUB r64,[mem]` с 64-битной адресацией. Вторая инструкция сохраняет
+регистры, флаги и RIP при отказе чтения.
+
+После исправлений независимое ревью `gpt-6.1-sol` high одобрило код,
+гостевые результаты и эталон. Прошли 6 071 тест `od-isa`, 2 144 теста
+`od-machine` (15 ignored), 5 CLI-тестов, 196 тестов firmware и 26 тестов
+сборщика. Проверены форматирование и сборка workspace. Graphify обновлён.
+Проверка структуры дала прежние 46 замечаний к отсутствующим артефактам
+`work/`.
+
+На Apple M3 Max с macOS 26.7.1 и Rust 1.99.0 сравнили два
+release-раннера на одном предыдущем ROM S7-05 (`603bc0f2…`), при 128 МиБ
+и бюджете 6 млн инструкций. После прогревочной пары выполнили ещё 20 пар
+с чередованием порядка. Все прогоны дали RIP `0x201412`, 3 015 946
+инструкций и один транскрипт COM1. Медиана и p95 составили 1 464,60 и
+1 593,63 мс до изменения, 1 461,12 и 1 543,04 мс после него. Диапазоны
+перекрылись. Изменение медианы на 0,24% укладывается в разброс прогонов.
+
+### S7-05 — привязки протоколов UEFI
+
+Диагностическая Boot Services содержит `InstallProtocolInterface`,
+`ReinstallProtocolInterface`, `UninstallProtocolInterface`,
+`HandleProtocol` и `LocateProtocol`. База хранит до 128 привязок.
+Её операции выполняются под общим с аллокатором доступом BSP. Тесты
+проверяют дубликаты, NULL-маркеры, несовпадающие указатели, сохранение
+идентификатора при переустановке и удаление последней записи. При
+исчерпании таблицы новый идентификатор остаётся доступен для следующей
+успешной установки. [Контракт базы](../specs/UEFI_PROFILE.md#база-протоколов).
+
+ROM SHA-256 `239697b1c1652cbb9b3fb00200f40e37580fc19a9eb71427fcf83cfc19f58f26`.
+Гость выделяет буфер через `AllocatePool`, записывает байт, устанавливает
+интерфейс, находит его по handle и GUID и читает байт через найденный
+указатель. Затем он заменяет интерфейс на NULL-маркер, удаляет привязку
+и проверяет отказ повторного поиска и обращения к прежнему handle. Байт
+из исходного буфера всё ещё читается до явного `FreePool`.
+
+Число инструкций до `HLT` по `0x201482` составило 3 024 881 при
+128 МиБ и 5 256 001 при 256 МиБ. На обеих конфигурациях вывод занял
+2 417 байт и 29 строк CRLF. Ввод байта `0xa5` через UART добавил
+45 байт RX. Из handoff независимо воспроизведены 17 начальных дескрипторов.
+По RAM и ELF сверены 13 работающих указателей. CRC System Table
+составили `0x401d8a29` и `0xa1d263e3`. CRC Boot Services `0xd53703a4`
+и Runtime Services `0x529320ab` совпали в обеих конфигурациях.
+
+Для чтения 16-битных полей GUID гостевой профиль допускает
+`MOVZX r32,word ptr [mem]` с 64-битной адресацией. Общая семантика
+переноса сохраняет регистры и RIP при отказе чтения.
+
+Независимое ревью `gpt-6.1-sol` high одобрило код, обе гостевые
+конфигурации и эталон. Прошли 6 072 теста `od-isa`, 2 144 теста
+`od-machine` (15 ignored), 5 CLI-тестов, 198 тестов firmware и 26 тестов
+сборщика. Форматирование и проверка workspace прошли. Graphify обновлён.
+Проверка структуры дала те же 46 замечаний к отсутствующим артефактам
+`work/`.
+
+На Apple M3 Max с macOS 26.7.1 и Rust 1.99.0 сравнили два
+release-раннера на одном предыдущем ROM S7-05 (`3aac6114…`), при 128 МиБ
+и бюджете 6 млн инструкций. После прогревочной пары выполнили ещё 20 пар
+с чередованием порядка. Во всех прогонах совпали RIP `0x2013d2`,
+3 021 287 инструкций и вывод COM1. Медиана и p95 составили 1 507,58 и
+1 627,52 мс до изменения, 1 513,34 и 1 576,16 мс после него. Диапазоны
+перекрылись. Изменение медианы на 0,38% укладывается в разброс.
+
+### S7-05 — открытие и закрытие протоколов
+
+База хранит до 128 записей открытий со счётчиками. В гостевом сценарии
+`BY_DRIVER` выдаёт указатель первому драйверу и возвращает
+`EFI_ALREADY_STARTED` с тем же указателем при повторе. Другой драйвер,
+удаление и переустановка получают `EFI_ACCESS_DENIED` до закрытия.
+`GET_PROTOCOL` возвращает указатель и позволяет переустановить привязку
+после `CloseProtocol` владельца. Повторное закрытие даёт `EFI_NOT_FOUND`.
+Host-тест также проверил счётчики, переполнение и очистку нескольких
+режимов за один вызов `CloseProtocol`.
+[Контракт открытий](../specs/UEFI_PROFILE.md#база-протоколов).
+
+ROM SHA-256 `bc86720ce88c51a2527839c854fb747eebd43e69c7bbd499385bdfc61c84499c`.
+Гость остановился по `HLT` на `0x201522` после 3 032 564 инструкций при
+128 МиБ и 5 263 684 при 256 МиБ. Повторная сборка дала побайтно одинаковый
+ROM. Из RAM сверены 15 действующих слотов,
+CRC System Table `0xe474450b` и `0x05bbacc1`, CRC Boot Services
+`0x87519e76` и Runtime Services `0x529320ab`. По handoff и границам ELF
+независимо проверены 17 дескрипторов. Три строки карты изменились вслед
+за ростом кода на одну страницу. Эталон состоит из 2 417 байт и 29 строк
+CRLF. UART с байтом `0xa5` добавляет 45 байт RX в обеих конфигурациях.
+
+Прошли 199 тестов firmware, 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры дала те же 46 замечаний к
+отсутствующим локальным артефактам `work/`. Независимое ревью
+`gpt-6.1-sol` high одобрило код, гостевые результаты и эталон.
+
+### S7-05 — перечисление протоколов и handles
+
+Гость запрашивает размер `LocateHandle`, затем получает три уникальных
+handle. `LocateHandleBuffer` возвращает двух агентов для одного GUID.
+`ProtocolsPerHandle` выдаёт копию GUID тестового интерфейса в общем
+с массивом указателей блоке. `OpenProtocolInformation` возвращает
+отдельные записи для драйвера и читающего агента с правильными agent,
+controller, режимом и счётчиком. Гость освобождает каждый выданный
+блок через `FreePool`. Host-тесты проверили фильтрацию, устранение
+дубликатов и чтение только тех указателей, которые нужны выбранному
+режиму. [Ограничения поиска](../specs/UEFI_PROFILE.md#база-протоколов).
+
+ROM SHA-256 `ea2f9fe07fb8ac3756ba6809052921245878757625e8d8b63f4a684f82ec4f02`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость остановился
+по `HLT` на `0x201522` после 3 041 877 и 5 273 111 инструкций.
+Из RAM и ELF независимо сверены 19 действующих слотов. CRC System Table
+составили `0x4b81f74b` и `0xaa4e1e81`. CRC Boot Services `0xe14fa6a1`
+и Runtime Services `0x529320ab` совпали для обеих конфигураций.
+Из handoff и границ ELF отдельно проверены все 17 начальных дескрипторов.
+Эталон по умолчанию составляет 2 417 байт и 29 строк CRLF. UART с
+байтом `0xa5` добавляет 45 байт RX в обеих конфигурациях.
+
+Прошли 201 тест firmware, 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`, проверка workspace и форматирование. Graphify
+обновлён. Проверка структуры дала прежние 46 замечаний для локальных
+артефактов `work/`. Независимое ревью `gpt-6.1-sol` high одобрило код,
+гостевые результаты и эталон.
+
+### S7-05 — поиск пути устройства
+
+`LocateDevicePath` выбирает handle с запрошенным протоколом по самому
+длинному совпавшему префиксу. Гость сравнивает два PCI-пути, проверяет
+остаток с именем файла и указатель на End при полном совпадении.
+Удаление запрошенной привязки у дочернего handle переключает результат
+на родителя. Поиск игнорирует второй экземпляр входного пути, сохраняет
+выходы при повреждённой длине и различает NULL выхода при отсутствии и
+наличии совпадения. Host-тесты проверили границу 64 КиБ, длины и маркеры
+End и пропуск повреждённого кандидата. [Формат и границы](../specs/UEFI_PROFILE.md#device-path).
+
+ROM SHA-256 `d8b6881cc7aac951bb34cfb0aa18c579cef81ab6e7a32af1ba4c4e6bfc0b5321`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость остановился
+по `HLT` на `0x201522` после 3 055 208 и 5 286 442 инструкций.
+Из RAM и ELF сверены 20 действующих слотов. CRC System Table составили
+`0x510fe15a` и `0xb0c00890`. CRC Boot Services `0xf14d72bd` и Runtime
+Services `0x529320ab` одинаковы. По handoff и границам ELF
+воспроизведены 17 начальных дескрипторов. Эталон составляет 2 417 байт и
+29 строк CRLF. Ввод байта `0xa5` добавляет 45 байт COM1.
+
+Гостевой профиль использует существующую семантику `INC r8`,
+`AND r8,byte ptr [mem]` и `CMP r/m8,r8` с регистровым первым
+операндом. Узкие тесты проверяют перенос, флаги сравнения и отсутствие
+записи результата при отказе чтения AND.
+
+Независимое ревью `gpt-6.1-sol` high одобрило код, физические результаты
+и эталон. Прошли 6 075 тестов `od-isa`, 2 144 теста `od-machine`
+(15 ignored), 5 CLI-тестов, 205 тестов firmware и 26 тестов сборщика.
+Форматирование и проверка workspace прошли. Graphify обновлён.
+Проверка структуры воспроизвела прежние 46 замечаний к отсутствующим
+локальным артефактам `work/`.
+
+На Apple M3 Max с macOS 26.7.1 и Rust 1.99.0 сравнили два
+release-раннера на прежнем ROM S7-05 (`ea2f9fe0…`), при 128 МиБ и бюджете
+6 млн инструкций. После прогревочной пары выполнили ещё 20 пар с
+чередованием порядка. Совпали RIP `0x201522`, 3 041 877 инструкций и
+вывод COM1. Медиана и p95 составили 1 525,48 и 1 650,32 мс до изменения,
+1 461,90 и 1 542,30 мс после него. Диапазоны 1 354–1 681 и 1 395–1 546 мс
+перекрылись.
+
+### S7-05 — пакетные операции с протоколами
+
+Гость вызывает обе функции через вариативные указатели Boot Services.
+Проверены пустой список и установка двух пар, где первая передаётся
+через регистры, а вторая занимает регистр и стек. Адаптер сохраняет
+регистровые аргументы в исходной области и вызывает обработчик с
+отдельной областью параметров. При позднем дубликате GUID или ошибке
+удаления ранние привязки сохраняются. Совпадающий полный Device Path
+с другого адреса даёт `EFI_ALREADY_STARTED`. Различие во втором
+экземпляре допускает отдельный handle. Host-тесты дополнительно проверили
+128 пар с завершителем, переполнение ёмкости, защиту `BY_DRIVER` и
+сохранение записей открытий при отказе.
+[Контракт пакетных операций](../specs/UEFI_PROFILE.md#база-протоколов).
+
+ROM SHA-256 `97de6f245031a87781eaa18d56758041b828d1beeca9802d404c0ce86cf8b130`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость остановился
+по `HLT` на `0x201522` за 3 068 880 и 5 300 114 инструкций.
+Из гостевой RAM и ELF сверены 22 действующих слота. CRC System Table
+составили `0x9c65b804` и `0x7daa51ce`. CRC Boot Services `0xa7ed2e90`
+и Runtime Services `0x529320ab` совпали. По handoff и границам ELF
+воспроизведены 17 дескрипторов. Эталон состоит из 2 417 байт и 29 строк
+CRLF. Ввод `0xa5` через UART добавляет 45 байт RX.
+
+Прошли 208 тестов firmware, 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры дала прежние 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, гостевые результаты и эталон.
+
+### S7-05 — события и TPL
+
+Диагностическая Boot Services поддерживает создание и закрытие событий,
+группы GUID, проверку, сигнализацию и управление TPL. В госте два сигнала,
+поданные при повышенном TPL, дают один callback. Вызов на TPL 8 запускает
+уведомление TPL 16 до возврата. `CheckEvent` вызывает `EVT_NOTIFY_WAIT`,
+после чего потребляет установленный сигнал. Участники группы видят
+единое сигнальное состояние до первого уведомления, а callback может
+закрыть своё событие. Host-тесты дополнительно проверяют FIFO для одного
+уровня, отмену ожидающего callback и недействительность старого токена.
+[Контракт событий](../specs/UEFI_PROFILE.md#события-и-tpl).
+
+Гостевому компиляторному пути понадобились qword `CMOVcc` и `OR` с
+источником в памяти, а также qword `INC` и `DEC` по RIP-relative адресу.
+Операции допущены в firmware-профиле. Тесты покрывают чтение источника
+`CMOVcc` при ложном условии, сохранение CF для `INC`/`DEC`, откат
+архитектурного состояния при ошибке доступа и соседние формы.
+
+ROM SHA-256 `79110d804082ddd76dbcab401fd934b0ca174adaa32e427fd57b95468397d2c1`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость остановился
+по `HLT` на `0x201692` за 3 072 535 и 5 303 769 инструкций. По RAM и ELF
+сверены 29 указателей Boot Services. CRC System Table составили
+`0xd1f25f2b` и `0x303db6e1`, CRC Boot Services `0x305e7f22`, CRC Runtime
+Services `0x529320ab`. По handoff и ELF воспроизведены 17 дескрипторов
+для каждого объёма RAM. Эталон 128 МиБ содержит 2 454 байта и 30 строк
+CRLF. Ввод `0xa5` в обоих прогонах добавил 45 байт RX.
+
+Прошли 211 тестов firmware, 6 078 тестов `od-isa`, 2 144 теста
+`od-machine` (15 `ignored`), 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры сохранила 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, гостевые результаты и эталон.
+
+Сравнение release-раннеров до и после изменения выполнялось на Apple
+M3 Max, macOS 26.7.1, Rust 1.99.0. Обе версии запускали прежний ROM
+(`97de6f24…`) при 128 МиБ с бюджетом 6 млн инструкций. После одной
+прогревочной пары выполнено 20 пар с чередованием порядка. Каждый
+прогон подтвердил `HLT` на `0x201522`, 3 068 880 инструкций и прежний
+COM1. Медиана составила 1 511,45 и 1 506,71 мс, p95 — 1 588,76 и
+1 637,86 мс, диапазоны — 1 416,73–1 589,77 и 1 419,52–1 731,82 мс.
+Разница медиан укладывается в разброс измерений.
+
+### S7-05 — уведомления об установке протоколов
+
+Диагностическая Boot Services выдаёт независимый ключ для каждой
+регистрации. Гость подтвердил выдачу существующей привязки после
+повторного запроса с достаточным буфером, выдачу одного handle из
+pool через другой ключ и отзыв обоих ключей при `CloseEvent`.
+Callback при установке, переустановке и пакетной установке повторно
+вызывает сервисы таблицы и читает опубликованные привязки. Ошибка
+пакета сохраняет значение выходного handle и число уведомлений.
+Host-тесты проверяют независимость курсоров и освобождение ёмкости.
+[Контракт базы протоколов](../specs/UEFI_PROFILE.md#база-протоколов).
+
+Firmware-профиль использует существующий tracked RMW для qword
+`INC`/`DEC` по адресу с регистровой базой. Проверены реальные
+`INC [RDI+0x1200]` и `INC [RSI+0x28]`, включая ошибку чтения и записи.
+Беззнаковая qword `MUL` с регистром использует общую семантику
+двух половин результата и определённости флагов. Гость использует
+`MUL RDX` в расчёте границы итерации по привязкам.
+
+ROM SHA-256 `ed50b30d24713a17e2a5a46232aca9662b1865478a97243a94c7a846e4b4de44`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость дошёл до
+`HLT` на `0x201692` за 3 095 566 и 5 326 851 инструкцию. По RAM и ELF
+сверены 30 действующих слотов Boot Services. CRC System Table составили
+`0xd9ad18c4` и `0x3862f10e`, CRC Boot Services `0xc41e17c9`, CRC Runtime
+Services `0x529320ab`. По handoff и ELF воспроизведены 17 дескрипторов
+в каждой конфигурации. Эталон 128 МиБ содержит 2 499 байт и 31 строку
+CRLF. Ввод `0xa5` добавил 45 байт RX при обоих объёмах RAM.
+
+Прошли 213 тестов firmware, 6 079 тестов `od-isa`, 2 144 теста
+`od-machine` (15 `ignored`), 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры сохранила 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, гостевые результаты и эталон.
+
+На Apple M3 Max, macOS 26.7.1, Rust 1.99.0 оба release-раннера
+запускали предыдущий ROM (`79110d80…`) при 128 МиБ с бюджетом 6 млн
+инструкций. После одной прогревочной пары выполнены 20 пар с
+чередованием порядка. Все прогоны подтвердили прежний COM1, `HLT` на
+`0x201692` и 3 072 535 инструкций. Медиана до и после составила
+1 489,30 и 1 517,79 мс, p95 — 1 642,59 и 1 582,08 мс, диапазоны —
+1 397,50–1 652,21 и 1 450,09–1 631,40 мс. Разница медиан укладывается
+в разброс измерений.
+
+### S7-05 — источник времени прошивки
+
+Гостевой `RDTSC` в профиле прошивки использует снимок виртуальных
+часов на входе в квант и число завершённых в нём инструкций. Значение
+переводится в такты с частотой из handoff. Машина увеличивает общие
+часы после кванта. Проверка со стартом в 1 нс и частотой 625 МГц
+получила значения 0 и 2 такта и итоговые 6 нс при бюджете одной
+инструкции и при одном кванте на весь поток. Обе ошибки переполнения
+возвращают типизированный результат машины, сохраняя `EDX:EAX`,
+`RIP` инструкции и состояние общих часов.
+
+ISA-тесты подтвердили ровно одно обращение к источнику для успешно
+декодированного `RDTSC`, разделение 64-битного значения, сохранение
+флагов и состояния при ошибке источника. При ошибке выборки или
+префиксе источник не вызывается. Следующий срез подключает таймеры
+Boot Services к этому источнику.
+[Правила опроса таймеров](../specs/FIRMWARE_BOOT.md#8-решение-3-модель-таймеров-и-событий).
+
+Существующий ROM (`ed50b30d…`) на 128 и 256 МиБ дошёл до прежнего
+`HLT` на `0x201692` с 3 095 566 и 5 326 851 завершённой инструкцией
+соответственно. COM1 и handoff совпали побайтно, в том числе при
+повторной проверке ввода `0xa5` через UART.
+
+Прошли 6 081 тест `od-isa`, 2 146 тестов `od-machine` (15 `ignored`)
+и 5 тестов `firmware_boot_cli`. Проверки форматирования и workspace
+завершены, Graphify обновлён. Проверка структуры сохранила 46 замечаний
+к локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, проверки часов и повторный гостевой прогон.
+
+Сравнение release-раннеров выполнено на Apple M3 Max, macOS 26.7.1,
+Rust 1.99.0. Обе версии запускали ROM `ed50b30d…` при 128 МиБ с
+бюджетом 6 млн инструкций. После одной прогревочной пары прошли 20 пар
+с чередованием порядка. Каждый прогон подтвердил прежний COM1,
+`HLT` на `0x201692` и 3 095 566 инструкций. Медиана до и после —
+1 529,51 и 1 559,91 мс, p95 — 1 678,53 и 1 631,22 мс, диапазоны —
+1 482,12–1 694,55 и 1 496,66–1 652,61 мс. Разница медиан укладывается
+в разброс измерений.
+
+### S7-05 — таймеры и ожидание
+
+Гость создал относительный и периодический таймеры через ABI Boot
+Services. `WaitForEvent` вернул индекс второго события и потребил его
+сигнал. Проверки подтвердили отказ при запрещённом TPL и индекс
+`EVT_NOTIFY_SIGNAL`. `Stall` выдержал запрошенную длительность по TSC.
+Несколько периодов под маской дали одно уведомление после `RestoreTPL`.
+Отмена остановила дальнейшие срабатывания. Host-тесты проверили
+округление, нулевой интервал, привязку следующего срока к прежнему
+и освобождение таймера при закрытии события.
+[Контракт таймеров](../specs/UEFI_PROFILE.md#таймеры-и-ожидание).
+
+При повторном прогоне с нарезкой оставшихся 200 000 инструкций на
+бюджеты от 89 до 201 гость остановился на 3 границах внутри
+`WaitForEvent` и на 230 внутри `Stall`. После возобновлений он дошёл до
+прежнего `HLT` с 3 165 882 завершёнными инструкциями, 3 165 882 нс
+виртуального времени и побайтно прежним COM1. Прогон состоял из
+3 922 квантов.
+
+Для скомпилированного расчёта сроков firmware-профиль использует
+существующую семантику `TEST` dword с непосредственной маской,
+qword `SHLD` и `SHRD`, `IMUL` с imm32, `SBB` между регистрами и
+беззнакового `DIV` регистра dword/qword. Тесты сверяют флаги,
+маскирование числа сдвигов, обе половины деления и отсутствие записи
+при ошибке деления.
+
+ROM SHA-256 `cb18866639fedd3f1b24d9243d6a7a1fb5e9af11cfc8f22ebaaad8ac1cf04f9b`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость дошёл до
+`HLT` на `0x2016b2` за 3 165 882 и 5 397 167 инструкций. По RAM и ELF
+сверены 33 указателя Boot Services. CRC System Table составили
+`0x754e3cfe` и `0x9481d534`, CRC Boot Services `0xbe842012`, CRC Runtime
+Services `0x529320ab`. По handoff и ELF воспроизведены 17 дескрипторов
+в обеих конфигурациях. Эталон 128 МиБ содержит 2 543 байта и 32 строки
+CRLF. Ввод `0xa5` добавил 45 байт RX.
+
+Прошли 216 тестов firmware, 6 084 теста `od-isa`, 2 146 тестов
+`od-machine` (15 `ignored`), 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры сохранила 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, гостевые проверки и эталон.
+
+На Apple M3 Max, macOS 26.7.1, Rust 1.99.0 release-раннеры запускали
+предыдущий ROM `ed50b30d…` при 128 МиБ с бюджетом 6 млн инструкций.
+После одной прогревочной пары выполнено 20 пар с чередованием порядка.
+Каждый прогон подтвердил прежний COM1, `HLT` на `0x201692` и
+3 095 566 инструкций. Медиана до и после — 1 515,82 и 1 531,12 мс,
+p95 — 2 189,41 и 2 061,67 мс, диапазоны — 1 448,65–2 848,70 и
+1 424,07–2 435,93 мс. Разница медиан укладывается в разброс измерений.
+
+### S7-05 — конфигурационные таблицы
+
+Гость вызвал `InstallConfigurationTable` для добавления, замены и
+удаления записей. Три уведомления для первого GUID увидели уже
+опубликованные записи. Добавление и удаление второго GUID изменили
+счётчик без вызова обработчика первого GUID. Замена при сохранении адреса
+и счётчика сохранила CRC System Table. Удаление последней записи
+восстановило NULL-указатель, ноль записей и исходный CRC. Первая
+вставка увеличила `MapKey` на единицу. Последующие операции
+переиспользовали блок с тем же ключом. Host-тесты также проверили
+уплотнение записей и переполнение ёмкости 32.
+[Контракт конфигурационных таблиц](../specs/UEFI_PROFILE.md#конфигурационные-таблицы).
+
+ROM SHA-256 `e9bd7d03b4eabc50e063adbc12e4a185eccb0c23173005ecadd72a7091f313d2`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость дошёл до
+`HLT` на `0x2016c2` за 3 180 131 и 5 411 472 инструкции. Сверены
+34 действующих слота по RAM и ELF. CRC System Table составили
+`0xecbda3ba` и `0x3d0201b1`, CRC Boot Services `0xbb6b9986`, CRC
+Runtime Services `0x529320ab`. Опубликованный массив находится по
+`0x7fff028` и `0xffff028`, каждый на одной странице
+`EfiRuntimeServicesData` с флагом `EFI_MEMORY_RUNTIME`. Из RAM
+прочитаны GUID и указатель на диагностическое содержимое. По handoff
+и ELF воспроизведены 17 начальных дескрипторов в обеих конфигурациях.
+Эталон 128 МиБ содержит 2 586 байт и 33 строки CRLF. Ввод `0xa5`
+добавил 45 байт RX.
+
+Прошли 218 тестов firmware, 26 тестов сборщика, 5 тестов
+`firmware_boot_cli` и целевой тест `IMUL` после удаления лишних
+скобок из условия сопоставления. Форматирование, проверка workspace
+и обновление Graphify завершены. Проверка структуры сохранила
+46 замечаний к локальным артефактам `work/`. Независимое ревью
+`gpt-6.1-sol` high одобрило код, гостевые результаты и эталон.
+
+### S7-05 — завершение Boot Services
+
+Диагностика привязала handle текущего диагностического вызова и выполнила `ExitBootServices`
+через ABI. Вызов с NULL handle вернул `EFI_INVALID_PARAMETER`.
+Обработчик BEFORE выделил страницу через pool `EfiLoaderData`.
+Это увеличило `MapKey`, поэтому первая попытка с прежним ключом
+завершилась отказом. После `GetMemoryMap` повтор дошёл до EXIT без
+повторного BEFORE. Выполнились оба обработчика EXIT, зарегистрированные
+через GUID группы и специальный тип `CreateEvent`. Обработчик EXIT
+выдержал 200 мкс через `Stall`. Взведённый до выхода таймер на 100 мкс
+остался остановлен на протяжении ожидания. После успеха диагностика
+использовала прямой COM1 и `HLT`.
+
+Host-тесты проверили отказ при неверном handle, TPL и повторном
+входе, заморозку изменения карты, снятие периодического таймера
+и его ожидающего уведомления. Отдельная проверка заполнила и затем
+сверила все семь обнулённых полей System Table, пересчёт CRC и сохранение
+Runtime Services и конфигурационных полей.
+[Контракт завершения Boot Services](../specs/UEFI_PROFILE.md#завершение-boot-services).
+
+ROM SHA-256 `497e3d3bb3f70615d5a8a0d3f25475ec15c94ce31039bd6123830939031f3cb9`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость дошёл до
+`HLT` на `0x2016d2` со счётчиками инструкций 3 386 902 и 5 618 281. По RAM и ELF
+сверены 35 слотов исходной Boot Services, включая `ExitBootServices`.
+Указатель на неё в System Table равен NULL. CRC System Table составили
+`0x37e9fd51` и `0x05c00182`, CRC Boot Services `0x8f116cf3`,
+CRC Runtime Services `0x529320ab`. В живой карте видны страницы
+`EfiLoaderData` из BEFORE по `0x7ffe000` и `0xfffe000`.
+Конфигурационный массив остался в соседней runtime-странице.
+По handoff и ELF воспроизведены 17 начальных дескрипторов для каждого
+объёма RAM. Эталон 128 МиБ содержит 2 649 байт и 34 строки CRLF. Ввод
+`0xa5` добавил 45 байт RX.
+
+Прошли 221 тест firmware, 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Проверки форматирования и workspace завершены,
+Graphify обновлён. Проверка структуры сохранила 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+выявило потерю TSC в обработчике EXIT. После исправления оно
+одобрило код, гостевые проверки и эталон.
+
+### S7-05 — watchdog
+
+Диагностика вызвала `SetWatchdogTimer` через ABI, проверила нулевой
+таймаут и отказ для зарезервированного кода. В конфигурации по умолчанию
+взведение вернуло `EFI_UNSUPPORTED`. На плате с `acpi_pm`,
+`acpi_tables` и `pci_ecam` тот же ROM взвёл watchdog, затем дошёл
+до выхода из Boot Services и `HLT` после 3 427 899 инструкций.
+Host-тесты подтверждают замену срока, однократное потребление
+действия сброса, отмену перед EXIT и полную ширину таймаута.
+[Контракт watchdog](../specs/UEFI_PROFILE.md#watchdog).
+
+Во втором прогоне на плате с ACPI гость был приостановлен после строки
+`watchdog armed` на повышенном TPL после 3 217 371 инструкции.
+Тест продвинул виртуальные часы на 1 секунду и возобновил гостя.
+Следующий опрос напечатал `0x0000000000010042`. Сброс через
+`OUT DX,AL` на `0x201efa` дал `MachineStopReason::Reset` с
+RIP `0x201efb` за ещё 1 295 инструкций, при времени 1 003 218 666 нс.
+
+Конфигурации с ACPI понадобились `SHR` qword с количеством из `CL`
+для проверки handoff и `SBB` qword с источником в памяти для сравнения
+срока. Firmware-профиль использует общие семантики количества сдвига,
+флагов, заёма и чтения до фиксации состояния. Тесты покрывают
+маскирование `CL`, чтение памяти и сохранение состояния при ошибке.
+
+ROM SHA-256 `aeba5d7b3b933e7a9783a9098c31db432649778642bcbad477abf62277a747a5`.
+Повторная сборка совпала побайтно. Стандартная плата при 128 и 256 МиБ
+дошла до `HLT` на `0x201712` после 3 388 871 и 5 620 250 инструкций.
+По RAM и ELF сверены 36 указателей исходной Boot Services, указатель
+на неё в System Table равен NULL. CRC System Table составили
+`0x6991ef09` и `0x5bb813da`, CRC Boot Services `0xc7b9a219`,
+CRC Runtime Services `0x529320ab`. Сверены 17 начальных дескрипторов
+на обоих объёмах RAM. Эталон 128 МиБ содержит 2 688 байт и 35 строк
+CRLF. Ввод `0xa5` добавил 45 байт RX.
+
+Прошли 224 теста firmware, 6 086 тестов `od-isa`, 2 146 тестов
+`od-machine` (15 `ignored`), 26 тестов сборщика и 5 тестов
+`firmware_boot_cli`. Форматирование, проверка workspace и обновление
+Graphify завершены. Проверка структуры сохранила 46 замечаний к
+локальным артефактам `work/`. Независимое ревью `gpt-6.1-sol` high
+одобрило код, гостевые проверки и эталон.
+
+На Apple M3 Max, macOS 26.7.1, Rust 1.99.0 release-раннеры запускали
+предыдущий ROM `497e3d3b…` при 128 МиБ с бюджетом 6 млн инструкций.
+Выполнены одна прогревочная пара и 20 пар с чередованием порядка.
+Каждый прогон подтвердил прежний COM1, `HLT` на `0x2016d2` и
+3 386 902 инструкции. Медиана до и после — 1 698,56 и 1 723,87 мс,
+p95 — 1 767,49 и 1 808,85 мс, диапазоны — 1 596,08–1 802,25 и
+1 565,18–1 815,69 мс. Разница медиан укладывается в разброс измерений.
+
+### S7-05 — события в runtime-памяти
+
+Диагностика создала регистрации в обработчике BEFORE. Legacy-тип через
+`CreateEventEx` вернул `EFI_INVALID_PARAMETER`, сохранив ключ и выход.
+`CreateEvent` с legacy-типом и `CreateEventEx` с GUID группы дали
+runtime-записи. Дополнительно создан runtime-таймер, а отдельное
+событие закрыто. Первая регистрация выделила массив и сменила `MapKey`.
+Остальные регистрации и закрытие сохранили этот ключ. Повторный
+`ExitBootServices` после BEFORE опубликовал адрес массива рядом с
+Runtime Services, за границей её ABI и CRC.
+
+Из гостевой RAM после выхода прочитаны три записи, включая оба
+типа изменения виртуальных адресов, группу, callback, context, TPL и
+тип таймера. Страница тестового callback имеет тип
+`EfiRuntimeServicesCode` и содержит однобайтовую инструкцию `RET`.
+Диагностика проверяет сохранение адреса. Вызов после переноса
+виртуальных адресов остаётся в S7-11. Прошивочный `IMUL` qword с
+imm8 для шага по массиву использует общий знаковый расчёт результата
+и флагов.
+[Контракт runtime-событий](../specs/UEFI_PROFILE.md#события-в-runtime-памяти).
+
+ROM SHA-256 `3494deda07002d6b0da16141fff12c6772215b0c608c65c6bbb5016d5c1519a5`.
+Повторная сборка совпала побайтно. При 128 и 256 МиБ гость дошёл до
+`HLT` на `0x201762` после 3 395 198 и 5 626 639 инструкций.
+Начальная карта содержала 17 сверенных дескрипторов. Из живой карты
+подтверждены Runtime Services по `0x7fff028` и `0xffff028` и массив
+по `0x7ffb028` и `0xfffb028` в `EfiRuntimeServicesData`.
+Сверены 36 исходных слотов, нулевой указатель Boot Services и CRC
+System Table `0x37476150`/`0xa9ebef33`, Boot Services `0xd0a36476` и
+Runtime Services `0x529320ab`. Эталон 128 МиБ содержит 2 727 байт и
+36 строк CRLF. Ввод `0xa5` добавил 45 байт RX. На плате с ACPI
+повторены обычный выход и `MachineStopReason::Reset` через watchdog.
+
+Прошли 225 тестов firmware, 6 086 тестов `od-isa`, 2 146 тестов
+`od-machine` (15 пропущены), пять CLI-тестов и 26 тестов сборщика ROM.
+Проверены форматирование и `cargo check --workspace --all-targets --offline`.
+Graphify обновлён. Проверка структуры воспроизвела те же 46 отсутствующих
+ссылок на локальные артефакты `work/`, что и исходный прогон.
+
+Стоимость расширения прошивочного профиля проверена на предыдущем watchdog ROM с
+128 МиБ RAM на Apple M3 Max, macOS 26.7.1, Rust 1.99.0. После прогрева
+выполнено по 20 чередующихся запусков `od-runner` в release-сборке.
+Обе версии дали одинаковые COM1, RIP `0x201712` и 3 388 871 инструкцию.
+Медиана, p95 и диапазон времени составили 1 693.16, 1 844.49 и
+1 556.65–1 874.77 мс до изменения и 1 685.26, 1 770.74 и
+1 547.81–1 856.03 мс после. Ускорение по этим прогонам не установлено.
+
+### S7-05 — завершение ABI таблиц UEFI
+
+Все 43 слота Boot Services и 14 слотов Runtime Services заполнены
+типизированными указателями. Зарезервированный слот Boot Services
+равен NULL. Проверка образов, счётчика и контроллеров вызывает службы
+через таблицу. Проверка реестра протоколов прошла цепочку
+`AllocatePool → InstallProtocolInterface → LocateProtocol →
+UninstallProtocolInterface → FreePool` и напечатала один протокол на
+диагностическом handle. Runtime-проверка вызвала пятиаргументный
+`GetVariable` через таблицу и сверила неизменные выходы.
+
+Ревью выявило расхождение между первоначальным планом и UEFI 2.11.
+План уточнён по §§7.3.12–13. Без Driver Binding `ConnectController`
+возвращает `EFI_NOT_FOUND`, а `DisconnectController` возвращает
+`EFI_SUCCESS` без управляющего открытия. При открытии `BY_DRIVER`,
+которое потребовало бы вызова Stop, возвращается `EFI_DEVICE_ERROR`
+с сохранением записи. Явно переданный driver handle отклоняется с
+`EFI_INVALID_PARAMETER` в диагностическом профиле без таких образов.
+Исправление и полный срез одобрены независимым `gpt-6.1-sol` high.
+[UEFI 2.11, §§7.3.12–13](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-connectcontroller).
+
+ROM 4 МиБ с SHA-256
+`e66a26ea5d35b0cb7128fc8f779aeb218c92c9185bd03e3fa2fcf64710aab93d`
+совпал побайтно с повторной сборкой. На 128 и 256 МиБ запуск дошёл до
+`HLT` на `0x201762` за 3 400 070 и 5 631 511 инструкций. Эталон COM1
+для 128 МиБ содержит 2 921 байт и 39 строк CRLF. Ввод `0xa5` добавил
+45 байт и 524 инструкции на обеих конфигурациях.
+
+Из гостевой RAM после выхода проверены все адреса по ELF, включая
+13 RT-возвратов `EFI_UNSUPPORTED` и адрес `ResetSystem` `0x206810`.
+Пересчитаны CRC по `HeaderSize`. System Table до выхода напечатала
+`0xd86dd0d8` и `0x95274ba2` для 128 и 256 МиБ, после выхода в RAM
+прочитаны `0xd01e8eb1` и `0x4eb200d2`. CRC Boot Services
+`0xed68797b` и Runtime Services `0xcb4c9ceb` совпали на обеих
+конфигурациях. Указатель Boot Services обнулён, три runtime-записи
+событий сохранены. Отдельный вход по адресу из живой RT-таблицы до
+выхода, с регистрами и стеком Win64, вызвал `ResetSystem(Cold,
+EFI_DEVICE_ERROR, 0, NULL)`. Без ACPI он записал тип и статус в
+COM1 и дошёл до `HLT` на `0x206fc2`. С ACPI та же проверка
+получила `MachineStopReason::Reset` на `0x206fae`. Watchdog с
+ACPI после продвижения часов на секунду также вызвал Reset.
+
+Прошли 227 тестов firmware, 26 тестов сборщика ROM, пять CLI-тестов,
+проверки форматирования и `cargo check --workspace --all-targets --offline`.
+Graphify обновлён. Проверка структуры воспроизвела 46 исходных отсутствующих
+ссылок на артефакты `work/`.
+
+Приёмка S7-05 относится к ядру Boot Services и диагностическому ABI.
+Передача таблиц загруженному EFI-образу проверяется в S7-06, реализации
+переменных и вызовов RT после выхода относятся к S7-09 и S7-11.
+[Поддержанный профиль UEFI](../specs/UEFI_PROFILE.md#таблицы-uefi-и-boot-services).
+
+### S7-06 — парсер PE32+
+
+Парсер читает PE32+ x64 из заимствованного буфера без аллокаций.
+Проверяются заголовки и размеры, различаются file offsets и RVA,
+а каталоги relocations и Security проверяются в соответствующих
+адресных пространствах. Сохранены позиция CheckSum и позиция записи
+Security, если она объявлена. Наполнение каталога relocations и
+сертификаты проверят следующие срезы. [Профиль PE32+](../specs/UEFI_PROFILE.md#формат-образов-pe32).
+
+Восемь тестов парсера включают три подсистемы, смещённый входной буфер,
+укороченный optional header, секции с raw padding и BSS, малое
+выравнивание, переполнения, пересечения и повреждённые диапазоны.
+Через библиотеку разобран отдельный образ, собранный `rustc 1.99.0`
+для `x86_64-unknown-uefi` с явным указателем на `efi_main` в данных.
+Парсер получил entry RVA `0x1000`, четыре секции и диапазон базовых
+relocations `0x4000..0x4018`, совпавшие с `llvm-objdump`.
+
+ROM с SHA-256
+`d1f49642dbf9926259006ae160a6399a78e7fa0ffa38f3b6b6e120014c31745f`
+воспроизведён побайтно. Диагностическая прошивка на 128 и 256 МиБ
+дошла до `HLT` на `0x201762` за 3 400 070 и 5 631 511 инструкций.
+Адреса функций, заголовки таблиц и CRC сверены с ELF и гостевой RAM.
+В эталоне COM1 изменилась CRC Boot Services (`0x51f91949`) после
+перекомпоновки адресов функций. Сценарий boot core пока не вызывает
+парсер. Прошли 235 тестов firmware, пять CLI-тестов, форматирование и
+`cargo check --workspace --all-targets --offline`.
+Graphify обновлён. Проверка структуры вернула 46 прежних ссылок на отсутствующие
+артефакты `work/`.
+
+### S7-06 — дайджест Authenticode
+
+`authenticode_digest` получает проверенный `PeImage` и вычисляет SHA-256
+по диапазонам Microsoft Authenticode v1.0. Перестановка записей секций
+в заголовке сохраняет порядок чтения их raw-данных по смещениям.
+Выбор хвоста использует счётчик байтов спецификации. Хеширование принимает
+certificate table в конце файла и исключает её байты.
+[Профиль Authenticode](../specs/UEFI_PROFILE.md#дайджест-authenticode).
+
+На host 16 вариантов PE дали те же байты, что независимый расчёт на
+Python `struct` и `hashlib`. Проверены unsigned, EOF-сертификат,
+изменения CheckSum и сертификата, raw padding, зазоры, порядок секций,
+файлы с отсутствующей записью Security и хвосты вокруг границ блока SHA-256.
+Для отдельного образа Rust из предыдущего среза дайджест равен
+`5321a69511695700f7c7b6047fa19ac1423d8f9cd1d547c594d5dc6c927c6c2c`.
+[Независимый расчёт](../../firmware/uefi/tests/authenticode_reference.py).
+
+`sha2 =0.11.1` успешно собран под `x86_64-unknown-none` с
+`--locked --offline` и `sha2_backend="soft"`. Стандартный backend дал
+ошибку LLVM на freestanding target. Граф активных зависимостей не содержит
+`libc`. Runtime-ветвь проверяется отдельно от сборки. Пробный ROM вызвал
+парсер и остановился в профиле CPU на `TEST r/m32,r32` (`85 4c 24 0c`,
+RIP `0x20d6e3`), до хеширования. Проверка выравнивания использует маски
+проверенных степеней двойки. [ISSUE-594](../KNOWN_ISSUES.md#issue-594).
+
+Штатный ROM
+`d492d9a12f966053c866ea09740e62a515b7e73cc477f9a530482907d3051b7c`
+воспроизведён побайтно. На 128 и 256 МиБ `HLT` на `0x201742`
+достигнут за 3 400 070 и 5 631 511 инструкций. В точном эталоне COM1
+CRC Runtime Services равен `0x31d8516a`. Дайджест в штатной
+диагностике пока не вызывается. Прошли 240 тестов firmware, пять
+CLI-тестов, форматирование и проверка workspace. Graphify обновлён,
+проверка структуры вернула 46 прежних ссылок на локальные данные `work/`.
+
+### S7-06 — гостевой парсер PE32+
+
+Пробный ROM с вызовом `PeImage::parse` прочитал тот же собственный PE32+
+от Rust. Для исполнения прошивочный профиль допускает
+`TEST m32,r32` (`85 4c 24 0c`), `AND r32,m32` (`23 54 24 04`)
+и `ADD r32,m32` (`46 03 4c 06 10`). Каждая форма обнаружена при
+возобновлении реального гостевого прогона. Все три используют
+действующие семантику ALU и путь чтения операнда. При ошибке чтения
+RIP, флаги и регистры сохраняются. Проверка базового paged-профиля
+возвращает `Unsupported` для этой формы `TEST`.
+
+На 128 МиБ ROM
+`c38d6bbc9c4fe9cf7e42ece3a6d234be49f2de98c879f2e90d055b0cb3db654c`
+напечатал `OD-FW Authenticode parsed`, затем после 3 019 351 инструкции
+остановился на `bswap eax` (`0f c8`) в SHA-256 по адресу `0x2164d7`.
+Гостевой парсер подтверждён. Проверка самого гостевого дайджеста
+продолжилась в следующем срезе. [ISSUE-594](../KNOWN_ISSUES.md#issue-594), [ISSUE-595](../KNOWN_ISSUES.md#issue-595).
+
+Штатный ROM на 128 и 256 МиБ дошёл до `HLT` на `0x201742` через
+3 400 070 и 5 631 511 инструкций. COM1 на 128 МиБ побайтно совпал
+с эталоном. Ввод RX сохранил разницу 45 байт и 524 инструкции.
+Прошли 6 090 тестов `od-isa`, 2 146 тестов `od-machine`
+(15 пропущены), 240 тестов firmware, пять CLI-тестов и 26 тестов сборщика.
+Проверены форматирование и workspace, обновлён Graphify, проверка
+структуры воспроизвела 46 прежних ссылок на отсутствующие данные `work/`.
+
+Влияние допуска на штатную загрузку измерено на предыдущем ROM
+`d492d9a1…3051b7c` с 128 МиБ. На Apple M3 Max, macOS 26.7.1 и Rust
+1.99.0 после прогрева выполнено по 20 чередующихся запусков двух
+release-сборок. Во всех запусках совпали COM1, 3 400 070 инструкций
+и RIP `0x201742`. Медиана, p95 и диапазон составили 1 688.49,
+1 756.13 и 1 563.29–1 839.36 мс до изменения и 1 623.56, 1 715.30
+и 1 541.50–1 761.58 мс после. Эти прогоны используются для проверки
+регрессии. Ускорение по ним не установлено.
+
+### S7-06 — гостевой дайджест Authenticode
+
+Тот же пробный ROM вычислил SHA-256 программным backend RustCrypto и
+сравнил все 32 байта с независимым Python-значением
+`5321a69511695700f7c7b6047fa19ac1423d8f9cd1d547c594d5dc6c927c6c2c`.
+В гостевом COM1 появилась строка `OD-FW Authenticode matches reference`,
+далее release-прогон дошёл до `HLT` на `0x201752` через 3 563 385
+инструкций при 128 МиБ и 5 794 826 при 256 МиБ.
+[ISSUE-595](../KNOWN_ISSUES.md#issue-595).
+
+Допуск прошивочного профиля опирается на остановы того же ROM:
+
+- `BSWAP r32/r64` — `0f c8` для слов сообщения и `49 0f cf` для счётчика битов.
+- `ROL r32,imm8` — `c1 c0 1a` для раунда SHA-256. Тесты проверяют счётчики
+  0, 1, 26, 31, 32 и 33, обнуление старшей половины регистра и определённость
+  `CF` и `OF`. Обнуление для 0 и 32 также наблюдалось при исполнении
+  x86_64 Mach-O через Rosetta на M3.
+- `ADD m32,r32` (`01 7c 24 34`) и `SUB m64,r64`
+  (`48 29 84 24 80 00 00 00`) используют существующую транзакцию
+  чтения и записи. Проверены соседние байты и состояние при ошибках
+  чтения и записи.
+- `ADD r8,r8` (`45 00 f7`) и `XOR r64,imm8` (`49 83 f6 3f`)
+  используют общую семантику ALU, включая байтовые алиасы и
+  знаковое расширение immediate.
+
+Для явного scalar load, пересекающего границу 4 КиБ, адаптер firmware
+использует существующее ограниченное чтение Word, Dword или Qword.
+Наблюдаемая форма — `8b 69 38` с операндом по `0x21bfff`. Машинные
+тесты подтвердили три ширины на двух несмежных read-only страницах с A-битами
+без D. При отсутствии второй страницы `#PF` содержит её адрес,
+инструкция остаётся незавершённой и регистры сохраняются. Неподкреплённый
+физический диапазон сохраняет классификацию `OperandPhysical`.
+
+Штатный ROM на 128 и 256 МиБ дошёл до `HLT` на `0x201742` через
+3 400 070 и 5 631 511 инструкций. Эталон COM1 для 128 МиБ совпал
+побайтно. Ввод RX добавил 45 байт и 524 инструкции на обеих
+конфигурациях.
+
+Прошли 6 095 тестов `od-isa`, 2 149 тестов `od-machine`
+(15 пропущены), 240 тестов firmware, пять CLI-тестов и 26 тестов
+сборщика. Проверены форматирование и workspace, обновлён Graphify.
+Проверка структуры воспроизвела 46 исходных ссылок на отсутствующие
+локальные артефакты `work/`.
+
+В двух сериях по 20 пар на штатном ROM с 128 МиБ медиана при
+встроенной обработке отказа чтения выросла с 1 663.96 до 1 767.81 мс
+и с 1 692.49 до 1 739.16 мс. Затем сравнили базу, встроенную и
+вынесенную обработку на Apple M3 Max с macOS 26.7.1 и Rust 1.99.0.
+После прогрева выполнили 24 прогона каждого варианта в группах по три
+с равномерной перестановкой порядка. Все результаты дали точный COM1,
+`HLT` на `0x201742` и 3 400 070 инструкций.
+
+| Обработка отказа | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База | 1 758.38 | 2 147.16 | 1 607.67–2 826.58 |
+| Встроенная | 1 761.71 | 2 126.28 | 1 657.27–2 781.47 |
+| Вынесенная | 1 703.92 | 1 988.07 | 1 582.32–1 989.35 |
+
+Выбрана вынесенная обработка. В 20 из 24 групп она завершилась быстрее
+встроенной, медиана парной разницы составила −84.00 мс. Этот выбор
+подтверждён для указанного сценария загрузки.
+
+
+### S7-06 — отображение PE32+ и relocations
+
+`pe::load_into` записывает заголовки и секции в переданный буфер.
+Блоки relocations проходят предварительную проверку до первой записи.
+Тесты охватывают BSS, raw padding, смежные и перекрывающиеся цели,
+неподдерживаемые типы, усечённые блоки и сохранение буфера при ошибке.
+[Профиль PE32+](../specs/UEFI_PROFILE.md#формат-образов-pe32).
+
+Независимый Python-расчёт сверил заголовки, секции, нулевые диапазоны
+и участки DIR64 у файла, собранного Rust 1.99.0 для `x86_64-unknown-uefi`.
+SHA-256 файла `0655b4b1f8b2b17da2123f46f9dbe1a4488d88d0d51bbebe38051b96bb612fa4`.
+На host все 20 480 байт совпали на базах `0x140000000`, `0x200000` и
+`0xc000000000000000`. Пробный ROM загрузил тот же образ с расчётной базой
+`0x200000` в диагностический буфер по GPA `0x220140`. Полный буфер,
+прочитанный из RAM после `HLT`, совпал с Python-эталоном при 128 и 256 МиБ.
+SHA-256 буфера `9b0bedb15de3cfa08fa7613371cb030de5e158a8d93d904e7d79a8e83a37ceeb`.
+На RVA `0x2000` и `0x3020` получены `0x201000` и `0xfffffffec0200000`.
+Точка входа по отчёту загрузчика `0x201000`, за диапазоном образа
+сохранились все 16 контрольных байт `0xa5`. Пробный ROM
+`ce17b6fdcc63e5323296f0cb59b8c6490712f64feb7e29a2a363bbf9a55753d6`
+дошёл до `HLT` на `0x201752` через 3 404 018 и 5 635 459 инструкций.
+
+Прошивочный профиль допустил две формы с этого пути. `40 80 e5 01`
+исполняет `AND BPL,1` при чтении флага COFF. `66 41 bb 01 00`
+исполняет `MOV R11W,1` при проверке relocations. Тесты проверяют
+сохранение старших битов, байтовый алиас с REX, флаги и отказ базового
+профиля для расширенного 16-битного регистра.
+
+Штатный 4 МиБ ROM сохранил SHA-256
+`d492d9a12f966053c866ea09740e62a515b7e73cc477f9a530482907d3051b7c`.
+При 128 и 256 МиБ он дошёл до `HLT` на `0x201742` через 3 400 070 и
+5 631 511 инструкций. Эталон COM1 для 128 МиБ совпал побайтно. Ввод RX
+добавил 45 байт и 524 инструкции при каждом объёме RAM.
+
+На Apple M3 Max с macOS 26.7.1 и Rust 1.99.0 выполнено 20 парных
+release-прогонов `od-runner boot-firmware --budget 6000000` при 128 МиБ
+на этом же ROM после прогрева, с чередованием порядка бинарников.
+В каждой паре подтверждены COM1, RIP и число инструкций.
+
+| `od-runner` | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База `2c5378c` | 1 635.46 | 1 755.78 | 1 530.66–1 821.97 |
+| С допусками AND и MOV | 1 646.74 | 1 773.00 | 1 514.04–1 788.16 |
+
+Медиана парной разницы −1.24 мс при диапазоне −163.64…+150.16 мс.
+Новый бинарник завершился быстрее в 11 из 20 пар. Изменение времени
+штатной загрузки этим замером не подтверждено.
+
+Независимое ревью `gpt-6.1-sol` high одобрило код. Прошли 6 097 тестов
+`od-isa`, 2 149 тестов `od-machine` (15 пропущены), 246 тестов firmware,
+пять CLI-тестов и 26 тестов сборщика. Проверены форматирование и workspace,
+обновлён Graphify. Проверка структуры воспроизвела исходные 46 ссылок
+на отсутствующие локальные артефакты `work/`.
+
+### S7-06 — архив FV и тестовые приложения
+
+`build_firmware.py --with-test-apps` собирает собственные `hello.efi` и
+`ebs.efi` в отдельном Cargo-проекте с `--locked --offline`. Каждый PE32+
+имеет подсистему 10, четыре секции и каталог relocations `0x4000..0x4018`.
+В архиве по именам `ebs` и `hello` лежат исходные PE по 3 072 байта.
+Весь архив занимает 6 192 байта, SHA-256
+`d0e0729993e29367ccc6e03651c82da5641cf3e6a7e7f596573881d3dd4dde5d`.
+[Формат FV](../specs/UEFI_PROFILE.md#встроенный-архив-fv).
+
+Две чистые сборки с разными target-каталогами дали побайтно равные PE,
+архив и 4 МиБ ROM. SHA-256 ROM
+`b199812cd56222e159a955b702860cb88d8f263c2454442d7cadbf29f4c34f58`.
+Настройки `lld-link` `/Brepro` и `/debug:none` убрали зависимость метаданных
+PE от времени и пути PDB. [Механизм `/Brepro`](https://blog.llvm.org/2019/11/deterministic-builds-with-clang-and-lld.html).
+
+Пробный ROM `22359bfc0b316224f329c9058f97905f629fb20d206b5d02f85076cd8e2a86b0`
+разобрал оба файла из read-only GPA `0x218612`, подтвердил наличие
+relocations и отказ поиска отсутствующего имени. На 128 и 256 МиБ
+он напечатал `OD-FW built-in FV parsed hello and ebs`, затем дошёл до
+`HLT` на `0x201752` через 3 464 542 и 5 695 983 инструкции. Проба с
+одним изменённым байтом файла и пересчитанным внешним CRC ROM дошла
+до `OD-FW STOP code=0x30 detail=0x000000000000606B` на внутренней
+проверке CRC архива. Запуск EFI-точек входа проверяется в срезе Boot
+Services для образов.
+
+Штатный ROM с пустым архивом имел SHA-256
+`815e34279c0dc5c487f1c5f43455caa384445bcdff236a7b89ead8fd7fac3c01`.
+При 128 и 256 МиБ обе сборки дошли до `HLT` на `0x201742` через
+3 400 070 и 5 631 511 инструкций. Штатный COM1 для 128 МиБ совпал
+с эталоном побайтно. В варианте с приложениями read-only диапазон
+прошивки вырос на одну страницу. Число инструкций и условия ввода
+RX совпали со штатным вариантом.
+
+Независимое ревью `gpt-6.1-sol` high одобрило архив, ABI приложений
+и воспроизводимость. Прошли 252 теста firmware и 30 тестов сборщика,
+проверено форматирование, обновлён Graphify. Проверка структуры
+воспроизвела исходные 46 ссылок на отсутствующие артефакты `work/`.
+
+### S7-06 — физический LoadImage
+
+Вызов `LoadImage` из буфера с NULL Device Path подготавливает изменение
+карты и проверяет identity PTE до первой записи. После копирования и
+DIR64 прошивка публикует `EFI_LOADED_IMAGE_PROTOCOL` и NULL marker
+`EFI_LOADED_IMAGE_DEVICE_PATH_PROTOCOL`. Перед уведомлениями установлены
+типы страниц, права секций и выходной handle. `UnloadImage` возвращает
+страницы в conventional RAM с RW/NX и снимает регистрацию handle.
+[Поддержанный профиль](../specs/UEFI_PROFILE.md#сервисы-загрузки-образов-и-монотонного-счётчика).
+
+Гостевой release-прогон ROM
+`8d62bc790ab7f0d8ef27b122e7e5c6f3d60b00c2532df985d65ee6659266262a`
+вызвал через таблицу Boot Services загрузку `hello` из буфера FV.
+Проверены оба протокола, родитель, System Table и типы памяти.
+`FreePages` отклонил освобождение пяти страниц, `UnloadImage` освободил
+их, обращения по старому handle вернули `EFI_INVALID_PARAMETER`.
+Повторная загрузка получила тот же GPA, свежий handle и подтвердила
+восстановление исходных RW/NX страниц через preflight загрузчика.
+
+Независимый расчёт по исходному PE совпал с каждым из 20 480 байт
+гостевого образа. Исполняемая страница по RVA `0x1000` была RX и
+`EfiLoaderCode`. Остальные четыре страницы были RO/NX и `EfiLoaderData`.
+В листовых PTE сохранились A/D и identity PFN. Точка входа ещё не
+вызывалась в этой пробе.
+
+| RAM, МиБ | База | DIR64 по RVA `0x2000` и `0x3020` | Инструкции до `HLT` `0x201782` |
+|---:|---|---|---:|
+| 128 | `0x7ff9000` | `0x7ffb008`, `0xfffffffec7ff9000` | 3 483 753 |
+| 256 | `0xfff9000` | `0xfffb008`, `0xfffffffecfff9000` | 5 715 269 |
+
+Прошивочный профиль допустил четыре наблюдавшиеся формы.
+
+| Байты | Инструкция | Участок |
+|---|---|---|
+| `04 fd` | `ADD AL,-3` | Классификация ошибки PE |
+| `45 2b 51 ec` | `SUB R10D,[R9-0x14]` | Размер участка карты |
+| `48 f7 d0` | `NOT RAX` | Проверка прав PTE |
+| `49 23 1b` | `AND RBX,[R11]` | Изменение прав PTE |
+
+Штатный ROM `a782ceda8b0a01148d4889857b1aa6dd0aaa865cfb109a9992f1cfa17150c99a`
+дошёл до `HLT` на `0x201772` через 3 401 667 и 5 633 107 инструкций
+на 128 и 256 МиБ. Приём RX добавил 45 байт и 524 инструкции в обеих
+конфигурациях. Обновлённый эталон на 128 МиБ содержит 2 921 байт и
+39 CRLF. Изменились три строки областей ROM shadow и строка CRC
+таблиц. Для 128 МиБ CRC составили `67e36828` (ST), `4028e120` (BS),
+`e7cd2087` (RT).
+
+Измерение изолировало допуски ISA от смены ROM. На Apple M3 Max,
+macOS 26.7.1 и Rust 1.99.0 оба release-бинарника `od-runner`
+загрузили один и тот же прежний ROM `815e34279c0dc5c487f1c5f43455caa384445bcdff236a7b89ead8fd7fac3c01`
+с 128 МиБ и бюджетом 6 000 000 инструкций. После прогрева выполнено
+20 пар с чередованием порядка. Каждый прогон дал тот же COM1,
+`HLT` на `0x201742` и 3 400 070 инструкций.
+
+| `od-runner` | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База `0214e1a` | 1 646.75 | 1 753.61 | 1 526.38–1 793.35 |
+| С четырьмя допусками | 1 663.91 | 1 776.32 | 1 576.99–1 880.38 |
+
+Медиана парной разницы +12.19 мс при диапазоне −201.33…+203.18 мс.
+Новый бинарник завершился быстрее в 7 из 20 пар. Изменение скорости
+штатной загрузки остаётся неопределённым по этой серии.
+
+Независимое ревью `gpt-6.1-sol` high одобрило загрузчик и допуски ISA.
+Прошли 6 101 тест `od-isa`, 2 149 тестов `od-machine` (15 пропущены),
+257 тестов firmware, пять CLI-тестов и 30 тестов сборщика.
+Проверены форматирование и workspace, обновлён Graphify. Проверка
+структуры воспроизвела 46 исходных ссылок на отсутствующие `work/`.
+
+### S7-06 — StartImage и Exit
+
+`StartImage` выделяет отдельный стек 256 КиБ RW/NX с guard-страницей.
+Ассемблерный шлюз сохраняет стек, флаги, регистры и FP-контекст
+вызывающего, затем устанавливает `FCW=0x037f`, `MXCSR=0x1f80`, `DF=0`,
+`IF=1` и вызывает EFI entry с 32 байтами shadow space. Обычный возврат
+и `Exit` восстанавливают контекст в одном месте. `Exit` передаёт
+управление шлюзу после освобождения BSP guard. Вложенный запуск
+временно меняет активный handle для `ExitBootServices`.
+[Профиль образов](../specs/UEFI_PROFILE.md#сервисы-загрузки-образов-и-монотонного-счётчика).
+
+Релизные прогоны при 128 и 256 МиБ подтвердили пять сценариев.
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| `hello` возвращает `EFI_SUCCESS`, после возврата handle освобождён | `7d9d0335785d7d946a98261083b3af9b48ae459c7fe6da924473f82e28defec5` | 3 482 757 / 5 714 273 |
+| `Exit` возвращает `EFI_LOAD_ERROR` и байты `41 00 00 00 a5` | `646ee61885f9514e50f799c91dc2baa28b5a34ee8b872d9e0b5d715e9ddc4f7c` | 3 504 812 / 5 736 480 |
+| `ebs` завершает Boot Services и выводит `!` в COM1 | `913a444530189156d8e1468b51a1433c6eca46203792e8894b7b816de4df1108` | 3 266 885 / 5 498 287 |
+| Родитель запускает `hello`, возвращает себе право EBS и выводит `!` | `392055a8423810d609caba50be17555c9cf332de69212d7dd3388e0b741728ed` | 3 289 246 / 5 520 724 |
+| EFI-приложение проверяет IF при входе, подъёме и восстановлении TPL | `24218b8e1a0535a620101b3fbd26b72d42c368d5b195b000e68024db67cb4c21` | 3 485 052 / 5 716 568 |
+
+Для `Exit` вызывающий освободил полученный буфер через `FreePool`.
+Второй запуск с NULL выходом оставил размер 43. В `ebs` и вложенной
+пробе поле BootServices системы стало NULL. `HLT` выполнен внутри
+образа. При остановке `FCW` и `MXCSR` совпали с EFI-профилем, IF и DF были
+сброшены. Чтение активных таблиц подтвердило 64 RW/NX страницы стека и
+неотображённую guard-страницу по `0x7fb8000` и `0xffb8000` на 128 и 256 МиБ.
+Для `hello` и `Exit` штатная диагностика продолжилась на
+исходном стеке и дошла до `HLT` на `0x201782`.
+Проба TPL подтвердила IF=1 на входе, IF=0 после подъёма до
+`TPL_HIGH_LEVEL` и повторного вызова на том же уровне, IF=1 после
+восстановления TPL и сохранение исходного IF вызывающего после возврата.
+
+Прошивочный профиль использует то же FP-состояние vCPU, что CPL0-set.
+Тест с двумя квантами сверил FCW, MXCSR и XMM12 через FXRSTOR64 и FXSAVE64.
+Точные формы шлюза `9c`, `9d`, `fb`, `48 0f ae 40 40` и `48 0f ae 4b 40`
+переиспользуют семантику стековых флагов и формата FX. Для guard-страницы
+допущен `80 f2 01` (`XOR DL,1`). Пролог `ebs` использует `48 85 64 24 08`
+и `c9` для проверки страниц стека и восстановления `RBP`/`RSP`. Тесты
+проверяют отказ чтения, invalid MXCSR и сохранение STI shadow при fault.
+
+Штатный ROM `14f8f225a7dc06a9876afa8dadb22c7a2ca19436598c809cdb2aa03a549bb151`
+дошёл до `HLT` на `0x201772` после 3 401 951 и 5 633 391 инструкций.
+RX добавил 45 байт и 524 инструкции для каждого объёма RAM. В новом
+эталоне 2 921 байт и 39 CRLF. Изменились три строки ROM shadow и
+CRC таблиц ST `64f5fe52` и BS `a7450b17` на 128 МиБ.
+
+Чтобы изолировать изменения CPU от изменений ROM, оба release-бинарника
+загружали один и тот же прежний ROM с 128 МиБ и бюджетом 6 000 000.
+Apple M3 Max, macOS 26.7.1, Rust 1.99.0. После прогрева выполнено
+20 пар с чередованием порядка. Каждый прогон дал эталонный COM1,
+`HLT` на `0x201772` и 3 401 667 инструкций.
+
+| `od-runner` | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База `94d86ac` | 1 679.89 | 1 904.96 | 1 560.69–1 909.01 |
+| С исполнителем EFI-вызова | 1 698.58 | 1 829.55 | 1 633.22–1 850.03 |
+
+Медиана парной разницы +15.34 мс при диапазоне −215.96…+242.65 мс.
+Новый бинарник завершился быстрее в 8 из 20 пар. Изменение скорости
+штатной загрузки остаётся неопределённым по этой серии.
+
+Реализация прошла независимое ревью `gpt-6.1-sol` high. Прошли
+6 106 тестов `od-isa`, 2 150 тестов `od-machine` (15 пропущены),
+257 тестов firmware, пять CLI-тестов и 30 тестов сборщика. Проверены
+форматирование и workspace, обновлён Graphify. Проверка структуры
+воспроизвела исходные 46 ссылок на отсутствующие артефакты `work/`.
+
+### S7-06 — выгрузка драйвера и изменения базы handles
+
+`UnloadImage` читает callback из текущего зарегистрированного Loaded Image
+и вызывает его на отдельном стеке с временно приостановленным правом
+текущего образа на `Exit` и `ExitBootServices`. Повторная выгрузка
+выполняемого callback отклоняется. Только `EFI_SUCCESS` переводит образ
+к освобождению памяти и протоколов. После ошибки или предупреждения
+драйвер остаётся резидентным. Если освобождение после успешного вызова
+нужно повторить, callback повторно не запускается.
+
+`StartImage` сравнивает handles и ревизии привязок до передачи
+управления и после завершения образа. Для каждого нового или изменённого
+handle, который ещё существует, вызывается `ConnectController` с
+`Recursive=TRUE` после освобождения BSP guard. Тест реестра проверяет
+замену интерфейса, удаление привязки с сохранением handle, переиспользование
+слота, исчезновение handle и отсутствие повторов в списке подключений.
+[UEFI 2.11, §§7.4.2–7.4.3](https://uefi.org/sites/default/files/resources/UEFI_Spec_Final_2.11.pdf).
+
+На 128 и 256 МиБ собственный PE32+ Boot Service Driver прошёл проверку
+NULL callback, замены Loaded Image через `ReinstallProtocolInterface`,
+NULL-интерфейса, ошибки, предупреждения и успеха. При ошибке и
+предупреждении handle и интерфейс остались доступны. Последний вызов при
+`TPL_CALLBACK` сохранил TPL, вывел `U` и освободил handle. Внутри
+callback проверены статусы повторной выгрузки и `Exit`. Трассировка
+во второй пробе зарегистрировала по одному вызову `ConnectController`
+для изменённого image handle и нового handle с `Recursive=TRUE` и
+NULL аргументами списка драйверов и оставшегося пути.
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| Выгрузка, включая замену протокола | `592dbcf9df03833e25512bd60d9a0bfb56dbf2089cc040f886aa1ed2e7415386` | 3 490 536 / 5 722 204 |
+| Выгрузка и трассировка вызовов подключения | `2caf63b0de32d471aa6fed0c34289ad04984ba26c66bf5e9eef5289a6255aeb8` | 3 493 976 / 5 725 644 |
+| Штатный ROM без входных байтов COM1 | `e20407f6566530a8760e6a0876437aab90bd713001a3676a80cd4faa6d93ad4e` | 3 401 985 / 5 633 425 |
+
+Штатная прошивка остановилась на `0x201772`. При вводе RX `A5`
+добавились 524 инструкции и 45 байт. Эталон для 128 МиБ содержит
+2 921 байт и 39 CRLF. Изменились три строки отображения ROM shadow
+и CRC таблиц ST `3a8dec0a` и BS `9c6f66d6`.
+
+На обоих объёмах памяти повторены пять сценариев предыдущего среза.
+В пробе обычного возврата `hello` добавилось 4 222 гостевых инструкции
+относительно предыдущего ROM. Сравнение базы выполняется на границе
+вызова образа. Суммарное время исполнения отдельно не измерялось.
+Прошли 258 тестов прошивки и 30 тестов сборщика. Код и гостевые
+результаты проверены независимо с `gpt-6.1-sol` high.
+
+### S7-06 — Device Path Utilities
+
+На отдельном handle опубликован `EFI_DEVICE_PATH_UTILITIES_PROTOCOL`.
+Гостевая проба получила интерфейс через `LocateProtocol` и вызвала
+все восемь функций. Проверены NULL и короткий заголовок, точные байты
+копий, последовательная и многоэкземплярная склейка, нулевое
+содержимое нового узла и освобождение результатов через `FreePool`.
+Добавление `End Instance` создало пустой последний экземпляр,
+извлечённый как `End Entire`. При запрете аллокаций в уведомлении
+`ExitBootServices` операция извлечения вернула NULL и сохранила
+указатель и длину. Исходный многоэкземплярный путь после извлечения
+совпал с исходными байтами. Пути ровно в 64 КиБ прошли копирование
+и извлечение. Дополнение узла на один байт сверх лимита вернуло NULL.
+На границах порций проверены обнуление и сохранение контрольных байтов.
+[UEFI 2.11, §10.5](https://uefi.org/specs/UEFI/2.11/10_Protocols_Device_Path_Protocol.html#device-path-utilities-protocol).
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| Восемь функций, граница 64 КиБ и отказ выделения пула | `dbe62228230e848546af272cc59d251331c31e52c61012afba591a4fa693a9ec` | 3 445 244 / 5 677 330 |
+| Штатный ROM без входных байтов COM1 | `465ed679110556289ce5ab02d610d244163101df897eb892383552f19775c35f` | 3 402 588 / 5 634 028 |
+
+Оба ROM остановились на `0x201792`. В штатном прогоне RX `A5`
+добавил 524 инструкции и 45 байт. Эталон для 128 МиБ содержит
+2 921 байт и 39 CRLF. Изменились три строки отображения ROM shadow
+и строка CRC ST `2003fa1b`, BS `60542725` и RT `be29274f`.
+Прошли 259 тестов прошивки и 30 тестов сборщика. Graphify обновлён.
+Независимое ревью выполнено с `gpt-6.1-sol` high.
+
+### S7-06 — загрузка по Device Path встроенного FV
+
+Прошивка публикует путь Media Vendor и `EFI_LOAD_FILE_PROTOCOL` на
+одном handle. Встроенный архив разрешает точное имя из Media File Path
+при обоих BootPolicy. `LoadImage` проверяет экземпляры пути по порядку.
+При ненулевом SourceBuffer его байты определяют загружаемый образ.
+Переданный путь сохраняется отдельно как метаданные образа.
+[Профиль загрузки образов](../specs/UEFI_PROFILE.md#сервисы-загрузки-образов-и-монотонного-счётчика).
+
+Обычная сборка `build_firmware.py --with-test-apps` загружает
+`hello` из FV через живые указатели Boot Services и печатает
+`OD-FW image hello: EFI_SUCCESS` в COM1. ROM с исправным архивом
+и двухбайтным файлом `MZ` печатает `EFI_LOAD_ERROR` и завершает
+штатную диагностику. Проба `ebs` загружает приложение по пути,
+после EBS печатает `!` и останавливается внутри образа. Гостевой
+System Table содержит NULL Boot Services, стек RW/NX, guard-страница
+отсутствует. На 128 и 256 МиБ guard лежит по `0x7fb7000` и `0xffb7000`.
+
+Гостевая проверка `LoadFile` сверила размер и все байты файла.
+При коротком буфере контрольный байт сохранился. Отсутствующий файл
+вернул `EFI_NOT_FOUND` с сохранением выходного handle. Повреждённый
+SourceBuffer с действительным FV-путём дал `EFI_LOAD_ERROR`. Действительный
+SourceBuffer загрузился с путём отсутствующего файла. Во входном
+многоэкземплярном пути поиск пропустил первый экземпляр и выбрал второй.
+Изменение исходных байтов сохранило полную копию Loaded Image Device Path
+и относительную `LoadedImage.FilePath`. Проверены RO/NX PTE метаданных,
+отказ освобождения принадлежащей образу страницы через `FreePages`,
+повторное выделение всего диапазона после `UnloadImage` и запись в
+бывшую страницу метаданных.
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| Штатный ROM без входных байтов COM1 | `cddcee25c154c519f49619faa6492dbb5bbdc972b85d8f819f25daf866e97abf` | 3 403 711 / 5 635 151 |
+| Штатная сборка с `hello` и `ebs` | `1899900a0ba23ed0f16734ae03a25563a7892b95385af555a74510ba84de4e10` | 3 553 386 / 5 784 902 |
+| FV с повреждённым PE | `6f404866ccbfcf9df5ce46b3186a2cc0093c8b5bb6ec138b677800d38f288f09` | 3 408 521 / 5 639 961 |
+| Пробы `LoadFile`, источника, путей и выгрузки | `a5df8afd0f944c7d9610fc335fa0bc2a25f32c91abf202be89e0923fbf380251` | 3 968 059 / 6 199 689 |
+| `ebs` загружен по пути FV | `292b95e67359a9060b7ad69288850bc0fa1dec630de03af2430dbb17eb36840e` | 3 421 618 / 5 653 096 |
+
+Штатный ROM остановился на `0x2017a2`. Ввод RX `A5` добавил
+524 инструкции и 45 байт. Эталон для 128 МиБ содержит 2 921 байт
+и 39 CRLF. Изменились три строки ROM shadow и CRC ST `f6bbd36a`,
+BS `8ab046ac` и RT `961e9c20`.
+
+В прошивочный профиль допущены точные формы `44 88 c1`
+(`MOV CL,R8B`) и `84 84 24 4c 01 00 00` (`TEST byte [RSP+0x14c],AL`).
+Семантика использует общий перенос регистров, отслеживаемое чтение
+байта и вычисление логических флагов. Проверены отсутствие записи,
+сохранение состояния при fault и отказ соседних форм.
+
+В первом полном прогоне `od-machine` один SMP-тест остановился
+с `StaleSafePoint` при seed 0 и quantum 7. Отдельный повтор прошёл.
+Ревью сверило путь теста через `Cpl0ProfileSet` и границу новых допусков
+в прошивочном профиле. [ISSUE-596](../KNOWN_ISSUES.md#issue-596).
+
+На Apple M3 Max, macOS 26.7.1 и Rust 1.99.0 сравнили release-бинарники
+до и после допуска двух форм. Оба запускали штатный ROM из среза Utilities
+на 128 МиБ с бюджетом 6 000 000. После прогрева выполнено 20 пар с
+чередованием порядка. Каждый прогон дал одинаковый COM1 и `HLT`
+на `0x201792` после 3 402 588 инструкций.
+
+| Runner | Медиана, мс | p95, мс | Диапазон, мс |
+|---|---:|---:|---:|
+| База `bc29c9b` | 1 607.98 | 1 699.57 | 1 538.56–1 738.10 |
+| Две формы для FV-пути | 1 626.42 | 1 709.55 | 1 524.78–1 727.60 |
+
+Медиана парной разницы +12.25 мс при диапазоне −153.65…+158.82 мс.
+Новый runner завершился быстрее в 10 из 20 пар. Изменение скорости
+по этой серии остаётся неопределённым.
+
+Прошли 6 106 тестов `od-isa`, 2 150 тестов `od-machine` в полном
+повторе (15 пропущены), 1 026 тестов runner (5 пропущены),
+260 тестов прошивки и 30 тестов сборщика. Проверены форматирование,
+`cargo check --workspace --all-targets --offline` и обновление Graphify.
+Проверка структуры воспроизвела исходные 46 ссылок на отсутствующие
+артефакты `work/`.
+
+## S7-07 — консоль COM1
+
+Один handle публикует Simple Text Input и Simple Text Output.
+`ConOut` и `StdErr` ссылаются на один интерфейс. Гость проверил оба
+протокола через `HandleProtocol`, все три handle в System Table
+и CRC таблицы. Консоль использует режим 80×25, цвета и курсор ANSI.
+Прежняя диагностика использует тот же UART.
+[Профиль консоли](../specs/UEFI_PROFILE.md#консоль-com1).
+
+Гостевая проба проверила режим 0, отказы для другого режима и
+координат вне 80×25, и перенос на нижней строке по CRLF и координатам. Символы
+`é` и `─` дошли в UTF-8, неподдержанный `U+2603` заменён на `?`
+со статусом `EFI_WARN_UNKNOWN_GLYPH`. Проверены атрибуты, видимость
+курсора, очистка и reset. После наступления срока callback был
+вызван каждым из `OutputString`, `ClearScreen` и `SetCursorPosition`
+без промежуточного вызова Boot Services между сроком и опросом.
+
+На 128 и 256 МиБ отдельный цикл `ReadKeyStroke` получил одиночный
+ESC по таймеру. Затем настоящее приложение `echo` через
+`WaitForKey` напечатало `a[UP]é─` и вернуло `EFI_SUCCESS`.
+После маркера готовности `UartRxEventPump` добавил байты
+`61 1b 5b 41 c3 a9 e2 94 80 0d` по смещениям
+100 000, 200 000, 11 000 000, 12 000 000, 13 000 000, 24 000 000,
+25 000 000, 26 000 000, 27 000 000 и 28 000 000 виртуальных нс.
+В обеих пробах очередь событий и регистр приёма опустели.
+
+`hello` печатает через `ConOut` в штатной сборке с приложениями.
+`ebs` вывел строку через тот же протокол, завершил Boot Services,
+вывел `!` напрямую и остановился в образе. После EBS все шесть полей
+консоли и указатель Boot Services равны нулю, стек RW/NX
+и его guard-страница не отображена.
+
+| Проба | SHA-256 ROM | Инструкции на 128 и 256 МиБ |
+|---|---|---:|
+| Штатный ROM без входных байтов COM1 | `bc64d18534ffdea2e77168131b500261059be191c179c5c6b0423b006c0fa05f` | 3 406 523 / 5 637 963 |
+| Обычная сборка с приложениями, `hello` через `ConOut` | `9b5542095d7f3f4a5e1a78dcbfc75042689072c08cc59599c9493a6c794aeed9` | 3 619 997 / 5 851 513 |
+| ABI, таймеры, ESC, Unicode и `echo` | `2752b5dbf1a2d91a5e125f56f7024be54ace916fef59151296818bbf3a002514` | 51 926 205 / 54 126 622 |
+| `ebs` после установки консоли | `d429b7e76962ece3cc3d3efd5cb645004a0705068db0cb26790e56a26ff9aec7` | 3 520 399 / 5 751 877 |
+
+Штатная загрузка остановилась на `0x2017b2`. RX `A5` добавил
+524 инструкции и 45 байт. Эталон 128 МиБ содержит 2 938 байт
+и 39 CRLF. Изменились три строки отображения ROM shadow и CRC
+таблиц ST `98398d4f`, BS `1274aa8e` и RT `a1375d4c`. При публикации
+консоли добавились 17 байт ANSI для сброса атрибутов, показа курсора,
+очистки и возврата курсора в начало.
+
+Прошивочный профиль исполняет форму перехода `48 ff 61 08`
+к `ConOut`, точные байтовые маски UTF-8 и RIP-relative запись
+`0f 95 05 disp32` в режим курсора. Тесты сверили ширину доступа,
+флаги, неизменность стека при переходе и сохранение состояния
+при ошибке чтения или записи.
+
+Прошли 6 109 тестов `od-isa`, 1 747 тестов библиотеки `od-machine`
+(13 пропущены), семь тестов UART RX, пять тестов CLI загрузки
+прошивки, 262 теста прошивки и 30 тестов сборщика. Проверены
+форматирование и workspace. Graphify обновлён.
+Проверка структуры воспроизвела исходные 46 ссылок на отсутствующие
+артефакты `work/`.
+
+До и после допуска инструкций два release-проверяющих бинарника
+загружали один прежний ROM с приложениями из `8f0d275`. Каждое
+измерение включает прогоны на 128 и 256 МиБ. На Apple M3 Max с
+macOS 26.7.1 и Rust 1.99.0 после прогрева выполнено 10 пар с
+чередованием порядка. Оба бинарника дали одинаковый COM1 и
+`HLT` на `0x2017a2` после 3 553 386 и 5 784 902 инструкций.
+
+| Бинарник | Медиана суммарного прогона, мс | Диапазон, мс |
+|---|---:|---:|
+| База `8f0d275` | 4 735.59 | 4 241.29–5 052.42 |
+| С допусками консоли | 4 813.80 | 4 322.75–4 864.49 |
+
+Медиана парной разницы +64.03 мс при диапазоне −213.70…+433.68 мс.
+Новый бинарник быстрее в двух из десяти пар. Изменение скорости
+по этой серии остаётся неопределённым.
+
+## S7-08 — сквозной запуск из FV
+
+`boot-firmware --fv-app hello|ebs` передаёт выбор гостю через handoff v1.5.
+Машина сохраняет прежний handoff для запуска без выбора и отклоняет
+выбор с ROM, объявляющим поддержку только до v1.4. Оба приложения
+грузятся из встроенного FV через `LoadImage` с Device Path и вызываются
+через `StartImage`. `hello` возвращает `EFI_SUCCESS`, прошивка печатает
+статус и останавливается с `0x21`. `ebs` пишет через `ConOut`, завершает
+Boot Services, выводит `!` через порт COM1 и останавливается в коде приложения.
+
+Команда `python3 tests/system/firmware_boot_smoke.py` прошла на Apple M3 Max,
+macOS 26.7.1 (25G241), Rust 1.99.0 (b940084d7), release, 128 МиБ RAM.
+Время измерено монотонными часами для каждого процесса runner без сборки.
+Во всех прогонах совпали полные эталоны COM1, тип останова и пределы
+4 000 000 инструкций и 3 500 квантов.
+
+| Режим | Инструкции | Кванты | Время по порядку, мс | Результат |
+|---|---:|---:|---|---|
+| Базовый ROM | 3 406 501 | 2 939 | 2 080.21 | Выход `0`, `HLT` |
+| FV `hello` | 3 407 978 | 2 938 | 2 165.03, 1 998.32, 2 001.26, 2 050.78, 2 020.14 | Выход `6`, `HLT`, `0x21` / `0` |
+| FV `ebs` | 3 399 502 | 2 851 | 2 067.46, 1 972.75, 2 006.21, 1 783.20, 1 764.67 | Выход `0`, `HLT`, последний байт COM1 `!` |
+
+SHA-256 базового ROM `70cfd9e9a3eefbdaa33e951159a9969180091380a29270342f07274e3c782a85`.
+Все десять запусков приложений использовали ROM
+`e22b250bc9d3b6bc75f2622a7f020a46093bc0a1204cc1eefd66d6ee9b4b37c6`.
+SHA-256 транскриптов записаны в [манифесте](../../tests/fixtures/firmware/manifest.json).
+
+Запрос `ebs` из базового ROM завершился `HLT`, выходом `6`, кодом `0x35`
+и `EFI_NOT_FOUND` после 3 197 299 инструкций и 2 887 квантов. CLI-тесты
+подтвердили отказ на неизвестном и повторном селекторе и на выборе
+с несовместимым ROM до создания транскрипта и запуска гостя. Прошли
+263 теста прошивки, 124 теста `firmware_board`, 7 CLI-тестов и 30 тестов
+сборщика. `cargo check --workspace --all-targets --offline` завершился
+успешно с прежними предупреждениями. Проверка структуры воспроизвела
+исходные 46 ссылок на отсутствующие артефакты `work/`.
+
+Независимое ревью `gpt-6.1-sol` High одобрило код и результаты.
+Открытых замечаний по задаче нет. Методика и границы среза описаны в [проверках прошивки](../testing/FIRMWARE.md#одна-команда).
+
+## S7-09 — переменные UEFI и формат снимка
+
+Четыре слота Runtime Services обслуживают переменные до `ExitBootServices`.
+Таблица и снимок записей с `NV` размещены в `EfiRuntimeServicesData`.
+Запись и удаление меняют снимок внутри той же операции. Встроенные
+`ConIn`, `ConOut` и `ErrOut` содержат путь к handle текстовой консоли COM1.
+Снимок в RAM использует [формат `ODVARSTR` v1](../specs/NVRAM_DEVICE.md#формат-store).
+Сохранение через сброс входит в S7-10, вызовы слотов после EBS — в S7-11.
+
+`--fv-app vars` передаёт селектор 3 через handoff v1.6. Старый ROM
+S7-08 с пределом v1.5 отклонён загрузчиком с выходом `4` и
+`ImageHeader { field: "handoff_minor_max", value: 5 }` до запуска гостя.
+`hello` и `ebs` сохранили селекторы и минимальную версию v1.5.
+
+`python3 tests/system/firmware_boot_smoke.py` прошёл на Apple M3 Max,
+macOS 26.7.1 (25G241), Rust 1.99.0 (b940084d7), release, 128 МиБ RAM.
+Скрипт подтвердил побайтовые COM1 и выходы в пределах 4 000 000 инструкций
+и 3 500 квантов. Базовый ROM проверил снимок после EBS. `vars` проверил
+встроенные значения и путь COM1, read-only `SetupMode`, оба результата
+малого буфера, создание, чтение, append, перечисление, удаление и возврат
+свободного места. После возврата `EFI_SUCCESS` прошивка остановилась с
+`0x21`, `detail = 0`. Отсутствующий `ebs` по-прежнему даёт `0x35` и
+`EFI_NOT_FOUND`.
+
+| Режим | Инструкции | Кванты | Запуски | Время runner, мс |
+|---|---:|---:|---:|---:|
+| Базовый ROM | 3 453 518 | 2 976 | 1 | 1 933.38 |
+| FV `hello` | 3 554 608 | 2 938 | 5 | 1 808.73–2 003.12 |
+| FV `ebs` | 3 546 100 | 2 851 | 5 | 1 793.37–1 857.81 |
+| FV `vars` | 3 611 081 | 2 998 | 1 | 1 825.84 |
+
+SHA-256 базового ROM `39f96b2ff6e6cb1eebfc18ceca17c30f85386334ea876ced6e8763b5b055f947`.
+SHA-256 общего ROM с приложениями `dbc45f3e63fdabd2c8601b0e929f0cf27cce2d3820d8556b06e1bf609c44b87e`.
+Хеши транскриптов в [манифесте](../../tests/fixtures/firmware/manifest.json).
+
+Host-тесты проверили границы UCS-2, GUID, флаги, оба лимита, append и
+перечисление, неизменность при отказе, удаление и кодирование. В тестах
+codec повреждённая запись с проверяемой границей пропускается, усечение
+останавливает разбор хвоста. Отдельный тест проверил обновление снимка
+после удаления `NV` с нулевыми входными атрибутами.
+
+Прошли 283 host-теста прошивки, 6 112 тестов `od-isa`, 125 тестов
+`firmware_board`, 7 тестов CLI и 30 тестов сборщика. Новые формы
+ограничены профилем прошивки и проверены на точных байтах, ширине записи,
+флагах и отказах paged memory. [Формы S7-09](../specs/CPU_CONTRACT.md#расширение-s7-09-переменные-uefi-и-приложение-vars).
+
+`cargo check --workspace --all-targets --offline` завершился успешно с
+прежними предупреждениями. Проверка структуры воспроизвела исходные
+46 ссылок на отсутствующие артефакты `work/`. Graphify обновлён.
+
+Для замера влияния новых допусков ISA оба release-бинарника запускали
+один базовый ROM из S7-08 на той же машине. После прогрева выполнено
+10 пар, порядок бинарников чередовался. Во всех прогонах совпали COM1,
+`HLT`, 3 406 501 инструкция и 2 939 квантов.
+
+| Runner | Медиана, мс | Диапазон, мс |
+|---|---:|---:|
+| S7-08 | 1 732.84 | 1 666.84–1 871.53 |
+| S7-09 | 1 701.98 | 1 661.80–1 780.97 |
+
+Медиана разницы внутри пары +6.28 мс, диапазон −198.62…+64.90 мс.
+Новый бинарник быстрее в четырёх парах. Серия не устанавливает
+направление изменения скорости.
+
+Независимое ревью `gpt-6.1-sol` High одобрило реализацию и результаты.
+Открытых замечаний по задаче нет.
+
+## S7-10 — NVRAM и повторная загрузка
+
+Плата с `FirmwareBoardConfig::nvram` описывает NVRAM в handoff v1.7.
+Гость восстанавливает значения из последнего валидного банка и фиксирует
+изменения `NV` через `FLUSH`. После ошибки записи рабочая таблица и
+предыдущий снимок сохраняются. Устройство предоставляет снимок двух
+банков владельцу между квантами. [Регистры и формат](../specs/NVRAM_DEVICE.md).
+
+`python3 tests/system/firmware_nvram_smoke.py` запустил один ROM дважды
+из одного процесса runner. Первая плата стартовала с пустой NVRAM и
+`vars` записал `od-s7-10`. Runner взял снимок, уничтожил первую плату и
+создал новую с сохранёнными банками. На второй загрузке `vars` через
+`GetVariable` проверил размер, атрибуты и значение. Обе загрузки дошли
+до `HLT` с кодом `0x21`, `detail = 0`. Скрипт подтвердил побайтовые
+эталоны COM1 с бюджетом 4 000 000 инструкций и 3 500 квантов на загрузку.
+
+| Загрузка | Инструкции | Кванты | Проверка приложения |
+|---|---:|---:|---|
+| Из пустого устройства | 3 650 878 | 3 226 | `OD-UEFI vars NV probe set` |
+| Из сохранённых банков | 3 669 497 | 3 240 | `OD-UEFI vars NV probe restored od-s7-10` |
+
+SHA-256 общего ROM `3c8230781b1aafde3ccc1877dccf0dabc0f3f635f584a3e78d31c190cec009d3`.
+SHA-256 снимка первой платы `283b6c6396042f3a5c233f9cb388e1e50f0f68b760fa2e238d52a78137dd64f6`.
+Обе загрузки использовали одинаковый handoff. Прошивка сообщила ноль
+повреждённых записей и ноль пропущенных значений по умолчанию. Артефакты
+воспроизводятся на Apple M3 Max, macOS 26.7.1 (25G241), Rust 1.99.0
+(b940084d7), release, 128 МиБ RAM. [Хеши транскриптов](../../tests/fixtures/firmware/manifest.json).
+
+`firmware_boot_smoke.py` подтвердил прежние остановы и строгие эталоны
+без подключённого устройства. ROM с `handoff_minor_max = 6` отклонён
+до запуска vCPU с кодом процесса `4`. Путь к выходу через `./`, совпавший
+с ROM, отклонён с кодом процесса `3`, исходный ROM не изменился.
+Проверки путей также покрывают символические и жёсткие ссылки.
+
+Прошли 6 113 тестов `od-isa`, 2 160 тестов `od-machine` при 15 пропущенных,
+287 тестов прошивки, 4 теста модуля runner, 7 CLI-тестов и 30 тестов сборщика.
+Дополнительный тест подтвердил, что при включённом окне NVRAM запись в
+другое MMIO-окно не устанавливает Dirty. Модель устройства проверена на
+обрыве записи, неполном `FLUSH` и выборе предыдущего поколения при порче
+CRC нового банка. Тесты прошивки сохранили старый снимок и значения
+при имитации ошибки записи, добавления и удаления.
+
+`cargo check --workspace --all-targets --offline` прошёл с прежними
+предупреждениями. Проверка структуры воспроизвела исходные 46 ссылок на
+отсутствующие артефакты `work/`. Graphify обновлён.
+
+В замере влияния изменений CPU и paged-пути обе release-версии runner
+загружали один базовый ROM S7-09 на той же машине. После прогрева выполнено
+10 пар с чередованием порядка. Во всех запусках совпали COM1, `HLT`,
+3 453 518 инструкций и 2 976 квантов.
+
+| Runner | Медиана, мс | Диапазон, мс |
+|---|---:|---:|
+| S7-09 | 1 767.47 | 1 679.08–1 837.38 |
+| S7-10 | 1 687.77 | 1 616.60–1 788.57 |
+
+Медиана разницы внутри пары −68.57 мс при диапазоне −175.87…+9.25 мс.
+Новая версия быстрее в девяти парах. Замер относится к этому ROM и режиму.
+
+Независимое ревью `gpt-6.1-sol` High одобрило код и результаты.
+Открытых замечаний по задаче нет.
+
+Полный сброс платы относится к S7-26. Сохранение между процессами
+и включение NVRAM в согласованный checkpoint относятся к S9-26.
+
+## S7-11. Runtime Services после ExitBootServices
+
+Основной ROM загружает встроенный PE32+ Runtime Driver с subsystem 12.
+После `ExitBootServices` таблицы, строка поставщика, переменные,
+регистрации событий и журналы DIR64 остаются в runtime-регионах.
+Драйвер публикует доступность сервисов через `EFI_RT_PROPERTIES_TABLE`.
+[Профиль Runtime Services](../specs/UEFI_PROFILE.md#runtime-services).
+
+`rt` получает окончательную EFI-карту и занимает страницы для собственных
+таблиц, карты и стека. После EBS оно переключает CR3 на таблицы без
+Boot Services и проверяет вызовы по физическим адресам. Затем приложение
+проверяет отказ при неполной виртуальной карте и применяет полную карту.
+После снятия физических отображений оно читает перенесённое слово из
+реального PE DIR64, проверяет оба CRC, строку поставщика и указатели
+System Table. Следом оно меняет NV-переменную через виртуальный слот,
+проверяет старшее слово счётчика, читает исходное время RTC и записывает
+дату 1969-12-31. Вызов `ResetSystem(Shutdown)` пишет в PM1a_CNT.
+Runner подтвердил `Stopped` с аппаратной причиной `Shutdown`.
+[Эталон COM1 и границы прогона](../../tests/fixtures/firmware/manifest.json).
+
+На Apple M3 Max, macOS 26.7.1 (25G241), Rust 1.99.0 (b940084d7), release
+и 128 МиБ RAM приложение прошло 5 156 006 инструкций и 3 452 кванта.
+SHA-256 ROM с приложениями
+`2cb2b345641ad0fec84ec6f987be6488e33fe5ea67e3e5fd665c1ca35bb51ada`.
+Бюджет теста составляет 6 000 000 инструкций и 3 600 квантов.
+Образ с пределом версии handoff 1.7 отвергнут на стенде проверок
+конфигурации до запуска vCPU. В тесте повторной загрузки `vars` наблюдает
+старшее слово 1 на первой плате и 2 на второй плате того же процесса.
+SHA-256 снимка банков после первой загрузки
+`f53eb958b63d8d93749d08f3aa5623d03a17268208c04cf02fe77ff462ffa6b7`.
+
+Тесты модели проверяют, что при отказе записи через границу страниц
+защищённая вторая страница оставляет оба фрагмента записи и их Dirty
+без изменений. Прерывания RTC и ход часов внутри кванта
+остаются в границах [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time).
+
+Прошли 6 114 тестов ISA, 2 161 тест машины при 15 пропущенных,
+293 теста прошивки, 344 теста runner при четырёх пропущенных,
+семь CLI-тестов и 30 тестов сборщика. Первый запуск rustdoc для
+машины завершился ошибкой E0463. Отдельный повтор трёх доктестов
+прошёл. Оба сквозных
+скрипта прошли на итоговой сборке. `cargo check --workspace --all-targets
+--offline` и проверки форматирования прошли. Проверка структуры дала
+те же 46 сообщений об отсутствующих локальных каталогах `work/`.
+
+Для оценки изменений профиля интерпретатора оба release-runner получили
+один и тот же ROM S7-10 с SHA-256
+`357358c33f14f83254956d194465844524d56f0ad1c9c5ce20413414b4466476`.
+На той же машине выполнили прогрев и десять чередующихся пар
+`boot-firmware --budget 4000000`. В каждой паре совпали COM1,
+3 462 415 инструкций и 2 976 квантов. Медианы составили 1 709,34 мс
+на `b4309ad` и 1 713,14 мс с S7-11. Медиана парных разниц составила
++9,62 мс при диапазоне от −165,79 до +68,50 мс. На этом сценарии
+разброс превышает медианную разницу.
+
+Независимое ревью `gpt-6.1-sol` High одобрило код и сквозные результаты.
 
 ## S7-14 RTC/CMOS, текущий срез
 
@@ -2905,7 +6137,7 @@ could not be collected in this environment; see
 
 Подтверждение: focused `od-machine` RTC tests — 15 passed; board tests покрывают привязку, 61 виртуальную секунду и no-RTC absent behavior. `cargo check --offline -p od-machine --all-targets` прошёл (есть предшествующее этому изменению предупреждение dead_code в `page_walk.rs`). UEFI ACPI `cargo test --offline --manifest-path firmware/uefi/Cargo.toml --lib` — 168 passed, включая проверку handoff/FADT. Полный `od-machine --lib` — 1634 passed, 13 ignored, два известных отказа CLD-ожиданий (ISSUE-201), описаны в [KNOWN_ISSUES](../KNOWN_ISSUES.md#issue-201); этот срез не меняет CPU. Независимое ревью RTC/CMOS-среза одобрило его без замечаний; реализация закоммичена в `330ea41`. Задача S7-14 остаётся `in_progress` из-за оставшегося объёма.
 
-Граница: HPET не реализован; RTC periodic/alarm/update IRQ и статус C не подключены (status C возвращает 0), поэтому UIP polling внутри длинного CPU-кванта может не наблюдать временной переход. Это отдельно зафиксировано в [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time).
+Граница исходного среза. Status C возвращает 0. RTC periodic/alarm/update IRQ и HPET остаются условными по результатам S7-30. Временная часть [ISSUE-509](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time) закрыта в [проверке точности RTC](#s7-14--точность-rtc-внутри-кванта).
 
 ### ISSUE-381 — exact word store `[RSP+0x10],0` (`66 C7 44 24 10 00 00`)
 
@@ -5236,3 +8468,1593 @@ Independent review approved with no findings. ISSUE-201 remains the unrelated CL
 ### Интеграция main и codex2 (2026-11-18)
 
 При слиянии разрешена коллизия handoff: PCI NVMe сохраняет v1.3, RTC использует v1.4; образы и проверки версии согласованы, для общего профиля PCI NVMe + RTC добавлен parser test. Совпавшие номера проблем переназначены: RTC — ISSUE-509, TPM phase A — ISSUE-510, Windows media — ISSUE-511. Независимое ревью интеграционных пересечений не выявило оставшихся блокирующих замечаний; оно не является полным ревью всех изменений main. Проверены сборка workspace offline, тесты прошивки и сборщика, выборки NVMe и firmware board. `tools/check_layout.py` в этом worktree сообщает об отсутствующих локальных файлах evidence в `work/`; наличие этих артефактов не проверено.
+
+
+### S7-13 — ACPI и SMBIOS из handoff block
+
+UEFI публикует `EFI_ACPI_20_TABLE_GUID` и `SMBIOS3_TABLE_GUID`. Тестовое
+приложение `acpi` загружается из FV штатными Boot Services и проверяет
+RSDP, XSDT, FADT, MADT, MCFG, DSDT, FACS и SMBIOS 3.9. Оно проверяет
+UUID и serial из handoff, CPUID и частоту Type 4, размеры RAM и связи
+handles, затем возвращает `EFI_SUCCESS`. Гость исполняет `WBINVD` при
+установленном соответствующем флаге FADT. [Форматы, границы и команды](../specs/ACPI_SMBIOS_TABLES.md#публикация-таблиц-uefi-s7-13).
+
+| Артефакт | Размер, байт | SHA-256 |
+|---|---:|---|
+| ROM с приложениями | 4 194 304 | `d7e75194a5cb8a99d8c1c3a38f9ef815f56644aa886aa7a6e21c952b0f51b68f` |
+| Handoff v1.9 | 1120 | `72596786f493f9cc23dc97813a73e032e42bea3baa97f518ca063998ecae45e2` |
+| ACPI blob v2 | 1136 | `640786919725fe3f8188fb58083b4188a0c9bca348be7ec64b1faf8a9c1d1f01` |
+| Наблюдаемые reclaim и NVS | 65 536 | `af5f3b7e7935d6ea50e6ca85ab85d8b7b4ed9f0373d26c91d328ef02b9049130` |
+
+Пять прогонов `acpi` дали по 5 763 734 инструкции и 3762 кванта,
+`STOP 0x21 detail=0`, одинаковые COM1 и области ACPI. В каждом прогоне
+`dump-handoff-block` сверил машинный handoff с эталоном, а гостевые области
+целиком совпали с freestanding-выводом. ACPICA `iasl -d` разобрал DSDT,
+FADT, MADT, MCFG и XSDT. [Сквозной скрипт](../../tests/system/firmware_boot_smoke.py),
+[эталон COM1](../../tests/fixtures/firmware/acpi_com1.txt).
+
+Дополнительно прошли штатные прогоны ядра, `hello`, `ebs`, `vars`,
+`rt` и сценарий отсутствующего приложения. `rt` по-прежнему завершает
+машину через `Shutdown` после виртуальных Runtime Services. Во второй
+загрузке NVRAM восстановлена запись первой. SHA-256 переданного снимка
+`f53eb958b63d8d93749d08f3aa5623d03a17268208c04cf02fe77ff462ffa6b7`.
+
+Возможность выпуска TPM2 зависит от CRB в S7-22. Требование HPET в S7-30
+не подтвердилось. У прежних профилей handoff остаются неизвестная
+номинальная частота vCPU и возможность отсутствующего UUID. Для
+производственного пути это зафиксировано в [ISSUE-597](../KNOWN_ISSUES.md#issue-597--s7-13-обязательные-поля-smbios-унаследованных-профилей-handoff).
+
+
+Прошли 297 тестов firmware, 6116 тестов `od-isa`, 2165 тестов
+`od-machine` (15 пропущены), 1030 тестов `od-runner` (5 пропущены) и 36
+тестов Python-сборщиков. `cargo check --workspace --all-targets --offline`,
+`cargo fmt --check` и `git diff --check` прошли. Проверка структуры
+вернула те же 46 ссылок на отсутствующие локальные файлы под `work/`,
+что и перед задачей. Независимое кодовое ревью и сверку артефактов провёл
+`gpt-6.1-sol` High. Graphify обновлён до 58 371 узла и 165 460 связей.
+
+Для проверки изменений горячего пути на Apple M3 Max, macOS 26.7.1
+(25G241), Rust 1.99.0 (`b940084d7`) и плате с 128 МиБ RAM сравнили
+release-сборки runner от `be69585` и S7-13. Оба бинарника запускали
+`boot-firmware --image <stock-ROM-из-S7-11> --com1-out <file> --budget 8000000`.
+После прогрева выполнено 10 пар, порядок внутри каждой второй пары
+менялся. В каждой паре совпали статус, останов, 4 142 639 инструкций,
+2976 квантов, RIP, handoff и COM1. Медианы времени 2017,66 мс и 2059,80 мс.
+Медианная парная разность +35,25 мс, диапазон от −48,20 до +196,58 мс.
+Разброс парных измерений пересекает ноль.
+
+
+### S7-14 — точность RTC внутри кванта
+
+Доступ к CMOS data port в firmware-профиле получает время начала кванта
+плюс циклы до текущей инструкции. Устройство использует ту же отметку
+для UIP, чтения и изменения календаря и переходов SET. Общее время
+продвигает плата по завершении кванта. Индексный порт и диагностический
+режим сохраняют свою прежнюю семантику. [Модель RTC](../specs/MACHINE_CONTRACT.md#явно-отсутствующие-порты-s4-29b).
+
+Гостевая тестовая программа выполняет две инструкции `IN` по разные
+стороны границы UIP и отдельно по разные стороны границы секунды. В
+пятиинструкционном кванте она получает `0x26 → 0xA6` для Status A и
+`0 → 1` для секунд. Исполнение с квантами по одной инструкции даёт те
+же регистры, число завершённых инструкций и итоговое виртуальное время.
+Тесты устройства проверяют момент заморозки SET, разморозки и записи
+календаря. При ошибочной ширине время не запрашивается. Переполнение
+времени отказывает перед исполнением портового доступа и сохраняет RTC.
+
+Существующий сценарий `rt` проходит реальные `GetTime` и `SetTime` после
+ExitBootServices и виртуального отображения, затем завершает машину через
+`Shutdown`. Маршрутизация `ResetSystem` проверяется таблицей команд
+прошивки и гостевой записью в reset register блока PM. Сброс и повторная
+загрузка машины остаются задачей S7-26. S7-30 не подтвердил потребность в
+HPET или доставке IRQ8 для текущего профиля. Status C возвращает 0.
+[Границы RTC](../KNOWN_ISSUES.md#issue-509-s7-14-rtc-interrupts-and-intra-quantum-time),
+[требования Windows](../specs/WINDOWS_PLATFORM_REQUIREMENTS.md).
+
+
+Прошли 20 профильных RTC-тестов, весь набор `od-machine` с 2169 успешными
+тестами и 15 пропусками, проверка workspace и форматирования. Пять
+гостевых загрузок `rt` и пять `acpi` совпали с действующими эталонами,
+так же как обычная загрузка, остальные FV-профили и две загрузки NVRAM.
+Проверка структуры повторила 46 прежних отсутствующих ссылок на файлы
+`work/`. Graphify обновлён до 58 387 узлов и 165 523 связей.
+
+На Apple M3 Max, macOS 26.7.1 (25G241), Rust 1.99.0 (`b940084d7`)
+сравнили release runner от `462ff13` и S7-14. Для каждого из двух
+ROM S7-13 запускали `boot-firmware` с бюджетом 8 000 000, базовый с
+параметрами по умолчанию и второй с `--fv-app rt`. Выполнили прогрев и
+10 пар с чередованием порядка. Во всех прогонах совпали вывод COM1,
+итоговое виртуальное время, RIP, инструкции, кванты и останов.
+Время приведено в миллисекундах.
+
+| Профиль | Медиана до | Медиана после | Медиана парной разности | Диапазон парных разностей |
+|---|---:|---:|---:|---|
+| Базовый ROM | 2075,62 | 2059,96 | −0,24 | −87,42…+85,47 |
+| `rt` с RTC | 2879,29 | 2896,20 | +20,60 | −243,36…+145,30 |
+
+Разброс разностей пересекает ноль в обоих профилях.
+
+## S7-15 — GOP на основном дисплее
+
+Прошивка публикует GOP и Memory Mapped Device Path на отдельном handle.
+Она читает 14 режимов из таблицы основного дисплея версии 2. Начальный
+режим 640×480 и последующие установки режима очищают видимый кадр.
+`QueryMode` выделяет копию сведений о режиме, `SetMode` подтверждает
+геометрию по регистрам устройства. Все четыре операции `Blt` работают с
+проверкой границ и байтового stride. Копирование между областями экрана
+учитывает их перекрытие. Поколение увеличивается при установке режима
+и после записи через `Blt`. Чтение через `Blt` оставляет поколение
+прежним. [Профиль GOP](../specs/UEFI_PROFILE.md#gop).
+
+Тестовое приложение `gop` проверяет отдельный handle, Device Path и
+два пустых EDID. Оно перечисляет режимы и освобождает `QueryMode`
+через `FreePool`, получает `EFI_UNSUPPORTED` от `SetMode` для номера
+вне таблицы, доставляет событие таймера вызовами только GOP и проверяет
+четыре операции `Blt`, включая перекрытие и невыравненный буфер с
+`Delta = 13`. Повторная установка 800×600 очищает видимый пиксель.
+Последний режим 640×480 содержит восемь полос, нарисованных через
+`VideoFill`.
+
+Runner считывает 1 228 800 байт через `DisplayHandle::read_frame_into`.
+Формат устройства равен 1, stride — 2560, поколение — 15, число установок
+режима — 4. SHA-256 кадра
+`d55dc0933410a97cfb907717b9af05c64268771da6b1897f69bda751da1bc714`.
+Сравнение с отдельно сгенерированным `bars` при нулевом допуске даёт
+0 отличий из 307 200 пикселей.
+
+В прогоне `ebs` карта памяти показывает апертуру типа `EfiMemoryMappedIO`
+с `EFI_MEMORY_UC`. После `ExitBootServices` гость читает контрольный
+пиксель по физическому адресу и печатает `!`. Отдельный прогон с
+доступным дисплеем подтвердил через `DisplayHandle` режим 640×480,
+поколение 1 и значение первого пикселя `0x00123456` после выхода.
+Прогон с
+`FirmwareBoardConfig { display_enabled: false, fv_app: Some(Ebs), ..Default::default() }`
+завершился `Halted` за 5 224 268 инструкций и 2635 квантов. В этой
+конфигурации гость вышел из Boot Services и напечатал `!` после
+`OD-UEFI ebs`. GOP использует фиксированные MMIO-регистры основного
+дисплея. Привязка PCI остаётся зависимостью S10-12.
+
+`firmware_boot_smoke.py` прошёл для обычного ROM и `vars`, а также в пяти
+повторах для каждого из `hello`, `ebs`, `rt`, `acpi` и `gop`. Все пять
+кадров совпали с эталоном. Каждый
+прогон GOP завершился `EFI_SUCCESS` и остановом `0x21` за 7 068 399
+инструкций и 3046 квантов. Все пять сравнений ACPI также дали полное
+совпадение. `firmware_nvram_smoke.py` подтвердил снимок NVRAM и две
+последовательные загрузки. Новые эталоны COM1 отражают размещение секций и CRC таблиц,
+а для `ebs` добавляют маркер проверки framebuffer. [Манифест проверок](../../tests/fixtures/firmware/manifest.json).
+
+Проверки `od-isa`, `od-machine` и `od-runner` дали 9319 успешных тестов
+и 20 помеченных как игнорируемые. Прошивка прошла 299 host-тестов,
+сборщик ROM — 31 Python-тест. `cargo check --workspace --all-targets --offline`,
+форматирование и `git diff --check` прошли. Проверка структуры вернула те же
+46 отсутствующих локальных ссылок на `work/`, что и до изменений.
+
+Независимое кодовое ревью `gpt-6.1-sol` (`high`) проверило маршрут MMIO,
+GOP и расширения профиля x86. Повторное ревью одобрило исправления
+доступа к состоянию GOP, доставки событий и загрузки `ebs` без дисплея.
+
+Стоимость маршрутизации MMIO проверена на Apple M3 Max (`arm64`, macOS
+26.7.1 `25G241`, Rust 1.99.0 `b940084d7`). Оба release runner выполняли
+одинаковые ROM S7-13 с 128 МиБ RAM. Для каждого сценария выполнены разогрев
+и десять пар запусков с чередованием порядка S7-14 и S7-15. Сверены
+COM1, конечное состояние, инструкции и кванты. Время измерялось от запуска
+процесса до завершения, включая запись COM1. Во время части пар выполнялись
+тесты runner.
+
+| ROM | Медиана S7-14, мс | Медиана S7-15, мс | Медиана попарной разности и диапазон, мс |
+|---|---:|---:|---:|
+| Обычный | 2110,64 | 2145,13 | +41,04 (−89,18…+352,43) |
+| `rt` | 2952,68 | 2947,60 | −18,49 (−116,30…+742,05) |
+
+Изменение времени не повторилось в обоих сценариях, а разброс парных
+замеров превышал обе медианные разности. Результаты не дают устойчивой
+оценки влияния на время загрузки. Гостевые результаты совпали в каждой
+паре. На ROM с GOP обычный запуск завершился за 4 326 046 инструкций и
+2976 квантов.
+
+## S7-17 — NVMe и GPT в UEFI
+
+Прошивка подключается к фиксированным регистрам NVMe из handoff и
+использует тот же контроллер, что и обычная шина платы. Запись doorbell
+завершает квант vCPU. Машина обслуживает команды и пишет DMA в RAM,
+затем vCPU возобновляет выполнение. В тесте машины гость прочитал три
+admin completion и одну I/O completion после двух таких переходов.
+Буфер Identify и сектор из in-memory backend совпали с ожидаемыми
+байтами. Прерывания для прошивки отключены. [Контракт NVMe](../specs/NVME_DEVICE.md).
+
+На пространстве имён 1 опубликованы Block I/O ревизии 2 и Disk I/O.
+Гостевой `blk` читает первый сектор каждого доступного раздела и
+печатает фактические GPT-имена. Тест находит ESP по GUID типа, сохраняет
+номера 1 и 3 после исключения записи No Block I/O, сверяет Device Path
+и Partition Info, выполняет запись через Disk I/O на границе секторов.
+Он проверяет сохранность соседних байтов, запись и чтение Block I/O,
+`FlushBlocks`, `Reset`, статусы границ и событие таймера через вызовы
+`ReadBlocks`. [Профиль хранения](../specs/UEFI_PROFILE.md#хранилище).
+
+| Образ GPT | Гостевой результат | Инструкции | Кванты |
+|---|---|---:|---:|
+| Обе копии исправны | `OD ESP`, `OD Data`, `EFI_SUCCESS` | 6 377 457 | 3198 |
+| CRC основного заголовка повреждена | `OD ESP`, `OD Data`, `EFI_SUCCESS` | 6 378 752 | 3200 |
+| CRC обоих заголовков повреждены | Только пространство имён, `EFI_SUCCESS` | 6 195 905 | 3110 |
+
+При отдельной проверке backend вернул ошибку чтения LBA 1. Прошивка
+один раз прочитала резервный заголовок в LBA 255 и опубликовала оба
+видимых раздела. `blk` завершился за 6 377 676 инструкций и 3200 квантов.
+В прогоне `ebs` backend обслужил шесть чтений GPT. После выхода из
+Boot Services гость напечатал `!`, а `NvmeHandle` подтвердил выключенное
+состояние и отсутствие ожидающей обработки DMA. [Генератор GPT](../../tools/build/make_test_disk.py),
+[методика](../testing/FIRMWARE.md).
+
+Независимые кодовые ревью `gpt-6.1-sol` (`high`) одобрили MMIO и
+DMA, драйвер, протоколы хранения, GPT, handoff и расширения профиля x86.
+Повторное ревью проверило обработку No Block I/O, обеих копий GPT,
+поиск ESP по GUID и доставку событий при вызовах протоколов хранения.
+
+Целевые проверки дали 1693 успешных теста профиля ISA, 304 теста
+прошивки, 8 тестов CLI и 31 тест сборщика. Фильтры машинных тестов
+`firmware_` и `nvme` дали 148 и 99 успешных результатов соответственно.
+Фильтры частично пересекаются. Общий параллельный прогон был прерван
+из-за нагрузки на память. `cargo check --workspace --all-targets --offline`,
+форматирование и `git diff --check` прошли. Проверка структуры сохранила
+исходный список из 46 локальных ссылок на отсутствующие файлы в `work/`.
+
+Три сценария `blk` прошли через `run_case` из `firmware_boot_smoke.py`
+на итоговом ROM со сверкой SHA-256 диска и точного COM1. Запись эталонов
+дополнительно подтвердила по одному прогону обычного ROM и прежних
+приложений, точный кадр GOP, прежние байты ACPI и два запуска с NVRAM.
+Полный повтор всех сценариев `firmware_boot_smoke.py` остановили после
+пересборки и первых проверок. [Манифест](../../tests/fixtures/firmware/manifest.json).
+
+Для замера ветки доступа к RAM использовали одинаковый ROM с циклом из
+50 000 пар чтения и записи, включённым штатным дисплеем и 128 МиБ памяти.
+Оба release runner выполнили 250 003 инструкции за один квант с
+идентичным отчётом и пустым COM1. На Apple M3 Max (`arm64`, macOS 26.7.1
+`25G241`, Rust 1.99.0 `b940084d7`) после разогрева выполнили пять пар с
+чередованием порядка. Время процесса, включая запуск и завершение,
+составило в медиане 921,89 мс для S7-15 и 939,05 мс для S7-17.
+Медиана попарной разности +26,29 мс, диапазон −206,33…+195,12 мс.
+Параллельно шла системная проверка прошивки.
+Из разброса нельзя выделить устойчивое изменение времени. Замер полной
+загрузки прервали после первой пары из-за нестабильной нагрузки host.
+
+## S7-18 — чтение FAT и Simple File System
+
+Собственный FAT-ридер проверяет геометрию BPB, границы секторов и
+кластеры. Host-тесты читают фрагментированный файл с длинным именем
+и коротким псевдонимом на FAT12, FAT16 и FAT32. Отдельно проверены
+активная FAT, запись FAT12 на границе секторов, последний кластер тома,
+отсутствующий путь, циклы, преждевременный конец цепочки и невозможные
+даты. [Профиль файловой системы](../specs/UEFI_PROFILE.md#файловая-система).
+
+Прошивка регистрирует Simple File System на том же handle ESP, что и
+Block I/O, Disk I/O и Partition Info. Интерфейс доступен только для чтения.
+По UEFI 2.11 §13.5.4 `Delete` закрывает handle с `EFI_WARN_DELETE_FAILURE`.
+Запись в файловую систему и загрузка образа с ESP остаются за рамками
+S7-18.
+
+Fixture `--esp-fat32` имеет 40 MiB логически и 1 753 088 байт выделенных
+на APFS. FAT32 в ней содержит 78 559 кластеров. Хеш образа и транскрипт
+COM1 проверяются системным тестом. Генерация трёх GPT fixtures S7-17
+сохранила прежние байты. [Формирование эталонов](../testing/FIRMWARE.md#эталоны).
+
+В x86-64 VM `--fv-app fs --nvme-image <raw>` читает
+`\EFI\BOOT\README.TXT` через эмулируемый контроллер NVMe. Проба проверяет
+повтор чтения каталога с увеличенным буфером, смешанный регистр пути,
+размеры и атрибуты файла, метку, объём и свободное место тома, статусы
+операций записи и поведение `Read` в конце файла и за его концом.
+Один таймер доставляется через `GetPosition`. Второй закрывает handle
+во время Disk I/O с успешным завершением начатого `Read`. Успешный
+прогон завершился `EFI_SUCCESS` и остановом `0x21`, detail `0`, после
+11 432 418 инструкций за 4 425 квантов во всех трёх прогонах smoke.
+Время процесса составило 5,43–5,71 с. На прежнем GPT-образе без FAT
+проба завершилась контролируемым отказом `0x35`, detail `0x48`.
+
+`FirmwareBootV1` исполняет формы, встретившиеся в машинном коде FAT,
+File Protocol и гостевой пробы. Существующая семантика переиспользована
+для `REP BSF` без BMI1, `SHR`, `BT`, `MOVSX`, `ADD`, `OR` и `XOR`.
+Тесты фиксируют ширину операндов, флаги, отказ соседних кодировок и
+сохранение регистров, флагов и памяти при ошибке доступа.
+
+Прошли 311 тестов прошивки, 1 701 тест paged-профиля ISA, 148 тестов
+машины с фильтром `firmware`, 8 CLI-тестов runner и 31 тест сборщика
+ROM. `cargo check --workspace --all-targets --offline` и проверка
+форматирования прошли. `check_layout.py` по-прежнему выдаёт 46 ошибок
+по тем же ссылкам на локальные результаты в `work/`.
+
+`firmware_boot_smoke.py` завершился успешно после 39 прогонов из
+манифеста и проверки отсутствующего FV-приложения. Снимок GOP совпал
+побайтно, а отдельный сборщик ACPI воспроизвёл байты гостя.
+
+Двойная загрузка NVRAM сохранила эталонный снимок. Во всех прежних
+COM1-транскриптах изменились только три записи карты памяти и строка
+CRC таблиц. Добавление `fs.efi` увеличило диагностический архив FV
+с 82 563 до 92 813 байт. Прошивка проверяет CRC всего архива. `vars`,
+`rt` и `acpi` превысили прежний лимит в 6,5 млн инструкций, поэтому
+их лимит smoke увеличен до 7 млн.
+
+Для оценки влияния изменений CPU использованы одни и те же ROM S7-17
+и профили обычной загрузки и `rt`. Два release runner собраны Rust 1.99.0
+`b940084d7` и запускались на Apple M3 Max (`arm64`, macOS 26.7.1
+`25G241`). Команда `boot-firmware --image <ROM> --budget 8000000
+--com1-out <файл>` запускалась с `--fv-app rt` для второго сценария.
+После одной прогревочной пары выполнены пять пар с чередованием порядка.
+COM1, итоговые состояния и числа инструкций и квантов совпали в каждой
+паре. Время измерено от запуска до завершения процесса.
+
+| Сценарий | S7-17, медиана (диапазон), мс | S7-18, медиана (диапазон), мс | Попарная разность, медиана (диапазон), мс |
+|---|---:|---:|---:|
+| Обычная загрузка | 2123,88 (2079,95–2219,62) | 2163,90 (2099,61–2210,87) | +30,63 (−55,72…+77,06) |
+| `rt` | 3147,05 (3127,32–3205,40) | 3208,08 (3175,86–3358,77) | +60,81 (+28,82…+158,16) |
+
+Сдвиг обычной загрузки укладывается в разброс. Для `rt` все пять
+запусков S7-18 в этой серии были медленнее, с медианой попарной
+разности около 1,9% времени S7-17. Причину различия по этим замерам
+локализовать нельзя.
+
+Независимые ревью кода и функциональная приёмка `gpt-6.1-sol` (`high`)
+одобрили S7-18. Замечания к продвижению таймеров, невозможным датам,
+pre-call `Close` в пробе и проверке SHA-256 при повторном подключении
+образа исправлены и перепроверены. Graphify обновлён, в графе 58 922 узла
+и 166 959 рёбер.
+
+## S7-19 — boot manager и загрузка с ESP
+
+При обычной загрузке с Block I/O менеджер потребляет `BootNext`,
+перебирает `BootOrder` и затем пробует `\EFI\BOOT\BOOTX64.EFI`.
+Короткий файловый путь расширяется на смонтированных ESP. Короткий GPT
+Hard Drive путь сопоставляется по GUID и номеру раздела. Сериализатор
+создаёт `Boot####` с полным путём для обнаруженного ESP. Если запись
+списка не удалась, новая опция удаляется до передачи управления.
+Менеджер сохраняет изменения `BootOrder`, сделанные приложением для
+следующего запуска. При возврате приложения без меню перебор продолжается.
+[Профиль boot manager](../specs/UEFI_PROFILE.md#boot-manager).
+
+`LoadImage` получает байты через Simple File System и закрывает файлы
+до входа под guard менеджера памяти. Перед публикацией проверяются
+исходный handle и интерфейс. Свойства Loaded Image содержат handle ESP,
+путь внутри раздела и копию полного Device Path. Гостевая проба сверяет
+эти свойства, `BootCurrent` и `LoadOptions`. `BootCurrent` не попадает
+в снимок NVRAM. `BootNext` удаляется до запуска, поэтому после
+восстановления снимка одноразовая опция не повторяется.
+
+Эталонный ESP генерируется из `hello.efi` и небольшой отдельной пробы.
+Они лежат на диске по путям `BOOTX64.EFI` и `CHECK.EFI`. Stock ROM
+собран без встроенного `hello`. Сценарии проверяют `no bootable option`
+на диске без ESP, fallback после отсутствующего файла, приоритет
+`BootNext`, загрузку из `BootOrder` после ошибки первого приложения и
+повторный запуск по сохранённым переменным. [Воспроизведение](../testing/FIRMWARE.md#гостевая-загрузка-с-esp).
+
+| Сценарий stock ROM | Порядок гостевых сообщений | Инструкции | Кванты |
+|---|---|---:|---:|
+| Пустая NVRAM, FAT32 ESP | `hello` | 4 442 332 | 3 305 |
+| NVMe без действительной GPT | `no bootable option` | 4 175 622 | 3 234 |
+| `BootOrder` с отсутствующим файлом | `hello` через fallback | 4 492 943 | 3 313 |
+| Короткие пути Hard Drive и File Path | `BootNext`, `BootOrder`, `hello` | 4 739 449 | 3 522 |
+| Перезапуск со снимком предыдущего запуска | `BootOrder`, `hello` | 4 609 257 | 3 414 |
+
+Все пять сценариев завершились остановом `0x21`, detail `1` после
+возврата приложений или исчерпания вариантов. У гостя в `BootNext`
+проба добавила номер 14 в `BootOrder` и вернула `EFI_LOAD_ERROR`.
+Кандидат из `BootOrder` вернул `EFI_SUCCESS`. Менеджер продолжил
+перебор. Снимок содержит порядок `[12, 13, 11, 14, 0]`, прежние
+`Boot####` побайтно и новый `Boot0000`. После восстановления снимка
+первая проба не выполняется, а `hello` запускается один раз.
+
+Профиль CPU использует существующую семантику `TEST`, `SHR`, `MOV` и
+`OR` для наблюдавшихся форм подготовки пути. Paged-тесты проверяют
+ширину, флаги и переходы состояния при ошибке чтения и записи.
+Буфер пути получает только записанные символы до NUL. Размер
+инициализации `EFI_LOAD_OPTION` вычисляется по формату записи.
+
+Системный тест ESP заново собрал ROM и обе EFI-программы, проверил
+пять полных COM1-транскриптов и хеши образов и снимков. Файл ESP имеет
+40 MiB логически и 1 753 088 байт выделенных на APFS. Старый образ
+S7-18 с одним README сохранил прежний SHA-256.
+
+Прошли 318 тестов прошивки, 1 704 теста paged-профиля ISA, 9 тестов
+NVRAM машины, 9 CLI-тестов runner и 31 тест сборщика. Проверены
+форматирование и `cargo check --workspace --all-targets --offline`.
+Layout по-прежнему сообщает 46 ошибок по тем же ссылкам на `work/`.
+Graphify обновлён до 59 057 узлов и 167 389 рёбер.
+
+Прежний `firmware_boot_smoke.py` завершил 39 прогонов и проверку
+отсутствующего FV-приложения. Кадр GOP совпал побайтно. Отдельный
+сборщик воспроизвёл байты ACPI гостя. Двойной запуск прежней пробы NVRAM
+сохранил хеш снимка. Прежние COM1-транскрипты обновились только в трёх
+записях карты памяти и строке CRC таблиц.
+
+Изменения CPU проверены на одних и тех же ROM S7-18 двумя release runner.
+Условия — Apple M3 Max (`arm64`), macOS 26.7.1 `25G241`, Rust 1.99.0
+`b940084d7`. Команда `boot-firmware --image <ROM> --budget 8000000
+--com1-out <файл>` запускалась с `--fv-app rt` для второго сценария.
+После прогревочной пары измерены пять пар с чередованием порядка.
+В каждой паре COM1 и выбранные поля отчёта, включая число инструкций
+и квантов, совпали. Учтено всё время выполнения процессов.
+
+| Сценарий | S7-18, медиана (диапазон), мс | S7-19, медиана (диапазон), мс | Попарная разность, медиана (диапазон), мс |
+|---|---:|---:|---:|
+| Обычная загрузка | 2219,26 (2091,92–2252,43) | 2159,54 (2128,14–2201,97) | −59,72 (−91,36…+47,39) |
+| `rt` | 3428,20 (3350,46–3499,82) | 3312,28 (3228,52–3404,63) | −130,03 (−216,37…+54,17) |
+
+Попарная разность меняла знак в обоих сценариях. Серия не подтверждает
+устойчивое ускорение или замедление.
+
+Ревью кода и приёмка `gpt-6.1-sol` (`high`) одобрили S7-19. Замечания
+к слиянию `BootOrder`, откату новой опции, повторной попытке по уже
+исполненному пути и совпадению файлов вывода NVRAM и COM1 исправлены
+и перепроверены.
+
+
+## S7-22 — CRB, TCG2 и measured boot
+
+Реализовано на плате с opt-in TPM: MMIO CRB locality 0 с синхронным START, общим буфером команды и ответа и временем из виртуальных часов платы. Handoff v1.13 связывает запись 6 с её ровным MMIO-диапазоном. Прошивка публикует MSFT0101 в DSDT и TPM2 rev6 в XSDT, StartMethod 7, ControlArea 0xFED40040. Snapshot/restore использует постоянный ODTPMSTA v3, очищает транспорт при восстановлении и учитывает время после последней гостевой команды. TPM_CAP_PCR_PROPERTIES сверена по Part 2 v185 и возвращает фактические маски locality 0. [Контракт CRB и форматы](../specs/VTPM.md#crb).
+
+Прошивка выполняет Startup(CLEAR), SelfTest и проверяет SHA-256 bank по CRB. Измеряет неизменяемый ROM, конфигурацию, BootOrder и Boot####, GPT выбранного диска, исходный PE через Authenticode и действия загрузки/EBS. Основной crypto-agile log и retained final events используют отдельные буферы. После первого GetEventLog последующие записи идут и в final events. Переполнение сохраняет EFI_VOLUME_FULL для TCG2, измерение EBS остаётся best-effort и не меняет результат сервиса. [Измерения и журнал](../specs/VTPM.md#measured-boot).
+
+### Гостевые проверки
+
+ROM с собственными пробами: SHA-256 `2fcc55e1fcf9722ebdade9c85380e41960a97fb10009637faf1cbc092fc0fc56`; stock ROM: `dc09121cd2cb62b27235856daf4ee38d56c33b5075f5b18874efbeaef0f883e3`. Собрано Rust/Cargo 1.99.0, Apple clang 21.0.0, target `x86_64-unknown-none`; тестовое приложение — `x86_64-unknown-uefi`. [Команда воспроизведения](../testing/FIRMWARE.md#измеренная-загрузка-s7-22).
+
+| Старт приложения `tpm` | Результат | Инструкции | Кванты |
+|---|---|---:|---:|
+| FV, `--fv-app tpm` | `completed/halted`, PCR0/1/4/5 совпали с replay, GetRandom 16, final events читаются после EBS | 226 588 027 | 3 559 |
+| NVMe ESP, `--tpm --nvme-image` | `completed/halted`, те же проверки и события BootOrder, Boot0000, выбора и GPT_EVENT2 | 226 694 892 | 4 135 |
+
+В обоих случаях гость проверил реальный ACPI TPM2, capability, Spec ID Event03 и нулевой дайджест EV_NO_ACTION, затем прочитал живые PCR через SubmitCommand. GetRandom подтвердил размер 16 без вывода случайных байтов. Гость проверил RuntimeServicesData у final events, вызвал EBS сначала с устаревшим, затем с актуальным MapKey и после успешного EBS прочитал события Invocation, Failure и Success с проверкой SHA-256. В прогоне с ESP он отдельно проверил нормализованную форму GPT после separator. Гостевой хеш всего ROM выполняется программно. Цифры в таблице относятся к конкретным запускам и включают всю проверку, а не только хеширование.
+
+### Регрессии и ревью
+
+- Host firmware: 321 тест, включая TPM2/AML, журнал и GPT с пустыми слотами и увеличенным on-disk stride. `od-tpm`: 271 тест. Полный финальный `od-machine`: 2178 passed, 15 ignored вместе с интеграционными и doctests. Регрессия подтвердила ROM data read, NX fetch, запрет записи и чтения через границу страницы. `paged_probe_profile`: 1708, CLI: 9, firmware builder: 31. Workspace check и форматирование прошли. Layout checker выдаёт те же 46 отсутствующих ссылок на локальные work-артефакты, что и до S7-22.
+- Официальные smoke прошли 39 повторов загрузки, проверку отсутствующего FV-приложения и пять сценариев ESP. Обновлены эталоны трёх строк карты кода/данных и CRC таблиц BS/RT. Сборка с тестовыми приложениями включает дополнительный `tpm.efi`; увеличенные instruction budgets опираются на прогоны этой сборки. Снимок NVRAM, эталонный кадр GOP и ACPI handoff bytes совпали. Пять контрольных ESP-сценариев со stock ROM завершились; хеши дисков и NVRAM остались прежними.
+- Независимые кодовые ревью Sol High одобрили CRB, firmware и точечные формы x86. Исправлены отмена приёма и стирание буферов CRB, selector lock, ошибки переполнения и EV_NO_ACTION, порядок и классификация измерений, формат GPT и зависимость статуса EBS от TCG2. Native приёмка проверяет результаты на плате с locality 0 и SHA-256. Остальные банки, D-RTM и профиль реальной Windows относятся к дальнейшим проверкам.
+- Graphify обновлён локально после кода: 59 308 узлов, 168 004 связи, 1 099 сообществ.
+
+
+### Измерения пути без TPM
+
+A/B на Apple M3 Max, macOS 26.7.1 (25G241), два release runner на Rust 1.99.0. Базовый runner — S7-19 (`80695f8`), оба runner получают одни и те же ROM S7-19 и одинаковые параметры. На каждый профиль — разогрев и пять последовательных пар с чередованием порядка A/B. Метрика — wall time запуска runner. Во всех парах совпали COM1, выход, RIP, число инструкций и квантов и виртуальное время.
+
+| Профиль | A, медиана мс | B, медиана мс | Парная медиана B−A, мс | Минимум…максимум парных разностей, мс |
+|---|---:|---:|---:|---:|
+| `boot_core` | 2192,75 | 2206,81 | +31,88 | +12,51…+54,50 |
+| `rt` | 3393,97 | 3444,28 | +25,49 | −38,06…+175,31 |
+
+В этой серии `boot_core` выполнялся немного дольше во всех пяти парах. У `rt` разброс больше парной медианы и знак менялся. Измерения относятся к целому запуску и не выделяют стоимость отдельных участков. Сопоставление firmware с включённым и выключенным TPM входит в измерения S7-27.
+
+## S7-23 — шаблоны EK и NV
+
+2026-11-19. `od_tpm::ek::LowRangeEk` задаёт L-1 и L-2 из TCG EK Credential Profile 2.7. Клиент передаёт шаблон явно в `CreatePrimary` под Endorsement. Имеющиеся правила derivation и dispatcher сохраняются. [Контракт EK и размещение DER](../specs/VTPM.md#endorsement-key-s7-23).
+
+- Тесты сравнили полные байты обоих шаблонов с независимо собранными структурами профиля, проверили вычисление Name через SHA-256 и воспроизведение открытого ключа после смены Endorsement auth, TPM Clear и snapshot/restore. Изменение входного `unique` или исходного EPS меняет ключ. Создание дочернего объекта под каждым EK прошло с `PolicySecret(Endorsement)`. Пароль, HMAC и политика Owner получили `TPM_RC_POLICY_FAIL`.
+- Тест NV проверил отсутствие обоих индексов у нового TPM, отказ при попытке определить platform-created индекс через Owner, запись частями до 512 байт, блокировку и побайтное чтение через Owner и auth самого индекса после Clear и восстановления снимка.
+- Отдельный host-прогон через `Tpm::execute` и OpenSSL 4.1.0 выпустил сертификаты временного CA (RSA EK DER 577 байт, ECC EK DER 375 байт). До записи проверены цепочка CA и точное совпадение DER SPKI с `CreatePrimary`/`ReadPublic`. После Clear и snapshot/restore повторно совпали SPKI и считанные байты DER, запись завершилась `TPM_RC_NV_LOCKED`. Этот прогон проверяет выпуск и хранение с временным CA. Условия доверия целевого Windows и трасса Windows TBS отслеживаются в [ISSUE-598](../KNOWN_ISSUES.md#issue-598).
+- `cargo test -p od-tpm --offline` — 275 passed. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline` и `git diff --check` прошли. Graphify обновлён, 59 325 узлов и 168 130 связей. Независимое Sol High code review EK и тестов одобрило изменение. Уточнена ссылка на раздел профиля в API.
+- Независимое Sol High ревью приёмки фазы B подтвердило несовпадение поддерживаемых команд с обязательным набором PTP 1.07 и оставило S7-23 открытой. [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-24 — исходные данные и форматы
+
+2026-11-19. В ADR-0011 записаны решения D3–D7. Из Microsoft Secure Boot Objects `v1.7.2` получены шесть публичных сертификатов RSA-2048 и отзывающий список `dbx` для x64 firmware. Его SHA-256 совпадает с проверенным артефактом официального выпуска. В `dbx` 445 SHA-256 записей, 21 388 байт. Сохранение официального `dbx` требует увеличить текущий лимит одной аутентифицированной переменной с 16 KiB. [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md), [происхождение и хеши](../../tests/fixtures/firmware/certs/README.md).
+
+Декодер ESL читает X.509, SHA-256 и X.509 SHA-256 из исходного буфера, проверяет размеры и сохраняет `SignatureOwner` в полном представлении записи, включая корректный проход списка из нуля записей. Декодер Auth2 проверяет `EFI_TIME` и заголовок `WIN_CERTIFICATE_UEFI_GUID`, разделяет PKCS#7 и новое значение, вычисляет SHA-256 точного подписываемого набора полей с `APPEND_WRITE`. 328 host-тестов firmware прошли, включая семь новых проверок. Подключение проверки подписи к `SetVariable` и `LoadImage`, защищённое сохранение метаданных в NVRAM и PCR7 входят в следующие срезы. [UEFI 2.11 §8.2.6](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#using-the-efi-variable-authentication-2-descriptor), [ISSUE-600](../KNOWN_ISSUES.md#issue-600).
+
+OpenSSL 4.1.0 проверил реальный x64 DBX update из `v1.7.2-signed` по Microsoft KEK 2023. В заголовке `AuthInfo` 3244 байта, в payload 13 996 байт. `SignedData` передаётся в bare DER, с detached `id-data` и без signed/unsigned attributes. Для независимой проверки OpenSSL использована оболочка `ContentInfo` и исходный signed payload с атрибутами `0x67`. Подпись прошла `openssl cms -verify` с опубликованным KEK 2023 как trust anchor. [Подписанный выпуск Microsoft](https://github.com/microsoft/secureboot_objects/releases/tag/v1.7.2-signed).
+
+Официальная сборка ROM и runtime EFI-драйвера прошла. SHA-256 ROM `dc09121cd2cb62b27235856daf4ee38d56c33b5075f5b18874efbeaef0f883e3` совпал с исходной сборкой S7-22. Форматирование и `git diff --check` прошли. `check_layout.py` получил прежние 46 отсутствующих ссылок на файлы в `work/`. Graphify обновлён, 59 381 узел и 168 217 связей.
+
+## S7-23 — расширение цели до PTP 1.07
+
+2026-11-19 владелец подтвердил расширение ADR-0009 до обязательного профиля PC Client PTP 1.07 с Errata 1.1. Сверка таблицы 16 с dispatcher выявила 41 отсутствующую обязательную команду из 101. Четыре обязательных платформенных сигнала учитываются отдельно. Выбраны SHA-256 и SHA-384 как начальные банки PCR и ML-KEM-768/ML-DSA-65 как первые обязательные PQC parameter sets. PKI выпуска Windows EK и Windows TBS trace ведутся отдельно. Запись добавляет целевые условия и инвентарь пробелов. S7-23 остаётся в работе. [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md#решение-3-профиль-команд), [матрица](../specs/VTPM.md#целевой-профиль-pc-client-ptp-107), [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+Независимое архитектурное ревью Sol High одобрило ADR и инвентарь после уточнений по лимитам ML-DSA и NV, self-tests, CRB MMIO и обязательности `ContextSave/ContextLoad`. `git diff --check` прошёл.
+
+## S7-23 — проверка параметров TestParms
+
+`TPM2_TestParms` (`0x18A`) проверяет один `TPMT_PUBLIC_PARMS` через общий декодер с `TPMT_PUBLIC`. Пробы проверили успешные RSA-2048, P-256 и KEYEDHASH, пустой ответ без сессии, индексированные ошибки алгоритма, схемы, хеша, размера RSA, экспоненты, кривой, KDF, усечения, а также отказ на лишние байты и password session. Подтверждены 61 объявленная команда, атрибуты и пагинация `TPM_CAP_COMMANDS`, `TPM_PT_TOTAL_COMMANDS` и отсутствие изменений persistent state и потока RNG при обычном вызове. Sol High одобрил этот объём. `TPM_ST_SESSIONS` для аудита остаётся за общим расширением dispatcher. [Контракт TestParms](../specs/VTPM.md#проверка-параметров-объектов), [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+`EFI_TCG2_PROTOCOL.SubmitCommand` для ECDSA/SHA-256 и NIST P-256 вернул точный 10-байтный ответ успеха из FV (225 670 796 инструкций, 3603 кванта) и с NVMe ESP (226 079 734 инструкции, 4179 квантов). Сверка PCR с журналом и проверки до и после EBS прошли в обоих сценариях. Firmware-профиль дополнили двумя формами XOR для проверок ответов, `RDX,[RSP+0xee]` и `RCX,[RSP+0x70]`. Sol High одобрил оба допуска, целевой тест проверил результат, флаги и отсутствие частичного состояния при отказе чтения. Прошли 277 тестов TPM, пять проверок CRB/платы, десять прежних FV-сценариев с точными COM1, workspace check и форматирование. [Системная проверка](../../tests/system/firmware_tpm_smoke.py).
+
+## S7-24 — общий верификатор Auth2
+
+Форматы Auth2 и `EFI_SIGNATURE_LIST` перенесены в `od-uefi-security` вместе с `Guid` и типом имени переменной. Firmware использует базовый `no_std` набор. Feature `verify` включает RSA и X.509 для host-стороны. Спецификация защищённого пути коммита, владельца состояния и legacy-совместимости записана в ADR-0011. [Карта проекта](../PROJECT_LAYOUT.md), [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md).
+
+Проверка detached `SignedData` принимает bare и wrapped DER, сверяет сертификат подписанта по issuer/serial и проверяет RSA-2048/SHA-256 на точном Auth2 digest. Текущий PK разрешает подпись соответствующим ключом. Для KEK цепочка доходит до конкретного enrolled сертификата, проверяя подписи звеньев, CA и KeyUsage, применимый EKU, ограничения пути и критические расширения. Частичное чтение, нарушенный порядок DER `SET OF`, чужой ключ и повреждённые подписи отвергаются.
+
+Встроенный regression test проверяет подпись настоящего `dbx_x64.efiauth2` из Microsoft `v1.7.2-signed` под KEK 2023 и отказы для KEK 2011, подписи подменённого digest и повреждённой цепочки. Отдельный локальный прогон с временными OpenSSL CA проверил правильную цепочку, альтернативный путь к зачисленному CA и отказы для `CA:FALSE`, отсутствующего `keyCertSign`, `pathLen=0`, EKU `clientAuth` и неизвестного critical extension. [Происхождение подписанной фикстуры](../../tests/fixtures/firmware/certs/README.md).
+
+Независимое Sol High code review одобрило срез после исправления порядка DER и повторной проверки. Состояние `NvramDevice`, `SetVariable` после EBS, политика образов и PCR7 продолжаются в S7-24. [ISSUE-600](../KNOWN_ISSUES.md#issue-600).
+
+`od-uefi-security --features verify` — 14 тестов, firmware — 321 тест. Workspace `check --all-targets --offline`, форматирование и `git diff --check` прошли. Graphify обновлён, 59 468 узлов и 168 225 связей. `check_layout.py` получил прежние 46 отсутствующих ссылок на файлы в `work/`.
+
+Перекомпоновка после переноса типов сдвинула границу двух записей карты на одну страницу. В 17 эталонах COM1 изменены эти две строки и CRC Boot/Runtime Services при том же CRC System Table. Нативный NVRAM-прогон подтвердил прежний SHA-256 снимка `f53eb958b63d8d93749d08f3aa5623d03a17268208c04cf02fe77ff462ffa6b7`, прогоны ESP — все пять прежних снимков и порядок загрузки. ACPI и кадр GOP сравнивались побайтно. Базовый ROM `155189f` и новый ROM на одном release runner, одном FAT32-диске и лимите 25 млн завершили FS с одинаковой причиной остановки и 4425 квантами. Число инструкций — 11 984 107 и 12 071 211 соответственно (+0,73%). Лимит FS-пробы обновлён с 12,0 до 12,5 млн. Изменения эталонов и lock-файла тестовых EFI-приложений отдельно одобрены Sol High.
+
+Официальные `firmware_boot_smoke.py` (39 прогонов и отсутствующее FV-приложение), `firmware_nvram_smoke.py` (два запуска) и `firmware_esp_boot_smoke.py` (пять сценариев) прошли. SHA-256 stock ROM `087a66c75d3a1de45ffb3728d1c86a859d203f90eefaea81355e48f19ca68455`. SHA-256 ROM с тестовыми приложениями `18cc70701c44df07fd15a25dbbeadb30dea90437ba76846a45073737ce7fbf6e`.
+
+## S7-24 — защищённый store NVRAM
+
+Host поддерживает `ODNVBANK`/`ODVARSTR` v2 с полным CRC, метаданными UTC-времени и уровнем защиты на границе устройства. Для `PK`, `KEK`, `db`, `dbx`, `dbt` и `dbr` обычный raw MMIO `FLUSH` сравнивает исходные записи по ключу и требует совпадения байтов и режима. Снимок после изменения обычной переменной восстановился с теми же защищёнными данными. Попытки убрать или заменить ключ, изменить timestamp, добавить дубликат или понизить версию получили `POLICY_REJECTED`. Обе предыдущие записи банков сохраняются при отказе или незавершённой записи. [Формат](../specs/NVRAM_DEVICE.md#защищённый-формат-v2).
+
+Sol High проверил код и повторно одобрил исправление восстановления при обнулённом заголовке с оставшимся payload, а также строгую проверку нулевого хвоста банка. Защищённый пустой store прошёл проверку отказа прямого enroll, а плата текущего формата отказала при попытке подключить v2 без firmware-интеграции. Microsoft `dbx` 21 388 байт прошёл кодек без усечения. Authenticated commit и `SetVariable` после EBS остаются в работе. [ISSUE-600](../KNOWN_ISSUES.md#issue-600).
+
+Прошли 16 тестов `od-uefi-security` с `verify,protected-nvram`, 13 целевых тестов NVRAM в `od-machine`, проверка workspace и `firmware_nvram_smoke.py`. В двух запусках legacy-пробы получены прежние COM1, SHA-256 снимка, счётчики 7 249 479 и 7 280 730 инструкций. Отдельный `boot_core` совпал с эталоном COM1 и завершился за 4 394 746 инструкций и 2976 квантов. Новый shared feature v2 включается в `od-machine` и отделён от текущего firmware build. Graphify обновлён.
+
+## S7-24 — защищённый authenticated update
+
+MMIO `AUTH_UPDATE` проверяет исходный `Attributes`, Auth2, watermark и текущие `PK`/`KEK` активного банка. Устройство само формирует и атомарно сохраняет новый v2 store. Отказ, незавершённая передача и повтор без изменения данных/времени проверяются по байтам обоих банков. Защищённая зона зарезервирована от заполнения обычными переменными. [Запрос, ограничения и статусы](../specs/NVRAM_DEVICE.md#authenticated-update-v2).
+
+Тесты воспроизвели настоящее Microsoft x64 `dbx` update под KEK 2023, отклонили его под KEK 2011 и при изменении подписанного массива. Проверены неверный PKCS#7 даже при SetupMode, unsigned enroll с переходом в UserMode, отказ неподписанной записи после enroll, старый и дублирующий append, обновление только watermark, отказ при переполнении, tombstone и запрет replay после восстановления снимка. Отдельная проба с временными OpenSSL RSA-ключами и публичным MMIO API подтвердила право PK менять KEK и удалять PK, отказ KEK менять KEK, отказ прежнего издателя сразу после смены, допустимое обновление `dbx` новым KEK и отказ более раннего подписанного обновления. Устройство восстанавливалось из снимка между операциями.
+
+Прошли 16 целевых тестов NVRAM и 17 тестов `od-uefi-security --features verify,protected-nvram`. `cargo check --workspace --all-targets --offline`, форматирование и `git diff --check` прошли. Независимое Sol High ревью одобрило код после проверки структуры непустого Auth2 `CertData` в SetupMode, затем проверило поведение квот и новые регрессии. Graphify обновлён, 59 592 узла и 168 533 связи. Подключение к `SetVariable` и firmware-режимам остаётся в работе. [ISSUE-600](../KNOWN_ISSUES.md#issue-600).
+
+## S7-24 — исходные ключи и холодный сброс
+
+Host API формирует защищённый снимок из публичного RSA-сертификата PK, двух KEK Microsoft, четырёх DER для `db` и неизменённых 445 записей опубликованного `dbx`. У ключей заводского образа watermark отсутствует. Независимая проверка состава использует ESL данных снимка. Холодный host reset сохраняет обычные переменные и возвращает SetupMode с пустой политикой или умолчания с новым RSA-ключом PK. Ошибки возвращаются для старого неподдержанного снимка, невалидного сертификата и переиспользования действующего PK. [API и происхождение ключей](../specs/NVRAM_DEVICE.md#первоначальные-ключи-и-холодный-сброс).
+
+17 целевых тестов NVRAM, workspace check и форматирование прошли. Прогон с временными самоподписанными сертификатами OpenSSL принял исходный PK и замену с новым ключом, отклонил заново выпущенный DER с прежним RSA-ключом и подтвердил побайтную сохранность исходного снимка. Sol High одобрил срез. Graphify обновлён, 59 616 узлов и 168 606 связей.
+
+## S7-24 — защищённые переменные UEFI runtime
+
+Защищённый снимок доступен через handoff v1.14 с обязательной записью NVRAM формата 2 и опциональным TPM. Плата принимает снимок v2 с явно заданным `secure_boot_disabled`. В этом отладочном профиле действуют Auth2, отдельные квоты обычных и защищённых записей, read-only переменные режима и динамический `SetupMode`. Runtime обновляет рабочую копию из активного банка и делегирует коммит Auth2 устройству. Обычные изменения сохраняют защищённые записи побайтно. Рабочий буфер находится в `EfiRuntimeServicesData` и конвертируется вместе с указателем на MMIO. [Контракт handoff](../specs/FIRMWARE_BOOT.md#64-правило-расширения-и-версии), [профиль переменных](../specs/UEFI_PROFILE.md#переменные).
+
+`python3 tests/system/firmware_nvram_smoke.py` запускает собственное EFI-приложение `rt` с пустым защищённым снимком и `SecureBoot=0`. Оно записало 19 228 байт `dbx` до EBS, перечислило запись и проверило её содержимое. После EBS приложение добавило запись со старой отметкой времени и напрямую изменило обычный счётчик через NVRAM MMIO. EFI прочитала актуальное значение и увеличила его с 41 до 42. После `SetVirtualAddressMap` с удалённым identity mapping runtime-областей приложение установило `PK`, увидело переход `SetupMode` в 0 и получило `EFI_SECURITY_VIOLATION` на неподписанное удаление `dbx`. Плата штатно выключилась за 11 387 702 инструкции и 3504 кванта. Разбор выходного снимка независимо подтвердил `PK`, `dbx` размером 19 304 байта с прежней отметкой времени и итоговый счётчик 43. [Системная проверка](../../tests/system/firmware_nvram_smoke.py).
+
+Нативные прогоны потребовали `ADC DL,1`, `OR AL,imm8` для значений 1…5 и `PUSH qword [RSP+0x68]`. Их допуск ограничен firmware-профилем и покрыт проверками ширины, флагов и исключений стека. Копирование защищённых данных использует штатные порции `CopyMem`, чтобы одна строковая инструкция укладывалась в предел интерпретатора. В 17 COM1-эталонах изменились три смежных диапазона загрузочной памяти в прежних границах `0x200000–0x600000` и CRC таблиц BS/RT. Хеш снимка legacy NVRAM и хеши дисков и снимков пяти ESP-сценариев совпали.
+
+Размер runtime PE и приложения увеличил объём проверяемого FV. Десять прежних FV-сценариев исчерпали бюджет на старом цикле CRC. Разделение CRC на префикс, нулевое поле и хвост сохранило правила проверки и фактический вывод. На Apple M3 Max, macOS 26.7.1, release runner и firmware rustc 1.99.0 три чередующихся прогона `od-runner boot-firmware --fv-app hello` показали 7 952 938 → 6 106 235 инструкций и медиану 3997 → 3213 мс (3870–4094 и 3115–3254 мс). `--fv-app fs` на одном FAT32 ESP показал 12 904 162 → 11 056 160 инструкций и медиану 6487 → 5733 мс (6483–6505 и 5684–5837 мс). Число квантов и причины остановки совпали в обоих сценариях. Стоковый образ `afb65988…d77d`, образ с приложениями `e2a94cf0…aab0` прошли исходные бюджеты.
+
+Проверены 39 загрузок FV/boot core и отсутствие приложения в стоковом FV, два legacy NVRAM boots, защищённый runtime и пять ESP-загрузок. Прошли 1708 тестов paged CPU, 17 NVRAM, 324 firmware, 31 builder, workspace check и форматирование. Проверка структуры возвращает прежние 46 отсутствующих ссылок на локальные материалы предыдущих этапов. Sol High одобрил срез firmware и host, CPU и CRC, диапазоны допустимых изменений эталонов и системные результаты. Graphify обновлён.
+
+## S7-24 — общий разбор PE и WIN_CERTIFICATE
+
+Разбор PE32+ и Authenticode SHA-256 переиспользуется из `od-uefi-security::pe`. Код отображения образов и релокаций остаётся в firmware. Новый заимствующий декодер `WIN_CERTIFICATE` проверяет длины, обход диапазона таблицы и внешнее выравнивание. Включённые в `dwLength` байты выравнивания передаются DER-слою. Алгоритм хеширования S7-06 сохранён, включая исключение каталога сертификатов. [Профиль](../specs/UEFI_PROFILE.md#формат-образов-pe32), [Microsoft PE Format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-attribute-certificate-table-image-only).
+
+Нативная сборка использует прежний профиль CPU с двумя новыми формами loader, `OR dword [RSP+0xb8],EAX` и `TEST byte [RSP+0x87],AL`. Тесты проверяют ширину, флаги и rollback при ошибках памяти. На исходных бюджетах прошли 39 прогонов 11 сценариев загрузки, проверка отсутствующего FV-приложения, два legacy NVRAM boots, защищённый runtime (11 388 768 инструкций, 3504 кванта) и пять ESP-сценариев с прежними хешами дисков и снимков. В 17 эталонах COM1 добавилась одна страница кода firmware, сдвинулись три смежные строки карты и изменились CRC BS/RT. Остальные байты совпадают. Стоковый образ `60ef9623…8459`, образ с приложениями `d5a27654…be78`. Добавление декодера сертификатов само по себе совпало побайтно со сборкой после переноса парсера.
+
+Из FV и с ESP нативно прошли замеры TCG2, сверка PCR0/1/4/5 с журналом и `TPM2_TestParms` (225 671 862 и 226 080 834 инструкции). Проверены 19 тестов общей библиотеки, 324 firmware, 1709 paged CPU, workspace check и форматирование. Проверка структуры повторила 46 прежних отсутствующих ссылок на локальные материалы. Sol High одобрил перенос, разбор `WIN_CERTIFICATE`, допуски CPU и точные COM1-эталоны. Graphify обновлён, 59 736 узлов и 168 949 связей.
+
+## S7-24 — Authenticode SignedData и цепочка
+
+Общая библиотека связывает Authenticode SHA-256 с `SpcIndirectDataContent`, его дайджест — с подписанным `messageDigest`, а `contentType` — с OID Authenticode. RSA-2048 проверяется на DER SET OF подписанных атрибутов. Несогласованные хеши и повтор обязательного атрибута отвергаются. DER-декодер ограничивает объём 64 КиБ, проверяет вложенные TLV и порядок SET до глубины 32. Хвост `WIN_CERTIFICATE` проверяется до ближайшей 8-байтной границы. [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315#section-9.3).
+
+Верификатор принимает закреплённый конечный сертификат или цепочку до одного из зачисленных сертификатов. Тестовый CA завершает цепочку, хотя PE содержит только конечный сертификат. Независимые Python и OpenSSL подтвердили хеш файла, подписанные атрибуты и RSA для собственного `hello.efi`. Проверены принятие просроченного конечного сертификата по ADR-0011, отказы при подмене секции или подписи и отказ при чужом CA. Реальное обновление Microsoft `dbx` по-прежнему проходит исходный Auth2-путь. [Тестовая подпись и сертификат](../../tests/fixtures/firmware/certs/README.md#тестовая-подпись-pe).
+
+Sol High повторно одобрил DER после исправления разбора вложенных значений и отдельно одобрил цепочки RSA и стабильный индекс сертификата. Прошли 23 теста с `verify,protected-nvram`, 16 с обычными features, 17 NVRAM, workspace check и форматирование. ROM с приложениями побайтно совпал со сборкой `b938a83`. Graphify обновлён, 59 785 узлов и 169 116 связей.
+
+## S7-24 — политика db и dbx для PE
+
+Общая `authorize_image` проверяет PE и обе базы ESL, затем проверяет SHA-256 образа и криптографически связанные сертификаты подписантов на отзыв. Обход `dbx` учитывает цепочки, даже если ограничения CA, KeyUsage или EKU не позволяют им дать допуск. Для допуска по сертификату требуется отдельная цепочка с этими ограничениями. Если алгоритм достижимого издателя или структура подписи мешает полному обходу, образ отклоняется. Выбор записи хеша или сертификата из `db` применяется только после проверки всех внешних и вложенных подписей и возвращает исходный `EFI_SIGNATURE_DATA` с GUID владельца. [UEFI 2.11 §32.5.3.3](https://uefi.org/specs/UEFI/2.11/32_Secure_Boot_and_Driver_Signing.html#authorization-process).
+
+Прогоны на полных PE-файлах подтвердили допуск неподписанного образа по хешу, допуск по сертификату и по внешнему CA, отказ при отзыве второй и вложенной подписи даже при совпадении хеша с `db`, отказ при неизвестном формате и битой базе. Unit-тесты проверили X.509 с тем же TBS и изменённой внешней подписью сертификата, X509Sha256 независимо от времени, TBS отозванного CA за пределами PE, неверную RSA-подпись, ограничения вложения и числа подписей, а также потенциальных издателей за пределами проверяемого криптографического профиля. Ревью Sol High одобрило политику после исправления обхода неизвестных внешних CA и разделения цепочек отзыва и допуска. [Публичные тестовые данные](../../tests/fixtures/firmware/certs/README.md#тестовая-подпись-pe).
+
+Прошли 29 тестов с `verify,protected-nvram`, 16 с обычными features, 17 NVRAM, workspace check и форматирование. ROM с приложениями побайтно совпал со сборкой `b938a83`. Graphify обновлён, 59 832 узла и 169 256 связей. Подключение к UEFI loader и PCR7 остаётся в работе.
+
+## S7-24 — проверка образов через NVRAM MMIO
+
+Команды 5–7 передают исходные PE-байты до 64 МиБ по 256 КиБ за раз. Host применяет `PK`, `db`, `dbx` и флаг отключения из текущего банка. По допуску вычитывается точный `EFI_SIGNATURE_DATA`, следующая команда снимает ответ. Ни накопление, ни проверка не меняют банки или поколения. Legacy NVRAM сохраняет прежний набор команд. [Контракт](../specs/NVRAM_DEVICE.md#проверка-pe-образа).
+
+Клиент `BusDevice` на полных PE проверил допуск по хешу и по внешнему CA, три части на 524 307 байтах, отказы при изменении последнего байта и отзыве по хешу, второй или вложенной подписи. Все семь прогонов сверили банки побайтно, повторная команда и открытие снимка не возвращали сохранённый ответ. 19 NVRAM-тестов проверили в том числе неполную запись, нарушение порядка и режимы SetupMode и debug. Sol High одобрил код и проверил свидетельства прогона. Workspace check и форматирование прошли. Graphify обновлён, 59 853 узла и 169 308 связей. Вызов команд из прошивки остаётся в работе.
+
+## S7-23 — параметры ECC и одноразовый ECDH для P-256
+
+`TPM2_ECC_Parameters` возвращает параметры NIST P-256. `TPM2_ECDH_KeyGen` принимает загруженный публичный ключ и возвращает общую точку перед одноразовой публичной. Проверены точное кодирование, параметрическая ошибка кривой, отказ для RSA, новый результат в каждом вызове, совпадение с `ECDH_ZGen` и неизменность snapshot. `TPM_CAP_COMMANDS` перечисляет 63 кода в порядке возрастания. [Контракт и источники](../specs/VTPM.md#проверка-параметров-объектов).
+
+Через CRB-сегмент реальной платы получена 217-байтная структура `ECC_Parameters`. После `LoadExternal` публичного ключа `Q=G` два вызова `ECDH_KeyGen` дали разные одноразовые точки, каждая совпала с возвращённой общей точкой при известном `d=1`. Прошли 279 TPM-тестов, 4 CRB-теста, workspace check и форматирование. Sol High одобрил срез. Graphify обновлён, 59 866 узлов и 169 368 связей. Гостевой TCG2-вызов этих двух команд, варианты с сессиями и оставшиеся 38 обязательных кодов пока открыты.
+
+## S7-24 — Secure Boot в UEFI и PCR7
+
+Handoff v1.15 включает авторизацию внешних файлов в `LoadImage` и повторную проверку исходных байтов в `StartImage`. Служба хранит приватный исходник в RO/NX-страницах общего выделения и освобождает его с образом. Отказанный handle остаётся выгружаемым и сохраняет запрет исполнения даже после обновления `db`. Источник считается доверенным встроенным FV только после фактической загрузки из ROM. Для снимка с включённой проверкой требуется маршрут UEFI. Плата с явным флагом отключения продолжает работать с v1.14. [Контракт handoff](../specs/FIRMWARE_BOOT.md#64-правило-расширения-и-версии), [правила loader](../specs/UEFI_PROFILE.md#secure-boot).
+
+Нативный прогон с NVMe ESP запустил подписанный PE по CA из `db` (5 859 614 инструкций), неподписанный по хешу в `db` (5 765 763) и неподписанный в SetupMode (5 655 602). При пустом `db` в UserMode и отзыве подписанного образа по хешу в `dbx` точка входа не вызывалась, загрузчик дошёл до сообщения `no bootable option`. Во всех пяти сценариях завершился тот же нативный путь управления после возврата или отказа приложения.
+
+Гостевой TCG2 записал семь событий конфигурации PCR7 и separator. При допуске подписанного PE записано одно событие `EV_EFI_VARIABLE_AUTHORITY` с точными GUID владельца и DER сертификата из `db`; повторная проверка перед `StartImage` сохранила одну запись. Для отозванного образа и SetupMode событий authority не было. Независимый SHA-256 replay совпал с `TPM2_PCR_Read` через CRB во всех трёх прогонах (225 739 236, 225 629 473 и 225 324 433 инструкции). [PFP 1.06 r52 §3.3.4.8](https://medias.cdn.trustedcomputinggroup.org/production/TCG_PC_Client_Platform_Firmware_Profile_Version_1_06_Revision_52_pub_3_1184065dfc.pdf).
+
+Sol High проверил loader и handoff, затем нашёл пропуск Auth2-изменений между проверками PCR7. В firmware добавлен callback после успешной записи в Boot Services. Прямые команды устройства учитывает volatile-счётчик Auth2. Если смену политики нельзя воспроизвести из активного банка, прошивка блокирует дальнейший допуск и EBS. Повторное Sol High подтвердило исправление. Unit-тест устройства подтвердил A→B→A, неизменность счётчика после ошибок и обычного FLUSH и обнуление при холодном открытии снимка. Нативный тест полного изменения политики из `SetVariable` остаётся в S7-25. [ISSUE-600](../KNOWN_ISSUES.md#issue-600), [ISSUE-601](../KNOWN_ISSUES.md#issue-601).
+
+Прошли 39 строгих прогонов прежней загрузки, проверка отсутствующего FV-приложения, два legacy NVRAM boot и пять ESP-сценариев с прежними хешами снимков и дисков. Защищённый debug runtime v1.14 сохранил полные Auth2 до и после EBS и после `SetVirtualAddressMap`, завершился через Shutdown на 11 546 913 инструкциях и сохранил побайтно прежний снимок. Sol High сверил 17 эталонов COM1. Две страницы кода изменили три строки карты памяти и CRC BS/RT; остальные байты и ST CRC сохранены. Для нативной сборки расширены точные формы OR, TEST и SHR профиля firmware с проверками ширины, флагов и отката при ошибке памяти.
+
+Пройдены 1710 paged CPU, 324 firmware, 20 NVRAM, 31 тест сборщика, workspace check и форматирование. Graphify обновлён, 59 913 узлов и 169 544 связи. Образы `cff103cf…589f6` (stock) и `4063e6b1…bec93` (с приложениями).
+
+## S7-25 — подпись тестовых PE
+
+`sign_test_app.py` создаёт `WIN_CERTIFICATE` для собственного неподписанного x64 EFI. DER для Authenticode формируется в скрипте, RSA-2048/PKCS#1 v1.5 выполняется системным инструментом. На одной эфемерной паре LibreSSL 3.3.6 и OpenSSL 4.1.0 дали побайтно одинаковые PE. Повторное подписание, занятый выходной путь, несовпадение ключа и сертификата и PSS-only ключ отклонены. Приватные тестовые ключи удалены из scratch.
+
+Общий проверяющий код принял подписанный PE с этим сертификатом в `db`. Отказы подтверждены для неподписанного образа, подмены секции и того же сертификата в `dbx`. SHA-256 исходного выровненного PE совпал с дайджестом после добавления таблицы сертификатов. Sol High одобрил инструмент после явного выбора PKCS#1 v1.5. [Порядок запуска](../testing/FIRMWARE.md#подпись-тестовых-pe-для-secure-boot-s7-25).
+
+## S7-25 — подготовка режимов Secure Boot в runner
+
+`prepare-secure-boot-nvram` создаёт снимок через host API, включая холодный сброс защищённого снимка. В SetupMode ключи пусты. Для `defaults` runner получает новый публичный DER PK из OpenSSL, приватный ключ направлен в `/dev/null`. Сравнение двух штатных снимков подтвердило разный PK и одинаковые `KEK`, `db`, `dbx`. Сброс в SetupMode удалил ключи и побайтно сохранил обычные записи. Проверены отказ при неправильной длине входа и сохранение занятого выходного файла.
+
+Штатный снимок загрузился с v1.15. PE с чужой действительной подписью дошёл до отказа загрузчика без вызова точки входа, 7 787 322 инструкции и 3209 квантов. Прошли четыре теста firmware CLI, release build и независимое повторное Sol High после правки поля `command` в JSON. [Использование команды](../testing/FIRMWARE.md#подпись-тестовых-pe-для-secure-boot-s7-25).
+
+## S7-25 — гостевой enrollment и холодный запуск
+
+Неподписанный `enroll.efi` загрузился с ESP в SetupMode из снимка, подготовленного через host API. Приложение проверило `SetupMode=1` и `SecureBoot=0`, прочитало три Auth2 с ESP, зачислило `KEK`, `db`, затем `PK`, и прочитало `SetupMode=0` и `SecureBoot=1`. В снимках с TPM и без него все три публичные записи совпали побайтно с исходными ESL. При холодном старте подписанный тестовый `hello` вошёл в точку исполнения. Неподписанный и подписанный чужим ключом PE дошли до `no bootable option`.
+
+Отдельный нативный прогон с TPM (225 365 856 инструкций, 3830 квантов) дал 12 событий PCR7. После исходной конфигурации и separator последовали `KEK`, `db`, `SecureBoot=1`, `PK`. Извлечённые записи совпали с полными ESL. Отдельный SHA-256 replay совпал с чтением PCR7 через CRB, `5eda80bf…df0a1`. [Методика системной проверки](../testing/FIRMWARE.md#подпись-тестовых-pe-для-secure-boot-s7-25).
+
+Системный скрипт прошёл пять полных повторов на готовых артефактах (25 запусков) и один повтор со сборкой входов (5 запусков). Независимое Sol High одобрило приложение и системный скрипт без замечаний.
+
+## S7-25 — отказ TPM при Startup
+
+Прошивка классифицирует точный десятибайтовый ответ `TPM_RC_FAILURE` до публикации ACPI и TCG2. При отказе COM1 фиксирует причину, а загрузка доходит до ESP без TPM2, AML-устройства TPM, TCG2 и таблицы финальных событий. Остальные ошибки Startup сохраняют аварийный исход. Ветка следует правилам скрытия в TCG PFP 1.06 r52, §§3.3.2.1 и 7.1. CRB освобождает locality и возвращается в idle. Расширить PCR через TPM, находящийся в failure mode, невозможно. Разъяснение PFP §8.3.9 относится к возобновлению. Для холодного Startup применили тот же вывод из режима отказа.
+
+Пять запусков гостевой пробы с подстановкой точного Startup-ответа дали 4 628 432 инструкции и 3771 квант каждый. Проба выполнилась из ESP в SetupMode и получила `EFI_NOT_FOUND` для TCG2. Обычный TPM прошёл гостевой тест с подтверждением PCR0/1/4/5 replay, `TPM2_TestParms` и сохранением финальных событий после EBS (225 682 099 инструкций, 3603 кванта). Повтор базовой Secure Boot проверки охватил пять запусков. Прошли 325 firmware unit-тестов и `cargo check --workspace --all-targets --offline`. Независимое Sol High повторно одобрило код после разборов полей TPM capability. [Как воспроизвести](../testing/FIRMWARE.md#отказ-tpm-при-startup).
+
+Обновлены 17 эталонов COM1: рост ROM на страницу кода изменил три строки карты памяти и CRC таблиц Boot Services и Runtime Services. Проверены 39 строгих обычных загрузок, случай отсутствующего FV-приложения, пять ESP сценариев и две загрузки NVRAM. Хеши дисков и снимков совпали. Sol High независимо сверило изменения эталонов и хешей COM1.
+
+## S7-25 — продолжение BootOrder после отказа Secure Boot
+
+Гостевой `enroll` записал `Boot000A`, `Boot000B` и `BootOrder=[10,11]`. Первая опция указывает на неподписанный `BOOTX64.EFI`. Его COM1-маркер отсутствует. Подписанный `CHECK.EFI` из второй опции проверил `BootCurrent=11`, путь и аргумент `order` через Boot Services и Runtime Services. После его возврата загрузчик дошёл до останова `0x21/1`.
+
+Системный набор прошёл пять раз (30 загрузок), включая прежние проверки зачисления и холодного старта. Переход к следующей опции совпал во всех пяти прогонах (5 361 606 инструкций, 3360 квантов). Независимое Sol High одобрило приложение и скрипт без замечаний.
+
+## S7-25 — отзыв dbx через Auth2 и повторная проверка StartImage
+
+Подписанное приложение работает в UserMode. Сначала оно проверяет точный `EFI_SECURITY_VIOLATION` при `LoadImage` неподписанного PE. Затем `LoadImage` допускает версию того же PE с действительной подписью. Приложение передаёт `SetVariable` отдельную PKCS#7-подпись KEK над Auth2, которая добавляет Authenticode SHA-256 этого образа в `dbx`. `StartImage` возвращает `EFI_SECURITY_VIOLATION`, COM1 подтверждает оба статуса, точка входа PE не вызывается. Снимок содержит точную запись `dbx` и прежний `BootOrder`. При холодном старте подписанный PE также отклоняется. Путь `LoadImage` с буфером из гостя выполняется благодаря точному допуску инструкции `48 83 84 24 C8 00 00 00 02`. [Контракт CPU](../specs/CPU_CONTRACT.md#расширение-s7-25-loadimage-из-буфера).
+
+На плате с TPM независимо сверили порядок, payload, SHA-256 каждого события и replay PCR7 по журналу и ответу CRB. SetupMode дал 8 событий, replay `13dada39…b83d87`. Зачисление дало 12 событий, `395e3d1d…3a5237`, включая точные ESL и новый `SecureBoot=1`. Отзыв дал 10 событий, `0a6543b7…4905be`, включая точную запись авторитетного сертификата и новый `dbx`. Журналы прошли соответственно за 224 202 745, 225 709 432 и 226 163 842 инструкции. [Методика](../testing/FIRMWARE.md#подпись-тестовых-pe-для-secure-boot-s7-25).
+
+Межплатформенный прогон выявил допустимый DER-знак `00` в положительном серийном номере X.509. PKCS#7 возвращает беззнаковую величину без этого байта. Общий поиск подписанта для Auth2 и Authenticode приводит положительный номер X.509 к той же величине, сохраняя проверку issuer и отказывая отрицательным номерам. Unit-тест покрывает положительные номера со знаком и без него, несовпадение и отрицательный номер. Тестовые сертификаты с новыми ключами используют серийные номера 128–130 для постоянной проверки DER-знака.
+
+Прошли 40 загрузок с OpenSSL 4.1.0 и восемь с macOS LibreSSL 3.3.6, 1711 тестов paged CPU, 30 тестов `od-uefi-security` со всеми features и 17 тестов `NvramDevice`. До правки отдельная host-проба воспроизвела ошибку на открытом сертификате LibreSSL. После правки та же подпись прошла. Независимое Sol High одобрило гостевой сценарий, допуск CPU и сопоставление серийных номеров.
+
+## S7-25 — приёмка системных сценариев
+
+Принято после независимого Sol High. Системный скрипт прошёл пять повторов с восемью загрузками на повтор. Подтверждены SetupMode, Auth2-зачисление и смена флагов, сохранение ключей при холодном старте, допуск подписанного PE, отказ неподписанному и переход к следующей опции, отзыв через `dbx`, отказ с пустым исходным `BootOrder` и отказ чужой подписи со штатным набором ключей. Пять проб с ответом `TPM_RC_FAILURE` дошли до ESP без опубликованного TCG2. Публичный PK для штатного набора генерирует runner.
+
+Постоянный тест PCR7 запустил SetupMode, зачисление и отзыв с реальным CRB. Проверка установила порядок 8, 12 и 10 событий, побайтное совпадение ключей и `dbx` с исходными ESL, точный `EFI_SIGNATURE_DATA` для сертификата и совпадение независимого replay с тремя различными результатами `TPM2_PCR_Read`. Зафиксированы 224 202 745, 225 704 367 и 226 145 034 инструкции соответственно. Sol High потребовало внешний oracle для полных payload. Повторное ревью одобрило сравнение с исходными ESL, повторная проверка прошла. [Системный набор и таблица отказов](../testing/FIRMWARE.md#проверка-pcr7-и-отказов-secure-boot).
+
+## S7-23 — дополнительные сессии шифрования параметров TPM
+
+Dispatcher принимает дополнительные HMAC- и policy-сессии для `decrypt` и `encrypt` без обращения к авторизуемому handle. Для них HMAC и KDFa используют только `sessionKey`. Проверены ограничение в три сессии, привязка первого HMAC к nonce шифрования, сохранение policy assertions и отсутствие DA-штрафа при ошибке дополнительного HMAC. Пустая область `TPM_ST_SESSIONS` теперь возвращает `TPM_RC_AUTHSIZE`, а `Startup` с таким тегом возвращает `TPM_RC_AUTH_CONTEXT`. [Контракт и ссылки на TPM Library v185](../specs/VTPM.md#дополнительные-сессии-шифрования-параметров).
+
+Тесты проверили AES-CFB и XOR для `ECDH_KeyGen`, защиту запроса и ответа `Hash` и `StartAuthSession`, третью сессию для `Certify` и допустимые атрибуты `GetTestResult`. Отдельная проба реальной MMIO-платы через CRB вычислила HMAC и KDFa средствами Python. Она подтвердила Name открытого P-256 ключа в `cpHash`, отказ битому HMAC с сохранением nonce, HMAC над шифротекстом ответа, шифрование только `zPoint` и освобождение сессии. Прошли 284 теста `od-tpm`, четыре теста CRB, проверка workspace и форматирование. Независимое Sol High одобрило изменения без замечаний.
+
+Аудит сессий и обязательный `GetSessionAuditDigest` остаются в работе. Инвентарь содержит 63 объявленных и 38 отсутствующих обязательных кодов. [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-24 — причина отказа проверки PE через MMIO
+
+При `POLICY_REJECTED` устройство помещает в `LEN` действие UEFI для таблицы выполнения образов. Различаются отсутствие сертификата, неверная подпись или отозванный сертификат, отсутствие доверенного совпадения, отзыв дайджеста и отказ по профилю проверки. Окно данных закрыто, содержимое банков и поколение снимка сохраняются. Ответ при успешной авторизации по-прежнему содержит точную `EFI_SIGNATURE_DATA`. [Контракт NVRAM](../specs/NVRAM_DEVICE.md#проверка-pe-образа).
+
+Через MMIO модели NVRAM проверены восемь отказов и допуск подписанного PE. Sol High выявило диагностическое расхождение при отозванном хеше и повреждённом `WIN_CERTIFICATE`. После правки устройство выдаёт `POLICY_FAILED` для повреждённой записи с тем же Authenticode SHA-256. Повторное ревью одобрило изменения. Прошли 30 тестов security crate и 17 тестов NVRAM, восемь загрузок Secure Boot и 11 обычных загрузок с побайтной проверкой COM1 плюс проба отсутствующего FV-приложения. Публикация таблицы в firmware и PKCS7 Verify Protocol остаются в работе. [ISSUE-601](../KNOWN_ISSUES.md#issue-601).
+
+## S7-24 — таблица выполнения образов
+
+Handoff v1.15 публикует `EFI_IMAGE_EXECUTION_INFO_TABLE` в памяти runtime. Отказ на `LoadImage` или повторной проверке `StartImage` добавляет код причины, имя, путь и доступный SHA-256 согласно [профилю](../specs/UEFI_PROFILE.md#secure-boot). NVRAM выдаёт дайджест через ограниченное окно дополнительно к коду отказа. Для отсутствующего или неразобранного образа окно закрыто. Восемь отказов и успешный допуск через MMIO подтвердили коды, длины, точный дайджест и EFI_SIGNATURE_DATA, закрытие окна следующей командой и сохранность NVRAM.
+
+Подписанное EFI-приложение проверило постоянный указатель таблицы и ровно две записи в UserMode. Для неподписанного буфера оно сверило точный Device Path и имя, для ранее разрешённого PE после обновления `dbx` сверило код отзыва, отсутствие имени, End node и SHA-256 ESL с независимым `dbx`. Оба handle успешно выгружаются. Целевые CPU-тесты покрыли новые формы стека загрузчика для слияния разрешений, проверки флага и расчёта пути и областей буфера. Прошли 1 711 тестов профиля, 326 тестов firmware, 30 security и 17 NVRAM. Sol High одобрил транспорт, сериализацию, проверку гостя, CPU и COM1. Пять повторов восьми сценариев Secure Boot дали побайтно одинаковый COM1 и одинаковые счётчики по каждому сценарию. Прошли 39 строгих загрузок без Secure Boot, проба отсутствующего FV-приложения, пять сценариев ESP и два старта NVRAM. В 17 обычных эталонах изменились только CRC таблиц BS/RT. В гостевом TPM-приложении совпал replay PCR0/1/4/5 и подтверждена доступность финальных событий после EBS. Повторный replay PCR7 в трёх нативных запусках подтвердил Setup, enrolment и отзыв с той же ABI-проверкой таблицы. Существующие 46 ошибок `check_layout.py` относятся к отсутствующим локальным артефактам, ссылки на которые уже были в исходном коммите.
+
+## S7-23 — аудит сессий и GetSessionAuditDigest
+
+TPM добавляет к дополнительной HMAC-сессии дайджест успешных транзакций и ведёт состояние эксклюзивности. `GetSessionAuditDigest` аттестует дайджест до обработки самой команды. Сохранение контекста и загрузка восстанавливают дайджест из защищённого хвоста без изменения формата persistent snapshot. Авторизующая сессия с собственным `audit` пока отклоняется. [Контракт аудита](../specs/VTPM.md#аудит-сессий-и-аттестация).
+
+287 тестов TPM, включая независимый SHA-256 вектор и аттестацию с RSA и ECC, прошли. Реальная плата через CRB и отдельный клиент Python подтвердили переходы exclusive/reset, сохранение через ContextSave/Load, HMAC и nonce после неудачного запроса, шифрование обеих сторон XOR, накопление по шифротексту, самоаттестацию и освобождение слота. Sol High одобрил код. Инвентарь объявляет 64 обязательные команды, остаются 37 отсутствующих кодов, профили алгоритмов и варианты команд в [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — CertifyCreation
+
+Поддерживается аттестация связи между Name и хешем создания для primary и загруженного child, с подписью или NULL Signature. Временные объекты получают защищённый `nullProof` билет до сброса. Тест сравнил однажды выданный билет с тем же Name, повторно загруженным после сброса, и получил `TPM_RC_TICKET`. Sol High одобрил транспорт команды, номера параметров, проверку билета и совместимость состояния. [Контракт](../specs/VTPM.md#аттестация-создания-объекта).
+
+В нативном CRB подтверждены обе формы ответа и корректность Name, хеша и ECDSA-подписи через OpenSSL. Проверены неверный пароль, чужой Name, пустой и изменённый билет. Набор TPM включает 289 тестов. Dispatcher объявляет 65 обязательных кодов PC Client PTP 1.07. Остаются 36 кодов и другие требования [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — HMAC_Start
+
+Поддерживается HMAC-SHA-256 через `HMAC_Start`, `SequenceUpdate` и `SequenceComplete` со своим паролем sequence. Исходный ключ можно выгрузить до завершения. Поток использует фиксированное состояние криптографической библиотеки и общий лимит три активных sequence. Сохранение sequence в контекст требует отдельной реализации. [Контракт](../specs/VTPM.md#потоковое-вычисление-hmac).
+
+Sol High одобрил изменения, включая очистку состояния HMAC. Прошёл 291 тест TPM. На нативном CRB клиент Python передал шифрованный пароль sequence, проверил HMAC ответа, затем сравнил итог 2 052 байт с независимым HMAC-SHA-256. Подтверждены выходной NULL ticket, отказ при неверном пароле и неверном виде sequence, освобождение ключа и слота. В профиле объявлены 66 обязательных кодов, остаются 35. [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-27 — измерения пути загрузки
+
+Mac15,11, Apple M3 Max, 36 ГБ RAM, macOS 26.7.1 (25G241), arm64. Host runner и
+прошивка собраны в release с Rust 1.99.0 и Apple clang 21.0.0. Плата
+исполняла x64 firmware в paged-интерпретаторе на одном vCPU со 128 МиБ RAM,
+свежим NVRAM, CRB TPM с банком SHA-256 и NVMe с in-memory backend.
+Глобальный бюджет каждого старта составил 1 200 000 000 инструкций.
+События устройств завершали кванты, пока оставался бюджет. Гостевые прогоны
+в серии выполнялись последовательно. На host параллельно шли другие сборки
+и проверки этапа.
+
+| Интервал | Среднее, с | p50, с | p95, с | Размах, с | Инструкций | Квантов |
+|---|---:|---:|---:|---:|---:|---:|
+| Handoff → первый RIP приложения из FV | 106,587 | 106,827 | 108,990 | 5,855 | 224 558 783 | 3 627 |
+| Handoff → первый RIP приложения из ESP | 106,193 | 105,581 | 109,154 | 4,676 | 224 299 077 | 3 711 |
+| `LoadImage` с PE размером 1 МиБ | 25,873 | 25,991 | 26,622 | 1,569 | 54 692 623 | 0 |
+| `ReadBlocks` с 64 МиБ через NVMe | 4,399 | 4,413 | 4,492 | 0,292 | 4 981 375 | 32 768 |
+| `HashLogExtendEvent` с 1 МиБ и PCR 8 | 25,841 | 25,864 | 27,009 | 2,144 | 54 595 638 | 0 |
+
+На каждом пути прошли один запуск для определения адресов, один
+отброшенный прогрев и десять валидных измерений. Счётчики инструкций
+и квантов для каждого интервала совпали во всех повторах. Отметки брались
+перед выборкой инструкции. Адрес входа сверялся с базой PE и
+`AddressOfEntryPoint`. У пустой функции среднее 1 399,9 нс, p50 1 333 нс,
+p95 1 833 нс, размах 583 нс и три инструкции. Значения в таблице включают
+измеренный интервал целиком.
+
+Контроль обычного `boot-firmware --fv-app hello --budget 12000000` выполнен
+на одном ROM с тестовыми приложениями, без TPM и без `--sample-rip`.
+В десяти чередующихся парах release-бинарников после прогрева обе сборки
+дали один SHA-256 COM1, 6 137 403 инструкции и 2 938 квантов. Медиана от
+запуска процесса до его выхода составила 2,980 с в исходной сборке и
+3,099 с после инструментирования. Диапазоны 2,900–3,248 с и 2,905–3,218 с
+пересекаются. Эти данные фиксируют наблюдаемую вариацию и служат базой
+для будущих сравнений.
+
+JSON занимает 14 274 байта. Он содержит сырые повторы, статистику и
+хеши исходников, runner, ROM, EFI-приложения, PE и диска. Базой сборки
+был `cee17ee` с изменениями S7-27. Sol High одобрил инструментирование
+и независимо сверил 22 трассы, шесть рядов измерений, их статистику и
+адреса входа PE. [Сырые данные](data/stage7/s7-27-m3-max-release-2026-11-20.json), [методика и воспроизведение](../testing/FIRMWARE.md#измерения-пути-загрузки-s7-27).
+
+## S7-28 — отказы без TPM и Secure Boot
+
+`firmware_failure_smoke.py` прошёл три раза на stock ROM с одним x64 vCPU и 128 МиБ RAM. Каждый проход включает 12 стартов, в том числе два старта для подготовки записей NVRAM и контрольный ESP. Число инструкций и квантов совпало по каждому сценарию. Гость проверил точные ошибки PE и FAT, отказ неверному MapKey и успешный EBS с верным ключом. Исключены page fault, memory error, достижение бюджета и неожиданные причины останова. [Таблица сценариев](../testing/FIRMWARE.md#отказы-без-tpm-и-secure-boot).
+
+Плата сохраняет строгую обработку защищённого NVRAM и открывает legacy v1 без исправного банка только для восстановления в firmware. При обоих ошибочных CRC прошивка сохраняет volatile defaults и коммитит свежий store. Без reset register, но с PM1, прошивка снимает `RESET_REG_SUP` и останавливает машину через S5. Без PM1 гость после EBS получает COM1 и останов 0x22/1. Нативная проба сверяет FADT и терминальное состояние машины.
+
+Sol High одобрил архитектуру, восстановление NVRAM, путь reset, новые CPU формы и проверку отказов. Прошли 328 тестов firmware, 18 NVRAM и 1 711 тестов paged CPU-профиля, а также workspace check и форматирование. В 17 COM1 эталонах обновлены CRC BS/RT. Строка об отсутствии устройств добавлена только в `boot_core`. Пять ESP и два NVRAM эталона побайтно совпали. Прошли 39 обычных загрузок в строгом режиме и проба отсутствующего FV-приложения, восемь повторных сценариев Secure Boot и нативный replay PCR7 для трёх состояний. В госте TPM replay PCR0/1/4/5 совпал. У `check_layout.py` сохраняются 46 ошибок существующих ссылок на локальные артефакты.
+
+## S7-29 — приёмка G1–G3
+
+| Gate | Статус | Проверка и результат ревью |
+|---|---|---|
+| G1 — ядро прошивки | Принято | Ревью сверило четыре решения S7-02 с реализацией, границы памяти и handoff, ABI `efiapi`, готовность BS, PE loader и консоль. Пять запусков `hello` и пять запусков `ebs` из FV совпали с COM1-эталонами и между собой по числу инструкций и квантов. Уточнены спецификации входа и сохранения состояния FP. Повторное ревью замечаний не выявило. |
+| G2 — переменные, RT и fixed hardware | Принято | Две загрузки сохранили переменную через коммит банка NVRAM. Проверены восстановление после CRC-ошибок и запись защищённых переменных после виртуального перехода. Пять запусков `rt` переключили CR3, удалили тождественные отображения RT, проверили вызовы после EBS и завершились аппаратным Shutdown. Отдельный нативный EFI-прогон после EBS подтвердил аппаратный Reset, `status=completed`, `exit=stopped` и `stop_reason=Reset` в исправленном runner. Ревью одобрило изменение. Перезапуск CPU и устройств после Reset остаётся за S7-26 и зависит от S4-21. |
+| G3 — диск и boot manager | Принято | Ревью проверило обязательные команды и границы DMA для фиксированного NVMe, Block/Disk I/O, первичный и резервный GPT, FAT и выбор ESP. Прошли пять ESP-сценариев с COM1-эталонами и три прогона по 12 сценариев отказа с одинаковыми счётчиками гостевых инструкций и квантов. Открытое ограничение PCI FLR относится к [ISSUE-591](../KNOWN_ISSUES.md#issue-591). |
+
+Четыре скрипта из инструкции приёмки выполнились одной командой на чистом экспорте исходников. Базовый набор включал 39 загрузок со строгим сравнением COM1 и пробу отсутствующего FV-приложения. Дополнительно прошли 328 тестов firmware, 136 тестов firmware board, 31 тест builder и четыре теста runner firmware boot, а также форматирование и сборка всех целей workspace в offline-режиме. Три теста платы были помечены `ignored` в этом запуске. [Команда проверки](../testing/FIRMWARE.md).
+
+## S7-33 — текущие контракты persistence
+
+Для S9-26 описаны `ODNVBANK` v1/v2, строгая проверка снимка, отдельный путь восстановления повреждённого legacy v1 при загрузке платы, первичная настройка и холодный сброс ключей. Для S9-27 описаны выдача `ODTPMSTA` v3 из `od-machine`, валидация и кодек в `od-tpm`, различия между восстановлением и созданием нового TPM, требование host-шифрования и границы persistent state. Каталоги bundle зарезервированы до реализации S9-26/S9-27. [NVRAM](../specs/NVRAM_DEVICE.md#host-api), [TPM](../specs/VTPM.md#host-api-и-persistence), [VM bundle](../specs/VM_BUNDLE.md).
+
+Прошли 18 тестов NVRAM, тест захвата и восстановления TPM через плату и 291 тест `od-tpm`. Вывод `check_layout.py` побайтно совпал с HEAD до изменений. Он содержит 46 существующих ошибок ссылок на локальные артефакты. Sol High подтвердил, что документированный контракт применим к текущему коду. S7-33 остаётся открытой до завершения S7-23 и S7-24. Новые возможности PTP, включая NV и конфигурацию PCR, могут изменить сохраняемые поля.
+
+## S7-23 — PolicyCpHash и PolicyLocality
+
+Sol High одобрил код, совместимость контекстов и обработку ошибок. Прошли 294 теста TPM и четыре теста CRB. Нативная проверка CRB с независимым клиентом Python сверила байты digest, HMAC ответа на шифрованный `PolicyCpHash`, атрибуты обеих команд, коды ошибок и сохранение ограничений через `ContextSave`/`ContextLoad`. Ключ с пересечением масок, допускающим locality 0, подписал дайджест через `TPM2_Sign`. Для ключа с политикой только locality 1 команда на locality 0 вернула `TPM_RC_LOCALITY`.
+
+В действующем профиле объявлены 68 из 101 обязательного кода команд. Остаются 33 и требования к алгоритмам, PCR и транспорту. [Спецификация реализации](../specs/VTPM.md#привязка-политики-к-команде-и-locality), [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — PolicyPassword
+
+`PolicyPassword` объявлена с одним handle и кодом `0x18C`. Она обновляет digest кодом `PolicyAuthValue` и сохраняет выбранный последним способ авторизации через существующий формат контекста. Sol High одобрил реализацию, тесты, пагинацию и атрибуты capability. Прошли все 296 тестов TPM.
+
+Нативный клиент Python через CRB вычислил policy digest и HMAC ответа для сессии с `sessionKey`, проверил точные коды ошибочного размера и пароля, увеличение DA, сохранение и загрузку контекста. Две команды `Sign` с непустым и пустым паролем вернули подписи, принятые `VerifySignature`. При пустом пароле поле HMAC ответа осталось пустым. Объявлены 69 из 101 обязательного кода. [Профиль и оставшиеся команды](../specs/VTPM.md#целевой-профиль-pc-client-ptp-107).
+
+## S7-23 — NV_Certify
+
+Sol High одобрил обе формы аттестации, авторизацию ключа и NV, обработку ошибок и шифрование параметров. Прошли 298 тестов TPM. Проверены диапазон, нулевой размер в конце индекса, digest всего индекса и аттестация без подписи с явным хешем в `inScheme`. [Контракт](../specs/VTPM.md#аттестация-содержимого-nv).
+
+Нативный клиент через CRB сверил SHA-256 всего записанного индекса размером 700 байт и поле данных диапазона 16 байт. OpenSSL принял обе ECDSA-подписи. Клиент дополнительно проверил XOR в обе стороны, HMAC ответа, атрибуты capability, отказ при неверной авторизации второго handle и при блокировке чтения. Объявлены 70 из 101 обязательного кода. [Остаток профиля](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — ClockSet
+
+Sol High одобрил изменение `Clock`, авторизацию, границы и сохранение состояния. Нативный клиент через CRB проверил `TPMA_CC`, авторизацию Owner с независимо вычисленным HMAC и авторизацию Platform с паролем. `ReadClock` подтвердил границы, равенство, отказ при попытке перевода назад и одинаковые `Time` и счётчики до и после скачка. Прошли 299 тестов TPM, включая продолжение хода после `ClockSet`, внутренний сброс и восстановление существующего snapshot с новой базой. Объявлен 71 из 101 обязательного кода. [Контракт](../specs/VTPM.md#изменение-clock).
+
+## S7-23 — MakeCredential
+
+Sol High проверил KDF, шифрование, формат TPM2B и проверку параметров
+публичного Storage key. После замечания ревью добавлены отказы для
+ключей с NULL symmetric и с неподходящей асимметричной схемой. Прошли
+302 теста TPM, включая сравнение с независимыми векторами KDFe и
+credential wrapper.
+
+Нативная проверка через CRB загрузила внешние публичные ключи RSA-2048
+и P-256. OpenSSL независимо восстановил RSA seed и секрет ECDH.
+Клиент Python сверил KDFa и HMAC, затем OpenSSL восстановил исходный
+credential. Дополнительно подтверждены свежие ответы, пустой credential,
+отказы при превышении размера, XOR-защита обоих направлений с аудитом и
+HMAC ответа. Объявлены 72 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#подготовка-credential).
+
+## S7-23 — ActivateCredential
+
+Команда авторизует первый объект в роли ADMIN, затем Storage key в роли
+USER. В `certInfo` возвращается credential после проверки HMAC от
+шифротекста и Name первого объекта. Применяются RSA-2048/OAEP-SHA-256
+или ECDH P-256 и общий с MakeCredential контейнер AES-128-CFB.
+
+Проверка через CRB приняла контейнеры, которые клиент сформировал с помощью
+Python и OpenSSL, включая 16-байтовый RSA seed, пустой credential и
+полноразмерные координаты P-256. Проверены отказы при неверном Name,
+изменённом HMAC или шифротексте, повреждённом внутреннем размере, слишком
+длинном RSA seed и некорректной точке. Дополнительная сессия проверила
+XOR для обоих направлений и HMAC ответа с аудитом.
+
+Sol High одобрил код после сверки ролей, контейнера, восстановления seed
+и параметров команды с TPM Library v185. Прошли 304 теста `od-tpm` и
+`cargo check --workspace --all-targets --offline`. Объявлены 73 из 101
+обязательного кода.
+[Контракт](../specs/VTPM.md#подготовка-credential).
+
+## S7-23 — ObjectChangeAuth
+
+Проверка через CRB использовала persistent handles дочернего объекта и
+его родителя. Независимый клиент подтвердил cpHash по обоим Name и HMAC
+и XOR для ответа с прежним `authValue`. После `Load` исходный объект
+принимал прежнюю авторизацию, а новая копия принимала новую. В обоих случаях
+`Unseal` возвращал исходные данные. Дополнительно проверены отклонение
+первичного объекта и неподходящего родителя, обязательный
+`PolicyCommandCode(ObjectChangeAuth)` для ADMIN и пустая новая авторизация.
+
+Sol High одобрил срез и независимо прогнал три новых теста. Старый
+контейнер потомка загружен после смены
+авторизации его Storage key. Проверены стабильность snapshot, Name
+и Qualified Name, свежий IV, отказ при повреждении контейнера, ограничение
+в 32 байта, неверный родитель и отсутствие закрытой части. Прошли все
+307 тестов `od-tpm` и проверка Rust workspace. В профиле объявлены
+74 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#смена-авторизации-загруженного-объекта).
+
+## S7-23 — порядок проверки DA lockout
+
+После проверки доступности закрытой части TPM проверяет DA lockout перед
+ролью ADMIN или USER и перед проверкой условий политики. Это применяется
+к сессиям с паролем, HMAC, `PolicyAuthValue` и `PolicyPassword`.
+Политика без доказательства `authValue` может авторизовать вызов в lockout.
+Проверка наличия закрытой части сохраняет приоритет.
+
+Нативный CRB-прогон установил порог в одну неуспешную попытку, вызвал
+lockout и сверил коды для пароля, HMAC, обеих политик с доказательством
+`authValue`, trial и чистой политики. Счётчик отказов и дайджесты
+отклонённых сессий сохранились. После сброса lockout новый контейнер
+загрузился и исходные данные были доступны с новой авторизацией. Прошли
+308 тестов TPM и проверка Rust workspace. Sol High одобрил срез.
+Защита, унаследованная от привязки сессии, реализована следующим срезом.
+[TPM Library v185, Part 3 §5.6](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=32), [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — PolicyNameHash и PolicyAuthorize
+
+Нативный CRB-клиент загрузил публичный P-256 ключ в иерархию Owner,
+подписал одобряемую политику с помощью OpenSSL и получил билет
+`VerifySignature`. После выгрузки ключа TPM принял подлинный билет.
+Изменённый билет, другой `policyRef`, NULL-билет для реальной сессии
+и несовпадающий `approvedPolicy` отклонены. Фиксированные векторы
+проверили дайджест с пустым и непустым `policyRef`, а также обработку trial.
+
+Сессия авторизовала `ObjectChangeAuth` после `ContextSave` и `ContextLoad`.
+Замена второго handle на другой Storage key дала `TPM_RC_POLICY_FAIL`.
+Подстановка persistent alias с тем же Name и разные значения `newAuth`
+прошли проверку. Оба выходных контейнера загрузились, и новая авторизация
+прочитала исходное запечатанное значение. Клиент также сверил XOR
+первых параметров обеих команд и HMAC ответов дополнительной сессии.
+
+После замечания Sol High проверка занятого слота NameHash предшествует
+проверке точной длины после разбора wire-формата. Повторное ревью
+подтвердило исправление. Прошли 310 тестов TPM и проверка Rust workspace.
+Объявлены 76 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#имена-команды-и-подписанная-авторизация-политики).
+
+## S7-23 — PolicyTemplate и PolicyParameters
+
+Нативный CRB-клиент вычислил SHA-256 шаблона по переданным байтам
+`TPMT_PUBLIC`. `PolicyTemplate` отклонила изменённый шаблон и
+команду без шаблона. После восстановления контекста `Create`
+успешно обработала другой `outsideInfo` и зашифрованный `inSensitive`
+с исходным шаблоном.
+
+Для `PolicyParameters` клиент вычислил хеш кода и зашифрованных
+параметров `Create`, подписал политику в OpenSSL и получил билет
+для `PolicyAuthorize`. После сохранения и загрузки контекста TPM
+отклонил тот же запрос в открытом виде и принял ранее зафиксированный
+шифротекст. Оба созданных контейнера загрузились и вернули исходные
+данные через `Unseal`. Сверены зашифрованные входы обоих утверждений
+и HMAC ответов. Sol High одобрил срез. Прошли 313 тестов TPM и
+проверка Rust workspace. Объявлены 78 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#ограничения-шаблона-и-параметров-команды).
+
+## S7-23 — DA-защита привязанных сессий
+
+Нативный CRB-прогон проверил сессию аудита с `bind=TPM_RH_LOCKOUT`
+после первой аудируемой команды, `ContextSave`/`ContextLoad` и смены
+`lockoutAuth`. Она сохранила исходный ключ. Неверный HMAC вернул
+`TPM_RC_AUTH_FAIL`, и следующий вызов вернул `TPM_RC_LOCKOUT`.
+Обычный счётчик отказов сохранился. Сессия с привязкой к Owner
+осталась доступна.
+
+Дополнительно проверены чистая политика с привязкой к Lockout и
+`PolicyPassword`. Неуспешная проверка условий политики сохраняет
+DA-состояние. Тест с защищённой целевой сущностью потребовал прохождения
+обеих проверок lockout. Старый контекст с сохранённым handle Lockout
+сохраняет защиту при загрузке. В старом контексте без происхождения ключа
+сохраняется прежнее поведение. Sol High одобрил срез. Прошли 316 тестов
+TPM и проверка Rust workspace.
+[Контракт](../specs/VTPM.md#фаза-b-срез-c1-rsa_encryptdecrypt-ecdh_zgen-da-persistent-state-v2-s7-23).
+
+## S7-23 — SetPrimaryPolicy и snapshot v4
+
+Нативный CRB-прогон сверил сортировку и формат `TPM_CAP_AUTH_POLICIES`,
+отказ для свойства вне permanent-диапазона и различие между NULL
+политикой и явным нулевым SHA-256. После назначения нулевой политики
+новая policy-сессия заменила её без отдельной привязки к коду команды.
+Проверены XOR-защита входа `SetPrimaryPolicy`, HMAC ответа и
+`CreatePrimary` с исходным шаблоном и зашифрованным `inSensitive`.
+Изменённый шаблон отклонён. Lockout policy восстановила `lockoutAuth`
+после неверного пароля. `Clear` сохранила Platform policy.
+
+Тесты проверили сохранение политик Owner, Endorsement и Lockout,
+сброс Platform policy при Reset и Restart и сохранение при Resume.
+Восстановление проверено на отдельно сформированном v3 без политик,
+актуальном v4 и повреждённых записях. Прошёл 321 тест `od-tpm`,
+5 тестов `od-machine` с фильтром `tpm` (2 пропущены по аннотации) и
+проверка рабочего пространства Rust. Sol High одобрил срез.
+Объявлены 79 из 101 обязательного кода.
+[Политики](../specs/VTPM.md#политики-иерархий), [формат](../specs/VTPM.md#формат-snapshot-odtpmsta-версия-4).
+
+## S7-23 — PolicyCounterTimer
+
+Нативный CRB-прогон сверил `TPMA_CC`, 25 байт `ReadClock`, сравнение
+на границе полей, независимый SHA-256 вектор, trial и обработку
+неверных параметров. Независимый клиент зашифровал операнд XOR и сверил
+HMAC ответа. Сессии с nonce, созданным на 2000 мс, использовали минимум
+из трёх сроков. Авторизация на 7000 мс прошла и обновила nonce. Сохранённая
+сессия на 7001 мс получила `TPM_RC_EXPIRED`. Изменение `Clock` не
+изменило `Time` или срок.
+
+Тесты проверили все 12 операций, условия сравнения знаковых чисел,
+приоритет проверки ADMIN, восстановление обычного контекста и
+истечение после Restart и Resume. Эталон обмена HMAC пересчитан
+независимым Python-клиентом с учётом запроса DRBG для новой эпохи.
+Sol High одобрил исправление приоритета ADMIN и проверил эталон.
+Прошёл 324 тест `od-tpm`, 5 тестов `od-machine` с фильтром `tpm`
+(2 пропущены по аннотации) и проверка рабочего пространства Rust.
+Объявлены 80 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#сравнение-time-и-clock-в-политике).
+
+## S7-23 — PolicyNV
+
+Нативный CRB-прогон подтвердил `TPMA_CC`, разницу в проверках
+незаписанного индекса для real и trial, счётчик DA после неверного
+пароля, обработку диапазона и блокировки. Независимый клиент сверил
+текущее имя индекса, дайджест политики и HMAC ответа при XOR-защите
+операнда отдельной audit-сессией. Сохранённая policy-сессия после
+изменения и блокировки индекса авторизовала команду Owner. Отдельно
+проверена политика Platform для чтения индекса с `PPREAD`.
+
+Тесты проверили сравнение обычных данных, счётчика, битового поля и
+extend-дайджеста, включая смещение и сохранение политики после
+удаления индекса. Прошли 326 тестов `od-tpm` и проверка рабочего
+пространства Rust. Sol High одобрил срез. Объявлен 81 из 101
+обязательного кода.
+[Контракт](../specs/VTPM.md#сравнение-значения-nv-в-политике).
+
+## S7-23 — Собственные политики NV-индекса
+
+Нативный CRB-прогон подтвердил выбор между паролем и политикой, отличие
+пустого `authPolicy` от нулевого SHA-256, приоритет DA и работу чистой
+policy-сессии при блокировке парольной авторизации. Покрыты обычная
+запись, счётчик, битовое поле, extend, блокировки чтения и записи,
+`PolicyNV` и второй слот авторизации в `NV_Certify`.
+
+Для незаписанного индекса с `AUTHREAD` независимый клиент вычислил
+HMAC `PolicySecret` и проверил ответ. Индекс с одним `POLICYREAD`
+отклонён, как и индекс отключённой иерархии. Unit-тесты подтвердили
+сосуществование HMAC и policy, а также запись и чтение после
+восстановления существующего формата snapshot v4. Прошли 328 тестов
+`od-tpm`. Sol High одобрил срез.
+[Контракт](../specs/VTPM.md#политики-nv-индексов).
+
+## S7-23 — PolicyNvWritten
+
+Нативный клиент подтвердил `TPMA_CC`, два независимых дайджеста,
+ошибки параметра, trial, HMAC аудита и отклонение флагов шифрования.
+Контекст с требованием `WRITTEN = CLEAR` пережил сохранение и
+загрузку. Запись policy-индекса прошла ровно один раз. Та же политика
+Owner не смогла авторизовать запись по состоянию индекса, указанного
+в другом handle. Для `WRITTEN = SET` успешно проверена авторизация NV
+во втором слоте `NV_Certify`.
+
+Тесты проверили изменение дайджеста при повторе, отказ при конфликте,
+сброс ограничения и совместимость битов кодирования контекста.
+Прошли 330 тестов `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Объявлены 82 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#состояние-записи-nv-в-политике).
+
+## S7-23 — PolicyAuthorizeNV
+
+Нативный CRB-прогон сверил `TPMA_CC`, текущий Name и одно расширение
+нулевого дайджеста после проверки `TPMT_HA` с метаданными. Trial
+прошёл с надлежащей авторизацией на незаписанном и заблокированном
+индексе. Независимый клиент сверил HMAC аудита по трём именам.
+Две реальные сессии сохранили срок после смены дайджеста. На 7000 мс
+запись прошла, а восстановленная сессия на 7001 мс получила
+`TPM_RC_EXPIRED`.
+
+Тесты проверили отказ после смены хранимого одобрения, собственную
+policy-авторизацию индекса, проверки длины, алгоритма и блокировки и
+сохранение `PolicyNvWritten` после замены дайджеста и загрузки контекста.
+Прошли 332 теста `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Объявлены 83 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#одобрение-политики-через-nv).
+
+## S7-23 — NV_ChangeAuth
+
+Независимый CRB-клиент сверил `TPMA_CC`, отказ обычного пароля,
+ограничение размера и XOR входного параметра со старым секретом.
+`PolicyAuthValue` отправила HMAC со старым секретом и получила HMAC
+с новым. `PolicyPassword` передала изменённый секрет и получила
+ответ, рассчитанный на ключе сессии. Для чистой ADMIN-политики
+также проверено XOR-шифрование с прежним секретом.
+
+Тесты подтвердили сохранение Name и данных, смену секрета на
+незаписанном и заблокированном счётчике и вход с новым секретом
+после восстановления snapshot. Прошли 334 теста `od-tpm`.
+Sol High одобрил срез. Объявлены 84 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#смена-секрета-nv-индекса).
+
+## S7-23 — NV_UndefineSpaceSpecial
+
+Нативный CRB-клиент проверил `TPMA_CC` и защиту заблокированного
+индекса от обычного удаления. При неверном HMAC Platform индекс
+и политика сохранились. Успешный запрос использовал прежний секрет
+индекса. Ответ подтвердил пустой секрет в первом HMAC, тот же секрет
+Platform во втором HMAC и отдельное аудирование. Первый и третий
+сеансы продолжились, второй был закрыт.
+
+Тесты проверили ограничения определения, сохранение через `Clear`
+и snapshot, удаление восстановленного индекса и сохранение максимума
+счётчиков. Прошли 335 тестов `od-tpm`. Sol High одобрил срез.
+Объявлены 85 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#удаление-nv-индекса-по-политике).
+
+## S7-23 — ClockRateAdjust
+
+Нативный CRB-клиент сверил `TPMA_CC`, знаковые значения параметра,
+авторизацию Owner policy и Platform, HMAC аудита и отклонение
+шифрования. При грубой поправке +1% после 990 исходных миллисекунд
+оба счётчика показывали 999 мс. Следующая миллисекунда подняла их
+до 1000, сняла блокировку DA и позволила использовать policy-сессию
+точно на сроке. На следующем тике другая сессия получила `EXPIRED`.
+Противоположная поправка восстановила номинальную скорость без скачка.
+
+Тесты подтвердили накопление дробной части, пределы калибровки,
+сохранение поправки при `ClockSet` и `Clear`, сохранение накопленного
+`Clock` в snapshot и номинальную скорость после включения. Прошли
+337 тестов `od-tpm`, 5 тестов `od-machine` с фильтром `tpm`
+(2 пропущены по аннотации) и проверка рабочего пространства Rust.
+Sol High одобрил срез. Объявлены 86 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#калибровка-time-и-clock).
+
+## S7-23 — Положительный expiration в PolicySecret
+
+Нативный CRB-клиент независимо зашифровал nonce, сверил HMAC ответа
+и пустой NULL билет. Сессии с nonce от 2000 мс получили несколько
+относительных и абсолютных сроков. Авторизация на самом раннем сроке
+6000 мс прошла, а восстановленная сессия отклонена на 6001 мс.
+Проверены обязательная авторизация источника для trial и приоритет
+ошибок срока и `cpHashA`.
+
+Прошли 339 тестов `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Отрицательный `expiration` ждёт общего
+формата билета и `PolicyTicket`.
+[Контракт](../specs/VTPM.md#срок-действия-policysecret-и-policyticket).
+
+## S7-23 — PolicyTicket и snapshot v5
+
+Нативный CRB-клиент независимо вычислил HMAC для срока от nonce
+и абсолютного срока при `INT32_MIN`. Для Lockout подтвердился Owner
+proof. Реальная сессия отклонила билет с переносом октетов из
+`cpHashA` в `policyRef`, а trial вычислила дайджест по §23.1.
+Повтор ранее выданного билета прошёл с шифрованием `timeout` и
+аудитом. После загрузки контекста команда с точным `cpHashA` прошла
+на сроке, другая команда и повтор билета после срока отклонены.
+
+Тесты проверили смену эпохи, Owner и Platform proof после `Clear`,
+миграцию snapshot v3 и v4 и рестарт с новым счётчиком TPM Reset.
+Прошли 341 тест `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез после уточнения trial. Объявлены 87 из 101
+обязательного кода.
+[Политики](../specs/VTPM.md#срок-действия-policysecret-и-policyticket), [snapshot](../specs/VTPM.md#формат-snapshot-odtpmsta-версия-5).
+
+## S7-23 — PolicySigned
+
+Нативный CRB-клиент загрузил публичные ключи OpenSSL P-256 и RSA-2048.
+Обе подписи проверены по самостоятельно собранным октетам утверждения.
+Изменённый `policyRef` отклонён. Независимый клиент сверил XOR-защиту
+nonce и срока ответа и HMAC аудита. Trial с `NULL` подписью вычислил
+совпадающий дайджест. После выгрузки ключей новые вызовы с прежними
+handle отклонены. Билеты авторизовали настоящие команды `ClockSet`
+на границе срока, а повтор после неё получил `EXPIRED`.
+
+Прошли 343 теста `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Объявлены 88 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#подписанное-утверждение-политики).
+
+## S7-23 — IncrementalSelfTest и самопроверки
+
+Нативный клиент CRB сверил атрибуты команды, вызов до `Startup`,
+запрос всех 13 объявленных идентификаторов, пустой список и 64 повтора.
+Проверены ошибки неизвестного алгоритма, превышения лимита, усечённого
+и избыточного кадра. Независимый клиент подтвердил HMAC аудита,
+отказ для атрибутов шифрования и успешный `GetTestResult` после
+`SelfTest(YES)`. Прошли 344 теста `od-tpm`, пять машинных TPM-тестов
+и проверка рабочего пространства Rust. Два машинных теста остались
+в штатном списке ignored. Sol High одобрил срез.
+
+На arm64 macOS 26.7.1 с rustc 1.99.0 замерили `TPM2_Startup(CLEAR)`
+в release-сборке в пяти сериях по 120 вызовов. В каждой итерации
+новый TPM создавался до начала таймера, а ответ проверялся на успех.
+Медианы серий до среза составили 1,25–1,29 мкс, p90 — 1,29–1,58 мкс.
+После расширения самопроверок медианы составили 5,33–5,51 мс, p90 —
+5,37–5,72 мс. Замер охватывает обработку команды внутри `od-tpm`.
+
+Объявлены 89 из 101 обязательного кода.
+[Контракт самопроверок](../specs/VTPM.md#самопроверка-tpm).
+
+## S7-23 — подготовка TCG2 к SHA-384
+
+Прошивка различает поддерживаемые и выделенные банки PCR, учитывает
+пагинацию списка алгоритмов и пишет расширение PCR, основной журнал и
+таблицу финальных событий в формате активных банков. Для образов PE
+оба алгоритма используют общие границы Authenticode. SHA-256 остаётся
+ключом дедупликации измерений конфигурации и издателей Secure Boot.
+Прошёл 331 тест прошивки и 40 тестов `od-uefi-security`. Тесты
+байтового формата сверили команды и записи журналов для трёх сочетаний
+банков. В нативном прогоне текущий SHA-256 TPM прошёл SetupMode,
+зачисление и отзыв политики Secure Boot. Журнал PCR7 во всех трёх
+загрузках сверён с ответом CRB. Sol High одобрил изменения после
+исправления пагинации и проверки сериализации. Нативная проверка с
+TPM SHA-384 относится к следующему срезу, где модель TPM объявит второй банк.
+[Контракт](../specs/VTPM.md#measured-boot).
+
+## S7-23 — SHA-256 и SHA-384 по умолчанию
+
+TPM объявляет оба банка с PCR 0–23 и поддерживает SHA-384 в `Hash`
+и потоковом хешировании. CRB-клиент на Python сверил значения банков,
+порядок смешанной выборки, поколения PCR, `EventSequenceComplete`,
+`PolicyPCR` и данные создания ключа. OpenSSL подтвердил подпись
+`Quote` над смешанной выборкой. Тесты Resume и Restart покрывают оба банка.
+
+Фреймы CRB и разметка журнала проверены нативно. В SetupMode, при зачислении
+и отзыве Secure Boot независимо пересчитаны оба дайджеста каждого
+события PCR7 и оба итоговых значения сверены с `PCR_Read`.
+Гостевая проба прошла из FV и ESP, включая проверку журнала и сохранённой
+таблицы финальных событий после `ExitBootServices`. Бенчмарковая EFI-проба
+собрана с новым заголовком события.
+Первые прогоны выявили формы qword ROR с единичным счётчиком, XOR со
+слотами стека и ADD единицы к счётчику блоков SHA-384. Эти формы
+исполняются через существующие операции в профиле загрузки прошивки.
+На одной и той же ESP с тестовым приложением SetupMode полный прогон
+потребовал 224 217 507 гостевых инструкций с одним SHA-256 и 364 985 952
+с обоими банками. Это счётчики инструкций проверочных запусков.
+
+Прошли 346 тестов `od-tpm`, пять TPM-тестов платы и сборка рабочего
+пространства. Sol High одобрил изменения. Объявлены 89 из 101
+обязательного кода. Изменение выделения банков остаётся за
+`PCR_Allocate`.
+[Контракт](../specs/VTPM.md#measured-boot).
+
+## S7-23 — PCR_Allocate и снимок v6
+
+Нативный CRB-клиент проверил ожидаемые размеры выделения, отказ
+для частичного и пустого итогового набора, разрешение повторов и
+сохранение карты банка вне запроса. Клиент сверил HMAC Platform и
+дополнительной сессии аудита. До следующего запуска активная карта сохранялась прежней.
+Клиент восстановил по снимку конфигурации SHA-256-only и SHA-384-only
+и проверил запрет `Shutdown(STATE)` после успешного запроса.
+`PolicyPCR` и `Quote` проверены с отключённым банком, включая
+исходную карту trial-сессии для внешней конфигурации.
+
+Обе однобанковые конфигурации прошли нативную загрузку одной и той же
+ESP в SetupMode. Независимый replay подтвердил семь PCR в каждом
+активном банке, хеш ROM и восемь событий политики. Чтение неактивного
+банка вернуло пустую карту и список. Нативные прогоны выполнили
+224 217 569 инструкций с SHA-256 и 145 489 768 с SHA-384.
+
+Прошли 348 тестов `od-tpm`, включая чтение снимков v3–v5 и отказ
+для неверной карты v6. Sol High подтвердил реализацию после
+исправления trial `PolicyPCR`. Объявлены 90 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#выделение-банков-pcr).
+
+## S7-23 — Import
+
+Нативный клиент через CRB подал четыре независимо собранных пакета.
+Проверены открытый пакет, внутренняя AES-CFB, внешняя P-256 и две
+обёртки через RSA-OAEP. Клиент загрузил все возвращённые `outPrivate`. OpenSSL
+проверил подписи импортированных P-256 и RSA-2048. RSA-дубликат содержал
+один множитель, P-256-дубликат содержал однобайтовый скаляр.
+Загруженный Storage key защитил следующий объект. Проверка отклонила
+его 15-байтовый seed, а 16-байтовый прошёл.
+
+Повреждение HMAC и неверный внутренний ключ остановили импорт.
+RSA-OAEP с меткой `IDENTITY` отклонён. Клиент сверил HMAC
+авторизующей сессии для параметров XOR и загрузил расшифрованный
+`outPrivate`. Тесты `MakeCredential` и `ActivateCredential`
+прошли с общими функциями восстановления seed.
+
+Прошли 349 тестов `od-tpm` и проверка рабочего пространства.
+Sol High одобрил реализацию. Объявлен 91 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#импорт-дубликата).
+
+## S7-23 — Duplicate
+
+Нативный CRB-клиент проверил все четыре варианта защиты. Он отдельно
+раскрыл RSA-OAEP и P-256 KDFe для родителя с загруженной открытой частью,
+сверил HMAC и внутренний дайджест, затем импортировал и загрузил пакеты.
+RSA-пакет содержит ровно один множитель. OpenSSL подтвердил подписи
+перенесённых объектов и исходного ключа. Подтверждено дублирование
+допустимого первичного ключа и загрузка прежнего дочернего контейнера
+под перенесённым Storage key.
+
+Пароль, обычная HMAC-сессия, trial, отсутствующее и неверное ограничение
+команды получили разные ожидаемые ошибки. Проверены запреты
+`fixedParent`, неподходящего родителя и отсутствующих обёрток при
+`encryptedDuplication`. Независимый клиент сверил XOR входного
+ключа и выходного сгенерированного ключа с `PolicyAuthValue`.
+
+Прошли 350 тестов `od-tpm` и проверка рабочего пространства.
+Sol High одобрил реализацию. Объявлены 92 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#дублирование-объекта).
+
+## S7-23 — PolicyDuplicationSelect
+
+Нативный CRB-клиент независимо вычислил дайджесты для обоих `includeObject`
+и проверил trial с внешним SHA-384 Name. Два объекта с одной политикой
+для `includeObject=NO` дали одинаковый дайджест. Попытка перенести второй
+объект и попытка выбрать другого родителя получили отказ. С правильной
+парой клиент перенёс, загрузил и раскрыл секрет под новым родителем.
+Привязка сохранилась через `ContextSave` и `ContextLoad`, а также при
+`PolicyAuthorize` с подписью, созданной OpenSSL. Проверены ошибки
+формата, конфликт команды, конфликт хеш-ограничений и аудит с XOR
+для первого параметра.
+
+Прошли 351 тест `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию. Объявлены 93 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#дублирование-объекта).
+
+## S7-23 — VerifyDigestSignature
+
+Нативный CRB-клиент проверил SHA-256 дайджесты по подписям OpenSSL для
+RSA-2048 и P-256. Отдельно рассчитаны Name, HMAC билетов `DIGEST_VERIFIED`
+и `VERIFIED` и HMAC сессии аудита. Проверены NULL-билет, несовместимые
+схемы, непустой контекст, неверные размеры и изменённый дайджест.
+
+После выгрузки открытого ключа клиент применил билет к реальной
+`PolicyAuthorize` и раскрыл запечатанный секрет. Повреждённые билеты,
+смена тега или метаданных и отключение иерархии получили отказ.
+Отдельный тест с известным proof проверил выбор SHA-384 по метаданным
+при Name на SHA-256. Trial-сессия проверена с полями SHA-384.
+
+Прошли 353 теста `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию после исправления порядка capability и границ
+декодирования. Объявлены 94 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#проверка-подписи-дайджеста).
+
+## S7-23 — SignDigest и HASHCHECK
+
+Нативный CRB-клиент независимо вычислил дайджесты SHA-256 и SHA-384,
+proof и байты `HASHCHECK`. Для одноразового и потокового хеша проверены
+канонический NULL-билет, маркер `TPM_GENERATED_VALUE`, короткая первая
+порция и первая успешно принятая порция после отказа авторизации.
+
+OpenSSL подтвердил подписи RSA-2048 и P-256 от `SignDigest` и legacy
+`Sign`, в том числе с restricted-ключами. Проверены подмена дайджеста,
+порча HMAC, смена иерархии билета, NULL для restricted-ключа, выдача
+и проверка для разных иерархий, повторное включение Owner, обычный
+сброс и отзыв Owner-билета через `Clear`. Выход SHA-384 с настоящим
+билетом отклонён для ключа со схемой SHA-256.
+
+Прошли 354 теста `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию. Объявлены 95 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#подпись-дайджеста-и-hashcheck).
+
+## S7-23 — потоковая подпись
+
+Нативный CRB-клиент проверил RSA-2048 и P-256 через OpenSSL. Покрыты
+пустое и короткое сообщения, многопорционная подпись и последняя порция
+в `SignSequenceComplete`. Клиент отдельно вычислил HMAC двух авторизаций,
+XOR последней порции и HMAC ответов после освобождения слота.
+
+Проверены отказ для другого Name в прежнем handle, успех после загрузки
+того же ключа под новым handle, ошибочная авторизация и повтор после
+неуспешного завершения. Restricted-ключ получил отказ для маркера на
+границе порций. Такой же префикс под unrestricted-ключом принят.
+
+Прошли 355 тестов `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию. Объявлены 97 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#потоковая-подпись).
+
+## S7-23 — потоковая проверка подписи
+
+Нативный CRB-клиент проверил OpenSSL подписи RSA-2048 и P-256, включая
+пустое сообщение, несколько порций и двоичные байты. Клиент независимо
+рассчитал HMAC исходного сообщения для Owner, Endorsement и Platform.
+Проверены NULL-билет, загрузка того же Name в другой иерархии,
+другая схема, чужой ключ, двойное хеширование, неуспешное завершение
+с повтором и ответ авторизующей HMAC-сессии после выгрузки слота.
+
+После `Clear` изменившийся proof Owner получил отказ. Поток успешно
+завершился с тем же Name и прежним proof Platform. Отдельный выданный
+билет `MESSAGE_VERIFIED` авторизовал реальный `Unseal` после выгрузки
+ключа проверки. Подмена HMAC и тега получила отказ.
+
+Прошли 356 тестов `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию. Объявлены 99 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#потоковая-проверка-подписи).
+
+## S7-23 — платформенные сигналы H-CRTM
+
+Нативный клиент передал сигналы через `LoadedFirmwareBoard::tpm_platform_port`
+и проверил результат обычными CRB-регистрами и `PCR_Read`. Сверены SHA-256
+и SHA-384 для PCR0 до Startup и PCR17 после Startup. PCR18–22 обнулились,
+PCR0, PCR16 и PCR23 сохранили значения при D-RTM. Проверены порции по
+1024 байта, совмещённый `HASH_DATA | HASH_END` и приращение счётчиков.
+
+Establishment сохранился во всех окнах после Clear, пересоздания платы
+из снимка v7 и Startup. Проверены недоверенные записи guest MMIO и сброс
+флага доверенной locality 3 и 4. Усечённый активный кадр освободил
+локальность и включил failure mode. Unit-тесты покрыли условия Resume,
+отмену незавершённого S-HCRTM и вытеснение слота при исчерпании.
+
+Прошли 358 тестов `od-tpm`, пять тестов CRB `od-machine` и проверка
+рабочего пространства. Sol High одобрил реализацию. Производитель
+сигналов для гостевого запуска D-RTM остаётся в ISSUE-599.
+[Контракт](../specs/VTPM.md#платформенные-сигналы-h-crtm).
+
+## S7-23 — Primary Seeds и snapshot v8
+
+Нативный CRB-клиент сравнил сборку v8 с замороженной v7. Исходный
+payload совпал до добавленных 96 байт. Python независимо вычислил
+все три продолжения seed из отдельного HMAC_DRBG. При одинаковых
+входных данных совпали `GetRandom`, открытые части и имена
+прежних Primary и EK до и после миграции.
+
+Загружены старый дочерний `outPrivate` и ранее сохранённый объект.
+Билет `HASHCHECK` от v7 авторизовал прежнюю подпись после миграции.
+`Clear` заменил обе половины SPS и отозвал этот билет, сохранив EPS,
+PPS и EK. Повторное открытие v8 с другой энтропией сохранило всё
+постоянное состояние. Для старых алгоритмов остаются исходные
+32-байтовые входы деривации и proof.
+
+Прошли 359 тестов `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию.
+[Контракт](../specs/VTPM.md#формат-snapshot-odtpmsta-версия-8).
+
+## S7-23 — ML-KEM-768 и команды KEM
+
+Два самотеста при Startup используют ML-KEM-768 из NIST ACVP. Файл
+`mlkem768-acvp26-ek.bin` содержит `ek` из группы 2, случая 26. Файл
+`mlkem768-acvp96-ct.bin` содержит `c` из группы 6, случая 96. `self_test.rs`
+хранит `d || z`, `m`, ожидаемые секреты и SHA-256 длинных ответов.
+[NIST ACVP, зафиксированная редакция](https://github.com/usnistgov/ACVP-Server/tree/975de31eb83d87039ec88934fdc47d8c312b892d/gen-val/json-files/ML-KEM-encapDecap-FIPS203-tr1).
+
+Нативный CRB-клиент импортировал seed. Проверены секреты ACVP для
+обычного и изменённого шифротекста, а также отказ для неканонического
+`ek` из случая 166. OpenSSL 4.1 подтвердил обмен с TPM в обе стороны.
+Проверены обычный `Create`/`Load`, подпись `Certify` над Name объекта,
+HMAC и XOR параметров, контекст, постоянный объект и повторное создание
+Primary после восстановления.
+
+На arm64 macOS 26.7.1 сравнили release `Startup(CLEAR)` до и после
+подключения ML-KEM. Пять чередующихся серий содержали по 120 свежих
+запусков каждого варианта. Диапазоны медиан составили 5,61–5,73 мс
+и 5,69–5,89 мс. В повторе для финальной сборки диапазоны составили
+5,55–6,25 мс и 5,67–6,14 мс. Таймер охватывал `Tpm::execute` после
+создания TPM. Каждая серия проверяла успешный ответ и число кодов capability.
+
+Прошли 360 тестов `od-tpm` и проверка рабочего пространства. Sol High
+одобрил реализацию. Объявлены все обязательные коды (101). Требования к
+restricted ML-KEM, сессиям, другим алгоритмам и Windows остаются в ISSUE-599.
+[Контракт](../specs/VTPM.md#ml-kem-768-и-команды-kem).
+
+## S7-23 — AES-256-CFB для сессий
+
+Включён AES-256-CFB для параметров команд и ответов. Самотест при
+`Startup` проверяет внешне рассчитанный вектор с неполным последним
+блоком CFB в обоих направлениях. Вектор рассчитан Python HMAC-SHA256
+для KDFa и OpenSSL для AES. Развёрнутые ключи AES очищаются через
+`aes/zeroize`. Список и версии пакетов сохранены.
+
+Через нативный CRB OpenSSL 4.1 зашифровал вход `NV_Write` и расшифровал
+выход `NV_Read` для привязанной и непривязанной AES-256-сессий и
+привязанной AES-128-сессии. Python независимо проверил HMAC команды и
+ответа по шифротексту. Проверены отказ при изменении шифротекста,
+`VALUE.p4` для 192 бит, `MODE.p4` для режима вне CFB и продолжение
+с теми же параметрами и nonce после `ContextSave/ContextLoad`.
+Постоянное состояние TPM использует прежний формат v8.
+
+Независимое ревью Sol High одобрило изменения. Уточнён исторический
+текст среза C3. Прошли 360 тестов `od-tpm` в release, проверка
+workspace и форматирования. Graphify обновлён. Проверка раскладки
+показала прежние 46 ссылок на отсутствующие материалы в `work/`.
+
+## S7-23 — AES-256-CFB для Storage keys
+
+RSA-2048 и P-256 принимают AES-256-CFB в симметричных параметрах
+Storage key. Этот выбор используется для `outPrivate`, внешней
+защиты Duplicate/Import и credential. Внутренняя защита
+Duplicate/Import использует ключ длины, выбранной командой.
+Существующий формат AES-128-CFB сохранён. Состав зависимостей
+и версия snapshot не изменились.
+
+Нативный CRB на macOS arm64 проверил `TestParms` и `CreatePrimary`
+для P-256, а также `Create/Load/ObjectChangeAuth` под импортированным
+P-256 Storage key с известными seed и скаляром. Python вычислил
+KDFa и HMAC, OpenSSL 4.1 проверил шифротекст `outPrivate` и ECDH
+для credential и дубликатов. Проверены `MakeCredential` и
+`ActivateCredential` с данными от обеих сторон, сочетания внутренней
+и внешней защиты 128/256, 256/128 и 256/256 и генерация 32-байтового
+ключа. Проверены неправильные размеры, изменённый шифротекст и
+загрузка прежнего контейнера после восстановления постоянного
+AES-256-родителя из snapshot v8. RSA-2048 и P-256 `TestParms` с
+AES-256 и независимый вектор credential входят в тесты `od-tpm`.
+
+Независимое ревью Sol High одобрило срез без замечаний. Прошли 360
+тестов `od-tpm` в release, проверка workspace и форматирования.
+Graphify обновлён. В проверке раскладки сохраняются прежние
+46 ссылок на отсутствующие материалы в `work/`.
+
+## S7-23 — Проверка Storage key с fixedParent
+
+`Create` сверяет `nameAlg` и симметричные параметры дочернего
+Storage key с параметрами родителя, если установлен `fixedParent`.
+Проверка выполняется до генерации ключа.
+
+Нативный CRB подтвердил `TPM_RC_SYMMETRIC` в `inPublic` для обеих
+пар AES-128/256 и AES-256/128. Создание с совпадающими параметрами
+и создание с очищенным `fixedParent` прошли. Контейнеры обеих пар,
+выданные предыдущей версией, загрузились и позволили создать
+дочерний объект и прочитать запечатанные данные через `Unseal`.
+Изменение шифротекста приводило к `TPM_RC_INTEGRITY`.
+
+Независимое ревью Sol High одобрило правку без замечаний. Прошли
+361 тест `od-tpm` в release, проверки workspace и форматирования.
+
+## S7-23 — CRB chunking
+
+Плата объявляет CRB revision 3 и `CapCRBChunk`. Предел кадра
+составляет 8192 байт при фиксированном окне команды и ответа в 3968
+байт. Старый адрес и ACPI StartMethod 7 сохраняются. Ёмкость выбрана
+с учётом рассчитанных кадров `Certify` в 4031 байт и сырого
+`NV_Certify` в 4991 байт с ML-DSA-65, SHA-512 и тремя сессиями.
+
+Нативный MMIO через `MachineBus` проверил границы 3968, 3969, 4031,
+4991, 7936 и 8192 байта. Правильно собранный кадр дошёл до проверки
+параметра TPM. Проверены усечённая передача, превышение общего
+предела, очистка при освобождении locality, свойства TPM и повтор
+байтов `GetRandom`. Тесты устройства проверяют разбиение и повтор
+синтетических ответов до 8192 байт. Крупный ответ с реальной
+подписью ML-DSA предстоит проверить после реализации алгоритма.
+
+На macOS 26.7.1 arm64 пять чередующихся серий по 2000 запросов
+`GetRandom` через нативный CRB использовали одинаковый release
+probe и ROM. Вариант до изменения занял 46,28–46,84 мс
+с медианой 46,77 мс. CRB с chunking занял 46,30–47,65 мс
+с медианой 47,11 мс. Диапазоны пересеклись.
+
+Независимое ревью Sol High одобрило драйвер и повторно проверило
+изменения в EFI-пробе. Первый прогон выявил ограничение декодера
+при сравнении ответа TPM. Проба сравнивает поля отдельных
+ответов побайтовыми чтениями. [ISSUE-604](../KNOWN_ISSUES.md#issue-604).
+
+`tests/system/firmware_tpm_smoke.py` прошёл из FV и с NVMe ESP.
+Оба пути подтвердили предел TCG2 в 8192 байт, передачу кадра на
+4991 байт через `SubmitCommand`, сверку PCR и чтение финальных
+событий после ExitBootServices. FV завершился за 366 501 258
+инструкций, ESP за 367 476 779. SHA-256 ROM
+`12a520c3738823015b065481027982198601933a3ab6cd89d23b6c7bfd0a896d`.
+Прошли 8 тестов CRB, 360 тестов TPM и 331 тест firmware,
+проверка workspace и форматирования. Graphify обновлён.
+Проверка раскладки сохранила прежние 46 ссылок на отсутствующие
+материалы в `work/`.
+
+## S7-24 — разбор подписанных сообщений PKCS#7
+
+`MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).
+
+Sol High повторно проверил исправление обработки некорректных DER-примитивов и одобрил срез. Прошли 33 теста пакета `od-uefi-security` с `verify,protected-nvram`, включая отказы для некорректных BOOLEAN, INTEGER, NULL и BIT STRING в подписанном контенте. В созданном для проверки бинарном сообщении OpenSSL 4.1.0 подтвердил подписи для embedded с signed attributes и detached без них по дайджестам, полученным из нового парсера. Проверка цепочки по спискам вызывающей стороны, обработка временных отметок и UEFI ABI остаются в [ISSUE-601](../KNOWN_ISSUES.md#issue-601).
+
+## S7-23 — аудит и авторизация одной HMAC-сессией
+
+HMAC-сессия с атрибутом `audit` теперь может одновременно авторизовать handle. Запрет держался на условии `!additional` в `classify_sessions`; оно снято. Остались проверки: сессия HMAC (policy и trial дают `TPM_RC_ATTRIBUTES` с номером сессии), не более одной audit-сессии в команде, `auditExclusive` без эксклюзивности даёт `TPM_RC_EXCLUSIVE`. Ключ HMAC ответа задаёт `used_auth`, вычисленный при проверке команды. Первый аудит привязанной сессии идёт ключом `sessionKey`, затем привязка снимается и со следующей команды `authValue` входит в ключ. Команда, меняющая `authValue`, отвечает новым значением.
+
+Правила сверены с текстом Part 1 rev 01.83 (2024-01-25): §18.6.1 Table 6 (примечания 1, 2, 5), §18.6.4 (`audit`, `auditExclusive`, `auditReset`), §19.6.1, §19.6.10 (уравнения 21 и 22), §20.1 (привязка теряется при первом аудите) и Errata 1.5, п. 2.15 (случай привязанной сессии, впервые использованной для аудита и авторизации, в справочном коде). Номера пунктов в v185 и Part 2 Table 38 не проверялись. Текст не задаёт однозначно ключ ответа при первом аудите привязанной сессии: принят ключ команды.
+
+Тесты в `tests_session_audit.rs`: подпись P-256 ключом, который авторизует audit-сессия (подпись проверена `p256` напрямую, дайджест 1e17f55e… сверен с Python hashlib, подпись вручную подтверждена `openssl pkeyutl -verify`); привязанная к Owner сессия (первая команда без `authValue`, ответ без него, вторая с ним, старый ключ отвергается); ошибки `ATTRIBUTES` и `EXCLUSIVE` без изменения nonce, дайджеста и эксклюзивности; `AUTH_FAIL` с ростом `failedTries`; DA lockout ключа и `lockoutAuth`; смена `authValue` Owner; decrypt-сессия AES-CFB с cpHash по байтам на проводе и `ContextSave`/`ContextLoad`. Мутации (возврат `!additional`, ответ с `authValue` при первом аудите) роняют соответствующие тесты. Тест `hmac_session_authorization_rules` больше не ждёт `ATTRIBUTES` для `audit` в авторизующей сессии. [ISSUE-599](../KNOWN_ISSUES.md#issue-599).
+
+## S7-23 — Срез: hash agility, шаги A–B
+
+SHA-384 и SHA-512 введены как хеши в криптопримитивах и в capability и хеш-командах (шаги A и B плана hash agility). Шаг A, примитивы в `crypto.rs` (`HashAlg`): KDFa и HMAC над SHA-384/SHA-512, подпись и проверка RSASSA и ECDSA над дайджестами 48 и 64 октета, SHA-512 в самопроверке. Шаг B, команды: `TPM_CAP_ALGS` перечисляет SHA-512 рядом с SHA-256 и SHA-384 (16 записей); `TPM_PT_MAX_DIGEST` = 64; `GetRandom` отдаёт до 64 октетов; `Hash`, `HashSequenceStart` и `SequenceComplete` принимают SHA-512, `HASHCHECK`-билет остаётся HMAC-SHA-256 от proof, как для SHA-256, а префикс `TPM_GENERATED` даёт NULL-билет; SHA-512 не банк PCR (`PCR_Read`, `PCR_Extend` и селекторы дают `TPM_RC_HASH`). `TestParms` и `Create` принимают ключи RSASSA и ECDSA со схемой на SHA-384/SHA-512, а `Sign`, `SignDigest`, attest и sequence-команды с такой схемой возвращают `TPM_RC_SCHEME`. Схемы шифрования хеш SHA-384/SHA-512 не принимают.
+
+Тесты. Новый файл `tests_sha2.rs`: capability (16 алгоритмов, `MAX_DIGEST` = 64), `Hash` SHA-384/SHA-512 с билетом, hash sequence SHA-512 против одиночного `Hash` при любом разбиении данных, SHA-512 не банк PCR, схемы подписи и шифрования, отказ `PolicySigned` на подпись с SHA-384 (`TPM_RC_HASH`, параметр 5), отказ подписывающих команд для ключа со схемой на SHA-384 (`SCHEME`), отказ проверочных команд для метки SHA-384 (`HASH`), привязка метки хеша к длине дайджеста в `VerifySignature` объекта. Ожидаемые дайджесты взяты из Python `hashlib`. Unit-тесты `crypto.rs`: SHA-512 на опубликованном векторе «abc», KDFa SHA-384/SHA-512 с независимыми векторами, HMAC RFC 4231, RSASSA SHA-384/SHA-512 (значения Python), ECDSA RFC 6979 SHA-384/SHA-512. `self_test.rs`: `sha2_known_answers` (SHA-512, KDFa и HMAC на SHA-384/SHA-512, ECDSA RFC 6979 A.2.5, согласованность таблицы `HashAlg`).
+
+Ревью: два раунда Opus high. Блокер по `PolicySigned` закрыт; закрывающий тест — `policy_signed_refuses_a_sha384_signature_with_hash_for_parameter_5` (подпись с SHA-384 даёт `TPM_RC_HASH` для параметра 5, пока `authHash` политик остаётся SHA-256).
+
+Осталось (шаги C–E): SHA-384/SHA-512 как `nameAlg` и объекты (C), как `authHash` сессий и контексты (D), политики и snapshot (E). До шага C расхождение: `TPM_PT_MAX_DIGEST` = 64, а `TPM2B_DIGEST` в остальных командах ограничен 32 октетами. Ограничение из ревью: порядок проверок SIZE и HASH для `authValue` в 40 октетов с неизвестным хешем в `HashSequenceStart` — NOT VERIFIED (Part 4 недоступна), в тесте `hash_sequence_start_error_order_for_an_oversized_auth_and_unknown_hash_is_provisional` зафиксирован `TPM_RC_SIZE` как ПРОВИЗОРНЫЙ. Остальное по [ISSUE-599](../KNOWN_ISSUES.md#issue-599) открыто.
+
+## S7-24 — списки доверия для PKCS#7
+
+Host-путь проверяет RSA-2048/SHA-256 с embedded, с хешем detached-контента и с хешем, переданным для `VerifySignature`. Доверие дают только X.509 из списка вызывающей стороны, включая один из сертификатов проверенной цепочки. SHA-256 хеша сообщения и сертификаты из списка отзыва блокируют подпись. Для TBS сертификата поддерживаются SHA-256/384/512. Хеш cert TBS блокирует подпись и при ненулевом времени отзыва, пока не реализовано исключение по доверенной отметке. Запись вне поддержанного профиля списка возвращает ошибку формата. [UEFI 2.11 §§32.4.1, 37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol).
+
+Политика учитывает `digitalSignature`, `keyCertSign` и ограничения CA. Для обычного подписанного сообщения допустимы сертификаты без EKU или с `anyExtendedKeyUsage`. Для `SpcIndirectData` также допустим `codeSigning`. Проверяется порядок дат сертификата. Текущее время среды не используется. Политики Auth2 и загрузчика PE действуют по ADR-0011. [RFC 5280 §4.2.1.12](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.12), [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md).
+
+Sol High одобрил срез после повторной проверки валидации некорректного `EFI_TIME` в обоих списках. Прошли 36 тестов `od-uefi-security` с `verify,protected-nvram`. Фикстуры OpenSSL 4.1.0 для embedded и detached подтвердили успешную проверку по заданному X.509, отказ по хешу и сертификату из списка отзыва и отказ по несовпадающему digest. RFC 3161 и вызовы EFI остаются в [ISSUE-601](../KNOWN_ISSUES.md#issue-601).
+
+## S7-24 — доверенные временные отметки RFC 3161
+
+Host-верификатор проверяет CMS v3 с одним TSA-подписантом issuer/serial, ожидаемым `contentType` и `messageDigest`, SHA-256 исходного значения подписи в `messageImprint` и идентификатором сертификата ESS v1 или v2. Для TSA проверяются подпись, отдельное критическое EKU `timeStamping`, цепочка до `TimeStampDb`, сроки действия цепочки на `genTime` и отсутствие отзыва. `EFI_TIME` с известной зоной нормализуется к UTC, дробные секунды сохраняются. Исключение применяется, если верхняя граница TSA раньше самого раннего подходящего отзыва. [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md), [RFC 3161](https://www.rfc-editor.org/rfc/rfc3161.html), [RFC 5816](https://www.rfc-editor.org/rfc/rfc5816.html).
+
+OpenSSL 4.1.0 подтвердил оба токена после упорядочивания вложенного набора сертификатов по DER. Независимый host-сценарий подтвердил разрешение до даты отзыва и отказ при равенстве, при полном отзыве, отзыве TSA или хеша сообщения, переносе токена на другую подпись и порче подписи TSA. Sol High одобрил реализацию и повторил проверку обоих токенов. Прошли 38 тестов с `verify,protected-nvram` и сборка workspace. Публикация UEFI ABI и гостевая проверка остаются в [ISSUE-601](../KNOWN_ISSUES.md#issue-601).
+
+## S7-24 — транспорт PKCS#7 через NVRAM
+
+Команда устройства проверяет полностью записанный staging-запрос и возвращает исход и границы подтверждённого embedded-контента. В MMIO-тесте подтверждены успех и отказы при пустом либо некорректном списке доверия, одноразовость ответа, отказ при обрыве записи и равенство снимка обоих банков и счётчика политики до и после вызовов. Проверка выполнялась в SetupMode с обычными флагами и с отключённой политикой загрузки образов. Прошли 40 тестов `od-uefi-security` и 19 тестов NVRAM. Sol High одобрил срез. [Контракт устройства](../specs/NVRAM_DEVICE.md#проверка-сообщений-pkcs7).
+
+## S7-24 — EFI PKCS7 Verify Protocol
+
+Подписанный EFI-пробник с ESP запустился под Secure Boot на handoff v1.16. Он нашёл протокол через `LocateProtocol`, проверил оба вызова, точные статусы ошибок, копирование подтверждённого контента и RFC 3161 при отзыве с датой. Значения защищённых переменных совпали до и после запуска. Зачисление ключей потребовало 5 476 554 гостевые инструкции и 3 444 кванта. Запуск пробника прошёл за 5 246 443 инструкции и 3 448 квантов. [Команда проверки](../testing/FIRMWARE.md#pkcs7-verify-protocol).
+
+Sol High одобрил ABI, проверку границ, выбор версии handoff, гостевой сценарий и точные `6A 00` / `6A 20` в профиле `PagedCpl0FirmwareBootV1`. Тесты процессора подтвердили qword-запись, сохранение флагов, отказ соседним immediate и атомарность при ошибке записи. Плата принимает ROM с максимумом v1.15 и выбирает v1.16 для обновлённого ROM. Прошли 31 тест builder, 328 тестов firmware, 121 paged-тест ISA, отдельная проверка negotiation на плате и workspace check. [Версии handoff](../specs/FIRMWARE_BOOT.md#64-правило-расширения-и-версии).
+
+В 17 эталонах COM1 изменились только три строки карты памяти и строка CRC таблиц BS/RT. Код прошивки занял одну дополнительную страницу. Sol High сверил новые байты и хеши манифеста. Строго прошли 39 базовых загрузок и проба отсутствующего FV-приложения, пять ESP-сценариев, два повторных старта NVRAM, защищённый runtime-прогон и три прогона по 12 сценариев отказа. Восемь Secure Boot-сценариев прошли, включая таблицу отказов при `LoadImage` и `StartImage`. Replay PCR7 совпал в трёх состояниях. Replay PCR0/1/4/5 и финальные события TCG2 подтверждены из FV и ESP. S7-24 принята для документированного профиля. [План](../plans/STAGE_7.md#s7-24-реализовать-secure-boot).
+
+## S7-35 — импорт ISO-9660
+
+Sol High одобрил конвертацию на host и первый срез ISO-9660 Level 1 → GPT/FAT32. После замечания ревью конвертер проверяет версию структуры файлов в PVD до создания выхода. При импорте сохраняются исходные байты файлов и каталоги. Проверенный выход публикуется через `publish_no_replace`. [ADR-0012](../decisions/ADR-0012-install-media-transport.md).
+
+`python3 tests/system/firmware_install_media_smoke.py` проверил оба GPT CRC, обе копии FAT, байты EFI и README, отказ при повреждённом ISO и при занятом источнике, сохранение существующего выхода и staging-файла. Stock ROM запустил EFI с преобразованного raw-образа через NVMe за 4 415 180 гостевых инструкций и 3 305 квантов. Независимое ревью дополнительно проверило файлы больше 1 МиБ, каталог на нескольких кластерах и форматирование с кластерами 4 КиБ. Прошли 19 тестов image-tool и 208 тестов storage, один тест storage пропущен. `check_layout.py` показал прежние 46 ошибок ссылок на локальные артефакты.
+
+Первый срез вернул `reason=udf` для исходного Windows ISO из S7-30. Raw и staging-файл отсутствовали. При отдельной пробе FAT выявлена недостающая инструкция для чтения времени создания файла. [ISSUE-602](../KNOWN_ISSUES.md#issue-602), [ISSUE-603](../KNOWN_ISSUES.md#issue-603).
+
+## S7-35 — импорт UDF 1.02 и длинные имена VFAT
+
+Конвертер прочитал дерево официального ISO с 977 файлами и 94 вложенными
+каталогами. Логическое представление файла поддерживает 64-битный размер
+и чтение через границы участков. У `install.wim` восемь участков общей
+длиной 8 155 984 950 байт. Импорт официального ISO остановился на
+`fat_file_size` без создания raw и staging-файла.
+
+Системный тест пересобрал EFI и stock ROM, преобразовал собственный
+UDF-образ и запустил его через NVMe за 4 415 180 гостевых инструкций и
+3 305 квантов. Сверены GPT, FAT, сохранение обоих имён при коллизии
+коротких aliases, пустой файл и байты файла из двух участков. Проверены
+отказы по CRC, карте раздела, циклу, границе участка и типу размещения.
+Разреженный тестовый образ с файлом размером 4 ГиБ + 1 байт отклонён
+на этапе планирования.
+
+Малый образ UDF 1.02, независимо подготовленный `hdiutil`, преобразован
+в GPT/FAT32. `7zz` нашёл длинное имя VFAT и извлёк содержимое, совпавшее
+с исходным. Sol High подтвердил чтение записи каталога через границу
+несмежных участков. После замечания ревью добавлен отказ для ICB
+с преобразованными данными. Повторное ревью подтвердило отказ до создания
+выхода. Прошли 19 тестов image-tool, 208 тестов storage с одним пропуском
+и проверка Rust workspace. Из официального ISO осталось подготовить
+набор SWM. Этот шаг выполнен в следующем срезе.
+[ADR-0012](../decisions/ADR-0012-install-media-transport.md), [ISSUE-602](../KNOWN_ISSUES.md#issue-602).
+
+## S7-35 — официальный носитель Windows и SWM
+
+Импорт официального ISO Windows 11 x64 build 26300.9457 размером
+9 047 330 816 байт прошёл командой `od-image-tool import-install-media`.
+SHA-256 источника `bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650`
+совпал с результатом S7-30.
+Результат `windows-x64-26300.9457.raw` имеет размер 9 013 129 728 байт
+и SHA-256 `e41552099b3c4897d2a55b94bdc87ff8a8bcea19b1e5e8173c4862f8da0a1d05`.
+Инструмент подтвердил запись, чтение и публикацию 979 файлов после
+перечитывания результата. Файл подготовлен в игнорируемом Git каталоге
+`work/stage7/install-media/`.
+
+| Часть | Байты | Ресурсы | Метаданные образов |
+|---|---:|---:|---:|
+| `install.swm` | 3 984 468 917 | 40 587 | 11 |
+| `install2.swm` | 3 981 686 363 | 60 385 | 0 |
+| `install3.swm` | 139 734 478 | 26 | 0 |
+
+При подключении только для чтения проверены все 976 сохранённых путей и
+размеров из ISO, а также SHA-256 `BOOTX64.EFI`, BCD и `boot.wim`. Сверены
+100 998 записей SHA-1, размеры и флаги ресурсов, счётчики ссылок, XML,
+номера частей и последовательность 11 метаданных с исходным WIM.
+`wimlib-imagex verify install.swm --ref='install*.swm'` версии 1.14.5
+проверил метаданные всех образов и SHA-1 распакованных ресурсов.
+Независимый инструмент использован только в проверке. Опциональной
+таблицы integrity в исходнике и частях нет.
+
+Sol High одобрил код после сверки с форматом Microsoft и независимым
+набором SWM. Прошли 210 тестов storage с одним пропуском, 19 тестов
+image-tool, проверка Rust workspace и системный прогон с загрузкой
+собственных ISO и UDF через NVMe. S7-35 принята. Гостевой проход до
+Windows Setup остаётся критерием S7-32.
+[ADR-0012](../decisions/ADR-0012-install-media-transport.md), [план](../plans/STAGE_7.md#s7-35-транспорт-установочного-носителя-windows).
+
+## S7-35 — время создания файла FAT
+
+Firmware-профиль допускает точные байты `69 C0 80 96 98 00` и использует существующий знаковый `IMUL` с усечением в EAX. Sol High сверил сохранение старых форм, отсутствие расширения базового профиля, CF/OF и отказ на ошибке выборки. Прошли 125 тестов firmware-профиля ISA.
+
+Системная проверка повторно загрузила stock ROM с обычным выходом импортера и с его копией, где у `BOOTX64.EFI` заполнено FAT-время создания 1980-01-01 00:00:00,270. В обоих случаях приложение выполнилось через NVMe. С временной меткой runner сообщил 4 415 208 инструкций и 3 305 квантов. [ISSUE-603](../KNOWN_ISSUES.md#issue-603).

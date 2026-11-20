@@ -1,18 +1,8 @@
 //! I/O command set of the minimal NVMe controller (S7-16, slice B): `Read`,
 //! `Write` and `Flush` over the attached [`NvmeBackend`].
 //!
-//! Opcodes Flush/Write/Read = 0x00/0x01/0x02 are cross-checked with Linux
-//! `include/linux/nvme.h` (master, 2026-11-07), not with NVMe Base 2.4 / NVM
-//! Command Set 1.3; the status values `LBA Out of Range` 0x80, `Namespace Not
-//! Ready` 0x82, `Internal Error` 0x06, `Invalid Field` 0x2, `Data Transfer
-//! Error` 0x4, `Invalid Namespace` 0xB and DNR 0x4000 are cross-checked with
-//! `nvme.h` too. Everything else is `NOT VERIFIED against NVMe Base 2.4`:
-//! the Read/Write dword layout used here (`CDW10/11` = SLBA, `CDW12[15:0]` =
-//! NLB 0's based; `CDW12[31:16]` and `CDW13` hold the control, protection and
-//! data-set-management fields: LR `CDW12[31]` and the DSM hints `CDW13[7:0]`
-//! are ignored, the rest is rejected as `Invalid Field`), the DNR
-//! values and the conditions under which the statuses are used, and the order
-//! of the checks below. Contract: `docs/specs/NVME_DEVICE.md`, "Slice B".
+//! See `docs/specs/NVME_DEVICE.md` for the hardware profile and the status
+//! values and boundaries verified against the NVMe specifications.
 
 use super::admin::{MDTS, NAMESPACE_ID};
 use super::backend::SECTOR_BYTES;
@@ -21,12 +11,17 @@ use super::queues::{
     Command, Completion, GuestDma, Outcome, PAGE_BYTES, Status, read_from_host, write_to_host,
 };
 
-const OPC_FLUSH: u8 = 0x00;
-const OPC_WRITE: u8 = 0x01;
-const OPC_READ: u8 = 0x02;
+pub(super) const OPC_FLUSH: u8 = 0x00;
+pub(super) const OPC_WRITE: u8 = 0x01;
+pub(super) const OPC_READ: u8 = 0x02;
 
 /// Largest transfer of one command in sectors: `MDTS` = 8 is 2^8 pages of 4 KiB.
 const MAX_SECTORS: u64 = (PAGE_BYTES << MDTS) / SECTOR_BYTES as u64;
+const NLB_MASK: u32 = 0xFFFF;
+const LR_FUA_MASK: u32 = (1 << 31) | (1 << 30);
+const WRITE_DTYPE_MASK: u32 = 0xF << 20;
+const WRITE_DSPEC_MASK: u32 = 0xFFFF << 16;
+const DSM_MASK: u32 = 0xFF;
 
 /// Counters behind the SMART / Health Information log; they survive a
 /// controller reset like the error log.
@@ -54,22 +49,17 @@ pub(super) fn execute(state: &mut NvmeState, command: &Command, dma: &mut dyn Gu
 /// Checks common to the three commands: no fused operation, no SGL, NSID 1,
 /// backend attached (otherwise `Namespace Not Ready`).
 fn check_common(state: &NvmeState, command: &Command) -> Result<(), Status> {
-    if command.fuse != 0 || command.psdt != 0 {
-        return Err(Status::INVALID_FIELD);
+    if let Some(status) = command.unsupported_format() {
+        return Err(status);
     }
     if command.nsid != NAMESPACE_ID {
-        return Err(Status::INVALID_NAMESPACE);
+        return Err(Status::INVALID_NAMESPACE.at_field(1, 0));
     }
     if state.backend.is_none() {
         return Err(Status::NAMESPACE_NOT_READY);
     }
     Ok(())
 }
-
-/// Limited Retry bit of Read/Write (CDW12[31]): a hint, ignored.
-const CDW12_LR: u32 = 1 << 31;
-/// Dataset management hints of Read/Write (CDW13[7:0]): hints, ignored.
-const CDW13_DSM_MASK: u32 = 0xFF;
 
 /// A validated Read/Write range: first sector and number of sectors.
 struct Transfer {
@@ -86,24 +76,51 @@ impl Transfer {
 /// Decodes and validates `SLBA`/`NLB` of `Read` and `Write`.
 fn check_transfer(state: &NvmeState, command: &Command) -> Result<Transfer, Status> {
     check_common(state, command)?;
-    // LR (CDW12[31]) and the dataset management hints (CDW13[7:0]) are only
-    // hints: there are no retries and no access classes here, so they are
-    // silently ignored (Linux sets them for REQ_FAILFAST_DEV | REQ_RAHEAD).
-    // FUA, PRINFO, STC, DTYPE (the rest of CDW12[30:16]) and CDW13[31:8]
-    // (DSPEC and reserved bits) are not supported: Invalid Field.
-    if (command.cdw12 & !CDW12_LR) >> 16 != 0 || command.cdw13 & !CDW13_DSM_MASK != 0 {
-        return Err(Status::INVALID_FIELD);
+    // FUA uses the same write-through and uncached read contract as plain I/O.
+    // There is no extra retry or recovery path. DSM attributes are hints.
+    // No Write directive is enabled, so its DTYPE and DSPEC are ignored.
+    let common_control = NLB_MASK | LR_FUA_MASK;
+    let (cdw12_mask, cdw13_mask, max_access_frequency) = if command.opcode == OPC_WRITE {
+        (
+            common_control | WRITE_DTYPE_MASK,
+            DSM_MASK | WRITE_DSPEC_MASK,
+            6,
+        )
+    } else {
+        (common_control, DSM_MASK, 8)
+    };
+    let invalid_control = command.cdw12 & !cdw12_mask;
+    if invalid_control != 0 {
+        let first_bit = invalid_control.trailing_zeros() as u8;
+        let field_bit = match first_bit {
+            16..=19 => 16, // CETYPE
+            20..=23 => 20, // reserved in Read
+            26..=29 => 26, // PRINFO
+            _ => first_bit,
+        };
+        return Err(Status::INVALID_FIELD.at_field(12, field_bit));
     }
-    let sectors = u64::from(command.cdw12 & 0xFFFF) + 1;
+    if command.cdw13 & !cdw13_mask != 0 {
+        return Err(Status::INVALID_FIELD.at_field(13, 8));
+    }
+    if command.cdw13 & 0xF > max_access_frequency {
+        return Err(Status::INVALID_FIELD.at_field(13, 0)); // DSM.AF
+    }
+    let sectors = u64::from(command.cdw12 & NLB_MASK) + 1;
     if sectors > MAX_SECTORS {
-        return Err(Status::INVALID_FIELD);
+        return Err(Status::INVALID_FIELD.at_field(12, 0)); // NLB
     }
-    let lba = u64::from(command.cdw10) | (u64::from(command.cdw11) << 32);
+    let lba = command.start_lba();
     let in_range = lba
         .checked_add(sectors)
         .is_some_and(|end| end <= state.config.namespace_sectors);
     if !in_range {
-        return Err(Status::LBA_OUT_OF_RANGE);
+        let dword = if lba >= state.config.namespace_sectors {
+            10 // SLBA itself is outside the namespace.
+        } else {
+            12 // SLBA is valid, but NLB extends the range past the end.
+        };
+        return Err(Status::LBA_OUT_OF_RANGE.at_field(dword, 0));
     }
     Ok(Transfer { lba, sectors })
 }
