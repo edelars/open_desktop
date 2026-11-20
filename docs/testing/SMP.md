@@ -526,6 +526,14 @@ done
 
 ### S6-22 — проверка гостевых нагрузок
 
+Для запуска подготовленного ELF соберите отдельный `overlay`. Рецепт сверяет хеши ELF и текущего C-исходника. Сценарий в госте выполняет ELF и печатает те же результаты и проверочный хеш исходника. Без этого параметра сценарий собирает нагрузку штатным GCC внутри гостя. [Офлайн-сборка ELF и хеши](../reports/data/stage6/s6-22-prebuilt-workload.txt).
+
+```sh
+python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
+  --stage5-initramfs "$stage5_initramfs" --prebuilt-workload "$workload_elf" \
+  --out "$overlay"
+```
+
 На macOS arm64 передайте `--rootfs-raw` рабочую копию принятого образа ext4. Runner открывает её на запись с эксклюзивной блокировкой, подключает к PCI/NVMe и добавляет `rdinit=/s6-smp-init`. Для каждого повтора создавайте новую копию образа и указывайте свободный путь отчёта. Установите `kernel`, `overlay` и `accepted_raw` в пути проверенных файлов, а `kernel_sha256` и `overlay_sha256` в ожидаемые хеши ядра и initramfs. Соберите release runner и задайте `budget` по длительности прогона.
 
 ```sh

@@ -22,6 +22,9 @@ INIT_NAME = "s6-smp-init"
 PAYLOAD_DIR = "s6-smp"
 SOURCE_NAME = "s6_smp_workloads.c"
 WRAPPER_NAME = "s6_smp_workloads.sh"
+PREBUILT_NAME = "s6_smp_workloads.elf"
+PREBUILT_SOURCE_SHA256 = "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a"
+PREBUILT_WORKLOAD_SHA256 = "0f23516d73483ad6bf74aaa3774707c518bbfafe6c7d00470b937b2aa76208b2"
 WORKLOAD_COUNTS = (
     ("counter", 20_000),
     ("condition", 256),
@@ -41,10 +44,18 @@ STAGE5_HANDOFF = b"""/bin/busybox mount -o move /proc /newroot/proc || fail 'pro
 exec </newroot/dev/console >/newroot/dev/console 2>&1
 """
 STAGE5_SWITCH_ROOT = b"exec /bin/busybox switch_root /newroot /bin/sh\n"
-STAGE6_SWITCH_ROOT = f"""\
+
+def stage6_switch_root(prebuilt: bool) -> bytes:
+    payload_files = [SOURCE_NAME, WRAPPER_NAME]
+    wrapper_command = f"/run/open-desktop-stage6/{WRAPPER_NAME}"
+    if prebuilt:
+        payload_files.append(PREBUILT_NAME)
+        wrapper_command += f" --prebuilt /run/open-desktop-stage6/{PREBUILT_NAME}"
+    payload_paths = " ".join(f"/{PAYLOAD_DIR}/{name}" for name in payload_files)
+    return f"""\
 mount -t tmpfs -o nodev,nosuid tmpfs /newroot/run || fail 'S6 tmpfs mount failed'
 mkdir /newroot/run/open-desktop-stage6 || fail 'S6 payload directory failed'
-/bin/busybox cp /{PAYLOAD_DIR}/{SOURCE_NAME} /{PAYLOAD_DIR}/{WRAPPER_NAME} /newroot/run/open-desktop-stage6/ || fail 'S6 payload copy failed'
+/bin/busybox cp {payload_paths} /newroot/run/open-desktop-stage6/ || fail 'S6 payload copy failed'
 read -r cmdline </newroot/proc/cmdline || fail 'S6 cmdline read failed'
 set -f
 set --
@@ -62,11 +73,29 @@ done
 if [ "$compute_requested" -eq 1 ]; then
   set -- "$@" --compute "$compute_setting"
 fi
-exec /bin/busybox switch_root /newroot /bin/sh /run/open-desktop-stage6/{WRAPPER_NAME} "$@"
+exec /bin/busybox switch_root /newroot /bin/sh {wrapper_command} "$@"
 """.encode("ascii")
 
 
-def build_archive(stage5_initramfs: bytes) -> bytes:
+def validate_prebuilt_workload(data: bytes, workload_source: bytes) -> None:
+    if sha256(workload_source) != PREBUILT_SOURCE_SHA256:
+        raise BuildError("prebuilt workload is pinned to a different S6-22 C source")
+    if sha256(data) != PREBUILT_WORKLOAD_SHA256:
+        raise BuildError("prebuilt workload SHA-256 differs from the verified amd64 artifact")
+    if (
+        len(data) < 64
+        or data[:4] != b"\x7fELF"
+        or data[4:7] != b"\x02\x01\x01"
+        or int.from_bytes(data[16:18], "little") not in (2, 3)
+        or int.from_bytes(data[18:20], "little") != 62
+        or int.from_bytes(data[20:24], "little") != 1
+    ):
+        raise BuildError("prebuilt workload must be a little-endian ELF64 x86-64 executable")
+
+def build_archive(stage5_initramfs: bytes, prebuilt_workload: bytes | None = None) -> bytes:
+    workload_source = (FIXTURES / SOURCE_NAME).read_bytes()
+    if prebuilt_workload is not None:
+        validate_prebuilt_workload(prebuilt_workload, workload_source)
     base = gzip.decompress(stage5_initramfs)
     if len(base) % 4:
         raise BuildError("Stage 5 newc archive is not aligned to four bytes")
@@ -81,12 +110,20 @@ def build_archive(stage5_initramfs: bytes) -> bytes:
     if not init.endswith(STAGE5_HANDOFF + STAGE5_SWITCH_ROOT):
         raise BuildError("Stage 5 /init is missing the proc/sys/dev and switch_root handoff")
 
-    overlay = pack_cpio([
-        (INIT_NAME, 0o100755, init.removesuffix(STAGE5_SWITCH_ROOT) + STAGE6_SWITCH_ROOT),
+    switch_root = stage6_switch_root(prebuilt=prebuilt_workload is not None)
+    overlay_entries = [
+        (INIT_NAME, 0o100755, init.removesuffix(STAGE5_SWITCH_ROOT) + switch_root),
         (PAYLOAD_DIR, 0o040755, b""),
-        (f"{PAYLOAD_DIR}/{SOURCE_NAME}", 0o100644, (FIXTURES / SOURCE_NAME).read_bytes()),
-        (f"{PAYLOAD_DIR}/{WRAPPER_NAME}", 0o100755, (FIXTURES / WRAPPER_NAME).read_bytes()),
-    ])
+        (f"{PAYLOAD_DIR}/{SOURCE_NAME}", 0o100644, workload_source),
+        (
+            f"{PAYLOAD_DIR}/{WRAPPER_NAME}",
+            0o100755,
+            (FIXTURES / WRAPPER_NAME).read_bytes(),
+        ),
+    ]
+    if prebuilt_workload is not None:
+        overlay_entries.append((f"{PAYLOAD_DIR}/{PREBUILT_NAME}", 0o100755, prebuilt_workload))
+    overlay = pack_cpio(overlay_entries)
     result = io.BytesIO()
     with gzip.GzipFile(fileobj=result, mode="wb", mtime=0) as stream:
         stream.write(base)
@@ -182,13 +219,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage5-initramfs", type=Path, help="accepted Stage 5 gzip initramfs")
     parser.add_argument("--out", type=Path, help="new gzip initramfs path")
+    parser.add_argument(
+        "--prebuilt-workload",
+        type=Path,
+        help="include the verified amd64 workload ELF and run it instead of compiling in the guest",
+    )
     parser.add_argument("--verify-report", type=Path, help="LinuxDirect JSON with the guest serial transcript")
     parser.add_argument("--nonce", help="expected nonce in the workload report")
     parser.add_argument("--expect-online", type=int, choices=(1, 2, 4), help="expected CPUs brought online by Linux")
     parser.add_argument("--compute", help="verify S6-38 instead of S6-22: WORKERS,BLOCKS,CHECKSUM")
     args = parser.parse_args()
     if args.verify_report is not None:
-        if args.stage5_initramfs is not None or args.out is not None:
+        if args.stage5_initramfs is not None or args.out is not None or args.prebuilt_workload is not None:
             parser.error("--verify-report is separate from initramfs packaging")
         if args.nonce is None or args.expect_online is None:
             parser.error("--verify-report requires --nonce and --expect-online")
@@ -208,7 +250,8 @@ def main() -> int:
     if args.nonce is not None or args.expect_online is not None or args.compute is not None:
         parser.error("--nonce, --expect-online and --compute require --verify-report")
     try:
-        archive = build_archive(args.stage5_initramfs.read_bytes())
+        prebuilt_workload = args.prebuilt_workload.read_bytes() if args.prebuilt_workload is not None else None
+        archive = build_archive(args.stage5_initramfs.read_bytes(), prebuilt_workload)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.open("xb") as output:
             output.write(archive)

@@ -10,6 +10,8 @@ run_workloads() (
     nonce=invalid
     step=nonce
     build_dir=
+    prebuilt=
+    fixture_dir=/run/open-desktop-stage6
 
     finish() {
         status=$?
@@ -22,6 +24,13 @@ run_workloads() (
     }
     trap finish 0
 
+    if [ "$#" -ge 2 ] && [ "$1" = --prebuilt ]; then
+        step=prebuilt-arguments
+        [ "$#" -ge 3 ] || exit 64
+        prebuilt=$2
+        [ "$prebuilt" = "$fixture_dir/s6_smp_workloads.elf" ] || exit 64
+        shift 2
+    fi
     if [ "$#" -eq 3 ] && [ "$2" = --compute ]; then
         task=38
     else
@@ -43,20 +52,26 @@ run_workloads() (
     fi
 
     step=source
-    fixture_dir=/run/open-desktop-stage6
     source=$fixture_dir/s6_smp_workloads.c
     digest=$(sha256sum "$source")
     printf 'OD_S6_%s_SOURCE nonce=%s sha256=%s\n' "$task" "$nonce" "${digest%% *}"
 
-    step=compile
-    build_dir=$(mktemp -d "$fixture_dir/build.XXXXXXXX")
-    TMPDIR=$build_dir
-    export TMPDIR
-    /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
-        "$source" -o "$build_dir/workloads"
+    if [ -n "$prebuilt" ]; then
+        step=prebuilt
+        [ -x "$prebuilt" ] || exit 1
+        executable=$prebuilt
+    else
+        step=compile
+        build_dir=$(mktemp -d "$fixture_dir/build.XXXXXXXX")
+        TMPDIR=$build_dir
+        export TMPDIR
+        /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
+            "$source" -o "$build_dir/workloads"
+        executable=$build_dir/workloads
+    fi
 
     step=run
-    "$build_dir/workloads" "$@"
+    "$executable" "$@"
     step=online
     IFS= read -r online </sys/devices/system/cpu/online
     printf 'OD_S6_%s_ONLINE nonce=%s cpus=%s\n' "$task" "$nonce" "$online"

@@ -1,0 +1,59 @@
+S6-22 — воспроизводимая офлайн-сборка гостевой нагрузки
+
+SHA-256 входов и результатов
+RAW этапа 5    c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
+initramfs S5   17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1
+C-исходник     595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a
+ELF amd64      0f23516d73483ad6bf74aaa3774707c518bbfafe6c7d00470b937b2aa76208b2
+initramfs S6   ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977
+обычный S6     dfb90d8c7f1e8316ecb2195feea8964e18b247ebe4dbf27086ad9d20543d4828
+
+Команда из корня репозитория. RAW и исходник доступны контейнеру только для
+чтения. Образ rust:1.99.0-bookworm для linux/amd64 был заранее доступен в
+локальном OrbStack. GCC 15.2.0-16ubuntu1 и libc6 2.43-2ubuntu2.3 берутся из RAW.
+Новые выходные файлы хранятся в work.
+
+    set -eu
+    raw="$PWD/work/stage5/s5-21/stage5-rootfs.raw"
+    source_file="$PWD/guest/linux/tests/s6_smp_workloads.c"
+    image=sha256:19059486ff9ddb4c6895cbc02a186f00274c257adcc6f79611ca29f55d36cdda
+    test "$(shasum -a 256 "$raw" | awk '{print $1}')" = c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895
+    mkdir -p "$PWD/work/stage6/s6-22-rootfs"
+    workdir=$(mktemp -d "$PWD/work/stage6/s6-22-rootfs/prebuilt.XXXXXX")
+    docker run --rm --pull=never --network=none --read-only --platform linux/amd64 \
+      --memory=6g --tmpfs /var/tmp:size=4g,exec \
+      --mount "type=bind,src=$raw,dst=/input.raw,readonly" \
+      --mount "type=bind,src=$source_file,dst=/s6_smp_workloads.c,readonly" \
+      "$image" bash -ec '
+        root=/var/tmp/rootfs
+        mkdir "$root"
+        debugfs -R "rdump / $root" /input.raw >&2
+        install -m 0644 /s6_smp_workloads.c "$root/tmp/s6_smp_workloads.c"
+        chroot "$root" /usr/bin/dpkg-query -W libc6 >&2
+        chroot "$root" /usr/bin/gcc-15 --version | grep -F "15.2.0-16ubuntu1" >&2
+        for generation in a b; do
+          chroot "$root" /usr/bin/env LC_ALL=C SOURCE_DATE_EPOCH=0 TMPDIR=/tmp \
+            /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
+            /tmp/s6_smp_workloads.c -o "/tmp/s6_smp_workloads.$generation"
+        done
+        cmp "$root/tmp/s6_smp_workloads.a" "$root/tmp/s6_smp_workloads.b"
+        cat "$root/tmp/s6_smp_workloads.a"
+      ' > "$workdir/workloads.elf"
+    python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
+      --stage5-initramfs work/stage5/s5-09-inputs/stage5-initramfs.cpio.gz \
+      --prebuilt-workload "$workdir/workloads.elf" --out "$workdir/initramfs.cpio.gz"
+
+После распаковки префикс initramfs S5 совпал побайтно. Исходник, ELF и скрипт
+из хвоста архива были извлечены в рабочую копию rootfs. GCC в этой копии
+переименован перед запуском скрипта. Список online прочитан из sysfs
+локального контейнера и скопирован в chroot для сценария. Привязка нагрузки
+к CPU 2 и 5 проверялась гостевой программой через getcpu.
+
+OD_S6_22_SOURCE nonce=s6-stage5-rootfs-prebuilt sha256=595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a
+OD_S6_22_PASS nonce=s6-stage5-rootfs-prebuilt case=counter cpus=2,5 checked=20000
+OD_S6_22_PASS nonce=s6-stage5-rootfs-prebuilt case=condition cpus=2,5 checked=256
+OD_S6_22_PASS nonce=s6-stage5-rootfs-prebuilt case=exchange cpus=2,5 checked=128
+OD_S6_22_PASS nonce=s6-stage5-rootfs-prebuilt case=mapping cpus=2,5 checked=32
+OD_S6_22_PASS nonce=s6-stage5-rootfs-prebuilt case=processes cpus=2,5 checked=32
+OD_S6_22_ONLINE nonce=s6-stage5-rootfs-prebuilt cpus=0-9
+OD_S6_22_COMPLETE nonce=s6-stage5-rootfs-prebuilt
