@@ -23,6 +23,8 @@ Microsoft публикует для Windows 11 общий минимум: сов
 
 Требования Windows boot path к прошивке и платформе с источниками и статусами (аудит S7-30, не принят) — [WINDOWS_PLATFORM_REQUIREMENTS.md](WINDOWS_PLATFORM_REQUIREMENTS.md).
 
+Поддерживаемая конфигурация Windows-гостя этапа 8 — [WINDOWS_GUEST_PROFILE.md](WINDOWS_GUEST_PROFILE.md) (S8-05; подготовлено, не принято); CPU-профиль Windows — [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md) (идентичность CPU ждёт решения владельца). VBS, HVCI, Hyper-V и WSL2 профиль записывает как неподдерживаемые.
+
 Переходы между boot-менеджером и загрузчиком зафиксированы документацией Microsoft: UEFI загружает EFI-приложение Windows Boot Manager, затем он запускает `winload.efi`, который загружает необходимые драйверы и kernel. Реальное поведение выбранного build всё равно нужно снять с образа; общая схема не заменяет эту проверку.
 
 ## Linux x86-64 для ранней отладки
