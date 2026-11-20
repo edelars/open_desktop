@@ -5,6 +5,8 @@
 //! the strict parser and the layer decoder that `open` uses). What lives here
 //! is only what the library cannot know: taking a read lease on a host file,
 //! turning an outcome into a process exit status, and parsing arguments.
+//! `import-install-media` converts the supported ISO subset to a new raw disk
+//! after storage verifies the generated GPT, FAT32 and copied file bytes.
 //!
 //! # Exit statuses
 //!
@@ -68,6 +70,7 @@ use od_storage::cow_export::{ExportOptions, StateSelection, export_raw};
 use od_storage::cow_inspect::{InspectMode, InspectReport, Outcome, inspect_storage};
 use od_storage::cow_salvage::{CopyStatus, SalvageError, SalvageOptions, salvage_to_copy};
 use od_storage::cow_snapshot::{ParentRef, ParentResolver, ResolveError};
+use od_storage::install_media::{ImportError, InstallMedia};
 use od_storage::io::{BackendError, CheckedStorage, StorageBackend, StorageCapabilities};
 use od_storage::testing::rng::SplitMix64;
 use std::collections::BTreeMap;
@@ -173,7 +176,7 @@ pub fn check_file(path: &Path, parents: &[(u64, PathBuf)]) -> InspectReport {
     inspect_file(path, InspectMode::Check, parents)
 }
 
-const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n";
+const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n       od-image-tool import-install-media <image.iso> <out.raw>\n";
 
 /// Result of one invocation: the status and what to print.
 #[derive(Debug, Eq, PartialEq)]
@@ -198,13 +201,14 @@ enum Command {
     Export,
     Salvage,
     CreateRaw,
+    ImportInstallMedia,
 }
 
 impl Command {
     fn positionals(self) -> usize {
         match self {
             Self::Info | Self::Check => 1,
-            Self::Export => 2,
+            Self::Export | Self::ImportInstallMedia => 2,
             Self::Salvage | Self::CreateRaw => 3,
         }
     }
@@ -235,6 +239,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         "check" => Command::Check,
         "export" => Command::Export,
         "salvage" => Command::Salvage,
+        "import-install-media" => Command::ImportInstallMedia,
         #[cfg(target_os = "macos")]
         "create-raw" => Command::CreateRaw,
         _ => return Err(usage("unknown command")),
@@ -291,6 +296,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
             Command::Export => "export needs an image and an output path",
             Command::Salvage => "salvage needs an image, a new image path and a report path",
             Command::CreateRaw => "create-raw needs a directory, name and capacity-bytes",
+            Command::ImportInstallMedia => "import-install-media needs an ISO and an output path",
         }));
     }
     Ok(parsed)
@@ -330,6 +336,9 @@ pub fn run(args: &[OsString]) -> Run {
             &parsed.parents,
             parsed.accept_partial,
         ),
+        (Command::ImportInstallMedia, [src, out]) => {
+            import_install_media(Path::new(src), Path::new(out))
+        }
         #[cfg(target_os = "macos")]
         (Command::CreateRaw, [directory, name, capacity]) => {
             create_raw_file(Path::new(directory), name, capacity)
@@ -515,6 +524,106 @@ fn fresh_uid() -> u64 {
             return uid;
         }
     }
+}
+
+fn import_install_media(input: &Path, target: &Path) -> Run {
+    const COMMAND: &str = "import-install-media";
+    let partial = with_suffix(target, ".partial");
+    let fail = |outcome, reason, partial_left, target_left| {
+        let mut lines = failure(COMMAND, outcome, reason, None);
+        lines
+            .put("published", false)
+            .put("partial_left", partial_left)
+            .put("target_left", target_left);
+        run_of(lines, outcome)
+    };
+    for (path, exists) in [
+        (target, "target_exists"),
+        (partial.as_path(), "partial_exists"),
+    ] {
+        match name_taken(path) {
+            Ok(false) => {}
+            Ok(true) => return fail(Outcome::Io, exists, path == partial, false),
+            Err(error) => return fail(Outcome::Io, io_reason(&error), false, false),
+        }
+    }
+    let lease = match ReadLease::open(input) {
+        Ok(lease) => lease,
+        Err(LeaseOpenError::LeaseBusy) => return fail(Outcome::Busy, "busy", false, false),
+        Err(LeaseOpenError::IdentityMismatch) => {
+            return fail(Outcome::Io, "path_changed", false, false);
+        }
+        Err(LeaseOpenError::Io(error)) => {
+            return fail(Outcome::Io, io_reason(&error), false, false);
+        }
+    };
+    let Ok(source) = CheckedStorage::new(lease) else {
+        return fail(Outcome::Io, "io_error", false, false);
+    };
+    let plan = match InstallMedia::from_iso(&source) {
+        Ok(plan) => plan,
+        Err(ImportError::Corrupt(reason)) => return fail(Outcome::Corrupt, reason, false, false),
+        Err(ImportError::Unsupported(reason)) => {
+            return fail(Outcome::Unsupported, reason, false, false);
+        }
+        Err(_) => return fail(Outcome::Io, "io_error", false, false),
+    };
+    let writer = match HostFileStorage::create_new_exclusive(&partial, 0) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let reason = match &error {
+                WriterOpenError::WriterBusy => "busy",
+                WriterOpenError::IdentityMismatch => "path_changed",
+                WriterOpenError::Io(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    "partial_exists"
+                }
+                WriterOpenError::Io(e) => io_reason(e),
+            };
+            return fail(
+                Outcome::Io,
+                reason,
+                name_taken(&partial).unwrap_or(false),
+                false,
+            );
+        }
+    };
+    let Ok(mut destination) = CheckedStorage::new(writer) else {
+        return fail(Outcome::Io, "io_error", true, false);
+    };
+    if let Err(error) = plan.write_and_verify(&source, &mut destination, fresh_uid()) {
+        let reason = match error {
+            ImportError::Output(reason) => reason,
+            _ => "io_error",
+        };
+        return fail(Outcome::Io, reason, true, false);
+    }
+    let Ok(writer) = destination.into_backend() else {
+        return fail(Outcome::Io, "io_error", true, false);
+    };
+    let published = match publish_no_replace(&partial, target, &writer) {
+        Ok(published) => published,
+        Err(error) => {
+            let reason = match error {
+                PublishError::TargetExists => "target_exists",
+                PublishError::PartialChanged => "partial_changed",
+                PublishError::TargetUnverified(_) => "target_unverified",
+                PublishError::Io(_) => "publish_failed",
+            };
+            return fail(Outcome::Io, reason, true, reason == "target_unverified");
+        }
+    };
+    let mut lines = Lines::new(COMMAND);
+    lines
+        .put("outcome", "ok")
+        .put("reason", "ok")
+        .put("logical_size", plan.disk_bytes())
+        .put("files", plan.file_count())
+        .put("verified", true)
+        .put("file_durable", true)
+        .put("published", true)
+        .put("namespace_durable", false)
+        .put("partial_removed", published.partial_removed);
+    run_of(lines, Outcome::Ok)
 }
 
 // ------------------------------------------------------------------ export

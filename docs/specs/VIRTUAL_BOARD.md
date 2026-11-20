@@ -26,6 +26,12 @@
 | TPM / Secure Boot state | Целевой security device — собственная vTPM 2.0; device state и UEFI variables принадлежат persistent state VM и входят в согласованные snapshots. | Требования Windows задают TPM 2.0. Сверяться с TPM Library v185 и PC Client PTP 1.07/Errata 1.1; ни реализация, ни соответствие/сертификация не заявлены. Размещение (crate `od-tpm`, CRB-устройство в `od-machine`), криптобиблиотеки, профиль команд, интерфейс CRB в окне `0xFED4_0000` (только locality 0) и границы состояния — [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (S7-20, принят после архитектурного ревью 2026-11-18). [VTPM.md](VTPM.md) содержит «Состояние и границы» (S7-20) и команды фазы A, PCR и формат snapshot `ODTPMSTA` v1 (S7-21, phase-A scope принят после независимого ревью 2026-11-18; TPM/PTP compliance не заявляется, ограничения — [ISSUE-510](../KNOWN_ISSUES.md#issue-510-s7-21-phase-a-acceptance-scope)); CRB, measured boot, фаза B и «Persistent state v1» добавляют S7-22 и S7-23 ([план этапа 7](../plans/STAGE_7.md)), до них контракт CRB и команд фазы B отсутствует. Постоянное защищённое состояние ключей — S9-27 (этап 9). |
 | Не включено | Audio, USB passthrough, GPU acceleration, nested virtualization, IOMMU, SMP, hot-plug и миграция. | SMP остаётся вне текущей реализации; границы и задачи приведены в [плане этапа 6](../plans/STAGE_6.md). Остальное добавлять по отдельным требованиям и этапам, а не ради полноты виртуальной платы. |
 
+Установочный диск подготавливается на host как raw-образ GPT/FAT32 и
+подключается к существующему NVMe с секторами 512 байт. Тест совместимости
+использует собственное EFI-приложение. Подготовка официального Windows ISO
+остается в [S7-35](../plans/STAGE_7.md#s7-35-транспорт-установочного-носителя-windows).
+[ADR-0012](../decisions/ADR-0012-install-media-transport.md).
+
 ## Текущий COM1 polling slice
 
 Локальная `Uart16550PollingTx` привязывается к PIO диапазону COM1

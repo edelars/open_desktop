@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the UEFI blk GPT fixture or the sparse FAT32 ESP fixture."""
+"""Generate GPT, FAT32 ESP and ISO-9660 fixtures for UEFI checks."""
 
 from __future__ import annotations
 
@@ -182,15 +182,86 @@ def write_fat32(out: Path, damage: str, boot_files: tuple[tuple[bytes, bytes], .
             disk.write(data)
 
 
+def write_iso9660(out: Path, app: bytes) -> None:
+    """ECMA-119 (5th ed.) Level 1 directory tree with an EFI app and README."""
+    sector = 2048
+    root, efi, boot = 20, 21, 22
+    app_lba = 23
+    readme_lba = app_lba + (len(app) + sector - 1) // sector
+    blocks = readme_lba + 1
+    disk = bytearray(blocks * sector)
+
+    def both16(number):
+        return struct.pack("<H", number) + struct.pack(">H", number)
+
+    def both32(number):
+        return struct.pack("<I", number) + struct.pack(">I", number)
+
+    def record(name, lba, size, directory):
+        length = 33 + len(name) + (len(name) % 2 == 0)
+        row = bytearray(length)
+        row[0] = length
+        row[2:10] = both32(lba)
+        row[10:18] = both32(size)
+        row[18:25] = bytes([126, 11, 20, 0, 0, 0, 0])
+        row[25] = 2 if directory else 0
+        row[28:32] = both16(1)
+        row[32] = len(name)
+        row[33:33 + len(name)] = name
+        return bytes(row)
+
+    def directory(lba, parent, children):
+        return record(b"\0", lba, sector, True) + record(b"\1", parent, sector, True) + children
+
+    def path_table(order):
+        rows = []
+        for name, lba, parent in ((b"\0", root, 1), (b"EFI", efi, 1), (b"BOOT", boot, 2)):
+            rows.append(struct.pack(order + "BBIH", len(name), 0, lba, parent) + name + bytes(len(name) % 2))
+        return b"".join(rows)
+
+    path_l, path_m = path_table("<"), path_table(">")
+    pvd = bytearray(sector)
+    pvd[:7] = b"\x01CD001\x01"
+    pvd[8:40] = b"OPEN DESKTOP".ljust(32)
+    pvd[40:72] = b"OD_INSTALL_FIXTURE".ljust(32)
+    pvd[80:88] = both32(blocks)
+    pvd[120:132] = both16(1) + both16(1) + both16(sector)
+    pvd[132:140] = both32(len(path_l))
+    struct.pack_into("<I", pvd, 140, 18)
+    struct.pack_into(">I", pvd, 148, 19)
+    pvd[156:190] = record(b"\0", root, sector, True)
+    pvd[190:813] = b" " * (813 - 190)
+    pvd[813:847] = (b"2026112000000000\0") * 2
+    pvd[847:881] = (b"0000000000000000\0") * 2
+    pvd[881] = 1
+    for lba, contents in (
+        (16, pvd), (17, b"\xffCD001\x01"), (18, path_l), (19, path_m),
+        (root, directory(root, root, record(b"EFI", efi, sector, True)
+                         + record(b"README.TXT;1", readme_lba, len(README), False))),
+        (efi, directory(efi, root, record(b"BOOT", boot, sector, True))),
+        (boot, directory(boot, efi, record(b"BOOTX64.EFI;1", app_lba, len(app), False))),
+        (app_lba, app), (readme_lba, README),
+    ):
+        start = lba * sector
+        disk[start:start + len(contents)] = contents
+    out.write_bytes(disk)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--damage", choices=("none", "primary", "both"), default="none")
-    parser.add_argument("--esp-fat32", action="store_true")
+    form = parser.add_mutually_exclusive_group()
+    form.add_argument("--esp-fat32", action="store_true")
+    form.add_argument("--iso9660", action="store_true")
     parser.add_argument("--bootx64", type=Path, help="place this EFI image at \\EFI\\BOOT\\BOOTX64.EFI")
     parser.add_argument("--boot-probe", type=Path, help="place this EFI image at \\EFI\\BOOT\\CHECK.EFI")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    if args.esp_fat32:
+    if args.iso9660:
+        if args.bootx64 is None or args.boot_probe or args.damage != "none":
+            parser.error("--iso9660 requires --bootx64 and a clean single application")
+        write_iso9660(args.out, args.bootx64.read_bytes())
+    elif args.esp_fat32:
         boot_files = tuple(
             (name, path.read_bytes())
             for name, path in ((b"BOOTX64 EFI", args.bootx64), (b"CHECK   EFI", args.boot_probe))
@@ -198,7 +269,7 @@ def main() -> None:
         )
         write_fat32(args.out, args.damage, boot_files)
     elif args.bootx64 or args.boot_probe:
-        parser.error("--bootx64 and --boot-probe require --esp-fat32")
+        parser.error("EFI files require --esp-fat32 or --iso9660")
     else:
         args.out.write_bytes(image(args.damage))
 

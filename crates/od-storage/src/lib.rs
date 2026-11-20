@@ -5,8 +5,11 @@
 //! containers have not started. This crate never imports `od-host`; a host
 //! layer implements [`io::StorageBackend`].
 
+pub mod install_media;
 pub mod io;
 pub mod raw;
+
+mod crc32;
 
 /// Prototype of a minimal CoW commit protocol (S9-08). Not a normative format.
 #[cfg(any(test, feature = "test-support"))]

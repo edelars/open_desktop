@@ -120,7 +120,7 @@
 | `docs/decisions/ADR-000N-vtpm-placement-and-crypto.md` | Размещение процессора команд TPM, криптозависимости, профиль команд, интерфейс CRB, состояние | S7-20 |
 | `docs/specs/VTPM.md` | Контракт собственного vTPM 2.0: поддержанные команды, PCR-банки, locality, состояние, формат persistent state, event log | S7-21, S7-22, S7-23 |
 | [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md) | Политика ключей Secure Boot по умолчанию (PK/KEK/db/dbx, судьба private key `PK`, сброс ключей), срок действия X.509, SetupMode/UserMode, происхождение сертификатов | S7-24 |
-| `docs/decisions/ADR-000N-install-media-transport.md` | Транспорт установочного носителя Windows: El Torito в прошивке или конвертация на host | S7-35 |
+| `docs/decisions/ADR-0012-install-media-transport.md` | Транспорт установочного носителя Windows и выбор конвертации на host | S7-35 |
 | `docs/specs/WINDOWS_PLATFORM_REQUIREMENTS.md` | Фактические требования Windows boot path к прошивке и платформе с источниками и статусами | S7-30 |
 | `docs/testing/FIRMWARE.md` | Методика проверки прошивки: уровни доказательств, команды, эталоны вывода COM1, fixtures ESP, измерения | S7-01, пополняется S7-08, S7-19, S7-25, S7-27 |
 | `docs/reports/STAGE_7_REPORT.md` | Факты по задачам: коммиты, проверки, результаты ревью, ограничения | S7-00, пополняется каждой задачей |
@@ -754,7 +754,8 @@
 ### S7-35. Транспорт установочного носителя Windows
 
 - [ ] Принято после архитектурного ревью (решение) и ревью кода (реализация выбранного варианта).
-- **Где:** `docs/decisions/ADR-000N-install-media-transport.md`, затем по выбору: `firmware/uefi/src/block/partition_eltorito.rs` + `tools/build/make_test_disk.py` (ISO-9660/El Torito fixtures собственным писателем) **или** `tools/image-tool/` (конвертация ISO в GPT/FAT-образ собственным кодом: разбор UDF/ISO-9660 на host, запись файлов в FAT-образ), `docs/specs/UEFI_PROFILE.md`.
+- **Текущий статус (2026-11-20).** После архитектурного ревью выбрана конвертация на host. Первый срез добавляет ISO-9660 Level 1 → GPT/FAT32 и проверку запуска EFI с преобразованного диска. UDF и подготовка `install.wim` сверх лимита FAT32 остаются открытыми. [ADR-0012](../decisions/ADR-0012-install-media-transport.md), [ISSUE-532](../KNOWN_ISSUES.md#issue-532).
+- **Где:** `crates/od-storage/src/install_media/` (разбор и писатель), `tools/image-tool/` (CLI, lease, публикация), `tools/build/make_test_disk.py` (собственный ISO fixture), `docs/specs/UEFI_PROFILE.md`.
 - **Сделать:** по данным S7-30 выбрать: (а) поддержка El Torito в прошивке (UEFI 2.11 раздел «ISO-9660 and El Torito»: boot catalog, platform ID `0xEF`, образ `efisys.bin` как виртуальный FAT-раздел, CD-ROM Media Device Path, блоки 2048 байт — требует NVMe NS с LBA 2048 или отдельного устройства CD-ROM на плате, которого нет) или (б) конвертация носителя на host в GPT-диск с FAT-разделом, содержащим файлы ISO (пользователь видит «установочный диск»); записать влияние на `VIRTUAL_BOARD.md` и на UX создания VM (этап 11). Реализовать выбранный вариант с собственным кодом разбора форматов (ISO-9660/UDF/El Torito — публичные стандарты ECMA-119, ECMA-167/UDF 2.60 — записать редакции).
 - **Проверить:** host-side тесты разбора на собственных маленьких fixtures; прошивка (а) или образ (б) доводит `hello`, положенный как `EFI\BOOT\BOOTX64.EFI` в тестовый ISO, до запуска.
 - **Готово:** S7-32 имеет способ подключить официальный ISO без ручной подготовки, записанный в документах.
