@@ -1,0 +1,72 @@
+{
+  "previous_run_evidence": "s6-22-busybox-prologue-replay.json",
+  "base_commit": "e980c93b267a8e56357f2c9af6c8118eada33ac6",
+  "production_patch_sha256": "1d4e19aab1a993dbcd2b402d9a5528ac9499798a7885caa494547128680cc114",
+  "run_execute_rs_sha256": "d7146493c273b771e8eb678774d39a3ca1253e62a06171191224ebc765ef0e8c",
+  "main_execute_rs_sha256": "416fe86489f5c7b93bf3d4191ca25b857d68ace5aea2e98480f682f8cd39fa84",
+  "execute_rs_parity": "The guest-built and committed sources differ only in comments and blank lines.",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "raw_namespace_sectors": 4194304,
+  "ram_mib": 128,
+  "seed": 24301,
+  "vcpus": 2,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "before": {
+    "report_sha256": "612540965f76d6e4a591fabc5a1ab4e6dac5be81a3294646a6e9a0e9dd3a4fc8",
+    "runner_sha256": "3dc90db9cb3c9000b279d22f059326161baf5bb6cd933516662a5d66f918d1fd",
+    "retired": 2400051075,
+    "retired_by_vcpu": [
+      1998533375,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 40,
+    "rip": "0x4762db",
+    "rip_gpa": "0x79642db",
+    "rip_bytes": "e8 e0 ca 01 00 48 8b 3d 29 5c 1a 00 e8 74 bc 01",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 232 }",
+    "busybox_elf_file_offset": "0x762db"
+  },
+  "after": {
+    "report_sha256": "cbccf9a75601f1d6152213df28c47521e764cbff0864a07842be0f5cc4231add",
+    "runner_sha256": "f3513b6682bc35f221a608d4993931d4787ed59a89680f585f6f49815803fca6",
+    "retired": 2400070067,
+    "retired_by_vcpu": [
+      1998552367,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 330,
+    "rip": "0x491f64",
+    "rip_gpa": "0x797ff64",
+    "rip_bytes": "8b 15 b2 2d 18 00 85 d2 0f 85 95 05 00 00 55 b9",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 139 }",
+    "busybox_elf_file_offset": "0x91f64"
+  },
+  "guest_kernel_markers": [
+    "[    1.745883] smpboot: Total of 2 processors activated (4002.55 BogoMIPS)",
+    "[    2.535573] Run /s6-smp-init as init process"
+  ],
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "diagnostic_auxv": {
+    "first_rip": "0x476295",
+    "next_rip": "0x491f64",
+    "retired": 169,
+    "exit_detail": "Unsupported { opcode: 139 }",
+    "probe_log_sha256": "1d1e5183fcac5290e8188909024cfc17b41f4cc2647dfe15885cfc1d23a9042b",
+    "scope": "Pinned ELF code and recorded GPRs with reconstructed stack, synthetic environment and auxiliary vector."
+  }
+}

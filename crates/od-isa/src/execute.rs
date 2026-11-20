@@ -28322,13 +28322,10 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
 /// `IRETQ` boundary are never reached because they are not allow-listed.
 ///
-/// S4-39f20: the one exception to the single-instruction steps is `F3 A4` (REP MOVSB, DF = 0): it
-/// bypasses the step of the set and runs in [`cpl3_rep_movsb`], one iteration per unit of the
-/// instruction budget (and of `instructions_executed`), with the STOP callback polled once before
-/// each iteration. The admission of the step is checked first by a zero-budget run of the same
-/// inner entry; a state that fails it refuses the form with `Unsupported { opcode: 0xa4 }`. A stop
-/// in the middle of a string (budget, STOP, #PF, #GP) leaves RIP on the instruction, so a count
-/// above zero means progress, not a completed instruction.
+/// REP MOVSB (S4-39f20) and REP STOSQ (S6-22) run in [`cpl3_rep_string`] with DF clear.
+/// Each iteration consumes one unit of the budget. The STOP callback is polled before every
+/// iteration. A zero-budget call to the inner entry first checks state admission. A stop within a
+/// string leaves RIP on that instruction and preserves progress from completed iterations.
 ///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
@@ -28357,15 +28354,12 @@ pub fn run_with_cpl3_profile_set(
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
         if !boundary && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
         {
-            // S4-39f20: `F3 A4` (REP MOVSB) runs iteration by iteration here, not through the
-            // step: the set's REP path ignores the instruction budget inside a string.
-            // The string path never enters the step, so the admission the step makes (flags
-            // defined, CR0/CR4/CR3 and policy, FP state, activity, STI shadow, RFLAGS.VM and
-            // bit 1, HLT/STI preconditions) is made here by a zero-budget run of the same inner
-            // entry: it checks the admission and then stops before any fetch. A state that does
-            // not pass is refused like any other unadmitted `F3 A4` (`Unsupported { 0xa4 }`
-            // from the allow-list), with no read, write or register change.
-            if cpl3_is_rep_movsb(&instruction)
+            // The shared REP step runs the entire string. For these CPL3 forms, charge each
+            // iteration so the scheduler can stop and resume them at a quantum boundary.
+            // Use the same inner entry's zero-budget path for state admission before any
+            // data access. A refused form falls through to the regular allow-list.
+            let stosq = cpl3_is_rep_stosq(&instruction);
+            if (cpl3_is_rep_movsb(&instruction) || stosq)
                 && state.rflags & (1 << 10) == 0
                 && run_cpl0_profile_set_inner(
                     state,
@@ -28390,7 +28384,8 @@ pub fn run_with_cpl3_profile_set(
                 })
             {
                 let next_rip = state.rip.wrapping_add(instruction.length as u64);
-                if let Some(exit) = cpl3_rep_movsb(
+                if let Some(exit) = cpl3_rep_string(
+                    stosq,
                     state,
                     memory,
                     config.context,
@@ -28499,17 +28494,29 @@ fn cpl3_is_rep_movsb(instruction: &long_decode::Instruction) -> bool {
             })
 }
 
-/// S4-39f20: `F3 A4` at CPL3, one iteration per unit of the instruction budget. Returns `None`
-/// when the instruction retired (RIP advanced) and the exit otherwise. The caller guarantees DF = 0
-/// and that the budget and STOP address were checked before the first iteration.
+fn cpl3_is_rep_stosq(instruction: &long_decode::Instruction) -> bool {
+    instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xab
+        && instruction.operation
+            == (Operation::RepStos {
+                size: OperandSize::Qword,
+            })
+        && instruction.length == 3
+        && instruction.address_size == OperandSize::Qword
+        && instruction.prefixes.group1 == Some(0xf3)
+        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+}
+
+/// Executes an admitted forward REP MOVSB or REP STOSQ at CPL3. Returns `None` after RIP advances
+/// and a run exit if execution stops partway. The caller checks DF, the initial budget and STOP
+/// address. A zero count advances RIP and consumes one unit of budget.
 ///
-/// Before the first iteration the STOP request is polled; before each later one the STOP request,
-/// then the budget (`retired` counts iterations, as the budget counts them). A stop in the middle
-/// leaves the finished iterations in `rsi`/`rdi`/`rcx` and RIP on the instruction. Each iteration
-/// reads `ds:[rsi]` then writes `es:[rdi]` (flat 64-bit, CPL3 access context); a fault (#GP(0) for a
-/// non-canonical address, #PF from the memory) leaves the state of the start of that iteration.
-/// `rcx = 0` retires the instruction as a no-op (one unit). Flags are never touched.
-fn cpl3_rep_movsb(
+/// MOVSB reads the byte at RSI and STOSQ uses RAX. Both write at RDI in the original CPL3 access
+/// context. A fault preserves the state of the current iteration. Completed iterations advance
+/// RDI, decrement RCX and consume one unit of budget. Only MOVSB also advances RSI. Flags stay
+/// unchanged.
+fn cpl3_rep_string(
+    stosq: bool,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -28537,34 +28544,46 @@ fn cpl3_rep_movsb(
             }
         }
         first = false;
-        let source = Operand::Memory(MemoryOperand {
-            base: AddressBase::Register(Register::Rsi),
-            index: None,
-            scale: 1,
-            displacement: 0,
-            address_size: OperandSize::Qword,
-            size: OperandSize::Byte,
-        });
+        let size = if stosq {
+            OperandSize::Qword
+        } else {
+            OperandSize::Byte
+        };
+        let value = if stosq {
+            state.gpr[Register::Rax as usize]
+        } else {
+            let source = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rsi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size,
+            });
+            match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
+                Err(error) => return Some(RunExit::MemoryError(error)),
+            }
+        };
         let destination = Operand::Memory(MemoryOperand {
             base: AddressBase::Register(Register::Rdi),
             index: None,
             scale: 1,
             displacement: 0,
             address_size: OperandSize::Qword,
-            size: OperandSize::Byte,
+            size,
         });
-        let value = match read_operand(state, memory, context, next_rip, source) {
-            Ok(value) => value,
-            Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
-            Err(error) => return Some(RunExit::MemoryError(error)),
-        };
         match write_operand(state, memory, context, next_rip, destination, value) {
             Ok(()) => {}
             Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
             Err(error) => return Some(RunExit::MemoryError(error)),
         }
-        state.gpr[Register::Rsi as usize] = state.gpr[Register::Rsi as usize].wrapping_add(1);
-        state.gpr[Register::Rdi as usize] = state.gpr[Register::Rdi as usize].wrapping_add(1);
+        if !stosq {
+            state.gpr[Register::Rsi as usize] = state.gpr[Register::Rsi as usize].wrapping_add(1);
+        }
+        state.gpr[Register::Rdi as usize] =
+            state.gpr[Register::Rdi as usize].wrapping_add(size.bytes() as u64);
         state.gpr[Register::Rcx as usize] -= 1;
         *retired += 1;
     }
@@ -28600,7 +28619,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f3: `REX.W C7 /0 id` (MOV r/m64, imm32 sign-extended to 64 bits) in the register form
 /// (mod = 11; REX.B selects r8..r15) with no prefix other than REX, as in `48 c7 c7 9c ff ff ff`
 /// (`movq $-0x64, %rdi`) of `/init` after its second `SYSCALL`. `C7 /0` without REX.W (MOV r/m32,
-/// imm32), a memory operand and `C6 /0` (MOV r/m8, imm8) stay outside.
+/// imm32) stays outside. The qword memory form joined in S6-22.
 ///
 /// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
 /// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
@@ -28615,10 +28634,10 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
 /// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
 /// RFLAGS, a taken branch goes to `next_rip + rel32`, a non-canonical target is #GP, flags stay).
-/// The short `7x` Jcc, `JMP` and `CALL` stay outside (`EB` joined in S4-39f13). `[REX.W] 89 /r` (MOV r/m64, r64) in the
+/// Short Jcc joined in S4-39f7, short JMP in S4-39f13 and direct CALL in Stage 6. `[REX.W] 89 /r` (MOV r/m64, r64) in the
 /// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
 /// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
-/// without REX.W (MOV r/m32, r32), a memory operand and `88`/`8B` stay outside.
+/// without REX.W (MOV r/m32, r32) stays outside for two register operands.
 ///
 /// S4-39f6: `[REX] C6 /0 ib` (MOV r/m8, imm8) with a memory operand (mod != 11: SIB, disp8/disp32,
 /// RIP-relative; REX.X and REX.B reach the index and the base) with no prefix other than REX, as in
@@ -28631,21 +28650,19 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f7: `REX.W 39 /r` (CMP r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
 /// r8..r15) with no prefix other than REX, as in `4c 39 eb` (`cmpq %r13, %rbx`) of `/init` at
 /// `0x400145`. The CPL0 `Operation::Arithmetic { kind: Cmp }` is reused (flags as `dst - src`, the
-/// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand and the other CMP
-/// opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside; `38` with a memory operand is S4-39f11.
+/// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand stay outside for opcode `39`. `38` with a memory operand joined in S4-39f11.
 ///
 /// S4-39f7 (continued): the short `7x rel8` Jcc (`74 08` = `je` of `/init` at `0x400151`) without
 /// REX and without any prefix: the same `Operation::Branch` as `0F 8x` (the decoder sign-extends
-/// rel8). `JMP` (`EB`/`E9`), `CALL`, `LOOP`/`JRCXZ` (`E0`..`E3`) and Jcc with REX or a prefix stay
-/// outside.
+/// rel8). Jcc with REX or a legacy prefix stays outside.
 ///
 /// S4-39f8: `REX.W 8D /r` (LEA r64, m) with a SIB operand (ModRM.mod != 11, rm = 100; REX.X and
 /// REX.B reach the index and the base, REX.R the destination), as in `49 8d 3c 1e`
 /// (`leaq (%r14,%rbx), %rdi`) of `/init` at `0x400162`. The CPL0 `Operation::Lea` is reused: the
 /// address is computed by `MemoryOperand::effective_address` (no memory access, no canonical
 /// check, flags stay). The decoder does not record whether a register-based operand came from a SIB
-/// byte, so `lea_sib` is derived from the ModRM byte (see [`lea_modrm_selects_sib`]); the plain
-/// register-base forms (`48 8d 03`, `lea (%rbx), %rax`) stay outside.
+/// byte, so `lea_sib` is derived from the ModRM byte (see [`lea_modrm_selects_sib`]). S6-22
+/// also admits qword register-base forms without an index.
 ///
 /// S4-39f10: `[REX] 8A /r` (MOV r8, r/m8) with a memory operand (mod != 11: SIB, disp8/disp32,
 /// RIP-relative; REX.R, REX.X and REX.B reach the destination, the index and the base) with no
@@ -28655,7 +28672,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// the byte view (AL..BL, SPL..DIL with any REX, AH..BH without) and only that byte changes; flags
 /// stay. REX.W does not change a byte load and is accepted as for `C6`. The register form
 /// (`8a c0`, mod = 11) and any prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay
-/// outside; `88` (MOV r/m8, r8) and `8B` stay outside too.
+/// outside for opcode `8A`.
 ///
 /// S4-39f11: `[REX] 38 /r` (CMP r/m8, r8) with a memory operand (mod != 11: SIB, disp8/disp32,
 /// RIP-relative; REX.R, REX.X and REX.B reach the register, the index and the base) with no prefix
@@ -28664,7 +28681,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// the CPL3 context (the U/S check applies, #PF with U and no state change), the flags are those of
 /// `memory - register` at byte size and nothing is written. REX.W does not change a byte compare
 /// and is accepted as for `8A`/`C6`. The register form (`38 c0`, mod = 11), any prefix
-/// (66/67/LOCK/REP/segment) and the other CMP opcodes (`3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
+/// (66/67/LOCK/REP/segment) stay outside for opcode `38`.
 ///
 /// S4-39f12: `REX.W FF /0` (INC r/m64, `incq %rbx` = `48 ff c3` of `/init` at `0x40017f`), register
 /// form only (mod = 11). The CPL0 `Operation::Arithmetic { kind: Inc, src: Immediate(1) }` is
@@ -28677,7 +28694,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// without REX and without any prefix. The CPL0 `Operation::Jump` is reused (the decoder
 /// sign-extends rel8): RIP becomes `next + rel8`, a non-canonical target is #GP(0) before RIP
 /// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
-/// the opcode byte is part of the match), `E8`, `FF /4` and the far forms stay outside.
+/// the opcode byte is part of the match), `FF /4` and the far forms stay outside.
 ///
 /// S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8, `movzbl (%r8,%rcx), %eax` = `41 0f b6 04 08` of
 /// `/init` at `0x400189`) with a memory source only (mod != 11), no REX.W and no prefix other than
@@ -28700,19 +28717,18 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
 /// `Operation::Arithmetic { kind: Cmp }` at qword size is reused: the imm32 is sign-extended to 64
 /// bits by the decoder, the flags are those of `reg - imm` (SUB rules, 64-bit), nothing is written.
-/// The memory form, the dword form (no REX.W), `81 /0..6`, `83 /7` and `3D` stay outside.
+/// The memory and dword forms of `81 /7` stay outside.
 ///
 /// S4-39f20: `F3 A4` (REP MOVSB, `rep movsb` at `0x4001c1` of `/init`) is not matched here (the
 /// prefix check above refuses it): the run loop recognizes it with [`cpl3_is_rep_movsb`] and
-/// executes it in [`cpl3_rep_movsb`], one iteration per unit of the instruction budget, with
+/// executes it in [`cpl3_rep_string`], one iteration per unit of the instruction budget, with
 /// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
 ///
 /// S4-39f21: `REX.W 29 /r` (SUB r/m64, r64, `subq %rsi, %rdx` = `48 29 f2` of `/init` at
 /// `0x4001db`) in the register form only (mod = 11; REX.R reaches the source r8..r15, REX.B the
 /// destination). The CPL0 `Operation::Arithmetic { kind: Sub }` at qword size is reused:
 /// `dst = dst - src` is written back in full and CF/OF/SF/ZF/PF/AF are those of the 64-bit SUB.
-/// The memory form, the dword form (no REX.W), `28`/`2A`/`2B`/`2C`/`2D`, `81 /5` and `83 /5` stay
-/// outside.
+/// The memory and dword forms of opcode `29` stay outside.
 ///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
@@ -28722,8 +28738,29 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         return true;
     }
     let prefixes = instruction.prefixes;
+    if instruction.opcode.map == OpcodeMap::Escape0f
+        && instruction.opcode.byte == 0x1f
+        && instruction.operation == Operation::NopModrm
+        && prefixes.group1.is_none()
+        && !prefixes.address_override
+        && matches!(prefixes.segment, None | Some(0x2e))
+    {
+        return true;
+    }
     if prefixes.address_override {
         return is_addr32_direct_call(instruction);
+    }
+    if prefixes.operand_override
+        && prefixes.group1.is_none()
+        && prefixes.segment.is_none()
+        && matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (OpcodeMap::Primary, 0x89,
+                Operation::Mov { dst: Operand::Memory(dst), src: Operand::Register(_) })
+                if dst.size == OperandSize::Word && dst.address_size == OperandSize::Qword
+        )
+    {
+        return true;
     }
     if prefixes.group1.is_some() || prefixes.segment.is_some() || prefixes.operand_override {
         return false;
@@ -28744,6 +28781,19 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Primary, 0xc9, Operation::Leave)
+        | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
+            prefixes.rex.is_none()
+        }
+        (
+            OpcodeMap::Escape0f,
+            0x42,
+            Operation::ConditionalMove {
+                src: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x50..=0x5f, Operation::StackRegister { .. }) => {
             instruction.operand_size == OperandSize::Qword
@@ -28764,8 +28814,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
             },
         ) => {
-            instruction.operand_size == OperandSize::Qword
-                && dst.size == OperandSize::Qword
+            matches!(dst.size, OperandSize::Dword | OperandSize::Qword)
                 && dst.address_size == OperandSize::Qword
         }
         (
@@ -28785,7 +28834,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OpcodeMap::Primary,
             0xc7,
             Operation::MovImmediate {
-                dst: Operand::Register(_),
+                dst: Operand::Register(_) | Operand::Memory(_),
                 ..
             },
         ) => instruction.operand_size == OperandSize::Qword,
@@ -28814,7 +28863,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OpcodeMap::Primary,
             0x83,
             Operation::Arithmetic {
-                kind: ArithmeticKind::Add | ArithmeticKind::Sub,
+                kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp,
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
@@ -28898,16 +28947,12 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
-        // S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32) in the register form only. The decoder
-        // names it `Arithmetic { Cmp, dst: Register, src: Immediate }` at qword size with the
-        // imm32 sign-extended to 64 bits; the memory form decodes to a memory destination, the
-        // dword form (no REX.W) to `Dword`, and `81 /0..6` and `3D` to other operations
-        // or opcode bytes: all of them stay refused.
+        // S4-39f19 and S6-22: qword register CMP and SUB with sign-extended imm32.
         (
             OpcodeMap::Primary,
             0x81,
             Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
+                kind: ArithmeticKind::Cmp | ArithmeticKind::Sub,
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
@@ -28983,11 +29028,11 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             },
         ) => dst.size() == OperandSize::Qword && src.size() == OperandSize::Dword,
         // S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8) with a memory source only, no REX.W; the
-        // register form decodes to a register source and stays refused with `0xb6`, as do
-        // `REX.W 0F B6` (MOVZX r64, r/m8), `0F B7` (word source) and `0F BE`/`BF` (MOVSX).
+        // register form decodes to a register source and stays refused with `0xb6`.
+        // S6-22 adds `0F B7` for a word memory source and a dword destination.
         (
             OpcodeMap::Escape0f,
-            0xb6,
+            0xb6 | 0xb7,
             Operation::Extend {
                 src: Operand::Memory(src),
                 signed: false,
@@ -28995,13 +29040,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             },
         ) => {
             instruction.operand_size == OperandSize::Dword
-                && src.size == OperandSize::Byte
+                && matches!(src.size, OperandSize::Byte | OperandSize::Word)
                 && src.address_size == OperandSize::Qword
         }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword
-                && (lea_sib || (src.base == AddressBase::NextRip && src.index.is_none()))
+                && (lea_sib
+                    || (matches!(src.base, AddressBase::Register(_) | AddressBase::NextRip)
+                        && src.index.is_none()))
         }
         _ => false,
     }
@@ -46038,9 +46085,14 @@ fn step_configured(
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
         }
+        // S4-38L6d / S6-22: LEAVE uses the original stack access context in long mode.
+        Operation::Leave => {
+            control_policy.is_some()
+                && matches!(context.privilege, PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3)
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
-        // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
-        Operation::Leave | Operation::FarReturn | Operation::IretQ => {
+        Operation::FarReturn | Operation::IretQ => {
             control_policy.is_some()
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
