@@ -1525,6 +1525,8 @@ S3-30d checked strict dead-home reuse on the same five fixtures with
 signed M3 Max and M1 Pro releases. In the live-through-helper case the
 candidate emitted 20 static allocator transfer sites and used a
 256-byte frame, compared with 33 sites and 288 bytes for fixed homes.
+A separate native test on both hosts verified pending flags through
+JZ/JNZ after register reuse and continuation past STOP-RIP.
 [S3-30d signed preflight](STAGE_3_S3-30d_2026-11-20.md)
 
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
