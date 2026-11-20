@@ -28711,7 +28711,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f18: `3C ib` (CMP AL, imm8, `cmpb $0x20, %al` = `3c 20` of `/init` at `0x400192`) with no
 /// REX and no prefix. The CPL0 `Operation::Arithmetic { kind: Cmp }` at byte size is reused: the
 /// flags are those of `al - imm8` (SUB rules), nothing is written. `3D` (CMP eAX, imm32), `3A`/`3B`,
-/// `A8` (TEST AL, imm8) and `80 /7` with a register operand stay outside.
+/// and `A8` (TEST AL, imm8) stay outside.
 ///
 /// S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32, `cmpq $0x80, %rcx` = `48 81 f9 80 00 00 00` of
 /// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
@@ -28794,6 +28794,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        (OpcodeMap::Primary, 0x90, Operation::Nop) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x50..=0x5f, Operation::StackRegister { .. }) => {
             instruction.operand_size == OperandSize::Qword
@@ -28825,8 +28826,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Memory(src),
             },
         ) => {
-            instruction.operand_size == OperandSize::Qword
-                && src.size == OperandSize::Qword
+            matches!(src.size, OperandSize::Dword | OperandSize::Qword)
                 && src.address_size == OperandSize::Qword
         }
         (OpcodeMap::Escape0f, 0x1f, Operation::NopModrm) => true,
@@ -28947,12 +28947,12 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
-        // S4-39f19 and S6-22: qword register CMP and SUB with sign-extended imm32.
+        // S4-39f19 and S6-22: qword register ADD, SUB and CMP with sign-extended imm32.
         (
             OpcodeMap::Primary,
             0x81,
             Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp | ArithmeticKind::Sub,
+                kind: ArithmeticKind::Cmp | ArithmeticKind::Sub | ArithmeticKind::Add,
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
@@ -28982,8 +28982,8 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 && dst.size == OperandSize::Byte
                 && dst.address_size == OperandSize::Qword
         }
-        // S4-39f14: `[REX] 80 /7 ib` (CMP r/m8, imm8) with a memory operand only; the register
-        // form (mod = 11) decodes to a register destination and stays refused with `0x80`.
+        // S4-39f14: `[REX] 80 /7 ib` (CMP r/m8, imm8) with a memory operand.
+        // S6-22 also admits the byte register form for the tunables scan.
         (
             OpcodeMap::Primary,
             0x80,
@@ -28997,6 +28997,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 && dst.size == OperandSize::Byte
                 && dst.address_size == OperandSize::Qword
         }
+        (
+            OpcodeMap::Primary,
+            0x80,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
         (
             OpcodeMap::Primary,
             0xff,

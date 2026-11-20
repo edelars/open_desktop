@@ -783,6 +783,7 @@ the [S4-34b report](STAGE_4_S4-34B_2026-11-14.md) and
 - **Уточнение S6-22.** По D5 профиль CPL3 допускает регистровый `MOVSXD r64, r32` из общего загрузочного пути BusyBox. Исполнитель использует существующее знаковое расширение. [ISSUE-559 и проверки](STAGE_6_REPORT.md#s6-22--movsxd-в-cpl3).
 - **Уточнение S6-22.** По D5 допущены qword операции пролога BusyBox с imm8 и памятью, а также многобайтовый NOP. Два vCPU с RAW прошли пролог и дошли до прямого вызова glibc. [ISSUE-560 и проверки](STAGE_6_REPORT.md#s6-22--пролог-busybox-в-cpl3).
 - **Уточнение S6-22.** По D5 допущены прямой CALL, LEAVE/RET, операции разбора auxiliary vector и REP STOSQ с учётом каждой итерации в бюджете CPL3. Двухпроцессорный повтор с RAW прошёл разбор в BusyBox. [ISSUE-561 и проверки](STAGE_6_REPORT.md#s6-22--разбор-auxiliary-vector-в-busybox).
+- **Уточнение S6-22.** По D5 допущены dword MOV из памяти, простой NOP, CMP байтового регистра с imm8 и qword ADD регистра с imm32. Два vCPU с RAW прошли начало настройки glibc до IMUL. [ISSUE-562 и проверки](STAGE_6_REPORT.md#s6-22--начало-настройки-glibc).
 
 - **Уточнение S6-21.** По D5 добавлена форма `LOCK AND m64, imm8` для остановки в `copy_process`. Она использует общий атомарный AND профиля CPL0. [ISSUE-550 и проверки](STAGE_6_REPORT.md#s6-21--lock-and-qword-с-imm8).
 
