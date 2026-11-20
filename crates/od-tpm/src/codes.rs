@@ -68,6 +68,7 @@ pub mod cc {
     pub const CLOCK_RATE_ADJUST: u32 = 0x0000_0130;
     pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
+    pub const PCR_ALLOCATE: u32 = 0x0000_012B;
     pub const NV_WRITE: u32 = 0x0000_0137;
     pub const NV_WRITE_LOCK: u32 = 0x0000_0138;
     pub const PCR_EVENT: u32 = 0x0000_013C;

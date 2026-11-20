@@ -1,5 +1,6 @@
-//! The payload codec of `ODTPMSTA` versions 3 through 5. Version 4 adds the
+//! The payload codec of `ODTPMSTA` versions 3 through 6. Version 4 adds the
 //! primary policies of Owner, Endorsement and Lockout. Version 5 adds `totalResetCount`.
+//! Version 6 adds the desired PCR allocation mask.
 //! The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
@@ -31,6 +32,7 @@
 //! | persistent objects: count (u8, at most 16), then per object: handle (u32), hierarchy (u32), `TPMT_PUBLIC` (`lv16`), Qualified Name (`lv8`), marshaled `TPM2B_SENSITIVE` (`lv16`) | variable |
 //! | v4 onward: Owner, Endorsement, Lockout policy. Each is `hashAlg` (u16), then 32 octets for SHA-256. NULL has no digest. | 6–102 |
 //! | v5 onward: `totalResetCount` | 8 |
+//! | v6 onward: desired PCR bank mask (SHA-256 bit 0, SHA-384 bit 1) | 1 |
 //!
 //! `decode` rejects, with `StateError::BadField`, a field that is out of range or inconsistent
 //! (a length above its limit, a duplicate or foreign handle, a handle outside the range of its
@@ -57,6 +59,7 @@ use crate::nv::{MAX_NV_INDEX_SIZE, NvIndex, NvStore};
 use crate::object::{
     MAX_PERSISTENT, Object, PersistentObjects, name_of, sensitive_from_bytes, sensitive_to_bytes,
 };
+use crate::pcr::PcrAllocation;
 use crate::state::{Persistent, StateError};
 
 /// The most octets of a Qualified Name (`nameAlg` and a SHA-256 digest).
@@ -242,6 +245,7 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         }
     }
     e.u64(p.total_reset_count);
+    e.u8(p.pcr_allocation.bits());
     Some(())
 }
 
@@ -390,6 +394,11 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
     if total_reset_count < u64::from(reset_count) {
         return Err(Bad::Field);
     }
+    let pcr_allocation = if version >= 6 {
+        PcrAllocation::from_bits(c.u8().ok_or(Bad::Short)?).ok_or(Bad::Field)?
+    } else {
+        PcrAllocation::default()
+    };
     if !c.buf.is_empty() {
         return Err(Bad::Field);
     }
@@ -401,6 +410,7 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         reset_count,
         restart_count,
         total_reset_count,
+        pcr_allocation,
         orderly,
         hier,
         da,

@@ -23,9 +23,9 @@ measured boot и журнала событий относится к S7-22. Гр
 |---|---|---|
 | §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
-| §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Включены оба банка с PCR 0–23. Изменение выделения и его сохранение в snapshot остаются за `PCR_Allocate`. |
+| §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 89 кодов из списка, 12 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 90 кодов из списка, 11 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,6 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| PCR | `PCR_Allocate` |
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicyDuplicationSelect` |
@@ -444,7 +443,7 @@ Platform. `DictionaryAttackLockReset` с рабочей Lockout policy може�
 
 `TPM2_ClockSet` (`0x128`) допускает авторизацию Owner или Platform. Новое значение в миллисекундах должно быть не меньше текущего `Clock` и не больше `0xFFFF_0000_0000_0000`. Равенство допустимо. Команда меняет сохранённую базу и продолжает отсчёт с текущего времени включения. `Time`, флаг `safe`, счётчики запуска и таймеры DA не меняются.
 
-Форматы `ODTPMSTA` v3–v5 сохраняют текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` остаётся в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+Снимки `ODTPMSTA` v3–v6 сохраняют текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` остаётся в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
 
 ### Калибровка Time и Clock
 
@@ -485,7 +484,7 @@ Snapshot сохраняет накопленный `Clock`. После ново�
 | Выдача/приём байтов TPM state host-стороне | `od-machine` public API (S7-22) | ADR-0009, решение 1 |
 | Защита ключей, хранение в bundle, rollback | этап 9, S9-27 | решение владельца D1 |
 
-- **Persistent** (snapshot `ODTPMSTA` v5, читаются v3 и v4): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth`, их политики и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
+- **Persistent** (snapshot `ODTPMSTA` v6, читаются v3–v5): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth`, их политики и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
 - **Volatile:** PCR, сессии, transient objects, загруженные контексты, hash/event sequences, locality, признак `Startup`.
 - Байты persistent state версионные; неизвестная версия (в том числе прежние v1 и v2) отвергается. **Snapshot — чувствительные данные:** в нём seeds, auth иерархий и NV, данные NV и приватные ключи в открытом виде; до S9-27 (защита, host) он выдаётся владельцу машины как есть, не логируется и не хранится без защиты.
 - Seeds, приватные ключи, `authValue`, ключи сессий, состояние и выход DRBG, данные NV и `Unseal` никогда не логируются и не попадают в отчёты и эталоны.
@@ -525,7 +524,7 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 
 ## Команды фазы A
 
-Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 89 реализованных кодов. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
+Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 90 реализованных кодов. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
 
 | Команда | Код | Авторизация | Границы фазы A |
 |---|---|---|---|
@@ -538,6 +537,7 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 | `TPM2_GetRandom` | `0x17B` | — | не более одного дайджеста (32 октета) за вызов, больший запрос — без ошибки, 32 октета (Part 3, 16.1) |
 | `TPM2_StirRandom` | `0x146` | — | до 128 октетов (`TPM_RC_SIZE` выше); данные подмешиваются в DRBG через `Update`, как «additional information», энтропией не считаются |
 | `TPM2_PCR_Read` | `0x17E` | — | SHA-256 и SHA-384 в порядке селекторов, внутри по возрастанию PCR. В ответе до 8 значений, `pcrSelectionOut` показывает возвращённые PCR. |
+| `TPM2_PCR_Allocate` | `0x12B` | Platform USER, handle 1 | Полный или пустой банк. Новое выделение действует после `_TPM_Init`. |
 | `TPM2_PCR_Extend` | `0x182` | password, handle 1 | PCR 0–16 и 23 на locality 0. Для PCR 17–22 — `TPM_RC_LOCALITY`. `TPM_RH_NULL` разбирает запрос без изменения. До двух дайджестов SHA-256/SHA-384. Повтор одного тега повторно расширяет банк в порядке запроса. |
 | `TPM2_PCR_Event` | `0x13C` | password, handle 1 | `eventData` 0…1024 октетов. Ответ содержит оба дайджеста, включая вызов для `TPM_RH_NULL`. |
 | `TPM2_PCR_Reset` | `0x13D` | password, handle 1 | только PCR 16 и 23; остальные — `TPM_RC_LOCALITY` (Part 3, 22.8); `TPM_RH_NULL` — `TPM_RC_VALUE` |
@@ -550,7 +550,6 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 
 **Не реализовано и отвечает `TPM_RC_COMMAND_CODE`:**
 
-- `TPM2_PCR_Allocate` (`0x12B`) — **отказ**. В текущем срезе оба банка фиксированы. Команда требует авторизации Platform и применяет выделение при следующем `_TPM_Init`. PTP 1.07 относит её к обязательным (таблица 16).
 - `TPM2_PCR_SetAuthPolicy` (`0x12C`), `TPM2_PCR_SetAuthValue` (`0x183`) — не поддерживаются (ADR-0009, открытый вопрос 6). PTP 1.07 (clause 4.7, item 7) допускает их отсутствие, а реализованные обязаны вернуть `TPM_RC_VALUE`.
 - Реализация расширений фазы B и оставшиеся коды перечислены в [инвентаре PTP 1.07](#целевой-профиль-pc-client-ptp-107).
 
@@ -559,14 +558,41 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 который был расширен. `PCR_Reset` и повторная инициализация PCR при
 Startup увеличивают его один раз за операцию. Атрибут `NO_INCREMENT`
 исключает соответствующий PCR. `Shutdown(STATE)` сохраняет оба банка
-для Resume, а Restart переинициализирует их. Снимок постоянного
-состояния сохраняет прежний формат.
+для Resume, а Restart переинициализирует их. Снимок хранит выделение
+банков. Значения PCR в снимок не входят.
 
 `Quote`, `PolicyPCR` и хеш PCR в данных создания используют внешний
 SHA-256 и конкатенацию полных значений 32/48 байт в порядке селекторов.
 Размеры digest в политике, nameAlg, подписи и авторизация сессий
 остаются в текущем профиле SHA-256.
 [TPM Library v185, Part 3 §§17, 22 и 23.7](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
+
+### Выделение банков PCR
+
+`PCR_Allocate` принимает до двух селекторов SHA-256/SHA-384. Для каждого
+банка поддержаны карты из одних нулей или единиц. При повторе банка
+действует последний селектор. Банк вне запроса сохраняет ранее
+записанное выделение. Частичная итоговая карта получает `NO_RESULT`.
+Отключение обоих банков получает `PCR`. Поддержанный профиль всегда
+оставляет PCR0 и PCR17 как минимум в одном банке. Успех возвращает
+`allocationSuccess=YES`, `maxPCR=24`, `sizeNeeded` 768, 1152 или 1920
+октетов и `sizeAvailable=1920`. Доступен аудит. Шифрование параметров
+для этой команды недоступно: запрос и ответ начинаются с полей фиксированной длины.
+
+Команда сохраняет запрошенное выделение в persistent state.
+`GetCapability(PCRS)` показывает действующее выделение и нулевую карту
+отключённого банка до следующего `_TPM_Init`. Успешный запрос, включая
+пустой и повторяющий действующее состояние, аннулирует ранее сохранённое
+состояние Resume и запрещает `Shutdown(STATE)` с `TYPE.p1` до
+`_TPM_Init`. `Shutdown(CLEAR)` остаётся доступен.
+
+`PCR_Read`, `Quote`, данные создания и реальные `PolicyPCR`
+исключают PCR отключённого банка. Extend на отключённый банк не меняет
+поколение. Trial `PolicyPCR` использует исходную карту запроса для
+вычисления политики другой конфигурации. `Hash`, `PCR_Event` и
+`EventSequenceComplete` сохраняют поддержку обоих алгоритмов.
+[TPM Library v185, Part 3 §§9.4, 22.5 и 23.7](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
+[порядок обновления в эталонной реализации](https://github.com/microsoft/ms-tpm-20-ref/blob/main/TPMCmd/tpm/src/subsystem/PCR.c).
 
 ### Кадрирование и коды ответа
 
@@ -815,11 +841,11 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 
 PTP требует вместить поддерживаемый максимальный кадр. Используются 3968 байт, включая конец страницы locality 0. Это явный выбор окна ADR из-за расхождения диапазона и размера в Table 36. Загрузка команды не принимает пропуски и допускает начало новой команды с базового адреса; §6.5.3.11.2 разрешает такой режим. Внутри firmware-кванта время берётся на START по позиции инструкции. Обычная шина использует текущее время платы. Часы TPM получают миллисекунды от включения.
 
-Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v5, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
+Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v6, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
 
 ## Measured boot
 
-`Startup(CLEAR)`, `SelfTest` и `GetCapability` проходят через гостевой MMIO, прежде чем публикуется `EFI_TCG2_PROTOCOL`. Прошивка принимает полное выделение PCR 0–23 в одном или обоих банках SHA-256 и SHA-384. Она определяет поддерживаемые банки через `TPM_CAP_ALGS`, а активные через `TPM_CAP_PCRS`. Текущая модель `od-tpm` активирует оба банка при запуске. `TPM_CAP_PCR_PROPERTIES` выдаёт свойства SAVE, RESET_L0, NO_INCREMENT и нулевую карту DRTM_RESET с пагинацией. Теги отсутствующих локальностей и неподдержанных PCR policy/auth отсутствуют. [TPM Library Part 2 v185, §6.14, Table 29](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
+`Startup(CLEAR)`, `SelfTest` и `GetCapability` проходят через гостевой MMIO, прежде чем публикуется `EFI_TCG2_PROTOCOL`. Прошивка принимает полное выделение PCR 0–23 в одном или обоих банках SHA-256 и SHA-384. Она определяет поддерживаемые банки через `TPM_CAP_ALGS`, а активные через `TPM_CAP_PCRS`. Новый TPM запускает оба банка. После `PCR_Allocate` применяется выделение, сохранённое в снимке или в том же экземпляре TPM. `TPM_CAP_PCR_PROPERTIES` выдаёт свойства SAVE, RESET_L0, NO_INCREMENT и нулевую карту DRTM_RESET с пагинацией. Теги отсутствующих локальностей и неподдержанных PCR policy/auth отсутствуют. [TPM Library Part 2 v185, §6.14, Table 29](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
 
 | PCR | События |
 |---|---|
@@ -870,14 +896,22 @@ Lockout. Запись содержит `hashAlg` (u16 big-endian) и 32 байт
 
 ### Формат snapshot `ODTPMSTA` версия 5
 
-Writer записывает `5` в поле версии. После трёх политик v4 идёт
-обязательный `totalResetCount` как big-endian u64. Счётчик растёт
+После трёх политик v4 версия 5 добавляет обязательный
+`totalResetCount` как big-endian u64. Счётчик растёт
 при TPM Reset с насыщением. `Clear`, Restart и Resume сохраняют его.
 Для v3 и v4 при восстановлении берётся доступная нижняя граница
 из `resetCount`. Эти версии выписывали только NULL билеты.
 Пустой TPM даёт payload 159 байт и snapshot 207 байт.
 
-`restore` принимает v3, v4 и v5. Для всех версий проверяются магия, нулевые
+### Формат snapshot `ODTPMSTA` версия 6
+
+Writer записывает `6` в поле версии и добавляет после `totalResetCount`
+один байт желаемого выделения PCR. Бит 0 соответствует SHA-256, бит 1
+соответствует SHA-384. Допустимы значения 1, 2 и 3. Восстановление
+применяет выделение при создании TPM. Снимки v3–v5 восстанавливаются
+с обоими банками. Пустой TPM даёт payload 160 байт и snapshot 208 байт.
+
+`restore` принимает v3, v4, v5 и v6. Для всех версий проверяются магия, нулевые
 флаги, точная длина и SHA-256 payload. Неизвестные алгоритмы, лишние
 байты и несогласованные поля дают `BadField`, усечённая запись даёт
 `BadLength`. Версии v1, v2 и неизвестные версии дают `UnsupportedVersion`.

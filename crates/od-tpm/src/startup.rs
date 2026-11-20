@@ -22,7 +22,6 @@ use crate::codes::su;
 use crate::context::ContextState;
 use crate::hierarchy::HierarchyVolatile;
 use crate::marshal::{Reader, Writer};
-use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::state::{SavedState, Tpm};
 
@@ -96,7 +95,8 @@ impl Tpm {
                     }
                     (None, seed) => {
                         // TPM Reset.
-                        self.pcrs = Pcrs::new();
+                        self.pcrs.set_initial();
+                        self.pcrs.clear_counter();
                         self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
                         self.context = ContextState::default();
                         self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
@@ -128,6 +128,9 @@ impl Tpm {
         match shutdown_type {
             su::CLEAR => self.saved = None,
             su::STATE => {
+                if self.pcr_allocation_pending {
+                    return Err(Rc::TYPE.in_param(1));
+                }
                 self.saved = Some(SavedState {
                     pcrs: self.pcrs.save(),
                     hier: self.hv.clone(),

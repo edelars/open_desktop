@@ -777,8 +777,8 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
         StateError::BadField,
         "data without WRITTEN",
     );
-    // The counter maximum precedes the zero object count, three NULL policies and total reset count.
-    let max_at = snap.len() - 32 - 8 - 6 - 1 - 8;
+    // The counter maximum precedes the object count, policies, total reset count and bank mask.
+    let max_at = snap.len() - 32 - 1 - 8 - 6 - 1 - 8;
     assert_eq!(&snap[max_at..max_at + 8], &9u64.to_be_bytes());
     let mut b = snap.clone();
     b[max_at..max_at + 8].copy_from_slice(&2u64.to_be_bytes());
@@ -2463,8 +2463,8 @@ fn increment_overflow_is_nv_range_and_changes_nothing() {
         .map(|p| at + p + 2)
         .expect("counter data");
     snap[data_at..data_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-    // Empty hierarchy policies and the total reset count follow the empty object table.
-    let max_at = snap.len() - 32 - 8 - 6 - 1 - 8;
+    // Empty policies, total reset count and bank mask follow the empty object table.
+    let max_at = snap.len() - 32 - 1 - 8 - 6 - 1 - 8;
     snap[max_at..max_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     refix(&mut snap);
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();

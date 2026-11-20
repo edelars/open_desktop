@@ -1919,7 +1919,7 @@ fn snapshots_of_another_version_are_refused() {
         u16::from_be_bytes([snap[8], snap[9]]),
         crate::SNAPSHOT_VERSION
     );
-    for v in [0u16, 1, 2, 6, 0x0100, u16::MAX] {
+    for v in [0u16, 1, 2, 7, 0x0100, u16::MAX] {
         let mut b = snap.clone();
         b[8..10].copy_from_slice(&v.to_be_bytes());
         assert_eq!(

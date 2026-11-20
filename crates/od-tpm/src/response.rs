@@ -21,8 +21,10 @@ impl Rc {
     pub const SEQUENCE: Rc = Rc(RC_VER1 + 0x003);
     /// Slice C2 (Part 2, Table 20): policy sessions and `TPM2_PolicyPCR`.
     pub const POLICY: Rc = Rc(RC_VER1 + 0x026);
+    pub const PCR: Rc = Rc(RC_VER1 + 0x027);
     pub const PCR_CHANGED: Rc = Rc(RC_VER1 + 0x028);
     pub const CPHASH: Rc = Rc(RC_VER1 + 0x051);
+    pub const NO_RESULT: Rc = Rc(RC_VER1 + 0x054);
     pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
     pub const EXCLUSIVE: Rc = Rc(RC_VER1 + 0x021);
     pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);

@@ -2351,8 +2351,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 89 commands less NV_UndefineSpaceSpecial and EvictControl.
-    assert_eq!(count, 87);
+    // From 0x121 on: 90 commands less NV_UndefineSpaceSpecial and EvictControl.
+    assert_eq!(count, 88);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
@@ -2361,6 +2361,7 @@ fn capability_commands_report_the_extensive_and_nv_attributes() {
     // {NV E} with one handle.
     assert_eq!(of(0x121), 0x121 | 1 << 22 | 1 << 23 | 1 << 25);
     assert_eq!(of(0x126), 0x126 | 1 << 22 | 1 << 23 | 1 << 25);
+    assert_eq!(of(0x12B), 0x0240_012B);
     // {NV} with one handle.
     assert_eq!(of(0x129), 0x129 | 1 << 22 | 1 << 25);
     // StartAuthSession: two handles and a handle in the response.

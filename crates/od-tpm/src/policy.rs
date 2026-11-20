@@ -466,29 +466,33 @@ impl Tpm {
         p.set_param(1);
         let pcr_digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
         p.set_param(2);
-        let pcrs = TpmlPcrSelection::unmarshal(p)?;
+        let mut pcrs = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
-        let slot = self.policy_slot(inv.handles[0])?;
-        let current = pcr_selection_digest(&self.pcrs, &pcrs);
-        let counter = self.pcrs.update_counter();
-        let (state, kind) = self.policy_mut(slot)?;
-        let mut selection = Writer::new();
-        pcrs.marshal(&mut selection);
+        let (slot, kind) = self.check_policy_session(inv.handles[0], 0)?;
+        if kind == SessionKind::Policy {
+            self.pcrs.filter_selection(&mut pcrs);
+        }
+        let current;
         let digest: &[u8] = if kind == SessionKind::Trial && !pcr_digest.is_empty() {
-            // A trial session takes the values of the command and checks no PCR.
+            // A trial policy can target a different allocation. Keep the original selectors.
             pcr_digest
         } else {
-            if kind == SessionKind::Policy {
-                if !pcr_digest.is_empty() && pcr_digest != current {
-                    return Err(Rc::VALUE.in_param(1));
-                }
-                match state.pcr_update_counter {
-                    Some(c) if c != counter => return Err(Rc::PCR_CHANGED),
-                    _ => state.pcr_update_counter = Some(counter),
-                }
-            }
+            current = pcr_selection_digest(&self.pcrs, &pcrs);
             &current
         };
+        let counter = self.pcrs.update_counter();
+        let (state, _) = self.policy_mut(slot)?;
+        if kind == SessionKind::Policy {
+            if !pcr_digest.is_empty() && pcr_digest != digest {
+                return Err(Rc::VALUE.in_param(1));
+            }
+            match state.pcr_update_counter {
+                Some(c) if c != counter => return Err(Rc::PCR_CHANGED),
+                _ => state.pcr_update_counter = Some(counter),
+            }
+        }
+        let mut selection = Writer::new();
+        pcrs.marshal(&mut selection);
         state.extend(&[&cc::POLICY_PCR.to_be_bytes(), &selection.buf, digest]);
         Ok(Output::default())
     }

@@ -273,9 +273,12 @@ impl Tpm {
         outside_info: &[u8],
         parent: (u16, &[u8], &[u8]),
     ) -> (Vec<u8>, Vec<u8>, TpmtTicket) {
+        let mut selection = selection.clone();
+        self.pcrs.filter_selection(&mut selection);
+        let pcr_digest = creation_pcr_digest(&self.pcrs, &selection);
         let data = TpmsCreationData {
-            pcr_select: selection.clone(),
-            pcr_digest: creation_pcr_digest(&self.pcrs, selection),
+            pcr_select: selection,
+            pcr_digest,
             locality: LOCALITY_ZERO,
             parent_name_alg: parent.0,
             parent_name: parent.1.to_vec(),

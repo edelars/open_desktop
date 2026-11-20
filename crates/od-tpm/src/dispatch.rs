@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 89] = [
+pub(crate) static COMMANDS: [CommandSpec; 90] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -121,6 +121,7 @@ pub(crate) static COMMANDS: [CommandSpec; 89] = [
     spec(cc::CLOCK_SET, 1, 1, false, true, false),
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
+    spec(cc::PCR_ALLOCATE, 1, 1, false, true, false),
     spec(cc::SET_PRIMARY_POLICY, 1, 1, false, true, false),
     spec(cc::CLOCK_RATE_ADJUST, 1, 1, false, false, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
@@ -769,6 +770,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::TEST_PARMS => Tpm::cmd_test_parms(&mut p)?,
         cc::GET_RANDOM => tpm.cmd_get_random(&mut p)?,
         cc::STIR_RANDOM => tpm.cmd_stir_random(&mut p)?,
+        cc::PCR_ALLOCATE => tpm.cmd_pcr_allocate(&mut p)?,
         cc::PCR_READ => tpm.cmd_pcr_read(&mut p)?,
         cc::PCR_EXTEND => tpm.cmd_pcr_extend(&inv, &mut p)?,
         cc::PCR_EVENT => tpm.cmd_pcr_event(&inv, &mut p)?,
@@ -957,6 +959,11 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         }
         cc::PCR_RESET => {
             resolve_pcr_handle(handles[0], false, 1)?;
+        }
+        cc::PCR_ALLOCATE => {
+            if handles[0] != handle::RH_PLATFORM {
+                return Err(Rc::VALUE.in_handle(1));
+            }
         }
         cc::SEQUENCE_UPDATE | cc::SEQUENCE_COMPLETE => {
             tpm.seq_slot(handles[0], 0)?;
@@ -1153,10 +1160,10 @@ mod tests {
             prev = c.code;
             assert!(c.auth <= c.handles);
         }
-        // PCR_Allocate (0x12B) and PCR_SetAuthPolicy/Value are not implemented.
-        for code in [0x12Bu32, 0x12C, 0x183] {
+        // PCR_SetAuthPolicy and PCR_SetAuthValue are outside the current profile.
+        for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 89);
+        assert_eq!(COMMANDS.len(), 90);
     }
 }

@@ -265,19 +265,6 @@ fn commands_outside_the_profile_return_command_code_not_success() {
 }
 
 #[test]
-fn pcr_allocate_is_refused_as_unsupported_command() {
-    // TPM2_PCR_Allocate (0x12B) is not supported in phase A (docs/specs/VTPM.md); it must not
-    // pretend to succeed and must not be listed by GetCapability(COMMANDS).
-    let mut t = started();
-    let r = run(
-        &mut t,
-        with_pw(0x12B, &[handle::RH_PLATFORM], &[b""], &u32b(0)),
-    );
-    err(&r, Rc::COMMAND_CODE);
-    assert!(!listed_commands(&mut t).contains(&0x12B));
-}
-
-#[test]
 fn every_command_before_startup_is_initialize() {
     let mut t = tpm_new();
     for c in COMMANDS.iter().filter(|c| c.code != cc::STARTUP) {
@@ -685,11 +672,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
         0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F, 0x192, 0x13B, 0x130, 0x172,
-        0x160, 0x142,
+        0x160, 0x142, 0x12B,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 89);
+    assert_eq!(expected.len(), 90);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -757,7 +744,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(89)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(90)[..]].concat()
     );
 }
 
@@ -1106,6 +1093,125 @@ fn pcr_read_cmd(hash: u16, size: u8, select: &[u8]) -> Vec<u8> {
         &[],
         &cat(&[&u32b(1), &u16b(hash), &[size], select]),
     )
+}
+
+#[test]
+fn pcr_allocate_activates_the_desired_banks_only_after_init_or_restore() {
+    let mut t = started();
+    let read_allocation = |t: &mut Tpm| cap_list(&get_cap(t, cap::PCRS, 0, 1)).2;
+    let both = hex("000b03ffffff000c03ffffff");
+    let sha384_only = hex("000b03000000000c03ffffff");
+    assert_eq!(read_allocation(&mut t), both);
+    ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(1))));
+
+    let allocate = |wire: &[u8]| with_pw(cc::PCR_ALLOCATE, &[handle::RH_PLATFORM], &[b""], wire);
+    let response = run(&mut t, allocate(&hex("00000001000b03000000")));
+    assert_eq!(params(&response, 0), hex("01000000180000048000000780"));
+    assert_eq!(read_allocation(&mut t), both);
+    err(
+        &run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(1))),
+        Rc::TYPE.in_param(1),
+    );
+    ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(0))));
+    let snapshot = t.persistent_snapshot();
+    assert_eq!(&snapshot[8..10], &u16b(6));
+    assert_eq!(snapshot[snapshot.len() - 33], 2);
+
+    t.init();
+    err(
+        &run(&mut t, plain(cc::STARTUP, &[], &u16b(1))),
+        Rc::VALUE.in_param(1),
+    );
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &u16b(0))));
+    assert_eq!(read_allocation(&mut t), sha384_only);
+    let mut restored = Tpm::restore(&snapshot, &[0x55; 48]).unwrap();
+    ok(&run(&mut restored, plain(cc::STARTUP, &[], &u16b(0))));
+    assert_eq!(read_allocation(&mut restored), sha384_only);
+
+    let selection = hex("00000002000b03010000000c03010000");
+    assert_eq!(
+        params(&run(&mut t, plain(cc::PCR_READ, &[], &selection)), 0),
+        cat(&[
+            &u32b(0),
+            &hex("00000002000b03000000000c03010000"),
+            &u32b(1),
+            &tpm2b(&[0; 48]),
+        ]),
+    );
+    // An extend affecting only a disabled bank neither increments the generation nor
+    // invalidates the state saved by Shutdown(STATE).
+    ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(1))));
+    ok(&extend(&mut t, 0, &[1; 32]));
+    assert_eq!(pcr_counter(&mut t), 0);
+    t.init();
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &u16b(1))));
+    assert_eq!(read_allocation(&mut t), sha384_only);
+    let before = pcr_counter(&mut t);
+    ok(&run(
+        &mut t,
+        with_pw(cc::PCR_EVENT, &[0], &[b""], &tpm2b(b"abc")),
+    ));
+    assert_eq!(pcr_counter(&mut t), before + 1);
+    assert_eq!(
+        read_pcr_bank(&mut t, 0, alg::SHA384),
+        hex(SHA384_EXTEND_ABC_ON_ZERO)
+    );
+}
+
+#[test]
+fn pcr_allocate_requires_platform_and_merges_only_the_final_selection_per_bank() {
+    let mut t = started();
+    let allocate = |wire: &[u8]| with_pw(cc::PCR_ALLOCATE, &[handle::RH_PLATFORM], &[b""], wire);
+    let orig = t.persistent_snapshot();
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::PCR_ALLOCATE, &[handle::RH_OWNER], &[b""], &u32b(0)),
+        ),
+        Rc::VALUE.in_handle(1),
+    );
+    err(
+        &run(
+            &mut t,
+            plain(cc::PCR_ALLOCATE, &[handle::RH_PLATFORM], &u32b(0)),
+        ),
+        Rc::AUTH_MISSING,
+    );
+    for (wire, error) in [
+        ("00000002000b03000000000c03000000", Rc::PCR),
+        ("00000001000c03010002", Rc::NO_RESULT),
+        ("00000001000403ffffff", Rc::HASH.in_param(1)),
+        ("00000003", Rc::SIZE.in_param(1)),
+        ("00000001000b03", Rc::INSUFFICIENT.in_param(1)),
+        ("0000000000", Rc::SIZE),
+    ] {
+        err(&run(&mut t, allocate(&hex(wire))), error);
+    }
+    assert_eq!(t.persistent_snapshot(), orig);
+    ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(1))));
+    let orderly = t.persistent_snapshot();
+    let duplicate = hex("00000002000b03010000000b03ffffff");
+    let response = run(&mut t, allocate(&duplicate));
+    assert_eq!(params(&response, 0), hex("01000000180000078000000780"));
+    assert_eq!(t.persistent_snapshot(), orderly);
+    err(
+        &run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(1))),
+        Rc::TYPE.in_param(1),
+    );
+
+    // A later request preserves the pending choice for an unmentioned bank.
+    ok(&run(&mut t, allocate(&hex("00000001000b03000000"))));
+    ok(&run(&mut t, allocate(&hex("00000001000c03ffffff"))));
+    err(
+        &run(&mut t, allocate(&hex("00000001000c03000000"))),
+        Rc::PCR,
+    );
+    t.init();
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &u16b(0))));
+    assert_eq!(
+        cap_list(&get_cap(&mut t, cap::PCRS, 0, 1)).2,
+        hex("000b03000000000c03ffffff")
+    );
 }
 
 #[test]

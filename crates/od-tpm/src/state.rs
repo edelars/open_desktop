@@ -16,12 +16,12 @@
 //! protects them. They must not be logged or stored unprotected. Seeds and DRBG state are wiped on
 //! drop and never reach `Debug`.
 //!
-//! Format `ODTPMSTA` version 5 (all integers big-endian):
+//! Format `ODTPMSTA` version 6 (all integers big-endian):
 //!
 //! | offset | size | field |
 //! |---|---|---|
 //! | 0 | 8 | magic `ODTPMSTA` |
-//! | 8 | 2 | format version (5) |
+//! | 8 | 2 | format version (6) |
 //! | 10 | 2 | flags (0; non-zero is rejected) |
 //! | 12 | 4 | payload length `L` (at most 1 MiB) |
 //! | 16 | `L` | payload (layout in `snapshot.rs`) |
@@ -35,6 +35,7 @@
 //! cannot be read as version 3 without inventing the maximum.
 //! Version 3 is accepted with all hierarchy policies empty. Versions 3 and 4 initialize
 //! `totalResetCount` from the saved `resetCount`, its available lower bound.
+//! Versions 3 through 5 use the default allocation of both PCR banks.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -47,7 +48,7 @@ use crate::hierarchy::{HierarchyPersistent, HierarchyVolatile};
 use crate::marshal::{TpmsClockInfo, TpmsTimeInfo, Writer};
 use crate::nv::NvStore;
 use crate::object::{Objects, PersistentObjects};
-use crate::pcr::{Pcrs, SavedPcrs};
+use crate::pcr::{PcrAllocation, Pcrs, SavedPcrs};
 use crate::random::{Drbg, MIN_ENTROPY_LEN};
 use crate::response::{Output, Rc};
 use crate::session::Sessions;
@@ -55,7 +56,7 @@ use crate::snapshot;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written by the TPM.
-pub const SNAPSHOT_VERSION: u16 = 5;
+pub const SNAPSHOT_VERSION: u16 = 6;
 const MIN_SNAPSHOT_VERSION: u16 = 3;
 /// Header size: magic, version, flags, payload length.
 const HEADER_LEN: usize = 16;
@@ -109,6 +110,8 @@ pub(crate) struct Persistent {
     pub restart_count: u32,
     /// Persistent TPM Reset count. Neither Restart, Resume nor Clear change this value.
     pub total_reset_count: u64,
+    /// Allocation to activate at the next `_TPM_Init`.
+    pub(crate) pcr_allocation: PcrAllocation,
     /// Set by `Shutdown`, cleared by `Startup`; a snapshot taken without `Shutdown` is disorderly.
     pub orderly: bool,
     /// Authorization values and flags of the hierarchies.
@@ -143,6 +146,8 @@ pub struct Tpm {
     /// without any shutdown.
     pub(crate) saved: Option<SavedState>,
     pub(crate) pcrs: Pcrs,
+    /// A successful PCR_Allocate forbids Shutdown(STATE) until init, even for a no-op.
+    pub(crate) pcr_allocation_pending: bool,
     pub(crate) sequences: Sequences,
     /// Loaded authorization sessions (HMAC, policy, trial).
     pub(crate) sessions: Sessions,
@@ -195,6 +200,7 @@ impl Tpm {
             reset_count: 0,
             restart_count: 0,
             total_reset_count: 0,
+            pcr_allocation: PcrAllocation::default(),
             orderly: true,
             hier: HierarchyPersistent::default(),
             da: DaPersistent::default(),
@@ -205,13 +211,15 @@ impl Tpm {
     }
 
     fn assemble(persistent: Persistent, drbg: Drbg) -> Tpm {
+        let pcrs = Pcrs::with_allocation(persistent.pcr_allocation);
         Tpm {
             persistent,
             drbg,
             started: false,
             failed: false,
             saved: None,
-            pcrs: Pcrs::new(),
+            pcrs,
+            pcr_allocation_pending: false,
             sequences: Sequences::default(),
             sessions: Sessions::default(),
             context: ContextState::default(),
@@ -243,7 +251,8 @@ impl Tpm {
         self.clock_epoch_ms = 0;
         self.started = false;
         self.failed = false;
-        self.pcrs = Pcrs::new();
+        self.pcrs = Pcrs::with_allocation(self.persistent.pcr_allocation);
+        self.pcr_allocation_pending = false;
         self.sequences.clear();
         self.sessions.clear();
         self.context = ContextState::default();
@@ -271,7 +280,7 @@ impl Tpm {
         self.da_tick();
     }
 
-    /// Bytes of the persistent state (format `ODTPMSTA` v5). **Sensitive data**: they contain the
+    /// Bytes of the persistent state (format `ODTPMSTA` v6). **Sensitive data**: they contain the
     /// seeds, the authorization values, the NV data and the private keys in clear text (S9-27
     /// protects them); do not log or store them unprotected. In the unreachable case that a
     /// private part cannot be marshaled the result is empty, which `restore` rejects.
@@ -468,10 +477,10 @@ mod tests {
         let bytes = t.persistent_snapshot();
         // 113 octets of seeds and counters, 3 empty auth values (3), hierarchy flags (1), DA (17),
         // NV count (2), NV counter maximum (8), object count (1) and three NULL primary
-        // policies (6) and total reset count (8): 159 octets of payload for an empty TPM.
-        assert_eq!(bytes.len(), HEADER_LEN + 159 + 32);
+        // policies (6), total reset count (8) and PCR allocation (1): 160 octets for an empty TPM.
+        assert_eq!(bytes.len(), HEADER_LEN + 160 + 32);
         assert_eq!(&bytes[..8], b"ODTPMSTA");
-        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 5);
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 6);
         let r = Tpm::restore(&bytes, &[9u8; 48]).unwrap();
         assert_eq!(r.persistent.clock_base_ms, 1500);
         assert_eq!(r.persistent.reset_count, 4);
@@ -529,12 +538,12 @@ mod tests {
         ] {
             assert_eq!(t.permanent_auth_policy(handle), None);
         }
-        let v5 = t.persistent_snapshot();
-        assert_eq!(&v5[8..10], &5u16.to_be_bytes());
-        assert_eq!(&v5[16..16 + payload.len()], &payload);
+        let v6 = t.persistent_snapshot();
+        assert_eq!(&v6[8..10], &6u16.to_be_bytes());
+        assert_eq!(&v6[16..16 + payload.len()], &payload);
         assert_eq!(
-            &v5[16 + payload.len()..v5.len() - 32],
-            &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4]
+            &v6[16 + payload.len()..v6.len() - 32],
+            &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4, 3]
         );
 
         let old_length = payload.len();
@@ -568,6 +577,26 @@ mod tests {
             Tpm::restore(&wrap(5, &payload), &[9; 48]).unwrap_err(),
             StateError::BadField
         );
+
+        payload.truncate(payload.len() - 8);
+        payload.extend_from_slice(&17u64.to_be_bytes());
+        let restored = Tpm::restore(&wrap(5, &payload), &[9; 48]).unwrap();
+        assert_eq!(restored.persistent.total_reset_count, 17);
+        assert_eq!(restored.persistent.pcr_allocation, PcrAllocation::default());
+        assert_eq!(
+            Tpm::restore(&wrap(6, &payload), &[9; 48]).unwrap_err(),
+            StateError::BadLength
+        );
+        payload.push(0);
+        assert_eq!(
+            Tpm::restore(&wrap(6, &payload), &[9; 48]).unwrap_err(),
+            StateError::BadField
+        );
+        *payload.last_mut().unwrap() = 4;
+        assert_eq!(
+            Tpm::restore(&wrap(6, &payload), &[9; 48]).unwrap_err(),
+            StateError::BadField
+        );
     }
 
     #[test]
@@ -583,7 +612,7 @@ mod tests {
         b[0] ^= 1;
         assert_eq!(Tpm::restore(&b, &e).unwrap_err(), StateError::BadMagic);
         // The former version 1 and a future version are refused, whatever the rest looks like.
-        for v in [1u8, 2, 6] {
+        for v in [1u8, 2, 7] {
             let mut b = bytes.clone();
             b[9] = v;
             assert_eq!(

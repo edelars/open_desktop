@@ -21,6 +21,71 @@ use crate::marshal::{
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
+const SHA256_BANK: u8 = 1;
+const SHA384_BANK: u8 = 2;
+const BOTH_BANKS: u8 = SHA256_BANK | SHA384_BANK;
+const BANKS: [(u16, u8, u32); 2] = [
+    (alg::SHA256, SHA256_BANK, 32),
+    (alg::SHA384, SHA384_BANK, 48),
+];
+const SELECT_NONE: [u8; limits::PCR_SELECT_SIZE] = [0; limits::PCR_SELECT_SIZE];
+const SELECT_ALL: [u8; limits::PCR_SELECT_SIZE] = [0xff; limits::PCR_SELECT_SIZE];
+
+/// The PTP allocation profile allows a complete 24-PCR bank or an empty one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PcrAllocation(u8);
+
+impl Default for PcrAllocation {
+    fn default() -> Self {
+        Self(BOTH_BANKS)
+    }
+}
+
+impl PcrAllocation {
+    pub(crate) fn from_bits(bits: u8) -> Option<Self> {
+        matches!(bits, SHA256_BANK | SHA384_BANK | BOTH_BANKS).then_some(Self(bits))
+    }
+
+    pub(crate) fn bits(self) -> u8 {
+        self.0
+    }
+
+    fn contains(self, hash: u16) -> bool {
+        BANKS
+            .iter()
+            .any(|&(bank, bit, _)| bank == hash && self.0 & bit != 0)
+    }
+
+    fn with_selections(self, selection: &TpmlPcrSelection) -> Result<Self, Rc> {
+        let mut bits = 0;
+        for (hash, bit, _) in BANKS {
+            let selected = selection
+                .selections
+                .iter()
+                .rfind(|entry| entry.hash == hash);
+            let selected = match selected.map(|entry| entry.select) {
+                None => self.0 & bit != 0,
+                Some(SELECT_NONE) => false,
+                Some(SELECT_ALL) => true,
+                Some(_) => return Err(Rc::NO_RESULT),
+            };
+            if selected {
+                bits |= bit;
+            }
+        }
+        // Keeping one complete bank ensures that both PCR0 and PCR17 are allocated.
+        Self::from_bits(bits).ok_or(Rc::PCR)
+    }
+
+    fn size(self) -> u32 {
+        BANKS
+            .iter()
+            .filter(|(_, bit, _)| self.0 & bit != 0)
+            .map(|(_, _, bytes)| bytes * limits::PCR_COUNT as u32)
+            .sum()
+    }
+}
+
 /// Attributes of one PCR at locality 0 (PTP 1.07, Table 14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PcrAttr {
@@ -85,6 +150,7 @@ pub const fn pcr_attr(index: usize) -> PcrAttr {
 /// The two banks of 24 PCRs and their common `pcrUpdateCounter`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Pcrs {
+    active: PcrAllocation,
     sha256: [[u8; 32]; limits::PCR_COUNT],
     sha384: [[u8; 48]; limits::PCR_COUNT],
     update_counter: u32,
@@ -94,7 +160,12 @@ impl Pcrs {
     /// Initial state after `Startup(CLEAR)` at locality 0 (PTP Table 15). PCR 0 holds the startup
     /// locality indicator, which is 0 for locality 0.
     pub fn new() -> Pcrs {
+        Self::with_allocation(PcrAllocation::default())
+    }
+
+    pub(crate) fn with_allocation(active: PcrAllocation) -> Self {
         let mut p = Pcrs {
+            active,
             sha256: [[0; 32]; limits::PCR_COUNT],
             sha384: [[0; 48]; limits::PCR_COUNT],
             update_counter: 0,
@@ -122,6 +193,9 @@ impl Pcrs {
     }
 
     pub fn value(&self, hash: u16, index: usize) -> Option<&[u8]> {
+        if !self.active.contains(hash) {
+            return None;
+        }
         match hash {
             alg::SHA256 => self.sha256.get(index).map(|slot| &slot[..]),
             alg::SHA384 => self.sha384.get(index).map(|slot| &slot[..]),
@@ -137,6 +211,9 @@ impl Pcrs {
         }
         let mut modified = 0u32;
         for value in digests {
+            if !self.active.contains(value.hash) {
+                continue;
+            }
             match value.hash {
                 alg::SHA256 => {
                     extend_value::<Sha256>(&mut self.sha256[index], &value.digest);
@@ -205,16 +282,29 @@ impl Pcrs {
         }
     }
 
-    /// The two banks allocate every PCR in the default profile.
+    /// Report both supported banks, including an empty selection for a disabled bank.
     pub(crate) fn allocation(&self) -> TpmlPcrSelection {
         TpmlPcrSelection {
-            selections: [alg::SHA256, alg::SHA384]
+            selections: BANKS
                 .into_iter()
-                .map(|hash| TpmsPcrSelection {
+                .map(|(hash, _, _)| TpmsPcrSelection {
                     hash,
-                    select: [0xff; limits::PCR_SELECT_SIZE],
+                    select: if self.active.contains(hash) {
+                        SELECT_ALL
+                    } else {
+                        SELECT_NONE
+                    },
                 })
                 .collect(),
+        }
+    }
+
+    /// Exclude unallocated PCR while preserving the caller's selector order and shape.
+    pub(crate) fn filter_selection(&self, selection: &mut TpmlPcrSelection) {
+        for bank in &mut selection.selections {
+            if !self.active.contains(bank.hash) {
+                bank.select = SELECT_NONE;
+            }
         }
     }
 
@@ -311,6 +401,27 @@ impl EventHash {
 }
 
 impl Tpm {
+    /// `TPM2_PCR_Allocate` (Part 3 v185 §22.5): a successful request replaces the
+    /// pending allocation. The current banks remain in use until the next init.
+    pub(crate) fn cmd_pcr_allocate(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
+        p.set_param(1);
+        let selection = TpmlPcrSelection::unmarshal(p)?;
+        p.finish()?;
+        let desired = self.persistent.pcr_allocation.with_selections(&selection)?;
+        self.persistent.pcr_allocation = desired;
+        self.pcr_allocation_pending = true;
+        self.saved = None;
+        let mut w = Writer::new();
+        w.u8(1);
+        w.u32(limits::PCR_COUNT as u32);
+        w.u32(desired.size());
+        w.u32(PcrAllocation::default().size());
+        Ok(Output {
+            handles: Vec::new(),
+            params: w.finish(),
+        })
+    }
+
     /// Extends PCR `index` after the locality check; used by `PCR_Extend`, `PCR_Event` and
     /// `EventSequenceComplete`. Changing a PCR voids a state saved by `Shutdown(STATE)`
     /// (Part 3, clause 9.4.1: the saved state is nullified by a later command that changes it).

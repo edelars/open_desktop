@@ -282,9 +282,10 @@ impl Tpm {
         p.set_param(2);
         let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
         p.set_param(3);
-        let selection = TpmlPcrSelection::unmarshal(p)?;
+        let mut selection = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
         let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 2)?;
+        self.pcrs.filter_selection(&mut selection);
         let mut attested = Writer::new();
         selection.marshal(&mut attested);
         attested.tpm2b(&pcr_selection_digest(&self.pcrs, &selection));

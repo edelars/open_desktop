@@ -666,6 +666,51 @@ fn policy_pcr_refuses_a_wrong_digest_and_a_changed_pcr() {
 }
 
 #[test]
+fn policy_pcr_trial_keeps_banks_that_are_inactive_locally() {
+    let mut t = started();
+    ok(&run(
+        &mut t,
+        with_pw(
+            cc::PCR_ALLOCATE,
+            &[PLATFORM],
+            &[b""],
+            &hex("00000001000b03000000"),
+        ),
+    ));
+    t.init();
+    startup(&mut t, 0);
+    let requested = hex("00000002000b03010000000c03010000");
+    let filtered = hex("00000002000b03000000000c03010000");
+    let cc = u32b(cc::POLICY_PCR);
+    let current = h256(&[&[0; 48]]);
+    let actual = policy_session(&mut t, 1);
+    ok(&pol(
+        &mut t,
+        cc::POLICY_PCR,
+        &actual,
+        &cat(&[&tpm2b(&current), &requested]),
+    ));
+    assert_eq!(
+        digest(&mut t, &actual),
+        h256(&[&[0; 32], &cc, &filtered, &current])
+    );
+
+    for (input, expected) in [(&[0x45; 32][..], &[0x45; 32][..]), (&[][..], &current[..])] {
+        let trial = policy_session(&mut t, 3);
+        ok(&pol(
+            &mut t,
+            cc::POLICY_PCR,
+            &trial,
+            &cat(&[&tpm2b(input), &requested]),
+        ));
+        assert_eq!(
+            digest(&mut t, &trial),
+            h256(&[&[0; 32], &cc, &requested, expected])
+        );
+    }
+}
+
+#[test]
 fn policy_or_needs_two_digests_and_a_matching_one() {
     let mut t = started();
     let s = policy_session(&mut t, se::POLICY);
