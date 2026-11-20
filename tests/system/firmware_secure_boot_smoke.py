@@ -12,8 +12,11 @@ from tempfile import TemporaryDirectory
 from uuid import UUID
 import zlib
 
+from firmware_esp_boot_smoke import file_node, load_option
+
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "tools" / "build"
+APPS = ROOT / "firmware" / "uefi" / "tests" / "apps"
 sys.path.insert(0, str(BUILD))
 from make_test_disk import write_fat32
 from sign_test_app import sign_image
@@ -21,6 +24,7 @@ from sign_test_app import sign_image
 HELLO = b"OD-UEFI hello 0.1.0\r\n"
 BEFORE = b"OD-UEFI Secure Boot SetupMode=1 SecureBoot=0\r\n"
 AFTER = b"OD-UEFI Secure Boot enrolled PK KEK db SetupMode=0 SecureBoot=1\r\n"
+FALLBACK = b"OD-UEFI ESP BootOrder, BootCurrent and LoadOptions verified\r\n"
 STOP = b"OD-FW no bootable option\r\nOD-FW STOP code=0x21 detail=0x0000000000000001\r\n"
 GLOBAL = UUID("8be4df61-93ca-11d2-aa0d-00e098032b8c").bytes_le
 DATABASE = UUID("d719b2cb-3d3a-4596-a3bc-dad00e67656f").bytes_le
@@ -45,8 +49,8 @@ def require(condition, detail):
         raise RuntimeError(detail)
 
 
-def call(args, **options):
-    return subprocess.run(args, cwd=ROOT, check=True, **options)
+def call(args, *, cwd=ROOT, **options):
+    return subprocess.run(args, cwd=cwd, check=True, **options)
 
 
 def build_inputs(work):
@@ -56,9 +60,9 @@ def build_inputs(work):
     call([sys.executable, BUILD / "build_firmware.py", "--out", rom,
           "--target-dir", work / "firmware-target"])
     target = work / "app-target"
-    call(["cargo", "build", "--manifest-path", ROOT / "firmware/uefi/tests/apps/Cargo.toml",
-          "--release", "--offline", "--target", "x86_64-unknown-uefi", "--target-dir", target,
-          "--bin", "hello", "--bin", "enroll"])
+    call(["cargo", "build", "--release", "--locked", "--offline", "--target", "x86_64-unknown-uefi",
+          "--target-dir", target, "--bin", "hello", "--bin", "enroll", "--bin", "esp-boot-probe"],
+         cwd=APPS)
     return runner, rom, target / "x86_64-unknown-uefi/release"
 
 
@@ -74,6 +78,7 @@ def setup_auth2(value):
 def make_disks(work, apps):
     hello = (apps / "hello.efi").read_bytes()
     enrollment = (apps / "enroll.efi").read_bytes()
+    fallback = (apps / "esp-boot-probe.efi").read_bytes()
     esls = {}
     # Keep private keys in a separate private directory, even if --work is retained.
     with TemporaryDirectory(prefix="od-s725-keys-") as directory:
@@ -89,11 +94,17 @@ def make_disks(work, apps):
                        capture_output=True).stdout
             esls[name] = signature_list(der)
         signed = sign_image(hello, secret / "db.crt", secret / "db.key")
+        signed_fallback = sign_image(fallback, secret / "db.crt", secret / "db.key")
     write_fat32(work / "unsigned.raw", "none", ((b"BOOTX64 EFI", hello),))
     write_fat32(work / "signed.raw", "none", ((b"BOOTX64 EFI", signed),))
+    write_fat32(work / "fallback.raw", "none", ((b"BOOTX64 EFI", hello), (b"CHECK   EFI", signed_fallback)))
     files = tuple(zip((b"PK      AUT", b"KEK     AUT", b"DB      AUT"),
                       (setup_auth2(esls[name]) for name in ("PK", "KEK", "db")), strict=True))
-    write_fat32(work / "enroll.raw", "none", ((b"BOOTX64 EFI", enrollment), *files))
+    boot_options = (
+        (b"BOOT000AOPT", load_option(file_node("BOOTX64.EFI"))),
+        (b"BOOT000BOPT", load_option(file_node("CHECK.EFI"), b"order")),
+    )
+    write_fat32(work / "enroll.raw", "none", ((b"BOOTX64 EFI", enrollment), *files, *boot_options))
     return {(GLOBAL, "PK"): esls["PK"], (GLOBAL, "KEK"): esls["KEK"], (DATABASE, "db"): esls["db"]}
 
 
@@ -148,7 +159,8 @@ def boot(runner, rom, work, name, disk, snapshot, expected, snapshot_out=None):
             f"{name}: {report}")
     serial = trace.read_bytes()
     require(serial.endswith(b"".join(expected) + STOP)
-            and all(serial.count(marker) == expected.count(marker) for marker in (HELLO, BEFORE, AFTER)),
+            and all(serial.count(marker) == expected.count(marker)
+                    for marker in (HELLO, BEFORE, AFTER, FALLBACK)),
             f"{name}: unexpected COM1 {serial[-400:]!r}")
     print(f"{name}: {report['retired']} instructions, {report['quanta']} quanta", flush=True)
 
@@ -166,6 +178,7 @@ def run(runner, rom, apps, work, repetitions):
         require(policy_snapshot(enrolled) == expected, "enrolled PK, KEK and db match public fixtures")
         boot(runner, rom, work, f"signed-{index}", "signed.raw", enrolled, [HELLO])
         boot(runner, rom, work, f"unsigned-{index}", "unsigned.raw", enrolled, [])
+        boot(runner, rom, work, f"fallback-{index}", "fallback.raw", enrolled, [FALLBACK])
         call([runner, "prepare-secure-boot-nvram", "defaults", "--out", defaults], capture_output=True)
         require(set(policy_snapshot(defaults)) == {(GLOBAL, "PK"), (GLOBAL, "KEK"),
                                                    (DATABASE, "db"), (DATABASE, "dbx")},

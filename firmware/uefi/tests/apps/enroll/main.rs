@@ -22,6 +22,10 @@ const KEK: [Char16; 4] = ascii_to_char16(b"KEK\0");
 const DB: [Char16; 3] = ascii_to_char16(b"db\0");
 const PK: [Char16; 3] = ascii_to_char16(b"PK\0");
 const AUTHENTICATED_ATTRIBUTES: u32 = 0x27;
+const BOOT_ATTRIBUTES: u32 = 7;
+const BOOT_ORDER: [Char16; 10] = ascii_to_char16(b"BootOrder\0");
+const FIRST_BOOT_OPTION: [Char16; 9] = ascii_to_char16(b"Boot000A\0");
+const NEXT_BOOT_OPTION: [Char16; 9] = ascii_to_char16(b"Boot000B\0");
 const IMAGE_SECURITY_DATABASE: Guid = Guid {
     data1: 0xd719_b2cb,
     data2: 0x3d3a,
@@ -31,6 +35,8 @@ const IMAGE_SECURITY_DATABASE: Guid = Guid {
 const KEK_FILE: [Char16; 18] = ascii_to_char16(b"\\EFI\\BOOT\\KEK.AUT\0");
 const DB_FILE: [Char16; 17] = ascii_to_char16(b"\\EFI\\BOOT\\DB.AUT\0");
 const PK_FILE: [Char16; 17] = ascii_to_char16(b"\\EFI\\BOOT\\PK.AUT\0");
+const FIRST_OPTION_FILE: [Char16; 23] = ascii_to_char16(b"\\EFI\\BOOT\\BOOT000A.OPT\0");
+const NEXT_OPTION_FILE: [Char16; 23] = ascii_to_char16(b"\\EFI\\BOOT\\BOOT000B.OPT\0");
 const BEFORE: &[u8] = b"OD-UEFI Secure Boot SetupMode=1 SecureBoot=0\r\n\0";
 const AFTER: &[u8] = b"OD-UEFI Secure Boot enrolled PK KEK db SetupMode=0 SecureBoot=1\r\n\0";
 static BEFORE_LINE: [Char16; BEFORE.len()] = ascii_to_char16(BEFORE);
@@ -42,6 +48,13 @@ impl OpenFile {
     /// The firmware returned an open, non-null file interface.
     fn checked(file: *mut FileProtocol) -> Result<Self, Status> {
         NonNull::new(file).map(Self).ok_or(Status::DEVICE_ERROR)
+    }
+
+    unsafe fn open(&self, path: &[Char16]) -> Result<Self, Status> {
+        let root = self.0.as_ptr();
+        let mut handle = ptr::null_mut();
+        check(unsafe { ((*root).open)(root, &mut handle, path.as_ptr(), 1, 0) })?;
+        Self::checked(handle)
     }
 }
 
@@ -91,41 +104,73 @@ unsafe fn enroll(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
     check(unsafe { (protocol.open_volume)(fs, &mut root) })?;
     let opened = OpenFile::checked(root)?;
 
+    unsafe { install_boot_options(runtime, &opened) }?;
     // PK is last so the previous writes remain SetupMode operations.
     for (file, name, namespace) in [
         (&KEK_FILE[..], &KEK[..], GLOBAL_VARIABLE),
         (&DB_FILE[..], &DB[..], IMAGE_SECURITY_DATABASE),
         (&PK_FILE[..], &PK[..], GLOBAL_VARIABLE),
     ] {
-        unsafe { enroll_variable(runtime, &opened, file, name, &namespace) }?;
+        let file = unsafe { opened.open(file) }?;
+        unsafe {
+            set_variable_from_file(
+                runtime,
+                &file,
+                name,
+                &namespace,
+                AUTHENTICATED_ATTRIBUTES,
+                40,
+            )
+        }?;
     }
     unsafe { check_modes(runtime, 0, 1) }?;
     check(unsafe { output(system, AFTER_LINE.as_ptr()) })
 }
 
-unsafe fn enroll_variable(
+unsafe fn install_boot_options(runtime: &RuntimeServices, root: &OpenFile) -> Result<(), Status> {
+    let first = match unsafe { root.open(&FIRST_OPTION_FILE) } {
+        Ok(file) => file,
+        Err(Status::NOT_FOUND) => return Ok(()),
+        Err(status) => return Err(status),
+    };
+    let next = unsafe { root.open(&NEXT_OPTION_FILE) }?;
+    for (file, name) in [(&first, &FIRST_BOOT_OPTION), (&next, &NEXT_BOOT_OPTION)] {
+        unsafe {
+            set_variable_from_file(runtime, file, name, &GLOBAL_VARIABLE, BOOT_ATTRIBUTES, 12)
+        }?;
+    }
+    let order = [10u16, 11];
+    check(unsafe {
+        (runtime.set_variable)(
+            BOOT_ORDER.as_ptr(),
+            &GLOBAL_VARIABLE,
+            BOOT_ATTRIBUTES,
+            size_of_val(&order),
+            order.as_ptr().cast(),
+        )
+    })
+}
+
+unsafe fn set_variable_from_file(
     runtime: &RuntimeServices,
-    root: &OpenFile,
-    path: &[Char16],
+    file: &OpenFile,
     name: &[Char16],
     namespace: &Guid,
+    attributes: u32,
+    minimum_length: usize,
 ) -> Result<(), Status> {
-    let root = root.0.as_ptr();
-    let mut handle = ptr::null_mut();
-    check(unsafe { ((*root).open)(root, &mut handle, path.as_ptr(), 1, 0) })?;
-    let file = OpenFile::checked(handle)?;
     let file = file.0.as_ptr();
     let mut buffer = MaybeUninit::<[u8; 4096]>::uninit();
     let mut length = 4096;
     check(unsafe { ((*file).read)(file, &mut length, buffer.as_mut_ptr().cast()) })?;
-    if !(40..4096).contains(&length) {
+    if !(minimum_length..4096).contains(&length) {
         return Err(Status::BAD_BUFFER_SIZE);
     }
     check(unsafe {
         (runtime.set_variable)(
             name.as_ptr(),
             namespace,
-            AUTHENTICATED_ATTRIBUTES,
+            attributes,
             length,
             buffer.as_ptr().cast(),
         )
