@@ -9,13 +9,13 @@
 use zeroize::Zeroizing;
 
 use crate::crypto::{
-    DIGEST, HashAlg, RsaPadding, ecc_ecdh, ecc_generate_extra_random_bits, ecc_public, hash, hmac,
-    hmac_verify, kdfa, rsa_decrypt_private, rsa_encrypt_public,
+    DIGEST, HashAlg, RsaPadding, ecc_coordinate_bytes, ecc_ecdh, ecc_generate_extra_random_bits,
+    ecc_public, hash, hmac, hmac_verify, kdfa, rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
 use crate::kem;
 use crate::marshal::{
-    MAX_ECC_BYTES, MAX_NAME, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, Unique, Writer,
+    MAX_NAME, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, TpmtPublic, Unique, Writer,
     limits,
 };
 use crate::object::{Object, Secret, find_object, storage_cfb};
@@ -64,13 +64,8 @@ impl Tpm {
         reader.finish()?;
 
         let (symmetric, name_hash) = check_sharing_key(key, 1)?;
-        let (seed, secret) = make_seed(
-            &key.public.unique,
-            IDENTITY_LABEL,
-            &mut self.drbg,
-            name_hash,
-        )
-        .ok_or(Rc::FAILURE)?;
+        let (seed, secret) =
+            make_seed(&key.public, IDENTITY_LABEL, &mut self.drbg, name_hash).ok_or(Rc::FAILURE)?;
         let blob = protect(&seed[..], symmetric, name_hash, object_name, credential);
         let mut output = Writer::new();
         output.tpm2b(&blob);
@@ -178,10 +173,12 @@ pub(crate) fn recover_seed(
         }
         (Secret::Ecc(ecc), Unique::Ecc { x: receiver_x, .. }) => {
             let mut point = Reader::new(encrypted);
-            let x = point.tpm2b(MAX_ECC_BYTES).map_err(|_| SeedError::Point)?;
-            let y = point.tpm2b(MAX_ECC_BYTES).map_err(|_| SeedError::Point)?;
+            // A coordinate has the size of the curve of the key (32 octets for P-256, 48 for P-384).
+            let size = ecc_coordinate_bytes(ecc.curve()).ok_or(SeedError::Point)?;
+            let x = point.tpm2b(size).map_err(|_| SeedError::Point)?;
+            let y = point.tpm2b(size).map_err(|_| SeedError::Point)?;
             point.finish().map_err(|_| SeedError::Point)?;
-            if x.len() != MAX_ECC_BYTES || y.len() != MAX_ECC_BYTES {
+            if x.len() != size || y.len() != size {
                 return Err(SeedError::Point);
             }
             let (shared_x, _) = ecc_ecdh(ecc, x, y).ok_or(SeedError::Point)?;
@@ -223,12 +220,12 @@ fn kdfa_label(label: &[u8]) -> &[u8] {
 
 /// Seed (one digest of `name_hash`, the `nameAlg` of the storage key) and encrypted secret.
 pub(crate) fn make_seed(
-    public: &Unique,
+    public: &TpmtPublic,
     label: &[u8],
     rng: &mut Drbg,
     name_hash: HashAlg,
 ) -> Option<(Zeroizing<Vec<u8>>, Vec<u8>)> {
-    match public {
+    match &public.unique {
         Unique::Rsa(modulus) => {
             let mut seed = Zeroizing::new(vec![0u8; name_hash.size()]);
             rng.generate(&mut seed[..])?;
@@ -237,7 +234,10 @@ pub(crate) fn make_seed(
             Some((seed, cipher))
         }
         Unique::Ecc { x, y } => {
-            let ephemeral = ecc_generate_extra_random_bits(rng)?;
+            let PublicParams::Ecc { curve, .. } = &public.params else {
+                return None;
+            };
+            let ephemeral = ecc_generate_extra_random_bits(rng, *curve)?;
             let (ephemeral_x, ephemeral_y) = ecc_public(&ephemeral)?;
             let (shared_x, _) = ecc_ecdh(&ephemeral, x, y)?;
             let seed = kdfe(name_hash, &shared_x, label, &ephemeral_x, x);

@@ -429,9 +429,10 @@ fn tpmt_public_unmarshal_codes() {
     let mut b = good.clone();
     b[7] |= 1;
     assert_eq!(parse(&b), Rc::RESERVED_BITS);
-    // Curve NIST P-384: TPM_RC_CURVE; KDF other than NULL: TPM_RC_KDF.
+    // Curve NIST P-521 (5; NIST P-384, 4, is supported since slice 6): TPM_RC_CURVE; KDF other
+    // than NULL: TPM_RC_KDF.
     let mut b = good.clone();
-    b[17] = 0x04;
+    b[17] = 0x05;
     assert_eq!(parse(&b), Rc::CURVE);
     let mut b = good.clone();
     b[19] = 0x20;
@@ -476,7 +477,7 @@ fn create_primary_ecc_returns_a_loaded_object_with_consistent_artifacts() {
         panic!("not an ECC unique")
     };
     assert_eq!((x.len(), y.len()), (32, 32));
-    assert!(crate::crypto::ecc_point_valid(x, y));
+    assert!(crate::crypto::ecc_point_valid(curve::NIST_P256, x, y));
     assert_eq!(public.attributes, ecc_sign().attributes);
     // Name = nameAlg || SHA-256(TPMT_PUBLIC); Qualified Name of a primary = H(hierarchy handle
     // || Name) (Part 1, clause 24.5).
@@ -912,7 +913,7 @@ fn create_load_sign_verify_ecc() {
     let Unique::Ecc { x, y } = &public.unique else {
         panic!()
     };
-    assert!(crate::crypto::ecc_point_valid(x, y));
+    assert!(crate::crypto::ecc_point_valid(curve::NIST_P256, x, y));
     assert_eq!(child.hash, Sha256::digest(&child.creation).to_vec());
     assert_eq!((child.ticket.0, child.ticket.1), (0x8021, OWNER));
     // Not loaded yet: the new object occupies no slot.
@@ -2443,11 +2444,15 @@ fn startup_and_power_cycle_flush_transient_objects() {
 #[test]
 fn capability_lists_algorithms_curves_and_object_handles() {
     let mut t = started();
-    // TPM_CAP_ECC_CURVES: NIST P-256 only (TPML_ECC_CURVE).
+    // TPM_CAP_ECC_CURVES: NIST P-256 and NIST P-384 (TPML_ECC_CURVE; P-384 since slice 6).
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ECC_CURVES, 0, 10));
     assert!(!more && c == cap::ECC_CURVES);
-    assert_eq!((count, body), (1, u16b(curve::NIST_P256)));
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 4, 10)).3, 0);
+    assert_eq!(
+        (count, body),
+        (2, [u16b(curve::NIST_P256), u16b(curve::NIST_P384)].concat())
+    );
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 4, 10)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 5, 10)).3, 0);
     // Transient handles: loaded sequence and key objects, ascending.
     ok(&run(
         &mut t,

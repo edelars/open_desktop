@@ -1700,7 +1700,9 @@ fn outside_storage_key(t: &mut Tpm, rsa: bool, name_alg: u16, symmetric: SymDef)
                 x: unhex(OUTSIDE_ECC_X),
                 y: unhex(OUTSIDE_ECC_Y),
             };
-            Secret::Ecc(ecc_from_scalar(&unhex(OUTSIDE_ECC_D)).unwrap())
+            Secret::Ecc(
+                ecc_from_scalar(crate::codes::curve::NIST_P256, &unhex(OUTSIDE_ECC_D)).unwrap(),
+            )
         }
         _ => unreachable!(),
     };

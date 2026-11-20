@@ -14,9 +14,10 @@
 //! (RUSTSEC-2023-0071), now also reachable through `TPM2_RSA_Decrypt`.
 //!
 //! **ECDH.** `TPM2_ECDH_ZGen` multiplies the point `inPoint` by the private scalar of an ECC
-//! P-256 key (cofactor 1) and returns the full point `Z = (x, y)` as `TPM2B_ECC_POINT`; the key
+//! P-256 or P-384 key (cofactor 1) and returns the full point `Z = (x, y)` as `TPM2B_ECC_POINT`; the key
 //! needs `restricted` CLEAR, `decrypt` SET and a scheme of ECDH or NULL; the point must lie on the
-//! curve (`TPM_RC_ECC_POINT`). Hashing or a KDF of `x` is the caller's business.
+//! curve (`TPM_RC_ECC_POINT`). Slice 6 adds NIST P-384 (48-octet coordinates; a coordinate longer
+//! than the curve of the key is `TPM_RC_SIZE`). Hashing or a KDF of `x` is the caller's business.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4, which gives the per-command response
 //! codes, was not available): the parameter and handle numbers of `TPM_RC_VALUE`, `TPM_RC_SCHEME`,
@@ -30,8 +31,8 @@
 
 use crate::codes::{alg, curve, object_attr};
 use crate::crypto::{
-    HashAlg, RsaPadding, ecc_ecdh, ecc_generate, ecc_public, rsa_decrypt_private,
-    rsa_encrypt_public,
+    HashAlg, RsaPadding, ecc_coordinate_bytes, ecc_ecdh, ecc_generate, ecc_kdf_hash, ecc_public,
+    rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
 use crate::marshal::{
@@ -39,6 +40,7 @@ use crate::marshal::{
 };
 use crate::object::{Secret, find_object};
 use crate::response::{Output, Rc};
+use crate::self_test::hex;
 use crate::state::Tpm;
 
 // NIST SP 800-186 §3.2.1.3 and TCG Algorithm Registry v1.35 §5.2.4, big-endian.
@@ -79,6 +81,29 @@ const P256_ELEMENTS: [[u8; 32]; 6] = [
         0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63,
         0x25, 0x51,
     ],
+];
+
+// NIST SP 800-186 §3.2.1.4 (FIPS 186-4 D.1.2.4) and TCG Algorithm Registry v1.35 §5.2.4, big-endian:
+// p, a, b, gX, gY, n.
+const P384_ELEMENTS: [[u8; 48]; 6] = [
+    hex(
+        "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff",
+    ),
+    hex(
+        "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000fffffffc",
+    ),
+    hex(
+        "b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef",
+    ),
+    hex(
+        "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7",
+    ),
+    hex(
+        "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f",
+    ),
+    hex(
+        "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973",
+    ),
 ];
 
 fn write_ecc_point(writer: &mut Writer, x: &[u8], y: &[u8]) {
@@ -209,18 +234,23 @@ impl Tpm {
         p.set_param(1);
         let id = p.u16()?;
         p.finish()?;
-        if id != curve::NIST_P256 {
+        let (Some(bytes), Some(kdf_hash)) = (ecc_coordinate_bytes(id), ecc_kdf_hash(id)) else {
             return Err(Rc::CURVE.in_param(1));
-        }
+        };
+        let elements: [&[u8]; 6] = if id == curve::NIST_P256 {
+            P256_ELEMENTS.each_ref().map(|e| &e[..])
+        } else {
+            P384_ELEMENTS.each_ref().map(|e| &e[..])
+        };
         let mut w = Writer {
-            buf: Vec::with_capacity(10 + 6 * 34 + 3),
+            buf: Vec::with_capacity(10 + 6 * (2 + bytes) + 3),
         };
         w.u16(id);
-        w.u16(256);
+        w.u16((bytes * 8) as u16);
         w.u16(alg::KDF1_SP800_56A);
-        w.u16(alg::SHA256);
+        w.u16(kdf_hash);
         w.u16(alg::NULL);
-        for element in &P256_ELEMENTS {
+        for element in elements {
             w.tpm2b(element);
         }
         w.tpm2b(&[1]); // Cofactor.
@@ -239,17 +269,13 @@ impl Tpm {
         p.finish()?;
         let object = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        let (
-            PublicParams::Ecc {
-                curve: curve::NIST_P256,
-                ..
-            },
-            Unique::Ecc { x, y },
-        ) = (&object.public.params, &object.public.unique)
+        let (PublicParams::Ecc { curve, .. }, Unique::Ecc { x, y }) =
+            (&object.public.params, &object.public.unique)
         else {
             return Err(Rc::KEY.in_handle(1));
         };
-        let ephemeral = ecc_generate(&mut self.drbg).ok_or(Rc::FAILURE)?;
+        let curve = *curve;
+        let ephemeral = ecc_generate(&mut self.drbg, curve).ok_or(Rc::FAILURE)?;
         let (zx, zy) = ecc_ecdh(&ephemeral, x, y).ok_or(Rc::KEY.in_handle(1))?;
         let (qx, qy) = ecc_public(&ephemeral).ok_or(Rc::FAILURE)?;
         let mut w = Writer {
@@ -269,16 +295,24 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        // A coordinate has at most the size of the curve of the key (32 octets for P-256, 48 for
+        // P-384); for a key that is no ECC key the limit of P-256 stays, the key is refused below.
+        let limit = match &o.public.params {
+            PublicParams::Ecc { curve, .. } => {
+                ecc_coordinate_bytes(*curve).unwrap_or(MAX_ECC_BYTES)
+            }
+            _ => 32,
+        };
         p.set_param(1);
         let size = usize::from(p.u16()?);
         let mut point = p.sub(size)?;
-        let x = point.tpm2b(MAX_ECC_BYTES)?;
-        let y = point.tpm2b(MAX_ECC_BYTES)?;
+        let x = point.tpm2b(limit)?;
+        let y = point.tpm2b(limit)?;
         if point.remaining() != 0 {
             return Err(Rc::SIZE.in_param(1));
         }
         p.finish()?;
-        let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
         let PublicParams::Ecc { scheme, .. } = &o.public.params else {
             return Err(Rc::KEY.in_handle(1));
         };
@@ -293,7 +327,8 @@ impl Tpm {
         };
         let (zx, zy) = ecc_ecdh(key, x, y).ok_or(Rc::ECC_POINT.in_param(1))?;
         let mut w = Writer {
-            buf: Vec::with_capacity(2 + 68),
+            // `TPM2B_ECC_POINT`: size, then both coordinates as TPM2B (2 + 2 * (2 + coordinate)).
+            buf: Vec::with_capacity(2 + 2 * (2 + zx.len())),
         };
         write_ecc_point(&mut w, &zx, &zy);
         Ok(Output {

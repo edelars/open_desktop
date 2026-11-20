@@ -25,6 +25,8 @@ mod tests_ek;
 mod tests_nv_props;
 #[path = "tests_obj.rs"]
 mod tests_obj;
+#[path = "tests_p384.rs"]
+mod tests_p384;
 #[path = "tests_rsa3072.rs"]
 mod tests_rsa3072;
 #[path = "tests_salted.rs"]
@@ -922,7 +924,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
         ("000100100014000b040000000000", Rc::VALUE), // RSA-1024.
         ("000100100014000b0c0100000000", Rc::VALUE), // 3073 key bits.
         ("000100100014000b080000000003", Rc::RANGE), // Unsupported exponent.
-        ("002300100018000b00040010", Rc::CURVE), // NIST P-384.
+        ("002300100018000b00050010", Rc::CURVE), // NIST P-521 (P-384 is supported since slice 6).
         ("002300100018000b00030021", Rc::KDF), // Non-null KDF.
         ("002300100014000b00030010", Rc::SCHEME), // RSASSA in ECC union.
         ("00080005", Rc::INSUFFICIENT), // Missing HMAC hash.

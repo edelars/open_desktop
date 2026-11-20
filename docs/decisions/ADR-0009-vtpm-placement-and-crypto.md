@@ -80,6 +80,7 @@
 | `cfb-mode` | `=0.9.1` | режим CFB для AES (Part 1, шифрование параметров) | host | да / нет | MIT OR Apache-2.0 | `default-features = false`, `zeroize` | — |
 | `rsa` | **Selected stable pin and current host implementation: `=0.10.0` (migration, API/feature compatibility checks, and independent review completed 2026-11-18).** | RSA-2048: host — PKCS#1 v1.5, OAEP, PSS по профилю; прошивка — проверка PKCS#1 v1.5/SHA-256 | host (S7-23), прошивка (S7-24) | да / **да** (`extern crate alloc` безусловно) | MIT OR Apache-2.0 | `default-features = false`, features `pkcs1v15`, `hazmat`; без `getrandom` (энтропия — DRBG `od-tpm`) | `default-features = false`, features `pkcs1v15`, `encoding` (для разбора RSA public key в PKCS#1 при проверке сертификата) |
 | `p256` | `=0.14.0` | ECC NIST P-256: ECDSA, ECDH (`ECDH_ZGen`, KDFe) | host (S7-23) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `arithmetic`, `ecdsa`, `ecdh` | — |
+| `p384` | `=0.14.0` | ECC NIST P-384: ECDSA, ECDH (`ECDH_ZGen`, `ECDH_KeyGen`, KDFe) | host (S7-23, срез 6) | да / нет (`alloc` опционален) | Apache-2.0 OR MIT | `default-features = false`, `ecdsa` (включает `arithmetic` и `sha384`) | — |
 | `ecdsa` | `=0.17.0` | общий ECDSA (подключается через `p256/ecdsa`; прямая зависимость — только если S7-23 нужна напрямую) | host | да / нет | Apache-2.0 OR MIT | `default-features = false`, `digest` | — |
 | `der` | `=0.8.3` | DER/ASN.1: разбор PKCS#7, X.509, `EFI_SIGNATURE_LIST` с X.509 | прошивка (S7-24); host — если понадобится | да / нет (`alloc` опционален; в firmware-наборе включён) | Apache-2.0 OR MIT | — | `default-features = false`, `alloc`, `oid` |
 | `x509-cert` | `=0.3.0` | структуры X.509 (сертификаты `db`/`KEK`, цепочка Authenticode) | прошивка (S7-24) | да / **да** | Apache-2.0 OR MIT | — | `default-features = false` |
@@ -101,6 +102,10 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 Лицензия Apache-2.0 OR MIT. [Пакет и функции](https://docs.rs/crate/ml-kem/0.3.3),
 [FIPS 203](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf).
 
+### ECC P-384 для host S7-23 (срез 6)
+
+Для кривой NIST P-384 выбран RustCrypto `p384 =0.14.0` из crates.io (индекс crates.io, версия не отозвана) с `default-features = false` и `ecdsa`: та же линейка и те же features, что у `p256 =0.14.0`. Назначение: ECDSA (подпись и проверка по дайджесту SHA-256/384/512), `TPM2_ECDH_ZGen`/`ECDH_KeyGen` (умножение точки) и ключи P-384 для `od-tpm`. Крейт использует те же общие пакеты, что и `p256`: `elliptic-curve 0.14.3`, `ecdsa 0.17.0`, `primefield 0.14.0`, `primeorder 0.14.0`; feature `ecdh` не включён (нужна точка `(x, y)`, а не только `x`). Лицензия Apache-2.0 OR MIT. Заявленная библиотекой константность арифметики нами не проверялась (см. «Требования к секретам»). Подробности по пакетам и транзитивным зависимостям — в [DEPENDENCIES.md](../policies/DEPENDENCIES.md) (S7-23, ECC P-384); firmware target не затронут. [Пакет](https://docs.rs/crate/p384/0.14.0).
+
 ### Условие D9 о constant-time `rsa`
 
 По состоянию на 2026-11-18 RustSec RUSTSEC-2023-0071 указывает `Patched >=0.10.0` (advisory modified 2026-11-08). RustCrypto RSA v0.10.0 release notes от 2026-11-08 сообщают переход на `crypto-bigint` для constant-time modular exponentiation, hardening private-key operations по опубликованному guidance и constant-time validation harness. Это upstream evidence; compatibility-тесты проекта и их ограничения зафиксированы ниже, но они не являются полной constant-time security certification.
@@ -121,7 +126,7 @@ MSRV наибольший у `aes` (1.89) и `sha2` (1.88); локальный t
 
 - seeds, приватные ключи, `authValue`, ключи сессий, состояние HMAC-DRBG хранятся в типах, обнуляющих память при уничтожении (`zeroize`, уже транзитивный); `Debug`/`Display` таких типов не печатают содержимое;
 - сравнение HMAC, `authValue`, policy digest — за постоянное время (`subtle`/`ctutils` или проверка `hmac`), не `==` по срезам;
-- ECDSA/ECDH — только через `p256` (заявленная библиотекой константность на `crypto-bigint` нами не проверялась — записать в S7-23 как заявление поставщика, не как наш факт);
+- ECDSA/ECDH — только через `p256` (NIST P-256) и `p384` (NIST P-384) (заявленная библиотекой константность на `crypto-bigint` нами не проверялась — записать в S7-23 как заявление поставщика, не как наш факт);
 - прошивка секретов не хранит (D5: private key `PK` на host уничтожается); требования к ней ограничиваются отсутствием утечки через логи.
 
 ### Сборка в `no_std` прошивке (условие проверки, не результат)

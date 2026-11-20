@@ -487,7 +487,7 @@ fn capability_table2_properties_match_behaviour() {
     let expected_var = [
         (pt::NV_COUNTERS, 0),
         (pt::NV_COUNTERS_AVAIL, 128),
-        (pt::LOADED_CURVES, 1),
+        (pt::LOADED_CURVES, 2),
         (pt::NV_WRITE_RECOVERY, 0),
         (pt::AUDIT_COUNTER_0, 0),
         (pt::AUDIT_COUNTER_1, 0),

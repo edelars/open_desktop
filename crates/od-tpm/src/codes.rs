@@ -264,6 +264,7 @@ pub mod alg {
 /// Table 12 (v184): `TPM_ECC_CURVE`.
 pub mod curve {
     pub const NIST_P256: u16 = 0x0003;
+    pub const NIST_P384: u16 = 0x0004;
 }
 
 /// Table 39 (v184): `TPMA_OBJECT` bits.

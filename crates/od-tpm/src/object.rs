@@ -78,16 +78,16 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
-    EccPrivate, HashAlg, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public,
-    ecc_scalar, ecc_verify, hash, hmac, hmac_verify, kdfa, kdfa_sha256, rsa_from_one_prime,
-    rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes, rsa_verify_hash, rsa_verify_pss,
-    supported_rsa_exponent,
+    EccPrivate, HashAlg, RsaPrivate, ecc_coordinate_bytes, ecc_from_scalar, ecc_generate,
+    ecc_point_valid, ecc_public, ecc_scalar, ecc_verify, hash, hmac, hmac_verify, kdfa,
+    kdfa_sha256, rsa_from_one_prime, rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes,
+    rsa_verify_hash, rsa_verify_pss, supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::kem::{self, KemPrivate};
 use crate::marshal::{
-    MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, Scheme, SymDef,
-    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, Unique, Writer, limits,
+    MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, Scheme, SymDef, TpmsSensitiveCreate,
+    TpmtPublic, TpmtSignature, Unique, Writer, limits,
 };
 use crate::pcr::Pcrs;
 use crate::random::Drbg;
@@ -204,7 +204,10 @@ impl Object {
                 rsa_verify_pss(n, hash, digest, sig)
             }
             (Unique::Ecc { x, y }, TpmtSignature::Ecdsa { r, s, .. }) => {
-                ecc_verify(x, y, digest, r, s)
+                let PublicParams::Ecc { curve, .. } = &self.public.params else {
+                    return false;
+                };
+                ecc_verify(*curve, x, y, digest, r, s)
             }
             _ => false,
         }
@@ -642,13 +645,13 @@ pub(crate) fn derive_object(
             let n = rsa_modulus(&key);
             (Secret::Rsa(Box::new(key)), Unique::Rsa(n), seed)
         }
-        PublicParams::Ecc { .. } => {
+        PublicParams::Ecc { curve, .. } => {
             let seed = if storage {
                 new_seed(rng, name_hash.size())?
             } else {
                 Zeroizing::new(Vec::new())
             };
-            let key = ecc_generate(rng).ok_or(Rc::FAILURE)?;
+            let key = ecc_generate(rng, *curve).ok_or(Rc::FAILURE)?;
             let (x, y) = ecc_public(&key).ok_or(Rc::FAILURE)?;
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }
@@ -862,19 +865,18 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
             };
             Secret::Rsa(Box::new(key.ok_or(Rc::BINDING)?))
         }
-        PublicParams::Ecc { .. } => {
+        PublicParams::Ecc { curve, .. } => {
             let Unique::Ecc { x, y } = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            if secret.is_empty()
-                || secret.len() > MAX_ECC_BYTES
-                || (!duplicate && secret.len() != MAX_ECC_BYTES)
-            {
+            // The scalar has the size of the curve (32 octets for P-256, 48 for P-384).
+            let size = ecc_coordinate_bytes(*curve).ok_or(Rc::KEY_SIZE)?;
+            if secret.is_empty() || secret.len() > size || (!duplicate && secret.len() != size) {
                 return Err(Rc::KEY_SIZE);
             }
-            let mut padded = Zeroizing::new([0u8; MAX_ECC_BYTES]);
-            padded[MAX_ECC_BYTES - secret.len()..].copy_from_slice(&secret);
-            let key = ecc_from_scalar(&padded[..]).ok_or(Rc::BINDING)?;
+            let mut padded = Zeroizing::new(vec![0u8; size]);
+            padded[size - secret.len()..].copy_from_slice(&secret);
+            let key = ecc_from_scalar(*curve, &padded[..]).ok_or(Rc::BINDING)?;
             // The public point must be the scalar's public point (clause 12.2.1).
             if ecc_public(&key).as_ref() != Some(&(x.clone(), y.clone())) {
                 return Err(Rc::BINDING);
@@ -1133,8 +1135,8 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
                 return Err(bad(Rc::KEY));
             }
         }
-        (PublicParams::Ecc { .. }, Unique::Ecc { x, y }) => {
-            if !ecc_point_valid(x, y) {
+        (PublicParams::Ecc { curve, .. }, Unique::Ecc { x, y }) => {
+            if !ecc_point_valid(*curve, x, y) {
                 return Err(bad(Rc::ECC_POINT));
             }
         }

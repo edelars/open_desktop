@@ -118,7 +118,7 @@ impl Tpm {
         let (duplicate, secret): (&[u8], &[u8]) =
             if let Some((new_parent, outer_sym, parent_hash)) = new_parent {
                 let (seed, secret) = make_seed(
-                    &new_parent.public.unique,
+                    &new_parent.public,
                     DUPLICATE_LABEL,
                     &mut self.drbg,
                     parent_hash,

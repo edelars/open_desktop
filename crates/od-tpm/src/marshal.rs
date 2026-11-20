@@ -8,7 +8,7 @@
 
 use zeroize::Zeroize;
 
-use crate::codes::{alg, curve, object_attr, st};
+use crate::codes::{alg, object_attr, st};
 use crate::response::Rc;
 
 /// Implementation limits of phase A (Part 2 names in parentheses).
@@ -625,8 +625,9 @@ impl TpmaCc {
 
 /// Largest `TPM2B_PUBLIC_KEY_RSA` (RSA-3072, `MAX_RSA_KEY_BYTES`; RSA-2048 keys use 256 octets).
 pub const MAX_RSA_BYTES: usize = 384;
-/// Largest `TPM2B_ECC_PARAMETER` (P-256 only, `MAX_ECC_KEY_BYTES`).
-pub const MAX_ECC_BYTES: usize = 32;
+/// Largest `TPM2B_ECC_PARAMETER` (P-384, `MAX_ECC_KEY_BYTES`; P-256 coordinates, scalars and signature values use
+/// 32 octets, see `crypto::ecc_coordinate_bytes`).
+pub const MAX_ECC_BYTES: usize = 48;
 /// ML-KEM-768 sizes and selector (Part 2 v185, Table 219).
 pub(crate) const MLKEM_768: u16 = 2;
 pub(crate) const MAX_MLKEM_PUBLIC_BYTES: usize = 1184;
@@ -877,9 +878,23 @@ impl PublicParams {
             }
             alg::ECC => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal_public(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
+                // An ECDH scheme names SHA-256 for P-256 (as before) and any of the three hashes
+                // for P-384, whose KDF hash is SHA-384; the curve follows the scheme, so the hash of
+                // an ECDH scheme is checked after the curve is read.
+                let scheme = Scheme::unmarshal_with_hashes(
+                    r,
+                    &[alg::ECDSA, alg::ECDH],
+                    Rc::SCHEME,
+                    &SIGNING_HASHES,
+                )?;
                 let curve = r.u16()?;
-                if curve != curve::NIST_P256 {
+                if scheme.alg == alg::ECDH
+                    && scheme.hash != alg::SHA256
+                    && curve != crate::codes::curve::NIST_P384
+                {
+                    return Err(r.err(Rc::HASH));
+                }
+                if !crate::crypto::supported_ecc_curve(curve) {
                     return Err(r.err(Rc::CURVE));
                 }
                 if r.u16()? != alg::NULL {
@@ -926,7 +941,7 @@ pub enum Unique {
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ML-KEM-768, SYMCIPHER (AES-CFB), or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ECC P-384, ML-KEM-768, SYMCIPHER (AES-CFB), or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -1010,7 +1025,7 @@ impl TpmtPublic {
     /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and 3072 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
     /// `TPM_RC_SCHEME` for an ECC scheme (Table 199), `TPM_RC_CURVE` for a curve other than NIST
-    /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
+    /// P-256 and NIST P-384 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
     /// and `TPM_RC_MODE` as in [`SymDef::unmarshal`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let type_alg = PublicParams::unmarshal_type(r)?;
@@ -1030,10 +1045,14 @@ impl TpmtPublic {
         let params = PublicParams::unmarshal(r, type_alg)?;
         let unique = match params {
             PublicParams::Rsa { .. } => Unique::Rsa(r.tpm2b(MAX_RSA_BYTES)?.to_vec()),
-            PublicParams::Ecc { .. } => Unique::Ecc {
-                x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
-                y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
-            },
+            PublicParams::Ecc { curve, .. } => {
+                // The coordinates are bounded by the size of the curve of the key.
+                let limit = crate::crypto::ecc_coordinate_bytes(curve).unwrap_or(MAX_ECC_BYTES);
+                Unique::Ecc {
+                    x: r.tpm2b(limit)?.to_vec(),
+                    y: r.tpm2b(limit)?.to_vec(),
+                }
+            }
             PublicParams::KeyedHash { .. } | PublicParams::SymCipher { .. } => {
                 Unique::Digest(r.tpm2b(digest_limit)?.to_vec())
             }

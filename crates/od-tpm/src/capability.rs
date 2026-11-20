@@ -13,7 +13,7 @@
 //! `NV_COUNTERS_AVAIL` (counters that can still be defined, limited by the index slots and the data
 //! pool), `ORDERLY_COUNT` (`nv.rs`: `MAX_ORDERLY_COUNT`), `CONTEXT_HASH` (SHA-256), `CONTEXT_SYM` (AES)
 //! and `CONTEXT_SYM_SIZE` (128), `MAX_OBJECT_CONTEXT` and `MAX_SESSION_CONTEXT` (the largest context
-//! `TPM2_ContextLoad` takes), `LOADED_CURVES` (1: NIST P-256). Reported as 0 because the feature is
+//! `TPM2_ContextLoad` takes), `LOADED_CURVES` (2: NIST P-256 and NIST P-384). Reported as 0 because the feature is
 //! absent or has no TPM-side interval (recorded deviations): `CONTEXT_GAP_MAX` (no context gap is
 //! tracked, `TPM_RC_CONTEXT_GAP` does not exist), `CLOCK_UPDATE` (`Clock` reaches NV only with the
 //! snapshot the host writes), `SPLIT_MAX` (no `TPM2_Commit`), `MODES` (no FIPS mode),
@@ -23,7 +23,7 @@
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
 //! ECC, with slice C1 also RSAES, OAEP and ECDH, with the RSA-3072 slice RSAPSS, with slice C2 HMAC, with slice C3 XOR (the
-//! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
+//! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256 and NIST P-384. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
 //!
@@ -57,6 +57,9 @@ use crate::pcr::{PcrAttr, pcr_attr};
 use crate::response::{Output, Rc};
 use crate::session::MAX_SESSIONS;
 use crate::state::Tpm;
+
+/// The curves of `TPM_CAP_ECC_CURVES`, in ascending order of their identifiers.
+const ECC_CURVES: [u16; 2] = [curve::NIST_P256, curve::NIST_P384];
 
 /// Maximum size of the capability data in one response (`TPM_PT_MAX_CAP_BUFFER`).
 const MAX_CAP_BUFFER: usize = 1024;
@@ -232,8 +235,8 @@ impl Tpm {
                 pt::NV_COUNTERS_AVAIL,
                 self.persistent.nv.counters_avail() as u32,
             ),
-            // NIST P-256, the one curve of `TPM_CAP_ECC_CURVES`.
-            (pt::LOADED_CURVES, 1),
+            // NIST P-256 and NIST P-384, the curves of `TPM_CAP_ECC_CURVES`.
+            (pt::LOADED_CURVES, ECC_CURVES.len() as u32),
             // Dictionary attack (slice C1, `da.rs`).
             (pt::LOCKOUT_COUNTER, self.persistent.da.failed_tries),
             (pt::MAX_AUTH_FAIL, self.persistent.da.max_tries),
@@ -285,9 +288,12 @@ impl Tpm {
             }
             cap::ECC_CURVES => {
                 entry_size = 2;
-                // `TPML_ECC_CURVE`: NIST P-256 only.
-                if u32::from(curve::NIST_P256) >= property {
-                    entries.push(|w| w.u16(curve::NIST_P256));
+                // `TPML_ECC_CURVE`: NIST P-256 and NIST P-384, in ascending order.
+                for id in ECC_CURVES
+                    .into_iter()
+                    .filter(|id| u32::from(*id) >= property)
+                {
+                    entries.push(|w| w.u16(id));
                 }
             }
             cap::HANDLES => {

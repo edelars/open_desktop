@@ -1,8 +1,8 @@
-//! Primitives of the vTPM over the RustCrypto crates `hmac`, `sha2`, `rsa` and `p256` (ADR-0009,
+//! Primitives of the vTPM over the RustCrypto crates `hmac`, `sha2`, `rsa`, `p256` and `p384` (ADR-0009,
 //! decision 2): SHA-256/384/512 digests, HMAC and KDFa over them ([`HashAlg`]), a constant-time
 //! HMAC check, and (slice B of phase B) RSA-2048 and RSA-3072 (PKCS#1 v1.5 and PSS signatures with any
-//! of the three hashes, OAEP with any of the three) and ECC P-256 ECDSA key generation, signing and
-//! verification.
+//! of the three hashes, OAEP with any of the three) and ECC P-256 and P-384 ECDSA key generation, signing and
+//! verification, and ECDH.
 //!
 //! The protocol-level constructions (KDFa, session HMACs, the DRBG that uses them) stay in this
 //! crate; only the primitives come from the libraries. No function here logs or prints a key.
@@ -14,7 +14,7 @@
 //! compatibility, and tests pass; this project does not certify the dependency's complete
 //! constant-time behavior; independent review approved the migration on 2026-11-18, resolving
 //! ISSUE-064 as the selected-version migration requirement. The exposure is a timing attack on the host process that runs the vTPM, not on a
-//! firmware stack. ECDSA runs on `p256` (`crypto-bigint` arithmetic); its constant-time property is
+//! firmware stack. ECDSA runs on `p256` and `p384` (`crypto-bigint` arithmetic); its constant-time property is
 //! the vendor's claim, not checked here (ADR-0009).
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -27,7 +27,7 @@ use sha2::digest::block_api::EagerHash;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use zeroize::Zeroizing;
 
-use crate::codes::alg;
+use crate::codes::{alg, curve};
 use crate::random::Drbg;
 
 /// Digest size of SHA-256, the hash of contexts, tickets and the DRBG (sessions, objects and
@@ -311,8 +311,12 @@ impl TryCryptoRng for DrbgRng<'_> {}
 
 /// An RSA private key of 2048 or 3072 bits (two primes, exponent 65537).
 pub(crate) type RsaPrivate = rsa::PrivateKey;
-/// An ECC P-256 private key.
-pub(crate) type EccPrivate = p256::ecdsa::SigningKey;
+/// An ECC private key: P-256 or P-384 (the curve of the `TPMT_PUBLIC` it belongs to).
+#[derive(Clone)]
+pub(crate) enum EccPrivate {
+    P256(p256::ecdsa::SigningKey),
+    P384(p384::ecdsa::SigningKey),
+}
 
 /// Bytes of an RSA-2048 modulus.
 const RSA_2048_BYTES: usize = 256;
@@ -604,132 +608,262 @@ pub(crate) fn rsa_decrypt_private(
     Some(out)
 }
 
-/// A P-256 private key from `rng`: 32 octets per attempt until the value is in `[1, n - 1]`.
-pub(crate) fn ecc_generate(rng: &mut Drbg) -> Option<EccPrivate> {
+/// The ECC curves of the profile (`TPM_ECC_CURVE`, Part 2 Table 12): NIST P-256 and NIST P-384.
+pub(crate) fn supported_ecc_curve(curve_id: u16) -> bool {
+    ecc_coordinate_bytes(curve_id).is_some()
+}
+
+/// Octets of a coordinate, of a scalar and of an ECDSA `r` or `s` of the curve: 32 for P-256, 48 for P-384.
+pub(crate) fn ecc_coordinate_bytes(curve_id: u16) -> Option<usize> {
+    match curve_id {
+        curve::NIST_P256 => Some(32),
+        curve::NIST_P384 => Some(48),
+        _ => None,
+    }
+}
+
+/// The hash of the KDF scheme the curve reports in `TPMS_ALGORITHM_DETAIL_ECC` (Part 4: SHA-256 for
+/// P-256, SHA-384 for P-384).
+pub(crate) fn ecc_kdf_hash(curve_id: u16) -> Option<u16> {
+    match curve_id {
+        curve::NIST_P256 => Some(alg::SHA256),
+        curve::NIST_P384 => Some(alg::SHA384),
+        _ => None,
+    }
+}
+
+impl EccPrivate {
+    /// The `TPM_ECC_CURVE` of the key.
+    pub(crate) fn curve(&self) -> u16 {
+        match self {
+            EccPrivate::P256(_) => curve::NIST_P256,
+            EccPrivate::P384(_) => curve::NIST_P384,
+        }
+    }
+}
+
+/// A private key of `curve_id` from `rng`: 32 (P-256) or 48 (P-384) octets per attempt until the value
+/// is in `[1, n - 1]`.
+pub(crate) fn ecc_generate(rng: &mut Drbg, curve_id: u16) -> Option<EccPrivate> {
+    let size = ecc_coordinate_bytes(curve_id)?;
     for _ in 0..64 {
-        let mut b = Zeroizing::new([0u8; 32]);
-        rng.generate(&mut b[..])?;
-        if let Ok(k) = EccPrivate::from_slice(&b[..]) {
+        let mut b = Zeroizing::new([0u8; 48]);
+        rng.generate(&mut b[..size])?;
+        if let Some(k) = ecc_from_scalar(curve_id, &b[..size]) {
             return Some(k);
         }
     }
     None
 }
 
-/// P-256 key generation with extra random bits (Part 1 v185 §44.6).
-/// Reduce 320 uniform bits modulo the group order minus one, then add one.
-pub(crate) fn ecc_generate_extra_random_bits(rng: &mut Drbg) -> Option<EccPrivate> {
+/// Key generation with extra random bits (Part 1 v185 §44.6).
+/// Reduce 320 (P-256) or 448 (P-384) uniform bits modulo the group order minus one, then add one.
+pub(crate) fn ecc_generate_extra_random_bits(rng: &mut Drbg, curve_id: u16) -> Option<EccPrivate> {
     use p256::elliptic_curve::bigint::{NonZero, U256, U320};
 
-    const ORDER_MINUS_ONE: U256 =
-        U256::from_be_hex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550");
-    let modulus = NonZero::new(ORDER_MINUS_ONE).expect("P-256 order minus one is nonzero");
-    let mut bytes = Zeroizing::new([0u8; 40]);
-    rng.generate(&mut bytes[..])?;
-    let random = Zeroizing::new(U320::from_be_slice(&bytes[..]));
-    let scalar = Zeroizing::new(random.rem(&modulus).wrapping_add(&U256::ONE));
-    let encoded = Zeroizing::new(scalar.to_be_bytes());
-    ecc_from_scalar(encoded.as_ref())
+    match curve_id {
+        curve::NIST_P256 => {
+            const ORDER_MINUS_ONE: U256 = U256::from_be_hex(
+                "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550",
+            );
+            let modulus = NonZero::new(ORDER_MINUS_ONE).expect("P-256 order minus one is nonzero");
+            let mut bytes = Zeroizing::new([0u8; 40]);
+            rng.generate(&mut bytes[..])?;
+            let random = Zeroizing::new(U320::from_be_slice(&bytes[..]));
+            let scalar = Zeroizing::new(random.rem(&modulus).wrapping_add(&U256::ONE));
+            let encoded = Zeroizing::new(scalar.to_be_bytes());
+            ecc_from_scalar(curve_id, encoded.as_ref())
+        }
+        curve::NIST_P384 => {
+            use p384::elliptic_curve::bigint::{U384, U448};
+
+            const ORDER_MINUS_ONE: U384 = U384::from_be_hex(
+                "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52972",
+            );
+            let modulus = NonZero::new(ORDER_MINUS_ONE).expect("P-384 order minus one is nonzero");
+            let mut bytes = Zeroizing::new([0u8; 56]);
+            rng.generate(&mut bytes[..])?;
+            let random = Zeroizing::new(U448::from_be_slice(&bytes[..]));
+            let scalar = Zeroizing::new(random.rem(&modulus).wrapping_add(&U384::ONE));
+            let encoded = Zeroizing::new(scalar.to_be_bytes());
+            ecc_from_scalar(curve_id, encoded.as_ref())
+        }
+        _ => None,
+    }
 }
 
-/// The private scalar, 32 octets; wiped on drop.
+/// The private scalar, 32 (P-256) or 48 (P-384) octets; wiped on drop.
 pub(crate) fn ecc_scalar(key: &EccPrivate) -> Zeroizing<Vec<u8>> {
-    Zeroizing::new(key.to_bytes().to_vec())
+    match key {
+        EccPrivate::P256(k) => Zeroizing::new(k.to_bytes().to_vec()),
+        EccPrivate::P384(k) => Zeroizing::new(k.to_bytes().to_vec()),
+    }
 }
 
-/// The private key from its scalar (`None` if zero or not below the group order).
-pub(crate) fn ecc_from_scalar(d: &[u8]) -> Option<EccPrivate> {
-    if d.len() != 32 {
+/// The private key of `curve_id` from its scalar (`None` if zero, not below the group order or not
+/// the size of the curve).
+pub(crate) fn ecc_from_scalar(curve_id: u16, d: &[u8]) -> Option<EccPrivate> {
+    if d.len() != ecc_coordinate_bytes(curve_id)? {
         return None;
     }
-    EccPrivate::from_slice(d).ok()
+    match curve_id {
+        curve::NIST_P256 => p256::ecdsa::SigningKey::from_slice(d)
+            .ok()
+            .map(EccPrivate::P256),
+        _ => p384::ecdsa::SigningKey::from_slice(d)
+            .ok()
+            .map(EccPrivate::P384),
+    }
 }
 
-/// Affine coordinates `(x, y)` of the public point, 32 octets each.
+/// Affine coordinates `(x, y)` of the public point, 32 (P-256) or 48 (P-384) octets each.
 pub(crate) fn ecc_public(key: &EccPrivate) -> Option<(Vec<u8>, Vec<u8>)> {
-    let point = key.verifying_key().to_sec1_point(false);
-    let b = point.as_bytes();
-    (b.len() == 65 && b[0] == 4).then(|| (b[1..33].to_vec(), b[33..].to_vec()))
+    match key {
+        EccPrivate::P256(k) => {
+            let point = k.verifying_key().to_sec1_point(false);
+            let b = point.as_bytes();
+            (b.len() == 65 && b[0] == 4).then(|| (b[1..33].to_vec(), b[33..].to_vec()))
+        }
+        EccPrivate::P384(k) => {
+            let point = k.verifying_key().to_sec1_point(false);
+            let b = point.as_bytes();
+            (b.len() == 97 && b[0] == 4).then(|| (b[1..49].to_vec(), b[49..].to_vec()))
+        }
+    }
 }
 
-/// `true` if `(x, y)` is a point of the curve (both coordinates 32 octets).
-pub(crate) fn ecc_point_valid(x: &[u8], y: &[u8]) -> bool {
-    ecc_verifying_key(x, y).is_some()
+/// `true` if `(x, y)` is a point of the curve (both coordinates the size of the curve).
+pub(crate) fn ecc_point_valid(curve_id: u16, x: &[u8], y: &[u8]) -> bool {
+    ecc_verifying_key(curve_id, x, y).is_some()
 }
 
-fn ecc_verifying_key(x: &[u8], y: &[u8]) -> Option<p256::ecdsa::VerifyingKey> {
-    if x.len() != 32 || y.len() != 32 {
+/// A verifying key of either curve.
+enum EccVerifying {
+    P256(p256::ecdsa::VerifyingKey),
+    P384(p384::ecdsa::VerifyingKey),
+}
+
+fn ecc_verifying_key(curve_id: u16, x: &[u8], y: &[u8]) -> Option<EccVerifying> {
+    let size = ecc_coordinate_bytes(curve_id)?;
+    if x.len() != size || y.len() != size {
         return None;
     }
-    let mut sec1 = Vec::with_capacity(65);
+    let mut sec1 = Vec::with_capacity(1 + 2 * size);
     sec1.push(4);
     sec1.extend_from_slice(x);
     sec1.extend_from_slice(y);
-    p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).ok()
+    match curve_id {
+        curve::NIST_P256 => p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1)
+            .ok()
+            .map(EccVerifying::P256),
+        _ => p384::ecdsa::VerifyingKey::from_sec1_bytes(&sec1)
+            .ok()
+            .map(EccVerifying::P384),
+    }
 }
 
 /// The affine coordinates `(x, y)` of a secret point, wiped on drop.
 pub(crate) type SecretPoint = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
 
-/// ECDH over P-256 (`TPM2_ECDH_ZGen`, Part 3, clause 14.5): `Z = [h * d] Q` with the cofactor
-/// `h = 1`, as the 32-octet affine coordinates `(x, y)`; the input coordinates may be shorter than
-/// 32 octets (padded on the left); `None` if `Q = (x, y)` is not a point of
-/// the curve or the product is the point at infinity (not possible for a point of the prime-order
-/// group and a scalar in `[1, n - 1]`). Both coordinates are wiped on drop.
+/// ECDH (`TPM2_ECDH_ZGen`, Part 3, clause 14.5): `Z = [h * d] Q` with the cofactor `h = 1`, as the
+/// affine coordinates `(x, y)` of the size of the curve (32 octets for P-256, 48 for P-384); the input
+/// coordinates may be shorter (padded on the left); `None` if `Q = (x, y)` is not a point of
+/// the curve of `key` or the product is the point at infinity (not possible for a point of the
+/// prime-order group and a scalar in `[1, n - 1]`). Both coordinates are wiped on drop.
 pub(crate) fn ecc_ecdh(key: &EccPrivate, x: &[u8], y: &[u8]) -> Option<SecretPoint> {
     use p256::elliptic_curve::sec1::ToSec1Point;
-    // A TPM2B coordinate may come without its leading zero octets: pad on the left to 32 octets.
-    let (x, y) = (pad32(x)?, pad32(y)?);
-    let mut sec1 = [0u8; 65];
-    sec1[0] = 4;
-    sec1[1..33].copy_from_slice(&x);
-    sec1[33..].copy_from_slice(&y);
-    let q = p256::PublicKey::from_sec1_bytes(&sec1).ok()?;
-    let scalar = Zeroizing::new(key.to_bytes());
-    let d = p256::SecretKey::from_bytes(&scalar).ok()?;
-    let z = (q.to_projective() * *d.to_nonzero_scalar()).to_affine();
+
+    // A TPM2B coordinate may come without its leading zero octets: pad on the left to the curve size.
+    let size = ecc_coordinate_bytes(key.curve())?;
+    let (x, y) = (pad_left(x, size)?, pad_left(y, size)?);
+    let mut sec1 = Vec::with_capacity(1 + 2 * size);
+    sec1.push(4);
+    sec1.extend_from_slice(&x);
+    sec1.extend_from_slice(&y);
     // The encoded point Z is secret: it is wiped after its coordinates are copied out.
-    let point = Zeroizing::new(z.to_sec1_point(false).as_bytes().to_vec());
-    (point.len() == 65 && point[0] == 4).then(|| {
+    let point = match key {
+        EccPrivate::P256(k) => {
+            let q = p256::PublicKey::from_sec1_bytes(&sec1).ok()?;
+            let scalar = Zeroizing::new(k.to_bytes());
+            let d = p256::SecretKey::from_bytes(&scalar).ok()?;
+            let z = (q.to_projective() * *d.to_nonzero_scalar()).to_affine();
+            Zeroizing::new(z.to_sec1_point(false).as_bytes().to_vec())
+        }
+        EccPrivate::P384(k) => {
+            let q = p384::PublicKey::from_sec1_bytes(&sec1).ok()?;
+            let scalar = Zeroizing::new(k.to_bytes());
+            let d = p384::SecretKey::from_bytes(&scalar).ok()?;
+            let z = (q.to_projective() * *d.to_nonzero_scalar()).to_affine();
+            Zeroizing::new(z.to_sec1_point(false).as_bytes().to_vec())
+        }
+    };
+    (point.len() == 1 + 2 * size && point[0] == 4).then(|| {
         (
-            Zeroizing::new(point[1..33].to_vec()),
-            Zeroizing::new(point[33..].to_vec()),
+            Zeroizing::new(point[1..=size].to_vec()),
+            Zeroizing::new(point[size + 1..].to_vec()),
         )
     })
 }
 
-/// ECDSA over P-256 of a SHA-256 `digest`: `(r, s)`, 32 octets each (RFC 6979 nonce).
+/// ECDSA of a `digest` of SHA-256, SHA-384 or SHA-512: `(r, s)`, the size of the curve each. The
+/// nonce `k` is deterministic (RFC 6979 style HMAC_DRBG), but keyed with the hash of the CURVE
+/// (SHA-384 for P-384, SHA-256 for P-256) as `sign_prehash` of the `ecdsa` crate does, not with the
+/// hash that made `digest`. So the signatures of RFC 6979 A.2.6 for SHA-256/SHA-512 on P-384 are
+/// not reproduced byte for byte (only the SHA-384 one is), but every signature verifies. A digest
+/// longer than the order is cut to its leftmost octets and a shorter one is taken as an integer
+/// (FIPS 186-4, clause 6.4), by the `ecdsa` crate.
 pub(crate) fn ecc_sign(key: &EccPrivate, digest: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let sig: p256::ecdsa::Signature = key.sign_prehash(digest).ok()?;
-    let (r, s) = sig.split_bytes();
-    Some((r.to_vec(), s.to_vec()))
+    match key {
+        EccPrivate::P256(k) => {
+            let sig: p256::ecdsa::Signature = k.sign_prehash(digest).ok()?;
+            let (r, s) = sig.split_bytes();
+            Some((r.to_vec(), s.to_vec()))
+        }
+        EccPrivate::P384(k) => {
+            let sig: p384::ecdsa::Signature = k.sign_prehash(digest).ok()?;
+            let (r, s) = sig.split_bytes();
+            Some((r.to_vec(), s.to_vec()))
+        }
+    }
 }
 
-/// Verifies an ECDSA P-256 signature `(r, s)` of `digest` with the public point `(x, y)`.
+/// Verifies an ECDSA signature `(r, s)` of `digest` on `curve_id` with the public point `(x, y)`.
 /// `r` and `s` are given as TPM2B values (leading zeros may be stripped).
-pub(crate) fn ecc_verify(x: &[u8], y: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
-    let Some(key) = ecc_verifying_key(x, y) else {
+pub(crate) fn ecc_verify(
+    curve_id: u16,
+    x: &[u8],
+    y: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool {
+    let Some(key) = ecc_verifying_key(curve_id, x, y) else {
         return false;
     };
-    let (Some(r), Some(s)) = (pad32(r), pad32(s)) else {
+    let Some(size) = ecc_coordinate_bytes(curve_id) else {
         return false;
     };
-    let mut rs = [0u8; 64];
-    rs[..32].copy_from_slice(&r);
-    rs[32..].copy_from_slice(&s);
-    let Ok(sig) = p256::ecdsa::Signature::from_slice(&rs) else {
+    let (Some(r), Some(s)) = (pad_left(r, size), pad_left(s, size)) else {
         return false;
     };
-    key.verify_prehash(digest, &sig).is_ok()
+    let mut rs = Vec::with_capacity(2 * size);
+    rs.extend_from_slice(&r);
+    rs.extend_from_slice(&s);
+    match key {
+        EccVerifying::P256(key) => p256::ecdsa::Signature::from_slice(&rs)
+            .is_ok_and(|sig| key.verify_prehash(digest, &sig).is_ok()),
+        EccVerifying::P384(key) => p384::ecdsa::Signature::from_slice(&rs)
+            .is_ok_and(|sig| key.verify_prehash(digest, &sig).is_ok()),
+    }
 }
 
-/// Left-pads a big-endian value of at most 32 octets to 32.
-fn pad32(v: &[u8]) -> Option<[u8; 32]> {
-    if v.len() > 32 {
+/// Left-pads a big-endian value of at most `size` octets to `size`.
+fn pad_left(v: &[u8], size: usize) -> Option<Vec<u8>> {
+    if v.len() > size {
         return None;
     }
-    let mut out = [0u8; 32];
-    out[32 - v.len()..].copy_from_slice(v);
+    let mut out = vec![0u8; size];
+    out[size - v.len()..].copy_from_slice(v);
     Some(out)
 }
 
@@ -1014,10 +1148,13 @@ mod tests {
             let digest = hex(digest);
             assert_eq!(hash(alg, &[b"sample"]).as_slice(), &digest[..]);
             let (r, s) = (hex(r), hex(s));
-            assert!(ecc_verify(&x, &y, &digest, &r, &s), "{alg:?}");
+            assert!(
+                ecc_verify(curve::NIST_P256, &x, &y, &digest, &r, &s),
+                "{alg:?}"
+            );
             let mut bad = digest.clone();
             bad[0] ^= 1;
-            assert!(!ecc_verify(&x, &y, &bad, &r, &s));
+            assert!(!ecc_verify(curve::NIST_P256, &x, &y, &bad, &r, &s));
             // The SHA-384 signature does not verify the SHA-512 digest and vice versa.
             let other = hash(
                 if alg == HashAlg::Sha384 {
@@ -1027,7 +1164,14 @@ mod tests {
                 },
                 &[b"sample"],
             );
-            assert!(!ecc_verify(&x, &y, other.as_slice(), &r, &s));
+            assert!(!ecc_verify(
+                curve::NIST_P256,
+                &x,
+                &y,
+                other.as_slice(),
+                &r,
+                &s
+            ));
         }
     }
 
