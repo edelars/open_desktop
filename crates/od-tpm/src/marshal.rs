@@ -672,6 +672,15 @@ impl Scheme {
     /// scheme, Table 199: `TPM_RC_SCHEME` for an ECC scheme). The hash must be SHA-256
     /// (`TPM_RC_HASH`, Table 78).
     pub fn unmarshal(r: &mut Reader<'_>, allowed: &[u16], bad: Rc) -> Result<Self, Rc> {
+        Self::unmarshal_with_hashes(r, allowed, bad, &[alg::SHA256])
+    }
+
+    pub(crate) fn unmarshal_with_hashes(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+        hashes: &[u16],
+    ) -> Result<Self, Rc> {
         let a = r.u16()?;
         if a == alg::NULL {
             return Ok(Scheme::NULL);
@@ -686,7 +695,7 @@ impl Scheme {
             });
         }
         let hash = r.u16()?;
-        if hash != alg::SHA256 {
+        if !hashes.contains(&hash) {
             return Err(r.err(Rc::HASH));
         }
         Ok(Scheme { alg: a, hash })

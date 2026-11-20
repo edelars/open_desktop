@@ -30,13 +30,14 @@
 //! **`signHandle` = `TPM_RH_NULL`** (clause 18.1; `Quote`, `Certify`, `GetTime`): the command does
 //! everything else and the attestation is "signed" with the NULL signature (`TPMT_SIGNATURE` with
 //! `sigAlg` = `TPM_ALG_NULL`, no further fields); `inScheme` must still be a valid signing scheme
-//! (RSASSA, ECDSA or NULL here) but has no effect; the values are obfuscated with the Qualified
+//! (RSASSA, ECDSA or NULL here). Whole-index `NV_Certify` requires an explicit hash in
+//! `inScheme` even for a NULL signer (v185 clause 31.16). Values are obfuscated with the Qualified
 //! Name `TPM_RH_NULL` (clause 18.1: "the QN for TPM_RH_NULL is TPM_RH_NULL"); `qualifiedSigner`
 //! ("Qualified Name of the signing key", Part 2, Table 151) holds the same 4 octets of the handle.
 //! No authorization value exists for `TPM_RH_NULL`: the session is checked
 //! against the empty authValue like for every other use of this handle (`dispatch.rs`).
 //!
-//! GetCommandAuditDigest, NV_Certify and CertifyX509 remain open. RSASSA and ECDSA
+//! GetCommandAuditDigest and CertifyX509 remain open. RSASSA and ECDSA
 //! are the currently supported attestation signing schemes.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the codes
@@ -65,6 +66,7 @@ use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
     limits,
 };
+use crate::nv::{NV_BUFFER_MAX, attr as nv_attr};
 use crate::object::{Object, Secret, find_object, is_object_hierarchy};
 use crate::policy::pcr_selection_digest;
 use crate::random::Drbg;
@@ -319,6 +321,70 @@ impl Tpm {
         );
         self.attest_response(inv.handles[1], signing.map(|(_, s)| s), attest)
     }
+
+    /// `TPM2_NV_Certify` (Part 3 v185, clause 31.16): certify a range or, when both
+    /// size and offset are zero, the digest of the entire NV index.
+    pub(crate) fn cmd_nv_certify(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let in_scheme = Scheme::unmarshal_with_hashes(
+            p,
+            &[alg::RSASSA, alg::ECDSA],
+            Rc::SCHEME,
+            &[alg::SHA256, alg::NULL],
+        )?;
+        p.set_param(3);
+        let size = usize::from(p.u16()?);
+        p.set_param(4);
+        let offset = usize::from(p.u16()?);
+        p.finish()?;
+
+        let sign_handle = inv.handles[0];
+        let whole_index = size == 0 && offset == 0;
+        if whole_index && sign_handle == handle::RH_NULL && in_scheme.hash == alg::NULL {
+            return Err(Rc::SCHEME.in_param(2));
+        }
+        if in_scheme.alg != alg::NULL && in_scheme.hash == alg::NULL {
+            return Err(Rc::HASH.in_param(2));
+        }
+        let signing = self.attest_signer(sign_handle, in_scheme, 1, 2)?;
+        let index = self
+            .persistent
+            .nv
+            .get(inv.handles[2])
+            .ok_or(Rc::HANDLE.in_handle(3))?;
+        if index.attributes & nv_attr::READLOCKED != 0 {
+            return Err(Rc::NV_LOCKED);
+        }
+        if size > NV_BUFFER_MAX {
+            return Err(Rc::VALUE.in_param(3));
+        }
+        let data = index.data.get(offset..offset + size).ok_or(Rc::NV_RANGE)?;
+        let mut attested = Writer::new();
+        attested.tpm2b(&index.name());
+        let attest_type = if whole_index {
+            // SHA-256 is the sole hash of the supported signing schemes.
+            attested.tpm2b(&Sha256::digest(index.data.as_slice()));
+            st::ATTEST_NV_DIGEST
+        } else {
+            attested.u16(offset as u16);
+            attested.tpm2b(data);
+            st::ATTEST_NV
+        };
+        let attest = self.attest_bytes(
+            signing.map(|(o, _)| o),
+            attest_type,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(sign_handle, signing.map(|(_, s)| s), attest)
+    }
+
     /// `TPM2_GetSessionAuditDigest` (Part 3 v185, clause 18.5). A command that
     /// audits its own retrieval extends the digest only after this response is built.
     pub(crate) fn cmd_get_session_audit_digest(

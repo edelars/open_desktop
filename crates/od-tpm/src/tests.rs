@@ -624,11 +624,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
         // Slice C3: NV_Increment, NV_SetBits, NV_Extend, GetTime.
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
-        0x14A, 0x14D, 0x15B, 0x163, 0x16E, 0x16F, 0x178, 0x18A, 0x18C,
+        0x14A, 0x14D, 0x15B, 0x163, 0x16E, 0x16F, 0x178, 0x184, 0x18A, 0x18C,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 69);
+    assert_eq!(expected.len(), 70);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -650,13 +650,15 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(body, 0x18Au32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18C, 1));
     assert_eq!(body, 0x0200_018Cu32.to_be_bytes());
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x184, 1));
+    assert_eq!(body, 0x0600_0184u32.to_be_bytes());
     // TPM_PT_TOTAL_COMMANDS agrees with the list.
     let (_, _, props, count) =
         cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, pt::TOTAL_COMMANDS, 1));
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(69)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(70)[..]].concat()
     );
 }
 
@@ -667,10 +669,10 @@ fn capability_commands_paging_and_more_data() {
     assert!(more && count == 5 && body.len() == 20);
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
     assert!(
-        !more && count == 10,
-        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x185, 0x186, 0x189, 0x18A, 0x18C"
+        !more && count == 11,
+        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x184, 0x185, 0x186, 0x189, 0x18A, 0x18C"
     );
-    assert_eq!(body.len(), 40);
+    assert_eq!(body.len(), 44);
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18D, 100));
     assert!(!more && count == 0);
     // propertyCount 0: empty list, moreData YES because entries remain.

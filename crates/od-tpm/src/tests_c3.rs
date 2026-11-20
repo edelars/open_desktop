@@ -71,6 +71,155 @@ fn def(t: &mut Tpm, index: u32, attributes: u32, size: u16) -> Vec<u8> {
     define(t, OWNER, index, attributes, size)
 }
 
+fn nv_certify(
+    t: &mut Tpm,
+    handles: [u32; 3],
+    passwords: &[&[u8]],
+    scheme: &[u8],
+    size: u16,
+    offset: u16,
+) -> Vec<u8> {
+    run(
+        t,
+        with_pw(
+            cc::NV_CERTIFY,
+            &handles,
+            passwords,
+            &cat(&[&tpm2b(b"nonce"), scheme, &u16b(size), &u16b(offset)]),
+        ),
+    )
+}
+
+#[test]
+fn nv_certify_signs_a_range_and_the_digest_of_a_large_index() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"kpw", &ecc_sign()));
+    let mut data = vec![0x12; 512];
+    data.extend_from_slice(&[0x34; 188]);
+    let index = NV0 + 1;
+    ok(&def(&mut t, index, OWNER_RW, 700));
+    let handles = [key.handle, OWNER, index];
+    let passwords = &[b"kpw".as_slice(), b"".as_slice()];
+    let scheme = u16b(alg::NULL);
+    err(
+        &nv_certify(&mut t, handles, passwords, &scheme, 0, 0),
+        Rc::NV_UNINITIALIZED,
+    );
+    ok(&nv_write(&mut t, OWNER, index, b"", &data[..512], 0));
+    ok(&nv_write(&mut t, OWNER, index, b"", &data[512..], 512));
+    let (_, name) = nv_read_public(&mut t, index);
+    let (_, clock) = clock_now(&mut t);
+    for (size, offset, tag, payload) in [
+        (16, 508, 0x8014, cat(&[&u16b(508), &tpm2b(&data[508..524])])),
+        (0, 700, 0x8014, cat(&[&u16b(700), &tpm2b(b"")])),
+        (0, 0, 0x801C, tpm2b(&h256(&[&data]))),
+    ] {
+        let response = nv_certify(&mut t, handles, passwords, &scheme, size, offset);
+        let (attest, signature) = parse_attestation(&response);
+        assert_eq!(
+            attest,
+            attest_bytes(
+                tag,
+                &qualified(PLATFORM, &key.name),
+                b"nonce",
+                clock,
+                FIRMWARE,
+                &cat(&[&tpm2b(&name), &payload]),
+            ),
+        );
+        ok(&verify(&mut t, key.handle, &h256(&[&attest]), &signature));
+    }
+    assert_eq!(nv_read_public(&mut t, index).1, name);
+}
+
+#[test]
+fn nv_certify_checks_nv_access_and_requires_a_hash_for_an_unsigned_digest() {
+    let mut t = started();
+    let index = NV0 + 1;
+    let public = nv_public(
+        index,
+        alg::SHA256,
+        attr::AUTHREAD | attr::AUTHWRITE | attr::READ_STCLEAR,
+        b"",
+        520,
+    );
+    ok(&define_raw(&mut t, OWNER, b"", b"nv-pw", &public));
+    let handles = [NULL, index, index];
+    let passwords = &[b"".as_slice(), b"nv-pw".as_slice()];
+    let null = u16b(alg::NULL);
+    let ecdsa = ecc_sig_scheme();
+    ok(&nv_write(&mut t, index, index, b"nv-pw", b"abc", 0));
+    for (handles, passwords, scheme, size, offset, error) in [
+        (
+            [NULL, OWNER, index],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::AUTH_TYPE,
+        ),
+        (
+            [NULL, NULL, index],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::VALUE.in_handle(2),
+        ),
+        (
+            [NULL, OWNER, index + 1],
+            [b"".as_slice(); 2],
+            &ecdsa,
+            0,
+            0,
+            Rc::HANDLE.in_handle(3),
+        ),
+        (
+            handles,
+            [b"".as_slice(), b"bad".as_slice()],
+            &ecdsa,
+            0,
+            0,
+            Rc::AUTH_FAIL.in_session(2),
+        ),
+        (handles, *passwords, &null, 0, 0, Rc::SCHEME.in_param(2)),
+        (
+            handles,
+            *passwords,
+            &hex("00180010"),
+            0,
+            0,
+            Rc::SCHEME.in_param(2),
+        ),
+        (handles, *passwords, &ecdsa, 513, 0, Rc::VALUE.in_param(3)),
+        (handles, *passwords, &ecdsa, 2, 519, Rc::NV_RANGE),
+    ] {
+        err(
+            &nv_certify(&mut t, handles, &passwords, scheme, size, offset),
+            error,
+        );
+    }
+    let (_, name) = nv_read_public(&mut t, index);
+    let response = nv_certify(&mut t, handles, passwords, &ecdsa, 0, 0);
+    let (attest, signature) = parse_attestation(&response);
+    let expected_digest = h256(&[b"abc", &[0; 517]]);
+    assert_eq!(&attest[..6], &hex("ff544347801c"));
+    assert!(attest.ends_with(&cat(&[&tpm2b(&name), &tpm2b(&expected_digest)])));
+    assert_eq!(signature, null);
+    ok(&nv_cmd(
+        &mut t,
+        cc::NV_READ_LOCK,
+        index,
+        index,
+        b"nv-pw",
+        &[],
+    ));
+    err(
+        &nv_certify(&mut t, handles, passwords, &ecdsa, 0, 0),
+        Rc::NV_LOCKED,
+    );
+}
+
 fn nt_of(attributes: u32) -> u32 {
     (attributes >> 4) & 0xF
 }

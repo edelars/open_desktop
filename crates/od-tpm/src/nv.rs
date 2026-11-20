@@ -372,10 +372,10 @@ impl Tpm {
             | crate::codes::cc::NV_INCREMENT
             | crate::codes::cc::NV_EXTEND
             | crate::codes::cc::NV_SET_BITS => {
-                self.check_nv_authorization(handles, Access::Write)?;
+                self.check_nv_authorization(handles[0], handles[1], 1, Access::Write)?;
             }
             crate::codes::cc::NV_READ | crate::codes::cc::NV_READ_LOCK => {
-                let index = self.check_nv_authorization(handles, Access::Read)?;
+                let index = self.check_nv_authorization(handles[0], handles[1], 1, Access::Read)?;
                 // A read of an index that was never written fails before the authValue check
                 // (clause 31.1); a read lock does not need data (clause 31.14.1).
                 if code == crate::codes::cc::NV_READ && index.attributes & attr::WRITTEN == 0 {
@@ -387,22 +387,32 @@ impl Tpm {
         Ok(())
     }
 
+    /// `NV_Certify` authorizes the NV read with handles 2 and 3 after the signing key.
+    pub(crate) fn check_nv_certify_handles(&self, handles: &CommandHandles) -> Result<(), Rc> {
+        let index = self.check_nv_authorization(handles[1], handles[2], 2, Access::Read)?;
+        if index.attributes & attr::WRITTEN == 0 {
+            return Err(Rc::NV_UNINITIALIZED);
+        }
+        Ok(())
+    }
+
     /// Validates `authHandle` (`TPMI_RH_NV_AUTH`), `nvIndex` and the role the attributes allow.
     fn check_nv_authorization(
         &self,
-        handles: &CommandHandles,
+        auth: u32,
+        index_handle: u32,
+        auth_position: u8,
         access: Access,
     ) -> Result<&NvIndex, Rc> {
-        let auth = handles[0];
         if auth != h::RH_PLATFORM && auth != h::RH_OWNER && !is_nv_handle(auth) {
-            return Err(Rc::VALUE.in_handle(1));
+            return Err(Rc::VALUE.in_handle(auth_position));
         }
         if is_nv_handle(auth) {
             // The authorizing index must exist before it can be compared with `nvIndex`.
-            self.nv_index_at(auth, 1)?;
+            self.nv_index_at(auth, auth_position)?;
         }
-        let index = self.nv_index_at(handles[1], 2)?;
-        if is_nv_handle(auth) && auth != handles[1] {
+        let index = self.nv_index_at(index_handle, auth_position + 1)?;
+        if is_nv_handle(auth) && auth != index_handle {
             return Err(Rc::NV_AUTHORIZATION);
         }
         let (platform, owner, own) = match access {

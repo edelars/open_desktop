@@ -34,6 +34,7 @@ pub mod cc {
     pub const POLICY_OR: u32 = 0x0000_0171;
     pub const POLICY_PCR: u32 = 0x0000_017F;
     pub const POLICY_RESTART: u32 = 0x0000_0180;
+    pub const NV_CERTIFY: u32 = 0x0000_0184;
     pub const POLICY_GET_DIGEST: u32 = 0x0000_0189;
     pub const POLICY_PASSWORD: u32 = 0x0000_018C;
     /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
@@ -95,12 +96,14 @@ pub mod st {
     pub const VERIFIED: u16 = 0x8022;
     pub const HASHCHECK: u16 = 0x8024;
     /// Attestation structure tags (Table 23).
+    pub const ATTEST_NV: u16 = 0x8014;
     pub const ATTEST_SESSION_AUDIT: u16 = 0x8016;
     pub const ATTEST_CERTIFY: u16 = 0x8017;
     pub const ATTEST_QUOTE: u16 = 0x8018;
     /// `TPM2_GetTime` (Table 23).
     pub const ATTEST_TIME: u16 = 0x8019;
     pub const ATTEST_CREATION: u16 = 0x801A;
+    pub const ATTEST_NV_DIGEST: u16 = 0x801C;
     /// Ticket tag of `TPM2_PolicySecret` (Table 23).
     pub const AUTH_SECRET: u16 = 0x8023;
 }

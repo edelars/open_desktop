@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 69] = [
+pub(crate) static COMMANDS: [CommandSpec; 70] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -175,6 +175,7 @@ pub(crate) static COMMANDS: [CommandSpec; 69] = [
     spec(cc::POLICY_RESTART, 1, 0, false, false, false),
     spec(cc::READ_CLOCK, 0, 0, false, false, false),
     spec(cc::PCR_EXTEND, 1, 1, false, true, false),
+    spec(cc::NV_CERTIFY, 3, 2, false, false, false),
     spec(cc::EVENT_SEQUENCE_COMPLETE, 2, 2, false, true, true),
     spec(cc::HASH_SEQUENCE_START, 0, 0, true, false, false),
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
@@ -739,6 +740,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
         cc::CERTIFY_CREATION => tpm.cmd_certify_creation(&inv, &mut p)?,
+        cc::NV_CERTIFY => tpm.cmd_nv_certify(&inv, &mut p)?,
         cc::GET_TIME => tpm.cmd_get_time(&inv, &mut p)?,
         cc::GET_SESSION_AUDIT_DIGEST => tpm.cmd_get_session_audit_digest(&inv, &mut p)?,
         cc::NV_INCREMENT => tpm.cmd_nv_increment(&inv, &mut p)?,
@@ -897,6 +899,10 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::HMAC_START => tpm.check_object_handle(handles[0], 0, false)?,
         // `signHandle` may be `TPM_RH_NULL` (Part 3, clause 18.1: `TPMI_DH_OBJECT+`).
         cc::QUOTE => check_sign_handle(tpm, handles[0], 0)?,
+        cc::NV_CERTIFY => {
+            check_sign_handle(tpm, handles[0], 0)?;
+            tpm.check_nv_certify_handles(handles)?;
+        }
         cc::CERTIFY => {
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
@@ -1012,6 +1018,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 69);
+        assert_eq!(COMMANDS.len(), 70);
     }
 }
