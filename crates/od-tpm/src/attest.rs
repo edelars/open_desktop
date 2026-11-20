@@ -58,7 +58,7 @@
 //! `TPM2_ReadClock` reports.
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
-use crate::crypto::{HashAlg, ecc_sign, hash, kdfa_sha256, rsa_sign};
+use crate::crypto::{HashAlg, ecc_sign, hash, kdfa_sha256};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
@@ -66,7 +66,7 @@ use crate::marshal::{
 };
 use crate::nv::{NV_BUFFER_MAX, attr as nv_attr};
 use crate::object::{Object, Secret, find_object, is_object_hierarchy};
-use crate::object_cmd::select_signing_scheme;
+use crate::object_cmd::{rsa_signature, select_signing_scheme};
 use crate::policy::pcr_selection_digest_with;
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
@@ -115,16 +115,7 @@ fn sign_digest(
 ) -> Result<TpmtSignature, Rc> {
     let sensitive = o.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
     match &sensitive.secret {
-        Secret::Rsa(key) => Ok(TpmtSignature::Rsassa {
-            hash: scheme.hash,
-            sig: rsa_sign(
-                key,
-                HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?,
-                digest,
-                drbg,
-            )
-            .ok_or(Rc::FAILURE)?,
-        }),
+        Secret::Rsa(key) => rsa_signature(key, scheme, digest, drbg),
         Secret::Ecc(key) => {
             let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;
             Ok(TpmtSignature::Ecdsa {

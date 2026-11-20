@@ -623,8 +623,8 @@ impl TpmaCc {
 // 205, 207, 208, 212, 215, 216, 219, 220, 246, 247 (checked 2026-11-07).
 // ------------------------------------------------------------------------------------------
 
-/// Largest `TPM2B_PUBLIC_KEY_RSA` (RSA-2048 only, `MAX_RSA_KEY_BYTES`).
-pub const MAX_RSA_BYTES: usize = 256;
+/// Largest `TPM2B_PUBLIC_KEY_RSA` (RSA-3072, `MAX_RSA_KEY_BYTES`; RSA-2048 keys use 256 octets).
+pub const MAX_RSA_BYTES: usize = 384;
 /// Largest `TPM2B_ECC_PARAMETER` (P-256 only, `MAX_ECC_KEY_BYTES`).
 pub const MAX_ECC_BYTES: usize = 32;
 /// ML-KEM-768 sizes and selector (Part 2 v185, Table 219).
@@ -700,8 +700,9 @@ impl SymDef {
     }
 }
 
-/// The hashes of an RSASSA or ECDSA scheme and of a signature (Part 2, Table 78 restricted to the
-/// implemented algorithms). The signing, verification and attestation commands support all three.
+/// The hashes of an RSASSA, RSAPSS, OAEP or ECDSA scheme and of a signature (Part 2, Table 78
+/// restricted to the implemented algorithms). The signing, verification and attestation commands
+/// support all three.
 pub(crate) const SIGNING_HASHES: [u16; 3] = [alg::SHA256, alg::SHA384, alg::SHA512];
 
 /// [`SIGNING_HASHES`] and `TPM_ALG_NULL`: the `inScheme` of `TPM2_NV_Certify`, whose hash may be left
@@ -710,7 +711,7 @@ const SIGNING_HASHES_OR_NULL: [u16; 4] = [alg::SHA256, alg::SHA384, alg::SHA512,
 
 /// A signing or asymmetric scheme with its hash (`TPMT_SIG_SCHEME`, `TPMT_RSA_SCHEME`,
 /// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA`,
-/// `TPM_ALG_ECDSA`, `TPM_ALG_OAEP` or `TPM_ALG_ECDH` (these with a hash) or `TPM_ALG_RSAES`
+/// `TPM_ALG_RSAPSS`, `TPM_ALG_ECDSA`, `TPM_ALG_OAEP` or `TPM_ALG_ECDH` (these with a hash) or `TPM_ALG_RSAES`
 /// (`TPMS_EMPTY` details: no hash on the wire, hash `TPM_ALG_NULL`; slice C1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Scheme {
@@ -739,27 +740,38 @@ impl Scheme {
         Self::unmarshal_with_hashes(r, allowed, bad, &[alg::SHA256])
     }
 
-    /// The `inScheme` of a signing command (`TPM2_Sign`, the attestation commands): RSASSA or
+    /// The `inScheme` of a signing command (`TPM2_Sign`, the attestation commands): RSASSA, RSAPSS or
     /// ECDSA with SHA-256, SHA-384 or SHA-512 (`TPM_RC_HASH` for another hash; `bad` for another
     /// scheme), or `TPM_ALG_NULL`.
     pub(crate) fn unmarshal_signing(r: &mut Reader<'_>, bad: Rc) -> Result<Self, Rc> {
-        Self::unmarshal_with_hashes(r, &[alg::RSASSA, alg::ECDSA], bad, &SIGNING_HASHES)
+        Self::unmarshal_with_hashes(
+            r,
+            &[alg::RSASSA, alg::RSAPSS, alg::ECDSA],
+            bad,
+            &SIGNING_HASHES,
+        )
     }
 
     /// [`Scheme::unmarshal_signing`] for `TPM2_NV_Certify`, where the hash may be `TPM_ALG_NULL`.
     pub(crate) fn unmarshal_signing_or_null_hash(r: &mut Reader<'_>, bad: Rc) -> Result<Self, Rc> {
-        Self::unmarshal_with_hashes(r, &[alg::RSASSA, alg::ECDSA], bad, &SIGNING_HASHES_OR_NULL)
+        Self::unmarshal_with_hashes(
+            r,
+            &[alg::RSASSA, alg::RSAPSS, alg::ECDSA],
+            bad,
+            &SIGNING_HASHES_OR_NULL,
+        )
     }
 
-    /// Like [`Scheme::unmarshal`] for the scheme of a public area: RSASSA and ECDSA accept
-    /// [`SIGNING_HASHES`], every other scheme (OAEP, ECDH) SHA-256 only (`TPM_RC_HASH`).
+    /// Like [`Scheme::unmarshal`] for the scheme of a public area and the `inScheme` of
+    /// `TPM2_RSA_Encrypt/Decrypt`: RSASSA, RSAPSS, ECDSA and OAEP accept [`SIGNING_HASHES`], every
+    /// other scheme (ECDH) SHA-256 only (`TPM_RC_HASH`).
     pub(crate) fn unmarshal_public(
         r: &mut Reader<'_>,
         allowed: &[u16],
         bad: Rc,
     ) -> Result<Self, Rc> {
         Self::unmarshal_by(r, allowed, bad, |a| {
-            if matches!(a, alg::RSASSA | alg::ECDSA) {
+            if matches!(a, alg::RSASSA | alg::RSAPSS | alg::ECDSA | alg::OAEP) {
                 &SIGNING_HASHES
             } else {
                 &[alg::SHA256]
@@ -843,10 +855,13 @@ impl PublicParams {
         match type_alg {
             alg::RSA => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme =
-                    Scheme::unmarshal_public(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
+                let scheme = Scheme::unmarshal_public(
+                    r,
+                    &[alg::RSASSA, alg::RSAPSS, alg::RSAES, alg::OAEP],
+                    Rc::VALUE,
+                )?;
                 let key_bits = r.u16()?;
-                if key_bits != 2048 {
+                if !crate::crypto::supported_rsa_key_bits(key_bits) {
                     return Err(r.err(Rc::VALUE));
                 }
                 Ok(Self::Rsa {
@@ -900,7 +915,7 @@ pub enum Unique {
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` of an RSA-2048, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -979,7 +994,7 @@ impl TpmtPublic {
     /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an unsupported object type,
     /// `TPM_RC_PARMS` for an unsupported ML-KEM parameter set, `TPM_RC_HASH` for a `nameAlg` other than SHA-256, SHA-384, SHA-512 or NULL
     /// (Table 78), `TPM_RC_RESERVED_BITS` for reserved `TPMA_OBJECT` bits, `TPM_RC_SIZE` for an
-    /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and
+    /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and 3072 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
     /// `TPM_RC_SCHEME` for an ECC scheme (Table 199), `TPM_RC_CURVE` for a curve other than NIST
     /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
@@ -1082,11 +1097,13 @@ impl TpmtTicket {
     }
 }
 
-/// `TPMT_SIGNATURE` (Table 208) for RSASSA and ECDSA.
+/// `TPMT_SIGNATURE` (Table 208) for RSASSA, RSAPSS and ECDSA.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TpmtSignature {
     /// `TPMS_SIGNATURE_RSA`: hash and the signature of the key size.
     Rsassa { hash: u16, sig: Vec<u8> },
+    /// `TPMS_SIGNATURE_RSA` of `TPM_ALG_RSAPSS`: hash and the signature of the key size.
+    Rsapss { hash: u16, sig: Vec<u8> },
     /// `TPMS_SIGNATURE_ECC`: hash, `signatureR`, `signatureS`.
     Ecdsa { hash: u16, r: Vec<u8>, s: Vec<u8> },
     /// The NULL signature of an attestation with `signHandle` `TPM_RH_NULL`: `sigAlg` only.
@@ -1102,6 +1119,11 @@ impl TpmtSignature {
                 w.u16(*hash);
                 w.tpm2b(sig);
             }
+            TpmtSignature::Rsapss { hash, sig } => {
+                w.u16(alg::RSAPSS);
+                w.u16(*hash);
+                w.tpm2b(sig);
+            }
             TpmtSignature::Ecdsa { hash, r, s } => {
                 w.u16(alg::ECDSA);
                 w.u16(*hash);
@@ -1111,7 +1133,7 @@ impl TpmtSignature {
         }
     }
 
-    /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA and ECDSA, including `TPM_ALG_NULL`
+    /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA, RSAPSS and ECDSA, including `TPM_ALG_NULL`
     /// (Table 84), `TPM_RC_HASH` for a hash outside [`SIGNING_HASHES`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         Self::unmarshal_inner(r, false)
@@ -1126,7 +1148,7 @@ impl TpmtSignature {
         if allow_null && a == alg::NULL {
             return Ok(Self::Null);
         }
-        if a != alg::RSASSA && a != alg::ECDSA {
+        if !matches!(a, alg::RSASSA | alg::RSAPSS | alg::ECDSA) {
             return Err(r.err(Rc::SCHEME));
         }
         let hash = r.u16()?;
@@ -1135,6 +1157,11 @@ impl TpmtSignature {
         }
         if a == alg::RSASSA {
             Ok(TpmtSignature::Rsassa {
+                hash,
+                sig: r.tpm2b(MAX_RSA_BYTES)?.to_vec(),
+            })
+        } else if a == alg::RSAPSS {
+            Ok(TpmtSignature::Rsapss {
                 hash,
                 sig: r.tpm2b(MAX_RSA_BYTES)?.to_vec(),
             })

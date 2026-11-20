@@ -7,7 +7,7 @@ use crate::credential;
 use crate::crypto::{
     HashAlg, RsaPadding, ecc_ecdh, ecc_from_scalar, ecc_public, ecc_sign, ecc_verify, hash, hmac,
     kdfa, kdfa_sha256, rsa_decrypt_private, rsa_encrypt_public, rsa_from_primes, rsa_sign,
-    rsa_verify, rsa_verify_hash,
+    rsa_sign_pss, rsa_verify, rsa_verify_hash, rsa_verify_pss,
 };
 use crate::paramenc::{self, SessionSym};
 use crate::pcr::sha256;
@@ -26,6 +26,7 @@ pub(crate) fn known_answers() -> bool {
         && credential::self_test()
         && ecc_known_answers().is_some()
         && rsa_known_answers().is_some()
+        && rsa3072_known_answers().is_some()
         && mlkem_known_answers().is_some()
 }
 
@@ -275,6 +276,138 @@ const OAEP_CIPHER: [u8; 256] = hex(concat!(
     "d40aa4fe5f4d2d1ced3107a187c957384c50ccbbe8890b17d99c079d3b414d76",
 ));
 
+// Synthetic RSA-3072 key made by `openssl genpkey` (public test material, not a TPM key). The message is
+// "Open Desktop RSA-3072 self-test"; the signatures come from `openssl dgst -sign` (PKCS #1 v1.5 is
+// deterministic; PSS with `rsa_pss_saltlen:digest` is salted, so it is verified, not compared).
+pub(crate) const RSA3072_N: [u8; 384] = hex(concat!(
+    "b7c539bdd13d9f075d237ce39c3e0a5b68fad0cd7241df9741bfe9179d30df25",
+    "b8994f1e0347c01e02bcd788aa24de28cbad67a5e3f546491f2fd199e39c1d3e",
+    "d1e9e844779e8d622f39ba802b3e0d26ce2a6d106563add74ee04d4e51e47e77",
+    "fd8ca56800338b9dd91bf51b6c13564653297f2144e79051d26c80e0c2cca78f",
+    "168c5e60974457720f033e509c8fb83c5497883babbc1aff36f8b12f6171012f",
+    "a55c72284e31198690f905e2a5a873cace07f8359decc3e56497b8d1e7cf35bd",
+    "06a961d221a001b34945e2c34b31f67988bdcf26bf2cac81ce4a692868a5aa3d",
+    "a2fe5be66b75f7d8d3bc29a98e28ca8c88127c5f0a2c56d0bebc0fbddeb3bd39",
+    "dede4a457b26b6882a3ee503a63ff6de16640121ad43676c450f08ec5c516d9e",
+    "7758eaee7118493bebd6d22df0d81ebde83f976bbfa1e69e7dd9be903c49ea30",
+    "f1417c0982d9662f2dfdc87a19b85c3f8e5cdf3f1eee4c3a0455c36fe83afa06",
+    "db6bdf2762b78e2749fa40f02c778d0aa59fe833326d3ea2ed1d26217e32a2fd",
+));
+pub(crate) const RSA3072_P: [u8; 192] = hex(concat!(
+    "f1233dc22cb42f141256c06a8eb42aefc6b3281e7c9baf84e41459cada2dd762",
+    "a50e3bbc61cc47d5ab8c5eb6532baa7d73445cc13209bddfb1ee4dba4b2ed602",
+    "e1d6ec38b92121ef20d50ca1e2e3ef8d19ccc17e6f7f316b14f166fda054324b",
+    "93a9f7e924fc06b972d5d717a0739936542a97c7d47baa09ad59ff0550b15201",
+    "c6293f88d2cd85c996ef1c0a1af398eff5cba5b0a5ee9d539b8348c01fb522f8",
+    "37a2b3512cac4d746fa88276efcf09a854b3b566d4b743272522581062b5e083",
+));
+pub(crate) const RSA3072_Q: [u8; 192] = hex(concat!(
+    "c318d29f786d5e89d603e7fe3b10ae1eb7ff9a6637b7c76cca36685e41037d67",
+    "f7f60f6f28bb8457bc05cefe713dee006033c4ef031882ded6617185de611b5f",
+    "0ea3d799f0041df7b45d283ec8a127c889b908c02a1fd4647b6f668e55d9bc12",
+    "2853aeaf68f6ce87b052099ffb584edb6c56c3af112ed1186ccb24a59575b0aa",
+    "b097f77ccfa17321eb42253cceaa87d8b18b5bb3b25ca554e40702e1d07a3695",
+    "29be7be2a595c1d281e5ca50acc525b08f5ecdec7ce545c38830af49bf0f167f",
+));
+#[cfg(test)]
+pub(crate) const RSA3072_MESSAGE: &[u8] = b"Open Desktop RSA-3072 self-test";
+pub(crate) const RSA3072_DIGEST_256: [u8; 32] =
+    hex("56404a62e8463ce3d97999e47ac135d16aa52ca4cb5e69fc897febe996dfba57");
+pub(crate) const RSA3072_DIGEST_384: [u8; 48] = hex(concat!(
+    "37ac4b6e75fca9b341feb8de100b411e1e702485a52b40c9ace5430c1f36c2b6",
+    "151898dafb0ee54f9ebf206cb48b3101",
+));
+pub(crate) const RSA3072_PKCS1_SHA256: [u8; 384] = hex(concat!(
+    "b634f99ecedc612a5cab73c3d2cc1cce69d63c858753f13a3c3bd2c37c394a3d",
+    "5b73d549ee4d9e175f07a6c8056ef356caf35a73cb16fa6a28ab300cfcaffb43",
+    "63b519c957d76d791723ca790c602d644339db61c941857ce851057059beac0a",
+    "695dc738394766b74c2bcf6af389875ab32f162fdf7017c52fdb03bfdc1229a5",
+    "e1ab674d1e3bc196ffe907da3223c2c1e88e27372f0756060dd407304554b67c",
+    "288b1bf4c4491788d3aa2ea64605428cd1d36a6e1bd3bfbafef7fedf5e1223fb",
+    "2e658592ac3f65d31faa90829676d822a151f6dab1484b9511675b0925bf8a50",
+    "225077395aad761e3bc75713f67eff896ce3bcacc05055dca4897960aad23008",
+    "ea97b336aece7c087f660e44a34b22778888170758e1f6b6fe4eb34e3f2c704c",
+    "4a73d3e3fc7a1e9ab54646fad806fc6e9f511603ee4c77be7d5449fe677353ce",
+    "12e0282b41002bcfa783b9e01e7414c40d776362e131aa60809813ec19eca9c2",
+    "653a9004e3dac41c414a6df864207ccf9a07017443db201b65f3ff1495a1f6a7",
+));
+pub(crate) const RSA3072_PSS_SHA256: [u8; 384] = hex(concat!(
+    "096f310bf110d13c0a4b51c9d91f5b71dc8d6a3953aaf2f8bd1d3bec57dc03fe",
+    "0310f46daf18812fbb00136835ef417e9f208d5d69cb57e4055ab8520ca59940",
+    "d9e1558a4fa70776a20f15010ddcf52c3e04b934bfc798e4f04f6e3479055400",
+    "cd4fa870ea4cda98d04a9a80a9b12188e96b7757d96598b8c99cfe9dcf6a1ccc",
+    "82019540c3820f09a53d9866db0ef3d32d7adacfda560291b097d7259bdd3011",
+    "40a72e572b8ef96fee236c9a0db8d2541177214b1afa1cb8e5e3eb857073348e",
+    "10c04fe91a84ebdf01b0905005f2add3957f3cb46089089337cf443b17596d05",
+    "b9a268d2da193317c8ed629dbb3d249ca029d58270c72b0c16427bad5a860664",
+    "dcdc42eec3b4b57c58b7c5963fec53be8bb905fe2f6813312608df512f944337",
+    "2fb7ffebf74374ea098abb81735559a0679c1a9a01a56abfc52b15db8ea09db3",
+    "6c614719b3fee4dd560df03f276102fa5961c6434cbc1b36e49dfd04a8704982",
+    "cb209064dbb85c55a360aac1db5a39ad4169aaca5317178499f31502af06bdd0",
+));
+pub(crate) const RSA3072_PSS_SHA384: [u8; 384] = hex(concat!(
+    "8ed6783624acb87e7ff566898dc402b8542c87be6587b6e95bae69422db3489a",
+    "73861126675b8e21d20a074b49b1654ca95b58f0b61224f32028fb37f8087087",
+    "6bfebc7268657385b352a67130522b31da9781e936ac6977a01e53a3787a08fc",
+    "a54634a1c6e093feefc0696e734fdb367d17d2aebb59e79f76575c58c16e5a5c",
+    "fc0841e7018401525c8d0c17b2f607d535f7e74c9e65d07ba363348192e98163",
+    "4ce44d7977676dfa824b580bd813147c4b427682b32cb35c08065b1529eb5b35",
+    "abbe50d7e30cf9fef6618dd9681fd7bb5101300eb5be8649a39a584b4c025a35",
+    "9d5520b75a8497964c782fb7c177c96ec7f390ce9eb2d0b4c8c200bbba0752f7",
+    "00ece5c3c37f418b950d59f5d0cf6411a9e091ac9998105f96e6b0ccc5de5679",
+    "2bfa6f34d6ae0837ef4311e996b4f506bff921164068676549c58dff13ac120e",
+    "8d55c954a879b4f430438ea9af8c7e608ee089de47204f86ab7bd9b481cb8706",
+    "38e784e9360c49bb9eb163dc4bd3e8e7fabcba83ede020046ed8198abfa9392a",
+));
+
+fn rsa3072_known_answers() -> Option<()> {
+    let mut primes = [0; 384];
+    primes[..192].copy_from_slice(&RSA3072_P);
+    primes[192..].copy_from_slice(&RSA3072_Q);
+    let key = rsa_from_primes(&primes, &RSA3072_N)?;
+    let mut rng = Drbg::new(&[5; 48])?;
+    // RSASSA-PKCS1-v1_5 SHA-256: sign (deterministic) and verify.
+    let signature = rsa_sign(&key, HashAlg::Sha256, &RSA3072_DIGEST_256, &mut rng)?;
+    if signature.as_slice() != RSA3072_PKCS1_SHA256
+        || !rsa_verify_hash(
+            &RSA3072_N,
+            HashAlg::Sha256,
+            &RSA3072_DIGEST_256,
+            &RSA3072_PKCS1_SHA256,
+        )
+    {
+        return None;
+    }
+    // RSASSA-PSS made outside this crate (SHA-256 and SHA-384, salt as long as the digest) verifies;
+    // neither padding mode accepts the other's signature.
+    if !rsa_verify_pss(
+        &RSA3072_N,
+        HashAlg::Sha256,
+        &RSA3072_DIGEST_256,
+        &RSA3072_PSS_SHA256,
+    ) || !rsa_verify_pss(
+        &RSA3072_N,
+        HashAlg::Sha384,
+        &RSA3072_DIGEST_384,
+        &RSA3072_PSS_SHA384,
+    ) || rsa_verify_pss(
+        &RSA3072_N,
+        HashAlg::Sha256,
+        &RSA3072_DIGEST_256,
+        &RSA3072_PKCS1_SHA256,
+    ) || rsa_verify_hash(
+        &RSA3072_N,
+        HashAlg::Sha256,
+        &RSA3072_DIGEST_256,
+        &RSA3072_PSS_SHA256,
+    ) {
+        return None;
+    }
+    // PSS signing: the salt is random, so the signature is checked by the verifier above.
+    let signature = rsa_sign_pss(&key, HashAlg::Sha384, &RSA3072_DIGEST_384, &mut rng)?;
+    rsa_verify_pss(&RSA3072_N, HashAlg::Sha384, &RSA3072_DIGEST_384, &signature).then_some(())
+}
+
 fn rsa_known_answers() -> Option<()> {
     const N: [u8; 256] = hex(EXT_RSA_N);
     const P: [u8; 128] = hex(EXT_RSA_P);
@@ -320,7 +453,7 @@ fn rsa_known_answers() -> Option<()> {
     Some(())
 }
 
-const fn hex<const N: usize>(text: &str) -> [u8; N] {
+pub(crate) const fn hex<const N: usize>(text: &str) -> [u8; N] {
     const fn nibble(byte: u8) -> u8 {
         match byte {
             b'0'..=b'9' => byte - b'0',

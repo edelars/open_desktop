@@ -7,8 +7,9 @@
 //! and is returned as a public area and a private blob that `TPM2_Load` takes back; an *external*
 //! object (`TPM2_LoadExternal`) has a public area only and no authorization value.
 //!
-//! **Types.** RSA-2048 (exponent 65537) with RSASSA-PKCS1-v1_5 and ECC NIST P-256 with ECDSA, both
-//! with SHA-256 as signature hash and SHA-256, SHA-384 or SHA-512 as `nameAlg` (it sets the Name, the
+//! **Types.** RSA-2048 and RSA-3072 (exponent 65537) with RSASSA-PKCS1-v1_5, RSASSA-PSS, RSAES or
+//! OAEP, and ECC NIST P-256 with ECDSA, with SHA-256, SHA-384 or SHA-512 as signature hash and
+//! SHA-256, SHA-384 or SHA-512 as `nameAlg` (it sets the Name, the
 //! Qualified Name, the digest sizes of `authPolicy`, `authValue`, seed value and keyed-hash
 //! `unique`, and the creation hash and PCR digest); a keyed-hash object holds sealed data
 //! (`TPM2_Unseal`). Storage keys (`restricted` + `decrypt`, no `sign`) can be parents.
@@ -68,7 +69,7 @@ use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
     EccPrivate, HashAlg, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public,
     ecc_scalar, ecc_verify, hash, hmac, hmac_verify, kdfa, kdfa_sha256, rsa_from_one_prime,
-    rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes, rsa_verify_hash,
+    rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes, rsa_verify_hash, rsa_verify_pss,
     supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
@@ -85,8 +86,10 @@ use crate::response::Rc;
 pub const MAX_OBJECTS: usize = 8;
 /// Persistent objects held at once.
 pub const MAX_PERSISTENT: usize = 16;
-/// Largest `TPM2B_PRIVATE` accepted by `TPM2_Load` (ours is below 400 octets).
-pub const MAX_PRIVATE: usize = 512;
+/// Largest `TPM2B_PRIVATE` accepted by `TPM2_Load`: an RSA-3072 storage key with a SHA-512 `nameAlg`
+/// is the largest private area (integrity 2 + 64, symIv 2 + 16, then the encrypted `TPM2B_SENSITIVE`:
+/// 2 + 2 + (2 + 64) + (2 + 64) + (2 + 384) octets; 606 in all). An RSA-2048 area is below 480.
+pub const MAX_PRIVATE: usize = 768;
 
 /// Handle of the transient object in `slot`: after the sequence slots `0x80000000..`.
 pub(crate) fn object_handle(slot: usize) -> u32 {
@@ -167,10 +170,12 @@ pub(crate) fn qualified_name_of(name_alg: u16, parent_qn: &[u8], name: &[u8]) ->
 
 impl Object {
     /// Verifies a digest with the public key. Each command checks its own usage and scheme rules.
-    /// The hash named by the signature selects the RSASSA padding, and the digest must have
-    /// exactly that hash's width (for ECDSA as well, so the label and the length cannot diverge).
+    /// The hash named by the signature selects the RSASSA or RSAPSS padding (RSAPSS needs a salt as
+    /// long as the digest), and the digest must have exactly that hash's width (for ECDSA as well, so the label and the length cannot diverge).
     pub(crate) fn verify_signature(&self, digest: &[u8], signature: &TpmtSignature) -> bool {
-        let (TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. }) = signature
+        let (TpmtSignature::Rsassa { hash, .. }
+        | TpmtSignature::Rsapss { hash, .. }
+        | TpmtSignature::Ecdsa { hash, .. }) = signature
         else {
             return false;
         };
@@ -183,6 +188,9 @@ impl Object {
         match (&self.public.unique, signature) {
             (Unique::Rsa(n), TpmtSignature::Rsassa { sig, .. }) => {
                 rsa_verify_hash(n, hash, digest, sig)
+            }
+            (Unique::Rsa(n), TpmtSignature::Rsapss { sig, .. }) => {
+                rsa_verify_pss(n, hash, digest, sig)
             }
             (Unique::Ecc { x, y }, TpmtSignature::Ecdsa { r, s, .. }) => {
                 ecc_verify(x, y, digest, r, s)
@@ -440,15 +448,17 @@ pub(crate) fn check_public(
             }
             check_symmetric(public, *symmetric)?;
             let ok = match (sign, decrypt, restricted) {
-                // sign + decrypt: scheme NULL; unrestricted signing: RSASSA or NULL; restricted
-                // signing: RSASSA; restricted decrypt: NULL; unrestricted decrypt: RSAES, OAEP or
-                // NULL (Part 2, Table 215; slice C1).
+                // sign + decrypt: scheme NULL; unrestricted signing: RSASSA, RSAPSS or NULL;
+                // restricted signing: RSASSA or RSAPSS; restricted decrypt: NULL; unrestricted
+                // decrypt: RSAES, OAEP or NULL (Part 2, Table 215; slice C1).
                 (true, true, _) | (false, true, true) => scheme.alg == alg::NULL,
                 (false, true, false) => {
                     matches!(scheme.alg, alg::NULL | alg::RSAES | alg::OAEP)
                 }
-                (true, false, false) => scheme.alg == alg::RSASSA || scheme.alg == alg::NULL,
-                (true, false, true) => scheme.alg == alg::RSASSA,
+                (true, false, false) => {
+                    matches!(scheme.alg, alg::RSASSA | alg::RSAPSS | alg::NULL)
+                }
+                (true, false, true) => matches!(scheme.alg, alg::RSASSA | alg::RSAPSS),
                 (false, false, _) => false,
             };
             if !ok {
@@ -574,13 +584,13 @@ pub(crate) fn derive_object(
         .ok_or(Rc::SIZE.in_param(1))?;
     let storage = is_storage(template);
     let (secret, unique, seed) = match &template.params {
-        PublicParams::Rsa { .. } => {
+        PublicParams::Rsa { key_bits, .. } => {
             let seed = if storage {
                 new_seed(rng, name_hash.size())?
             } else {
                 Zeroizing::new(Vec::new())
             };
-            let key = rsa_generate(rng).ok_or(Rc::FAILURE)?;
+            let key = rsa_generate(rng, *key_bits).ok_or(Rc::FAILURE)?;
             let n = rsa_modulus(&key);
             (Secret::Rsa(Box::new(key)), Unique::Rsa(n), seed)
         }
@@ -686,7 +696,8 @@ fn sensitive_with_auth(
     body.tpm2b(&auth[..]);
     body.tpm2b(&s.seed);
     let serialized = if duplicate && matches!(s.secret, Secret::Rsa(_)) {
-        &secret[..MAX_RSA_BYTES / 2]
+        // One prime: the first half of `p || q`.
+        &secret[..secret.len() / 2]
     } else {
         &secret[..]
     };
@@ -752,14 +763,17 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
         }
     }
     let secret = match &public.params {
-        PublicParams::Rsa { exponent, .. } => {
+        PublicParams::Rsa {
+            exponent, key_bits, ..
+        } => {
             let Unique::Rsa(n) = &public.unique else {
                 return Err(Rc::BINDING);
             };
+            let modulus_bytes = usize::from(*key_bits) / 8;
             let size = if duplicate {
-                MAX_RSA_BYTES / 2
+                modulus_bytes / 2
             } else {
-                MAX_RSA_BYTES
+                modulus_bytes
             };
             if secret.len() != size {
                 return Err(Rc::KEY_SIZE);
@@ -992,8 +1006,8 @@ pub(crate) fn open_private(
 // --------------------------------------------------------------------------- public-only objects
 
 /// The checks of `TPM2_LoadExternal` for a public area without a private part: the point of an
-/// ECC key is on the curve (`TPM_RC_ECC_POINT`, Part 3, clause 12.3.1), an RSA modulus is 2048
-/// bits and odd (`TPM_RC_KEY`), the exponent is 65537 (`TPM_RC_RANGE`), `nameAlg` is SHA-256,
+/// ECC key is on the curve (`TPM_RC_ECC_POINT`, Part 3, clause 12.3.1), an RSA modulus has
+/// `keyBits` (2048 or 3072) bits and is odd (`TPM_RC_KEY`), the exponent is 65537 (`TPM_RC_RANGE`), `nameAlg` is SHA-256,
 /// SHA-384 or SHA-512 (`TPM_RC_HASH`), `authPolicy` is empty or one digest of `nameAlg`
 /// (`TPM_RC_SIZE`).
 pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
@@ -1014,11 +1028,19 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
         return Err(bad(Rc::ATTRIBUTES));
     }
     match (&public.params, &public.unique) {
-        (PublicParams::Rsa { exponent, .. }, Unique::Rsa(n)) => {
+        (
+            PublicParams::Rsa {
+                exponent, key_bits, ..
+            },
+            Unique::Rsa(n),
+        ) => {
             if !supported_rsa_exponent(*exponent) {
                 return Err(bad(Rc::RANGE));
             }
-            if n.len() != MAX_RSA_BYTES || n[0] & 0x80 == 0 || n[MAX_RSA_BYTES - 1] & 1 == 0 {
+            if n.len() != usize::from(*key_bits) / 8
+                || n[0] & 0x80 == 0
+                || n.last().is_none_or(|last| last & 1 == 0)
+            {
                 return Err(bad(Rc::KEY));
             }
         }

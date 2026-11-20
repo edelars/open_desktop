@@ -14,7 +14,7 @@
 //! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
-//! ECC, with slice C1 also RSAES, OAEP and ECDH, with slice C2 HMAC, with slice C3 XOR (the
+//! ECC, with slice C1 also RSAES, OAEP and ECDH, with the RSA-3072 slice RSAPSS, with slice C2 HMAC, with slice C3 XOR (the
 //! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
@@ -86,12 +86,12 @@ impl Entries {
 }
 
 // Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
-// KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
+// KEYEDHASH "H O", RSASSA, RSAPSS and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
 // (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -110,6 +110,10 @@ pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
     (
         alg::RSAES,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
+    ),
+    (
+        alg::RSAPSS,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
     ),
     (
         alg::OAEP,

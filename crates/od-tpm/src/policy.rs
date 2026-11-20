@@ -311,13 +311,13 @@ pub(crate) fn pcr_selection_digest_with(
 /// session of the same hash, otherwise `TPM_RC_HASH` (the caller sets parameter 5).
 fn signature_hash(signature: &TpmtSignature, session: HashAlg) -> Result<Option<HashAlg>, Rc> {
     match signature {
-        TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. } => {
-            match HashAlg::from_alg(*hash) {
-                Some(HashAlg::Sha256) => Ok(Some(HashAlg::Sha256)),
-                Some(wide) if wide == session => Ok(Some(wide)),
-                _ => Err(Rc::HASH),
-            }
-        }
+        TpmtSignature::Rsassa { hash, .. }
+        | TpmtSignature::Rsapss { hash, .. }
+        | TpmtSignature::Ecdsa { hash, .. } => match HashAlg::from_alg(*hash) {
+            Some(HashAlg::Sha256) => Ok(Some(HashAlg::Sha256)),
+            Some(wide) if wide == session => Ok(Some(wide)),
+            _ => Err(Rc::HASH),
+        },
         _ => Ok(None),
     }
 }
@@ -854,6 +854,13 @@ impl Tpm {
                     *scheme,
                     Scheme {
                         alg: alg::RSASSA,
+                        hash: *hash,
+                    },
+                ),
+                (PublicParams::Rsa { scheme, .. }, TpmtSignature::Rsapss { hash, .. }) => (
+                    *scheme,
+                    Scheme {
+                        alg: alg::RSAPSS,
                         hash: *hash,
                     },
                 ),

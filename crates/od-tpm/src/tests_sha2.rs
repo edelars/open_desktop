@@ -61,7 +61,7 @@ fn hash_sequence_start_error_order_for_an_oversized_auth_and_unknown_hash_is_pro
 fn capability_reports_sha512_and_max_digest_64() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 16);
+    assert!(!more && c == cap::ALGS && count == 17);
     let entries: Vec<(u16, u32)> = body
         .chunks(6)
         .map(|e| {
@@ -71,7 +71,7 @@ fn capability_reports_sha512_and_max_digest_64() {
             )
         })
         .collect();
-    assert_eq!(entries.len(), 16);
+    assert_eq!(entries.len(), 17);
     assert!(entries.windows(2).all(|w| w[0].0 < w[1].0));
     for (id, name) in [
         (0x000B, "SHA-256"),
@@ -279,27 +279,32 @@ fn sha512_is_a_hash_but_not_a_pcr_bank() {
 }
 
 #[test]
-fn signing_schemes_accept_sha2_hashes_and_encryption_schemes_do_not() {
+fn signing_schemes_accept_sha2_hashes_and_ecdh_does_not() {
     let mut t = started();
-    // TPM2_TestParms decodes TPMT_PUBLIC_PARMS: RSASSA and ECDSA with SHA-256/384/512 ...
+    // TPM2_TestParms decodes TPMT_PUBLIC_PARMS: RSASSA, RSAPSS, OAEP and ECDSA with SHA-256/384/512
+    // (OAEP and RSAPSS with SHA-384/512 since the RSA-3072 slice; they were TPM_RC_HASH before) ...
     for hash in ["000b", "000c", "000d"] {
-        ok(&run(
-            &mut t,
-            plain(0x18A, &[], &hex(&format!("000100100014{hash}080000000000"))),
-        ));
+        for scheme in ["0014", "0016", "0017"] {
+            ok(&run(
+                &mut t,
+                plain(
+                    0x18A,
+                    &[],
+                    &hex(&format!("0001001000{}{hash}080000000000", &scheme[2..])),
+                ),
+            ));
+        }
         ok(&run(
             &mut t,
             plain(0x18A, &[], &hex(&format!("002300100018{hash}00030010"))),
         ));
     }
-    // ... but not OAEP, ECDH or a SHA-3 hash.
+    // ... but not ECDH or a SHA-3 hash.
     for (encoded, error) in [
-        ("000100100017000c080000000000", Rc::HASH), // OAEP with SHA-384.
-        ("000100100017000d080000000000", Rc::HASH), // OAEP with SHA-512.
-        ("002300100019000c00030010", Rc::HASH),     // ECDH with SHA-384.
-        ("002300100019000d00030010", Rc::HASH),     // ECDH with SHA-512.
+        ("002300100019000c00030010", Rc::HASH), // ECDH with SHA-384.
+        ("002300100019000d00030010", Rc::HASH), // ECDH with SHA-512.
         ("0001001000140027080000000000", Rc::HASH), // RSASSA with SHA3-256.
-        ("002300100018002700030010", Rc::HASH),     // ECDSA with SHA3-256.
+        ("002300100018002700030010", Rc::HASH), // ECDSA with SHA3-256.
         ("00080005000c", Rc::HASH), // The HMAC scheme of a keyed-hash key stays SHA-256.
     ] {
         err(

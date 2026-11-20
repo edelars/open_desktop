@@ -227,6 +227,8 @@ pub mod alg {
     pub const RSASSA: u16 = 0x0014;
     /// RSA encryption padding schemes (`TPM2_RSA_Encrypt/Decrypt`) and the ECDH key exchange.
     pub const RSAES: u16 = 0x0015;
+    /// `TPM_ALG_RSAPSS`: RSASSA-PSS (RFC 8017, 8.1) signed with a salt as long as the digest (Part 1, Annex B.7); verification accepts any salt length, like the reference TPM.
+    pub const RSAPSS: u16 = 0x0016;
     pub const OAEP: u16 = 0x0017;
     pub const ECDSA: u16 = 0x0018;
     pub const ECDH: u16 = 0x0019;

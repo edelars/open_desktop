@@ -4,7 +4,8 @@
 //! The key model is in `object.rs` and the primitives in `crypto.rs`.
 //!
 //! **RSA.** The padding follows Part 3, Table 42: the scheme of the key and `inScheme` select
-//! none (raw RSA), RSAES-PKCS1-v1_5 or RSAES-OAEP (SHA-256 for the label hash and for MGF1). A
+//! none (raw RSA), RSAES-PKCS1-v1_5 or RSAES-OAEP (SHA-256, SHA-384 or SHA-512 for the label hash and
+//! for MGF1, the hash of the scheme; an OAEP key and an OAEP `inScheme` must name the same hash). A
 //! label must end with a zero octet, which belongs to the label used for the padding
 //! (`TPM_RC_VALUE` otherwise). `TPM2_RSA_Encrypt` needs only the public part of an RSA key and
 //! checks no attributes; `TPM2_RSA_Decrypt` needs an RSA key with `restricted` CLEAR and
@@ -22,14 +23,15 @@
 //! `TPM_RC_KEY`, `TPM_RC_ATTRIBUTES`, `TPM_RC_ECC_POINT` and `TPM_RC_SIZE` below; `TPM_RC_VALUE`
 //! for a message or a ciphertext that does not fit the padding, for a failed padding check of
 //! OAEP and for an integer not below `n` in the raw scheme; `TPM_RC_SCHEME` (parameter 2) for an
-//! RSA key whose scheme is a signing scheme; `TPM_RC_HASH` for an OAEP scheme with a hash other
-//! than SHA-256. Deviation: RSAES decryption uses the implicit rejection of the `rsa` crate (a
+//! RSA key whose scheme is a signing scheme or whose OAEP hash differs from that of `inScheme`;
+//! `TPM_RC_HASH` for an OAEP scheme with a hash other than SHA-256, SHA-384 and SHA-512. Deviation: RSAES decryption uses the implicit rejection of the `rsa` crate (a
 //! defence against padding oracles), so an invalid RSAES padding does not give `TPM_RC_VALUE` but a
 //! deterministic synthetic message, unlike the text of clause 14.3.1.
 
 use crate::codes::{alg, curve, object_attr};
 use crate::crypto::{
-    RsaPadding, ecc_ecdh, ecc_generate, ecc_public, rsa_decrypt_private, rsa_encrypt_public,
+    HashAlg, RsaPadding, ecc_ecdh, ecc_generate, ecc_public, rsa_decrypt_private,
+    rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
 use crate::marshal::{
@@ -85,13 +87,25 @@ fn write_ecc_point(writer: &mut Writer, x: &[u8], y: &[u8]) {
     writer.tpm2b(y);
 }
 
-/// Padding for the scheme of the key and `inScheme` (Part 3, Table 42).
+/// OAEP with the hash of the scheme (`TPMS_SCHEME_OAEP.hashAlg`) for the label and for MGF1.
+fn oaep_padding(hash: u16) -> RsaPadding {
+    match HashAlg::from_alg(hash) {
+        Some(HashAlg::Sha384) => RsaPadding::OaepWith(HashAlg::Sha384),
+        Some(HashAlg::Sha512) => RsaPadding::OaepWith(HashAlg::Sha512),
+        _ => RsaPadding::Oaep,
+    }
+}
+
+/// Padding for the scheme of the key and `inScheme` (Part 3, Table 42). An OAEP key and an OAEP
+/// `inScheme` must name the same hash (`TPM_RC_SCHEME`, parameter 2).
 fn select_padding(key: Scheme, requested: Scheme) -> Result<RsaPadding, Rc> {
     let bad = Rc::SCHEME.in_param(2);
     match (key.alg, requested.alg) {
         (alg::NULL, alg::NULL) => Ok(RsaPadding::None),
         (alg::NULL, alg::RSAES) | (alg::RSAES, alg::NULL | alg::RSAES) => Ok(RsaPadding::Rsaes),
-        (alg::NULL, alg::OAEP) | (alg::OAEP, alg::NULL | alg::OAEP) => Ok(RsaPadding::Oaep),
+        (alg::NULL, alg::OAEP) => Ok(oaep_padding(requested.hash)),
+        (alg::OAEP, alg::NULL) => Ok(oaep_padding(key.hash)),
+        (alg::OAEP, alg::OAEP) if key.hash == requested.hash => Ok(oaep_padding(key.hash)),
         _ => Err(bad),
     }
 }
@@ -114,7 +128,7 @@ impl Tpm {
         p.set_param(1);
         let message = p.tpm2b(MAX_RSA_BYTES)?;
         p.set_param(2);
-        let in_scheme = Scheme::unmarshal(p, &[alg::RSAES, alg::OAEP], Rc::VALUE)?;
+        let in_scheme = Scheme::unmarshal_public(p, &[alg::RSAES, alg::OAEP], Rc::VALUE)?;
         p.set_param(3);
         let label = p.tpm2b(MAX_DATA)?;
         p.finish()?;
@@ -124,6 +138,11 @@ impl Tpm {
         else {
             return Err(Rc::KEY.in_handle(1));
         };
+        // The buffer type holds the largest key of the profile; a message longer than this key's
+        // modulus is still a size error of parameter 1 (as when RSA-2048 was the only size).
+        if message.len() > n.len() {
+            return Err(Rc::SIZE.in_param(1));
+        }
         let padding = select_padding(*scheme, in_scheme)?;
         check_label(label)?;
         let n = n.clone();
@@ -147,18 +166,24 @@ impl Tpm {
         p.set_param(1);
         let cipher = p.tpm2b(MAX_RSA_BYTES)?;
         p.set_param(2);
-        let in_scheme = Scheme::unmarshal(p, &[alg::RSAES, alg::OAEP], Rc::VALUE)?;
+        let in_scheme = Scheme::unmarshal_public(p, &[alg::RSAES, alg::OAEP], Rc::VALUE)?;
         p.set_param(3);
         let label = p.tpm2b(MAX_DATA)?;
         p.finish()?;
         // The fields are borrowed separately so that the key is used in place, not copied.
         let o = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        let PublicParams::Rsa { scheme, .. } = &o.public.params else {
+        let PublicParams::Rsa {
+            scheme, key_bits, ..
+        } = &o.public.params
+        else {
             return Err(Rc::KEY.in_handle(1));
         };
         if o.has(object_attr::RESTRICTED) || !o.has(object_attr::DECRYPT) {
             return Err(Rc::ATTRIBUTES.in_handle(1));
+        }
+        if cipher.len() > usize::from(*key_bits) / 8 {
+            return Err(Rc::SIZE.in_param(1));
         }
         let padding = select_padding(*scheme, in_scheme)?;
         check_label(label)?;

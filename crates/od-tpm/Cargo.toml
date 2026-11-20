@@ -13,6 +13,8 @@ publish.workspace = true
 # feature, the NULL scheme (raw RSA) needs `hazmat`) and ECDH (`TPM2_ECDH_ZGen`: point multiplication of
 # `p256` `arithmetic`, already enabled by `ecdsa`; feature `ecdh` of the ADR is not needed, see
 # docs/policies/DEPENDENCIES.md).
+# RSA-3072, RSASSA-PSS (`rsa::pss`) and OAEP with SHA-384/SHA-512 need no new feature of `rsa =0.10.0` (it has
+# no `pss` feature; the module is always built), see docs/policies/DEPENDENCIES.md.
 # `der`, `spki`, `sha1` of the ADR are not needed by slices B and C1 and are not added.
 [dependencies]
 # Wipe the retained HMAC inner and outer SHA-256 state when a sequence ends.
