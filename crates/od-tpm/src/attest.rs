@@ -418,7 +418,7 @@ impl Tpm {
         let signing = self.attest_signer(inv.handles[1], in_scheme, 2, 2)?;
         let mut attested = Writer::new();
         attested.u8(u8::from(self.sessions.exclusive_audit == Some(slot)));
-        attested.tpm2b(&digest);
+        attested.tpm2b(digest.as_slice());
         let attest = self.attest_bytes(
             signing.map(|(object, _)| object),
             st::ATTEST_SESSION_AUDIT,

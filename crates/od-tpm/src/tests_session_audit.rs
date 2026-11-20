@@ -360,7 +360,8 @@ fn audit_state(t: &Tpm, session: u32) -> AuditState {
     let s = t.sessions.get(slot).unwrap();
     (
         s.nonce_tpm.clone(),
-        s.audit_digest,
+        s.audit_digest
+            .map(|d| d.as_slice().try_into().expect("a SHA-256 audit digest")),
         s.bound.is_some(),
         t.sessions.exclusive_audit,
     )

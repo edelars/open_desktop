@@ -63,6 +63,16 @@ impl HashAlg {
         }
     }
 
+    /// Index 0 (SHA-256), 1 (SHA-384) or 2 (SHA-512): the slot of the per-hash caches of cpHash and
+    /// rpHash, and the `authHash` nibble of a saved session body.
+    pub(crate) fn index(self) -> usize {
+        match self {
+            HashAlg::Sha256 => 0,
+            HashAlg::Sha384 => 1,
+            HashAlg::Sha512 => 2,
+        }
+    }
+
     /// The `TPM_ALG_ID`.
     pub(crate) fn alg(self) -> u16 {
         match self {
@@ -81,7 +91,8 @@ pub(crate) struct TpmDigest {
 }
 
 impl TpmDigest {
-    fn from_output(out: &[u8]) -> TpmDigest {
+    /// The digest held in `out` (at most 64 octets).
+    pub(crate) fn from_output(out: &[u8]) -> TpmDigest {
         let mut bytes = [0u8; 64];
         bytes[..out.len()].copy_from_slice(out);
         TpmDigest {
@@ -92,6 +103,11 @@ impl TpmDigest {
 
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn to_vec(self) -> Vec<u8> {
+        self.as_slice().to_vec()
     }
 }
 

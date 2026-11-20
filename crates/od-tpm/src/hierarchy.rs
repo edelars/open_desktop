@@ -261,8 +261,14 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_HierarchyChangeAuth` (Part 3, clause 24.8): the new value is at most one digest
-    /// (32 octets, SHA-256 is the context-integrity hash) and is stored without trailing zeros.
+    /// `TPM2_HierarchyChangeAuth` (Part 3, clause 24.8): the new value is at most 32 octets, whatever
+    /// the `authHash` of the session that authorizes the command, and is stored without trailing zeros.
+    /// The limit is the reference implementation's `CONTEXT_INTEGRITY_HASH_SIZE` (the digest of the
+    /// context-integrity hash, SHA-256 here). It also bounds the authValue that a session bound to a
+    /// hierarchy keeps: `decode_session` (`context.rs`) reads a bound authValue with a limit of 32 octets,
+    /// so a longer value would make the saved context of such a session unloadable. NOT VERIFIED: the text
+    /// of Part 3 gives `TPM_RC_SIZE` for a larger value; that the limit is exactly 32 for every
+    /// `authHash` is taken from the reference implementation.
     /// The response HMAC uses the new value (the dispatcher recomputes it after the command).
     pub(crate) fn cmd_hierarchy_change_auth(
         &mut self,
@@ -270,7 +276,10 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let new_auth = p.tpm2b(crate::marshal::limits::MAX_DIGEST_SIZE)?;
+        let new_auth = p.tpm2b(crate::marshal::limits::MAX_HASH_SIZE)?;
+        if new_auth.len() > DIGEST {
+            return Err(Rc::SIZE.in_param(1));
+        }
         p.finish()?;
         let value = AuthValue::from_slice_trimmed(new_auth).ok_or(Rc::SIZE.in_param(1))?;
         let hp = &mut self.persistent.hier;

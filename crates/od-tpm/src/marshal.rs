@@ -19,9 +19,9 @@ pub mod limits {
     pub const PCR_SELECT_SIZE: usize = 3;
     /// `HASH_COUNT`: implemented hash algorithms.
     pub const HASH_COUNT: usize = 2;
-    /// Digest limit for the current SHA-256 authorization, session and policy profile
-    /// (`crypto::DIGEST`). Those parts do not take part in the SHA-384/SHA-512 hash agility yet
-    /// (steps D and E); objects use the digest size of their `nameAlg`. The largest digest of any
+    /// Digest limit for the SHA-256 profile (`crypto::DIGEST`): passwords, hierarchy and policy digests.
+    /// Sessions follow their `authHash` since step D and the policy digests will in step E; objects use the
+    /// digest size of their `nameAlg`. The largest digest of any
     /// implemented hash is [`MAX_HASH_SIZE`].
     pub const MAX_DIGEST_SIZE: usize = 32;
     /// `sizeof(TPMU_HA)`: the largest digest of any implemented hash (SHA-512), reported as
@@ -462,11 +462,20 @@ impl TpmsAuthCommand {
         w.tpm2b(&self.hmac);
     }
 
+    /// Reads a session with nonce and `hmac` of at most 32 octets (the limit of a password, which
+    /// stays one SHA-256 digest whatever the hash of the sessions).
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_up_to(r, limits::MAX_DIGEST_SIZE)
+    }
+
+    /// Reads a session with nonce and `hmac` of at most `max` octets: the authorization area takes
+    /// up to one SHA-512 digest ([`limits::MAX_HASH_SIZE`]), the dispatcher then applies the limit of
+    /// the hash of each session.
+    pub fn unmarshal_up_to(r: &mut Reader<'_>, max: usize) -> Result<Self, Rc> {
         let session_handle = r.u32()?;
-        let nonce = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let nonce = r.tpm2b(max)?.to_vec();
         let attributes = r.u8()?;
-        let hmac = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let hmac = r.tpm2b(max)?.to_vec();
         Ok(TpmsAuthCommand {
             session_handle,
             nonce,
@@ -492,9 +501,9 @@ impl TpmsAuthResponse {
     }
 
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
-        let nonce = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let nonce = r.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         let attributes = r.u8()?;
-        let hmac = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let hmac = r.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         Ok(TpmsAuthResponse {
             nonce,
             attributes,

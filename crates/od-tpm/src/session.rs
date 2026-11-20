@@ -10,7 +10,10 @@
 //!   a hierarchy authorization handle (owner, platform, endorsement, lockout): a bound session,
 //!   `sessionKey = KDFa(sessionAlg, authValue_bind, "ATH", nonceTPM, nonceCaller, bits)`
 //!   (Part 1, clause 17.6.10, Equation 20);
-//! - `authHash` SHA-256; `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
+//! - `authHash` SHA-256, SHA-384 or SHA-512 (hash agility, step D: `Session::auth_hash` selects the hash of
+//!   every HMAC, cpHash, rpHash, `KDFa` and audit digest of the session; a policy or trial session
+//!   stays SHA-256 until its policy digest follows the hash in step E, `TPM_RC_HASH` otherwise);
+//!   `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
 //!   `paramenc.rs`: the attributes `decrypt`/`encrypt` need a symmetric algorithm, otherwise
 //!   `TPM_RC_SYMMETRIC`).
 //! - An HMAC session may audit successful commands, either as an additional session or while it
@@ -25,7 +28,7 @@
 //! `sessionKey` alone (Equation 22), in the command and in the response. When the key is empty the
 //! caller may send an empty HMAC (clause 17.6.15), the response then carries an empty HMAC too.
 //! The nonce size of the session is the size of the initial `nonceCaller` (at least 16 octets,
-//! at most one digest); a later `nonceCaller` may be of any size up to it. The TPM rolls `nonceTPM`
+//! at most one digest of `authHash`); a later `nonceCaller` may be of any size up to it. The TPM rolls `nonceTPM`
 //! on every successful use; a command that fails leaves the session unchanged. `continueSession`
 //! CLEAR flushes the session after a successful command (clause 17.6.17).
 //!
@@ -47,11 +50,10 @@
 //! 17.6.5 says so for authorization computations); that a session handle `0x02nnnnnn` and
 //! `0x03nnnnnn` name the same slot when flushing ("the upper byte is ignored", clause 28.4).
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::codes::{alg, handle, se, session_attr};
-use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::codes::{handle, se, session_attr};
+use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash, hmac, hmac_verify, kdfa};
 use crate::da::DaClass;
 use crate::dispatch::Invocation;
 use crate::hash::{AuthValue, password_matches};
@@ -105,7 +107,10 @@ pub(crate) struct Session {
     pub nonce_tpm: Vec<u8>,
     /// Time when this nonce was generated, absent in older saved policy contexts.
     pub nonce_time: Option<TimePoint>,
-    /// `sessionKey`: empty (unbound, unsalted) or one digest.
+    /// `authHash` of `TPM2_StartAuthSession` (SHA-256, SHA-384 or SHA-512; a policy or trial session
+    /// is SHA-256 until step E).
+    pub auth_hash: HashAlg,
+    /// `sessionKey`: empty (unbound, unsalted) or one digest of `auth_hash`.
     pub key: AuthValue,
     pub bound: Option<BoundEntity>,
     /// DA class of the entity whose secret was used to derive sessionKey.
@@ -116,8 +121,8 @@ pub(crate) struct Session {
     pub policy: PolicyState,
     /// `symmetric` of `TPM2_StartAuthSession`: how the session encrypts parameters.
     pub symmetric: SessionSym,
-    /// Set on the first successful command audited by this session.
-    pub audit_digest: Option<[u8; DIGEST]>,
+    /// Set on the first successful command audited by this session, one digest of `auth_hash`.
+    pub audit_digest: Option<TpmDigest>,
 }
 
 /// Session slots; the handle of slot `n` is `0x02000000 + n` (`HMAC_SESSION_FIRST + n`).
@@ -186,23 +191,22 @@ impl Sessions {
         &mut self,
         slot: usize,
         reset: bool,
-        cp_hash: &[u8; DIGEST],
-        rp_hash: &[u8; DIGEST],
+        cp_hash: &[u8],
+        rp_hash: &[u8],
     ) {
         let session = self
             .get_mut(slot)
             .expect("validated audit session stays loaded");
         let first = session.audit_digest.is_none();
-        let base = if reset {
-            [0; DIGEST]
-        } else {
-            session.audit_digest.unwrap_or([0; DIGEST])
+        // auditDigest' = H_authHash(auditDigest || cpHash || rpHash), starting from zeros of the
+        // digest size (Part 1 rev 01.83, clause 19.6.1); `cp_hash` and `rp_hash` are those of
+        // `session.auth_hash`.
+        let zero = [0u8; 64];
+        let base: &[u8] = match (&session.audit_digest, reset) {
+            (Some(d), false) => d.as_slice(),
+            _ => &zero[..session.auth_hash.size()],
         };
-        let mut hash = Sha256::new();
-        hash.update(base);
-        hash.update(cp_hash);
-        hash.update(rp_hash);
-        session.audit_digest = Some(hash.finalize().into());
+        session.audit_digest = Some(hash(session.auth_hash, &[base, cp_hash, rp_hash]));
         if first {
             session.bound = None;
         }
@@ -270,16 +274,17 @@ pub(crate) fn authorization_key(
 pub(crate) fn verify_command_hmac(
     session: &Session,
     key: &[u8],
-    cp_hash: &[u8; DIGEST],
+    cp_hash: &[u8],
     nonce_caller: &[u8],
     parameter_nonces: [&[u8]; 2],
     attributes: u8,
-    hmac: &[u8],
+    tag: &[u8],
 ) -> bool {
-    if key.is_empty() && hmac.is_empty() {
+    if key.is_empty() && tag.is_empty() {
         return true;
     }
-    hmac_sha256_verify(
+    hmac_verify(
+        session.auth_hash,
         key,
         &[
             cp_hash,
@@ -289,19 +294,25 @@ pub(crate) fn verify_command_hmac(
             parameter_nonces[1],
             &[attributes],
         ],
-        hmac,
+        tag,
     )
 }
 
-/// The HMAC of a response acknowledgement (Equation 17 with rpHash).
+/// The HMAC of a response acknowledgement (Equation 17 with rpHash), with the `authHash` `alg` of
+/// the session; `rp_hash` is the rpHash of `alg`.
 pub(crate) fn response_hmac(
+    alg: HashAlg,
     key: &[u8],
-    rp_hash: &[u8; DIGEST],
+    rp_hash: &[u8],
     nonce_tpm_new: &[u8],
     nonce_caller: &[u8],
     attributes: u8,
-) -> [u8; DIGEST] {
-    hmac_sha256(key, &[rp_hash, nonce_tpm_new, nonce_caller, &[attributes]])
+) -> TpmDigest {
+    hmac(
+        alg,
+        key,
+        &[rp_hash, nonce_tpm_new, nonce_caller, &[attributes]],
+    )
 }
 
 /// Checks the attribute octet of an HMAC session in a command (`n` is the session number).
@@ -329,25 +340,47 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let nonce_caller = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        p.set_param(2);
-        let encrypted_salt = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
-        p.set_param(3);
-        let session_type = p.u8()?;
-        p.set_param(4);
-        let symmetric = SessionSym::unmarshal(p)?;
-        p.set_param(5);
-        let auth_hash = p.u16()?;
-        p.finish()?;
-        if auth_hash != alg::SHA256 {
-            return Err(Rc::HASH.in_param(5));
+        // The limit of `nonceCaller` is one digest of `authHash` (parameter 5, not parsed yet):
+        // read up to the largest digest and check the size once `authHash` is known.
+        let nonce_caller = p.tpm2b(limits::MAX_HASH_SIZE)?;
+        let oversized = nonce_caller.len() > DIGEST;
+        let rest = (|| -> Result<_, Rc> {
+            p.set_param(2);
+            let encrypted_salt = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
+            p.set_param(3);
+            let session_type = p.u8()?;
+            p.set_param(4);
+            let symmetric = SessionSym::unmarshal(p)?;
+            p.set_param(5);
+            let auth_hash = p.u16()?;
+            p.finish()?;
+            Ok((encrypted_salt, session_type, symmetric, auth_hash))
+        })();
+        // A `nonceCaller` of more than 32 octets was refused first, before the rest of the
+        // parameters, while only SHA-256 existed: it still is, unless `authHash` is a longer hash.
+        let (encrypted_salt, session_type, symmetric, auth_hash) = match rest {
+            Ok(parts) => parts,
+            Err(_) if oversized => return Err(Rc::SIZE.in_param(1)),
+            Err(e) => return Err(e),
+        };
+        let auth_alg = HashAlg::from_alg(auth_hash);
+        if oversized && !matches!(auth_alg, Some(HashAlg::Sha384 | HashAlg::Sha512)) {
+            return Err(Rc::SIZE.in_param(1));
         }
+        let auth_alg = auth_alg.ok_or(Rc::HASH.in_param(5))?;
         let kind = match session_type {
             se::HMAC => SessionKind::Hmac,
             se::POLICY => SessionKind::Policy,
             se::TRIAL => SessionKind::Trial,
             _ => return Err(Rc::VALUE.in_param(3)),
         };
+        // The policy digest of a policy or trial session is SHA-256 until step E.
+        if kind.is_policy() && auth_alg != HashAlg::Sha256 {
+            return Err(Rc::HASH.in_param(5));
+        }
+        if nonce_caller.len() > auth_alg.size() {
+            return Err(Rc::SIZE.in_param(1));
+        }
         if nonce_caller.len() < MIN_NONCE {
             return Err(Rc::SIZE.in_param(1));
         }
@@ -369,14 +402,15 @@ impl Tpm {
         let key = match &bound {
             None => AuthValue::empty(),
             Some(b) => {
-                let k = kdfa_sha256(
+                let k = kdfa(
+                    auth_alg,
                     b.auth.as_slice(),
                     b"ATH",
                     &nonce_tpm,
                     nonce_caller,
-                    (DIGEST * 8) as u32,
+                    (auth_alg.size() * 8) as u32,
                 );
-                AuthValue::from_slice(&k).ok_or(Rc::FAILURE)?
+                AuthValue::from_slice_up_to(&k, auth_alg.size()).ok_or(Rc::FAILURE)?
             }
         };
         let slot = self
@@ -391,6 +425,7 @@ impl Tpm {
                     bound: if kind.is_policy() { None } else { bound },
                     bind_da,
                     kind,
+                    auth_hash: auth_alg,
                     policy: PolicyState::new(),
                     symmetric,
                     audit_digest: None,

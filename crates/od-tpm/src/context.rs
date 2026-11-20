@@ -36,7 +36,11 @@
 //! in [`ContextState`]; the slot stays reserved (the handle of a session does not change, Part 1,
 //! clause 28.5) and the session counts as active. A saved session loads once (the record is
 //! removed), only with the sequence of the last save, and at its old handle; `FlushContext` of the
-//! handle forgets it. `sequence` is the context counter, increased by every save and load.
+//! handle forgets it. `sequence` is the context counter, increased by every save and load. The first
+//! octet of the session body is the session type (low nibble) and the `authHash` (high nibble: 0
+//! SHA-256, 1 SHA-384, 2 SHA-512); a SHA-256 session, and every body saved before hash agility, has a
+//! zero high nibble and so the same bytes as before. The nonce, the key and the audit digest have the
+//! size of the `authHash`; the policy digest stays 32 octets (SHA-256 sessions only until step E).
 //!
 //! **Failure mode** (Part 2, clause 14.5): if the integrity is valid but the decrypted sequence
 //! differs from the parameter, the TPM enters failure mode (`TPM_RC_FAILURE`).
@@ -60,7 +64,7 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{handle, object_attr};
-use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::crypto::{HashAlg, TpmDigest, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
 use crate::da::DaClass;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
@@ -335,11 +339,14 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     let mut w = Writer {
         buf: Vec::with_capacity(256),
     };
-    w.u8(match s.kind {
-        SessionKind::Hmac => 0,
-        SessionKind::Policy => 1,
-        SessionKind::Trial => 2,
-    });
+    // The low nibble is the session type; the high nibble is the `authHash` (0 SHA-256, 1 SHA-384,
+    // 2 SHA-512), zero for every context saved before hash agility, so SHA-256 stays byte-identical.
+    w.u8((s.auth_hash.index() as u8) << 4
+        | match s.kind {
+            SessionKind::Hmac => 0,
+            SessionKind::Policy => 1,
+            SessionKind::Trial => 2,
+        });
     w.tpm2b(&s.nonce_tpm);
     w.tpm2b(s.key.as_slice());
     match &s.bound {
@@ -390,7 +397,7 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     w.u8(s.symmetric.to_octet());
     if let Some(digest) = s.audit_digest {
         w.u8(1); // Version of the optional audit tail.
-        w.bytes(&digest);
+        w.bytes(digest.as_slice()); // One digest of `authHash`.
     } else if let Some(nonce_time) = s.nonce_time {
         w.u8(3); // Policy locality, nonce time and optional deadline.
         w.u8(p.command_locality);
@@ -408,14 +415,23 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
 
 fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     let mut r = Reader::new(body);
-    let kind = match r.u8()? {
+    let head = r.u8()?;
+    let kind = match head & 0x0f {
         0 => SessionKind::Hmac,
         1 => SessionKind::Policy,
         2 => SessionKind::Trial,
         _ => return Err(Rc::VALUE),
     };
-    let nonce_tpm = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-    let key = AuthValue::from_slice(r.tpm2b(limits::MAX_DIGEST_SIZE)?).ok_or(Rc::SIZE)?;
+    let auth_hash = match head >> 4 {
+        0 => HashAlg::Sha256,
+        // Policy and trial sessions are SHA-256 until step E.
+        1 if kind == SessionKind::Hmac => HashAlg::Sha384,
+        2 if kind == SessionKind::Hmac => HashAlg::Sha512,
+        _ => return Err(Rc::VALUE),
+    };
+    let size = auth_hash.size();
+    let nonce_tpm = r.tpm2b(size)?.to_vec();
+    let key = AuthValue::from_slice_up_to(r.tpm2b(size)?, size).ok_or(Rc::SIZE)?;
     let bound = match r.u8()? {
         0 => None,
         1 => {
@@ -469,7 +485,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         2 => DaClass::Lockout,
         _ => return Err(Rc::VALUE),
     };
-    if bind_da != DaClass::Exempt && key.as_slice().len() != DIGEST {
+    if bind_da != DaClass::Exempt && key.as_slice().len() != size {
         return Err(Rc::VALUE);
     }
     policy.auth_value_needed = flags & 1 != 0;
@@ -486,7 +502,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     if r.remaining() != 0 {
         match r.u8()? {
             1 if kind == SessionKind::Hmac && bound.is_none() => {
-                audit_digest = Some(r.bytes(DIGEST)?.try_into().map_err(|_| Rc::SIZE)?);
+                audit_digest = Some(TpmDigest::from_output(r.bytes(size)?));
             }
             2 if kind == SessionKind::Policy => {
                 policy.command_locality = r.u8()?;
@@ -514,6 +530,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         bound,
         bind_da,
         kind,
+        auth_hash,
         policy,
         symmetric,
         audit_digest,
@@ -748,6 +765,55 @@ mod tests {
                     assert!(matches!(decode_session(&legacy), Err(Rc::VALUE)));
                 }
             }
+        }
+    }
+
+    /// A saved session body: `head`, a nonce and a key of the digest size of its hash, no bound entity,
+    /// an empty policy, no flags, a NULL symmetric algorithm.
+    fn session_body(head: u8, size: usize) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(head);
+        w.tpm2b(&vec![1; size]);
+        w.tpm2b(&vec![2; size]);
+        w.u8(0);
+        w.bytes(&[0; 32]);
+        w.bytes(&[0, 0, 0, 0, SessionSym::Null.to_octet()]);
+        w.finish()
+    }
+
+    #[test]
+    fn decode_session_accepts_a_wide_hash_only_for_an_hmac_session() {
+        // Type nibble (low): 0 HMAC, 1 policy, 2 trial; hash nibble (high): 0 SHA-256, 1 SHA-384, 2 SHA-512.
+        for (head, size, kind, hash) in [
+            (0x00, 32, SessionKind::Hmac, HashAlg::Sha256),
+            (0x10, 48, SessionKind::Hmac, HashAlg::Sha384),
+            (0x20, 64, SessionKind::Hmac, HashAlg::Sha512),
+            (0x01, 32, SessionKind::Policy, HashAlg::Sha256),
+            (0x02, 32, SessionKind::Trial, HashAlg::Sha256),
+        ] {
+            let body = session_body(head, size);
+            let session = decode_session(&body).unwrap();
+            assert_eq!(
+                (session.kind, session.auth_hash),
+                (kind, hash),
+                "{head:#04x}"
+            );
+            assert_eq!(&encode_session(&session)[..], body, "{head:#04x}");
+        }
+        // Policy and trial sessions are SHA-256 until step E: hash nibble 1 or 2 is refused.
+        for head in [0x11, 0x21, 0x12, 0x22] {
+            let size = if head >> 4 == 1 { 48 } else { 64 };
+            assert!(
+                matches!(decode_session(&session_body(head, size)), Err(Rc::VALUE)),
+                "{head:#04x}"
+            );
+        }
+        // Unknown nibbles: a hash nibble of 3 and a type nibble of 3.
+        for head in [0x30, 0x03, 0x33, 0xf0, 0x0f] {
+            assert!(
+                matches!(decode_session(&session_body(head, 32)), Err(Rc::VALUE)),
+                "{head:#04x}"
+            );
         }
     }
 

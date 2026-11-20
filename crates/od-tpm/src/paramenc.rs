@@ -12,9 +12,13 @@
 //!
 //! `sessionValue` is `sessionKey || authValue` of the authorized entity regardless of binding.
 //! An additional encryption session uses only its `sessionKey` (§18.1).
-//! CFB: `KDFa(SHA-256, sessionValue, "CFB", nonceNewer, nonceOlder, keyBits + 128)`, the first
-//! `keyBits / 8` octets are the AES key, the next 16 the IV; XOR: `mask = KDFa(SHA-256, sessionValue, "XOR",
-//! nonceNewer, nonceOlder, 8 * size)` (§18.2). For a command `nonceNewer` is
+//! CFB: `KDFa(authHash, sessionValue, "CFB", nonceNewer, nonceOlder, keyBits + 128)` with the `authHash` of
+//! the session (SHA-256, SHA-384 or SHA-512, step D), the first `keyBits / 8` octets are the AES key, the next
+//! 16 the IV; XOR: `mask = KDFa(authHash, sessionValue, "XOR", nonceNewer, nonceOlder, 8 * size)` (§18.2)
+//! with the `authHash` of the session, as `CryptXORObfuscation(session->authHashAlg, ...)` of the
+//! ms-tpm-20-ref reference implementation does. `StartAuthSession` accepts only SHA-256 as the hash of the
+//! XOR `symmetric` definition, so for a SHA-256 session the mask is the same as before step D, and for a
+//! SHA-384 or SHA-512 session the hash of the mask follows the session, not that definition. For a command `nonceNewer` is
 //! the `nonceCaller` of the session and `nonceOlder` the `nonceTPM` the session had before the
 //! command; for a response `nonceNewer` is the new `nonceTPM` and `nonceOlder` the `nonceCaller`.
 //!
@@ -36,7 +40,7 @@
 //! `encrypt` as sent.
 
 use crate::codes::{alg, cc};
-use crate::crypto::kdfa_sha256;
+use crate::crypto::{HashAlg, kdfa};
 use crate::marshal::Reader;
 use crate::object::aes_cfb;
 use crate::response::Rc;
@@ -202,11 +206,33 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
     )
 }
 
+/// [`apply_with_hash`] for a session with the `authHash` SHA-256 (the self-test and the unit tests below).
+pub(crate) fn apply(
+    sym: SessionSym,
+    session_value: &[u8],
+    nonce_newer: &[u8],
+    nonce_older: &[u8],
+    params: &mut [u8],
+    encrypt: bool,
+) {
+    apply_with_hash(
+        HashAlg::Sha256,
+        sym,
+        session_value,
+        nonce_newer,
+        nonce_older,
+        params,
+        encrypt,
+    );
+}
+
 /// Encrypts or decrypts the data portion of the sized buffer at the start of `params` in place
 /// (`[size u16][data]`; the size field stays). A buffer whose size field does not fit is left
 /// alone: the command reports its own `TPM_RC_SIZE`. `nonce_newer` and `nonce_older` as in the
-/// module comment.
-pub(crate) fn apply(
+/// module comment; `auth_hash` is the `authHash` of the session (the KDFa hash of AES-CFB and of the
+/// XOR mask).
+pub(crate) fn apply_with_hash(
+    auth_hash: HashAlg,
     sym: SessionSym,
     session_value: &[u8],
     nonce_newer: &[u8],
@@ -225,7 +251,8 @@ pub(crate) fn apply(
     match sym {
         SessionSym::Null => {}
         SessionSym::Xor => {
-            let mask = kdfa_sha256(
+            let mask = kdfa(
+                auth_hash,
                 session_value,
                 b"XOR",
                 nonce_newer,
@@ -238,7 +265,8 @@ pub(crate) fn apply(
         }
         SessionSym::AesCfb128 | SessionSym::AesCfb256 => {
             let key_len = if sym == SessionSym::AesCfb128 { 16 } else { 32 };
-            let kv = kdfa_sha256(
+            let kv = kdfa(
+                auth_hash,
                 session_value,
                 b"CFB",
                 nonce_newer,

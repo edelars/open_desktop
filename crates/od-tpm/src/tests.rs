@@ -27,6 +27,8 @@ mod tests_obj;
 mod tests_session_audit;
 #[path = "tests_sha2.rs"]
 mod tests_sha2;
+#[path = "tests_sha2_sessions.rs"]
+mod tests_sha2_sessions;
 
 const ENTROPY: [u8; 48] = [5; 48];
 

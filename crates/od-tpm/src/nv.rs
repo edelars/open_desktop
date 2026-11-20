@@ -70,6 +70,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, cc, handle as h};
+use crate::crypto::HashAlg;
 use crate::dispatch::{CommandHandles, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, Writer, limits};
@@ -514,9 +515,19 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let new_auth = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        // The limit is one digest of the `nameAlg` of the index (step D). Only a SHA-256 index can be
+        // defined for now (`TPM2_NV_DefineSpace` refuses another `nameAlg` with `TPM_RC_HASH`), so the
+        // limit is 32 octets; an index with another `nameAlg` is left to the NV hash agility.
+        let limit = self
+            .persistent
+            .nv
+            .get(inv.handles[0])
+            .and_then(|index| HashAlg::from_alg(index.name_alg))
+            .map_or(limits::MAX_DIGEST_SIZE, HashAlg::size);
+        let new_auth = p.tpm2b(limit)?;
         p.finish()?;
-        let auth = AuthValue::from_slice_trimmed(new_auth).ok_or(Rc::SIZE.in_param(1))?;
+        let auth =
+            AuthValue::from_slice_trimmed_up_to(new_auth, limit).ok_or(Rc::SIZE.in_param(1))?;
         let index = self
             .persistent
             .nv
@@ -556,6 +567,7 @@ impl Tpm {
         if attributes & (attr::RESERVED_LOW | attr::RESERVED_HIGH) != 0 {
             return Err(Rc::RESERVED_BITS.in_param(2));
         }
+        // `authPolicy` is one digest of `nameAlg`, SHA-256 here (the check above).
         if !auth_policy.is_empty() && auth_policy.len() != limits::MAX_DIGEST_SIZE {
             return Err(Rc::SIZE.in_param(2));
         }

@@ -41,12 +41,11 @@
 //! §12.5 for `ActivateCredential`). With `userWithAuth` CLEAR a password or
 //! HMAC for the USER role is `TPM_RC_POLICY_FAIL` (slice C2, above).
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{cc, handle, session_attr, st};
 use crate::command::{HEADER_SIZE, check_password_session, parse_auth_area, parse_header};
-use crate::crypto::DIGEST;
+use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash};
 use crate::da::{DaClass, DaProtection};
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
@@ -54,7 +53,7 @@ use crate::marshal::{Reader, TpmsAuthCommand, limits};
 use crate::nv::is_nv_handle;
 use crate::object::is_object_hierarchy;
 use crate::paramenc::{
-    SessionSym, apply as apply_param_encryption, first_parameter_is_sized,
+    SessionSym, apply_with_hash as apply_param_encryption, first_parameter_is_sized,
     first_response_parameter_is_sized,
 };
 use crate::pcr::resolve_pcr_handle;
@@ -356,41 +355,52 @@ pub(crate) fn handle_name(tpm: &Tpm, h: u32) -> Vec<u8> {
     }
 }
 
-/// cpHash of a command (Part 1, clause 16.7): `H(commandCode || Name1 || ... || parameters)`.
+// The per-algorithm caches of cpHash and rpHash are indexed by `HashAlg::index`: the sessions of one
+// command may have different `authHash` values.
+
+/// cpHash of a command (Part 1, clause 16.7), `H(commandCode || Name1 || ... || parameters)`, with
+/// the hash `alg` of the session.
 fn command_parameter_hash(
     tpm: &Tpm,
     spec: &CommandSpec,
     handles: &CommandHandles,
     parameters: &[u8],
-) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    h.update(spec.code.to_be_bytes());
-    append_command_names(&mut h, tpm, spec, handles);
-    h.update(parameters);
-    h.finalize().into()
+    alg: HashAlg,
+) -> TpmDigest {
+    let code = spec.code.to_be_bytes();
+    let names = command_names(tpm, spec, handles);
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(names.len() + 2);
+    parts.push(&code);
+    parts.extend(names.iter().map(Vec::as_slice));
+    parts.push(parameters);
+    hash(alg, &parts)
 }
 
-fn append_command_names(h: &mut Sha256, tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) {
-    for handle in handles.iter().take(usize::from(spec.handles)) {
-        h.update(handle_name(tpm, *handle));
-    }
+fn command_names(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Vec<Vec<u8>> {
+    handles
+        .iter()
+        .take(usize::from(spec.handles))
+        .map(|handle| handle_name(tpm, *handle))
+        .collect()
 }
 
-fn command_names_hash(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    append_command_names(&mut h, tpm, spec, handles);
-    h.finalize().into()
+fn command_names_hash(
+    tpm: &Tpm,
+    spec: &CommandSpec,
+    handles: &CommandHandles,
+    alg: HashAlg,
+) -> TpmDigest {
+    let names = command_names(tpm, spec, handles);
+    let parts: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
+    hash(alg, &parts)
 }
 
 /// pHash covers the command code and the encoded parameters on the wire.
-fn command_parameters_hash(code: u32, parameters: &[u8]) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    h.update(code.to_be_bytes());
-    h.update(parameters);
-    h.finalize().into()
+fn command_parameters_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDigest {
+    hash(alg, &[&code.to_be_bytes(), parameters])
 }
 
-fn command_template_hash(code: u32, parameters: &[u8]) -> Option<[u8; DIGEST]> {
+fn command_template_hash(code: u32, parameters: &[u8], alg: HashAlg) -> Option<TpmDigest> {
     if !matches!(code, cc::CREATE | cc::CREATE_PRIMARY) {
         return None;
     }
@@ -399,16 +409,37 @@ fn command_template_hash(code: u32, parameters: &[u8]) -> Option<[u8; DIGEST]> {
     // the following inPublic untouched.
     p.tpm2b(usize::from(u16::MAX)).ok()?;
     let public = p.tpm2b(usize::from(u16::MAX)).ok()?;
-    Some(Sha256::digest(public).into())
+    Some(hash(alg, &[public]))
 }
 
 /// rpHash of a response (Part 1, clause 16.8): `H(responseCode || commandCode || parameters)`.
-fn response_parameter_hash(code: u32, parameters: &[u8]) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    h.update(Rc::SUCCESS.0.to_be_bytes());
-    h.update(code.to_be_bytes());
-    h.update(parameters);
-    h.finalize().into()
+fn response_parameter_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDigest {
+    hash(
+        alg,
+        &[
+            &Rc::SUCCESS.0.to_be_bytes(),
+            &code.to_be_bytes(),
+            parameters,
+        ],
+    )
+}
+
+/// `parse_auth_area` takes up to one SHA-512 digest of nonce and HMAC in every session; the limit
+/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`, whose password
+/// stays at 32 octets) and a handle that names no loaded session keep the SHA-256 limit of before
+/// hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
+fn check_auth_sizes(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<(), Rc> {
+    for s in sessions {
+        let limit = tpm
+            .sessions
+            .slot_of(s.session_handle)
+            .and_then(|slot| tpm.sessions.get(slot))
+            .map_or(DIGEST, |session| session.auth_hash.size());
+        if s.nonce.len() > limit || s.hmac.len() > limit {
+            return Err(Rc::AUTHSIZE);
+        }
+    }
+    Ok(())
 }
 
 /// How a session of the authorization area is used.
@@ -580,6 +611,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     } else {
         Vec::new()
     };
+    check_auth_sizes(tpm, &sessions)?;
     let needed = usize::from(spec.auth);
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);
@@ -600,9 +632,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     let params_start = command.len() - r.remaining();
     let parameters = &command[params_start..];
 
-    // Verify every authorization. cpHash is computed once, with the first HMAC or policy
-    // session's hash (SHA-256 is the only session hash).
-    let mut cp_hash: Option<[u8; DIGEST]> = None;
+    // Verify every authorization. cpHash is computed once per hash of the sessions of the command
+    // (SHA-256, SHA-384, SHA-512), when the first session with that `authHash` needs it.
+    let mut cp_hash: [Option<TpmDigest>; 3] = [None; 3];
     // `authValue` of the entity of each session, for `sessionValue` of parameter encryption.
     let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
@@ -658,14 +690,20 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 } else {
                     [&[][..]; 2]
                 };
-                let cp = *cp_hash
-                    .get_or_insert_with(|| command_parameter_hash(tpm, spec, &handles, parameters));
+                let alg = tpm
+                    .sessions
+                    .get(*slot)
+                    .map(|session| session.auth_hash)
+                    .ok_or(Rc::reference_session(i))?;
+                let cp = *cp_hash[alg.index()].get_or_insert_with(|| {
+                    command_parameter_hash(tpm, spec, &handles, parameters, alg)
+                });
                 if !authorizes {
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     if !verify_command_hmac(
                         session,
                         session.key.as_slice(),
-                        &cp,
+                        cp.as_slice(),
                         &s.nonce,
                         parameter_nonces,
                         s.attributes,
@@ -682,15 +720,17 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         pslot,
                         (spec.code, handles[i]),
                         |restriction| match restriction {
-                            PolicyHashRestriction::CpHash(expected) => cp == expected,
+                            PolicyHashRestriction::CpHash(expected) => cp.as_slice() == expected,
                             PolicyHashRestriction::NameHash(expected) => {
-                                command_names_hash(tpm, spec, &handles) == expected
+                                command_names_hash(tpm, spec, &handles, alg).as_slice() == expected
                             }
                             PolicyHashRestriction::TemplateHash(expected) => {
-                                command_template_hash(spec.code, parameters) == Some(expected)
+                                command_template_hash(spec.code, parameters, alg)
+                                    .is_some_and(|hash| hash.as_slice() == expected)
                             }
                             PolicyHashRestriction::ParametersHash(expected) => {
-                                command_parameters_hash(spec.code, parameters) == expected
+                                command_parameters_hash(spec.code, parameters, alg).as_slice()
+                                    == expected
                             }
                         },
                         policy,
@@ -712,7 +752,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                             || !verify_command_hmac(
                                 session,
                                 &key,
-                                &cp,
+                                cp.as_slice(),
                                 &s.nonce,
                                 parameter_nonces,
                                 s.attributes,
@@ -728,7 +768,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         if !verify_command_hmac(
                             session,
                             session.key.as_slice(),
-                            &cp,
+                            cp.as_slice(),
                             &s.nonce,
                             parameter_nonces,
                             s.attributes,
@@ -744,7 +784,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     if !verify_command_hmac(
                         session,
                         &key,
-                        &cp,
+                        cp.as_slice(),
                         &s.nonce,
                         parameter_nonces,
                         s.attributes,
@@ -782,6 +822,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             let mut value = Zeroizing::new(session.key.as_slice().to_vec());
             value.extend_from_slice(&entity_auths[i]);
             apply_param_encryption(
+                session.auth_hash,
                 session.symmetric,
                 &value,
                 &s.nonce,
@@ -920,6 +961,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 value.extend_from_slice(now.as_slice());
             }
             apply_param_encryption(
+                session.auth_hash,
                 session.symmetric,
                 &value,
                 &new_nonces[i],
@@ -931,16 +973,28 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     }
 
     // Acknowledgements roll the nonce and release sessions that do not continue.
-    let rp_hash = response_parameter_hash(spec.code, &out.params);
+    // rpHash per hash of the sessions, as cpHash.
+    let mut rp_hash: [Option<TpmDigest>; 3] = [None; 3];
+    let mut rp_for = |alg: HashAlg| -> TpmDigest {
+        *rp_hash[alg.index()]
+            .get_or_insert_with(|| response_parameter_hash(spec.code, &out.params, alg))
+    };
     if let Some(index) = audit_index {
         let SessionUse::Hmac { slot, .. } = uses[index] else {
             unreachable!("the dispatcher accepts only HMAC audit sessions");
         };
+        let audit_alg = tpm
+            .sessions
+            .get(slot)
+            .map(|session| session.auth_hash)
+            .expect("validated audit session stays loaded");
         tpm.sessions.extend_audit(
             slot,
             sessions[index].attributes & session_attr::AUDIT_RESET != 0,
-            &cp_hash.expect("an audit session computes cpHash"),
-            &rp_hash,
+            cp_hash[audit_alg.index()]
+                .expect("an audit session computes cpHash")
+                .as_slice(),
+            rp_for(audit_alg).as_slice(),
         );
     } else if sessions_allowed {
         tpm.sessions.exclusive_audit = None;
@@ -968,8 +1022,17 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                             let now = response_auth(tpm, spec.code, &handles, i);
                             key.extend_from_slice(now.as_slice());
                         }
-                        let tag =
-                            response_hmac(&key, &rp_hash, &nonce, &s.nonce, attributes).to_vec();
+                        let alg = session.auth_hash;
+                        let tag = response_hmac(
+                            alg,
+                            &key,
+                            rp_for(alg).as_slice(),
+                            &nonce,
+                            &s.nonce,
+                            attributes,
+                        )
+                        .as_slice()
+                        .to_vec();
                         zeroize::Zeroize::zeroize(&mut key);
                         tag
                     }

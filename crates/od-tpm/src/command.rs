@@ -53,7 +53,10 @@ pub fn parse_header(cmd: &[u8]) -> Result<Header, Rc> {
     Ok(Header { tag, size, code })
 }
 
-/// Parses the authorization area that follows the handle area of a `TPM_ST_SESSIONS` command.
+/// Parses the authorization area that follows the handle area of a `TPM_ST_SESSIONS` command. A
+/// session takes a nonce and an `hmac` of up to one SHA-512 digest here; the dispatcher narrows the
+/// limit to the hash of each loaded session (`TPM_RC_AUTHSIZE`) and keeps 32 octets for a password
+/// (the password of `TPM_RS_PW` is read here as an `hmac` of up to 64 octets, without narrowing).
 /// Per Part 3 v185 §5.5, the size must cover at least one session header (nine
 /// octets), and the area must contain at most [`limits::MAX_AUTH_SESSIONS`] complete sessions.
 pub fn parse_auth_area(r: &mut Reader<'_>) -> Result<Vec<TpmsAuthCommand>, Rc> {
@@ -67,7 +70,10 @@ pub fn parse_auth_area(r: &mut Reader<'_>) -> Result<Vec<TpmsAuthCommand>, Rc> {
         if sessions.len() == limits::MAX_AUTH_SESSIONS {
             return Err(Rc::AUTHSIZE);
         }
-        sessions.push(TpmsAuthCommand::unmarshal(&mut area).map_err(|_| Rc::AUTHSIZE)?);
+        sessions.push(
+            TpmsAuthCommand::unmarshal_up_to(&mut area, limits::MAX_HASH_SIZE)
+                .map_err(|_| Rc::AUTHSIZE)?,
+        );
     }
     Ok(sessions)
 }
