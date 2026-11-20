@@ -1501,6 +1501,80 @@ fn unmarshal_name(t: &mut Tpm, h: u32) -> Vec<u8> {
 }
 
 #[test]
+fn lockout_bind_protects_policy_ahead_of_validation_and_preserves_both_gates() {
+    let (mut t, parent) = with_ecc_parent();
+    let lockout_auth = b"recovery key";
+    ok(&set_auth(&mut t, LOCKOUT, b"", lockout_auth));
+    let loc_digest = h256(&[&[0; 32], &u32b(cc::POLICY_LOCALITY), &[1]]);
+    let mut template = sealed();
+    template.attributes |= oa::NO_DA;
+    template.auth_policy = h256(&[
+        &loc_digest,
+        &u32b(cc::POLICY_COMMAND_CODE),
+        &u32b(cc::UNSEAL),
+    ]);
+    let (key, key_name, _) = make_child(&mut t, parent, &template, b"", b"contents");
+    let mut unseal = hc(cc::UNSEAL, &[key], Vec::new(), (key, b""));
+    unseal.names = vec![key_name];
+
+    let mut p = start_session(&mut t, se::POLICY, LOCKOUT, lockout_auth, &[0x55; 16]);
+    err(
+        &use_session(&mut t, &mut p, &unseal, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert!(t.persistent.da.lockout_auth_enabled);
+    ok(&pol(&mut t, cc::POLICY_RESTART, &p, &[]));
+    ok(&pol(&mut t, cc::POLICY_LOCALITY, &p, &[1]));
+    ok(&pol_cc(&mut t, &p, cc::UNSEAL));
+    let saved = params(&save(&mut t, p.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), p.handle);
+
+    ok(&pw_cmd(
+        &mut t,
+        cc::DICTIONARY_ATTACK_PARAMETERS,
+        &[LOCKOUT],
+        lockout_auth,
+        &cat(&[&u32b(1), &u32b(600), &u32b(86_400)]),
+    ));
+    err(
+        &create_child(&mut t, parent, b"wrong", b"", b"", &sealed()),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert!(t.da_in_lockout() && t.persistent.da.lockout_auth_enabled);
+    let mut hmac = start_hmac(&mut t, LOCKOUT, lockout_auth, &[0x56; 16]);
+    let mut create = hc(
+        cc::CREATE,
+        &[parent],
+        creation_params(b"", b"", &sealed(), b"", &NO_PCR),
+        (parent, b"parent-pw"),
+    );
+    create.names = vec![unmarshal_name(&mut t, parent)];
+    err(
+        &use_session(&mut t, &mut hmac, &create, 0, false, false),
+        Rc::LOCKOUT,
+    );
+    assert!(t.persistent.da.lockout_auth_enabled);
+    // The target noDA object can still use the independent, enabled Lockout secret.
+    assert_eq!(
+        params(&use_session(&mut t, &mut p, &unseal, 0, false, false), 0),
+        tpm2b(b"contents")
+    );
+    ok(&pol(&mut t, cc::POLICY_LOCALITY, &p, &[1]));
+    ok(&pol_cc(&mut t, &p, cc::UNSEAL));
+    err(
+        &use_session(&mut t, &mut p, &unseal, 0, true, false),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert!(!t.persistent.da.lockout_auth_enabled);
+    assert_eq!(t.persistent.da.failed_tries, 1);
+    ok(&pol(&mut t, cc::POLICY_RESTART, &p, &[]));
+    err(
+        &use_session(&mut t, &mut p, &unseal, 0, false, false),
+        Rc::LOCKOUT,
+    );
+}
+
+#[test]
 fn da_lockout_precedes_role_and_flagged_policy_checks() {
     let (mut t, parent) = with_ecc_parent();
     let mut template = ecc_sign();

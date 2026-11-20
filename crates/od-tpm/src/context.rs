@@ -61,6 +61,7 @@ use zeroize::Zeroizing;
 
 use crate::codes::{handle, object_attr};
 use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::da::DaClass;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, TpmtPublic, Writer, limits};
@@ -360,7 +361,12 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     } else {
         w.u8(0);
     }
-    w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1));
+    let bind_da = match s.bind_da {
+        DaClass::Exempt => 0,
+        DaClass::Protected => 1,
+        DaClass::Lockout => 2,
+    };
+    w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1) | (bind_da << 2));
     w.u8(s.symmetric.to_octet());
     if let Some(digest) = s.audit_digest {
         w.u8(1); // Version of the optional audit tail.
@@ -418,7 +424,21 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         _ => return Err(Rc::VALUE),
     };
     let flags = r.u8()?;
-    if flags > 3 {
+    let bind_da = match flags >> 2 {
+        // Legacy HMAC bodies retain the bound handle. Policy and audit
+        // bodies from that format do not record bind provenance.
+        0 if bound
+            .as_ref()
+            .is_some_and(|b| b.handle == handle::RH_LOCKOUT) =>
+        {
+            DaClass::Lockout
+        }
+        0 => DaClass::Exempt,
+        1 => DaClass::Protected,
+        2 => DaClass::Lockout,
+        _ => return Err(Rc::VALUE),
+    };
+    if bind_da != DaClass::Exempt && key.as_slice().len() != DIGEST {
         return Err(Rc::VALUE);
     }
     policy.auth_value_needed = flags & 1 != 0;
@@ -444,6 +464,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         nonce_tpm,
         key,
         bound,
+        bind_da,
         kind,
         policy,
         symmetric,
@@ -631,6 +652,38 @@ mod tests {
 
     const PROOF: [u8; 32] = [3; 32];
     const RESET: [u8; 32] = [4; 32];
+
+    #[test]
+    fn legacy_session_bodies_recover_da_only_when_the_bound_handle_survived() {
+        for (kind, bound, expected) in [
+            (0, Some(handle::RH_LOCKOUT), DaClass::Lockout),
+            (0, Some(handle::RH_OWNER), DaClass::Exempt),
+            (1, None, DaClass::Exempt),
+        ] {
+            let mut w = Writer::new();
+            w.u8(kind);
+            w.tpm2b(&[1; 16]);
+            w.tpm2b(&[2; 32]);
+            if let Some(bound) = bound {
+                w.u8(1);
+                w.u32(bound);
+                w.tpm2b(b"old");
+            } else {
+                w.u8(0);
+            }
+            w.bytes(&[0; 32]);
+            w.bytes(&[0, 0, 0, 0, SessionSym::Null.to_octet()]);
+            let mut legacy = w.finish();
+            let session = decode_session(&legacy).unwrap();
+            assert_eq!(session.bind_da, expected);
+            if expected == DaClass::Exempt {
+                assert_eq!(&encode_session(&session)[..], legacy);
+            }
+            let flags = legacy.len() - 2;
+            legacy[flags] = 0x0c;
+            assert!(matches!(decode_session(&legacy), Err(Rc::VALUE)));
+        }
+    }
 
     #[test]
     fn a_context_opens_only_with_the_values_it_was_made_with() {

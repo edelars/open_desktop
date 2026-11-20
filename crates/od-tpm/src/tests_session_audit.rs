@@ -1,7 +1,8 @@
 //! Raw TPM commands and an independent digest oracle for session audit.
 
 use super::tests_b::{
-    Hc, Hs, check_hmac_ack, hmac_auth_entry, set_auth, split_response, start_hmac, start_session,
+    Hc, Hs, LOCKOUT, check_hmac_ack, hmac_auth_entry, set_auth, split_response, start_hmac,
+    start_session,
 };
 use super::tests_c2::{FIRMWARE, attest_bytes, h256, parse_attestation, qualified};
 use super::tests_obj::{create_primary, ecc_sign, parse_primary, rsa_sign, verify};
@@ -128,6 +129,38 @@ fn session_audit_context_roundtrip_and_self_attestation_commit_after_response() 
     let dig = h256(&[&first_digest(), &cp, &rp]);
     let second = audited(&mut t, c, passwords, &mut s, AUDIT | EXCLUSIVE);
     check_attestation(&second, true, &dig);
+}
+
+#[test]
+fn lockout_bind_remains_protected_after_audit_conversion_and_context_save() {
+    let mut t = started();
+    ok(&set_auth(&mut t, LOCKOUT, b"", b"secret"));
+    let mut auditor = start_hmac(&mut t, LOCKOUT, b"secret", &[0x45; 16]);
+    audited(&mut t, parms(AUDIT), &[], &mut auditor, AUDIT | EXCLUSIVE);
+    let slot = t.sessions.slot_of(auditor.handle).unwrap();
+    assert!(t.sessions.get(slot).unwrap().bound.is_none());
+    let response = run(&mut t, plain(cc::CONTEXT_SAVE, &[auditor.handle], &[]));
+    let context = params(&response, 0).to_vec();
+    let loaded = run(&mut t, plain(cc::CONTEXT_LOAD, &[], &context));
+    ok(&loaded);
+    assert_eq!(&loaded[10..14], &auditor.handle.to_be_bytes());
+
+    // The issued session retains the key derived before a hierarchy auth change.
+    ok(&set_auth(&mut t, LOCKOUT, b"secret", b"rotated"));
+    audited(&mut t, parms(AUDIT), &[], &mut auditor, AUDIT);
+    let tries = t.persistent.da.failed_tries;
+    err(
+        &run(&mut t, packet(&parms(AUDIT), &[], &[(&auditor, true)])),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert!(!t.persistent.da.lockout_auth_enabled);
+    assert_eq!(t.persistent.da.failed_tries, tries);
+    err(
+        &run(&mut t, packet(&parms(AUDIT), &[], &[(&auditor, false)])),
+        Rc::LOCKOUT,
+    );
+    let mut exempt = start_hmac(&mut t, OWNER, b"", &[0x46; 16]);
+    audited(&mut t, parms(AUDIT), &[], &mut exempt, AUDIT | EXCLUSIVE);
 }
 
 #[test]

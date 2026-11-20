@@ -36,7 +36,7 @@ use crate::codes::{alg, handle, object_attr, st};
 use crate::crypto::{
     ecc_sign, ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign, rsa_verify,
 };
-use crate::da::DaClass;
+use crate::da::DaProtection;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{
@@ -128,7 +128,7 @@ impl Tpm {
         idx: usize,
         admin: bool,
         policy: bool,
-        da: DaClass,
+        da: DaProtection,
     ) -> Result<AuthValue, Rc> {
         let s = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         self.da_check(da)?;

@@ -50,6 +50,7 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, se, session_attr};
 use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::da::DaClass;
 use crate::dispatch::Invocation;
 use crate::hash::{AuthValue, password_matches};
 use crate::marshal::{Reader, Writer, limits};
@@ -103,6 +104,9 @@ pub(crate) struct Session {
     /// `sessionKey`: empty (unbound, unsalted) or one digest.
     pub key: AuthValue,
     pub bound: Option<BoundEntity>,
+    /// DA class of the entity whose secret was used to derive sessionKey.
+    /// This outlives any association that omits an authValue in an HMAC.
+    pub bind_da: DaClass,
     pub kind: SessionKind,
     /// The policy context (`policy.rs`); the initial state for an HMAC session.
     pub policy: PolicyState,
@@ -348,6 +352,7 @@ impl Tpm {
             return Err(Rc::VALUE.in_param(2));
         }
         let bind = inv.handles[1];
+        let bind_da = self.da_class_of(bind);
         let bound = if bind == handle::RH_NULL {
             None
         } else {
@@ -379,6 +384,7 @@ impl Tpm {
                     // A policy session is not bound: `bind` only feeds the session key
                     // (Part 3, clause 11.1.1: "the session is not bound").
                     bound: if kind.is_policy() { None } else { bound },
+                    bind_da,
                     kind,
                     policy: PolicyState::new(),
                     symmetric,
