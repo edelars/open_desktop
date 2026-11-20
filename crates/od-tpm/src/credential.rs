@@ -1,4 +1,4 @@
-//! TPM credential protection (Library v185 Part 1 §21.4; Part 3 §§12.5–6).
+//! TPM credential protection and seed sharing (Library v185 Part 1 §§21.3–5, 43.10 and 44.7).
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -18,6 +18,25 @@ use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
 const IDENTITY_LABEL: &[u8] = b"IDENTITY\0";
+pub(crate) const DUPLICATE_LABEL: &[u8] = b"DUPLICATE\0";
+
+pub(crate) enum SeedError {
+    NoPrivate,
+    KeyType,
+    Ciphertext,
+    Point,
+}
+
+impl SeedError {
+    pub(crate) fn response(self, handle: u8, param: u8) -> Rc {
+        match self {
+            Self::NoPrivate => Rc::AUTH_UNAVAILABLE,
+            Self::KeyType => Rc::TYPE.in_handle(handle),
+            Self::Ciphertext => Rc::VALUE.in_param(param),
+            Self::Point => Rc::ECC_POINT.in_param(param),
+        }
+    }
+}
 
 impl Tpm {
     pub(crate) fn cmd_make_credential(
@@ -34,7 +53,8 @@ impl Tpm {
         let key = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
         check_storage_key(key, 1)?;
-        let (seed, secret) = make_seed(&key.public.unique, &mut self.drbg).ok_or(Rc::FAILURE)?;
+        let (seed, secret) =
+            make_seed(&key.public.unique, IDENTITY_LABEL, &mut self.drbg).ok_or(Rc::FAILURE)?;
         let blob = protect(&seed[..], object_name, credential);
         let mut output = Writer::new();
         output.tpm2b(&blob);
@@ -65,12 +85,10 @@ impl Tpm {
         id.set_param(1);
         let tag = id.tpm2b(DIGEST)?;
         let encrypted = id.bytes(id.remaining())?;
-        let seed = recover_seed(key, secret, &mut self.drbg)?;
-        if !hmac_sha256_verify(&integrity_key(&seed), &[encrypted, &activated.name], tag) {
-            return Err(Rc::INTEGRITY.in_param(1));
-        }
-
-        let clear = crypt_identity(&seed, &activated.name, encrypted, false);
+        let seed = recover_seed(key, secret, IDENTITY_LABEL, &mut self.drbg)
+            .map_err(|error| error.response(2, 2))?;
+        let clear = open_seed_blob(&seed, &activated.name, tag, encrypted)
+            .ok_or(Rc::INTEGRITY.in_param(1))?;
         let mut value = Reader::new(&clear);
         let credential = value
             .tpm2b(DIGEST)
@@ -85,7 +103,7 @@ impl Tpm {
     }
 }
 
-fn check_storage_key(key: &Object, position: u8) -> Result<(), Rc> {
+pub(crate) fn check_storage_key(key: &Object, position: u8) -> Result<(), Rc> {
     if !key.is_storage() {
         return Err(Rc::TYPE.in_handle(position));
     }
@@ -109,51 +127,57 @@ fn check_storage_key(key: &Object, position: u8) -> Result<(), Rc> {
     Ok(())
 }
 
-fn recover_seed(key: &Object, encrypted: &[u8], rng: &mut Drbg) -> Result<Zeroizing<Vec<u8>>, Rc> {
-    let sensitive = key.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+pub(crate) fn recover_seed(
+    key: &Object,
+    encrypted: &[u8],
+    label: &[u8],
+    rng: &mut Drbg,
+) -> Result<Zeroizing<Vec<u8>>, SeedError> {
+    let sensitive = key.sensitive.as_ref().ok_or(SeedError::NoPrivate)?;
     match (&sensitive.secret, &key.public.unique) {
         (Secret::Rsa(rsa), Unique::Rsa(modulus)) => {
-            let error = Rc::VALUE.in_param(2);
             if encrypted.len() != modulus.len() {
-                return Err(error);
+                return Err(SeedError::Ciphertext);
             }
-            rsa_decrypt_private(rsa, RsaPadding::Oaep, IDENTITY_LABEL, encrypted, rng)
+            rsa_decrypt_private(rsa, RsaPadding::Oaep, label, encrypted, rng)
                 .filter(|seed| seed.len() <= DIGEST)
-                .ok_or(error)
+                .ok_or(SeedError::Ciphertext)
         }
         (Secret::Ecc(ecc), Unique::Ecc { x: receiver_x, .. }) => {
-            let error = Rc::ECC_POINT.in_param(2);
             let mut point = Reader::new(encrypted);
-            let x = point.tpm2b(MAX_ECC_BYTES).map_err(|_| error)?;
-            let y = point.tpm2b(MAX_ECC_BYTES).map_err(|_| error)?;
-            point.finish().map_err(|_| error)?;
+            let x = point.tpm2b(MAX_ECC_BYTES).map_err(|_| SeedError::Point)?;
+            let y = point.tpm2b(MAX_ECC_BYTES).map_err(|_| SeedError::Point)?;
+            point.finish().map_err(|_| SeedError::Point)?;
             if x.len() != MAX_ECC_BYTES || y.len() != MAX_ECC_BYTES {
-                return Err(error);
+                return Err(SeedError::Point);
             }
-            let (shared_x, _) = ecc_ecdh(ecc, x, y).ok_or(error)?;
+            let (shared_x, _) = ecc_ecdh(ecc, x, y).ok_or(SeedError::Point)?;
             Ok(Zeroizing::new(
-                identity_kdfe(&shared_x, x, receiver_x).to_vec(),
+                kdfe(&shared_x, label, x, receiver_x).to_vec(),
             ))
         }
-        _ => Err(Rc::TYPE.in_handle(2)),
+        _ => Err(SeedError::KeyType),
     }
 }
 
 /// Seed and encrypted secret, using the storage key's supported Name hash (SHA-256).
-fn make_seed(public: &Unique, rng: &mut Drbg) -> Option<(Zeroizing<[u8; DIGEST]>, Vec<u8>)> {
+fn make_seed(
+    public: &Unique,
+    label: &[u8],
+    rng: &mut Drbg,
+) -> Option<(Zeroizing<[u8; DIGEST]>, Vec<u8>)> {
     match public {
         Unique::Rsa(modulus) => {
             let mut seed = Zeroizing::new([0u8; DIGEST]);
             rng.generate(&mut seed[..])?;
-            let cipher =
-                rsa_encrypt_public(modulus, RsaPadding::Oaep, IDENTITY_LABEL, &seed[..], rng)?;
+            let cipher = rsa_encrypt_public(modulus, RsaPadding::Oaep, label, &seed[..], rng)?;
             Some((seed, cipher))
         }
         Unique::Ecc { x, y } => {
             let ephemeral = ecc_generate_extra_random_bits(rng)?;
             let (ephemeral_x, ephemeral_y) = ecc_public(&ephemeral)?;
             let (shared_x, _) = ecc_ecdh(&ephemeral, x, y)?;
-            let seed = identity_kdfe(&shared_x, &ephemeral_x, x);
+            let seed = kdfe(&shared_x, label, &ephemeral_x, x);
             let mut point = Writer::new();
             point.tpm2b(&ephemeral_x);
             point.tpm2b(&ephemeral_y);
@@ -164,15 +188,16 @@ fn make_seed(public: &Unique, rng: &mut Drbg) -> Option<(Zeroizing<[u8; DIGEST]>
 }
 
 /// Single SHA-256 block of KDFe, with the ephemeral point as party U.
-fn identity_kdfe(
+fn kdfe(
     shared_x: &[u8],
+    label: &[u8],
     ephemeral_x: &[u8],
     receiver_x: &[u8],
 ) -> Zeroizing<[u8; DIGEST]> {
     let mut hash = Sha256::new();
     hash.update(1u32.to_be_bytes());
     hash.update(shared_x);
-    hash.update(IDENTITY_LABEL);
+    hash.update(label);
     hash.update(ephemeral_x);
     hash.update(receiver_x);
     Zeroizing::new(hash.finalize().into())
@@ -182,18 +207,21 @@ fn protect(seed: &[u8], name: &[u8], credential: &[u8]) -> Vec<u8> {
     let mut clear = Zeroizing::new(Vec::with_capacity(2 + credential.len()));
     clear.extend_from_slice(&(credential.len() as u16).to_be_bytes());
     clear.extend_from_slice(credential);
-    let encrypted = crypt_identity(seed, name, &clear, true);
+    protect_seed_blob(seed, name, &clear)
+}
+
+fn protect_seed_blob(seed: &[u8], name: &[u8], clear: &[u8]) -> Vec<u8> {
+    let encrypted = crypt_seed_blob(seed, name, clear, true);
     let integrity = hmac_sha256(&integrity_key(seed), &[&encrypted, name]);
     let mut blob = Writer::new();
     blob.tpm2b(&integrity);
-    // The inner length of the credential is encrypted with its contents.
     blob.bytes(&encrypted);
     blob.finish()
 }
 
 pub(crate) fn self_test() -> bool {
     // Independent Python SHA-256 vector for the credential KDFe transcript.
-    *identity_kdfe(&[1; 32], &[2; 32], &[3; 32])
+    *kdfe(&[1; 32], IDENTITY_LABEL, &[2; 32], &[3; 32])
         == [
             0x20, 0x73, 0xa3, 0x30, 0x6e, 0xed, 0xcf, 0xb1, 0x78, 0x18, 0x3d, 0x8a, 0x72, 0x1f,
             0x94, 0x9b, 0xba, 0x9c, 0x3d, 0x45, 0x01, 0xb6, 0xc2, 0x83, 0x94, 0x87, 0xbb, 0xdd,
@@ -205,7 +233,17 @@ fn integrity_key(seed: &[u8]) -> Zeroizing<Vec<u8>> {
     kdfa_sha256(seed, b"INTEGRITY", &[], &[], (DIGEST * 8) as u32)
 }
 
-fn crypt_identity(seed: &[u8], name: &[u8], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
+pub(crate) fn open_seed_blob(
+    seed: &[u8],
+    name: &[u8],
+    tag: &[u8],
+    encrypted: &[u8],
+) -> Option<Zeroizing<Vec<u8>>> {
+    hmac_sha256_verify(&integrity_key(seed), &[encrypted, name], tag)
+        .then(|| crypt_seed_blob(seed, name, encrypted, false))
+}
+
+fn crypt_seed_blob(seed: &[u8], name: &[u8], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
     let key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
     aes128_cfb(&key, &[0; 16], data, encrypt)
 }

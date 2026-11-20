@@ -204,6 +204,31 @@ pub(crate) fn rsa_from_primes(pq: &[u8], n: &[u8]) -> Option<RsaPrivate> {
     (key.n_bytes().as_ref() == n).then_some(key)
 }
 
+/// TPM duplication carries a single RSA prime. Derive the other from the public
+/// modulus and validate the factors before handing them to the private-key codec.
+pub(crate) fn rsa_from_one_prime(prime: &[u8], modulus: &[u8]) -> Option<RsaPrivate> {
+    if prime.len() != PRIME_BYTES || modulus.len() != RSA_BYTES || modulus[0] & 0x80 == 0 {
+        return None;
+    }
+    let modulus_value = BoxedUint::from_be_slice(modulus, 2048).ok()?;
+    let prime_value = Zeroizing::new(BoxedUint::from_be_slice(prime, 2048).ok()?);
+    let other = Zeroizing::new(modulus_value.checked_div(&*prime_value).into_option()?);
+    // Both factors must have squares with the same bit length as the modulus
+    // (TPM Library v185 Part 1 §43.1). Both 1024-bit inputs fit the 2048-bit square.
+    // rsa_from_primes also checks the exact product.
+    if other.bit_width() != 1024
+        || Zeroizing::new(prime_value.wrapping_square()).bit_width() != 2048
+        || Zeroizing::new(other.wrapping_square()).bit_width() != 2048
+    {
+        return None;
+    }
+    let tail = Zeroizing::new(other.to_be_bytes());
+    let mut pair = Zeroizing::new(Vec::with_capacity(RSA_BYTES));
+    pair.extend_from_slice(prime);
+    pair.extend_from_slice(&tail[tail.len() - PRIME_BYTES..]);
+    rsa_from_primes(&pair, modulus)
+}
+
 /// RSASSA-PKCS1-v1_5 with SHA-256 over `digest` (already a SHA-256 digest). Private operation:
 /// see the ISSUE-064 note at the top of this module.
 pub(crate) fn rsa_sign(key: &RsaPrivate, digest: &[u8], rng: &mut Drbg) -> Option<Vec<u8>> {

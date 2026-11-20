@@ -64,8 +64,8 @@ use zeroize::Zeroizing;
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
     EccPrivate, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public, ecc_scalar,
-    ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_primes, rsa_generate,
-    rsa_modulus, rsa_primes, rsa_verify, supported_rsa_exponent,
+    ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_one_prime, rsa_from_primes,
+    rsa_generate, rsa_modulus, rsa_primes, rsa_verify, supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::marshal::{
@@ -619,6 +619,16 @@ fn sensitive_with_auth(
 /// `TPM_RC_KEY_SIZE` for a private value of the wrong size, `TPM_RC_BINDING` if the private value
 /// does not belong to the public area.
 pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
+    read_sensitive(bytes, public, false)
+}
+
+/// A duplication blob carries canonical TPM sensitive fields. The local
+/// private object envelope retains its existing two-prime RSA layout.
+pub(crate) fn sensitive_from_duplicate(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
+    read_sensitive(bytes, public, true)
+}
+
+fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<Sensitive, Rc> {
     type Raw = (
         u16,
         Zeroizing<Vec<u8>>,
@@ -644,27 +654,55 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
         return Err(Rc::TYPE);
     }
     let auth = AuthValue::from_slice_trimmed(&auth).ok_or(Rc::SENSITIVE)?;
+    if duplicate {
+        let storage = object_attr::RESTRICTED | object_attr::DECRYPT;
+        let required_seed = if matches!(public.params, PublicParams::KeyedHash { .. }) {
+            limits::MAX_DIGEST_SIZE
+        } else if public.attributes & storage == storage {
+            limits::MAX_DIGEST_SIZE / 2
+        } else {
+            0
+        };
+        if seed.len() < required_seed {
+            return Err(Rc::KEY_SIZE);
+        }
+    }
     let secret = match &public.params {
         PublicParams::Rsa { exponent, .. } => {
             let Unique::Rsa(n) = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            if secret.len() != MAX_RSA_BYTES {
+            let size = if duplicate {
+                MAX_RSA_BYTES / 2
+            } else {
+                MAX_RSA_BYTES
+            };
+            if secret.len() != size {
                 return Err(Rc::KEY_SIZE);
             }
             if !supported_rsa_exponent(*exponent) {
                 return Err(Rc::BINDING);
             }
-            Secret::Rsa(Box::new(rsa_from_primes(&secret, n).ok_or(Rc::BINDING)?))
+            let key = if duplicate {
+                rsa_from_one_prime(&secret, n)
+            } else {
+                rsa_from_primes(&secret, n)
+            };
+            Secret::Rsa(Box::new(key.ok_or(Rc::BINDING)?))
         }
         PublicParams::Ecc { .. } => {
             let Unique::Ecc { x, y } = &public.unique else {
                 return Err(Rc::BINDING);
             };
-            if secret.len() != MAX_ECC_BYTES {
+            if secret.is_empty()
+                || secret.len() > MAX_ECC_BYTES
+                || (!duplicate && secret.len() != MAX_ECC_BYTES)
+            {
                 return Err(Rc::KEY_SIZE);
             }
-            let key = ecc_from_scalar(&secret).ok_or(Rc::BINDING)?;
+            let mut padded = Zeroizing::new([0u8; MAX_ECC_BYTES]);
+            padded[MAX_ECC_BYTES - secret.len()..].copy_from_slice(&secret);
+            let key = ecc_from_scalar(&padded[..]).ok_or(Rc::BINDING)?;
             // The public point must be the scalar's public point (clause 12.2.1).
             if ecc_public(&key).as_ref() != Some(&(x.clone(), y.clone())) {
                 return Err(Rc::BINDING);

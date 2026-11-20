@@ -33,6 +33,7 @@ mod credential;
 pub mod crypto;
 mod da;
 pub mod dispatch;
+mod duplicate;
 pub mod ek;
 pub mod hash;
 pub mod hierarchy;

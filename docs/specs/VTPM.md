@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 90 кодов из списка, 11 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлен 91 код из списка, 10 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,7 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| Объекты | `Duplicate`, `Import` |
+| Объекты | `Duplicate` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicyDuplicationSelect` |
 
@@ -127,6 +127,34 @@ TPM проверяет HMAC от шифротекста и Name загружен
 параметра авторизующей сессией. Новая авторизация начинает действовать
 при `Load` выходного контейнера. Формат snapshot сохраняется.
 [TPM Library v185 Part 1 §§16.2 и 24.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf), [Part 3 §12.8](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=83).
+
+### Импорт дубликата
+
+`TPM2_Import` (`0x156`) авторизует новый Storage key как USER.
+Команда принимает RSA-2048, P-256 и KEYEDHASH с `nameAlg=SHA-256`.
+У импортируемого объекта сброшены `fixedTPM` и `fixedParent`.
+`encryptedDuplication` требует внутреннюю и внешнюю защиту.
+Открытый дубликат, каждая обёртка отдельно и их сочетание допустимы
+в пределах атрибутов объекта и родителя.
+
+Внешний seed восстанавливается RSA-OAEP/SHA-256 или P-256 ECDH/KDFe
+с меткой `DUPLICATE\0`. Внешний HMAC проверяется над шифротекстом
+и Name до AES-128-CFB с нулевым IV. Внутренний AES-128-CFB использует
+предоставленный 16-байтовый ключ и нулевой IV. После дешифрования TPM
+проверяет SHA-256 от полного `TPM2B_SENSITIVE` и Name без его длины.
+
+Канонический RSA-дубликат содержит один 128-байтовый множитель.
+TPM восстанавливает второй по модулю, проверяет диапазоны обоих
+множителей и соответствие открытому модулю. Для P-256 допускается
+скаляр длиной от 1 до 32 байт. Для Storage key требуется от 16 байт
+`seedValue` при SHA-256, для KEYEDHASH требуется 32 байта.
+Авторизация, закрытый материал и `seedValue` проходят в локальный
+`outPrivate` под ключом нового родителя со свежим IV. Для использования
+объекта вызывается обычный `Load`. Формат локальных контейнеров
+и snapshot сохраняется. Сессия может защищать `encryptionKey` и
+выходной `outPrivate` на проводе.
+[TPM Library v185 Part 1 §§19.4–19.5, 20.3.2, 24.7.4, 43.1, 43.10 и 44.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
+[Part 3 §13.3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Имена команды и подписанная авторизация политики
 
@@ -524,7 +552,7 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 
 ## Команды фазы A
 
-Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 90 реализованных кодов. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
+Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 91 реализованный код. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
 
 | Команда | Код | Авторизация | Границы фазы A |
 |---|---|---|---|

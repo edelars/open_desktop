@@ -329,6 +329,53 @@ pub(super) fn rsa_sig_scheme() -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256)])
 }
 
+#[test]
+fn import_accepts_a_single_rsa_prime_and_checks_the_binding() {
+    use crate::object::MAX_PRIVATE;
+    use crate::self_test::{EXT_RSA_N, EXT_RSA_P, EXT_RSA_Q};
+
+    let (mut t, parent) = with_ecc_parent();
+    let mut public = rsa(oa::USER_WITH_AUTH | oa::SIGN, SymDef::Null, RSASSA);
+    public.unique = Unique::Rsa(hex(EXT_RSA_N));
+    let import = |prime: &[u8]| {
+        let sensitive = cat(&[
+            &u16b(alg::RSA),
+            &tpm2b(b"child"),
+            &tpm2b(b""),
+            &tpm2b(prime),
+        ]);
+        let parameters = cat(&[
+            &tpm2b(b""),
+            &tpm2b(&public.to_bytes()),
+            &tpm2b(&tpm2b(&sensitive)),
+            &tpm2b(b""),
+            &u16b(alg::NULL),
+        ]);
+        with_pw(cc::IMPORT, &[parent], &[b"parent-pw"], &parameters)
+    };
+    let prime = hex(EXT_RSA_P);
+    let other = hex(EXT_RSA_Q);
+    let slots = t.objects.free_slots();
+    let reply = run(&mut t, import(&prime));
+    ok(&reply);
+    assert_eq!(t.objects.free_slots(), slots);
+    let mut reader = Reader::new(params(&reply, 0));
+    let private = reader.tpm2b(MAX_PRIVATE).unwrap();
+    reader.finish().unwrap();
+    let reply = load(&mut t, parent, b"parent-pw", private, &public.to_bytes());
+    ok(&reply);
+    let handle = u32::from_be_bytes(reply[10..14].try_into().unwrap());
+    ok(&sign(&mut t, handle, b"child", &DIGEST, &u16b(alg::NULL)));
+    ok(&run(&mut t, import(&other)));
+    err(
+        &run(&mut t, import(&cat(&[&prime, &other]))),
+        Rc::KEY_SIZE.in_param(3),
+    );
+    let mut wrong = prime;
+    wrong[127] ^= 2;
+    err(&run(&mut t, import(&wrong)), Rc::BINDING.in_param(3));
+}
+
 fn null_scheme() -> Vec<u8> {
     u16b(alg::NULL)
 }

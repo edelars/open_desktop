@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 90] = [
+pub(crate) static COMMANDS: [CommandSpec; 91] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -154,6 +154,7 @@ pub(crate) static COMMANDS: [CommandSpec; 90] = [
     spec(cc::CREATE, 1, 1, false, false, false),
     spec(cc::ECDH_Z_GEN, 1, 1, false, false, false),
     spec(cc::HMAC, 1, 1, false, false, false),
+    spec(cc::IMPORT, 1, 1, false, false, false),
     spec(cc::LOAD, 1, 1, true, false, false),
     spec(cc::QUOTE, 1, 1, false, false, false),
     spec(cc::RSA_DECRYPT, 1, 1, false, false, false),
@@ -806,6 +807,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::MAKE_CREDENTIAL => tpm.cmd_make_credential(&inv, &mut p)?,
         cc::ACTIVATE_CREDENTIAL => tpm.cmd_activate_credential(&inv, &mut p)?,
         cc::OBJECT_CHANGE_AUTH => tpm.cmd_object_change_auth(&inv, &mut p)?,
+        cc::IMPORT => tpm.cmd_import(&inv, &mut p)?,
         cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
         cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
@@ -1006,6 +1008,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             }
         }
         cc::CREATE
+        | cc::IMPORT
         | cc::LOAD
         | cc::READ_PUBLIC
         | cc::MAKE_CREDENTIAL
@@ -1164,6 +1167,6 @@ mod tests {
         for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 90);
+        assert_eq!(COMMANDS.len(), 91);
     }
 }
