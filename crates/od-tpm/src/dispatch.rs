@@ -110,12 +110,13 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 70] = [
+pub(crate) static COMMANDS: [CommandSpec; 71] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
     ext(spec(cc::CLEAR, 1, 1, false, true, false)),
     spec(cc::CLEAR_CONTROL, 1, 1, false, true, false),
+    spec(cc::CLOCK_SET, 1, 1, false, true, false),
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
@@ -693,6 +694,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::SEQUENCE_COMPLETE => tpm.cmd_sequence_complete(&inv, &mut p)?,
         cc::EVENT_SEQUENCE_COMPLETE => tpm.cmd_event_sequence_complete(&inv, &mut p)?,
         cc::READ_CLOCK => tpm.cmd_read_clock(&mut p)?,
+        cc::CLOCK_SET => tpm.cmd_clock_set(&mut p)?,
         cc::HIERARCHY_CONTROL => tpm.cmd_hierarchy_control(&inv, &mut p)?,
         cc::HIERARCHY_CHANGE_AUTH => tpm.cmd_hierarchy_change_auth(&inv, &mut p)?,
         cc::CLEAR => tpm.cmd_clear(&mut p)?,
@@ -872,6 +874,11 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
+        cc::CLOCK_SET => {
+            if !matches!(handles[0], handle::RH_OWNER | handle::RH_PLATFORM) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
         cc::CLEAR | cc::CLEAR_CONTROL => {
             // `TPMI_RH_CLEAR` (Part 2, Table 69): lockout or platform.
             if !matches!(handles[0], handle::RH_LOCKOUT | handle::RH_PLATFORM) {
@@ -1018,6 +1025,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 70);
+        assert_eq!(COMMANDS.len(), 71);
     }
 }

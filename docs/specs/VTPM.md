@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Все 70 кодов текущего dispatcher входят в список команд, 31 отсутствует. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлен 71 код из списка, 30 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -38,7 +38,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Credential activation и объекты | `ActivateCredential`, `MakeCredential`, `ObjectChangeAuth`, `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicySigned`, `PolicyTicket`, `PolicyNV`, `PolicyCounterTimer`, `PolicyNameHash`, `PolicyDuplicationSelect`, `PolicyAuthorize`, `PolicyNvWritten`, `PolicyTemplate`, `PolicyAuthorizeNV`, `PolicyParameters` |
-| Управление и NV | `SetPrimaryPolicy`, `ClockSet`, `ClockRateAdjust`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth` |
+| Управление и NV | `SetPrimaryPolicy`, `ClockRateAdjust`, `NV_UndefineSpaceSpecial`, `NV_ChangeAuth` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -82,6 +82,12 @@ Errata 1.1 уточняет применимость ECC для `Encapsulate`/`D
 
 С поддерживаемым RSA-2048 или P-256 возвращается подпись над `TPMS_ATTEST`. При `TPM_RH_NULL` подпись пуста, а полный digest требует явной схемы подписи с SHA-256 в `inScheme`. Без схемы или при NULL hash возвращается `TPM_RC_SCHEME`. Дополнительная сессия может защитить `qualifyingData` и `certifyInfo`. [TPM Library v185 Part 3, §31.16](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=371).
 
+### Изменение Clock
+
+`TPM2_ClockSet` (`0x128`) допускает авторизацию Owner или Platform. Новое значение в миллисекундах должно быть не меньше текущего `Clock` и не больше `0xFFFF_0000_0000_0000`. Равенство допустимо. Команда меняет сохранённую базу и продолжает отсчёт с текущего времени включения. `Time`, флаг `safe`, счётчики запуска и таймеры DA не меняются.
+
+Существующий формат `ODTPMSTA` v3 сохраняет текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` и `ClockRateAdjust` остаются в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+
 ### Привязка политики к команде и locality
 
 `TPM2_PolicyCpHash` (`0x16E`) добавляет в policy digest 32 байта SHA-256 без префикса длины и сохраняет ограничение на cpHash будущей команды. Повтор того же хеша допустим. Другой сохранённый хеш вызывает `TPM_RC_CPHASH`. Дополнительная сессия может шифровать входной параметр. TPM проверяет HMAC по байтам шифротекста и сохраняет расшифрованный хеш. При использовании политики cpHash команды должен совпасть, включая её wire-параметры.
@@ -122,7 +128,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 ## Команды фазы A
 
-Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 68 реализованных кодов. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
+Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 71 реализованный код. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
 
 | Команда | Код | Авторизация | Границы фазы A |
 |---|---|---|---|

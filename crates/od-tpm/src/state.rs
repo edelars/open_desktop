@@ -1,5 +1,5 @@
 //! TPM state: persistent part (survives power cycles, goes into the snapshot) and volatile part
-//! (reset by `_TPM_Init`), the snapshot codec, and `TPM2_ReadClock`.
+//! (reset by `_TPM_Init`), the snapshot codec, and TPM clock commands.
 //!
 //! Persistent (ADR-0009, decision 5): the three hierarchy seeds (generated from owner entropy), the
 //! clock base, `resetCount`, `restartCount` and the orderly-shutdown flag, the authorization values
@@ -151,7 +151,7 @@ pub struct Tpm {
     pub(crate) power_ms: u64,
     /// `TPMS_CLOCK_INFO.safe` for the current power cycle.
     pub(crate) clock_safe: bool,
-    /// `power_ms` at the moment `TPM2_Clear` zeroed `Clock`; `Clock` counts from there.
+    /// `power_ms` when `Clock` last took its current persistent base.
     pub(crate) clock_epoch_ms: u64,
     /// Volatile dictionary-attack timers (`da.rs`).
     pub(crate) da_v: DaVolatile,
@@ -215,8 +215,7 @@ impl Tpm {
         }
     }
 
-    /// `Clock` in milliseconds: the base of earlier power cycles plus this cycle since the last
-    /// zeroing by `TPM2_Clear`.
+    /// `Clock` in milliseconds: the persistent base plus elapsed power-on time since it was set.
     pub(crate) fn clock_ms(&self) -> u64 {
         self.persistent
             .clock_base_ms
@@ -337,6 +336,24 @@ impl Tpm {
             handles: Vec::new(),
             params: w.finish(),
         })
+    }
+
+    /// `TPM2_ClockSet` (Part 3 v185, clause 29.2) moves the Clock forward
+    /// without changing power-on Time or the DA recovery timers.
+    pub(crate) fn cmd_clock_set(
+        &mut self,
+        p: &mut crate::marshal::Reader<'_>,
+    ) -> Result<Output, Rc> {
+        const MAX_CLOCK_SET: u64 = 0xffff_0000_0000_0000;
+        p.set_param(1);
+        let new_time = p.u64()?;
+        p.finish()?;
+        if new_time < self.clock_ms() || new_time > MAX_CLOCK_SET {
+            return Err(Rc::VALUE.in_param(1));
+        }
+        self.persistent.clock_base_ms = new_time;
+        self.clock_epoch_ms = self.power_ms;
+        Ok(Output::default())
     }
 }
 

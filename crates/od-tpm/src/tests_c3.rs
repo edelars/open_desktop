@@ -821,6 +821,68 @@ fn time_attested(time_info: &[u8]) -> Vec<u8> {
     cat(&[time_info, &FIRMWARE.to_be_bytes()])
 }
 
+#[test]
+fn clock_set_is_monotonic_authorized_and_survives_a_power_cycle() {
+    const MAX_SET: u64 = 0xffff_0000_0000_0000;
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", b"owner"));
+    ok(&set_auth(&mut t, PLATFORM, b"", b"platform"));
+    pass_time(&mut t, 5);
+    let initial = clock_now(&mut t).0;
+    let set = |t: &mut Tpm, auth, password: &[u8], milliseconds: u64| {
+        run(
+            t,
+            with_pw(
+                cc::CLOCK_SET,
+                &[auth],
+                &[password],
+                &milliseconds.to_be_bytes(),
+            ),
+        )
+    };
+    for invalid in [4_999, MAX_SET + 1] {
+        err(
+            &set(&mut t, OWNER, b"owner", invalid),
+            Rc::VALUE.in_param(1),
+        );
+    }
+    err(
+        &set(&mut t, OWNER, b"bad", 50_000),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    err(
+        &set(&mut t, ENDORSEMENT, b"", 50_000),
+        Rc::VALUE.in_handle(1),
+    );
+    assert_eq!(clock_now(&mut t).0, initial);
+
+    ok(&set(&mut t, OWNER, b"owner", 5_000));
+    assert_eq!(clock_now(&mut t).0, initial);
+    ok(&set(&mut t, OWNER, b"owner", 50_000));
+    let (info, clock) = clock_now(&mut t);
+    assert_eq!(clock.0, 50_000);
+    assert_eq!(&info[..8], &5_000u64.to_be_bytes());
+    assert_eq!(&info[16..], &initial[16..], "counters and safe");
+    pass_time(&mut t, 2);
+    assert_eq!(clock_now(&mut t).1.0, 52_000);
+    ok(&set(&mut t, PLATFORM, b"platform", MAX_SET));
+    assert_eq!(clock_now(&mut t).1.0, MAX_SET);
+    pass_time(&mut t, 1);
+    assert_eq!(clock_now(&mut t).1.0, MAX_SET + 1_000);
+
+    let snapshot = t.persistent_snapshot();
+    t.init();
+    let mut restored = Tpm::restore(&snapshot, &[0x41; 48]).unwrap();
+    for after in [&mut t, &mut restored] {
+        startup(after, crate::codes::su::CLEAR);
+        let response = run(after, plain(cc::READ_CLOCK, &[], &[]));
+        let info = params(&response, 0);
+        assert_eq!(&info[8..16], &(MAX_SET + 1_000).to_be_bytes());
+        assert_eq!(&info[..8], &[0; 8], "new power-on cycle");
+        assert_eq!(info[24], 0, "the previous power cycle did not shut down");
+    }
+}
+
 const TIME_X: &str = "ef7f114d6b36e22e25103e3ea3f22a7598ed7bf9baca96df4214ca22589601b4";
 const TIME_Y: &str = "cb94108076eeef988e6d73698714edef104caf5576928bcf409c688ade13cf5c";
 const TIME_R: &str = "da696a2c6d384de20bc676e7601f5f644c86f1a95c4f2086899826fe59056e8a";

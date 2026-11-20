@@ -50,6 +50,7 @@ pub mod cc {
     pub const NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
     pub const CLEAR: u32 = 0x0000_0126;
     pub const CLEAR_CONTROL: u32 = 0x0000_0127;
+    pub const CLOCK_SET: u32 = 0x0000_0128;
     pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
     pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
