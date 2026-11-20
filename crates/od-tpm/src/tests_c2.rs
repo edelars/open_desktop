@@ -1755,6 +1755,210 @@ fn policy_nv_written_repeats_the_same_assertion_and_rejects_real_conflicts() {
 }
 
 #[test]
+fn policy_authorize_nv_replaces_the_digest_but_preserves_the_nv_written_constraint() {
+    let mut t = started();
+    let approval = NV0;
+    let subject = NV0 + 1;
+    let approval_attrs = nv_attr::POLICYREAD | nv_attr::OWNERWRITE;
+    ok(&define_raw(
+        &mut t,
+        OWNER,
+        b"",
+        b"",
+        &nv_public(approval, alg::SHA256, approval_attrs, &[0; 32], 37),
+    ));
+    let mut authorizer = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    let mut policy = policy_session(&mut t, se::POLICY);
+    let authorize = |session: &Hs| {
+        hc(
+            cc::POLICY_AUTHORIZE_NV,
+            &[approval, approval, session.handle],
+            Vec::new(),
+            (approval, b""),
+        )
+    };
+    let (_, unwritten_name) = nv_read_public(&mut t, approval);
+    err(
+        &use_session(&mut t, &mut authorizer, &authorize(&policy), 0, true, false),
+        Rc::NV_UNINITIALIZED,
+    );
+    ok(&use_session(
+        &mut t,
+        &mut authorizer,
+        &authorize(&trial),
+        0,
+        true,
+        false,
+    ));
+    assert_eq!(
+        digest(&mut t, &trial),
+        h256(&[&[0; 32], &u32b(0x192), &unwritten_name])
+    );
+
+    ok(&nv_write(
+        &mut t,
+        OWNER,
+        approval,
+        b"",
+        &cat(&[&u16b(alg::SHA256), &[0; 32], b"tag"]),
+        0,
+    ));
+    let (_, name) = nv_read_public(&mut t, approval);
+    ok(&use_session(
+        &mut t,
+        &mut authorizer,
+        &authorize(&trial),
+        0,
+        true,
+        false,
+    ));
+    let stable = h256(&[&[0; 32], &u32b(0x192), &name]);
+    assert_eq!(digest(&mut t, &trial), stable);
+    ok(&define_raw(
+        &mut t,
+        OWNER,
+        b"",
+        b"",
+        &nv_public(
+            subject,
+            alg::SHA256,
+            nv_attr::OWNERREAD | nv_attr::POLICYWRITE,
+            &stable,
+            2,
+        ),
+    ));
+
+    let write = hc(
+        cc::NV_WRITE,
+        &[subject, subject],
+        cat(&[&tpm2b(b"ab"), &u16b(0)]),
+        (subject, b""),
+    );
+    let approved = h256(&[&[0; 32], &u32b(0x18f), &[0]]);
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[0]));
+    err(
+        &use_session(&mut t, &mut authorizer, &authorize(&policy), 0, true, false),
+        Rc::VALUE.in_handle(2),
+    );
+    assert_eq!(digest(&mut t, &policy), approved);
+    let record = cat(&[&u16b(alg::SHA256), &approved, b"tag"]);
+    ok(&nv_write(&mut t, OWNER, approval, b"", &record, 0));
+    ok(&use_session(
+        &mut t,
+        &mut authorizer,
+        &authorize(&policy),
+        0,
+        true,
+        false,
+    ));
+    assert_eq!(digest(&mut t, &policy), stable);
+    let context = params(&save(&mut t, policy.handle), 0).to_vec();
+
+    ok(&nv_write(&mut t, OWNER, approval, b"", &[7; 32], 2));
+    assert_eq!(loaded(&load_ctx(&mut t, &context)), policy.handle);
+    ok(&use_session(&mut t, &mut policy, &write, 0, true, false));
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[0]));
+    err(
+        &use_session(&mut t, &mut authorizer, &authorize(&policy), 0, true, false),
+        Rc::VALUE.in_handle(2),
+    );
+    ok(&nv_write(&mut t, OWNER, approval, b"", &record, 0));
+    ok(&use_session(
+        &mut t,
+        &mut authorizer,
+        &authorize(&policy),
+        0,
+        true,
+        false,
+    ));
+    err(
+        &use_session(&mut t, &mut policy, &write, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &policy), stable);
+}
+
+#[test]
+fn policy_authorize_nv_validates_a_raw_tagged_digest_only_for_real_sessions() {
+    let mut t = started();
+    let policy = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    let attrs = nv_attr::AUTHREAD | nv_attr::OWNERWRITE | nv_attr::READ_STCLEAR;
+    let mut written = cat(&[&u16b(alg::SHA256), &[0; 32]]);
+    for (number, size, error) in [
+        (0, 1, Rc::INSUFFICIENT.in_handle(2)),
+        (1, 33, Rc::INSUFFICIENT.in_handle(2)),
+        (2, 34, Rc::HASH.in_handle(2)),
+    ] {
+        let index = NV0 + number;
+        let auth = b"read-secret";
+        let handles = [index, index, policy.handle];
+        let trial_handles = [index, index, trial.handle];
+        ok(&define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            auth,
+            &nv_public(index, alg::SHA256, attrs, &[], size),
+        ));
+        err(
+            &pw_cmd(&mut t, cc::POLICY_AUTHORIZE_NV, &handles, b"wrong", &[]),
+            Rc::NV_UNINITIALIZED,
+        );
+        if number == 2 {
+            written[1] = alg::NULL as u8;
+        }
+        ok(&nv_write(
+            &mut t,
+            OWNER,
+            index,
+            b"",
+            &written[..usize::from(size)],
+            0,
+        ));
+        err(
+            &pw_cmd(&mut t, cc::POLICY_AUTHORIZE_NV, &handles, auth, &[]),
+            error,
+        );
+        err(
+            &pw_cmd(
+                &mut t,
+                cc::POLICY_AUTHORIZE_NV,
+                &trial_handles,
+                b"wrong",
+                &[],
+            ),
+            Rc::AUTH_FAIL.in_session(1),
+        );
+        ok(&pw_cmd(
+            &mut t,
+            cc::NV_READ_LOCK,
+            &[index, index],
+            auth,
+            &[],
+        ));
+        err(
+            &pw_cmd(&mut t, cc::POLICY_AUTHORIZE_NV, &handles, auth, &[]),
+            Rc::NV_LOCKED,
+        );
+        ok(&pw_cmd(
+            &mut t,
+            cc::POLICY_AUTHORIZE_NV,
+            &trial_handles,
+            auth,
+            &[],
+        ));
+        let name = nv_read_public(&mut t, index).1;
+        assert_eq!(
+            digest(&mut t, &trial),
+            h256(&[&[0; 32], &u32b(0x192), &name])
+        );
+        assert_eq!(digest(&mut t, &policy), [0; 32]);
+    }
+}
+
+#[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
     let mut s = policy_session(&mut t, se::POLICY);

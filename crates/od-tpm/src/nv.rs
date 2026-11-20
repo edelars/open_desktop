@@ -330,7 +330,11 @@ enum Access {
 impl Access {
     fn for_command(code: u32) -> Option<Self> {
         match code {
-            cc::NV_READ | cc::NV_READ_LOCK | cc::NV_CERTIFY | cc::POLICY_NV => Some(Self::Read),
+            cc::NV_READ
+            | cc::NV_READ_LOCK
+            | cc::NV_CERTIFY
+            | cc::POLICY_NV
+            | cc::POLICY_AUTHORIZE_NV => Some(Self::Read),
             cc::NV_WRITE
             | cc::NV_WRITE_LOCK
             | cc::NV_INCREMENT
@@ -411,7 +415,8 @@ impl Tpm {
         }
         Ok(())
     }
-    /// PolicyNV uses an independent policy handle. A trial still needs read authorization.
+    /// PolicyNV and PolicyAuthorizeNV use an independent target session. A trial still needs
+    /// authorization to read the index.
     pub(crate) fn check_policy_nv_handles(&self, handles: &CommandHandles) -> Result<(), Rc> {
         let index = self.check_nv_authorization(handles[0], handles[1], 1, Access::Read)?;
         let (_, kind) = self.check_policy_session(handles[2], 2)?;

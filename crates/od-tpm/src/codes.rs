@@ -43,6 +43,7 @@ pub mod cc {
     pub const POLICY_PASSWORD: u32 = 0x0000_018C;
     pub const POLICY_NV_WRITTEN: u32 = 0x0000_018F;
     pub const POLICY_TEMPLATE: u32 = 0x0000_0190;
+    pub const POLICY_AUTHORIZE_NV: u32 = 0x0000_0192;
     pub const POLICY_PARAMETERS: u32 = 0x0000_019C;
     /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
     pub const DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;

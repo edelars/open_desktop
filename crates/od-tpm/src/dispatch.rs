@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 82] = [
+pub(crate) static COMMANDS: [CommandSpec; 83] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -193,6 +193,7 @@ pub(crate) static COMMANDS: [CommandSpec; 82] = [
     spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
     spec(cc::POLICY_NV_WRITTEN, 1, 0, false, false, false),
     spec(cc::POLICY_TEMPLATE, 1, 0, false, false, false),
+    spec(cc::POLICY_AUTHORIZE_NV, 3, 1, false, false, false),
     spec(cc::POLICY_PARAMETERS, 1, 0, false, false, false),
 ];
 
@@ -810,6 +811,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
         cc::POLICY_NV => tpm.cmd_policy_nv(&inv, &mut p)?,
+        cc::POLICY_AUTHORIZE_NV => tpm.cmd_policy_authorize_nv(&inv, &mut p)?,
         cc::POLICY_NV_WRITTEN => tpm.cmd_policy_nv_written(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
         cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
@@ -999,7 +1001,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             check_sign_handle(tpm, handles[0], 0)?;
             tpm.check_nv_certify_handles(handles)?;
         }
-        cc::POLICY_NV => tpm.check_policy_nv_handles(handles)?,
+        cc::POLICY_NV | cc::POLICY_AUTHORIZE_NV => tpm.check_policy_nv_handles(handles)?,
         cc::ACTIVATE_CREDENTIAL | cc::OBJECT_CHANGE_AUTH => {
             tpm.check_object_handle(handles[0], 0, false)?;
             tpm.check_object_handle(handles[1], 1, false)?;
@@ -1132,6 +1134,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 82);
+        assert_eq!(COMMANDS.len(), 83);
     }
 }

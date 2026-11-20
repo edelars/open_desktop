@@ -55,7 +55,7 @@ use crate::codes::{alg, cc, handle, st};
 use crate::crypto::DIGEST;
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{MAX_DATA, Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
-use crate::nv::attr as nv_attr;
+use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
@@ -325,6 +325,20 @@ impl Tpm {
         Ok(Output::default())
     }
 
+    /// Both NV policy assertions require read authorization but skip the data checks in trial mode.
+    fn nv_policy_input(&self, inv: &Invocation) -> Result<(usize, SessionKind, &NvIndex), Rc> {
+        let (slot, kind) = self.check_policy_session(inv.handles[2], 2)?;
+        let index = self
+            .persistent
+            .nv
+            .get(inv.handles[1])
+            .ok_or(Rc::HANDLE.in_handle(2))?;
+        if kind != SessionKind::Trial && index.attributes & nv_attr::READLOCKED != 0 {
+            return Err(Rc::NV_LOCKED);
+        }
+        Ok((slot, kind, index))
+    }
+
     /// `TPM2_PolicyNV` (Part 3 v185, §23.9). The read and comparison are immediate.
     pub(crate) fn cmd_policy_nv(
         &mut self,
@@ -332,16 +346,8 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         let args = ComparisonArgs::unmarshal(p)?;
-        let (slot, kind) = self.check_policy_session(inv.handles[2], 2)?;
-        let index = self
-            .persistent
-            .nv
-            .get(inv.handles[1])
-            .ok_or(Rc::HANDLE.in_handle(2))?;
+        let (slot, kind, index) = self.nv_policy_input(inv)?;
         if kind != SessionKind::Trial {
-            if index.attributes & nv_attr::READLOCKED != 0 {
-                return Err(Rc::NV_LOCKED);
-            }
             let offset = usize::from(args.offset);
             let value = index
                 .data
@@ -354,6 +360,34 @@ impl Tpm {
         let name = index.name();
         let (state, _) = self.policy_mut(slot)?;
         state.extend(&[&cc::POLICY_NV.to_be_bytes(), &args.digest(), &name]);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyAuthorizeNV` (Part 3 v185, §23.22). The NV index starts with a raw
+    /// `TPMT_HA` and may contain additional bytes following that value.
+    pub(crate) fn cmd_policy_authorize_nv(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.finish()?;
+        let (slot, kind, index) = self.nv_policy_input(inv)?;
+        if kind != SessionKind::Trial {
+            let mut data = Reader::new(&index.data);
+            // SHA-256 is the only supported authHash for policy sessions.
+            if data.u16().map_err(|rc| rc.in_handle(2))? != alg::SHA256 {
+                return Err(Rc::HASH.in_handle(2));
+            }
+            let approved = data.bytes(DIGEST).map_err(|rc| rc.in_handle(2))?;
+            let session = self.sessions.get(slot).ok_or(Rc::reference_handle(2))?;
+            if approved != session.policy.digest {
+                return Err(Rc::VALUE.in_handle(2));
+            }
+        }
+        let name = index.name();
+        let (state, _) = self.policy_mut(slot)?;
+        state.digest = [0; DIGEST];
+        state.extend(&[&cc::POLICY_AUTHORIZE_NV.to_be_bytes(), &name]);
         Ok(Output::default())
     }
 
