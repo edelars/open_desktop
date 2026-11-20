@@ -869,6 +869,8 @@ fn test_parms_accepts_supported_public_parameters_without_state_changes() {
     let before = t.persistent_snapshot();
     for encoded in [
         "00010006008000430010080000000000", // RSA-2048 storage, AES-128-CFB, default exponent.
+        "00010006010000430010080000000000", // RSA-2048 storage, AES-256-CFB.
+        "0023000601000043001000030010",     // P-256 storage, AES-256-CFB.
         "000100100014000b080000010001",     // RSA-2048 RSASSA-SHA256, explicit exponent.
         "000100100017000b080000000000",     // RSA-2048 OAEP-SHA256.
         "002300100018000b00030010",         // ECDSA-SHA256, NIST P-256, null KDF.
@@ -890,7 +892,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
     let before = t.persistent_snapshot();
     for (encoded, error) in [
         ("0025", Rc::TYPE), // SYMCIPHER is outside the implemented profile.
-        ("00010006010000430010080000000000", Rc::SYMMETRIC), // AES-256.
+        ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
         ("000100100016000b080000000000", Rc::VALUE), // RSAPSS.
         ("000100100014000c080000000000", Rc::HASH), // SHA-384.

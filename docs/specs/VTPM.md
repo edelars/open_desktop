@@ -22,7 +22,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Область | Что требуется | Состояние и необходимые проверки |
 |---|---|---|
 | §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
-| Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. AES-128/256-CFB проверены для сессий. Для Storage и credential пока применяется AES-128-CFB. |
+| Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. AES-128/256-CFB проверены для сессий, Storage keys, дублирования и credential. Самостоятельные объекты SYMCIPHER остаются открытыми. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
 | §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены все 101 кодов из списка. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_Init` и `_TPM_Hash_Start/Data/End` доступны платформенной стороне, включая измерение PCR17 и сохранение establishment. Гостевой D-RTM требует доверенного производителя этих сигналов. |
@@ -105,11 +105,31 @@ ML-KEM Storage parent, labeled KEM для salt и credential, выпуск
 4, неподдерживаемый режим — `TPM_RC_MODE` для того же параметра.
 `ContextSave` и `ContextLoad` сохраняют выбор алгоритма сессии.
 Форматы NULL, XOR и AES-128 используют прежние значения в контексте.
-Использование AES-256 для объектов, credential и дублирования
-отслеживается в ISSUE-529.
+Выбор AES для контейнеров объектов описан в
+[разделе о Storage keys](#aes-256-cfb-для-storage-keys).
 [TPM Library v185 Part 1 §18](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [Part 2 §11.1.2](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
 [результаты проверки](../reports/STAGE_7_REPORT.md#s7-23--aes-256-cfb-для-сессий).
+
+### AES-256-CFB для Storage keys
+
+RSA-2048 и P-256 Storage keys с `nameAlg=SHA-256` принимают
+`TPMT_SYM_DEF_OBJECT` с AES-128/256-CFB. Storage key определяет
+алгоритм при создании и загрузке `outPrivate`, при `ObjectChangeAuth`,
+для внешней части дубликата и для credential. Длина результата
+`KDFa(SHA-256, seed, "STORAGE", Name, NULL, keyBits)` равна длине
+ключа AES. IV контейнера `outPrivate` имеет длину 16 байт, внешняя обёртка
+дубликата и credential используют 16 нулевых байт. Проверка HMAC
+предшествует дешифрованию. Форматы AES-128, контекста и snapshot v8
+сохраняются.
+
+Алгоритм внутренней обёртки Duplicate/Import задаётся отдельно.
+Ключ AES имеет длину 16 или 32 байта. Duplicate генерирует ключ
+выбранной длины при пустом `encryptionKeyIn` и возвращает его через
+`encryptionKeyOut`. Поддержка самостоятельных объектов SYMCIPHER
+остаётся в ISSUE-529.
+[TPM Library Part 1 §§20–22](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
+[результаты проверки](../reports/STAGE_7_REPORT.md#s7-23--aes-256-cfb-для-storage-keys).
 
 ### Проверка параметров объектов
 
@@ -154,7 +174,7 @@ ML-KEM Storage parent, labeled KEM для salt и credential, выпуск
 ### Подготовка credential
 
 `TPM2_MakeCredential` (`0x168`) выполняется с публичным Storage key
-RSA-2048 или P-256 с SHA-256 и AES-128-CFB. Параметры ключа проверяются
+RSA-2048 или P-256 с SHA-256 и AES-128/256-CFB. Параметры ключа проверяются
 до генерации seed. Публичный ключ, загруженный через `LoadExternal`,
 достаточен для вызова. Команда принимает до 32 байт credential и Name
 до 34 байт. Дополнительная сессия может аудировать команду и защищать
@@ -210,8 +230,9 @@ TPM проверяет HMAC от шифротекста и Name загружен
 
 Внешний seed восстанавливается RSA-OAEP/SHA-256 или P-256 ECDH/KDFe
 с меткой `DUPLICATE\0`. Внешний HMAC проверяется над шифротекстом
-и Name до AES-128-CFB с нулевым IV. Внутренний AES-128-CFB использует
-предоставленный 16-байтовый ключ и нулевой IV. После дешифрования TPM
+и Name до AES-CFB с нулевым IV и размером ключа нового родителя.
+Внутренний AES-CFB использует предоставленный 16- или 32-байтовый
+ключ по `symmetricAlg` и нулевой IV. После дешифрования TPM
 проверяет SHA-256 от полного `TPM2B_SENSITIVE` и Name без его длины.
 
 Канонический RSA-дубликат содержит один 128-байтовый множитель.
@@ -241,8 +262,8 @@ TPM восстанавливает второй по модулю, провер�
 `fixedParent`, включая допускаемый первичный объект. При явном
 `TPM_RH_NULL` внешняя обёртка и `outSymSeed` отсутствуют. Атрибут
 `encryptedDuplication` требует Storage key в качестве родителя и внутреннего
-AES-128-CFB. При пустом `encryptionKeyIn` с AES TPM генерирует
-и возвращает 16-байтовый ключ. При переданном ключе или NULL
+AES-128/256-CFB. При пустом `encryptionKeyIn` с AES TPM генерирует
+и возвращает 16- или 32-байтовый ключ. При переданном ключе или NULL
 алгоритме `encryptionKeyOut` пуст. Запрос и ответ защищают первый
 параметр через сессию шифрования.
 
@@ -896,7 +917,7 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 
 **Primary: детерминизм.** Part 1, 25.6.3: способ получения энтропии для primary — «vendor option». Выбор проекта: `material = KDFa(SHA-256, seed иерархии, "ODTPM-PRIMARY", SHA-256(шаблон TPMT_PUBLIC вместе с unique), inSensitive.data, 384 бита)` заводит HMAC_DRBG (`random.rs`), из него берутся `seedValue` и затем ключ. Одинаковые seed, шаблон и `data` дают тот же объект (тесты: TPM с той же энтропией, snapshot → `restore`, повторное создание после `FlushContext`); `userAuth`, `outsideInfo` и `creationPCR` ключ не меняют; другой шаблон, иерархия или seed — другой ключ; в вывод не входит ни одно proof-значение: endorsement primary (EK) — функция только endorsement seed (EPS) и шаблона (Part 1, 12.4.2: EK меняется лишь через `TPM2_ChangeEPS`). `TPM2_Clear` меняет storage seed (а с ним `shProof` и `ehProof`), но не EPS, поэтому EK переживает `Clear` (тест `endorsement_key_survives_clear`); смена `endorsementAuth` EK тоже не меняет (тест `endorsement_auth_does_not_change_the_ek`). Обычные (не primary) объекты Endorsement-иерархии `Clear` уничтожает (flush иерархии). **`TPM2_ChangeEPS` не реализована** (не сделано: нет команды, EPS не меняется после создания TPM). **Ограничения:** (1) алгоритм вывода — собственный (отклонение от референсного кода, который Part 1 допускает, совместимости ключей с другими TPM нет); (2) поиск простых RSA — алгоритм `rsa`/`crypto-primes` при зафиксированных версиях: смена версии крейтов может изменить RSA-primary для тех же входов (важно для persistent state, срез C); ключи ECC выводятся нашим кодом (32 октета DRBG, повтор до значения в `[1, n−1]`). Эталонные ключи закреплены тестом `golden_primaries_are_pinned_and_their_signatures_verify_externally`.
 
-**`outPrivate`: шифрование AES-128-CFB.** Формат следует Part 1, 20.3–20.5: `integrity (TPM2B) ‖ symIv (TPM2B, 16 октетов из DRBG) ‖ encSensitive`, `symKey = KDFa(SHA-256, seedValue родителя, "STORAGE", Name, NULL, 128)`, `HMACkey = KDFa(SHA-256, seedValue родителя, "INTEGRITY", NULL, NULL, 256)`, `outerHMAC = HMAC(HMACkey, symIv ‖ encSensitive ‖ Name)`, integrity проверяется до расшифровки (`TPM_RC_INTEGRITY`). `encSensitive` — это `TPM2B_SENSITIVE`, зашифрованный AES-128 в режиме CFB (полноблочная обратная связь; крейты `aes =0.9.4` и `cfb-mode =0.9.1`, ADR-0009) ключом `symKey` (16 октетов) и IV `symIv`, как и объявляет шаблон storage key (`TPM_ALG_AES`, 128, `TPM_ALG_CFB`); `TPM_CAP_ALGS` перечисляет AES и CFB. Тесты: вектор NIST SP 800-38A (F.3.13), round-trip, испорченный блоб, пустой, неполный блок и максимальный размер. **Сверено со срезом C1 по тексту Part 1 v184, 20.2–20.5 (Part 1 v184 скачивается, см. «Источники и сверка»):** `symKey = KDFa(pNameAlg, seedValue родителя, "STORAGE", Name, NULL, bits)`, шифр — симметричный шифр родителя в режиме CFB со случайным `symIv` размером в блок, `HMACkey = KDFa(pNameAlg, seedValue, "INTEGRITY", NULL, NULL, bits дайджеста)`, `outerHMAC = HMAC(HMACkey, symIv ‖ encSensitive ‖ Name)` (`symIv` — маршалированный `TPM2B_IV`, размер входит в HMAC), integrity перед IV, integrity проверяется до расшифровки (в тексте: «size and buffer fields» `TPM2B_SENSITIVE` шифруются) — реализация совпадает. **NOT VERIFIED (остаток):** блоб с другим TPM не проверялся; sensitive-область RSA-ключа хранит `p ‖ q`, а не одно простое (отклонение). В sensitive-области ключа RSA лежат оба простых числа `p ‖ q` (256 октетов), а не одно; `authValue` дополняется нулями до 32 октетов (Part 1, 25.7.3). Формат блоба в срезе C1 не менялся и в snapshot не входит (persistent-объекты хранятся там как `TPM2B_SENSITIVE`, см. «Состояние»).
+**`outPrivate` на момент среза B.** Актуальные варианты шифрования описаны в [AES-256-CFB для Storage keys](#aes-256-cfb-для-storage-keys). Формат следует Part 1, 20.3–20.5: `integrity (TPM2B) ‖ symIv (TPM2B, 16 октетов из DRBG) ‖ encSensitive`, `symKey = KDFa(SHA-256, seedValue родителя, "STORAGE", Name, NULL, 128)`, `HMACkey = KDFa(SHA-256, seedValue родителя, "INTEGRITY", NULL, NULL, 256)`, `outerHMAC = HMAC(HMACkey, symIv ‖ encSensitive ‖ Name)`, integrity проверяется до расшифровки (`TPM_RC_INTEGRITY`). `encSensitive` — это `TPM2B_SENSITIVE`, зашифрованный AES-128 в режиме CFB (полноблочная обратная связь; крейты `aes =0.9.4` и `cfb-mode =0.9.1`, ADR-0009) ключом `symKey` (16 октетов) и IV `symIv`, как и объявляет шаблон storage key (`TPM_ALG_AES`, 128, `TPM_ALG_CFB`); `TPM_CAP_ALGS` перечисляет AES и CFB. Тесты: вектор NIST SP 800-38A (F.3.13), round-trip, испорченный блоб, пустой, неполный блок и максимальный размер. **Сверено со срезом C1 по тексту Part 1 v184, 20.2–20.5 (Part 1 v184 скачивается, см. «Источники и сверка»):** `symKey = KDFa(pNameAlg, seedValue родителя, "STORAGE", Name, NULL, bits)`, шифр — симметричный шифр родителя в режиме CFB со случайным `symIv` размером в блок, `HMACkey = KDFa(pNameAlg, seedValue, "INTEGRITY", NULL, NULL, bits дайджеста)`, `outerHMAC = HMAC(HMACkey, symIv ‖ encSensitive ‖ Name)` (`symIv` — маршалированный `TPM2B_IV`, размер входит в HMAC), integrity перед IV, integrity проверяется до расшифровки (в тексте: «size and buffer fields» `TPM2B_SENSITIVE` шифруются) — реализация совпадает. **NOT VERIFIED (остаток):** блоб с другим TPM не проверялся; sensitive-область RSA-ключа хранит `p ‖ q`, а не одно простое (отклонение). В sensitive-области ключа RSA лежат оба простых числа `p ‖ q` (256 октетов), а не одно; `authValue` дополняется нулями до 32 октетов (Part 1, 25.7.3). Формат блоба в срезе C1 не менялся и в snapshot не входит (persistent-объекты хранятся там как `TPM2B_SENSITIVE`, см. «Состояние»).
 
 **Тикеты.** Creation ticket — `HMAC-SHA-256(proof, TPM_ST_CREATION ‖ Name ‖ SHA-256(TPMS_CREATION_DATA))`, verified ticket — `HMAC-SHA-256(proof, TPM_ST_VERIFIED ‖ digest ‖ keyName)` (Part 2, 10.7.3–10.7.4), proof берётся из иерархии объекта. Для проверочного билета в Null используется NULL-тикет, для билета создания используется `nullProof`, меняющийся при TPM Reset. Proof-значения не хранятся: `proof = KDFa(SHA-256, seed, "ODTPM-PHPROOF"/"ODTPM-SHPROOF"/"ODTPM-EHPROOF", [storage seed для ehProof], NULL, 256)` (Part 3, 24.6 разрешает выводить proof из Primary Seeds, для `ehProof` — из SPS и EPS), поэтому `TPM2_Clear` (новый SPS) меняет `shProof` и `ehProof` (и инвалидирует тикеты и объекты Endorsement-иерархии, но не её primary: EK зависит только от EPS); `nullProof` не нужен (тикеты Null hierarchy — NULL). Выдача и проверка `HASHCHECK` описаны выше. [Подпись дайджеста и HASHCHECK](#подпись-дайджеста-и-hashcheck).
 

@@ -9855,6 +9855,32 @@ restricted ML-KEM, сессиям, другим алгоритмам и Windows 
 workspace и форматирования. Graphify обновлён. Проверка раскладки
 показала прежние 46 ссылок на отсутствующие материалы в `work/`.
 
+## S7-23 — AES-256-CFB для Storage keys
+
+RSA-2048 и P-256 принимают AES-256-CFB в симметричных параметрах
+Storage key. Этот выбор используется для `outPrivate`, внешней
+защиты Duplicate/Import и credential. Внутренняя защита
+Duplicate/Import использует ключ длины, выбранной командой.
+Существующий формат AES-128-CFB сохранён. Состав зависимостей
+и версия snapshot не изменились.
+
+Нативный CRB на macOS arm64 проверил `TestParms` и `CreatePrimary`
+для P-256, а также `Create/Load/ObjectChangeAuth` под импортированным
+P-256 Storage key с известными seed и скаляром. Python вычислил
+KDFa и HMAC, OpenSSL 4.1 проверил шифротекст `outPrivate` и ECDH
+для credential и дубликатов. Проверены `MakeCredential` и
+`ActivateCredential` с данными от обеих сторон, сочетания внутренней
+и внешней защиты 128/256, 256/128 и 256/256 и генерация 32-байтового
+ключа. Проверены неправильные размеры, изменённый шифротекст и
+загрузка прежнего контейнера после восстановления постоянного
+AES-256-родителя из snapshot v8. RSA-2048 и P-256 `TestParms` с
+AES-256 и независимый вектор credential входят в тесты `od-tpm`.
+
+Независимое ревью Sol High одобрило срез без замечаний. Прошли 360
+тестов `od-tpm` в release, проверка workspace и форматирования.
+Graphify обновлён. В проверке раскладки сохраняются прежние
+46 ссылок на отсутствующие материалы в `work/`.
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

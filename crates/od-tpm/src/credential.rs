@@ -9,10 +9,9 @@ use crate::crypto::{
 };
 use crate::dispatch::Invocation;
 use crate::marshal::{
-    MAX_DATA, MAX_ECC_BYTES, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, Unique, Writer,
-    limits,
+    MAX_DATA, MAX_ECC_BYTES, MAX_RSA_BYTES, Reader, Scheme, SymDef, Unique, Writer, limits,
 };
-use crate::object::{Object, Secret, aes_cfb, find_object};
+use crate::object::{Object, Secret, find_object, storage_cfb};
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -52,10 +51,10 @@ impl Tpm {
 
         let key = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        check_storage_key(key, 1)?;
+        let symmetric = check_storage_key(key, 1)?;
         let (seed, secret) =
             make_seed(&key.public.unique, IDENTITY_LABEL, &mut self.drbg).ok_or(Rc::FAILURE)?;
-        let blob = protect(&seed[..], object_name, credential);
+        let blob = protect(&seed[..], symmetric, object_name, credential);
         let mut output = Writer::new();
         output.tpm2b(&blob);
         output.tpm2b(&secret);
@@ -80,14 +79,14 @@ impl Tpm {
             .ok_or(Rc::reference_handle(0))?;
         let key = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
             .ok_or(Rc::reference_handle(1))?;
-        check_storage_key(key, 2)?;
+        let symmetric = check_storage_key(key, 2)?;
         let mut id = Reader::new(blob);
         id.set_param(1);
         let tag = id.tpm2b(DIGEST)?;
         let encrypted = id.bytes(id.remaining())?;
         let seed = recover_seed(key, secret, IDENTITY_LABEL, &mut self.drbg)
             .map_err(|error| error.response(2, 2))?;
-        let clear = open_seed_blob(&seed, &activated.name, tag, encrypted)
+        let clear = open_seed_blob(&seed, symmetric, &activated.name, tag, encrypted)
             .ok_or(Rc::INTEGRITY.in_param(1))?;
         let mut value = Reader::new(&clear);
         let credential = value
@@ -103,28 +102,19 @@ impl Tpm {
     }
 }
 
-pub(crate) fn check_storage_key(key: &Object, position: u8) -> Result<(), Rc> {
-    if !key.is_storage() {
-        return Err(Rc::TYPE.in_handle(position));
-    }
-    let (symmetric, scheme) = match key.public.params {
-        PublicParams::Rsa {
-            symmetric, scheme, ..
-        }
-        | PublicParams::Ecc {
-            symmetric, scheme, ..
-        } => (symmetric, scheme),
-        _ => return Err(Rc::TYPE.in_handle(position)),
-    };
+pub(crate) fn check_storage_key(key: &Object, position: u8) -> Result<SymDef, Rc> {
+    let (symmetric, scheme) = key
+        .storage_parameters()
+        .ok_or(Rc::TYPE.in_handle(position))?;
     // LoadExternal admits public keys for several uses. A Storage key
     // requires a NULL asymmetric scheme and a supported symmetric cipher.
     if scheme != Scheme::NULL {
         return Err(Rc::VALUE.in_handle(position));
     }
-    if symmetric != SymDef::Aes128Cfb {
+    if symmetric == SymDef::Null {
         return Err(Rc::TYPE.in_handle(position));
     }
-    Ok(())
+    Ok(symmetric)
 }
 
 pub(crate) fn recover_seed(
@@ -203,15 +193,20 @@ fn kdfe(
     Zeroizing::new(hash.finalize().into())
 }
 
-fn protect(seed: &[u8], name: &[u8], credential: &[u8]) -> Vec<u8> {
+fn protect(seed: &[u8], symmetric: SymDef, name: &[u8], credential: &[u8]) -> Vec<u8> {
     let mut clear = Zeroizing::new(Vec::with_capacity(2 + credential.len()));
     clear.extend_from_slice(&(credential.len() as u16).to_be_bytes());
     clear.extend_from_slice(credential);
-    protect_seed_blob(seed, name, &clear)
+    protect_seed_blob(seed, symmetric, name, &clear)
 }
 
-pub(crate) fn protect_seed_blob(seed: &[u8], name: &[u8], clear: &[u8]) -> Vec<u8> {
-    let encrypted = crypt_seed_blob(seed, name, clear, true);
+pub(crate) fn protect_seed_blob(
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    clear: &[u8],
+) -> Vec<u8> {
+    let encrypted = storage_cfb(seed, symmetric, name, &[0; 16], clear, true);
     let integrity = hmac_sha256(&integrity_key(seed), &[&encrypted, name]);
     let mut blob = Writer::new();
     blob.tpm2b(&integrity);
@@ -235,17 +230,13 @@ fn integrity_key(seed: &[u8]) -> Zeroizing<Vec<u8>> {
 
 pub(crate) fn open_seed_blob(
     seed: &[u8],
+    symmetric: SymDef,
     name: &[u8],
     tag: &[u8],
     encrypted: &[u8],
 ) -> Option<Zeroizing<Vec<u8>>> {
     hmac_sha256_verify(&integrity_key(seed), &[encrypted, name], tag)
-        .then(|| crypt_seed_blob(seed, name, encrypted, false))
-}
-
-fn crypt_seed_blob(seed: &[u8], name: &[u8], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
-    let key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    aes_cfb(&key, &[0; 16], data, encrypt)
+        .then(|| storage_cfb(seed, symmetric, name, &[0; 16], encrypted, false))
 }
 
 #[cfg(test)]
@@ -254,17 +245,27 @@ mod tests {
 
     #[test]
     fn identity_kdfe_and_wrapping_match_external_vectors() {
-        // Python hashlib/HMAC, and OpenSSL AES-128-CFB with an all-zero IV.
+        // Python hashlib/HMAC and OpenSSL AES-CFB with an all-zero IV.
         let mut name = [2u8; 34];
         name[..2].copy_from_slice(&[0, 0x0b]);
         assert_eq!(
-            protect(&[1; 32], &name, &[3; 32]),
+            protect(&[1; 32], SymDef::Aes128Cfb, &name, &[3; 32]),
             [
                 0x00, 0x20, 0x89, 0x46, 0xb6, 0x7b, 0x4c, 0xa4, 0x60, 0xb3, 0x6c, 0xa8, 0xd6, 0x9b,
                 0x3e, 0xec, 0x7a, 0x89, 0xb6, 0xaf, 0x4d, 0x25, 0x33, 0xe6, 0xb2, 0x6e, 0x6e, 0x2b,
                 0x98, 0x6c, 0x52, 0x33, 0x16, 0xaf, 0xe0, 0x19, 0x6e, 0x1c, 0x3b, 0x03, 0x9d, 0x55,
                 0x07, 0x2e, 0x43, 0x2c, 0x21, 0x68, 0x6d, 0xa1, 0xf5, 0x62, 0x54, 0xb1, 0x54, 0x06,
                 0x81, 0xc3, 0xc1, 0xf3, 0xec, 0x67, 0xcb, 0xec, 0x35, 0x37, 0x53, 0x0b,
+            ]
+        );
+        assert_eq!(
+            protect(&[1; 32], SymDef::Aes256Cfb, &name, &[3; 32]),
+            [
+                0x00, 0x20, 0x97, 0x42, 0xcf, 0x51, 0xbf, 0xce, 0x05, 0x50, 0xe4, 0x09, 0xd4, 0xda,
+                0xb4, 0x75, 0x64, 0xc3, 0x13, 0x7b, 0xdd, 0x4b, 0x5f, 0x54, 0xd9, 0x3f, 0x8a, 0xf0,
+                0x75, 0xfa, 0xdf, 0xec, 0xda, 0xa6, 0xc4, 0xc3, 0x8f, 0x9f, 0x07, 0x46, 0x54, 0x7a,
+                0x8a, 0x10, 0x11, 0x89, 0x18, 0xa8, 0x0f, 0x5d, 0xde, 0x80, 0x99, 0x23, 0x11, 0x05,
+                0xb1, 0xeb, 0x91, 0x63, 0x92, 0xe1, 0xb4, 0x00, 0x2f, 0x8f, 0x78, 0xd3,
             ]
         );
         assert!(self_test());

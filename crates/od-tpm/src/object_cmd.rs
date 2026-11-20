@@ -42,7 +42,7 @@ use crate::dispatch::{AuthRole, Invocation};
 use crate::hash::AuthValue;
 use crate::hierarchy::LEGACY_SEED_BYTES;
 use crate::marshal::{
-    MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsCreationData,
+    MAX_DATA, PublicParams, Reader, Scheme, SymDef, TpmlPcrSelection, TpmsCreationData,
     TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer,
     digest_size, limits,
 };
@@ -225,6 +225,7 @@ impl<'a> VerifiedTicket<'a> {
 /// DRBG is used.
 struct ParentCtx {
     seed: Zeroizing<Vec<u8>>,
+    symmetric: SymDef,
     name: Vec<u8>,
     qualified_name: Vec<u8>,
     hierarchy: u32,
@@ -438,13 +439,14 @@ impl Tpm {
     fn parent_ctx(&self, h: u32) -> Result<ParentCtx, Rc> {
         let o = self.object(h).ok_or(Rc::reference_handle(0))?;
         // The parent must be a storage key with both parts loaded.
-        let s = o
-            .sensitive
-            .as_ref()
-            .filter(|_| o.is_storage())
+        let s = o.sensitive.as_ref().ok_or(Rc::TYPE.in_handle(1))?;
+        let (symmetric, _) = o
+            .storage_parameters()
+            .filter(|(symmetric, _)| *symmetric != SymDef::Null)
             .ok_or(Rc::TYPE.in_handle(1))?;
         Ok(ParentCtx {
             seed: s.seed.clone(),
+            symmetric,
             name: o.name.clone(),
             qualified_name: o.qualified_name.clone(),
             hierarchy: o.hierarchy,
@@ -572,6 +574,7 @@ impl Tpm {
             sensitive,
             &sensitive.auth,
             &parent.seed,
+            parent.symmetric,
             &iv,
         )?;
         let (creation, creation_hash, ticket) = self.creation_artifacts(
@@ -608,7 +611,7 @@ impl Tpm {
         if self.objects.free_slots() == 0 {
             return Err(Rc::OBJECT_MEMORY);
         }
-        let sensitive = open_private(&public, &parent.seed, blob)?;
+        let sensitive = open_private(&public, &parent.seed, parent.symmetric, blob)?;
         let obj = Object::new(
             public,
             Some(sensitive),
@@ -643,10 +646,10 @@ impl Tpm {
         let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
             .ok_or(Rc::reference_handle(1))?;
-        let parent_sensitive = parent
-            .sensitive
-            .as_ref()
-            .filter(|_| parent.is_storage())
+        let parent_sensitive = parent.sensitive.as_ref().ok_or(Rc::TYPE.in_handle(2))?;
+        let (parent_symmetric, _) = parent
+            .storage_parameters()
+            .filter(|(symmetric, _)| *symmetric != SymDef::Null)
             .ok_or(Rc::TYPE.in_handle(2))?;
         if object.qualified_name != qualified_name_of(&parent.qualified_name, &object.name) {
             return Err(Rc::PARENT);
@@ -660,6 +663,7 @@ impl Tpm {
             sensitive,
             &auth,
             &parent_sensitive.seed,
+            parent_symmetric,
             &iv,
         )?;
         let mut params = Writer::new();

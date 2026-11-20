@@ -67,8 +67,8 @@ impl Tpm {
         } else {
             let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
                 .ok_or(Rc::reference_handle(1))?;
-            check_storage_key(parent, 2)?;
-            Some(parent)
+            let symmetric = check_storage_key(parent, 2)?;
+            Some((parent, symmetric))
         };
         if object.has(object_attr::ENCRYPTED_DUPLICATION) {
             if symmetric == SymDef::Null {
@@ -78,19 +78,21 @@ impl Tpm {
                 return Err(Rc::HIERARCHY.in_handle(2));
             }
         }
-        match (symmetric, key_in.len()) {
-            (SymDef::Null, 0) | (SymDef::Aes128Cfb, 0 | 16) => {}
-            _ => return Err(Rc::SIZE.in_param(1)),
+        let key_size = usize::from(symmetric.key_bits() / 8);
+        if !key_in.is_empty() && key_in.len() != key_size {
+            return Err(Rc::SIZE.in_param(1));
         }
 
         let canonical = sensitive_to_duplicate(sensitive, object.public.type_alg())?;
-        let mut generated = Zeroizing::new([0; 16]);
+        let mut generated = Zeroizing::new([0; 32]);
         let mut key_out = &[][..];
         let inner;
-        let wrapped = if symmetric == SymDef::Aes128Cfb {
+        let wrapped = if key_size != 0 {
             let key = if key_in.is_empty() {
-                self.drbg.generate(&mut generated[..]).ok_or(Rc::FAILURE)?;
-                key_out = &generated[..];
+                self.drbg
+                    .generate(&mut generated[..key_size])
+                    .ok_or(Rc::FAILURE)?;
+                key_out = &generated[..key_size];
                 key_out
             } else {
                 key_in
@@ -107,12 +109,13 @@ impl Tpm {
         };
         let encrypted;
         let enc_seed;
-        let (duplicate, secret): (&[u8], &[u8]) = if let Some(new_parent) = new_parent {
+        let (duplicate, secret): (&[u8], &[u8]) = if let Some((new_parent, outer_sym)) = new_parent
+        {
             let (seed, secret) =
                 make_seed(&new_parent.public.unique, DUPLICATE_LABEL, &mut self.drbg)
                     .ok_or(Rc::FAILURE)?;
             enc_seed = secret;
-            encrypted = protect_seed_blob(&seed[..], &object.name, wrapped);
+            encrypted = protect_seed_blob(&seed[..], outer_sym, &object.name, wrapped);
             (&encrypted, &enc_seed)
         } else {
             (wrapped, &[])
@@ -136,7 +139,7 @@ impl Tpm {
     ) -> Result<Output, Rc> {
         let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        check_storage_key(parent, 1)?;
+        let parent_symmetric = check_storage_key(parent, 1)?;
         let parent_sensitive = parent.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
 
         reader.set_param(1);
@@ -164,10 +167,7 @@ impl Tpm {
             parent.has(object_attr::FIXED_TPM),
             parent.has(encrypted_duplication),
         )?;
-        let required_key_size = match symmetric {
-            SymDef::Null => 0,
-            SymDef::Aes128Cfb => 16,
-        };
+        let required_key_size = usize::from(symmetric.key_bits() / 8);
         if key.len() != required_key_size {
             return Err(Rc::SIZE.in_param(1));
         }
@@ -180,12 +180,12 @@ impl Tpm {
             let seed = recover_seed(parent, encrypted_seed, DUPLICATE_LABEL, &mut self.drbg)
                 .map_err(|error| error.response(1, 4))?;
             let (tag, ciphertext) = integrity_and_body(duplicate).ok_or(Rc::SIZE.in_param(3))?;
-            outer =
-                open_seed_blob(&seed, &name, tag, ciphertext).ok_or(Rc::INTEGRITY.in_param(3))?;
+            outer = open_seed_blob(&seed, parent_symmetric, &name, tag, ciphertext)
+                .ok_or(Rc::INTEGRITY.in_param(3))?;
             &outer[..]
         };
         let inner;
-        let canonical = if symmetric == SymDef::Aes128Cfb {
+        let canonical = if required_key_size != 0 {
             inner = aes_cfb(key, &[0; 16], wrapped, false);
             let (tag, sensitive) = integrity_and_body(&inner).ok_or(Rc::INTEGRITY.in_param(3))?;
             if !inner_integrity_matches(tag, sensitive, &name) {
@@ -210,6 +210,7 @@ impl Tpm {
             &sensitive,
             &sensitive.auth,
             &parent_sensitive.seed,
+            parent_symmetric,
             &iv,
         )?;
         let mut params = Writer::new();

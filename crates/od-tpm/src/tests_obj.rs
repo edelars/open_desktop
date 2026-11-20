@@ -435,8 +435,7 @@ fn tpmt_public_unmarshal_codes() {
     let mut b = good.clone();
     b[19] = 0x20;
     assert_eq!(parse(&b), Rc::KDF);
-    // Symmetric algorithm other than NULL/AES-128-CFB: TPM_RC_SYMMETRIC; mode other than CFB:
-    // TPM_RC_MODE.
+    // Unsupported symmetric algorithm, AES key size, and AES mode have distinct errors.
     let mut b = good.clone();
     b[11] = 0x13;
     assert_eq!(parse(&b), Rc::SYMMETRIC);
@@ -446,7 +445,10 @@ fn tpmt_public_unmarshal_codes() {
     assert_eq!(parse(&b), Rc::MODE);
     let mut b = storage;
     b[13] = 0xC0;
-    assert_eq!(parse(&b), Rc::SYMMETRIC);
+    assert_eq!(parse(&b), Rc::VALUE);
+    b[12..14].copy_from_slice(&256u16.to_be_bytes());
+    let aes256 = TpmtPublic::unmarshal(&mut Reader::new(&b)).unwrap();
+    assert_eq!(aes256.to_bytes(), b);
     // Cut off.
     assert_eq!(parse(&good[..good.len() - 1]), Rc::INSUFFICIENT);
     // TPM2B_PUBLIC whose size is not that of the structure: TPM_RC_SIZE.

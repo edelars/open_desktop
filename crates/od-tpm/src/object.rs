@@ -26,10 +26,10 @@
 //!
 //! **Private area.** `outPrivate` follows Part 1 v184, clauses 20.3-20.5: `integrity (TPM2B) ||
 //! symIv (TPM2B) || encSensitive`, with `symKey = KDFa(nameAlg, seedValue(parent), "STORAGE",
-//! Name, NULL, 128)`, `HMACkey = KDFa(nameAlg, seedValue(parent), "INTEGRITY", NULL, NULL, 256)`
+//! Name, NULL, keyBits)`, `HMACkey = KDFa(nameAlg, seedValue(parent), "INTEGRITY", NULL, NULL, 256)`
 //! and `outerHMAC = HMAC(HMACkey, symIv || encSensitive || Name)`, with the integrity checked
-//! before decryption. `encSensitive` is the marshaled `TPM2B_SENSITIVE` encrypted with AES-128 in
-//! CFB mode (full-block feedback; crates `aes` and `cfb-mode`), key `symKey` (16 octets), IV the
+//! before decryption. `encSensitive` is the marshaled `TPM2B_SENSITIVE` encrypted with the
+//! parent's AES-128/256-CFB cipher (full-block feedback). The key is `symKey`; the IV is the
 //! 16-octet `symIv` drawn from the TPM DRBG at `TPM2_Create`. Checked in slice C1 against the text of
 //! Part 1 v184, clauses 20.2-20.5 (the labels, the KDFa inputs, the CFB mode of the parent's
 //! symmetric cipher with a random `symIv`, the outer HMAC over the marshaled `TPM2B_IV`, the
@@ -70,8 +70,8 @@ use crate::crypto::{
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::kem::{self, KemPrivate};
 use crate::marshal::{
-    MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, SymDef, TpmsSensitiveCreate,
-    TpmtPublic, TpmtSignature, Unique, Writer, limits,
+    MAX_ECC_BYTES, MAX_RSA_BYTES, MAX_SYM_DATA, PublicParams, Reader, Scheme, SymDef,
+    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, Unique, Writer, limits,
 };
 use crate::pcr::Pcrs;
 use crate::random::Drbg;
@@ -188,6 +188,18 @@ impl Object {
     /// clause 8.3.3.13); only such a key can be a parent.
     pub(crate) fn is_storage(&self) -> bool {
         is_storage(&self.public)
+    }
+
+    pub(crate) fn storage_parameters(&self) -> Option<(SymDef, Scheme)> {
+        match self.public.params {
+            PublicParams::Rsa {
+                symmetric, scheme, ..
+            }
+            | PublicParams::Ecc {
+                symmetric, scheme, ..
+            } if self.is_storage() => Some((symmetric, scheme)),
+            _ => None,
+        }
     }
 }
 
@@ -459,14 +471,8 @@ fn check_asymmetric_attributes(
 }
 
 fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
-    // A restricted decryption (storage) key states AES-128-CFB, every other key TPM_ALG_NULL
-    // (Part 2, Tables 215 and 216).
-    let want = if is_storage(public) {
-        SymDef::Aes128Cfb
-    } else {
-        SymDef::Null
-    };
-    if symmetric != want {
+    // Only a restricted RSA/ECC decryption key specifies a storage cipher in this profile.
+    if is_storage(public) != (symmetric != SymDef::Null) {
         return Err(Rc::SYMMETRIC.in_param(2));
     }
     Ok(())
@@ -808,9 +814,14 @@ fn crypt_cfb<C: BlockCipherEncrypt + KeyInit>(
 /// The contents of a `TPM2B_PRIVATE` for `sensitive` (a `TPM2B_SENSITIVE`) of the object with
 /// `name`, protected under the parent's `seed`: `integrity || symIv || encSensitive` (module
 /// comment).
-pub(crate) fn protect(seed: &[u8], name: &[u8], sensitive: &[u8], iv: &[u8; 16]) -> Vec<u8> {
-    let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    let enc = aes_cfb(&sym_key, iv, sensitive, true);
+fn protect(
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    sensitive: &[u8],
+    iv: &[u8; 16],
+) -> Vec<u8> {
+    let enc = storage_cfb(seed, symmetric, name, iv, sensitive, true);
     let hmac_key = kdfa_sha256(seed, b"INTEGRITY", &[], &[], 256);
     let mut iv_field = Writer::new();
     iv_field.tpm2b(iv);
@@ -824,7 +835,12 @@ pub(crate) fn protect(seed: &[u8], name: &[u8], sensitive: &[u8], iv: &[u8; 16])
 
 /// Verifies the integrity of a private area and decrypts it: `TPM_RC_INTEGRITY` before any
 /// decryption (Part 3, clause 12.2.1), `TPM_RC_SIZE` for a malformed container.
-fn unprotect(seed: &[u8], name: &[u8], blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, Rc> {
+fn unprotect(
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    blob: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let mut r = Reader::new(blob);
     let tag = r.tpm2b(limits::MAX_DIGEST_SIZE).map_err(|_| Rc::SIZE)?;
     let iv_bytes = r.tpm2b(16).map_err(|_| Rc::SIZE)?;
@@ -839,8 +855,21 @@ fn unprotect(seed: &[u8], name: &[u8], blob: &[u8]) -> Result<Zeroizing<Vec<u8>>
     if !hmac_sha256_verify(&hmac_key, &[&iv_field.buf, enc, name], tag) {
         return Err(Rc::INTEGRITY);
     }
-    let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    Ok(aes_cfb(&sym_key, &iv, enc, false))
+    Ok(storage_cfb(seed, symmetric, name, &iv, enc, false))
+}
+
+/// Derives the AES-CFB key for a private, duplication or credential wrapper.
+/// The caller supplies the cipher of the Storage key and the IV for that wrapper.
+pub(crate) fn storage_cfb(
+    seed: &[u8],
+    symmetric: SymDef,
+    name: &[u8],
+    iv: &[u8; 16],
+    data: &[u8],
+    encrypt: bool,
+) -> Zeroizing<Vec<u8>> {
+    let key = kdfa_sha256(seed, b"STORAGE", name, &[], u32::from(symmetric.key_bits()));
+    aes_cfb(&key, iv, data, encrypt)
 }
 
 /// Protects the sensitive area of `obj` for a parent seed (`TPM2_Create`).
@@ -850,20 +879,22 @@ pub(crate) fn private_blob(
     sensitive: &Sensitive,
     auth: &AuthValue,
     parent_seed: &[u8],
+    parent_symmetric: SymDef,
     iv: &[u8; 16],
 ) -> Result<Vec<u8>, Rc> {
     let bytes = sensitive_with_auth(sensitive, obj_public.type_alg(), auth, false)?;
-    Ok(protect(parent_seed, name, &bytes, iv))
+    Ok(protect(parent_seed, parent_symmetric, name, &bytes, iv))
 }
 
 /// Opens a private blob for `public` under a parent seed (`TPM2_Load`).
 pub(crate) fn open_private(
     public: &TpmtPublic,
     parent_seed: &[u8],
+    parent_symmetric: SymDef,
     blob: &[u8],
 ) -> Result<Sensitive, Rc> {
     let name = name_of(public);
-    let plain = unprotect(parent_seed, &name, blob)?;
+    let plain = unprotect(parent_seed, parent_symmetric, &name, blob)?;
     sensitive_from_bytes(&plain, public)
 }
 
@@ -1016,21 +1047,31 @@ mod tests {
 
     #[test]
     fn protect_round_trip_and_tamper() {
+        let symmetric = SymDef::Aes128Cfb;
         let seed = [7u8; 32];
         let name = [9u8; 34];
         let sens = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let blob = protect(&seed, &name, &sens, &[3u8; 16]);
-        assert_eq!(&unprotect(&seed, &name, &blob).unwrap()[..], &sens[..]);
+        let blob = protect(&seed, symmetric, &name, &sens, &[3u8; 16]);
+        assert_eq!(
+            &unprotect(&seed, symmetric, &name, &blob).unwrap()[..],
+            &sens[..]
+        );
         // Another name, another seed, a flipped octet: integrity failure.
-        assert_eq!(unprotect(&seed, &[8u8; 34], &blob), Err(Rc::INTEGRITY));
-        assert_eq!(unprotect(&[6u8; 32], &name, &blob), Err(Rc::INTEGRITY));
+        assert_eq!(
+            unprotect(&seed, symmetric, &[8u8; 34], &blob),
+            Err(Rc::INTEGRITY)
+        );
+        assert_eq!(
+            unprotect(&[6u8; 32], symmetric, &name, &blob),
+            Err(Rc::INTEGRITY)
+        );
         let mut bad = blob.clone();
         let last = bad.len() - 1;
         bad[last] ^= 1;
-        assert_eq!(unprotect(&seed, &name, &bad), Err(Rc::INTEGRITY));
+        assert_eq!(unprotect(&seed, symmetric, &name, &bad), Err(Rc::INTEGRITY));
         // The ciphertext does not contain the plaintext.
         assert!(!blob.windows(sens.len()).any(|w| w == &sens[..]));
-        assert_eq!(unprotect(&seed, &name, &[]), Err(Rc::SIZE));
+        assert_eq!(unprotect(&seed, symmetric, &name, &[]), Err(Rc::SIZE));
     }
 
     #[test]
@@ -1057,29 +1098,33 @@ mod tests {
 
     #[test]
     fn protect_handles_empty_partial_and_maximum_sizes() {
+        let symmetric = SymDef::Aes128Cfb;
         let seed = [7u8; 32];
         let name = [9u8; 34];
         let iv = [3u8; 16];
         // Empty sensitive: the container is rejected (`TPM_RC_SIZE`), nothing to decrypt.
-        let blob = protect(&seed, &name, &[], &iv);
-        assert_eq!(unprotect(&seed, &name, &blob), Err(Rc::SIZE));
+        let blob = protect(&seed, symmetric, &name, &[], &iv);
+        assert_eq!(unprotect(&seed, symmetric, &name, &blob), Err(Rc::SIZE));
         // One octet, partial blocks, whole blocks and the largest blob `TPM2B_PRIVATE` holds
         // (integrity 2 + 32, symIv 2 + 16, the rest encSensitive).
         let largest = MAX_PRIVATE - (2 + 32 + 2 + 16);
         for len in [1usize, 15, 16, 17, 100, 256, largest] {
             let sens: Vec<u8> = (0..len).map(|i| (i * 7 + 1) as u8).collect();
-            let blob = protect(&seed, &name, &sens, &iv);
+            let blob = protect(&seed, symmetric, &name, &sens, &iv);
             assert_eq!(blob.len(), 52 + len);
-            assert_eq!(&unprotect(&seed, &name, &blob).unwrap()[..], &sens[..]);
+            assert_eq!(
+                &unprotect(&seed, symmetric, &name, &blob).unwrap()[..],
+                &sens[..]
+            );
             // Any single flipped octet is caught by the integrity check before decryption.
             for at in [2usize, 40, blob.len() - 1] {
                 let mut bad = blob.clone();
                 bad[at] ^= 0x80;
-                assert_eq!(unprotect(&seed, &name, &bad), Err(Rc::INTEGRITY));
+                assert_eq!(unprotect(&seed, symmetric, &name, &bad), Err(Rc::INTEGRITY));
             }
         }
         assert_eq!(
-            protect(&seed, &name, &vec![0u8; largest], &iv).len(),
+            protect(&seed, symmetric, &name, &vec![0u8; largest], &iv).len(),
             MAX_PRIVATE
         );
     }

@@ -621,39 +621,49 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// `TPMT_SYM_DEF_OBJECT` (Table 160), restricted to what slice B can state: NULL, or AES-128 in
-/// CFB mode (the template of a storage key); `object.rs` protects `outPrivate` with it.
+/// `TPMT_SYM_DEF_OBJECT` for NULL and AES-128/256-CFB.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SymDef {
     Null,
     Aes128Cfb,
+    Aes256Cfb,
 }
 
 impl SymDef {
+    pub(crate) fn key_bits(self) -> u16 {
+        match self {
+            Self::Null => 0,
+            Self::Aes128Cfb => 128,
+            Self::Aes256Cfb => 256,
+        }
+    }
+
     pub fn marshal(&self, w: &mut Writer) {
         match self {
             SymDef::Null => w.u16(alg::NULL),
-            SymDef::Aes128Cfb => {
+            SymDef::Aes128Cfb | SymDef::Aes256Cfb => {
                 w.u16(alg::AES);
-                w.u16(128);
+                w.u16(self.key_bits());
                 w.u16(alg::CFB);
             }
         }
     }
 
-    /// `TPM_RC_SYMMETRIC` for another algorithm or key size (Table 81), `TPM_RC_MODE` for a mode
-    /// other than CFB (Table 82).
+    /// `TPM_RC_SYMMETRIC` for another algorithm, `TPM_RC_VALUE` for an unsupported key size
+    /// (Part 2 §11.1.2), and `TPM_RC_MODE` for a mode other than CFB.
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         match r.u16()? {
             alg::NULL => Ok(SymDef::Null),
             alg::AES => {
-                if r.u16()? != 128 {
-                    return Err(r.err(Rc::SYMMETRIC));
-                }
+                let symmetric = match r.u16()? {
+                    128 => SymDef::Aes128Cfb,
+                    256 => SymDef::Aes256Cfb,
+                    _ => return Err(r.err(Rc::VALUE)),
+                };
                 if r.u16()? != alg::CFB {
                     return Err(r.err(Rc::MODE));
                 }
-                Ok(SymDef::Aes128Cfb)
+                Ok(symmetric)
             }
             _ => Err(r.err(Rc::SYMMETRIC)),
         }
