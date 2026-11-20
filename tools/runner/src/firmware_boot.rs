@@ -8,14 +8,15 @@
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    PagedProbeExit, TpmConfig, firmware_handoff_block, load_firmware_image,
+    NvramDevice, PagedProbeExit, SecureBootKeys, TpmConfig, firmware_handoff_block,
+    load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
-use std::fs::{self, File, Metadata};
-use std::io::{self, Read};
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
@@ -23,6 +24,8 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
 const DUMP_USAGE: &str =
     "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm]";
+const PREPARE_NVRAM_USAGE: &str =
+    "prepare-secure-boot-nvram setup|defaults --out <new file> [--nvram-in <protected snapshot>]";
 
 struct Options {
     image: String,
@@ -179,23 +182,10 @@ pub fn run(args: &[String]) -> ExitCode {
         config.nvme = Some(Default::default());
     }
     if let Some(path) = &options.nvram_in {
-        let mut bytes = Vec::new();
-        if let Err(error) = File::open(path).and_then(|file| {
-            file.take(NVRAM_SNAPSHOT_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-        }) {
-            return emit(failure("invalid_input", "nvram_in", error.to_string()), 3);
-        }
-        if bytes.len() != NVRAM_SNAPSHOT_BYTES {
-            return emit(
-                failure(
-                    "invalid_input",
-                    "nvram_in",
-                    "NVRAM snapshot has an invalid size".to_owned(),
-                ),
-                3,
-            );
-        }
+        let bytes = match read_nvram_snapshot(path) {
+            Ok(bytes) => bytes,
+            Err(error) => return emit(failure("invalid_input", "nvram_in", error.to_string()), 3),
+        };
         config.nvram = Some(NvramConfig::Snapshot(bytes));
     } else if options.nvram_out.is_some()
         || (options.nvme_image.is_some() && options.fv_app.is_none())
@@ -359,6 +349,114 @@ pub fn run(args: &[String]) -> ExitCode {
         }),
         if completed { 0 } else { second.code.max(5) },
     )
+}
+
+/// Builds a cold-start Secure Boot store through the machine's provisioning API.
+pub fn prepare_secure_boot_nvram(args: &[String]) -> ExitCode {
+    let (mut report, code) = match prepare_nvram(args) {
+        Ok(bytes) => (
+            json!({"schema_version": 1, "status": "prepared", "snapshot_sha256": sha256_hex(&bytes)}),
+            0,
+        ),
+        Err(error) => (failure("invalid_input", "secure_boot_nvram", error), 3),
+    };
+    report["command"] = json!("prepare-secure-boot-nvram");
+    emit(report, code)
+}
+
+fn prepare_nvram(args: &[String]) -> Result<Vec<u8>, String> {
+    let mut out = None;
+    let mut input = None;
+    let usage = || format!("usage: {PREPARE_NVRAM_USAGE}");
+    let (mode, options) = args.split_first().ok_or_else(usage)?;
+    let mut pairs = options.chunks_exact(2);
+    if !pairs.remainder().is_empty() {
+        return Err(usage());
+    }
+    for pair in &mut pairs {
+        match pair[0].as_str() {
+            "--out" if out.is_none() => out = Some(Path::new(&pair[1])),
+            "--nvram-in" if input.is_none() => input = Some(&pair[1]),
+            _ => return Err(usage()),
+        }
+    }
+    let out = out.ok_or_else(usage)?;
+    let prior = input
+        .map(|path| read_nvram_snapshot(path).map_err(|error| format!("{path}: {error}")))
+        .transpose()?;
+    let certificate;
+    let keys = match mode.as_str() {
+        "setup" => SecureBootKeys::SetupMode,
+        "defaults" => {
+            certificate = generate_platform_certificate()?;
+            SecureBootKeys::Defaults {
+                public_platform_key: &certificate,
+            }
+        }
+        _ => return Err(usage()),
+    };
+    let device = match prior {
+        Some(bytes) => NvramDevice::reset_secure_boot_keys(&bytes, keys),
+        None => NvramDevice::with_secure_boot_keys(keys),
+    }
+    .map_err(|error| error.to_string())?;
+    let snapshot = device.nvram_snapshot();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .map_err(|error| format!("{}: {error}", out.display()))?;
+    if let Err(error) = file.write_all(&snapshot) {
+        drop(file);
+        let _ = fs::remove_file(out);
+        return Err(format!("{}: {error}", out.display()));
+    }
+    Ok(snapshot)
+}
+
+fn generate_platform_certificate() -> Result<Vec<u8>, String> {
+    let output = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-batch",
+            "-sha256",
+            "-days",
+            "365",
+            "-subj",
+            "/CN=Open Desktop VM Platform Key",
+            "-keyout",
+            "/dev/null",
+            "-outform",
+            "DER",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("openssl: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "openssl: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn read_nvram_snapshot(path: &str) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(NVRAM_SNAPSHOT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() != NVRAM_SNAPSHOT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "NVRAM snapshot has an invalid size",
+        ));
+    }
+    Ok(bytes)
 }
 
 struct RebootPath {

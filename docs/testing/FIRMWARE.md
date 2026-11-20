@@ -227,6 +227,15 @@ python3 tools/build/sign_test_app.py unsigned.efi \
 
 Тестовый инструмент сам формирует DER `SpcIndirectDataContent` и подписанные атрибуты PKCS#7. Для RSA он вызывает `openssl dgst` с явным PKCS#1 v1.5. Так `SpcIndirectDataContent` остаётся SEQUENCE в PKCS#7 ContentInfo. Встроенный CMS-путь OpenSSL упаковывает содержимое в OCTET STRING. На одной эфемерной паре LibreSSL 3.3.6 и OpenSSL 4.1.0 создали побайтно одинаковый PE. Независимый digest и общий verifier подтвердили допуск при зачисленном сертификате и отказ при подмене секции, отзыве и отсутствии подписи. Инструмент отклонил PSS-only и чужой ключ, повторное подписание и повторную запись выходного файла. [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315#section-9.3), [план S7-25](../plans/STAGE_7.md#s7-25-проверить-secure-boot-на-собственных-приложениях).
 
+Для первого запуска в SetupMode подготовьте защищённый снимок через API сброса ключей команды runner. `defaults` подготавливает UserMode. Параметр `--nvram-in <protected snapshot>` выбирает холодный сброс существующего снимка с сохранением обычных переменных. Подготовленный снимок передаётся через `boot-firmware --nvram-in`.
+
+```sh
+target/release/od-runner prepare-secure-boot-nvram setup --out setup.nv
+target/release/od-runner prepare-secure-boot-nvram defaults --out defaults.nv
+```
+
+В `defaults` runner запускает OpenSSL с RSA-2048 и возвращает только DER публичного PK в API provisioning. Запись приватного ключа направляется в `/dev/null`. Каждый штатный сброс создаёт новый PK. Команда требует новый выходной файл и печатает SHA-256 снимка.
+
 ## Что проверяет S7-12 (AML и DSDT)
 
 - `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` (77 тестов; из них AML 46, DSDT 13, manifest 4, таблица 3): эталонные байты ≥ 30 конструктов (PkgLength 1–4 байта и границы, NameString, Integer, String, EISAID, Name/Scope/Device/Method/Package/Buffer, дескрипторы ResourceTemplate), вычисленные вручную по спецификации и записанные в тесте с выкладкой; три побайтных эталона DSDT (PCI0 + COM1; только COM2 с level/active-low; без устройств), сгенерированные независимой Python-программой по ACPI 6.4 (скрипт не сохранён); отрицательные случаи — переполнение PkgLength, недопустимое имя, ссылка на неопределённое имя, повтор имени в одном Scope (при построении и в готовых байтах), порча контрольной суммы/длины/сигнатуры, неописуемые записи manifest. Это проверка формата на host: DSDT не загружалась в машину или ОС. Разбор `iasl -d` не выполнялся (`iasl` отсутствует).
