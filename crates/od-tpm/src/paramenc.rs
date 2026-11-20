@@ -135,6 +135,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::GET_SESSION_AUDIT_DIGEST
             | cc::POLICY_PCR
             | cc::POLICY_SECRET
+            | cc::POLICY_TICKET
             | cc::POLICY_COUNTER_TIMER
             | cc::POLICY_NV
             | cc::POLICY_CP_HASH

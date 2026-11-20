@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 86 кодов из списка, 15 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 87 кодов из списка, 14 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -37,7 +37,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Инициализация и PCR | `IncrementalSelfTest`, `PCR_Allocate` |
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
-| Политики | `PolicySigned`, `PolicyTicket`, `PolicyDuplicationSelect` |
+| Политики | `PolicySigned`, `PolicyDuplicationSelect` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -213,23 +213,49 @@ nonce. Формат persistent snapshot v4 сохраняется.
 [TPM Library v185 Part 1 §16.7.12](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [Part 3 §§5.6 и 23.10](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=233).
 
-### Срок действия PolicySecret
+### Срок действия PolicySecret и PolicyTicket
 
-`TPM2_PolicySecret` (`0x151`) поддерживает нулевой и положительный
-`expiration` в секундах. Положительное значение без `nonceTPM` задаёт
-абсолютное TPM `Time`. С совпадающим `nonceTPM` срок отсчитывается
+`TPM2_PolicySecret` (`0x151`) принимает знаковый `expiration` в
+секундах. Модуль ненулевого значения без `nonceTPM` задаёт абсолютное
+TPM `Time`. С совпадающим `nonceTPM` срок отсчитывается
 от формирования этого nonce. Сохраняется самый ранний срок политики.
 На границе срока авторизация ещё допустима. Ранее сохранённая сессия
 после смены эпохи `Time` получает `TPM_RC_EXPIRED`.
 
 Нулевой и положительный варианты возвращают пустой `timeout` и NULL
-билет. Отрицательный `expiration` в реальной сессии пока возвращает
-`TPM_RC_VALUE` для параметра 4. Trial проверяет авторизацию источника
+билет. Отрицательный `expiration` выдаёт `TPMT_TK_AUTH` с отдельным
+сроком этого утверждения. Trial проверяет авторизацию источника
 секрета, затем вычисляет дайджест без проверок срока, значения nonce
 и ограничений `cpHashA`. Для реальной сессии проверка срока
 предшествует конфликту `cpHashA`, а конфликт предшествует проверке
 его длины.
 [TPM Library v185 Part 3 §§23.2 и 23.4](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=209).
+
+`TPM2_PolicyTicket` (`0x172`) принимает `timeout`, `cpHashA`,
+`policyRef`, `authName` и билет. Для реальной сессии проверяются срок
+и конфликт `cpHashA`, затем HMAC. Билет задаёт исходный код команды
+для двух расширений дайджеста. Восстанавливаются ограничения срока
+и `cpHashA`. Trial после разбора полей выполняет только расширения
+дайджеста по §23.1. Референсная реализация Microsoft отклоняет такой
+trial с `ATTRIBUTES`. [TPM Library v185 Part 3 §§23.1 и 23.5](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf), [Microsoft TPM reference](https://raw.githubusercontent.com/microsoft/ms-tpm-20-ref/main/TPMCmd/tpm/src/command/EA/PolicyTicket.c).
+
+Кодировка билета в этом TPM использует ровно восемь байт `timeout`.
+Младшие 63 бита содержат миллисекунды `Time`. Старший бит означает,
+что nonce при выдаче отсутствовал. HMAC-SHA-256 защищает тег,
+`cpHashA`, `policyRef` и `authName` с их префиксами длины TPM2B,
+само восьмибайтовое значение срока и 16 байт эпохи `Time`.
+При установленном старшем бите в HMAC также идут восемь байт
+`totalResetCount` в big-endian. Префиксы длины позволяют
+однозначно различать пустые и заполненные поля. Источник использует
+proof своей иерархии. Для Lockout это Owner proof. Для NV выбор
+определяет `PLATFORMCREATE`.
+[TPM Library v185 Part 2 §§10.3.10 и 10.6.6](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf), [Microsoft TPM reference](https://raw.githubusercontent.com/microsoft/ms-tpm-20-ref/main/TPMCmd/tpm/src/support/Entity.c).
+
+После смены эпохи билет в новой сессии получает `TICKET` при
+несовпадении HMAC. Истёкший срок или старая эпоха самой сессии
+дают `EXPIRED`. `Clear` меняет Owner и Endorsement proof.
+Билет Platform сохраняет силу до истечения срока или смены
+эпохи. Первый параметр `PolicyTicket` поддерживает шифрование.
 
 ### Сравнение значения NV в политике
 
@@ -395,7 +421,7 @@ Platform. `DictionaryAttackLockReset` с рабочей Lockout policy може�
 
 `TPM2_ClockSet` (`0x128`) допускает авторизацию Owner или Platform. Новое значение в миллисекундах должно быть не меньше текущего `Clock` и не больше `0xFFFF_0000_0000_0000`. Равенство допустимо. Команда меняет сохранённую базу и продолжает отсчёт с текущего времени включения. `Time`, флаг `safe`, счётчики запуска и таймеры DA не меняются.
 
-Форматы `ODTPMSTA` v3 и v4 сохраняют текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` остаётся в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+Форматы `ODTPMSTA` v3–v5 сохраняют текущее значение. Профиль обновляет базу в памяти синхронно, а запись snapshot остаётся обязанностью host. Интервал обновления NV `TPM_PT_CLOCK_UPDATE` остаётся в работе по PTP. [TPM Library v185 Part 3 §29.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=327), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
 
 ### Калибровка Time и Clock
 
@@ -436,7 +462,7 @@ Snapshot сохраняет накопленный `Clock`. После ново�
 | Выдача/приём байтов TPM state host-стороне | `od-machine` public API (S7-22) | ADR-0009, решение 1 |
 | Защита ключей, хранение в bundle, rollback | этап 9, S9-27 | решение владельца D1 |
 
-- **Persistent** (snapshot `ODTPMSTA` v4, читается и v3): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth`, их политики и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
+- **Persistent** (snapshot `ODTPMSTA` v5, читаются v3 и v4): seeds иерархий, `ownerAuth`/`endorsementAuth`/`lockoutAuth`, их политики и флаги иерархий, NV-индексы всех поддержанных типов (ordinary, counter, bit field, extend: атрибуты, auth, данные) и наибольшее значение NV-счётчика, persistent objects с приватными частями, состояние DA, `Clock`-база, `resetCount`, `restartCount`. Не сохраняются: состояние DRBG (при создании и `restore` владелец передаёт свежую энтропию), `platformAuth` (volatile по Part 3, 9.3.1).
 - **Volatile:** PCR, сессии, transient objects, загруженные контексты, hash/event sequences, locality, признак `Startup`.
 - Байты persistent state версионные; неизвестная версия (в том числе прежние v1 и v2) отвергается. **Snapshot — чувствительные данные:** в нём seeds, auth иерархий и NV, данные NV и приватные ключи в открытом виде; до S9-27 (защита, host) он выдаётся владельцу машины как есть, не логируется и не хранится без защиты.
 - Seeds, приватные ключи, `authValue`, ключи сессий, состояние и выход DRBG, данные NV и `Unseal` никогда не логируются и не попадают в отчёты и эталоны.
@@ -734,7 +760,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 PTP требует вместить поддерживаемый максимальный кадр. Используются 3968 байт, включая конец страницы locality 0. Это явный выбор окна ADR из-за расхождения диапазона и размера в Table 36. Загрузка команды не принимает пропуски и допускает начало новой команды с базового адреса; §6.5.3.11.2 разрешает такой режим. Внутри firmware-кванта время берётся на START по позиции инструкции. Обычная шина использует текущее время платы. Часы TPM получают миллисекунды от включения.
 
-Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v4, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
+Снимок `tpm_state_snapshot()` обновляет clock до текущего времени платы и возвращает постоянное состояние ODTPMSTA v5, включая секреты. Чтения данных из ROM внутри одной страницы разрешены firmware-профилю с TPM после обычной трансляции; ROM остаётся NX и read-only. Восстановление при создании платы использует `TpmConfig::snapshot` и свежий host entropy (не менее 48 байт), проверяет весь снимок до запуска гостя и сбрасывает транспорт и volatile state. Состояние PCR, сессии и локальность в снимок не входят. Сохранение защищённой копии на диск относится к S9-27.
 
 ## Measured boot
 
@@ -781,13 +807,22 @@ PTP требует вместить поддерживаемый максима�
 
 ### Формат snapshot `ODTPMSTA` версия 4
 
-Текущий writer записывает `4` в поле версии. В конец payload v3
+Writer v4 записывал `4` в поле версии. В конец payload v3
 добавлены три обязательные записи политик в порядке Owner, Endorsement,
 Lockout. Запись содержит `hashAlg` (u16 big-endian) и 32 байта при SHA-256.
 Для NULL после алгоритма дайджеста нет. Platform policy в snapshot
 отсутствует. Пустой TPM даёт payload 151 октет и snapshot 199 октетов.
 
-`restore` принимает v3 и v4. Для обеих версий проверяются магия, нулевые
+### Формат snapshot `ODTPMSTA` версия 5
+
+Writer записывает `5` в поле версии. После трёх политик v4 идёт
+обязательный `totalResetCount` как big-endian u64. Счётчик растёт
+при TPM Reset с насыщением. `Clear`, Restart и Resume сохраняют его.
+Для v3 и v4 при восстановлении берётся доступная нижняя граница
+из `resetCount`. Эти версии выписывали только NULL билеты.
+Пустой TPM даёт payload 159 байт и snapshot 207 байт.
+
+`restore` принимает v3, v4 и v5. Для всех версий проверяются магия, нулевые
 флаги, точная длина и SHA-256 payload. Неизвестные алгоритмы, лишние
 байты и несогласованные поля дают `BadField`, усечённая запись даёт
 `BadLength`. Версии v1, v2 и неизвестные версии дают `UnsupportedVersion`.

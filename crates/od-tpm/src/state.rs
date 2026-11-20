@@ -2,7 +2,7 @@
 //! (reset by `_TPM_Init`), the snapshot codec, and TPM clock commands.
 //!
 //! Persistent (ADR-0009, decision 5): the three hierarchy seeds (generated from owner entropy), the
-//! clock base, `resetCount`, `restartCount` and the orderly-shutdown flag, the authorization values
+//! clock base, `resetCount`, `totalResetCount`, `restartCount` and the orderly-shutdown flag, the authorization values
 //! and flags of the hierarchies (`hierarchy.rs`), the dictionary-attack state (`da.rs`), the NV store
 //! (`nv.rs`) and the persistent objects with their private parts (`object.rs`) go into the
 //! snapshot (slice C1 of phase B; the codec is `snapshot.rs`). The transient objects are volatile
@@ -16,12 +16,12 @@
 //! protects them. They must not be logged or stored unprotected. Seeds and DRBG state are wiped on
 //! drop and never reach `Debug`.
 //!
-//! Format `ODTPMSTA` version 4 (all integers big-endian):
+//! Format `ODTPMSTA` version 5 (all integers big-endian):
 //!
 //! | offset | size | field |
 //! |---|---|---|
 //! | 0 | 8 | magic `ODTPMSTA` |
-//! | 8 | 2 | format version (4) |
+//! | 8 | 2 | format version (5) |
 //! | 10 | 2 | flags (0; non-zero is rejected) |
 //! | 12 | 4 | payload length `L` (at most 1 MiB) |
 //! | 16 | `L` | payload (layout in `snapshot.rs`) |
@@ -33,7 +33,8 @@
 //! only, no counter maximum) is rejected as `UnsupportedVersion(2)`: slice C3 added NV counters,
 //! bit fields and extend indices and the persistent counter maximum, and a version-2 snapshot
 //! cannot be read as version 3 without inventing the maximum.
-//! Version 3 is accepted with all hierarchy policies empty.
+//! Version 3 is accepted with all hierarchy policies empty. Versions 3 and 4 initialize
+//! `totalResetCount` from the saved `resetCount`, its available lower bound.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -54,8 +55,8 @@ use crate::snapshot;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written by the TPM.
-pub const SNAPSHOT_VERSION: u16 = 4;
-const LEGACY_SNAPSHOT_VERSION: u16 = 3;
+pub const SNAPSHOT_VERSION: u16 = 5;
+const MIN_SNAPSHOT_VERSION: u16 = 3;
 /// Header size: magic, version, flags, payload length.
 const HEADER_LEN: usize = 16;
 /// The largest payload `restore` accepts (the real maximum is about 60 KiB: 128 NV indices with
@@ -71,7 +72,7 @@ pub enum StateError {
     BadLength,
     /// Magic mismatch.
     BadMagic,
-    /// Format version other than [`SNAPSHOT_VERSION`] (the version found is returned).
+    /// An unrecognized format version (the version found is returned).
     UnsupportedVersion(u16),
     /// Non-zero flags, bad payload length or an invalid field value.
     BadField,
@@ -106,6 +107,8 @@ pub(crate) struct Persistent {
     pub clock_base_ms: u64,
     pub reset_count: u32,
     pub restart_count: u32,
+    /// Persistent TPM Reset count. Neither Restart, Resume nor Clear change this value.
+    pub total_reset_count: u64,
     /// Set by `Shutdown`, cleared by `Startup`; a snapshot taken without `Shutdown` is disorderly.
     pub orderly: bool,
     /// Authorization values and flags of the hierarchies.
@@ -191,6 +194,7 @@ impl Tpm {
             clock_base_ms: 0,
             reset_count: 0,
             restart_count: 0,
+            total_reset_count: 0,
             orderly: true,
             hier: HierarchyPersistent::default(),
             da: DaPersistent::default(),
@@ -267,7 +271,7 @@ impl Tpm {
         self.da_tick();
     }
 
-    /// Bytes of the persistent state (format `ODTPMSTA` v4). **Sensitive data**: they contain the
+    /// Bytes of the persistent state (format `ODTPMSTA` v5). **Sensitive data**: they contain the
     /// seeds, the authorization values, the NV data and the private keys in clear text (S9-27
     /// protects them); do not log or store them unprotected. In the unreachable case that a
     /// private part cannot be marshaled the result is empty, which `restore` rejects.
@@ -285,7 +289,7 @@ impl Tpm {
         out
     }
 
-    /// Restores a TPM from version 3 or version 4 snapshot bytes. An unsupported version,
+    /// Restores a TPM from version 3, 4 or 5 snapshot bytes. An unsupported version,
     /// a damaged snapshot or too little entropy is an error: there is no silent
     /// fallback to an empty TPM. `entropy` reseeds the DRBG (the DRBG state is not part of the
     /// snapshot). The TPM is in the state after `_TPM_Init`.
@@ -297,7 +301,7 @@ impl Tpm {
             return Err(StateError::BadMagic);
         }
         let version = u16::from_be_bytes([snapshot[8], snapshot[9]]);
-        if !matches!(version, LEGACY_SNAPSHOT_VERSION | SNAPSHOT_VERSION) {
+        if !(MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&version) {
             return Err(StateError::UnsupportedVersion(version));
         }
         if snapshot.len() < HEADER_LEN + 32 {
@@ -316,7 +320,7 @@ impl Tpm {
         if Sha256::digest(payload)[..] != snapshot[HEADER_LEN + len..] {
             return Err(StateError::BadDigest);
         }
-        let persistent = snapshot::decode(payload, version == SNAPSHOT_VERSION)?;
+        let persistent = snapshot::decode(payload, version)?;
         let drbg = Drbg::new(entropy).ok_or(StateError::InsufficientEntropy)?;
         Ok(Tpm::assemble(persistent, drbg))
     }
@@ -458,18 +462,20 @@ mod tests {
         let mut t = tpm();
         t.power_ms = 1500;
         t.persistent.reset_count = 4;
+        t.persistent.total_reset_count = 18;
         t.persistent.restart_count = 2;
         t.persistent.orderly = false;
         let bytes = t.persistent_snapshot();
         // 113 octets of seeds and counters, 3 empty auth values (3), hierarchy flags (1), DA (17),
         // NV count (2), NV counter maximum (8), object count (1) and three NULL primary
-        // policies (6): 151 octets of payload for an empty TPM.
-        assert_eq!(bytes.len(), HEADER_LEN + 151 + 32);
+        // policies (6) and total reset count (8): 159 octets of payload for an empty TPM.
+        assert_eq!(bytes.len(), HEADER_LEN + 159 + 32);
         assert_eq!(&bytes[..8], b"ODTPMSTA");
-        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 4);
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 5);
         let r = Tpm::restore(&bytes, &[9u8; 48]).unwrap();
         assert_eq!(r.persistent.clock_base_ms, 1500);
         assert_eq!(r.persistent.reset_count, 4);
+        assert_eq!(r.persistent.total_reset_count, 18);
         assert_eq!(r.persistent.restart_count, 2);
         assert!(!r.persistent.orderly);
         assert_eq!(&r.persistent.owner_seed[..], &t.persistent.owner_seed[..]);
@@ -487,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn restore_legacy_v3_without_hierarchy_policies() {
-        // v3 bytes formed independently of the v4 writer.
+    fn restore_v3_and_v4_without_a_total_reset_count() {
+        // Legacy bytes formed independently of the current writer.
         let mut payload = vec![0x42; 96];
         payload.extend_from_slice(&1234u64.to_be_bytes());
         payload.extend_from_slice(&4u32.to_be_bytes());
@@ -513,6 +519,7 @@ mod tests {
         assert_eq!(t.persistent.clock_base_ms, 1234);
         assert_eq!(t.persistent.hier.owner_auth.as_slice(), b"old");
         assert_eq!(t.persistent.da.failed_tries, 2);
+        assert_eq!(t.persistent.total_reset_count, 4);
         assert!(t.persistent.hier.owner_auth_set);
         for handle in [
             crate::codes::handle::RH_OWNER,
@@ -522,12 +529,12 @@ mod tests {
         ] {
             assert_eq!(t.permanent_auth_policy(handle), None);
         }
-        let v4 = t.persistent_snapshot();
-        assert_eq!(&v4[8..10], &4u16.to_be_bytes());
-        assert_eq!(&v4[16..16 + payload.len()], &payload);
+        let v5 = t.persistent_snapshot();
+        assert_eq!(&v5[8..10], &5u16.to_be_bytes());
+        assert_eq!(&v5[16..16 + payload.len()], &payload);
         assert_eq!(
-            &v4[16 + payload.len()..v4.len() - 32],
-            &[0, 0x10, 0, 0x10, 0, 0x10]
+            &v5[16 + payload.len()..v5.len() - 32],
+            &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4]
         );
 
         let old_length = payload.len();
@@ -540,6 +547,25 @@ mod tests {
         payload.extend_from_slice(&[0, 0x01, 0, 0x10, 0, 0x10]);
         assert_eq!(
             Tpm::restore(&wrap(4, &payload), &[9; 48]).unwrap_err(),
+            StateError::BadField
+        );
+        payload.truncate(old_length);
+        payload.extend_from_slice(&[0, 0x0b]);
+        payload.extend_from_slice(&[0x55; 32]);
+        payload.extend_from_slice(&[0, 0x10, 0, 0x10]);
+        let restored = Tpm::restore(&wrap(4, &payload), &[9; 48]).unwrap();
+        assert_eq!(restored.persistent.total_reset_count, 4);
+        assert_eq!(
+            restored.permanent_auth_policy(crate::codes::handle::RH_OWNER),
+            Some(&[0x55; 32])
+        );
+        assert_eq!(
+            Tpm::restore(&wrap(5, &payload), &[9; 48]).unwrap_err(),
+            StateError::BadLength
+        );
+        payload.extend_from_slice(&3u64.to_be_bytes());
+        assert_eq!(
+            Tpm::restore(&wrap(5, &payload), &[9; 48]).unwrap_err(),
             StateError::BadField
         );
     }
@@ -557,7 +583,7 @@ mod tests {
         b[0] ^= 1;
         assert_eq!(Tpm::restore(&b, &e).unwrap_err(), StateError::BadMagic);
         // The former version 1 and a future version are refused, whatever the rest looks like.
-        for v in [1u8, 2, 5] {
+        for v in [1u8, 2, 6] {
             let mut b = bytes.clone();
             b[9] = v;
             assert_eq!(

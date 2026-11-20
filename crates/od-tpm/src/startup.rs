@@ -117,6 +117,8 @@ impl Tpm {
                         self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
                         self.context = ContextState::default();
                         self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
+                        self.persistent.total_reset_count =
+                            self.persistent.total_reset_count.saturating_add(1);
                         self.persistent.restart_count = 0;
                     }
                 }

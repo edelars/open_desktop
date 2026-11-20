@@ -21,8 +21,8 @@
 //! failure is not a dictionary-attack failure (Part 1, clause 17.8.3). An ADMIN-role authorization
 //! with a policy session needs `TPM2_PolicyCommandCode` in the policy (Part 3, clause 5.6, step 6).
 //!
-//! `PolicySecret` supports session expiration and returns a NULL ticket and an empty
-//! timeout. Negative expiration needs the reusable ticket path (`PolicyTicket`).
+//! A negative `PolicySecret` expiration can issue a reusable authorization ticket.
+//! `PolicyTicket` authenticates the ticket and reuses its original assertion.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the numbers of the
 //! handle and parameter modifiers of the codes below; `TPM_RC_VALUE` (handle 1/2) for a session
@@ -39,7 +39,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::codes::{alg, cc, handle, st};
-use crate::crypto::DIGEST;
+use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify};
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{MAX_DATA, Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
 use crate::nv::{NvIndex, attr as nv_attr};
@@ -48,6 +48,9 @@ use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::{Session, SessionKind};
 use crate::state::{TimePoint, Tpm};
+
+/// The top bit of the private eight-octet timeout marks an assertion without nonceTPM.
+const RESET_BOUND_TIMEOUT: u64 = 1 << 63;
 
 /// The policy context of a session (Part 1, clause 17.7.8) for the SHA-256 session hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -210,6 +213,23 @@ impl PolicyState {
         }
         self.hash_restriction = Some(restriction);
         Ok(())
+    }
+
+    fn apply_authorization(
+        &mut self,
+        code: u32,
+        name: &[u8],
+        policy_ref: &[u8],
+        deadline: Option<TimePoint>,
+        cp_hash: Option<[u8; DIGEST]>,
+    ) {
+        if let Some(hash) = cp_hash {
+            self.hash_restriction = Some(PolicyHashRestriction::CpHash(hash));
+        }
+        self.restrict_deadline(deadline);
+        // PolicyUpdate (Part 3, §23.2.3) has two extensions, including an empty policyRef.
+        self.extend(&[&code.to_be_bytes(), name]);
+        self.extend(&[policy_ref]);
     }
 }
 
@@ -644,34 +664,147 @@ impl Tpm {
             if !nonce_tpm.is_empty() && nonce_tpm != session.nonce_tpm {
                 return Err(Rc::VALUE.in_param(1));
             }
-            if expiration < 0 {
-                // Negative expiration also requires issuing a reusable authorization ticket.
-                return Err(Rc::VALUE.in_param(4));
-            }
-            let deadline = self.policy_assertion_deadline(session, nonce_tpm, expiration as u32)?;
+            let deadline =
+                self.policy_assertion_deadline(session, nonce_tpm, expiration.unsigned_abs())?;
             let cp_hash = Self::policy_assertion_cp_hash(&session.policy, cp_hash_a)?;
             (deadline, cp_hash)
         };
-        let (state, _) = self.policy_mut(slot)?;
-        if let Some(hash) = cp_hash {
-            state.hash_restriction = Some(PolicyHashRestriction::CpHash(hash));
-        }
-        state.restrict_deadline(deadline);
-        // PolicyUpdate: two extensions (clause 23.2.3).
-        state.extend(&[&cc::POLICY_SECRET.to_be_bytes(), &name]);
-        state.extend(&[policy_ref]);
-        let mut w = Writer::new();
-        w.tpm2b(&[]);
-        TpmtTicket {
+        let mut ticket = TpmtTicket {
             tag: st::AUTH_SECRET,
             hierarchy: handle::RH_NULL,
             digest: Vec::new(),
+        };
+        let mut w = Writer::new();
+        if let Some(limit) = deadline
+            && expiration < 0
+        {
+            if limit.ms >= RESET_BOUND_TIMEOUT {
+                return Err(Rc::VALUE.in_param(4));
+            }
+            let timeout = limit.ms
+                | if nonce_tpm.is_empty() {
+                    RESET_BOUND_TIMEOUT
+                } else {
+                    0
+                };
+            let hierarchy = self.secret_ticket_hierarchy(inv.handles[0])?;
+            let proof = self.hierarchy_proof(hierarchy).ok_or(Rc::FAILURE)?;
+            let transcript =
+                self.auth_ticket_transcript(st::AUTH_SECRET, timeout, cp_hash_a, policy_ref, &name);
+            ticket.hierarchy = hierarchy;
+            ticket.digest = hmac_sha256(&proof, &[&transcript]).to_vec();
+            w.tpm2b(&timeout.to_be_bytes());
+        } else {
+            w.tpm2b(&[]);
         }
-        .marshal(&mut w);
+        ticket.marshal(&mut w);
+        let (state, _) = self.policy_mut(slot)?;
+        state.apply_authorization(cc::POLICY_SECRET, &name, policy_ref, deadline, cp_hash);
         Ok(Output {
             handles: Vec::new(),
             params: w.finish(),
         })
+    }
+
+    /// `TPM2_PolicyTicket` (Part 3 v185, §23.5) reuses a previous authorization.
+    pub(crate) fn cmd_policy_ticket(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let timeout = p.tpm2b(8)?;
+        p.set_param(2);
+        let cp_hash_a = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(3);
+        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(4);
+        let name = p.tpm2b(2 + limits::MAX_DIGEST_SIZE)?;
+        p.set_param(5);
+        let tag = p.u16()?;
+        let code = match tag {
+            st::AUTH_SECRET => cc::POLICY_SECRET,
+            st::AUTH_SIGNED => cc::POLICY_SIGNED,
+            _ => return Err(Rc::TAG.in_param(5)),
+        };
+        let hierarchy = p.u32()?;
+        if !is_object_hierarchy(hierarchy) {
+            return Err(Rc::VALUE.in_param(5));
+        }
+        let tag_digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+        let (slot, kind) = self.check_policy_session(inv.handles[0], 0)?;
+        if kind == SessionKind::Trial {
+            // Part 3 v185 §23.1 applies: compute the digest without using the ticket.
+            let (state, _) = self.policy_mut(slot)?;
+            state.apply_authorization(code, name, policy_ref, None, None);
+            return Ok(Output::default());
+        }
+        let timeout = u64::from_be_bytes(timeout.try_into().map_err(|_| Rc::SIZE.in_param(1))?);
+        let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
+        let deadline = TimePoint {
+            epoch: session.nonce_time.ok_or(Rc::EXPIRED)?.epoch,
+            ms: timeout & !RESET_BOUND_TIMEOUT,
+        };
+        if deadline.has_passed(self.time_point()) {
+            return Err(Rc::EXPIRED);
+        }
+        let cp_hash = Self::policy_assertion_cp_hash(&session.policy, cp_hash_a)?;
+        let proof = self
+            .hierarchy_proof(hierarchy)
+            .ok_or(Rc::TICKET.in_param(5))?;
+        let transcript = self.auth_ticket_transcript(tag, timeout, cp_hash_a, policy_ref, name);
+        if !hmac_sha256_verify(&proof, &[&transcript], tag_digest) {
+            return Err(Rc::TICKET.in_param(5));
+        }
+        let (state, _) = self.policy_mut(slot)?;
+        state.apply_authorization(code, name, policy_ref, Some(deadline), cp_hash);
+        Ok(Output::default())
+    }
+
+    fn secret_ticket_hierarchy(&self, auth_handle: u32) -> Result<u32, Rc> {
+        if let Some(object) = self.object(auth_handle) {
+            return Ok(object.hierarchy);
+        }
+        if let Some(index) = self.persistent.nv.get(auth_handle) {
+            return Ok(if index.attributes & nv_attr::PLATFORMCREATE != 0 {
+                handle::RH_PLATFORM
+            } else {
+                handle::RH_OWNER
+            });
+        }
+        Ok(match auth_handle {
+            handle::RH_PLATFORM | handle::RH_ENDORSEMENT | handle::RH_NULL => auth_handle,
+            handle::RH_OWNER | handle::RH_LOCKOUT => handle::RH_OWNER,
+            // Sequence objects have no persistent owner.
+            _ if self.seq_slot(auth_handle, 0).is_ok() => handle::RH_NULL,
+            _ => return Err(Rc::VALUE.in_handle(1)),
+        })
+    }
+
+    /// Canonical encoding of the logical transcript in Part 3 v185 §23.2.5.
+    /// Lengths distinguish optional fields with otherwise identical concatenations.
+    fn auth_ticket_transcript(
+        &self,
+        tag: u16,
+        timeout: u64,
+        cp_hash: &[u8],
+        policy_ref: &[u8],
+        name: &[u8],
+    ) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u16(tag);
+        w.tpm2b(cp_hash);
+        w.tpm2b(policy_ref);
+        w.tpm2b(name);
+        w.u64(timeout);
+        if timeout & !RESET_BOUND_TIMEOUT != 0 {
+            w.bytes(&self.time_epoch);
+            if timeout & RESET_BOUND_TIMEOUT != 0 {
+                w.u64(self.persistent.total_reset_count);
+            }
+        }
+        w.finish()
     }
 
     /// Part 3 v185 §23.2.2. An empty nonce makes the expiration an absolute TPM Time.

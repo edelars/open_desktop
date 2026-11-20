@@ -25,6 +25,7 @@ pub mod cc {
     pub const NV_EXTEND: u32 = 0x0000_0136;
     pub const NV_CHANGE_AUTH: u32 = 0x0000_013B;
     pub const POLICY_SECRET: u32 = 0x0000_0151;
+    pub const POLICY_SIGNED: u32 = 0x0000_0160;
     pub const HMAC: u32 = 0x0000_0155;
     pub const HMAC_START: u32 = 0x0000_015B;
     pub const QUOTE: u32 = 0x0000_0158;
@@ -38,6 +39,7 @@ pub mod cc {
     pub const POLICY_LOCALITY: u32 = 0x0000_016F;
     pub const POLICY_NAME_HASH: u32 = 0x0000_0170;
     pub const POLICY_OR: u32 = 0x0000_0171;
+    pub const POLICY_TICKET: u32 = 0x0000_0172;
     pub const POLICY_PCR: u32 = 0x0000_017F;
     pub const POLICY_RESTART: u32 = 0x0000_0180;
     pub const NV_CERTIFY: u32 = 0x0000_0184;
@@ -122,6 +124,7 @@ pub mod st {
     pub const ATTEST_NV_DIGEST: u16 = 0x801C;
     /// Ticket tag of `TPM2_PolicySecret` (Table 23).
     pub const AUTH_SECRET: u16 = 0x8023;
+    pub const AUTH_SIGNED: u16 = 0x8025;
 }
 
 /// Table 26 (v184): `TPM_CAP` capability selectors.

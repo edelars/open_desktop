@@ -196,7 +196,7 @@ impl Tpm {
         kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-NULLPROOF", &[], &[], 256)
     }
 
-    fn creation_proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
+    pub(crate) fn hierarchy_proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
         if hierarchy == handle::RH_NULL {
             Some(self.null_proof())
         } else {
@@ -211,7 +211,7 @@ impl Tpm {
         hierarchy: u32,
         digest: &[u8],
     ) -> bool {
-        self.creation_proof(hierarchy).is_some_and(|proof| {
+        self.hierarchy_proof(hierarchy).is_some_and(|proof| {
             hmac_sha256_verify(&proof, &creation_ticket_parts(name, creation_hash), digest)
         })
     }
@@ -290,7 +290,7 @@ impl Tpm {
         let bytes = w.finish();
         let hash = Sha256::digest(&bytes).to_vec();
         let proof = self
-            .creation_proof(obj.hierarchy)
+            .hierarchy_proof(obj.hierarchy)
             .expect("a newly created object has a hierarchy proof");
         let ticket = TpmtTicket {
             tag: st::CREATION,

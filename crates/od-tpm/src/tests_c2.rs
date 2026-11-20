@@ -2314,6 +2314,155 @@ fn policy_secret_validation_order_and_trial_do_not_install_restrictions_on_failu
 }
 
 #[test]
+fn policy_ticket_replays_a_secret_assertion_and_keeps_its_command_binding() {
+    let mut t = started();
+    t.advance_power_time(2000);
+    let source = policy_session(&mut t, se::POLICY);
+    let replay = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    let clock = hc(
+        cc::CLOCK_SET,
+        &[OWNER],
+        100_000u64.to_be_bytes().to_vec(),
+        (OWNER, b""),
+    );
+    let cp_hash = h256(&[&u32b(0x128), &u32b(OWNER), &clock.params]);
+    let issued = secret_pw(
+        &mut t,
+        OWNER,
+        b"",
+        &source,
+        &secret_params(&source.nonce_tpm, &cp_hash, b"", (-2i32) as u32),
+    );
+    ok(&issued);
+    let output = params(&issued, 0);
+    let timeout = &output[..10];
+    let ticket = &output[10..];
+    assert_eq!(timeout, tpm2b(&4000u64.to_be_bytes()));
+    assert_eq!(&ticket[..8], &hex("8023400000010020"));
+    let request = |timeout: &[u8], cp: &[u8], reference: &[u8], ticket: &[u8]| {
+        cat(&[
+            timeout,
+            &tpm2b(cp),
+            &tpm2b(reference),
+            &tpm2b(&u32b(OWNER)),
+            ticket,
+        ])
+    };
+    let valid = request(timeout, &cp_hash, b"", ticket);
+    let repartition = request(timeout, b"", &cp_hash, ticket);
+    // Trial uses the structurally valid fields without verifying their HMAC.
+    ok(&pol(&mut t, cc::POLICY_TICKET, &trial, &repartition));
+    let trial_first = h256(&[&[0; 32], &u32b(0x151), &u32b(OWNER)]);
+    assert_eq!(digest(&mut t, &trial), h256(&[&trial_first, &cp_hash]));
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &replay, &repartition),
+        Rc::TICKET.in_param(5),
+    );
+    let new_timeout = tpm2b(&(4000u64 | (1 << 63)).to_be_bytes());
+    let altered = request(&new_timeout, &cp_hash, b"", ticket);
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &replay, &altered),
+        Rc::TICKET.in_param(5),
+    );
+    assert_eq!(digest(&mut t, &replay), [0; 32]);
+    ok(&pol(&mut t, cc::POLICY_TICKET, &replay, &valid));
+    let approved = digest(&mut t, &source);
+    assert_eq!(digest(&mut t, &replay), approved);
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &approved,
+        alg::SHA256,
+    ));
+
+    let saved = params(&save(&mut t, replay.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), replay.handle);
+    let mut replay = replay;
+    let different_clock = hc(
+        cc::CLOCK_SET,
+        &[OWNER],
+        100_001u64.to_be_bytes().to_vec(),
+        (OWNER, b""),
+    );
+    err(
+        &use_session(&mut t, &mut replay, &different_clock, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    t.advance_power_time(4000);
+    ok(&use_session(&mut t, &mut replay, &clock, 0, true, false));
+    t.advance_power_time(4001);
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &replay, &valid),
+        Rc::EXPIRED,
+    );
+    assert_eq!(digest(&mut t, &replay), [0; 32]);
+}
+
+#[test]
+fn policy_ticket_depends_on_the_issuing_epoch_and_persistent_hierarchy_proof() {
+    let mut t = started();
+    let source = policy_session(&mut t, se::POLICY);
+    let pending = policy_session(&mut t, se::POLICY);
+    let mut requests = Vec::new();
+    for hierarchy in [LOCKOUT, PLATFORM] {
+        let issued = secret_pw(
+            &mut t,
+            hierarchy,
+            b"",
+            &source,
+            &secret_params(&[], b"", b"", i32::MIN as u32),
+        );
+        ok(&issued);
+        let output = params(&issued, 0);
+        let abs_ms = (u64::from(i32::MIN.unsigned_abs()) * 1000) | (1 << 63);
+        assert_eq!(&output[..10], &tpm2b(&abs_ms.to_be_bytes()));
+        let ticket = &output[10..];
+        let proof_hierarchy = if hierarchy == LOCKOUT {
+            OWNER
+        } else {
+            PLATFORM
+        };
+        assert_eq!(&ticket[..6], &cat(&[&u16b(0x8023), &u32b(proof_hierarchy)]));
+        requests.push(cat(&[
+            &output[..10],
+            &[0; 4],
+            &tpm2b(&u32b(hierarchy)),
+            ticket,
+        ]));
+    }
+    assert_eq!(t.persistent.total_reset_count, 1);
+    ok(&pw_cmd(&mut t, cc::CLEAR, &[PLATFORM], b"", &[]));
+    assert_eq!(t.persistent.total_reset_count, 1);
+    assert_eq!(t.persistent.reset_count, 0);
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &pending, &requests[0]),
+        Rc::TICKET.in_param(5),
+    );
+    ok(&pol(&mut t, cc::POLICY_TICKET, &pending, &requests[1]));
+    let saved = params(&save(&mut t, pending.handle), 0).to_vec();
+    shutdown(&mut t, su::STATE);
+    t.init();
+    startup(&mut t, su::STATE);
+    assert_eq!(t.persistent.total_reset_count, 1);
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), pending.handle);
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &pending, &requests[1]),
+        Rc::EXPIRED,
+    );
+    let after = policy_session(&mut t, se::POLICY);
+    err(
+        &pol(&mut t, cc::POLICY_TICKET, &after, &requests[1]),
+        Rc::TICKET.in_param(5),
+    );
+    shutdown(&mut t, su::CLEAR);
+    t.init();
+    startup(&mut t, su::CLEAR);
+    assert_eq!(t.persistent.total_reset_count, 2);
+}
+
+#[test]
 fn policy_secret_checks_authorization_and_parameters() {
     let mut t = started();
     ok(&set_auth(&mut t, OWNER, b"", b"owner-pw"));
@@ -2349,17 +2498,6 @@ fn policy_secret_checks_authorization_and_parameters() {
         &s,
         &secret_params(&own, &[], b"ref", 0),
     ));
-    // Negative expiration asks for a reusable ticket, which is unavailable.
-    err(
-        &secret_pw(
-            &mut t,
-            OWNER,
-            b"owner-pw",
-            &s,
-            &secret_params(&[], &[], b"ref", u32::MAX),
-        ),
-        Rc::VALUE.in_param(4),
-    );
     // cpHashA must be one digest (TPM_RC_SIZE, parameter 2); policyRef above one digest.
     err(
         &secret_pw(

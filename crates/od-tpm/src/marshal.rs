@@ -935,7 +935,7 @@ impl Drop for TpmsSensitiveCreate {
     }
 }
 
-/// `TPMT_TK_CREATION` and `TPMT_TK_VERIFIED` (Tables 109, 110) for output: a tag, a hierarchy and
+/// `TPMT_TK_CREATION`, `TPMT_TK_VERIFIED` and `TPMT_TK_AUTH` for output: a tag, a hierarchy and
 /// a digest. A NULL ticket has hierarchy `TPM_RH_NULL` and an empty digest.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtTicket {
