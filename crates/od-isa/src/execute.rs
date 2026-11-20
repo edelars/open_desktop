@@ -28619,7 +28619,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f3: `REX.W C7 /0 id` (MOV r/m64, imm32 sign-extended to 64 bits) in the register form
 /// (mod = 11; REX.B selects r8..r15) with no prefix other than REX, as in `48 c7 c7 9c ff ff ff`
 /// (`movq $-0x64, %rdi`) of `/init` after its second `SYSCALL`. `C7 /0` without REX.W (MOV r/m32,
-/// imm32) stays outside. The qword memory form joined in S6-22.
+/// imm32) joins in S6-22 for a memory destination, along with the qword memory form.
 ///
 /// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
 /// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
@@ -28637,7 +28637,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// Short Jcc joined in S4-39f7, short JMP in S4-39f13 and direct CALL in Stage 6. `[REX.W] 89 /r` (MOV r/m64, r64) in the
 /// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
 /// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
-/// without REX.W (MOV r/m32, r32) stays outside for two register operands.
+/// without REX.W (MOV r/m32, r32) joins in S6-22.
 ///
 /// S4-39f6: `[REX] C6 /0 ib` (MOV r/m8, imm8) with a memory operand (mod != 11: SIB, disp8/disp32,
 /// RIP-relative; REX.X and REX.B reach the index and the base) with no prefix other than REX, as in
@@ -28680,8 +28680,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// `Operation::Arithmetic { kind: Cmp }` is reused: the byte is read through `read_operand` with
 /// the CPL3 context (the U/S check applies, #PF with U and no state change), the flags are those of
 /// `memory - register` at byte size and nothing is written. REX.W does not change a byte compare
-/// and is accepted as for `8A`/`C6`. The register form (`38 c0`, mod = 11), any prefix
-/// (66/67/LOCK/REP/segment) stay outside for opcode `38`.
+/// and is accepted as for `8A`/`C6`. S6-22 adds the register form without legacy prefixes.
 ///
 /// S4-39f12: `REX.W FF /0` (INC r/m64, `incq %rbx` = `48 ff c3` of `/init` at `0x40017f`), register
 /// form only (mod = 11). The CPL0 `Operation::Arithmetic { kind: Inc, src: Immediate(1) }` is
@@ -28693,8 +28692,8 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f13: the short `EB cb` (JMP rel8, `eb c1` = `jmp 0x400145` of `/init` at `0x400182`)
 /// without REX and without any prefix. The CPL0 `Operation::Jump` is reused (the decoder
 /// sign-extends rel8): RIP becomes `next + rel8`, a non-canonical target is #GP(0) before RIP
-/// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
-/// the opcode byte is part of the match), `FF /4` and the far forms stay outside.
+/// changes, flags and memory are untouched. S6-22 admits the unprefixed `E9` using the same
+/// operation with a rel32 displacement.
 ///
 /// S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8, `movzbl (%r8,%rcx), %eax` = `41 0f b6 04 08` of
 /// `/init` at `0x400189`) with a memory source only (mod != 11), no REX.W and no prefix other than
@@ -28706,12 +28705,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// the register form only (mod = 11) with no prefix other than REX. The CPL0
 /// `Operation::Logic { kind: Test }` at byte size is reused: CF = OF = 0, SF/ZF/PF of the byte
 /// `rm & reg`, AF undefined, nothing is written. REX.W does not change a byte test and is accepted
-/// as for `8A`/`38`/`C6`. The memory form, `A8` (TEST AL, imm8) and `F6 /0` stay outside.
+/// as for `8A`/`38`/`C6`. S6-22 uses `A8` and `F6 /0` during glibc CPU feature detection.
 ///
 /// S4-39f18: `3C ib` (CMP AL, imm8, `cmpb $0x20, %al` = `3c 20` of `/init` at `0x400192`) with no
 /// REX and no prefix. The CPL0 `Operation::Arithmetic { kind: Cmp }` at byte size is reused: the
-/// flags are those of `al - imm8` (SUB rules), nothing is written. `3D` (CMP eAX, imm32), `3A`/`3B`,
-/// and `A8` (TEST AL, imm8) stay outside.
+/// flags are those of `al - imm8` (SUB rules), nothing is written.
 ///
 /// S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32, `cmpq $0x80, %rcx` = `48 81 f9 80 00 00 00` of
 /// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
@@ -28781,6 +28779,102 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Escape0f, 0xa2, Operation::Cpuid) => prefixes.rex.is_none(),
+        (
+            OpcodeMap::Primary,
+            0xc7,
+            Operation::MovImmediate {
+                dst: Operand::Memory(dst),
+                ..
+            },
+        ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x81 | 0x83,
+            Operation::Logic {
+                kind: LogicKind::Or,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) => dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x81 | 0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if dst.size() == OperandSize::Dword => true,
+        (
+            OpcodeMap::Escape0f,
+            0x90..=0x9f,
+            Operation::SetCondition {
+                dst: Operand::Register(dst),
+                ..
+            },
+        ) => dst.size() == OperandSize::Byte,
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x25 | 0x81 | 0x83,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) if instruction.operand_size == OperandSize::Dword => true,
+        (
+            OpcodeMap::Primary,
+            0x09 | 0x0b,
+            Operation::Logic {
+                kind: LogicKind::Or,
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0xa9 | 0xf7,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Escape0f,
+            0x45,
+            Operation::ConditionalMove {
+                src: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0xa8 | 0xf6,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                src: Operand::Immediate(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
+        (
+            OpcodeMap::Primary,
+            0xf7,
+            Operation::Logic {
+                kind: LogicKind::Not,
+                dst: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Dword,
         (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xc9, Operation::Leave)
         | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
@@ -28795,7 +28889,24 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             },
         ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0x90, Operation::Nop) => prefixes.rex.is_none(),
-        (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
+        (
+            OpcodeMap::Primary,
+            0x69,
+            Operation::ImulImmediate {
+                src: Operand::Register(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x38,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
+        (OpcodeMap::Primary, 0xe9 | 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x50..=0x5f, Operation::StackRegister { .. }) => {
             instruction.operand_size == OperandSize::Qword
         }
@@ -28806,7 +28917,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0x89,

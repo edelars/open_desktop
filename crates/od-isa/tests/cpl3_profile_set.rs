@@ -414,13 +414,13 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             0xc7,
         ),
         (
-            "mov dword [rax], imm32 (C7 /0)",
-            &[0xc7, 0x00, 0x01, 0x00, 0x00, 0x00],
+            "mov word [rax], imm16 (66 C7 /0)",
+            &[0x66, 0xc7, 0x00, 0x01, 0x00],
             0xc7,
         ),
         (
-            "mov dword [rax], imm32 (C7 /0, memory, no REX.W)",
-            &[0xc7, 0x00, 0x01, 0x00, 0x00, 0x00],
+            "C7 memory form with reserved /1 extension",
+            &[0xc7, 0x08, 0x01, 0x00, 0x00, 0x00],
             0xc7,
         ),
         (
@@ -520,7 +520,6 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x43, 0x84, 0x04, 0x08],
             0x84,
         ),
-        ("test eax, imm32 (A9)", &[0xa9, 1, 0, 0, 0], 0xa9),
         (
             "test rax, imm32 (REX.W A9)",
             &[0x48, 0xa9, 1, 0, 0, 0],
@@ -548,15 +547,10 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x48, 0xf7, 0xc0, 1, 0, 0, 0],
             0xf7,
         ),
-        ("test al, imm8 (A8)", &[0xa8, 1], 0xa8),
+        ("addr32 test al, imm8 (67 A8)", &[0x67, 0xa8, 1], 0xa8),
         // S4-39f5: `[REX.W] 89 /r` in the register form is allowed; the variants below stay outside.
-        ("mov ebx, eax (89 /r, no REX.W)", &[0x89, 0xc3], 0x89),
-        (
-            "mov r12d, r8d (89 /r, REX.RB without W)",
-            &[0x45, 0x89, 0xc4],
-            0x89,
-        ),
-        ("mov ebx, eax (89 /r, registers)", &[0x89, 0xc3], 0x89),
+        ("mov eax, ebx (8B /r, registers)", &[0x8b, 0xc3], 0x8b),
+        ("mov r12d, r8d (8B /r, REX.RB)", &[0x45, 0x8b, 0xe0], 0x8b),
         (
             "addr32 mov [eip+0], rax (67 REX.W 89 /r)",
             &[0x67, 0x48, 0x89, 0x05, 0, 0, 0, 0],
@@ -607,11 +601,11 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("fs cmp rbx, rcx", &[0x64, 0x48, 0x39, 0xcb], 0x39),
         ("addr32 cmp rbx, rcx", &[0x67, 0x48, 0x39, 0xcb], 0x39),
         ("cmp rcx, rbx (REX.W 3B /r)", &[0x48, 0x3b, 0xcb], 0x3b),
-        ("cmp bl, cl (38 /r)", &[0x38, 0xcb], 0x38),
-        ("cmp ebx, imm8 (83 /7)", &[0x83, 0xfb, 0x01], 0x83),
-        // S4-39f14: `80 /7` with a memory operand executes; the register form stays refused.
+        ("addr32 cmp bl, cl (67 38 /r)", &[0x67, 0x38, 0xcb], 0x38),
+        ("cmp bx, imm8 (66 83 /7)", &[0x66, 0x83, 0xfb, 0x01], 0x83),
+        // CPL3 keeps the 64-bit address-size restriction for `80 /7`.
         ("addr32 cmp bl, imm8", &[0x67, 0x80, 0xfb, 0x20], 0x80),
-        ("jmp rel32 (E9)", &[0xe9, 0, 0, 0, 0], 0xe9),
+        ("REX.W jmp rel32", &[0x48, 0xe9, 0, 0, 0, 0], 0xe9),
         ("REX.W call rel32", &[0x48, 0xe8, 0, 0, 0, 0], 0xe8),
         ("rex.w je rel32", &[0x48, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
         ("rex je rel32", &[0x40, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
@@ -1355,11 +1349,11 @@ fn mov_r64_imm32_sign_extends_and_leaves_everything_else_unchanged() {
 
 #[test]
 fn mov_r64_imm32_refusals_keep_the_state_when_a_later_form_is_forbidden() {
-    // The allowed C7 form retires, the dword memory form that follows stops the run before any write.
+    // The allowed C7 form retires, the word memory form that follows stops the run before any write.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     let mut memory = Memory::code(&[
-        0x48, 0xc7, 0xc3, 0x05, 0x00, 0x00, 0x00, 0xc7, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x48, 0xc7, 0xc3, 0x05, 0x00, 0x00, 0x00, 0x66, 0xc7, 0x00, 0x01, 0x00,
     ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xc7 });
@@ -1513,15 +1507,15 @@ fn test_r64_register_form_sets_flags_and_writes_no_result() {
 #[test]
 fn test_r64_allowed_then_forbidden_form_keeps_the_retired_state() {
     // `testq %rax, %rax` retires, the taken `js rel32` (S4-39f5: allowed) skips one byte and lands
-    // on `mov ebx, eax` (dword register form), which stops the run.
+    // on `mov eax, ebx` (8B register form), which stops the run.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_fff2;
     let mut memory = Memory::code(&[
-        0x48, 0x85, 0xc0, 0x0f, 0x88, 0x01, 0x00, 0x00, 0x00, 0x90, 0x89, 0xc3,
+        0x48, 0x85, 0xc0, 0x0f, 0x88, 0x01, 0x00, 0x00, 0x00, 0x90, 0x8b, 0xc3,
     ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x89 });
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8b });
     assert_eq!(result.instructions_executed, 2);
     assert_eq!(state.rip, RIP + 10);
     assert_eq!(state.rflags & (SF | ZF | CF | OF), SF);
@@ -1668,14 +1662,14 @@ fn test_r32_then_je_chain_keeps_the_boundary_state() {
     // `85 c9` (testl %ecx, %ecx), `74 01` (je, taken on a zero low dword),
     // a skipped `90`, then `8a 06` (movb (%rsi), %al), `38 07` (cmpb %al, (%rdi); executes since
     // S4-39f11) and `48 ff c6` (incq %rsi; executes since S4-39f12) retire, `eb 00` (jmp rel8;
-    // executes since S4-39f13) retires too, and `e9` (jmp rel32, still outside) stops the run.
+    // executes since S4-39f13) retires too, and `48 e9` (prefixed jmp rel32) stops the run.
     let mut state = user_state();
     state.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0000;
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;
     let mut memory = DataMemory::new(&[
-        0x85, 0xc9, 0x74, 0x01, 0x90, 0x8a, 0x06, 0x38, 0x07, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0xe9,
-        0x00, 0x00, 0x00, 0x00,
+        0x85, 0xc9, 0x74, 0x01, 0x90, 0x8a, 0x06, 0x38, 0x07, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0x48,
+        0xe9, 0x00, 0x00, 0x00, 0x00,
     ])
     .with_user(DATA, 0x5a)
     .with_user(DATA + 0x40, 0x5a);
@@ -2274,7 +2268,6 @@ fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
     }
 
     for (code, opcode) in [
-        (&[0x83, 0xe4, 0xf0][..], 0x83),
         (&[0x66, 0x83, 0xe4, 0xf0][..], 0x83),
         (&[0x48, 0x83, 0x27, 0xf0][..], 0x83),
         (&[0x48, 0x81, 0xe4, 0xf0, 0xff, 0xff, 0xff][..], 0x81),
@@ -3387,13 +3380,12 @@ fn neighbouring_byte_mov_and_compare_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movb_load_then_cmpb_then_jne_then_incq_then_jmp_chain_stops_at_jmp_rel32() {
+fn init_movb_load_then_cmpb_then_jne_then_incq_then_jmp_chain_stops_at_prefixed_jmp_rel32() {
     // Synthetic bytes modelled on the `/init` loop (the real `/init` at 0x40016f has `jne +0x0a`
     // and `incq %rsi`/`incq %rdi` at 0x400175/0x400178): `8a 06` (movb (%rsi), %al), `38 07`
     // (cmpb %al, (%rdi); executes since S4-39f11), `75 00` (jne rel8 with displacement 0: taken and
     // not taken reach the same RIP, so this test does not tell them apart), `48 ff c6` (incq %rsi;
-    // executes since S4-39f12), `eb 00` (jmp rel8, executes since S4-39f13) and `e9` (jmp rel32,
-    // outside).
+    // executes since S4-39f12), `eb 00` (jmp rel8, executes since S4-39f13) and `48 e9` (prefixed jmp rel32).
     let mut state = mov_byte_state();
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;
@@ -3404,8 +3396,8 @@ fn init_movb_load_then_cmpb_then_jne_then_incq_then_jmp_chain_stops_at_jmp_rel32
     // (rdi) - al = 'b' - 'a' = 1: no arithmetic flag set; DATA + 1 has none either.
     expected.rflags &= !ARITH;
     let mut memory = DataMemory::new(&[
-        0x8a, 0x06, 0x38, 0x07, 0x75, 0x00, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0xe9, 0x00, 0x00, 0x00,
-        0x00,
+        0x8a, 0x06, 0x38, 0x07, 0x75, 0x00, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0x48, 0xe9, 0x00, 0x00,
+        0x00, 0x00,
     ])
     .with_user(DATA, b'a')
     .with_user(DATA + 0x40, b'b');
@@ -3790,11 +3782,7 @@ fn cmpb_at_a_non_canonical_stack_base_is_a_stack_fault() {
 #[test]
 fn cmpb_refusals_stop_as_unsupported_38_without_change() {
     let forms: &[(&str, &[u8])] = &[
-        ("38 c0 cmp al, al (mod = 11)", &[0x38, 0xc0]),
-        ("38 cb cmp bl, cl (mod = 11)", &[0x38, 0xcb]),
-        ("44 38 c3 cmp bl, r8b (mod = 11)", &[0x44, 0x38, 0xc3]),
-        ("41 38 c0 cmp r8b, al (mod = 11)", &[0x41, 0x38, 0xc0]),
-        ("48 38 c0 REX.W mod = 11", &[0x48, 0x38, 0xc0]),
+        ("67 38 c0 addr32 register form", &[0x67, 0x38, 0xc0]),
         ("66 38 03", &[0x66, 0x38, 0x03]),
         ("67 38 03", &[0x67, 0x38, 0x03]),
         ("f0 38 03 LOCK", &[0xf0, 0x38, 0x03]),
@@ -3842,7 +3830,11 @@ fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
             &[0x81, 0x3b, 0, 0, 0, 0],
             0x81,
         ),
-        ("83 3b 01 cmpl $1, (%rbx)", &[0x83, 0x3b, 0x01], 0x83),
+        (
+            "66 83 3b 01 cmpw $1, (%rbx)",
+            &[0x66, 0x83, 0x3b, 0x01],
+            0x83,
+        ),
         ("39 03 cmpl %eax, (%rbx)", &[0x39, 0x03], 0x39),
         ("48 39 03 cmpq %rax, (%rbx)", &[0x48, 0x39, 0x03], 0x39),
     ];
@@ -4250,7 +4242,7 @@ fn jmp_rel8_to_a_non_canonical_target_is_a_general_protection_fault_without_a_st
 }
 
 #[test]
-fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
+fn jmp_forms_other_than_unprefixed_relative_are_refused_without_change() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let forms: &[(&str, &[u8], u8)] = &[
         ("66 eb 00", &[0x66, 0xeb, 0x00], 0xeb),
@@ -4267,7 +4259,7 @@ fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
         ("40 eb 00 REX", &[0x40, 0xeb, 0x00], 0xeb),
         ("48 eb 00 REX.W", &[0x48, 0xeb, 0x00], 0xeb),
         ("41 eb 00 REX.B", &[0x41, 0xeb, 0x00], 0xeb),
-        ("e9 rel32", &[0xe9, 0x00, 0x00, 0x00, 0x00], 0xe9),
+        ("48 e9", &[0x48, 0xe9, 0, 0, 0, 0], 0xe9),
         ("66 e9 jmp", &[0x66, 0xe9, 0x00, 0x00, 0x00, 0x00], 0xe9),
         ("66 e8 rel32", &[0x66, 0xe8, 0x00, 0x00, 0x00, 0x00], 0xe8),
         ("ff e0 jmp *%rax", &[0xff, 0xe0], 0xff),
@@ -5490,8 +5482,12 @@ fn test_r8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
             &[0x66, 0x40, 0x84, 0xc0],
             0x84,
         ),
-        ("a8 00 test al, imm8", &[0xa8, 0x00], 0xa8),
-        ("f6 c0 01 test al, imm8", &[0xf6, 0xc0, 0x01], 0xf6),
+        ("f0 a8 00 LOCK test al, imm8", &[0xf0, 0xa8, 0x00], 0xa8),
+        (
+            "f0 f6 c0 01 LOCK test al, imm8",
+            &[0xf0, 0xf6, 0xc0, 0x01],
+            0xf6,
+        ),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = user_state();
@@ -5719,20 +5715,9 @@ fn cmp_r64_imm32_then_jb_loops_as_in_init() {
 fn cmp_r64_imm32_outside_the_register_form_stays_refused() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let forms: &[(&str, &[u8], u8)] = &[
-        // Dword form (no REX.W) and REX without W.
         (
-            "81 f9 80 cmpl $0x80, %ecx",
-            &[0x81, 0xf9, 0x80, 0, 0, 0],
-            0x81,
-        ),
-        (
-            "41 81 f9 80 cmpl $0x80, %r9d",
-            &[0x41, 0x81, 0xf9, 0x80, 0, 0, 0],
-            0x81,
-        ),
-        (
-            "40 81 f9 80 cmpl $0x80, %ecx (REX)",
-            &[0x40, 0x81, 0xf9, 0x80, 0, 0, 0],
+            "66 81 f9 80 00 cmp cx, imm16",
+            &[0x66, 0x81, 0xf9, 0x80, 0],
             0x81,
         ),
         // Memory forms.
@@ -5778,11 +5763,7 @@ fn cmp_r64_imm32_outside_the_register_form_stays_refused() {
             0x81,
         ),
         // Neighbouring opcodes.
-        (
-            "83 f9 80 cmpl $-128, %ecx (83 /7)",
-            &[0x83, 0xf9, 0x80],
-            0x83,
-        ),
+        ("66 83 f9 80 cmp cx, imm8", &[0x66, 0x83, 0xf9, 0x80], 0x83),
         (
             "3d 80 00 00 00 cmpl $0x80, %eax",
             &[0x3d, 0x80, 0, 0, 0],
@@ -5920,7 +5901,7 @@ fn cmp_al_imm8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
         ),
         ("3a c0 cmp al, al (3A)", &[0x3a, 0xc0], 0x3a),
         ("3b c0 cmp eax, eax (3B)", &[0x3b, 0xc0], 0x3b),
-        ("a8 20 test al, imm8", &[0xa8, 0x20], 0xa8),
+        ("f0 a8 20 LOCK test al, imm8", &[0xf0, 0xa8, 0x20], 0xa8),
         (
             "f2 80 f8 20 repne cmpb $0x20, %al",
             &[0xf2, 0x80, 0xf8, 0x20],
@@ -6816,5 +6797,102 @@ fn cpl3_tunables_add_rsp_imm32_sign_extends() {
     assert_eq!(state.gpr[Register::Rsp as usize], 0x1_ffff_ff80);
     assert_eq!(state.rip, RIP + 7);
     assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_tunables_imul_uses_r10_and_flags_signed_overflow() {
+    for value in [-3i64, i64::MAX] {
+        let mut state = user_state();
+        state.gpr[Register::R10 as usize] = value as u64;
+        state.rflags |= CF | OF;
+        let mut memory = DataMemory::new(&[0x4d, 0x69, 0xd2, 0x88, 0, 0, 0]);
+        let (product, overflow) = value.overflowing_mul(0x88);
+
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gpr[Register::R10 as usize], product as u64);
+        assert_eq!(state.rflags & (CF | OF), if overflow { CF | OF } else { 0 });
+        assert_eq!(state.rip, RIP + 7);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_jmp_rel32_uses_signed_displacement_and_preserves_flags() {
+    let mut state = user_state();
+    state.rflags |= ARITH;
+    let expected = state.clone();
+    let mut memory = DataMemory::new(&[0xe9, 0xfb, 0xff, 0xff, 0xff]);
+
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state, expected);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_cpuid_reports_the_selected_vcpu_topology() {
+    use od_isa::cpuid::CpuidProfile;
+    let profile = CpuidProfile::X8664V1Stage4AApic;
+    for apic_id in 0..2u8 {
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cpuid(&profile)
+            .with_cpuid_topology(apic_id, 2);
+        let mut state = user_state();
+        state.gpr[Register::Rax as usize] = 0x1234_5678_0000_0001;
+        state.gpr[Register::Rcx as usize] = 0x9876_5432_0000_0000;
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        let outputs = profile.query_for_vcpu(1, 0, u32::from(apic_id), 2);
+        for (register, value) in [
+            (Register::Rax, outputs.eax),
+            (Register::Rbx, outputs.ebx),
+            (Register::Rcx, outputs.ecx),
+            (Register::Rdx, outputs.edx),
+        ] {
+            expected.gpr[register as usize] = u64::from(value);
+        }
+        expected.rip += 2;
+        let mut memory = Memory::code(&[0x0f, 0xa2]);
+
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state, expected);
+        assert_eq!(memory.accesses, 0);
+    }
+}
+
+#[test]
+fn cpl3_cpu_detection_dword_or_cannot_read_supervisor_memory() {
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = DATA;
+    state.gpr[Register::Rax as usize] = 0x7654;
+    let expected = state.clone();
+    let mut memory = DataMemory::new(&[0x0b, 0x07]);
+    for offset in 0..4 {
+        memory = memory.with_supervisor(DATA + offset, 0);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert!(
+        matches!(
+            exit(&result),
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(5),
+                linear_address: Some(DATA),
+            })
+        ),
+        "{:?}",
+        exit(&result)
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, expected);
     assert!(memory.writes.is_empty());
 }
