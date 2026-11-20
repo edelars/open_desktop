@@ -30,7 +30,7 @@
 //! 175) is as in the open text.
 
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr, st};
@@ -47,9 +47,9 @@ use crate::marshal::{
     digest_size, limits,
 };
 use crate::object::{
-    MAX_PRIVATE, Object, Secret, check_creation, check_external_public, check_public,
-    creation_pcr_digest, derive_object, find_object, is_object_hierarchy, open_private,
-    primary_drbg, private_blob, qualified_name_of,
+    MAX_PRIVATE, Object, ParentKey, Secret, check_creation, check_external_public, check_public,
+    creation_pcr_digest, derive_object, find_object, is_object_hierarchy, name_hash_alg,
+    open_private, primary_drbg, private_blob, qualified_name_of,
 };
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
@@ -255,6 +255,16 @@ struct ParentCtx {
     hierarchy: u32,
     fixed_tpm: bool,
     enc_dup: bool,
+}
+
+impl ParentCtx {
+    fn key(&self) -> ParentKey<'_> {
+        ParentKey {
+            name_alg: self.name_alg,
+            seed: &self.seed,
+            symmetric: self.symmetric,
+        }
+    }
 }
 
 impl Tpm {
@@ -492,7 +502,10 @@ impl Tpm {
     ) -> (Vec<u8>, Vec<u8>, TpmtTicket) {
         let mut selection = selection.clone();
         self.pcrs.filter_selection(&mut selection);
-        let pcr_digest = creation_pcr_digest(&self.pcrs, &selection);
+        // The creation hash and the PCR digest use the hash of the new object's nameAlg; the ticket
+        // is an HMAC-SHA-256 under the hierarchy proof, like every ticket of this TPM.
+        let name_hash = name_hash_alg(obj.public.name_alg).unwrap_or(HashAlg::Sha256);
+        let pcr_digest = creation_pcr_digest(&self.pcrs, &selection, name_hash);
         let data = TpmsCreationData {
             pcr_select: selection,
             pcr_digest,
@@ -505,7 +518,9 @@ impl Tpm {
         let mut w = Writer::new();
         data.marshal(&mut w);
         let bytes = w.finish();
-        let hash = Sha256::digest(&bytes).to_vec();
+        let hash = crate::crypto::hash(name_hash, &[&bytes])
+            .as_slice()
+            .to_vec();
         let proof = self
             .hierarchy_proof(obj.hierarchy)
             .expect("a newly created object has a hierarchy proof");
@@ -610,8 +625,7 @@ impl Tpm {
             &obj.name,
             sensitive,
             &sensitive.auth,
-            &parent.seed,
-            parent.symmetric,
+            parent.key(),
             &iv,
         )?;
         let (creation, creation_hash, ticket) = self.creation_artifacts(
@@ -648,7 +662,7 @@ impl Tpm {
         if self.objects.free_slots() == 0 {
             return Err(Rc::OBJECT_MEMORY);
         }
-        let sensitive = open_private(&public, &parent.seed, parent.symmetric, blob)?;
+        let sensitive = open_private(&public, parent.key(), blob)?;
         let obj = Object::new(
             public,
             Some(sensitive),
@@ -674,12 +688,18 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let auth = AuthValue::from_slice_trimmed(p.tpm2b(limits::MAX_DIGEST_SIZE)?)
-            .ok_or_else(|| p.err(Rc::SIZE))?;
+        // The limit is one digest of the object's nameAlg, known once the handle is resolved.
+        let new_auth = p.tpm2b(limits::MAX_HASH_SIZE)?;
+        let size_error = p.err(Rc::SIZE);
         p.finish()?;
 
         let object = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
+        let auth = AuthValue::from_slice_trimmed_up_to(
+            new_auth,
+            name_hash_alg(object.public.name_alg)?.size(),
+        )
+        .ok_or(size_error)?;
         let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
             .ok_or(Rc::reference_handle(1))?;
@@ -689,7 +709,9 @@ impl Tpm {
             .storage_parameters()
             .filter(|(symmetric, _)| *symmetric != SymDef::Null)
             .ok_or(Rc::TYPE.in_handle(2))?;
-        if object.qualified_name != qualified_name_of(&parent.qualified_name, &object.name) {
+        if object.qualified_name
+            != qualified_name_of(object.public.name_alg, &parent.qualified_name, &object.name)
+        {
             return Err(Rc::PARENT);
         }
 
@@ -700,8 +722,11 @@ impl Tpm {
             &object.name,
             sensitive,
             &auth,
-            &parent_sensitive.seed,
-            parent_symmetric,
+            ParentKey {
+                name_alg: parent.public.name_alg,
+                seed: &parent_sensitive.seed,
+                symmetric: parent_symmetric,
+            },
             &iv,
         )?;
         let mut params = Writer::new();

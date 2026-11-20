@@ -3,8 +3,9 @@
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::codes::alg;
 use crate::crypto::{
-    DIGEST, RsaPadding, ecc_ecdh, ecc_generate_extra_random_bits, ecc_public, hmac_sha256,
+    DIGEST, HashAlg, RsaPadding, ecc_ecdh, ecc_generate_extra_random_bits, ecc_public, hmac_sha256,
     hmac_sha256_verify, kdfa_sha256, rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
@@ -77,6 +78,10 @@ impl Tpm {
 
         let activated = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
+        // The credential wrapper of this implementation is SHA-256 only (Names, KDFa and HMAC).
+        if activated.public.name_alg != alg::SHA256 {
+            return Err(Rc::HASH.in_handle(1));
+        }
         let key = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
             .ok_or(Rc::reference_handle(1))?;
         let symmetric = check_storage_key(key, 2)?;
@@ -114,6 +119,10 @@ pub(crate) fn check_storage_key(key: &Object, position: u8) -> Result<SymDef, Rc
     }
     if symmetric == SymDef::Null {
         return Err(Rc::TYPE.in_handle(position));
+    }
+    // The seed wrappers (credential, duplication) are SHA-256 only: KDFa, HMAC and KDFe.
+    if key.public.name_alg != alg::SHA256 {
+        return Err(Rc::HASH.in_handle(position));
     }
     Ok(symmetric)
 }
@@ -207,7 +216,15 @@ pub(crate) fn protect_seed_blob(
     name: &[u8],
     clear: &[u8],
 ) -> Vec<u8> {
-    let encrypted = storage_cfb(seed, symmetric, name, &[0; 16], clear, true);
+    let encrypted = storage_cfb(
+        HashAlg::Sha256,
+        seed,
+        symmetric,
+        name,
+        &[0; 16],
+        clear,
+        true,
+    );
     let integrity = hmac_sha256(&integrity_key(seed), &[&encrypted, name]);
     let mut blob = Writer::new();
     blob.tpm2b(&integrity);
@@ -236,8 +253,17 @@ pub(crate) fn open_seed_blob(
     tag: &[u8],
     encrypted: &[u8],
 ) -> Option<Zeroizing<Vec<u8>>> {
-    hmac_sha256_verify(&integrity_key(seed), &[encrypted, name], tag)
-        .then(|| storage_cfb(seed, symmetric, name, &[0; 16], encrypted, false))
+    hmac_sha256_verify(&integrity_key(seed), &[encrypted, name], tag).then(|| {
+        storage_cfb(
+            HashAlg::Sha256,
+            seed,
+            symmetric,
+            name,
+            &[0; 16],
+            encrypted,
+            false,
+        )
+    })
 }
 
 #[cfg(test)]

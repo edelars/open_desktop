@@ -63,8 +63,8 @@ use crate::object::{
 use crate::pcr::PcrAllocation;
 use crate::state::{Persistent, StateError};
 
-/// The most octets of a Qualified Name (`nameAlg` and a SHA-256 digest).
-const MAX_QN: usize = 2 + 32;
+/// The most octets of a Qualified Name (`nameAlg` and a SHA-512 digest).
+const MAX_QN: usize = 2 + 64;
 
 /// A payload writer. It runs twice: a counting pass that only sums the length, then a writing pass
 /// into a buffer of exactly that capacity, so the buffer never grows and no earlier, smaller copy of
@@ -235,7 +235,7 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         e.lv16(&o.public.to_bytes());
         e.lv8(&o.qualified_name);
         let sensitive = o.sensitive.as_ref()?;
-        let bytes = sensitive_to_bytes(sensitive, o.public.type_alg()).ok()?;
+        let bytes = sensitive_to_bytes(sensitive, o.public.type_alg(), o.public.name_alg).ok()?;
         e.lv16(&bytes);
     }
     for policy in [&hp.owner_policy, &hp.endorsement_policy, &hp.lockout_policy] {
@@ -358,7 +358,7 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         let mut r = Reader::new(public_bytes);
         let public = TpmtPublic::unmarshal(&mut r).map_err(|_| Bad::Field)?;
         r.finish().map_err(|_| Bad::Field)?;
-        if public.name_alg != alg::SHA256 {
+        if !matches!(public.name_alg, alg::SHA256 | alg::SHA384 | alg::SHA512) {
             return Err(Bad::Field);
         }
         let sensitive = sensitive_from_bytes(&sensitive_bytes, &public).map_err(|_| Bad::Field)?;

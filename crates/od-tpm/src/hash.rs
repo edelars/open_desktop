@@ -98,10 +98,16 @@ impl AuthValue {
     /// removed from an authValue before it is used in an authorization computation" (Part 1 v184,
     /// clause 17.6.5). The size limit applies to the value as given.
     pub(crate) fn from_slice_trimmed(v: &[u8]) -> Option<AuthValue> {
-        if v.len() > DIGEST {
+        AuthValue::from_slice_trimmed_up_to(v, DIGEST)
+    }
+
+    /// [`AuthValue::from_slice_trimmed`] with the size limit `max` (the digest size of the
+    /// `nameAlg` of an object; at most [`limits::MAX_HASH_SIZE`]).
+    pub(crate) fn from_slice_trimmed_up_to(v: &[u8], max: usize) -> Option<AuthValue> {
+        if v.len() > max {
             return None;
         }
-        AuthValue::from_slice(trim(v))
+        AuthValue::from_slice_up_to(trim(v), max)
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {

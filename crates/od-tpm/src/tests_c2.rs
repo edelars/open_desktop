@@ -4870,7 +4870,12 @@ fn object_context_encryption_changes_after_reset_and_keeps_saved_restart_context
     let create = |t: &mut Tpm| parse_primary(&create_primary(t, OWNER, b"", &ecc_sign())).handle;
     let sensitive = |t: &Tpm, handle| {
         let o = t.objects.get(handle).unwrap();
-        sensitive_to_bytes(o.sensitive.as_ref().unwrap(), o.public.type_alg()).unwrap()
+        sensitive_to_bytes(
+            o.sensitive.as_ref().unwrap(),
+            o.public.type_alg(),
+            o.public.name_alg,
+        )
+        .unwrap()
     };
     let ciphertext = |ctx: &[u8]| {
         let mut context = Reader::new(&ctx[16..]);

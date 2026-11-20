@@ -11,7 +11,7 @@ use crate::crypto::DIGEST;
 use crate::dispatch::Invocation;
 use crate::marshal::{MAX_DATA, MAX_RSA_BYTES, Reader, SymDef, TpmtPublic, Writer};
 use crate::object::{
-    MAX_PRIVATE, aes_cfb, check_public, find_object, name_of, private_blob,
+    MAX_PRIVATE, ParentKey, aes_cfb, check_public, find_object, name_of, private_blob,
     sensitive_from_duplicate, sensitive_to_duplicate,
 };
 use crate::response::{Output, Rc};
@@ -61,6 +61,10 @@ impl Tpm {
         if object.public.name_alg == alg::NULL {
             return Err(Rc::TYPE.in_handle(1));
         }
+        // The inner integrity and the wrappers of this implementation use SHA-256 only.
+        if object.public.name_alg != alg::SHA256 {
+            return Err(Rc::HASH.in_handle(1));
+        }
         let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         let new_parent = if inv.handles[1] == handle::RH_NULL {
             None
@@ -83,7 +87,8 @@ impl Tpm {
             return Err(Rc::SIZE.in_param(1));
         }
 
-        let canonical = sensitive_to_duplicate(sensitive, object.public.type_alg())?;
+        let canonical =
+            sensitive_to_duplicate(sensitive, object.public.type_alg(), object.public.name_alg)?;
         let mut generated = Zeroizing::new([0; 32]);
         let mut key_out = &[][..];
         let inner;
@@ -167,6 +172,10 @@ impl Tpm {
             parent.has(object_attr::FIXED_TPM),
             parent.has(encrypted_duplication),
         )?;
+        // The inner integrity and the wrappers of this implementation use SHA-256 only.
+        if public.name_alg != alg::SHA256 {
+            return Err(Rc::HASH.in_param(2));
+        }
         let required_key_size = usize::from(symmetric.key_bits() / 8);
         if key.len() != required_key_size {
             return Err(Rc::SIZE.in_param(1));
@@ -209,8 +218,11 @@ impl Tpm {
             &name,
             &sensitive,
             &sensitive.auth,
-            &parent_sensitive.seed,
-            parent_symmetric,
+            ParentKey {
+                name_alg: parent.public.name_alg,
+                seed: &parent_sensitive.seed,
+                symmetric: parent_symmetric,
+            },
             &iv,
         )?;
         let mut params = Writer::new();

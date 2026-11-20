@@ -19,9 +19,10 @@ pub mod limits {
     pub const PCR_SELECT_SIZE: usize = 3;
     /// `HASH_COUNT`: implemented hash algorithms.
     pub const HASH_COUNT: usize = 2;
-    /// Digest limit for the current SHA-256 authorization, session, policy and object profile
-    /// (`crypto::DIGEST`). Those parts do not take part in the SHA-384/SHA-512 hash agility yet;
-    /// the largest digest of any implemented hash is [`MAX_HASH_SIZE`].
+    /// Digest limit for the current SHA-256 authorization, session and policy profile
+    /// (`crypto::DIGEST`). Those parts do not take part in the SHA-384/SHA-512 hash agility yet
+    /// (steps D and E); objects use the digest size of their `nameAlg`. The largest digest of any
+    /// implemented hash is [`MAX_HASH_SIZE`].
     pub const MAX_DIGEST_SIZE: usize = 32;
     /// `sizeof(TPMU_HA)`: the largest digest of any implemented hash (SHA-512), reported as
     /// `TPM_PT_MAX_DIGEST`.
@@ -951,9 +952,9 @@ impl TpmtPublic {
     }
 
     /// Unmarshals one `TPMT_PUBLIC`. Codes: `TPM_RC_TYPE` for an unsupported object type,
-    /// `TPM_RC_PARMS` for an unsupported ML-KEM parameter set, `TPM_RC_HASH` for a `nameAlg` other than SHA-256/NULL
+    /// `TPM_RC_PARMS` for an unsupported ML-KEM parameter set, `TPM_RC_HASH` for a `nameAlg` other than SHA-256, SHA-384, SHA-512 or NULL
     /// (Table 78), `TPM_RC_RESERVED_BITS` for reserved `TPMA_OBJECT` bits, `TPM_RC_SIZE` for an
-    /// oversized `authPolicy` or `unique`, `TPM_RC_VALUE` for an RSA key size other than 2048 and
+    /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
     /// `TPM_RC_SCHEME` for an ECC scheme (Table 199), `TPM_RC_CURVE` for a curve other than NIST
     /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
@@ -961,15 +962,18 @@ impl TpmtPublic {
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let type_alg = PublicParams::unmarshal_type(r)?;
         let name_alg = r.u16()?;
-        // nameAlg SHA-384/SHA-512 belong to a later step (object Names with other hashes).
-        if name_alg != alg::SHA256 && name_alg != alg::NULL {
-            return Err(r.err(Rc::HASH));
-        }
+        // The digest of nameAlg bounds authPolicy and a keyed-hash unique; NULL keeps one SHA-256
+        // digest (such a template is refused later by the template rules).
+        let digest_limit = match digest_size(name_alg) {
+            Some(size) => size,
+            None if name_alg == alg::NULL => limits::MAX_DIGEST_SIZE,
+            None => return Err(r.err(Rc::HASH)),
+        };
         let attributes = r.u32()?;
         if attributes & object_attr::RESERVED != 0 {
             return Err(r.err(Rc::RESERVED_BITS));
         }
-        let auth_policy = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let auth_policy = r.tpm2b(digest_limit)?.to_vec();
         let params = PublicParams::unmarshal(r, type_alg)?;
         let unique = match params {
             PublicParams::Rsa { .. } => Unique::Rsa(r.tpm2b(MAX_RSA_BYTES)?.to_vec()),
@@ -977,9 +981,7 @@ impl TpmtPublic {
                 x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
                 y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
             },
-            PublicParams::KeyedHash { .. } => {
-                Unique::Digest(r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec())
-            }
+            PublicParams::KeyedHash { .. } => Unique::Digest(r.tpm2b(digest_limit)?.to_vec()),
             PublicParams::MlKem { .. } => Unique::MlKem(r.tpm2b(MAX_MLKEM_PUBLIC_BYTES)?.to_vec()),
         };
         Ok(TpmtPublic {
@@ -1016,12 +1018,13 @@ pub struct TpmsSensitiveCreate {
 }
 
 impl TpmsSensitiveCreate {
-    /// `TPM_RC_SIZE` for `userAuth` above one digest or `data` above [`MAX_SYM_DATA`], or when the
-    /// outer size differs from the two inner buffers.
+    /// `TPM_RC_SIZE` for `userAuth` above the largest digest ([`limits::MAX_HASH_SIZE`]; the limit of
+    /// the `nameAlg` of the template is checked by `object::check_creation`) or `data` above
+    /// [`MAX_SYM_DATA`], or when the outer size differs from the two inner buffers.
     pub fn unmarshal_sized(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let n = usize::from(r.u16()?);
         let mut sub = r.sub(n)?;
-        let user_auth = sub.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
+        let user_auth = sub.tpm2b(limits::MAX_HASH_SIZE)?.to_vec();
         let data = sub.tpm2b(MAX_SYM_DATA)?.to_vec();
         if sub.remaining() != 0 {
             return Err(r.err(Rc::SIZE));

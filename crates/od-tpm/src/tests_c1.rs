@@ -1993,8 +1993,12 @@ fn persistent_rsa_snapshot_validates_the_encoded_exponent() {
         unreachable!("persistent RSA key");
     };
     *exponent = 3;
-    let sensitive =
-        crate::object::sensitive_to_bytes(object.sensitive.as_ref().unwrap(), alg::RSA).unwrap();
+    let sensitive = crate::object::sensitive_to_bytes(
+        object.sensitive.as_ref().unwrap(),
+        alg::RSA,
+        alg::SHA256,
+    )
+    .unwrap();
     assert!(matches!(
         crate::object::sensitive_from_bytes(&sensitive, &incompatible),
         Err(Rc::BINDING)

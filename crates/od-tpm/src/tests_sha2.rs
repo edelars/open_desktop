@@ -11,8 +11,8 @@ use super::*;
 use crate::codes::{object_attr as oa, se};
 use crate::crypto::{HashAlg, hash, hmac_sha256, kdfa_sha256};
 use crate::marshal::{
-    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Writer, digest_size,
-    pcr_digest_size,
+    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Unique, Writer,
+    digest_size, pcr_digest_size,
 };
 
 const SHA384_FOX: &str = "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1";
@@ -335,12 +335,11 @@ fn signing_schemes_accept_sha2_hashes_and_encryption_schemes_do_not() {
         TpmtSignature::unmarshal(&mut Reader::new(&w.finish())),
         Err(Rc::HASH)
     );
-    // A public area still names itself with SHA-256 or NULL only: nameAlg SHA-384/SHA-512 is a
-    // later step (TPM_RC_HASH, as before hash agility).
+    // A public area names itself with SHA-256, SHA-384, SHA-512 or NULL (step C: object Names).
     for (name_alg, accepted) in [
         (alg::SHA256, true),
-        (alg::SHA384, false),
-        (alg::SHA512, false),
+        (alg::SHA384, true),
+        (alg::SHA512, true),
         (alg::NULL, true),
         (0x0027, false),
         (0x0004, false),
@@ -543,4 +542,738 @@ fn object_verify_signature_binds_the_hash_label_to_the_digest_length() {
     }
     assert!(!object.verify_signature(&digest[..31], &signature));
     assert!(!object.verify_signature(&[0x5a; 48], &signature));
+}
+
+// ------------------------------------------------------------------ step C: objects with SHA-384/512
+
+fn hex_of(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    hex_of(hash(HashAlg::Sha256, &[b]).as_slice())
+}
+
+/// Every reply of the SHA-256 object flow, as the SHA-256 digest of its bytes, and the size of
+/// each private blob. Run once on the code before step C and pinned in the golden test below.
+fn sha256_object_flow() -> Vec<(String, usize)> {
+    use super::tests_obj::{create_child, evict, load, parse_child, sealed};
+    let mut t = started();
+    let mut out = Vec::new();
+    let storage = create_primary(&mut t, OWNER, b"gold", &super::tests_obj::ecc_storage());
+    out.push((sha256_hex(&storage), 0));
+    let parent = parse_primary(&storage).handle;
+    let flow = |t: &mut Tpm, public: &TpmtPublic, auth: &[u8], data: &[u8]| {
+        let resp = create_child(t, parent, b"gold", auth, data, public);
+        ok(&resp);
+        let child = parse_child(&resp);
+        let loaded = load(t, parent, b"gold", &child.private, &child.public);
+        ok(&loaded);
+        (
+            vec![
+                (sha256_hex(&resp), child.private.len()),
+                (sha256_hex(&loaded), 0),
+            ],
+            parse_loaded(&loaded).0,
+        )
+    };
+    let (rows, h) = flow(&mut t, &ecc_sign(), b"child-auth", b"");
+    out.extend(rows);
+    ok(&evict(&mut t, OWNER, b"", h, 0x8100_0001));
+    out.push((sha256_hex(&t.persistent_snapshot()), 0));
+    let (rows, h) = flow(&mut t, &sealed(), b"seal-auth", b"sealed-secret");
+    out.extend(rows);
+    ok(&flush(&mut t, h));
+    let mut hmac_key = sealed();
+    hmac_key.attributes = oa::FIXED_TPM
+        | oa::FIXED_PARENT
+        | oa::SENSITIVE_DATA_ORIGIN
+        | oa::USER_WITH_AUTH
+        | oa::SIGN;
+    let (rows, h) = flow(&mut t, &hmac_key, b"", b"");
+    out.extend(rows);
+    ok(&flush(&mut t, h));
+    out
+}
+
+// Taken on the code before step C (HEAD ea477d9): CreatePrimary (ECC storage), then Create and Load
+// of an ECC signing key, sealed data and an HMAC key under it, the persistent snapshot after
+// EvictControl of the first child. Rows are SHA-256 of the reply bytes (the private blobs and
+// creation data are included, the keys come from the fixed entropy) and the private blob size.
+const SHA256_FLOW_GOLDEN: [(&str, usize); 8] = [
+    (
+        "4e2320c599d9f9ba6de5905398b20dbb286d7ea187e15988933e2cf7a8642a59",
+        0,
+    ),
+    (
+        "88d8b52563e5c221c6a212e8bb3b859a2ab109bbce4c2a985bb674f5b2e38c71",
+        126,
+    ),
+    (
+        "99526b325d6ec2e762e4ae9acb5380316ea568d031e294012525367eb1877a2b",
+        0,
+    ),
+    (
+        "dd85da7377ca26be3b0f3370db5f139c4add19570fbac58656141168098c444c",
+        0,
+    ),
+    (
+        "6988f704f73ed933ec96095a36b3b9c66dbfb65979876208eb8bc3cab65cb6e5",
+        139,
+    ),
+    (
+        "283229ab8975a8a44df4cf755aa23485f685f5778b8f9d7c20e00ed404fef86e",
+        0,
+    ),
+    (
+        "3f70c29c4456816fb3de6af77eb67a0c37530019933c8c89019ab7a62249006b",
+        158,
+    ),
+    (
+        "14532f0a3d8ddd95aa54ea4fe7904d0042c0cc632ae50cae11b8a738c521fa53",
+        0,
+    ),
+];
+
+#[test]
+fn golden_sha256_primary_and_private_blob_are_byte_identical() {
+    let flow = sha256_object_flow();
+    assert_eq!(flow.len(), SHA256_FLOW_GOLDEN.len());
+    for (i, ((digest, size), (want, want_size))) in flow.iter().zip(SHA256_FLOW_GOLDEN).enumerate()
+    {
+        assert_eq!((digest.as_str(), *size), (want, want_size), "row {i}");
+    }
+}
+
+/// Compares `actual` with the hex string `expected`.
+fn expect_hex(label: &str, actual: &[u8], expected: &str) {
+    assert_eq!(hex_of(actual), expected, "{label}");
+}
+
+fn named(mut public: TpmtPublic, name_alg: u16) -> TpmtPublic {
+    public.name_alg = name_alg;
+    public
+}
+
+/// `(handle, Name)` of a Load reply; a SHA-512 Name is 66 octets, one more than the shared helper takes.
+fn loaded_name(resp: &[u8]) -> (u32, Vec<u8>) {
+    ok(resp);
+    let mut r = Reader::new(params(resp, 1));
+    let name = r.tpm2b(66).unwrap().to_vec();
+    r.finish().unwrap();
+    (u32::from_be_bytes(resp[10..14].try_into().unwrap()), name)
+}
+
+/// `(handle, public, Name)` of a CreatePrimary reply, with a Name of up to 66 octets.
+fn primary_parts(resp: &[u8]) -> (u32, Vec<u8>, Vec<u8>) {
+    ok(resp);
+    let mut r = Reader::new(params(resp, 1));
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
+    r.tpm2b(1024).unwrap();
+    r.tpm2b(64).unwrap();
+    r.u16().unwrap();
+    r.u32().unwrap();
+    r.tpm2b(64).unwrap();
+    let name = r.tpm2b(66).unwrap().to_vec();
+    r.finish().unwrap();
+    (
+        u32::from_be_bytes(resp[10..14].try_into().unwrap()),
+        public,
+        name,
+    )
+}
+
+fn child_of(
+    t: &mut Tpm,
+    parent: u32,
+    public: &TpmtPublic,
+    auth: &[u8],
+    data: &[u8],
+) -> (u32, Vec<u8>, Vec<u8>, Vec<u8>) {
+    use super::tests_obj::{create_child, load, parse_child};
+    let created = create_child(t, parent, b"parent-pw", auth, data, public);
+    ok(&created);
+    let child = parse_child(&created);
+    let (h, name) = loaded_name(&load(
+        t,
+        parent,
+        b"parent-pw",
+        &child.private,
+        &child.public,
+    ));
+    (h, name, child.public, child.private)
+}
+
+/// \`(public, Name, Qualified Name)\` of ReadPublic.
+fn read_public_triple(t: &mut Tpm, h: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let resp = super::tests_obj::read_public(t, h);
+    ok(&resp);
+    let mut r = Reader::new(params(&resp, 0));
+    let public = r.tpm2b(limits::MAX_RESPONSE_SIZE).unwrap().to_vec();
+    let name = r.tpm2b(66).unwrap().to_vec();
+    let qn = r.tpm2b(66).unwrap().to_vec();
+    r.finish().unwrap();
+    (public, name, qn)
+}
+
+fn startup_clear(t: &mut Tpm) {
+    ok(&run(t, plain(cc::STARTUP, &[], &u16b(0))));
+}
+
+const DIGEST32: [u8; 32] = [0x5A; 32];
+// Computed with Python hashlib from the parent public below: Name = nameAlg || H(public), QN = nameAlg
+// || H(parentQN || Name) (the QN of a primary hashes the 4 octets of its hierarchy handle). The ECDSA and
+// RSASSA signatures were verified with plain Python integer arithmetic (affine P-256, `pow(s, 65537, n)`
+// against the EMSA-PKCS1-v1_5 block of SHA-256 over 0x5a x 32), not with the crates under test.
+const PARENT_PUBLIC: &str = "0023000b0003007200000006008000430010000300100020970cb503b2b0fe8daa962a2ab82757af1d106a1e28670ad56ecc5371b096a9b50020fd45993854190f90d12faf794bbe18eba771f5f8dcc555f9a68a8ddd7f210b73";
+const PARENT_QN: &str = "000b2f5cf7f48c43a91fd75c352a6b4e5ab54d33a8d9922a9ec9eca07a2d3881953c";
+const SHA384_ECC_PUBLIC: &str = "0023000c00040072000000100018000b000300100020e433ca504e2f38bd4b2fda7857e9789b3c8c90b5069e9629aac9ce0f0b074e060020ef727aa1daa612aa1e964f251407541e829296be23c8402eaec1ce57d0dda789";
+const SHA384_ECC_NAME: &str = "000c2229ec4350284ce4caa1e908bb19aaaad6022c3ab6f639925e5925bfd305bf0dad85e34cd9ebf67bf44537f31a5c5224";
+const SHA384_ECC_QN: &str = "000cd1ee4adacf749e99acdb1e0db82fc11e1841cdcbe94b64b703981ba9febd8a858e204de66053b1cbd0eb6a5fd8657c96";
+const SHA384_ECC_SIG: &str = "0018000b00207511e1dd918b4170c3de8699ae91da9d8a6f2de98f270058b5dd16bd474d665a0020670e3bffb06b2595cb7e4d2e1189247ebb3a060e2afea225367b93eda7c737bc";
+const SHA384_RSA_PUBLIC: &str = "0001000c00040072000000100014000b0800000000000100c3a5201be5b52e1a36857f17df760dd0a68f4a8909e551eefb7440a90e0cf2a92fb0428eb626e964c5fd2973f6ae446e307da774e56826bad6c640adb054b3d4281c4a987c4a762ee059ed75c88c6b7c943787b23f1fd4dff3f9336d64daa0a46aa1527554326f0fd833eefdd0867518ddcea6045a38271fdd64e6aa12f92eefad7372b89f7c7228466ea9f728d03933df0073faa5756d9d59174177f1c671730c75c24388c91e4c9db81b8f0b7bd89fefde229b964f9c79158dfebaa58c2dd0a4399419e0871d67bc4c34a0676f7a037e79b66471ae9ead6cfa92f121719f57dc22734c31c099aeb3ac4985d73e5f6d02d90920a4ef4a915331e8664f6e257d";
+const SHA384_RSA_NAME: &str = "000ca64543c05fc9f6b8d9815bbf168df1f2374b30a2694c8d59df07907741841fe0bd601f6fd82569b6195ab2a51ef352a7";
+const SHA384_RSA_QN: &str = "000c75e04c00857d11eb5fafa32162c5513bf325809be9584c0786c351e414784192a6ee3ce645201a32f90f4b6822cb15b5";
+const SHA384_RSA_SIG: &str = "0014000b0100b65540ded305834084478a22a129c79c8bd1d785536c46475d790d49459f2d5ef4be3c80c9f89c027ce5e61137e35a0e2afa34d12db4dbe13c163543775330c397a1ed226520f2c98158584c173240884facede3173e44360ba3467da2766a25dc35f49f4dba337f30f8280d8506c3e7f5c6f8ee9c58fa597314dcdf72f870a75c30705edc9cdeca5e06a51f605afb30f919dd69b28bcf1dcc6785cea5238114c20a129061fb25574fd54f7d6234bb18412384067509423e05da60382e35bcb5761c97aec4f772285d7de364de06779d5806115a09e1f2f32a47da1015879a3f3c0f245094d11d3798025e08b197e81a3adecc65ec84c672be42911a140b8232";
+const SHA512_CHILD_PUBLIC: &str = "0023000d00040072000000100018000b000300100020e433ca504e2f38bd4b2fda7857e9789b3c8c90b5069e9629aac9ce0f0b074e060020ef727aa1daa612aa1e964f251407541e829296be23c8402eaec1ce57d0dda789";
+const SHA512_CHILD_NAME: &str = "000d1ff1ece8919071b8bbdba740d8b186121e1b9978b7e577f257c6ba814af6e24ea03c5058f0a4deb4dfe3d3dabbe00764f9927a765591a5b21c72e7d25ba7c797";
+const SHA512_CHILD_QN: &str = "000dcaeab9d991633e77e56202451b7e0244cb508fa44e5f3499ebe92a5529af50403506e4e9631347e495983b88ec16ce82b0c211f0abc0ddd3d704d031153031d6";
+const SHA512_PRIMARY_PUBLIC: &str = "0023000d00040072000000100018000b0003001000202852a51f980a2493f630b9e89331c2fa95b9f618856f4f9bda314d75ce7db9db0020f32244f4dc210b13d59addc275f84f0f1b3c50f3207c957f3b156d6537ef4fa7";
+const SHA512_PRIMARY_NAME: &str = "000db3600eaf617635d8ded900898f0ed6c7fd7c902c16c3bd55f1c12b5210a9b8cf1d42a4a212ff90a9896e1e9f1fe17ab034c1ab84906bc2ec0d48557a43db3b4a";
+const SHA512_PRIMARY_QN: &str = "000dfb1126c07fd1cecc19bc57a733392c871948b7badd08297fc76191b3a238ff8d56e3e434f607bfb8422f7b0ee26e06caa91f6c5f777940025b17f95a57f89670";
+
+#[test]
+fn sha384_object_create_load_sign_verify_snapshot_restore() {
+    use super::tests_obj::{evict, rsa_sig_scheme, rsa_sign};
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    let (parent_public, _, parent_qn) = read_public_triple(&mut t, parent);
+    expect_hex("parent_public", &parent_public, PARENT_PUBLIC);
+    expect_hex("parent_qn", &parent_qn, PARENT_QN);
+    for (kind, template, scheme, want) in [
+        (
+            "ecc",
+            ecc_sign(),
+            ecc_sig_scheme(),
+            [
+                SHA384_ECC_PUBLIC,
+                SHA384_ECC_NAME,
+                SHA384_ECC_QN,
+                SHA384_ECC_SIG,
+            ],
+        ),
+        (
+            "rsa",
+            rsa_sign(),
+            rsa_sig_scheme(),
+            [
+                SHA384_RSA_PUBLIC,
+                SHA384_RSA_NAME,
+                SHA384_RSA_QN,
+                SHA384_RSA_SIG,
+            ],
+        ),
+    ] {
+        let template = named(template, alg::SHA384);
+        let (h, name, public, _) = child_of(&mut t, parent, &template, b"child-auth", b"");
+        assert_eq!(unmarshal_public(&public).name_alg, alg::SHA384);
+        expect_hex(&format!("{kind}_public"), &public, want[0]);
+        expect_hex(&format!("{kind}_name"), &name, want[1]);
+        let (rp, rname, rqn) = read_public_triple(&mut t, h);
+        assert_eq!((rp, rname.clone()), (public.clone(), name.clone()));
+        expect_hex(&format!("{kind}_qn"), &rqn, want[2]);
+        let signed = sign(&mut t, h, b"child-auth", &DIGEST32, &scheme);
+        ok(&signed);
+        let signature = params(&signed, 0).to_vec();
+        expect_hex(&format!("{kind}_sig"), &signature, want[3]);
+        ok(&verify(&mut t, h, &DIGEST32, &signature));
+        // Persist, snapshot, restore: the same Name and Qualified Name, the same signature.
+        let persistent = if kind == "ecc" {
+            0x8100_0001
+        } else {
+            0x8100_0002
+        };
+        ok(&evict(&mut t, OWNER, b"", h, persistent));
+        let mut r = Tpm::restore(&t.persistent_snapshot(), &[9; 48]).unwrap();
+        startup_clear(&mut r);
+        let (rp2, rname2, rqn2) = read_public_triple(&mut r, persistent);
+        assert_eq!((rp2, rname2, rqn2), (public, name, rqn));
+        let again = sign(&mut r, persistent, b"child-auth", &DIGEST32, &scheme);
+        ok(&again);
+        assert_eq!(params(&again, 0), &signature[..]);
+        ok(&verify(&mut r, persistent, &DIGEST32, &signature));
+    }
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn sha512_object_name_is_nameAlg_000d() {
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    let template = named(ecc_sign(), alg::SHA512);
+    let (h, name, public, _) = child_of(&mut t, parent, &template, b"child-auth", b"");
+    assert_eq!(&name[..2], &[0x00, 0x0d]);
+    assert_eq!(name.len(), 2 + 64);
+    expect_hex("child_public", &public, SHA512_CHILD_PUBLIC);
+    expect_hex("child_name", &name, SHA512_CHILD_NAME);
+    let (_, _, qn) = read_public_triple(&mut t, h);
+    assert_eq!(&qn[..2], &[0x00, 0x0d]);
+    expect_hex("child_qn", &qn, SHA512_CHILD_QN);
+    // A primary: the Qualified Name hashes the hierarchy handle and the Name.
+    let (handle, primary_public, primary_name) = primary_parts(&create_primary(
+        &mut t,
+        OWNER,
+        b"pw",
+        &named(ecc_sign(), alg::SHA512),
+    ));
+    assert_eq!(&primary_name[..2], &[0x00, 0x0d]);
+    expect_hex("primary_public", &primary_public, SHA512_PRIMARY_PUBLIC);
+    expect_hex("primary_name", &primary_name, SHA512_PRIMARY_NAME);
+    let (_, _, pqn) = read_public_triple(&mut t, handle);
+    expect_hex("primary_qn", &pqn, SHA512_PRIMARY_QN);
+    ok(&sign(&mut t, handle, b"pw", &DIGEST32, &ecc_sig_scheme()));
+}
+
+#[test]
+fn sha384_object_context_save_load() {
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    let template = named(ecc_sign(), alg::SHA384);
+    let (h, name, _, _) = child_of(&mut t, parent, &template, b"child-auth", b"");
+    let (_, _, qn) = read_public_triple(&mut t, h);
+    let before = sign(&mut t, h, b"child-auth", &DIGEST32, &ecc_sig_scheme());
+    ok(&before);
+    let saved = run(&mut t, plain(cc::CONTEXT_SAVE, &[h], &[]));
+    ok(&saved);
+    let context = params(&saved, 0).to_vec();
+    ok(&flush(&mut t, h));
+    let resp = run(&mut t, plain(cc::CONTEXT_LOAD, &[], &context));
+    ok(&resp);
+    let h2 = u32::from_be_bytes(resp[10..14].try_into().unwrap());
+    let (_, name2, qn2) = read_public_triple(&mut t, h2);
+    assert_eq!((name2, qn2), (name, qn));
+    let after = sign(&mut t, h2, b"child-auth", &DIGEST32, &ecc_sig_scheme());
+    assert_eq!(params(&after, 0), params(&before, 0));
+    // The authValue and the private scalar are not in the clear in the context.
+    assert!(!super::tests_obj::contains(&context, b"child-auth"));
+    assert!(!super::tests_obj::contains(
+        &context,
+        &super::tests_obj::secret_of(&t, h2)
+    ));
+    // A SHA-384 storage parent keeps its seed through a context as well.
+    let storage = parse_primary(&create_primary(
+        &mut t,
+        OWNER,
+        b"sp",
+        &named(super::tests_obj::ecc_storage(), alg::SHA384),
+    ));
+    let child = super::tests_obj::parse_child(&super::tests_obj::create_child(
+        &mut t,
+        storage.handle,
+        b"sp",
+        b"x",
+        b"data",
+        &named(super::tests_obj::sealed(), alg::SHA384),
+    ));
+    let saved = run(&mut t, plain(cc::CONTEXT_SAVE, &[storage.handle], &[]));
+    ok(&saved);
+    let pctx = params(&saved, 0).to_vec();
+    ok(&flush(&mut t, storage.handle));
+    let resp = run(&mut t, plain(cc::CONTEXT_LOAD, &[], &pctx));
+    ok(&resp);
+    let p2 = u32::from_be_bytes(resp[10..14].try_into().unwrap());
+    ok(&super::tests_obj::load(
+        &mut t,
+        p2,
+        b"sp",
+        &child.private,
+        &child.public,
+    ));
+}
+
+#[test]
+fn object_authpolicy_length_follows_name_alg() {
+    use super::tests_obj::create_child;
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    // The accepted authPolicy is exactly one digest of the nameAlg: 32, 48 or 64 octets.
+    for (name_alg, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
+        let mut template = named(ecc_sign(), name_alg);
+        template.auth_policy = vec![0xA5; size];
+        ok(&create_child(
+            &mut t,
+            parent,
+            b"parent-pw",
+            b"",
+            b"",
+            &template,
+        ));
+        ok(&create_primary(&mut t, OWNER, b"", &template));
+        for h in t.objects.loaded_handles() {
+            if h != parent {
+                ok(&flush(&mut t, h));
+            }
+        }
+        let wrong = [1, 16, 32, 48, 64, size + 1, 65, 66];
+        for len in wrong.into_iter().filter(|len| *len != size) {
+            template.auth_policy = vec![0xA5; len];
+            err(
+                &create_child(&mut t, parent, b"parent-pw", b"", b"", &template),
+                Rc::SIZE.in_param(2),
+            );
+            err(
+                &create_primary(&mut t, OWNER, b"", &template),
+                Rc::SIZE.in_param(2),
+            );
+        }
+        // A public-only object follows the same rule.
+        let mut external = named(ecc_sign(), name_alg);
+        external.attributes = oa::SIGN | oa::USER_WITH_AUTH;
+        let (public, ..) = {
+            let created = super::tests_obj::parse_child(&create_child(
+                &mut t,
+                parent,
+                b"parent-pw",
+                b"",
+                b"",
+                &named(ecc_sign(), name_alg),
+            ));
+            (created.public,)
+        };
+        external.unique = unmarshal_public(&public).unique;
+        external.auth_policy = vec![0xA5; size];
+        ok(&load_external(&mut t, &external, NULL));
+        external.auth_policy = vec![0xA5; if size == 48 { 32 } else { 48 }];
+        err(
+            &load_external(&mut t, &external, NULL),
+            Rc::SIZE.in_param(2),
+        );
+    }
+}
+
+#[test]
+fn user_auth_length_follows_name_alg() {
+    // Frees every transient object but `keep`: the TPM has eight object slots.
+    fn flush_all_but(t: &mut Tpm, keep: u32) {
+        for h in t.objects.loaded_handles() {
+            if h != keep {
+                ok(&flush(t, h));
+            }
+        }
+    }
+    use super::tests_obj::create_child;
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    for (name_alg, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
+        let template = named(ecc_sign(), name_alg);
+        let auth: Vec<u8> = (1..=size as u8).collect();
+        let (h, name, ..) = child_of(&mut t, parent, &template, &auth, b"");
+        // The whole authValue is the key of an HMAC session, however long it is. (A password session
+        // carries at most 32 octets until the session layer follows, steps D and E.) The cpHash
+        // covers the Name of the object, 34, 50 or 66 octets.
+        let mut session = super::tests_b::start_hmac(&mut t, NULL, b"", &[0x11; 16]);
+        let mut command = super::tests_b::hc(
+            cc::SIGN,
+            &[h],
+            super::tests_obj::sign_params(&DIGEST32, &ecc_sig_scheme()),
+            (h, &auth),
+        );
+        command.names = vec![name];
+        ok(&super::tests_b::run_hmac(&mut t, &mut session, &command));
+        // One octet more than the digest is TPM_RC_SIZE for parameter 1 (inSensitive).
+        let mut long = auth.clone();
+        long.push(0x7f);
+        err(
+            &create_child(&mut t, parent, b"parent-pw", &long, b"", &template),
+            Rc::SIZE.in_param(1),
+        );
+        err(
+            &create_primary(&mut t, OWNER, &long, &template),
+            Rc::SIZE.in_param(1),
+        );
+        ok(&create_primary(&mut t, OWNER, &auth, &template));
+        flush_all_but(&mut t, parent);
+    }
+    // ObjectChangeAuth takes the digest size of the object's nameAlg as well.
+    for (name_alg, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
+        let mut template = named(super::tests_obj::sealed(), name_alg);
+        template.attributes |= oa::NO_DA;
+        let (h, ..) = child_of(&mut t, parent, &template, b"old", b"secret");
+        let change = |t: &mut Tpm, auth: &[u8]| {
+            super::tests_b::pw_cmd(
+                t,
+                cc::OBJECT_CHANGE_AUTH,
+                &[h, parent],
+                b"old",
+                &tpm2b(auth),
+            )
+        };
+        let reply = change(&mut t, &vec![0x33; size]);
+        ok(&reply);
+        err(&change(&mut t, &vec![0x33; size + 1]), Rc::SIZE.in_param(1));
+        // The new blob loads with the new authValue and unseals the same data.
+        let mut r = Reader::new(params(&reply, 0));
+        let private = r.tpm2b(512).unwrap().to_vec();
+        r.finish().unwrap();
+        let public = read_public_triple(&mut t, h).0;
+        let (h2, _) = loaded_name(&super::tests_obj::load(
+            &mut t,
+            parent,
+            b"parent-pw",
+            &private,
+            &public,
+        ));
+        let (_, name2) = (h2, read_public_triple(&mut t, h2).1);
+        let mut session = super::tests_b::start_hmac(&mut t, NULL, b"", &[0x22; 16]);
+        let mut command =
+            super::tests_b::hc(cc::UNSEAL, &[h2], Vec::new(), (h2, &vec![0x33; size]));
+        command.names = vec![name2];
+        let unsealed = super::tests_b::run_hmac(&mut t, &mut session, &command);
+        ok(&unsealed);
+        assert_eq!(params(&unsealed, 0), tpm2b(b"secret"));
+        flush_all_but(&mut t, parent);
+    }
+}
+
+// Computed with Python hashlib/hmac and the `openssl enc -aes-128-cfb` command line: HMACkey =
+// KDFa(SHA-384, parentSeed, "INTEGRITY", NULL, NULL, 384), tag = HMAC-SHA-384(HMACkey, symIv TPM2B ||
+// encSensitive || Name), symKey = KDFa(SHA-384, parentSeed, "STORAGE", Name, NULL, 128); the decrypted
+// sensitive is the TPM2B of (TPM_ALG_KEYEDHASH, authValue padded to 48 octets, a 48-octet seedValue,
+// "sealed-data").
+const SHA384_PARENT_SEED: &str = "fff823da7b2a9ce5c712c358bd3e601da02eab57fca61fc1bacdf80638a0624d6c1c17e8d612a5364290a9813e95611e";
+const SHA384_BLOB_TAG: &str = "037830b6e9415aeedbf76d45465ce6644e24569cbcc06ab2277d5d736ab6ae18ef985c9c13853843fda17706cad833b1";
+const SHA384_BLOB_PUBLIC: &str = "0008000c00000452000000100030fa128e3101c3fcadab930854ef1c290f70a3ea26e1086c5a85c4bc3ae0e384b53c068064271123a0e0c7e96ca1273405";
+const SHA384_BLOB_NAME: &str = "000c7d8db4ad95e19a8db14d4ccf777c0f3d01c994c6645315cfab58863a0fc0a341e4c76c279be99a0a355b38a61c507bec";
+const SHA384_BLOB: &str = "0030037830b6e9415aeedbf76d45465ce6644e24569cbcc06ab2277d5d736ab6ae18ef985c9c13853843fda17706cad833b10010fff9690bde8aad0397efc5f7e644b5aa425247fe9aa1206259adeda84343ba7caacd87e821d520824c23b33811043ce747012bb81a9a98d0e967875075b1aa2133ec8c746aa592318564151b0de6f41c75114a0bf5703858c79af61fed34bd40fa750cbff86b26e01a92cf07316dfc693bd2c8f6d907cb6c3ba2c15a7e0d738bfaf509a60a";
+
+#[test]
+fn protect_unprotect_round_trip_with_sha384_parent() {
+    use super::tests_obj::{create_child, ecc_storage, load, parse_child, sealed};
+    let mut t = started();
+    let storage = parse_primary(&create_primary(
+        &mut t,
+        OWNER,
+        b"sp",
+        &named(ecc_storage(), alg::SHA384),
+    ));
+    assert_eq!(unmarshal_public(&storage.public).name_alg, alg::SHA384);
+    let seed = t
+        .object(storage.handle)
+        .unwrap()
+        .sensitive
+        .as_ref()
+        .unwrap()
+        .seed
+        .to_vec();
+    // The seed value of a storage key is one digest of its nameAlg.
+    assert_eq!(seed.len(), 48);
+    expect_hex("parent_seed", &seed, SHA384_PARENT_SEED);
+    let mut template = named(sealed(), alg::SHA384);
+    template.attributes |= oa::NO_DA;
+    let auth = [0x61u8; 48];
+    let created = parse_child(&create_child(
+        &mut t,
+        storage.handle,
+        b"sp",
+        &auth,
+        b"sealed-data",
+        &template,
+    ));
+    let blob = created.private.clone();
+    // integrity (TPM2B, an HMAC-SHA-384 tag) || symIv (TPM2B, 16) || encSensitive: size 2 + type 2
+    // + authValue 2 + 48 + seedValue 2 + 48 + data 2 + 11.
+    assert_eq!(&blob[..2], &[0, 48]);
+    assert_eq!(&blob[50..52], &[0, 16]);
+    assert_eq!(blob.len(), 50 + 18 + 2 + 2 + 50 + 50 + 13);
+    expect_hex("blob_tag", &blob[2..50], SHA384_BLOB_TAG);
+    expect_hex("blob", &blob, SHA384_BLOB);
+    expect_hex("blob_public", &created.public, SHA384_BLOB_PUBLIC);
+    let name = {
+        let mut n = alg::SHA384.to_be_bytes().to_vec();
+        n.extend_from_slice(hash(HashAlg::Sha384, &[&created.public]).as_slice());
+        n
+    };
+    expect_hex("blob_name", &name, SHA384_BLOB_NAME);
+    let (h, reloaded_name) =
+        loaded_name(&load(&mut t, storage.handle, b"sp", &blob, &created.public));
+    assert_eq!(reloaded_name, name);
+    let mut session = super::tests_b::start_hmac(&mut t, NULL, b"", &[0x33; 16]);
+    let mut command = super::tests_b::hc(cc::UNSEAL, &[h], Vec::new(), (h, &auth));
+    command.names = vec![name.clone()];
+    let unsealed = super::tests_b::run_hmac(&mut t, &mut session, &command);
+    ok(&unsealed);
+    assert_eq!(params(&unsealed, 0), tpm2b(b"sealed-data"));
+    // Any changed octet of the tag, the IV or the ciphertext is TPM_RC_INTEGRITY, before decryption.
+    for at in [2, 20, 49, 52, 60, 67, 68, 100, blob.len() - 1] {
+        let mut bad = blob.clone();
+        bad[at] ^= 0x01;
+        err(
+            &load(&mut t, storage.handle, b"sp", &bad, &created.public),
+            Rc::INTEGRITY,
+        );
+    }
+    // A public area with another nameAlg is another Name, and the same blob does not open for it.
+    let mut other = unmarshal_public(&created.public);
+    other.name_alg = alg::SHA512;
+    err(
+        &load(&mut t, storage.handle, b"sp", &blob, &other.to_bytes()),
+        Rc::INTEGRITY,
+    );
+    // A tag of the SHA-256 size in front of the rest of the blob does not split into the container.
+    let short = [&[0u8, 32][..], &blob[50..]].concat();
+    err(
+        &load(&mut t, storage.handle, b"sp", &short, &created.public),
+        Rc::SIZE,
+    );
+    // A SHA-256 child of the SHA-384 parent is protected with the parent's hash as well.
+    let child = parse_child(&create_child(
+        &mut t,
+        storage.handle,
+        b"sp",
+        b"c",
+        b"d",
+        &sealed(),
+    ));
+    assert_eq!(&child.private[..2], &[0, 48]);
+    let (_, child_name) = loaded_name(&load(
+        &mut t,
+        storage.handle,
+        b"sp",
+        &child.private,
+        &child.public,
+    ));
+    assert_eq!(&child_name[..2], &[0x00, 0x0b]);
+    assert_eq!(child_name.len(), 34);
+}
+
+// Python hashlib: SHA384_CREATION_HASH = SHA-384(SHA384_CREATION), and the pcrDigest inside it is
+// SHA-384 of the 32 zero octets of PCR 0 in the SHA-256 bank.
+const SHA384_CREATION: &str = "00000001000b030100000030a38fff4ba26c15e4ac9cde8c03103ac89080fd47545fde9446c8f192729eab7bd03a4d5c3187f75fe2a71b0ee50a4a4001000b0022000b67f34e33d70b07b2ed7d3a7427cc5abf19e60fd72cfa754305c2a29739fb750d0022000b2f5cf7f48c43a91fd75c352a6b4e5ab54d33a8d9922a9ec9eca07a2d3881953c00076f757473696465";
+const SHA384_CREATION_HASH: &str = "5270337d9e130cfbe053c46ce167e85ad9b4b7b5834c23616621207f5ab9119a915fe7526da91f4606c60b72aed577fb";
+const SHA384_PCR0: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+#[test]
+fn sha384_object_creation_hash_and_pcr_digest_use_the_name_alg() {
+    use super::tests_obj::{parse_child, sealed};
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    // PCR 0 of the SHA-256 bank is the only selected value; the banks themselves stay SHA-256/384.
+    let selection = [0, 0, 0, 1, 0x00, 0x0b, 3, 0x01, 0, 0];
+    let pcr0 = t.pcrs.value(alg::SHA256, 0).unwrap().to_vec();
+    expect_hex("pcr0", &pcr0, SHA384_PCR0);
+    let create = |t: &mut Tpm, name_alg: u16| {
+        let params = super::tests_obj::creation_params(
+            b"auth",
+            b"data",
+            &named(sealed(), name_alg),
+            b"outside",
+            &selection,
+        );
+        let resp = run(t, with_pw(cc::CREATE, &[parent], &[b"parent-pw"], &params));
+        ok(&resp);
+        parse_child(&resp)
+    };
+    let child = create(&mut t, alg::SHA384);
+    expect_hex("creation", &child.creation, SHA384_CREATION);
+    // creationHash = H_nameAlg(creationData); the ticket stays an HMAC-SHA-256 under the hierarchy proof.
+    expect_hex("creation_hash", &child.hash, SHA384_CREATION_HASH);
+    assert_eq!(child.hash.len(), 48);
+    assert_eq!(
+        (child.ticket.0, child.ticket.1, child.ticket.2.len()),
+        (st::CREATION, OWNER, 32)
+    );
+    let sha256_child = create(&mut t, alg::SHA256);
+    assert_eq!(sha256_child.hash.len(), 32);
+    assert_eq!(
+        sha256_child.hash,
+        hash(HashAlg::Sha256, &[&sha256_child.creation]).as_slice()
+    );
+}
+
+#[test]
+fn duplicate_import_and_credentials_refuse_a_sha384_name_alg_with_hash() {
+    use super::tests_obj::{ecc_storage, sealed};
+    use crate::dispatch::Invocation;
+    use crate::response::Output;
+    let (mut t, parent) = super::tests_obj::with_ecc_parent();
+    // The handlers are called without their authorization: a SHA-384 object cannot be authorized by
+    // a SHA-256 policy session yet (step D), and Duplicate needs one.
+    type Handler = fn(&mut Tpm, &Invocation, &mut Reader<'_>) -> Result<Output, Rc>;
+    let invoke = |t: &mut Tpm, handles: [u32; 3], f: Handler, params: &[u8]| {
+        f(t, &Invocation { handles }, &mut Reader::new(params)).map(|_| ())
+    };
+    let duplicate: Handler = |t, inv, r| t.cmd_duplicate(inv, r);
+    let activate: Handler = |t, inv, r| t.cmd_activate_credential(inv, r);
+    let mut movable = sealed();
+    movable.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+    let (plain_object, ..) = child_of(&mut t, parent, &movable, b"c", b"data");
+    let (sha384_object, ..) = child_of(&mut t, parent, &named(movable, alg::SHA384), b"c", b"data");
+    let to_null = cat(&[&tpm2b(b""), &u16b(alg::NULL)]);
+    // TPM2_Duplicate: the object (handle 1) and the new parent (handle 2).
+    assert_eq!(
+        invoke(&mut t, [plain_object, NULL, 0], duplicate, &to_null),
+        Ok(())
+    );
+    assert_eq!(
+        invoke(&mut t, [sha384_object, NULL, 0], duplicate, &to_null),
+        Err(Rc::HASH.in_handle(1))
+    );
+    let storage384 = parse_primary(&create_primary(
+        &mut t,
+        OWNER,
+        b"sp",
+        &named(ecc_storage(), alg::SHA384),
+    ))
+    .handle;
+    assert_eq!(
+        invoke(&mut t, [plain_object, storage384, 0], duplicate, &to_null),
+        Err(Rc::HASH.in_handle(2))
+    );
+    // TPM2_Import: the parent (handle 1) and the public area (parameter 2).
+    let import = |public: &TpmtPublic| {
+        cat(&[
+            &tpm2b(b""),
+            &tpm2b(&public.to_bytes()),
+            &tpm2b(&tpm2b(b"")),
+            &tpm2b(b""),
+            &u16b(alg::NULL),
+        ])
+    };
+    let mut foreign = named(sealed(), alg::SHA384);
+    foreign.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+    foreign.unique = Unique::Digest(vec![0; 48]);
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::IMPORT, &[parent], &[b"parent-pw"], &import(&foreign)),
+        ),
+        Rc::HASH.in_param(2),
+    );
+    let mut native = foreign.clone();
+    native.name_alg = alg::SHA256;
+    native.unique = Unique::Digest(vec![0; 32]);
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::IMPORT, &[storage384], &[b"sp"], &import(&native)),
+        ),
+        Rc::HASH.in_handle(1),
+    );
+    // TPM2_MakeCredential: the storage key (handle 1).
+    let make = |t: &mut Tpm, key: u32| {
+        run(
+            t,
+            plain(
+                cc::MAKE_CREDENTIAL,
+                &[key],
+                &cat(&[&tpm2b(&[7; 32]), &tpm2b(&[8; 34])]),
+            ),
+        )
+    };
+    err(&make(&mut t, storage384), Rc::HASH.in_handle(1));
+    ok(&make(&mut t, parent));
+    // TPM2_ActivateCredential: the activated object (handle 1) and the key (handle 2).
+    let blob = cat(&[&tpm2b(&[0; 40]), &tpm2b(b"")]);
+    assert_eq!(
+        invoke(&mut t, [sha384_object, parent, 0], activate, &blob),
+        Err(Rc::HASH.in_handle(1))
+    );
+    assert_eq!(
+        invoke(&mut t, [plain_object, storage384, 0], activate, &blob),
+        Err(Rc::HASH.in_handle(2))
+    );
 }

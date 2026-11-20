@@ -284,7 +284,7 @@ fn encode_object(o: &Object) -> Result<Zeroizing<Vec<u8>>, Rc> {
     w.tpm2b(&o.qualified_name);
     w.u32(o.hierarchy);
     if let Some(s) = &o.sensitive {
-        let bytes = sensitive_to_bytes(s, o.public.type_alg())?;
+        let bytes = sensitive_to_bytes(s, o.public.type_alg(), o.public.name_alg)?;
         w.bytes(&bytes);
     }
     Ok(Zeroizing::new(w.buf))
@@ -297,7 +297,7 @@ fn decode_object(body: &[u8]) -> Result<Object, Rc> {
     let mut pr = Reader::new(public_bytes);
     let public = TpmtPublic::unmarshal(&mut pr)?;
     pr.finish()?;
-    let qualified_name = r.tpm2b(limits::MAX_DIGEST_SIZE + 2)?.to_vec();
+    let qualified_name = r.tpm2b(2 + limits::MAX_HASH_SIZE)?.to_vec();
     let hierarchy = r.u32()?;
     let sensitive: Option<Sensitive> = match has_sensitive {
         0 => None,
