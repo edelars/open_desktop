@@ -1,10 +1,10 @@
 //! PC Client PFP 1.06 event payloads for this board and its boot path.
 
-use super::tcg2;
+use super::{banks::EventDigests, tcg2};
 #[cfg(target_os = "none")]
 use crate::bs::memory::BootPool;
 use crate::handoff::Handoff;
-use crate::pe::{DigestAlgorithm, PeImage, Subsystem, authenticode_digest};
+use crate::pe::{PeImage, Subsystem};
 use crate::uefi::status::Status;
 use core::{ptr, slice};
 
@@ -72,9 +72,10 @@ fn separate() -> Result<(), Status> {
         return Ok(());
     }
     let data = [0; 4];
-    let digest = tcg2::hash(&data);
+    let banks = tcg2::active_banks().ok_or(Status::DEVICE_ERROR)?;
+    let digests = EventDigests::hash_parts(banks, &[&data], None);
     for pcr in 0..8 {
-        tcg2::measure_digest(pcr, EV_SEPARATOR, &digest, &data, false)?;
+        tcg2::measure_parts(pcr, EV_SEPARATOR, &digests, &[&data], false)?;
     }
     unsafe {
         (*ptr::addr_of_mut!(tcg2::TCG2)).as_mut().unwrap().separated = true;
@@ -140,18 +141,9 @@ pub(crate) fn boot_variable(name: &[u16], value: &[u8]) -> Result<(), Status> {
     // This x64 firmware stores CHAR16 little-endian, as UEFI_VARIABLE_DATA expects.
     let name = unsafe { slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len() * 2) };
     let parts = [&header[..], name, value];
-    use sha2::{Digest, Sha256};
-    let mut hash = Sha256::new();
-    for part in parts {
-        hash.update(part);
-    }
-    tcg2::measure_parts(
-        1,
-        EV_EFI_VARIABLE_BOOT2,
-        &hash.finalize().into(),
-        &parts,
-        false,
-    )
+    let banks = tcg2::active_banks().ok_or(Status::DEVICE_ERROR)?;
+    let digests = EventDigests::hash_parts(banks, &parts, None);
+    tcg2::measure_parts(1, EV_EFI_VARIABLE_BOOT2, &digests, &parts, false)
 }
 
 pub(crate) fn image(
@@ -161,9 +153,9 @@ pub(crate) fn image(
     path: &[u8],
     embedded: bool,
 ) -> Result<(), Status> {
-    if !tcg2::active() {
+    let Some(banks) = tcg2::active_banks() else {
         return Ok(());
-    }
+    };
     let boot_attempt = unsafe {
         (*ptr::addr_of!(tcg2::TCG2))
             .as_ref()
@@ -173,8 +165,7 @@ pub(crate) fn image(
     if embedded && !boot_attempt && pe.subsystem() != Subsystem::Application {
         return Ok(());
     }
-    let digest =
-        authenticode_digest(pe, DigestAlgorithm::Sha256).map_err(|_| Status::LOAD_ERROR)?;
+    let digests = EventDigests::hash_image(banks, pe).map_err(|_| Status::LOAD_ERROR)?;
     let (default_pcr, kind) = match pe.subsystem() {
         Subsystem::Application => (4, EV_EFI_BOOT_SERVICES_APPLICATION),
         Subsystem::BootServiceDriver => (2, EV_EFI_BOOT_SERVICES_DRIVER),
@@ -188,7 +179,7 @@ pub(crate) fn image(
     out[8..16].copy_from_slice(&size.to_le_bytes());
     out[16..24].copy_from_slice(&pe.image_base().to_le_bytes());
     out[24..32].copy_from_slice(&(path.len() as u64).to_le_bytes());
-    tcg2::measure_parts(pcr, kind, &digest, &[&out, path], false)
+    tcg2::measure_parts(pcr, kind, &digests, &[&out, path], false)
 }
 
 #[cfg(target_os = "none")]

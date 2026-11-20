@@ -1,6 +1,6 @@
 //! PFP 1.06 r52, §3.3.4.8. Measure the committed policy and enrolled image authority.
 
-use super::{event_log::SECURE_BOOT_CAPACITY, tcg2};
+use super::{banks::EventDigests, event_log::SECURE_BOOT_CAPACITY, tcg2};
 use crate::{
     bs::memory::BootPool,
     uefi::status::Status,
@@ -102,7 +102,10 @@ pub(crate) fn authorize(nvram: Nvram, bytes: &[u8]) -> Result<ImageCheck, Status
     let slot = authorities
         .get_mut(used..used + digest.len())
         .ok_or(Status::VOLUME_FULL)?;
-    if let Err(status) = tcg2::measure_parts(PCR, EV_EFI_VARIABLE_AUTHORITY, &digest, &parts, false)
+    let banks = tcg2::active_banks().ok_or(Status::DEVICE_ERROR)?;
+    let digests = EventDigests::hash_parts(banks, &parts, Some(digest));
+    if let Err(status) =
+        tcg2::measure_parts(PCR, EV_EFI_VARIABLE_AUTHORITY, &digests, &parts, false)
     {
         state.failed = Some(status);
         return Err(status);
@@ -174,7 +177,9 @@ impl Measurements {
             let parts = [&header[..], name, value];
             let digest = digest_parts(&parts);
             if *last != Some(digest) {
-                tcg2::measure_parts(PCR, EV_EFI_VARIABLE_DRIVER_CONFIG, &digest, &parts, false)?;
+                let banks = tcg2::active_banks().ok_or(Status::DEVICE_ERROR)?;
+                let digests = EventDigests::hash_parts(banks, &parts, Some(digest));
+                tcg2::measure_parts(PCR, EV_EFI_VARIABLE_DRIVER_CONFIG, &digests, &parts, false)?;
                 *last = Some(digest);
             }
         }

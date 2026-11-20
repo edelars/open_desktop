@@ -1,5 +1,6 @@
 //! Trusted computing for the firmware board.
 
+mod banks;
 mod crb_driver;
 mod event_log;
 pub mod measure;

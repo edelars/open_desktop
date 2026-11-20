@@ -2,7 +2,8 @@ use super::*;
 use crate::pe::test_image::{
     OPTIONAL_START, SECTION_HEADER_BYTES, SECTIONS, SECURITY, fixture, put_u16, put_u32,
 };
-use sha2::{Digest, Sha256};
+use od_uefi_security::pe::authenticode_digest_sha384;
+use sha2::{Digest, Sha256, Sha384};
 
 const CHECKSUM: usize = OPTIONAL_START + 64;
 const HEADERS_END: usize = 0x200;
@@ -28,7 +29,16 @@ fn excludes_checksum_and_certificate_but_keeps_raw_padding_and_overlay() {
         &unsigned[CHECKSUM + 4..SECURITY],
         &unsigned[SECURITY + 8..],
     ]);
+    let mut sha384 = Sha384::new();
+    sha384.update(&unsigned[..CHECKSUM]);
+    sha384.update(&unsigned[CHECKSUM + 4..SECURITY]);
+    sha384.update(&unsigned[SECURITY + 8..]);
+    let expected384: [u8; 48] = sha384.finalize().into();
     assert_eq!(digest(&unsigned), Ok(expected));
+    assert_eq!(
+        authenticode_digest_sha384(&PeImage::parse(&unsigned).unwrap()),
+        Ok(expected384)
+    );
 
     let mut signed = unsigned;
     let certificate_offset = signed.len();
@@ -39,6 +49,10 @@ fn excludes_checksum_and_certificate_but_keeps_raw_padding_and_overlay() {
     assert_eq!(digest(&signed), Ok(expected));
     signed[certificate_offset] ^= 0xff;
     assert_eq!(digest(&signed), Ok(expected));
+    assert_eq!(
+        authenticode_digest_sha384(&PeImage::parse(&signed).unwrap()),
+        Ok(expected384)
+    );
 
     for offset in [0x50, 0x390, certificate_offset - 1] {
         signed[offset] ^= 0xff;
