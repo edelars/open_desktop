@@ -57,7 +57,7 @@
 //! over the selected PCR values in index order; empty when no PCR is selected) and the capacity
 //! limits [`MAX_OBJECTS`] and [`MAX_PERSISTENT`] (choices of this implementation).
 
-use cfb_mode::cipher::KeyIvInit;
+use cfb_mode::cipher::{BlockCipherEncrypt, KeyInit, KeyIvInit};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -772,25 +772,37 @@ fn read_sensitive(bytes: &[u8], public: &TpmtPublic, duplicate: bool) -> Result<
 
 // ---------------------------------------------------------------------- private area protection
 
-/// AES-128-CFB (full-block feedback, as `TPMT_SYM_DEF_OBJECT` AES/128/CFB states) of `data` under
-/// the 16-octet `sym_key` and `iv`; `encrypt` selects the direction. The result has the length
-/// of `data`.
-pub(crate) fn aes128_cfb(
+/// AES-CFB with full-block feedback and a derived or previously validated 16- or 32-octet key.
+pub(crate) fn aes_cfb(
     sym_key: &[u8],
     iv: &[u8; 16],
     data: &[u8],
     encrypt: bool,
 ) -> Zeroizing<Vec<u8>> {
-    let mut key = Zeroizing::new([0u8; 16]);
-    let n = key.len().min(sym_key.len());
-    key[..n].copy_from_slice(&sym_key[..n]);
     let mut buf = Zeroizing::new(data.to_vec());
-    if encrypt {
-        cfb_mode::Encryptor::<aes::Aes128>::new(&(*key).into(), &(*iv).into()).encrypt(&mut buf);
-    } else {
-        cfb_mode::Decryptor::<aes::Aes128>::new(&(*key).into(), &(*iv).into()).decrypt(&mut buf);
+    match sym_key.len() {
+        16 => crypt_cfb::<aes::Aes128>(sym_key, iv, &mut buf, encrypt),
+        32 => crypt_cfb::<aes::Aes256>(sym_key, iv, &mut buf, encrypt),
+        _ => unreachable!("AES-CFB key size was validated or derived locally"),
     }
     buf
+}
+
+fn crypt_cfb<C: BlockCipherEncrypt + KeyInit>(
+    key: &[u8],
+    iv: &[u8; 16],
+    data: &mut [u8],
+    encrypt: bool,
+) {
+    if encrypt {
+        cfb_mode::Encryptor::<C>::new_from_slices(key, iv)
+            .expect("AES-CFB key and IV sizes")
+            .encrypt(data);
+    } else {
+        cfb_mode::Decryptor::<C>::new_from_slices(key, iv)
+            .expect("AES-CFB key and IV sizes")
+            .decrypt(data);
+    }
 }
 
 /// The contents of a `TPM2B_PRIVATE` for `sensitive` (a `TPM2B_SENSITIVE`) of the object with
@@ -798,7 +810,7 @@ pub(crate) fn aes128_cfb(
 /// comment).
 pub(crate) fn protect(seed: &[u8], name: &[u8], sensitive: &[u8], iv: &[u8; 16]) -> Vec<u8> {
     let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    let enc = aes128_cfb(&sym_key, iv, sensitive, true);
+    let enc = aes_cfb(&sym_key, iv, sensitive, true);
     let hmac_key = kdfa_sha256(seed, b"INTEGRITY", &[], &[], 256);
     let mut iv_field = Writer::new();
     iv_field.tpm2b(iv);
@@ -828,7 +840,7 @@ fn unprotect(seed: &[u8], name: &[u8], blob: &[u8]) -> Result<Zeroizing<Vec<u8>>
         return Err(Rc::INTEGRITY);
     }
     let sym_key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    Ok(aes128_cfb(&sym_key, &iv, enc, false))
+    Ok(aes_cfb(&sym_key, &iv, enc, false))
 }
 
 /// Protects the sensitive area of `obj` for a parent seed (`TPM2_Create`).
@@ -1039,8 +1051,8 @@ mod tests {
             0xfb, 0x4a, 0xc8, 0xa6, 0x45, 0x37, 0xa0, 0xb3, 0xa9, 0x3f, 0xcd, 0xe3, 0xcd, 0xad,
             0x9f, 0x1c, 0xe5, 0x8b,
         ];
-        assert_eq!(&aes128_cfb(&key, &iv, &plain, true)[..], &cipher[..]);
-        assert_eq!(&aes128_cfb(&key, &iv, &cipher, false)[..], &plain[..]);
+        assert_eq!(&aes_cfb(&key, &iv, &plain, true)[..], &cipher[..]);
+        assert_eq!(&aes_cfb(&key, &iv, &cipher, false)[..], &plain[..]);
     }
 
     #[test]

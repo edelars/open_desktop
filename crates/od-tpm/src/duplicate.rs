@@ -11,7 +11,7 @@ use crate::crypto::DIGEST;
 use crate::dispatch::Invocation;
 use crate::marshal::{MAX_DATA, MAX_RSA_BYTES, Reader, SymDef, TpmtPublic, Writer};
 use crate::object::{
-    MAX_PRIVATE, aes128_cfb, check_public, find_object, name_of, private_blob,
+    MAX_PRIVATE, aes_cfb, check_public, find_object, name_of, private_blob,
     sensitive_from_duplicate, sensitive_to_duplicate,
 };
 use crate::response::{Output, Rc};
@@ -100,7 +100,7 @@ impl Tpm {
             clear.extend_from_slice(&(DIGEST as u16).to_be_bytes());
             clear.extend_from_slice(&inner_integrity(&canonical, &object.name));
             clear.extend_from_slice(&canonical);
-            inner = aes128_cfb(key, &[0; 16], &clear, true);
+            inner = aes_cfb(key, &[0; 16], &clear, true);
             &inner[..]
         } else {
             &canonical[..]
@@ -186,7 +186,7 @@ impl Tpm {
         };
         let inner;
         let canonical = if symmetric == SymDef::Aes128Cfb {
-            inner = aes128_cfb(key, &[0; 16], wrapped, false);
+            inner = aes_cfb(key, &[0; 16], wrapped, false);
             let (tag, sensitive) = integrity_and_body(&inner).ok_or(Rc::INTEGRITY.in_param(3))?;
             if !inner_integrity_matches(tag, sensitive, &name) {
                 return Err(Rc::INTEGRITY.in_param(3));

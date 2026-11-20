@@ -1471,6 +1471,7 @@ fn a_null_sign_handle_with_an_hmac_session() {
 // -------------------------------------------------------------------- parameter encryption
 
 const AES_SYM: [u8; 6] = [0x00, 0x06, 0x00, 128, 0x00, 0x43];
+const AES256_SYM: [u8; 6] = [0x00, 0x06, 0x01, 0x00, 0x00, 0x43];
 const XOR_SYM: [u8; 4] = [0x00, 0x0A, 0x00, 0x0B];
 
 /// KDFa for any size (`bits` in the input; the Part 1 counter-mode construction).
@@ -1498,10 +1499,11 @@ fn crypt(
 ) -> Vec<u8> {
     let mut value = s.key.clone();
     value.extend_from_slice(&trimmed(entity_auth));
-    if sym == AES_SYM {
-        let kv = kdfa_bits(&value, b"CFB", newer, older, 256);
-        let iv: [u8; 16] = kv[16..32].try_into().unwrap();
-        crate::object::aes128_cfb(&kv[..16], &iv, data, encrypt).to_vec()
+    if sym == AES_SYM || sym == AES256_SYM {
+        let key_len = if sym == AES_SYM { 16 } else { 32 };
+        let kv = kdfa_bits(&value, b"CFB", newer, older, (key_len as u32 + 16) * 8);
+        let (key, iv) = kv.split_at(key_len);
+        crate::object::aes_cfb(key, iv.try_into().unwrap(), data, encrypt).to_vec()
     } else {
         let mask = kdfa_bits(&value, b"XOR", newer, older, (data.len() * 8) as u32);
         data.iter().zip(mask).map(|(d, m)| d ^ m).collect()
@@ -1577,7 +1579,7 @@ fn stored(t: &mut Tpm, idx: u32, size: u16) -> Vec<u8> {
 
 #[test]
 fn a_decrypted_command_parameter_reaches_the_command_in_clear() {
-    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
         for bind in [NULL, OWNER] {
             let (mut t, idx) = nv_with_owner_pw();
             let mut s = start_sym(&mut t, bind, OWNER_PW, sym);
@@ -1670,7 +1672,7 @@ fn the_cp_hash_covers_the_encrypted_parameter() {
 
 #[test]
 fn an_encrypted_response_parameter_decrypts_with_the_new_tpm_nonce() {
-    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
         let (mut t, idx) = nv_with_owner_pw();
         ok(&nv_write(&mut t, OWNER, idx, OWNER_PW, PLAIN, 0));
         let name = nv_read_public(&mut t, idx).1;
@@ -2043,7 +2045,7 @@ fn first_certify_hmac_binds_other_parameter_encryption_sessions() {
 
 #[test]
 fn additional_session_encrypts_only_the_shared_ecdh_point() {
-    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+    for sym in [&AES_SYM[..], &AES256_SYM[..], &XOR_SYM[..]] {
         let mut t = started();
         ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
         let mut session = start_sym(&mut t, OWNER, OWNER_PW, sym);

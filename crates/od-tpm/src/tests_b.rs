@@ -973,11 +973,11 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
             Rc::VALUE.in_param(3),
         );
     }
-    // Parameter encryption (slice C3): AES-128-CFB and XOR(SHA-256) are accepted; every other
-    // `TPMT_SYM_DEF` is refused with parameter number 4.
+    // AES-128/256-CFB and XOR(SHA-256) are accepted. Unsupported parameters report index 4.
     let aes = cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0043)]);
+    let aes256 = cat(&[&u16b(0x0006), &u16b(256), &u16b(0x0043)]);
     let xor = cat(&[&u16b(0x000A), &u16b(alg::SHA256)]);
-    for sym in [&aes[..], &xor[..]] {
+    for sym in [&aes[..], &aes256[..], &xor[..]] {
         let r = run(
             &mut t,
             start_cmd(
@@ -993,10 +993,7 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
         ));
     }
     for (sym, expect) in [
-        (
-            cat(&[&u16b(0x0006), &u16b(256), &u16b(0x0043)]),
-            Rc::KEY_SIZE,
-        ),
+        (cat(&[&u16b(0x0006), &u16b(192), &u16b(0x0043)]), Rc::VALUE),
         (cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0044)]), Rc::MODE),
         (cat(&[&u16b(0x000A), &u16b(0x0004)]), Rc::HASH),
         (u16b(0x0013), Rc::SYMMETRIC),

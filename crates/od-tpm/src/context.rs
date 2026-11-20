@@ -66,7 +66,7 @@ use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, TpmtPublic, Writer, limits};
 use crate::object::{
-    Object, Sensitive, aes128_cfb, name_of, sensitive_from_bytes, sensitive_to_bytes,
+    Object, Sensitive, aes_cfb, name_of, sensitive_from_bytes, sensitive_to_bytes,
 };
 use crate::paramenc::SessionSym;
 use crate::policy::{PolicyHashRestriction, PolicyState};
@@ -166,7 +166,7 @@ fn context_blob_inner(
     plain.extend_from_slice(&((8 + body.len()) as u16).to_be_bytes());
     plain.extend_from_slice(&inner_sequence.to_be_bytes());
     plain.extend_from_slice(body);
-    let enc = aes128_cfb(&key, &iv, &plain, true);
+    let enc = aes_cfb(&key, &iv, &plain, true);
     let tag = context_integrity(proof, reset, clear_count, sequence, saved_handle, &enc);
     let mut w = Writer::new();
     w.tpm2b(&tag);
@@ -260,7 +260,7 @@ fn open_context(
     }
     // The key and the IV are made only now, after the integrity check (Part 1, 28.3.1).
     let (key, iv) = context_key_iv(proof, reset, sequence, saved_handle);
-    let plain = aes128_cfb(&key, &iv, enc, false);
+    let plain = aes_cfb(&key, &iv, enc, false);
     let mut p = Reader::new(&plain);
     let n = usize::from(p.u16().map_err(|_| OpenError::Corrupt)?);
     let mut inner = p.sub(n).map_err(|_| OpenError::Corrupt)?;

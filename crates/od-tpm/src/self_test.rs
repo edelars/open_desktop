@@ -78,13 +78,18 @@ fn transport_known_answers() -> bool {
     const KDFA_256: [u8; 32] =
         hex("32316f0b89c58eaa1e22f5fda644e5b5aca6fbb7605b7bc37d8ffe830730fc07");
     const XOR: [u8; 28] = hex("a2a3bc81404fdde08b7944ee59126e530380fe46a86b584d57a5455d");
-    const CFB: [u8; 28] = hex("ee55abb9c4280144b16b0e87a7c8598e95714446b30a543da0a74e2a");
+    const CFB128: [u8; 28] = hex("ee55abb9c4280144b16b0e87a7c8598e95714446b30a543da0a74e2a");
+    const CFB256: [u8; 28] = hex("5025ed706adbfe1c36e214472cec2265bde977b9c78b3072055c1d96");
     if kdfa_sha256(&[1; 32], b"ATH", &[2; 16], &[3; 16], 256).as_slice() != KDFA_256 {
         return false;
     }
     let key = b"sv-0123456789abcdef";
     let plain = b"\x00\x1chello, parameter encryption!";
-    for (sym, expected) in [(SessionSym::Xor, XOR), (SessionSym::AesCfb128, CFB)] {
+    for (sym, expected) in [
+        (SessionSym::Xor, XOR),
+        (SessionSym::AesCfb128, CFB128),
+        (SessionSym::AesCfb256, CFB256),
+    ] {
         let mut param = *plain;
         paramenc::apply(sym, key, &[0x11; 16], &[0x22; 16], &mut param, true);
         if param[..2] != [0, 28] || param[2..] != expected {

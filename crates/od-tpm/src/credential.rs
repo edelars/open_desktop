@@ -12,7 +12,7 @@ use crate::marshal::{
     MAX_DATA, MAX_ECC_BYTES, MAX_RSA_BYTES, PublicParams, Reader, Scheme, SymDef, Unique, Writer,
     limits,
 };
-use crate::object::{Object, Secret, aes128_cfb, find_object};
+use crate::object::{Object, Secret, aes_cfb, find_object};
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -245,7 +245,7 @@ pub(crate) fn open_seed_blob(
 
 fn crypt_seed_blob(seed: &[u8], name: &[u8], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
     let key = kdfa_sha256(seed, b"STORAGE", name, &[], 128);
-    aes128_cfb(&key, &[0; 16], data, encrypt)
+    aes_cfb(&key, &[0; 16], data, encrypt)
 }
 
 #[cfg(test)]
