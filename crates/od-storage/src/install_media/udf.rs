@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use crate::io::{CheckedStorage, StorageBackend};
 
 use super::ImportError;
-use super::tree::{Contents, Entry, Extent, File, Name};
+use super::tree::{Contents, Entry, Extent, File, FileData, Name};
 
 const BLOCK: usize = 2048;
 const MAX_SEQUENCE_BLOCKS: u32 = 64;
@@ -351,7 +351,7 @@ impl<B: StorageBackend> Reader<'_, B> {
             let contents = if properties == 2 {
                 Contents::Directory(self.directory(child, lbn, depth + 1)?)
             } else {
-                Contents::File(self.file(child, REGULAR_TYPE)?)
+                Contents::File(FileData::Source(self.file(child, REGULAR_TYPE)?))
             };
             entries.push(Entry {
                 name: Name::Long(name),

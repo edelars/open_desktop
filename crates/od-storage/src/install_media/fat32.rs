@@ -4,7 +4,7 @@ use crate::io::{CheckedStorage, StorageBackend};
 
 use super::ImportError;
 use super::gpt::PARTITION_START;
-use super::tree::{Contents, Entry, File, Name};
+use super::tree::{Contents, Entry, FileData, Name};
 
 const SECTOR: u32 = 512;
 const RESERVED: u32 = 32;
@@ -19,7 +19,7 @@ const DATA_CHUNK: usize = 128 * 1024;
 
 enum Data {
     Directory(Vec<u8>),
-    File(File),
+    File(FileData),
 }
 
 struct Allocation {
@@ -137,12 +137,7 @@ impl Volume {
             match &run.data {
                 Data::Directory(bytes) => put(out, bytes)?,
                 Data::File(file) => {
-                    let len = file.length;
-                    for at in (0..len).step_by(DATA_CHUNK) {
-                        let count = (len - at).min(DATA_CHUNK as u64) as usize;
-                        file.read_exact_at(source, at, &mut buf[..count])?;
-                        put(out + at, &buf[..count])?;
-                    }
+                    file.emit(source, identity, &mut buf, |at, bytes| put(out + at, bytes))?
                 }
             }
         }
@@ -245,7 +240,7 @@ impl Allocator {
                 }
                 Contents::File(file) => {
                     self.files += 1;
-                    let len = u32::try_from(file.length)
+                    let len = u32::try_from(file.length())
                         .map_err(|_| ImportError::Unsupported("fat_file_size"))?;
                     let cluster = if len == 0 {
                         0

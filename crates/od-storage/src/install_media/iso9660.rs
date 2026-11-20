@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::io::{CheckedStorage, StorageBackend};
 
 use super::ImportError;
-use super::tree::{Contents, Entry, Extent as SourceExtent, File, Name};
+use super::tree::{Contents, Entry, Extent as SourceExtent, File, FileData, Name};
 
 const SECTOR: u64 = 2048;
 const FIRST_DESCRIPTOR: u64 = 16;
@@ -151,10 +151,10 @@ impl<B: StorageBackend> Reader<'_, B> {
                 let contents = if child.directory {
                     Contents::Directory(self.directory(child.extent, extent, depth + 1)?)
                 } else {
-                    Contents::File(File::contiguous(SourceExtent {
+                    Contents::File(FileData::Source(File::contiguous(SourceExtent {
                         offset: child.extent.offset(),
                         length: u64::from(child.extent.length),
-                    }))
+                    })))
                 };
                 entries.push(Entry {
                     name: Name::Short(name),

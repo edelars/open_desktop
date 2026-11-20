@@ -8,6 +8,7 @@ mod gpt;
 mod iso9660;
 mod tree;
 mod udf;
+mod wim;
 
 /// Fixed reasons are safe to put in tool output without exposing image data.
 #[derive(Debug)]
@@ -26,11 +27,12 @@ pub struct InstallMedia {
 
 impl InstallMedia {
     pub fn from_iso<B: StorageBackend>(source: &CheckedStorage<B>) -> Result<Self, ImportError> {
-        let tree = if udf::recognize(source)? {
+        let mut tree = if udf::recognize(source)? {
             udf::read(source)?
         } else {
             iso9660::read(source)?
         };
+        wim::split_install_wim(source, &mut tree)?;
         let volume = fat32::Volume::plan(tree, source.size()?)?;
         let disk_sectors =
             gpt::disk_sectors(volume.sectors()).ok_or(ImportError::Unsupported("fat_capacity"))?;
