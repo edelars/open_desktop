@@ -28736,6 +28736,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         return true;
     }
     let prefixes = instruction.prefixes;
+    // S6-22: glibc's TLS setup uses a bounded set of FS-relative absolute forms.
+    if cpl3_glibc_tls_fs_form(instruction) {
+        return true;
+    }
     if instruction.opcode.map == OpcodeMap::Escape0f
         && instruction.opcode.byte == 0x1f
         && instruction.operation == Operation::NopModrm
@@ -28826,6 +28830,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) => dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
+            0x81,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if dst.size() == OperandSize::Dword => true,
+        (
+            OpcodeMap::Primary,
             0x81 | 0x83,
             Operation::Arithmetic {
                 kind: ArithmeticKind::Cmp,
@@ -28833,6 +28846,19 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) if dst.size() == OperandSize::Dword => true,
+        (
+            OpcodeMap::Primary,
+            0xc1,
+            Operation::Shift {
+                kind: ShiftKind::Shr,
+                dst: Operand::Register(dst),
+                source: None,
+                count: Operand::Immediate(_),
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Dword && dst.size() == OperandSize::Dword => {
+            true
+        }
         (
             OpcodeMap::Escape0f,
             0x90..=0x9f,
@@ -29377,6 +29403,44 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         _ => false,
     }
+}
+
+fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
+    let prefixes = instruction.prefixes;
+    if instruction.opcode.map != OpcodeMap::Primary
+        || prefixes.segment != Some(0x64)
+        || prefixes.group1.is_some()
+        || prefixes.operand_override
+        || prefixes.address_override
+    {
+        return false;
+    }
+    let absolute = |memory: MemoryOperand, size: OperandSize| {
+        memory.base == AddressBase::None
+            && memory.index.is_none()
+            && memory.address_size == OperandSize::Qword
+            && memory.size == size
+    };
+    matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x8b, Operation::MovFsLoadQ { dst, src })
+            if dst.size() == OperandSize::Qword
+                && absolute(src, OperandSize::Qword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x89, Operation::MovFsStore { dst, src })
+            if src.size() == OperandSize::Qword
+                && absolute(dst, OperandSize::Qword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0xc7, Operation::MovFsMemImm { dst, .. })
+            if absolute(dst, OperandSize::Dword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x88, Operation::MovFsStore { dst, src })
+            if src.size() == OperandSize::Byte
+                && absolute(dst, OperandSize::Byte)
+    )
 }
 
 fn is_addr32_direct_call(instruction: &long_decode::Instruction) -> bool {
@@ -45072,6 +45136,17 @@ fn step_configured(
         // S4-38L9e: INT3 commits in its own gated path before this point.
         | Operation::Int3 => false,
         Operation::Swapgs => true,
+        // S6-22: the small glibc TLS FS subset is also executable from CPL3; the
+        // exact operation and addressing form are checked by the helper.
+        Operation::MovFsLoadQ { .. }
+        | Operation::MovFsStore { .. }
+        | Operation::MovFsMemImm { .. }
+            if context.privilege == PrivilegeLevel::Ring3
+                && control_policy.is_some()
+                && cpl3_glibc_tls_fs_form(&instruction) =>
+        {
+            true
+        }
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
         // S4-38L7i: the same holds for the FS/GS-based qword loads.

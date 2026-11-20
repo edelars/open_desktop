@@ -788,6 +788,7 @@ the [S4-34b report](STAGE_4_S4-34B_2026-11-14.md) and
 - **Уточнение S6-22.** По D5 допущены MOVD, PUNPCKLDQ и MOVQ для начального пути glibc. Формы используют FP-ячейку текущего vCPU. Двухпроцессорный повтор дошёл до CMOVE с операндом памяти. [ISSUE-564 и проверки](STAGE_6_REPORT.md#s6-22--sse2-в-запуске-glibc).
 - **Уточнение S6-22.** По D5 допущен qword CMOV с памятью и связанные qword CMP и ADD. Два vCPU с RAW дошли до загрузки MOVQ из памяти в XMM. [ISSUE-565 и проверки](STAGE_6_REPORT.md#s6-22--cmov-из-памяти-в-glibc).
 - **Уточнение S6-22.** По D5 допущены MOVQ в XMM, PAND, PUNPCKLQDQ, 16-байтовые пересылки CPL3 и связанные целочисленные формы. Два vCPU с RAW дошли до регистрового dword ADD с imm32 после двух `brk`. [ISSUE-566 и проверки](STAGE_6_REPORT.md#s6-22--векторные-операции-при-настройке-tls-в-glibc).
+- **Уточнение S6-22.** По D5 допущены регистровые dword ADD и SHR и прямые обращения CPL3 через FS. Два vCPU с RAW дошли до ADD через FS после `set_robust_list`. [ISSUE-567 и проверки](STAGE_6_REPORT.md#s6-22--настройка-fs-в-glibc).
 
 - **Уточнение S6-21.** По D5 добавлена форма `LOCK AND m64, imm8` для остановки в `copy_process`. Она использует общий атомарный AND профиля CPL0. [ISSUE-550 и проверки](STAGE_6_REPORT.md#s6-21--lock-and-qword-с-imm8).
 

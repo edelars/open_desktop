@@ -6796,6 +6796,218 @@ fn cpl3_tunables_add_rsp_imm32_sign_extends() {
 }
 
 #[test]
+fn cpl3_tunables_add_dword_imm32_and_shr_dword_imm8_execute_register_forms() {
+    let code = [
+        0x81, 0xc1, 0x40, 0x09, 0x00, 0x00, // add ecx, 0x940
+        0xc1, 0xe9, 0x04, // shr ecx, 4
+    ];
+    let mut state = user_state();
+    state.gpr[Register::Rcx as usize] = 0x1000;
+    let mut memory = DataMemory::new(&code);
+
+    let result = run3_data(&mut state, &mut memory, 2).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x194);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_glibc_tls_fs_load_and_adjacent_stores_use_live_fs_base() {
+    let code = [
+        0x64, 0x48, 0x8b, 0x14, 0x25, 0x10, 0x00, 0x00, 0x00, // mov rdx, fs:[0x10]
+        0x64, 0x48, 0x89, 0x04, 0x25, 0x10, 0x05, 0x00, 0x00, // mov fs:[0x510], rax
+        0x64, 0xc7, 0x04, 0x25, 0x14, 0x06, 0x00, 0x00, 0x02, 0x00, 0x00,
+        0x00, // mov dword fs:[0x614], 2
+        0x64, 0x88, 0x04, 0x25, 0x11, 0x06, 0x00, 0x00, // mov byte fs:[0x611], al
+    ];
+    let fs = DATA + 0x100;
+    let tls_value = 0x8877_6655_4433_2211u64;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0033;
+    state.gpr[Register::Rdx as usize] = 0xdead_beef;
+    let mut memory = DataMemory::new(&code).with_user(0x10, 0x99);
+    for (offset, byte) in tls_value.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(fs + 0x10 + offset as u64, byte);
+    }
+    for offset in 0..8 {
+        memory = memory.with_user(fs + 0x510 + offset, 0);
+    }
+    for offset in 0..4 {
+        memory = memory.with_user(fs + 0x614 + offset, 0);
+    }
+    memory = memory.with_user(fs + 0x611, 0);
+
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state.gpr[Register::Rdx as usize], tls_value);
+    assert_eq!(state.fs_base, fs);
+    assert_eq!(memory.reads, 1);
+    let mut expected_writes = (0..8)
+        .map(|offset| {
+            (
+                fs + 0x510 + offset,
+                (0xaabb_ccdd_eeff_0033u64 >> (offset * 8)) as u8,
+            )
+        })
+        .collect::<Vec<_>>();
+    expected_writes
+        .extend((0..4).map(|offset| (fs + 0x614 + offset, if offset == 0 { 2 } else { 0 })));
+    expected_writes.push((fs + 0x611, 0x33));
+    assert_eq!(memory.writes, expected_writes);
+}
+
+#[test]
+fn cpl3_glibc_tls_fs_allowlist_rejects_gs_indexed_and_nonmatching_width_forms() {
+    for code in [
+        &[0x64, 0x48, 0x8b, 0x14, 0x0d, 0x10, 0x00, 0x00, 0x00][..],
+        &[0x65, 0x48, 0x8b, 0x14, 0x25, 0x10, 0x00, 0x00, 0x00][..],
+        &[0x64, 0x8b, 0x14, 0x25, 0x10, 0x00, 0x00, 0x00][..],
+    ] {
+        let mut state = user_state();
+        state.fs_base = DATA;
+        state.gs_base = DATA;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        state.gpr[Register::Rcx as usize] = 0;
+        for offset in 0..8 {
+            memory = memory.with_user(DATA + 0x10 + offset, 0x11);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8b });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+    }
+}
+
+#[test]
+fn cpl3_glibc_tls_fs_direct_forms_use_encoded_registers_offsets_and_immediates() {
+    let code = [
+        0x64, 0x48, 0x8b, 0x0c, 0x25, 0x28, 0x00, 0x00, 0x00, // mov rcx, fs:[0x28]
+        0x64, 0x4c, 0x89, 0x04, 0x25, 0x28, 0x05, 0x00, 0x00, // mov fs:[0x528], r8
+        0x64, 0xc7, 0x04, 0x25, 0x24, 0x06, 0x00, 0x00, 0x07, 0x00, 0x00,
+        0x00, // mov dword fs:[0x624], 7
+        0x64, 0x88, 0x14, 0x25, 0x21, 0x06, 0x00, 0x00, // mov fs:[0x621], dl
+    ];
+    let fs = DATA + 0x200;
+    let value = 0x1020_3040_5060_7080u64;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::R8 as usize] = value;
+    state.gpr[Register::Rdx as usize] = 0x5a;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(fs + 0x28 + offset as u64, byte);
+    }
+    for offset in 0..8 {
+        memory = memory.with_user(fs + 0x528 + offset, 0);
+    }
+    for offset in 0..4 {
+        memory = memory.with_user(fs + 0x624 + offset, 0);
+    }
+    memory = memory.with_user(fs + 0x621, 0);
+
+    let result = run3_data(&mut state, &mut memory, 4).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rcx as usize], value);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.writes.last(), Some(&(fs + 0x621, 0x5a)));
+}
+
+#[test]
+fn bare_ring3_run_still_refuses_tls_fs_before_memory_access() {
+    let code = [0x64, 0x48, 0x8b, 0x14, 0x25, 0x10, 0x00, 0x00, 0x00];
+    let mut state = user_state();
+    state.fs_base = DATA;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        memory = memory.with_user(DATA + 0x10 + offset, 0x44);
+    }
+
+    let result = od_isa::execute::run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        || false,
+    );
+
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x0f });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
+fn cpl3_glibc_tls_fs_load_and_store_fault_before_cpu_or_memory_mutation() {
+    let load = [0x64, 0x48, 0x8b, 0x14, 0x25, 0x10, 0x00, 0x00, 0x00];
+    let mut state = user_state();
+    state.fs_base = DATA;
+    state.gpr[Register::Rdx as usize] = 0x1234;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&load);
+    for offset in 0..8 {
+        memory = memory.with_supervisor(DATA + 0x10 + offset, 0x55);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(DATA + 0x10),
+        })
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 1);
+
+    let store = [0x64, 0x48, 0x89, 0x04, 0x25, 0x10, 0x05, 0x00, 0x00];
+    let mut state = user_state();
+    state.fs_base = DATA;
+    state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&store);
+    for offset in 0..8 {
+        memory = memory.with_supervisor(DATA + 0x510 + offset, 0x77);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7),
+            linear_address: Some(DATA + 0x510),
+        })
+    );
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+
+    let mut state = user_state();
+    state.fs_base = 0x0000_7fff_ffff_fff8;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&load);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert!(matches!(
+        exit(&result),
+        RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    ));
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
 fn cpl3_tunables_imul_uses_r10_and_flags_signed_overflow() {
     for value in [-3i64, i64::MAX] {
         let mut state = user_state();
