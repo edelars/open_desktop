@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 91] = [
+pub(crate) static COMMANDS: [CommandSpec; 92] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -145,6 +145,7 @@ pub(crate) static COMMANDS: [CommandSpec; 91] = [
     spec(cc::CERTIFY, 2, 2, false, false, false),
     spec(cc::POLICY_NV, 3, 1, false, false, false),
     spec(cc::CERTIFY_CREATION, 2, 1, false, false, false),
+    spec(cc::DUPLICATE, 2, 1, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
     spec(cc::GET_SESSION_AUDIT_DIGEST, 3, 2, false, false, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
@@ -240,14 +241,14 @@ fn handle_auth(
     code: u32,
     handles: &CommandHandles,
     i: usize,
-    admin: bool,
+    role: AuthRole,
     policy: bool,
     da: DaProtection,
 ) -> Result<AuthValue, Rc> {
     let h = handles[i];
     if let Some(object) = tpm.object(h) {
         // PolicySecret requires userWithAuth even for policy-based authorization.
-        return tpm.object_auth(object, i, admin, policy && code != cc::POLICY_SECRET, da);
+        return tpm.object_auth(object, i, role, policy && code != cc::POLICY_SECRET, da);
     }
     tpm.da_check(da)?;
     if is_pcr_position(code, i) || h == handle::RH_NULL {
@@ -261,7 +262,7 @@ fn handle_auth(
             }
             tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
         }
-        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, admin, policy),
+        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, role == AuthRole::Admin, policy),
         _ => {
             let slot = tpm.seq_slot(h, i)?;
             // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
@@ -270,17 +271,26 @@ fn handle_auth(
     }
 }
 
-/// Whether an authorized handle uses the ADMIN role.
-fn admin_role(code: u32, i: usize) -> bool {
-    i == 0
-        && matches!(
-            code,
-            cc::CERTIFY
-                | cc::ACTIVATE_CREDENTIAL
-                | cc::OBJECT_CHANGE_AUTH
-                | cc::NV_CHANGE_AUTH
-                | cc::NV_UNDEFINE_SPACE_SPECIAL
-        )
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum AuthRole {
+    User,
+    Admin,
+    Dup,
+}
+
+fn auth_role(code: u32, i: usize) -> AuthRole {
+    if i != 0 {
+        return AuthRole::User;
+    }
+    match code {
+        cc::CERTIFY
+        | cc::ACTIVATE_CREDENTIAL
+        | cc::OBJECT_CHANGE_AUTH
+        | cc::NV_CHANGE_AUTH
+        | cc::NV_UNDEFINE_SPACE_SPECIAL => AuthRole::Admin,
+        cc::DUPLICATE => AuthRole::Dup,
+        _ => AuthRole::User,
+    }
 }
 
 /// The `authPolicy` installed on the entity, or the empty policy.
@@ -567,7 +577,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
         let authorizes = i < needed;
-        let admin = admin_role(spec.code, i);
+        let role = auth_role(spec.code, i);
         let loaded = match &uses[i] {
             SessionUse::Hmac { slot, .. } => {
                 tpm.sessions.get(*slot).map(|session| (*slot, session))
@@ -595,15 +605,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         };
         let policy_slot = policy.map(|(slot, _)| slot);
         let auth = if authorizes {
-            handle_auth(
-                tpm,
-                spec.code,
-                &handles,
-                i,
-                admin,
-                policy_slot.is_some(),
-                da,
-            )?
+            handle_auth(tpm, spec.code, &handles, i, role, policy_slot.is_some(), da)?
         } else {
             tpm.da_check(da)?;
             AuthValue::empty()
@@ -661,7 +663,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                             }
                         },
                         policy,
-                        admin,
+                        role != AuthRole::User,
                         n,
                     )?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
@@ -807,6 +809,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::MAKE_CREDENTIAL => tpm.cmd_make_credential(&inv, &mut p)?,
         cc::ACTIVATE_CREDENTIAL => tpm.cmd_activate_credential(&inv, &mut p)?,
         cc::OBJECT_CHANGE_AUTH => tpm.cmd_object_change_auth(&inv, &mut p)?,
+        cc::DUPLICATE => tpm.cmd_duplicate(&inv, &mut p)?,
         cc::IMPORT => tpm.cmd_import(&inv, &mut p)?,
         cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
         cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
@@ -1032,6 +1035,12 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             tpm.check_object_handle(handles[0], 0, false)?;
             tpm.check_object_handle(handles[1], 1, false)?;
         }
+        cc::DUPLICATE => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            if handles[1] != handle::RH_NULL {
+                tpm.check_object_handle(handles[1], 1, false)?;
+            }
+        }
         cc::CERTIFY => {
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
@@ -1167,6 +1176,6 @@ mod tests {
         for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 91);
+        assert_eq!(COMMANDS.len(), 92);
     }
 }

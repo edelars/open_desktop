@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 use crate::codes::{alg, handle, object_attr, st};
 use crate::crypto::{ecc_sign, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign};
 use crate::da::DaProtection;
-use crate::dispatch::Invocation;
+use crate::dispatch::{AuthRole, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsCreationData,
@@ -117,25 +117,28 @@ impl Tpm {
     /// checked for sessions that require its authValue. For a password or
     /// HMAC session (`policy` false) `TPM_RC_POLICY_FAIL` when the USER role needs a policy
     /// (`userWithAuth` CLEAR) and `TPM_RC_AUTH_TYPE` when the ADMIN role does (`adminWithPolicy`
-    /// SET); a policy session passes here and is checked against the `authPolicy` by the
-    /// dispatcher.
+    /// SET). The DUP role always requires policy. A policy session is checked
+    /// against the `authPolicy` by the dispatcher.
     pub(crate) fn object_auth(
         &self,
         object: &Object,
         idx: usize,
-        admin: bool,
+        role: AuthRole,
         policy: bool,
         da: DaProtection,
     ) -> Result<AuthValue, Rc> {
         let s = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         self.da_check(da)?;
         if !policy {
-            if admin {
-                if object.has(object_attr::ADMIN_WITH_POLICY) {
+            match role {
+                AuthRole::Dup => return Err(Rc::AUTH_TYPE),
+                AuthRole::Admin if object.has(object_attr::ADMIN_WITH_POLICY) => {
                     return Err(Rc::AUTH_TYPE);
                 }
-            } else if !object.has(object_attr::USER_WITH_AUTH) {
-                return Err(Rc::POLICY_FAIL.in_session((idx + 1) as u8));
+                AuthRole::User if !object.has(object_attr::USER_WITH_AUTH) => {
+                    return Err(Rc::POLICY_FAIL.in_session((idx + 1) as u8));
+                }
+                _ => {}
             }
         }
         Ok(s.auth.clone())

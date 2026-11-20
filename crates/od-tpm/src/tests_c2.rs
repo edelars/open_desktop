@@ -473,6 +473,85 @@ pub(super) fn make_child(
     (h, name, c.public)
 }
 
+#[test]
+fn duplicate_requires_a_real_policy_with_the_duplicate_command_code() {
+    let (mut t, parent) = with_ecc_parent();
+    let mut template = sealed();
+    template.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+    template.auth_policy = h256(&[
+        &[0; 32],
+        &u32b(cc::POLICY_COMMAND_CODE),
+        &u32b(cc::DUPLICATE),
+    ]);
+    let (key, name, public) = make_child(&mut t, parent, &template, b"child", b"duplication");
+    let parameters = cat(&[&tpm2b(b""), &u16b(alg::NULL)]);
+    let mut command = hc(
+        cc::DUPLICATE,
+        &[key, NULL],
+        parameters.clone(),
+        (key, b"child"),
+    );
+    command.names[0] = name;
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::DUPLICATE, &[key, NULL], &[b"child"], &parameters),
+        ),
+        Rc::AUTH_TYPE,
+    );
+    let mut hmac = policy_session(&mut t, se::HMAC);
+    err(
+        &use_session(&mut t, &mut hmac, &command, 0, false, false),
+        Rc::AUTH_TYPE,
+    );
+    let mut policy = policy_session(&mut t, se::POLICY);
+    err(
+        &use_session(&mut t, &mut policy, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&pol_cc(&mut t, &policy, cc::UNSEAL));
+    err(
+        &use_session(&mut t, &mut policy, &command, 0, true, false),
+        Rc::POLICY_CC.in_session(1),
+    );
+    let mut trial = policy_session(&mut t, se::TRIAL);
+    ok(&pol_cc(&mut t, &trial, cc::DUPLICATE));
+    err(
+        &use_session(&mut t, &mut trial, &command, 0, true, false),
+        Rc::ATTRIBUTES.in_session(1),
+    );
+
+    ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+    ok(&pol_cc(&mut t, &policy, cc::DUPLICATE));
+    let r = use_session(&mut t, &mut policy, &command, 0, true, false);
+    let mut p = Reader::new(params(&r, 0));
+    assert_eq!(p.tpm2b(34).unwrap(), b"");
+    let duplicate = p.tpm2b(crate::object::MAX_PRIVATE).unwrap();
+    assert_eq!(p.tpm2b(256).unwrap(), b"");
+    p.finish().unwrap();
+    let imported = run(
+        &mut t,
+        with_pw(
+            cc::IMPORT,
+            &[parent],
+            &[b"parent-pw"],
+            &cat(&[
+                &tpm2b(b""),
+                &tpm2b(&public),
+                &tpm2b(duplicate),
+                &tpm2b(b""),
+                &u16b(alg::NULL),
+            ]),
+        ),
+    );
+    let outside = Reader::new(params(&imported, 0))
+        .tpm2b(crate::object::MAX_PRIVATE)
+        .unwrap();
+    let loaded = parse_loaded(&load(&mut t, parent, b"parent-pw", outside, &public)).0;
+    assert_eq!(secret_of(&t, loaded), b"duplication");
+    assert_eq!(secret_of(&t, key), b"duplication");
+}
+
 fn policy_key(auth_policy: &[u8]) -> TpmtPublic {
     let mut p = ecc_sign();
     p.attributes &= !oa::USER_WITH_AUTH;

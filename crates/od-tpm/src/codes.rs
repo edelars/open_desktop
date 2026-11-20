@@ -28,6 +28,7 @@ pub mod cc {
     pub const POLICY_SIGNED: u32 = 0x0000_0160;
     pub const HMAC: u32 = 0x0000_0155;
     pub const IMPORT: u32 = 0x0000_0156;
+    pub const DUPLICATE: u32 = 0x0000_014B;
     pub const HMAC_START: u32 = 0x0000_015B;
     pub const QUOTE: u32 = 0x0000_0158;
     pub const CONTEXT_LOAD: u32 = 0x0000_0161;

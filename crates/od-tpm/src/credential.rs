@@ -161,7 +161,7 @@ pub(crate) fn recover_seed(
 }
 
 /// Seed and encrypted secret, using the storage key's supported Name hash (SHA-256).
-fn make_seed(
+pub(crate) fn make_seed(
     public: &Unique,
     label: &[u8],
     rng: &mut Drbg,
@@ -210,7 +210,7 @@ fn protect(seed: &[u8], name: &[u8], credential: &[u8]) -> Vec<u8> {
     protect_seed_blob(seed, name, &clear)
 }
 
-fn protect_seed_blob(seed: &[u8], name: &[u8], clear: &[u8]) -> Vec<u8> {
+pub(crate) fn protect_seed_blob(seed: &[u8], name: &[u8], clear: &[u8]) -> Vec<u8> {
     let encrypted = crypt_seed_blob(seed, name, clear, true);
     let integrity = hmac_sha256(&integrity_key(seed), &[&encrypted, name]);
     let mut blob = Writer::new();

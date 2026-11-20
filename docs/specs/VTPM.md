@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлен 91 код из списка, 10 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 92 кода из списка, 9 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,6 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| Объекты | `Duplicate` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicyDuplicationSelect` |
 
@@ -155,6 +154,34 @@ TPM восстанавливает второй по модулю, провер�
 выходной `outPrivate` на проводе.
 [TPM Library v185 Part 1 §§19.4–19.5, 20.3.2, 24.7.4, 43.1, 43.10 и 44.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [Part 3 §13.3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
+
+### Дублирование объекта
+
+`TPM2_Duplicate` (`0x14B`) использует роль DUP и требует реальную
+сессию с ограничением команды `Duplicate`. Эту политику можно
+составить через `PolicyCommandCode`. Авторизация зависит от
+`authPolicy` исходного объекта. При `PolicyAuthValue` сессия также
+доказывает знание его `authValue`. Для нового родителя достаточно
+загруженной открытой части Storage key, и отдельная авторизация
+родителя не требуется.
+
+Команда дублирует загруженный объект с закрытой частью и очищенным
+`fixedParent`, включая допускаемый первичный объект. При явном
+`TPM_RH_NULL` внешняя обёртка и `outSymSeed` отсутствуют. Атрибут
+`encryptedDuplication` требует Storage key в качестве родителя и внутреннего
+AES-128-CFB. При пустом `encryptionKeyIn` с AES TPM генерирует
+и возвращает 16-байтовый ключ. При переданном ключе или NULL
+алгоритме `encryptionKeyOut` пуст. Запрос и ответ защищают первый
+параметр через сессию шифрования.
+
+Транскрипты внутренней и внешней защиты совпадают с `Import`.
+`outSymSeed` содержит RSA-OAEP с `DUPLICATE\0` либо временную точку
+P-256. RSA sensitive в дубликате содержит один множитель.
+При дублировании Storage key его `seedValue` сохраняет возможность
+загрузить прежние дочерние `outPrivate`. Исходный объект остаётся
+доступен с прежним состоянием.
+[TPM Library v185 Part 1 §20.3.2](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
+[Part 3 §§5.6 и 13.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Имена команды и подписанная авторизация политики
 
@@ -552,7 +579,7 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 
 ## Команды фазы A
 
-Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 91 реализованный код. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
+Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 92 реализованных кода. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
 
 | Команда | Код | Авторизация | Границы фазы A |
 |---|---|---|---|

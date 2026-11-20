@@ -1031,15 +1031,15 @@ impl Tpm {
     /// The checks of Part 3, clause 5.6, step 8, for a policy session in `slot` that authorizes
     /// a `(command code, authorized handle)` pair with `auth_policy`.
     /// `matches_hash` checks a restriction
-    /// against the authorized command's actual content. `admin` is the ADMIN role,
-    /// `n` the one-based session number. Returns `(isAuthValueNeeded, isPasswordNeeded)`.
+    /// against the authorized command's actual content. ADMIN and DUP require
+    /// an explicit command code. `n` is the one-based session number.
     pub(crate) fn policy_use_check(
         &self,
         slot: usize,
         (code, entity): (u32, u32),
         matches_hash: impl Fn(PolicyHashRestriction) -> bool,
         auth_policy: &[u8],
-        admin: bool,
+        requires_command_code: bool,
         n: u8,
     ) -> Result<(bool, bool), Rc> {
         let session = self.sessions.get(slot).ok_or(Rc::reference_session(0))?;
@@ -1047,8 +1047,7 @@ impl Tpm {
             return Err(Rc::ATTRIBUTES.in_session(n));
         }
         let st = &session.policy;
-        // ADMIN needs `TPM2_PolicyCommandCode` before the step 8 policy checks.
-        if admin && st.command_code.is_none() {
+        if requires_command_code && st.command_code.is_none() {
             return Err(Rc::POLICY_FAIL.in_session(n));
         }
         if st

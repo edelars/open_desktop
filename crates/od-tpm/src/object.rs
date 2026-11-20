@@ -584,13 +584,21 @@ fn padded_auth(a: &AuthValue) -> [u8; limits::MAX_DIGEST_SIZE] {
 /// `TPM2B_SENSITIVE` of the object (Table 225): `size || sensitiveType || authValue || seedValue
 /// || sensitive`.
 pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>, Rc> {
-    sensitive_with_auth(s, type_alg, &s.auth)
+    sensitive_with_auth(s, type_alg, &s.auth, false)
+}
+
+pub(crate) fn sensitive_to_duplicate(
+    sensitive: &Sensitive,
+    type_alg: u16,
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    sensitive_with_auth(sensitive, type_alg, &sensitive.auth, true)
 }
 
 fn sensitive_with_auth(
     s: &Sensitive,
     type_alg: u16,
     auth: &AuthValue,
+    duplicate: bool,
 ) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let secret: Zeroizing<Vec<u8>> = match &s.secret {
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
@@ -608,7 +616,12 @@ fn sensitive_with_auth(
     let auth = Zeroizing::new(padded_auth(auth));
     body.tpm2b(&auth[..]);
     body.tpm2b(&s.seed);
-    body.tpm2b(&secret);
+    let serialized = if duplicate && matches!(s.secret, Secret::Rsa(_)) {
+        &secret[..MAX_RSA_BYTES / 2]
+    } else {
+        &secret[..]
+    };
+    body.tpm2b(serialized);
     w.tpm2b(&body.buf);
     zeroize::Zeroize::zeroize(&mut body.buf);
     Ok(Zeroizing::new(w.buf))
@@ -798,7 +811,7 @@ pub(crate) fn private_blob(
     parent_seed: &[u8],
     iv: &[u8; 16],
 ) -> Result<Vec<u8>, Rc> {
-    let bytes = sensitive_with_auth(sensitive, obj_public.type_alg(), auth)?;
+    let bytes = sensitive_with_auth(sensitive, obj_public.type_alg(), auth, false)?;
     Ok(protect(parent_seed, name, &bytes, iv))
 }
 
