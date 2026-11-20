@@ -621,8 +621,8 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lock je rel32", &[0xf0, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
         // Prefixed variants of the allowed forms and a different operand size.
         (
-            "mov rax, imm64",
-            &[0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0],
+            "addr32 mov rax, imm64",
+            &[0x67, 0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0],
             0xb8,
         ),
         ("mov ax, imm16", &[0x66, 0xb8, 1, 0], 0xb8),
@@ -5769,11 +5769,7 @@ fn cmp_r64_imm32_outside_the_register_form_stays_refused() {
             &[0x3d, 0x80, 0, 0, 0],
             0x3d,
         ),
-        (
-            "48 3d 80 00 00 00 cmpq $0x80, %rax",
-            &[0x48, 0x3d, 0x80, 0, 0, 0],
-            0x3d,
-        ),
+        ("66 3d 80 00 cmp ax, imm16", &[0x66, 0x3d, 0x80, 0], 0x3d),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = user_state();
@@ -5894,11 +5890,7 @@ fn cmp_al_imm8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
             &[0x3d, 0x20, 0, 0, 0],
             0x3d,
         ),
-        (
-            "48 3d 20 00 00 00 cmp rax, imm32",
-            &[0x48, 0x3d, 0x20, 0, 0, 0],
-            0x3d,
-        ),
+        ("66 3d 20 00 cmp ax, imm16", &[0x66, 0x3d, 0x20, 0], 0x3d),
         ("3a c0 cmp al, al (3A)", &[0x3a, 0xc0], 0x3a),
         ("3b c0 cmp eax, eax (3B)", &[0x3b, 0xc0], 0x3b),
         ("f0 a8 20 LOCK test al, imm8", &[0xf0, 0xa8, 0x20], 0xa8),
@@ -6895,4 +6887,171 @@ fn cpl3_cpu_detection_dword_or_cannot_read_supervisor_memory() {
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, expected);
     assert!(memory.writes.is_empty());
+}
+
+fn run3_with_guest_fp(
+    state: &mut LongModeState,
+    memory: &mut DataMemory,
+    fp: &std::cell::RefCell<od_isa::GuestFpState>,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    let profile = od_isa::cpuid::CpuidProfile::X8664V1Stage4AApic;
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpuid(&profile)
+        .with_fp_state(fp);
+    run_with_cpl3_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring3, budget),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn cpl3_glibc_xmm_transfers_use_the_vcpus_fp_cell() {
+    let code = [
+        0x66, 0x0f, 0x6e, 0x45, 0x94, // movd xmm0, [rbp - 0x6c]
+        0x66, 0x0f, 0x6e, 0xca, // movd xmm1, edx
+        0x66, 0x0f, 0x62, 0xc8, // punpckldq xmm1, xmm0
+        0x66, 0x0f, 0xd6, 0x0f, // movq [rdi], xmm1
+    ];
+    let mut state = user_state();
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.gpr[Register::Rbp as usize] = DATA + 0x6c;
+    state.gpr[Register::Rdx as usize] = 0xdead_beef_a1b2_c3d4;
+    state.gpr[Register::Rdi as usize] = DATA + 16;
+    state.rflags |= ARITH;
+    let mut expected = state.clone();
+    expected.rip += code.len() as u64;
+
+    let mut original_fp = od_isa::GuestFpState::initial();
+    original_fp.sse.xmm[0] = [0xaa; 16];
+    original_fp.sse.xmm[1] = [0xbb; 16];
+    original_fp.sse.xmm[2] = [0xcc; 16];
+    let fp = std::cell::RefCell::new(original_fp.clone());
+    let mut expected_fp = original_fp;
+    expected_fp.sse.xmm[0] = [0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    expected_fp.sse.xmm[1] = [
+        0xd4, 0xc3, 0xb2, 0xa1, 0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in 0x1122_3344u32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + offset as u64, byte);
+    }
+    for address in DATA + 16..DATA + 24 {
+        memory = memory.with_user(address, 0xee);
+    }
+
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 4);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state, expected);
+    assert_eq!(*fp.borrow(), expected_fp);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(
+        memory.writes,
+        (DATA + 16..DATA + 24)
+            .zip(expected_fp.sse.xmm[1][..8].iter().copied())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cpl3_glibc_xmm_move_faults_preserve_cpu_and_fp_state() {
+    for (code, error_code) in [
+        (&[0x66, 0x0f, 0x6e, 0x07][..], 5),
+        (&[0x66, 0x0f, 0xd6, 0x07][..], 7),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rdi as usize] = DATA;
+        let expected = state.clone();
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[0] = [0xa5; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_supervisor(DATA + offset, 0x55);
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(error_code),
+                linear_address: Some(DATA),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, expected);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_glibc_xmm_controls_fault_before_touching_guest_memory() {
+    let cr0 = 0x8005_0033;
+    let cr4 = 0x6b0;
+    for (cr0, cr4, vector) in [
+        (cr0 | (1 << 2), cr4, 6),
+        (cr0 | (1 << 3), cr4, 7),
+        (cr0, cr4 & !(1 << 9), 6),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(cr0);
+        state.cr4 = Some(cr4);
+        state.gpr[Register::Rdi as usize] = DATA;
+        let expected = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(&[0x66, 0x0f, 0x6e, 0x07]);
+
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, expected);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_glibc_xmm_keeps_neighbouring_encodings_refused() {
+    for (code, opcode) in [
+        (&[0x0f, 0x6e, 0xc0][..], 0x6e),
+        (&[0x66, 0x48, 0x0f, 0x6e, 0xc0][..], 0x6e),
+        (&[0x67, 0x66, 0x0f, 0x6e, 0x07][..], 0x6e),
+        (&[0x66, 0x0f, 0xd6, 0xc0][..], 0xd6),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        let expected = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, expected);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
 }

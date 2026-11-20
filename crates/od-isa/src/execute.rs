@@ -28745,6 +28745,14 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     {
         return true;
     }
+    if matches!(
+        instruction.operation,
+        Operation::MovdToXmm { .. }
+            | Operation::MovqFromXmm { .. }
+            | Operation::PunpckldqRegister { .. }
+    ) {
+        return true;
+    }
     if prefixes.address_override {
         return is_addr32_direct_call(instruction);
     }
@@ -28775,7 +28783,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Dword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
@@ -28856,7 +28867,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Dword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0xa8 | 0xf6,
@@ -28875,6 +28889,35 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0x80,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
+        (
+            OpcodeMap::Primary,
+            0xc1,
+            Operation::Shift {
+                kind: ShiftKind::Sar,
+                dst: Operand::Register(_),
+                source: None,
+                count: Operand::Immediate(_),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x3d,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xc9, Operation::Leave)
         | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
@@ -28882,7 +28925,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         (
             OpcodeMap::Escape0f,
-            0x42,
+            0x42 | 0x43 | 0x44 | 0x46 | 0x49,
             Operation::ConditionalMove {
                 src: Operand::Register(_),
                 ..
@@ -42242,6 +42285,17 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    if control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring3
+        && matches!(
+            instruction.operation,
+            Operation::MovdToXmm { .. }
+                | Operation::MovqFromXmm { .. }
+                | Operation::PunpckldqRegister { .. }
+        )
+    {
+        return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
+    }
     // S4-38L9d/E, S4-39f22: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE`, `FXSAVE64`
     // and `FXRSTOR64`; its state lives in the member's cell, so these four never reach the
     // `state.x87`/`state.sse` paths below.
@@ -46716,6 +46770,7 @@ fn step_configured(
         Operation::RepneScasWdqAddr32 { .. } => false,
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
+        Operation::MovdToXmm { .. } | Operation::MovqFromXmm { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -58208,6 +58263,9 @@ fn step_configured(
         Operation::MovupsLoadMemory { .. } => unreachable!("MOVUPS load commits before dispatch"),
         Operation::MovupdLoadMemory { .. } => unreachable!("MOVUPD load commits before dispatch"),
         Operation::MovupdStoreMemory { .. } => unreachable!("MOVUPD store commits before dispatch"),
+        Operation::MovdToXmm { .. } | Operation::MovqFromXmm { .. } => {
+            return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
+        }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
         Operation::MovsdLoadMemory { .. } => unreachable!("MOVSD load commits before dispatch"),
         Operation::MovsdStoreMemory { .. } => unreachable!("MOVSD store commits before dispatch"),
@@ -64275,6 +64333,81 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
 enum FxsaveLayout {
     Plain,
     Long64,
+}
+
+fn step_cpl3_xmm(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    fp: Option<&RefCell<GuestFpState>>,
+) -> Result<StepOutcome, MemoryError> {
+    let (Some(fp), Some(cr0), Some(cr4)) = (fp, state.cr0, state.cr4) else {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    };
+    let vector = if cr0 & (1 << 2) != 0 || cr4 & (1 << 9) == 0 {
+        Some(6)
+    } else if cr0 & (1 << 3) != 0 {
+        Some(7)
+    } else {
+        None
+    };
+    if let Some(vector) = vector {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    match instruction.operation {
+        Operation::MovdToXmm {
+            destination,
+            source,
+        } => {
+            let value = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut result = [0; 16];
+            result[..4].copy_from_slice(&(value as u32).to_le_bytes());
+            fp.borrow_mut().sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::MovqFromXmm {
+            destination,
+            source,
+        } => {
+            let source = fp.borrow().sse.xmm[usize::from(source)];
+            let value = u64::from_le_bytes(source[..8].try_into().unwrap());
+            if let Err(error) = write_operand(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(destination),
+                value,
+            ) {
+                return report_memory_error(error);
+            }
+        }
+        Operation::PunpckldqRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let source = fp.sse.xmm[usize::from(source)];
+            let target = &mut fp.sse.xmm[usize::from(destination)];
+            let previous = *target;
+            target[4..8].copy_from_slice(&source[..4]);
+            target[8..12].copy_from_slice(&previous[4..8]);
+            target[12..16].copy_from_slice(&source[4..8]);
+        }
+        _ => unreachable!(),
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
 }
 
 /// S4-38L9d: `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
