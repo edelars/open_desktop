@@ -1682,14 +1682,15 @@ fn access_long64_4k_internal_with_writer(
 }
 
 /// S6-31: the translation half of a locked read-modify-write ([`RamAccessOperation::AtomicTarget`]).
-/// The page-table effects are exactly those of the serial S6-20 sequence it replaces (an ordinary
-/// read of the operand, then an ordinary write): a read walk first (accessed bits; a missing or
-/// forbidden page is a read fault, error code without W), then a write walk (write rights, accessed
-/// bits, a write fault), then the physical region check of a write, then the dirty bit of the leaf.
-/// Only the data access is left out: the caller performs the host atomic operation on the returned
-/// physical address. Order of refusals: MMIO is refused before the dirty bit and before any
-/// device is reached (`DeviceUnavailable`); ROM and holes are the `ReadOnlyRegion` of a write; a
-/// Framebuffer operand is plain memory.
+/// Ring0 keeps the serial S6-20 page-table effects: a read walk first (accessed bits; a missing or
+/// forbidden page is a read fault without W), then a write walk (write rights, accessed bits, and a
+/// write fault). CPL3 RMWs use a single Write walk so protection faults report W=1; in this
+/// supported profile it checks the same presence, user, and reserved-bit conditions as Read, plus
+/// write permission. Both paths then check the physical region for a write and commit the leaf
+/// dirty bit only after that check. Only the data access is left out: the caller performs the host
+/// atomic operation on the returned physical address. MMIO is refused before the dirty bit and
+/// before any device is reached (`DeviceUnavailable`); ROM and holes are the `ReadOnlyRegion` of a
+/// write; a Framebuffer operand is plain memory.
 fn locate_atomic_target(
     memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -1703,7 +1704,15 @@ fn locate_atomic_target(
     let mut ad_update_count = 0;
     let mut trace = WalkTrace::new();
     let mut translation = None;
-    for access in [AccessKind::Read, AccessKind::Write] {
+    // S6-22: a CPL3 atomic read-modify-write reports write-protection faults as writes. In the
+    // supported paging profile, a Write walk subsumes the Read checks (P/U and reserved bits;
+    // Write adds RW). Preserve the legacy serial Read-then-Write walk for Ring0 callers.
+    let accesses: &[AccessKind] = if request.context.privilege == PrivilegeLevel::Ring3 {
+        &[AccessKind::Write]
+    } else {
+        &[AccessKind::Read, AccessKind::Write]
+    };
+    for &access in accesses {
         let walk = walk_long64_4k_with_writer(
             memory,
             paging,

@@ -1894,6 +1894,7 @@ struct DataMemory {
     absent: std::collections::BTreeSet<u64>,
     writes: Vec<(u64, u8)>,
     reads: usize,
+    atomic_rmws: usize,
 }
 
 impl DataMemory {
@@ -1906,6 +1907,7 @@ impl DataMemory {
             absent: std::collections::BTreeSet::new(),
             writes: Vec::new(),
             reads: 0,
+            atomic_rmws: 0,
         }
     }
 
@@ -2010,6 +2012,24 @@ impl GuestMemory for DataMemory {
             self.writes.push((at, *byte));
         }
         Ok(())
+    }
+
+    fn atomic_rmw_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        update: &mut dyn FnMut(u64) -> u64,
+    ) -> Result<u64, MemoryError> {
+        self.atomic_rmws += 1;
+        let mut bytes = vec![0; usize::from(size.bytes())];
+        self.read(address, context, &mut bytes)?;
+        let mut padded = [0u8; 8];
+        padded[..bytes.len()].copy_from_slice(&bytes);
+        let old = u64::from_le_bytes(padded);
+        let new = update(old).to_le_bytes();
+        self.write(address, context, &new[..bytes.len()])?;
+        Ok(old)
     }
 
     fn atomic_exchange_integer(
@@ -7315,6 +7335,140 @@ fn bare_ring3_run_still_refuses_rseq_fs_add_and_imm_store() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_lock_add_qword_imm8_executes_one_atomic_and_sets_add_flags() {
+    let code = [0xf0, 0x48, 0x83, 0x03, 0x01]; // lock add qword [rbx], 1
+    let initial = 0x7fff_ffff_ffff_ffffu64;
+    let mut state = user_state();
+    state.gpr[Register::Rbx as usize] = DATA;
+    state.rflags |= ARITH;
+    let preserved = state.rflags & !ARITH;
+    let mut memory = DataMemory::new(&code);
+    for (offset, byte) in initial.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + offset as u64, byte);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.rflags, preserved | OF | SF | AF | PF);
+    assert_eq!(memory.atomic_rmws, 1);
+    assert_eq!(memory.reads, 1);
+    assert_eq!(memory.writes.len(), 8);
+    let actual = (0..8).fold(0u64, |value, offset| {
+        value | (u64::from(memory.user[&(DATA + offset)]) << (offset * 8))
+    });
+    assert_eq!(actual, 0x8000_0000_0000_0000);
+}
+
+#[test]
+fn cpl3_lock_add_qword_imm8_refuses_other_forms_and_unaligned_operands() {
+    for code in [
+        &[0xf0, 0x48, 0x81, 0x03, 1, 0, 0, 0][..], // imm32 opcode
+        &[0xf0, 0x83, 0x03, 1][..],                // dword form
+        &[0x64, 0xf0, 0x48, 0x83, 0x03, 1][..],    // FS override
+        &[0x67, 0xf0, 0x48, 0x83, 0x03, 1][..],    // address-size override
+    ] {
+        let mut state = user_state();
+        state.gpr[Register::Rbx as usize] = DATA;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_user(DATA + offset, 1);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(result.instructions_executed, 0);
+        assert!(matches!(exit(&result), RunExit::Unsupported { .. }));
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+        assert_eq!(memory.atomic_rmws, 0);
+        assert!(memory.writes.is_empty());
+    }
+
+    let code = [0xf0, 0x48, 0x83, 0x03, 0x01];
+    let mut state = user_state();
+    state.gpr[Register::Rbx as usize] = DATA + 1;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        memory = memory.with_user(DATA + 1 + offset, 1);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x83 });
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(memory.atomic_rmws, 0);
+    assert!(memory.writes.is_empty());
+
+    let mut state = user_state();
+    state.gpr[Register::Rbx as usize] = DATA;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        memory = memory.with_user(DATA + offset, 1);
+    }
+    let result = od_isa::execute::run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        || false,
+    );
+    assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(memory.atomic_rmws, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_lock_add_qword_gives_range_fault_priority_over_alignment_refusal() {
+    let data_code = [0xf0, 0x48, 0x83, 0x03, 0x01];
+    let stack_code = [0xf0, 0x48, 0x83, 0x04, 0x24, 0x01];
+    for (code, base, address, vector) in [
+        (
+            data_code.as_slice(),
+            Register::Rbx,
+            0x0000_8000_0000_0000,
+            13,
+        ),
+        (
+            data_code.as_slice(),
+            Register::Rbx,
+            0x0000_7fff_ffff_fffc,
+            13,
+        ),
+        (
+            stack_code.as_slice(),
+            Register::Rsp,
+            0x0000_7fff_ffff_fffc,
+            12,
+        ),
+    ] {
+        let mut state = user_state();
+        state.gpr[base as usize] = address;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+        assert_eq!(memory.atomic_rmws, 0);
         assert!(memory.writes.is_empty());
     }
 }

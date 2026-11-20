@@ -28417,6 +28417,26 @@ pub fn run_with_cpl3_profile_set(
                     rflags_defined,
                 });
             }
+            // This CPL3 slice intentionally supports only naturally aligned qword LOCK ADD.
+            // Refuse a valid but misaligned operand before the serial split RMW.
+            // Invalid ranges continue to the executor for normal architectural fault handling.
+            if config.context.privilege == PrivilegeLevel::Ring3
+                && cpl3_lock_add_qword_imm8_form(&instruction)
+                && let Operation::LockAddMem { destination, .. } = instruction.operation
+            {
+                let next_rip = state.rip.wrapping_add(instruction.length as u64);
+                if let Ok(address) = destination.access_address_48(state, next_rip)
+                    && address & 7 != 0
+                {
+                    return Ok(Cpl0ProfileSetResult {
+                        exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        }),
+                        instructions_executed: retired,
+                        rflags_defined,
+                    });
+                }
+            }
         }
         let step_config = RunConfig {
             instruction_budget: u64::from(!boundary),
@@ -28738,6 +28758,9 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     let prefixes = instruction.prefixes;
     // S6-22: glibc's TLS setup uses a bounded set of FS-relative absolute forms.
     if cpl3_glibc_tls_fs_form(instruction) {
+        return true;
+    }
+    if cpl3_lock_add_qword_imm8_form(instruction) {
         return true;
     }
     if instruction.opcode.map == OpcodeMap::Escape0f
@@ -29420,6 +29443,24 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         _ => false,
     }
+}
+
+fn cpl3_lock_add_qword_imm8_form(instruction: &long_decode::Instruction) -> bool {
+    let prefixes = instruction.prefixes;
+    instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x83
+        && instruction.operand_size == OperandSize::Qword
+        && prefixes.group1 == Some(0xf0)
+        && prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+        && prefixes.segment.is_none()
+        && !prefixes.address_override
+        && !prefixes.operand_override
+        && matches!(
+            instruction.operation,
+            Operation::LockAddMem { destination, .. }
+                if destination.size == OperandSize::Qword
+                    && destination.address_size == OperandSize::Qword
+        )
 }
 
 fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
@@ -45185,6 +45226,13 @@ fn step_configured(
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
                 && cpl3_glibc_tls_fs_form(&instruction) =>
+        {
+            true
+        }
+        Operation::LockAddMem { .. }
+            if context.privilege == PrivilegeLevel::Ring3
+                && control_policy.is_some()
+                && cpl3_lock_add_qword_imm8_form(&instruction) =>
         {
             true
         }

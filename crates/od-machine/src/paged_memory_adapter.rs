@@ -5820,7 +5820,10 @@ mod tests {
         MemoryRegionSpec, RamLimits,
     };
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
-    use od_isa::{CpuActivity, InvlpgExit, StiShadow, TranslationInvalidation};
+    use od_isa::{
+        CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, InvlpgExit, StiShadow,
+        TranslationInvalidation,
+    };
 
     const CR0: u64 = 0x8001_0033;
     const CR4: u64 = 1 << 5;
@@ -5834,6 +5837,13 @@ mod tests {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
             origin: AccessOrigin::Explicit,
+        }
+    }
+
+    fn user_context() -> AccessContext {
+        AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
         }
     }
 
@@ -8844,6 +8854,35 @@ mod tests {
             .to_vec()
     }
 
+    fn lock_memory_2m(data_pde: u64) -> crate::PhysicalMemory {
+        const LARGE_RAM: u64 = 0x40_0000;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), LARGE_RAM).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let memory = crate::PhysicalMemory::new(&map, RamLimits::new(LARGE_RAM)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x87),     // code VA 0x400000 -> physical 0, 2 MiB leaf
+            (0x3020, data_pde), // data VA 0x800000 -> physical 0x200000, 2 MiB leaf
+        ] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        memory
+    }
+
+    fn two_mib_entries(memory: &crate::PhysicalMemory) -> [u64; 4] {
+        [0x1000u64, 0x2000, 0x3010, 0x3020]
+            .map(|address| memory.load_u64(GuestPhysicalAddress::new(address)).unwrap())
+    }
+
     fn data_frame(memory: &crate::PhysicalMemory) -> Vec<u8> {
         let mut bytes = vec![0u8; 0x1000];
         memory
@@ -8852,19 +8891,27 @@ mod tests {
         bytes
     }
 
-    fn lock_adapter<'a>(
+    fn lock_adapter_with_cr0<'a>(
         memory: &'a crate::PhysicalMemory,
         committed: &'a mut dyn FnMut(GuestPhysicalRange),
+        cr0: u64,
     ) -> PagedMovMemoryAdapter<'a> {
         set_loop_adapter(
             memory,
             None,
-            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            Long64ProbeConfig::new(cr0, ROOT, CR4, EFER).unwrap(),
             0x0040_0000,
             committed,
             None,
             None,
         )
+    }
+
+    fn lock_adapter<'a>(
+        memory: &'a crate::PhysicalMemory,
+        committed: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedMovMemoryAdapter<'a> {
+        lock_adapter_with_cr0(memory, committed, CR0)
     }
 
     /// S6-41c: the translation half of an inline atomic operation does to the page tables, the
@@ -9516,6 +9563,275 @@ mod tests {
             .atomic_fetch_add_integer(DATA_LINEAR + 0x40, context(), Dword, 1)
             .unwrap();
         assert_eq!(memory.split_lock_refusals(), 3);
+    }
+
+    #[test]
+    fn cpl3_aligned_qword_atomic_rmw_walks_for_write_and_commits_data_last() {
+        use od_isa::OperandSize::Qword;
+        let memory = lock_memory(0, 0x7007);
+        memory
+            .store_u64(GuestPhysicalAddress::new(0x7040), 5, |_| {})
+            .unwrap();
+        let data_generation = memory
+            .code_page_generation(GuestPhysicalAddress::new(0x7040))
+            .unwrap();
+        let mut log = Vec::new();
+        let old = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter
+                .atomic_rmw_integer(DATA_LINEAR + 0x40, user_context(), Qword, &mut |old| {
+                    old + 1
+                })
+                .unwrap()
+        };
+
+        assert_eq!(old, 5);
+        assert_eq!(
+            memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+            6
+        );
+        assert_eq!(
+            memory.code_page_generation(GuestPhysicalAddress::new(0x7040)),
+            Ok(data_generation + 1)
+        );
+        assert!(
+            log.contains(&range(0x7040)),
+            "data commit is notified: {log:?}"
+        );
+        assert_eq!(
+            table_entries(&memory),
+            vec![0x2027, 0x3027, 0x4007, 0x5027, 0x7007, 0x7067]
+        );
+    }
+
+    #[test]
+    fn cpl3_atomic_rmw_faults_have_write_user_bits_without_operand_commit() {
+        use od_isa::OperandSize::Qword;
+        for (pte, expected_error, clear_wp) in [
+            (0x7006, 0x06, false), // not present
+            (0x7003, 0x07, false), // supervisor page
+            (0x7005, 0x07, false), // read-only user page, WP enabled
+            (0x7005, 0x07, true),  // CPL3 still cannot write with WP clear
+        ] {
+            let memory = lock_memory(0, pte);
+            memory
+                .store_u64(
+                    GuestPhysicalAddress::new(0x7040),
+                    0x1122_3344_5566_7788,
+                    |_| {},
+                )
+                .unwrap();
+            let before_frame = data_frame(&memory);
+            let mut log = Vec::new();
+            let result = {
+                let mut note = |range| log.push(range);
+                let mut adapter = lock_adapter_with_cr0(
+                    &memory,
+                    &mut note,
+                    if clear_wp { CR0 & !(1 << 16) } else { CR0 },
+                );
+                adapter.atomic_rmw_integer(DATA_LINEAR + 0x40, user_context(), Qword, &mut |old| {
+                    old + 1
+                })
+            };
+            let Err(MemoryError::Architectural(fault)) = result else {
+                panic!("expected an architectural write fault, got {result:?}");
+            };
+            assert_eq!(fault.vector, 14);
+            assert_eq!(fault.error_code, Some(expected_error));
+            assert_eq!(fault.linear_address, Some(DATA_LINEAR + 0x40));
+            assert_eq!(data_frame(&memory), before_frame);
+            let entries = table_entries(&memory);
+            assert_eq!(entries[0] & 0x20, 0x20, "ancestor PML4 A may commit");
+            assert_eq!(entries[1] & 0x20, 0x20, "ancestor PDP A may commit");
+            assert_eq!(entries[3] & 0x20, 0x20, "ancestor PD A may commit");
+            assert_eq!(entries[5] & 0x40, 0, "leaf D is not committed on a fault");
+            assert!(
+                log.iter().all(|range| range.start().get() < 0x7000),
+                "walk may update paging prefixes, but the operand is not notified: {log:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cpl3_lock_add_bytes_execute_through_the_paged_memory_adapter() {
+        use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSetExit};
+        use od_isa::{CpuActivity, StiShadow};
+        let code = [0xf0, 0x48, 0x83, 0x03, 0x01]; // lock add qword [rbx], 1
+        let initial = 0x7fff_ffff_ffff_ffffu64;
+        let memory = lock_memory(0, 0x7007);
+        memory
+            .store_bytes(GuestPhysicalAddress::new(0x7000), &code, |_| {})
+            .unwrap();
+        memory
+            .store_u64(GuestPhysicalAddress::new(0x7040), initial, |_| {})
+            .unwrap();
+        let mut state = LongModeState::default();
+        state.rip = 0x0040_0000;
+        state.gpr[od_isa::Register::Rbx as usize] = DATA_LINEAR + 0x40;
+        state.cr0 = Some(CR0);
+        state.cr4 = Some(CR4);
+        state.activity = Some(CpuActivity::Running);
+        state.sti_shadow = Some(StiShadow::Clear);
+        state.rflags = 0x202 | 0x0cd5;
+        state.cs_selector = Some(0x33);
+        state.cs_cache = Some(CodeSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0xfb,
+            flags: 0x2,
+        });
+        state.ss_selector = Some(0x2b);
+        state.ss_cache = Some(DataSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0xf3,
+            flags: 0xc,
+        });
+        let mut log = Vec::new();
+        let result = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+            run_with_cpl3_profile_set(
+                &mut state,
+                &mut adapter,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: user_context(),
+                },
+                od_isa::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(result.instructions_executed, 1, "{result:#?}");
+        assert!(matches!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+        ));
+        assert_eq!(state.rip, 0x0040_0005);
+        assert_eq!(state.rflags & 0x0cd5, 0x0c94);
+        assert_eq!(
+            memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+            0x8000_0000_0000_0000
+        );
+        assert!(log.contains(&range(0x7040)));
+    }
+
+    #[test]
+    fn cpl3_atomic_rmw_2m_leaf_sets_dirty_only_after_successful_write_intent() {
+        use od_isa::OperandSize::Qword;
+        const DATA_PHYS: u64 = 0x20_0000;
+        let memory = lock_memory_2m(DATA_PHYS | 0x87);
+        memory
+            .store_u64(GuestPhysicalAddress::new(DATA_PHYS + 0x40), 9, |_| {})
+            .unwrap();
+        let mut log = Vec::new();
+        let old = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter
+                .atomic_rmw_integer(DATA_LINEAR + 0x40, user_context(), Qword, &mut |old| {
+                    old + 1
+                })
+                .unwrap()
+        };
+        assert_eq!(old, 9);
+        assert_eq!(
+            memory
+                .load_u64(GuestPhysicalAddress::new(DATA_PHYS + 0x40))
+                .unwrap(),
+            10
+        );
+        let entries = two_mib_entries(&memory);
+        assert_eq!(entries[0] & 0x20, 0x20);
+        assert_eq!(entries[1] & 0x20, 0x20);
+        assert_eq!(entries[3] & 0x60, 0x60, "large leaf A and D are committed");
+        assert!(log.contains(&range(DATA_PHYS + 0x40)));
+
+        let memory = lock_memory_2m(DATA_PHYS | 0x85); // present, user, read-only 2 MiB leaf
+        memory
+            .store_u64(
+                GuestPhysicalAddress::new(DATA_PHYS + 0x40),
+                0x1122_3344_5566_7788,
+                |_| {},
+            )
+            .unwrap();
+        let before = memory
+            .load_u64(GuestPhysicalAddress::new(DATA_PHYS + 0x40))
+            .unwrap();
+        let mut log = Vec::new();
+        let result = {
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            adapter.atomic_rmw_integer(DATA_LINEAR + 0x40, user_context(), Qword, &mut |old| {
+                old + 1
+            })
+        };
+        let Err(MemoryError::Architectural(fault)) = result else {
+            panic!("expected a CPL3 write-protection fault, got {result:?}");
+        };
+        assert_eq!(fault.vector, 14);
+        assert_eq!(fault.error_code, Some(0x07));
+        assert_eq!(fault.linear_address, Some(DATA_LINEAR + 0x40));
+        assert_eq!(
+            memory
+                .load_u64(GuestPhysicalAddress::new(DATA_PHYS + 0x40))
+                .unwrap(),
+            before
+        );
+        let entries = two_mib_entries(&memory);
+        assert_eq!(entries[0] & 0x20, 0x20);
+        assert_eq!(entries[1] & 0x20, 0x20);
+        assert_eq!(entries[3] & 0x40, 0, "large leaf D stays clear on fault");
+        assert!(
+            log.iter().all(|range| range.start().get() < DATA_PHYS),
+            "page-walk A updates may commit, operand data is untouched: {log:?}"
+        );
+    }
+
+    #[test]
+    fn two_cpl3_adapters_share_exact_aligned_qword_increment_updates() {
+        use od_isa::OperandSize::Qword;
+        const VCPUS: usize = 2;
+        const ROUNDS: usize = 1_000;
+        let mut memory = lock_memory(0, 0x7007);
+        memory
+            .store_u64(GuestPhysicalAddress::new(0x7040), 0, |_| {})
+            .unwrap();
+        memory.set_execution_mode(crate::ExecutionMode::Parallel);
+        let barrier = std::sync::Barrier::new(VCPUS);
+        std::thread::scope(|scope| {
+            for _ in 0..VCPUS {
+                let (memory, barrier) = (&memory, &barrier);
+                scope.spawn(move || {
+                    let mut note = |_| {};
+                    let mut adapter = lock_adapter(memory, &mut note);
+                    barrier.wait();
+                    for _ in 0..ROUNDS {
+                        adapter
+                            .atomic_rmw_integer(
+                                DATA_LINEAR + 0x40,
+                                user_context(),
+                                Qword,
+                                &mut |old| old + 1,
+                            )
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+            (VCPUS * ROUNDS) as u64
+        );
+        assert_eq!(memory.split_lock_refusals(), 0);
     }
 
     /// S6-31: four host threads, each with its own adapter on one shared memory, run the four
