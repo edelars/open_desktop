@@ -20766,7 +20766,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
-        // Firmware also uses fixed multiplies for counts of memory descriptors.
+        // Firmware also uses fixed multiplies for memory descriptors and FAT timestamps.
         operation @ (Operation::Imul {
             dst: destination,
             src: source @ (Operand::Register(_) | Operand::Memory(_)),
@@ -20796,24 +20796,32 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                             immediate: 0x64 | 0xab | 0xcd | 0x147b | 0x2710 | 0x5c29 | 0xc350,
                             ..
                         }
-                    ) || (matches!(
-                        operation,
-                        Operation::ImulImmediate {
-                            immediate: 0xcccd,
-                            ..
-                        }
-                    ) && instruction.opcode.byte == 0x69
+                    ) || (instruction.opcode.byte == 0x69
                         && instruction.length == 6
                         && instruction.prefixes.rex.is_none()
-                        && source
-                            == Operand::Register(RegisterView::low(
-                                Register::Rcx,
-                                OperandSize::Dword,
-                            ))
-                        && (destination
-                            == RegisterView::low(Register::Rcx, OperandSize::Dword)
-                            || destination
-                                == RegisterView::low(Register::Rax, OperandSize::Dword))))))
+                        && match operation {
+                            Operation::ImulImmediate {
+                                immediate: 0xcccd, ..
+                            } => {
+                                source
+                                    == Operand::Register(RegisterView::low(
+                                        Register::Rcx,
+                                        OperandSize::Dword,
+                                    ))
+                                    && (destination
+                                        == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                                        || destination
+                                            == RegisterView::low(Register::Rax, OperandSize::Dword))
+                            }
+                            Operation::ImulImmediate {
+                                immediate: 0x0098_9680,
+                                ..
+                            } => {
+                                let eax = RegisterView::low(Register::Rax, OperandSize::Dword);
+                                source == Operand::Register(eax) && destination == eax
+                            }
+                            _ => false,
+                        }))))
             && instruction.prefixes
                 == (Prefixes {
                     rex: instruction.prefixes.rex,

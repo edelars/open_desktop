@@ -56903,6 +56903,99 @@ fn firmware_boot_dword_imul_counts_tcg2_memory_descriptors() {
 }
 
 #[test]
+fn firmware_boot_dword_imul_converts_fat_creation_time() {
+    let code = [0x69, 0xc0, 0x80, 0x96, 0x98, 0x00];
+    for count in [0i32, 1, 99, 214, 215, -1, -215] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rax as usize] = 0xfedc_ba98_0000_0000 | u64::from(count as u32);
+        cpu.rflags = 0xed7;
+        let mut expected = cpu.clone();
+        let product = i64::from(count) * 10_000_000;
+        expected.gpr[Register::Rax as usize] = u64::from(product as u32);
+        expected.rip += code.len() as u64;
+        if i32::try_from(product).is_ok() {
+            expected.rflags &= !0x801;
+        }
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, (DEFINED & !0xd4) | 0x801);
+        assert_eq!(cpu, expected);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn firmware_boot_fat_time_imul_is_exact_and_fetch_atomic() {
+    let exact = [0x69, 0xc0, 0x80, 0x96, 0x98, 0x00];
+    let initial = state();
+    let mut cpu = initial.clone();
+    let base = step(
+        &mut cpu,
+        &mut Memory::new(&exact),
+        &mut Pio::default(),
+        ring0(),
+    );
+    assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0x69 });
+    assert_eq!(cpu, initial);
+
+    for bytes in [
+        &[0x69, 0xc1, 0x80, 0x96, 0x98, 0x00][..],
+        &[0x69, 0xc8, 0x80, 0x96, 0x98, 0x00],
+        &[0x69, 0x00, 0x80, 0x96, 0x98, 0x00],
+        &[0x69, 0xc0, 0x81, 0x96, 0x98, 0x00],
+        &[0x40, 0x69, 0xc0, 0x80, 0x96, 0x98, 0x00],
+        &[0x67, 0x69, 0xc0, 0x80, 0x96, 0x98, 0x00],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x69 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, initial);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+
+    for byte in 2..6 {
+        let mut memory = Memory::new(&exact);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(RIP + byte),
+        };
+        memory.fail_fetch_at = Some((RIP + byte, MemoryError::Architectural(fault.clone())));
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, initial);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn firmware_boot_qword_imul_immediate_writes_only_the_truncated_destination() {
     for (code, source, product, flags) in [
         (

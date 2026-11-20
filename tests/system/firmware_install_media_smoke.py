@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -85,16 +86,18 @@ def verify_disk(path, app):
                 if row[:11] == name:
                     hi, lo = struct.unpack_from("<H4xH", row, 20)
                     require(row[11] == attributes, f"wrong FAT attributes for {name!r}")
-                    return hi << 16 | lo, struct.unpack_from("<I", row, 28)[0]
+                    return hi << 16 | lo, struct.unpack_from("<I", row, 28)[0], start
             raise RuntimeError(f"missing FAT entry {name!r}")
 
         root_rows = chain(root)
-        efi, _ = locate(root_rows, b"EFI        ", 0x10)
-        boot_dir, _ = locate(chain(efi), b"BOOT       ", 0x10)
-        efi_app, length = locate(chain(boot_dir), b"BOOTX64 EFI", 0x20)
-        note, note_len = locate(root_rows, b"README  TXT", 0x20)
+        efi, _, _ = locate(root_rows, b"EFI        ", 0x10)
+        boot_dir, _, _ = locate(chain(efi), b"BOOT       ", 0x10)
+        efi_app, length, app_row = locate(chain(boot_dir), b"BOOTX64 EFI", 0x20)
+        note, note_len, _ = locate(root_rows, b"README  TXT", 0x20)
         require(length == len(app) and chain(efi_app)[:length] == app, "EFI file bytes")
         require(note_len == len(README) and chain(note)[:note_len] == README, "README file bytes")
+        require(app_row < spc * SECTOR, "EFI record is outside the first BOOT cluster")
+        return (data + (boot_dir - 2) * spc) * SECTOR + app_row
 
 
 def check_rejection(tool, source, scratch, output):
@@ -158,14 +161,22 @@ def main():
                 "import did not verify two files and publish")
         require(int(status["logical_size"]) == output.stat().st_size, "reported size")
         require(not output.with_suffix(".raw.partial").exists(), "successful import left staging path")
-        verify_disk(output, app.read_bytes())
+        app_row = verify_disk(output, app.read_bytes())
         check_rejection(tool, source, scratch, output)
         require(digest(source) == before, "source ISO changed")
-        trace, _, report = boot(target / "od-runner", rom, output, scratch, "converted-esp", None)
-        transcript = trace.read_bytes()
-        require(transcript.count(HELLO) == 1 and transcript.endswith(HELLO + STOP),
-                "firmware did not start the converted EFI application")
-        print(f"Converted ESP booted through NVMe: {report['retired']} instructions, {report['quanta']} quanta.")
+        # Probe the normal firmware path for a FAT creation timestamp that is
+        # present on external media. Preserve the independently verified output.
+        with_time = scratch / "creation-time.raw"
+        shutil.copyfile(output, with_time)
+        with with_time.open("r+b") as file:
+            file.seek(app_row + 13)
+            file.write(struct.pack("<BHH", 27, 0, 0x0021))  # 1980-01-01, 270 ms.
+        for name, image in (("converted-esp", output), ("fat-creation-time", with_time)):
+            trace, _, report = boot(target / "od-runner", rom, image, scratch, name, None)
+            transcript = trace.read_bytes()
+            require(transcript.count(HELLO) == 1 and transcript.endswith(HELLO + STOP),
+                    f"{name}: firmware did not start the EFI application")
+            print(f"{name} booted through NVMe: {report['retired']} instructions, {report['quanta']} quanta.")
 
 
 if __name__ == "__main__":
