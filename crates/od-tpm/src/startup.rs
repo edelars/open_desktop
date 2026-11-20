@@ -141,7 +141,7 @@ impl Tpm {
     }
 
     /// `TPM2_SelfTest` (Part 3, clause 10.2): `fullTest` YES re-runs the tests, NO has nothing
-    /// left to test because `Startup` already tested every function.
+    /// left to test because `Startup` completed the current algorithm tests.
     pub(crate) fn cmd_self_test(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
         let full = match p.u8()? {

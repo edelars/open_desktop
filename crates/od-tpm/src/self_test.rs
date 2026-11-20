@@ -1,5 +1,7 @@
-//! Synchronous known-answer tests for the advertised SHA-256, RSA-2048 and P-256 profile.
+//! Synchronous known-answer tests for the advertised hash, RSA-2048 and P-256 profile.
 //! The test material is public. Randomized operations use separate fixture DRBGs.
+
+use sha2::{Digest, Sha384};
 
 use crate::credential;
 use crate::crypto::{
@@ -11,7 +13,11 @@ use crate::pcr::sha256;
 use crate::random::{self, Drbg};
 
 pub(crate) fn known_answers() -> bool {
+    const SHA384_ABC: [u8; 48] = hex(
+        "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7",
+    );
     sha256(b"abc") == hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        && Sha384::digest(b"abc")[..] == SHA384_ABC
         && random::self_test()
         && drbg_known_answers().is_some()
         && transport_known_answers()

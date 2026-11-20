@@ -270,17 +270,8 @@ impl PolicyState {
 /// SHA-256 over the values of the selected PCR in ascending index order (Part 1, "Selecting
 /// Multiple PCR"); the digest of the empty string when nothing is selected.
 pub(crate) fn pcr_selection_digest(pcrs: &Pcrs, selection: &TpmlPcrSelection) -> [u8; DIGEST] {
-    let mut h = Sha256::new();
-    for sel in &selection.selections {
-        for i in 0..limits::PCR_COUNT {
-            if sel.selects(i)
-                && let Some(v) = pcrs.value(i)
-            {
-                h.update(v);
-            }
-        }
-    }
-    h.finalize().into()
+    pcrs.selection_digest(selection)
+        .unwrap_or_else(|| Sha256::digest([]).into())
 }
 
 impl Tpm {
@@ -510,7 +501,7 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let list = TpmlDigest::unmarshal(p)?;
+        let list = TpmlDigest::unmarshal_with_limit(p, limits::MAX_DIGEST_SIZE)?;
         p.finish()?;
         if list.digests.len() < 2 {
             return Err(Rc::SIZE.in_param(1));

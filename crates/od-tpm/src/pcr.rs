@@ -1,4 +1,4 @@
-//! PCR bank (SHA-256, PCR 0-23) and the commands `TPM2_PCR_Read`, `TPM2_PCR_Extend`,
+//! PCR banks (SHA-256 and SHA-384, PCR 0-23) and the commands `TPM2_PCR_Read`, `TPM2_PCR_Extend`,
 //! `TPM2_PCR_Event`, `TPM2_PCR_Reset`.
 //!
 //! Attributes and initial values follow PC Client PTP 1.07 (3/23/2026), clause 4.7.1, Table 14 and
@@ -10,12 +10,13 @@
 //! locality may not extend (`TPM_RC_LOCALITY`, the code Part 3 names for `TPM2_PCR_Reset`;
 //! Part 3, clause 22.2 does not list it for `TPM2_PCR_Extend`).
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 
 use crate::codes::{alg, handle};
 use crate::dispatch::Invocation;
 use crate::marshal::{
-    Reader, TpmlDigest, TpmlDigestValues, TpmlPcrSelection, TpmtHa, Writer, limits,
+    Reader, TpmlDigest, TpmlDigestValues, TpmlPcrSelection, TpmsPcrSelection, TpmtHa, Writer,
+    limits,
 };
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -81,10 +82,11 @@ pub const fn pcr_attr(index: usize) -> PcrAttr {
     }
 }
 
-/// The SHA-256 bank of 24 PCR and the `pcrUpdateCounter`.
+/// The two banks of 24 PCRs and their common `pcrUpdateCounter`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Pcrs {
-    values: [[u8; 32]; limits::PCR_COUNT],
+    sha256: [[u8; 32]; limits::PCR_COUNT],
+    sha384: [[u8; 48]; limits::PCR_COUNT],
     update_counter: u32,
 }
 
@@ -93,7 +95,8 @@ impl Pcrs {
     /// locality indicator, which is 0 for locality 0.
     pub fn new() -> Pcrs {
         let mut p = Pcrs {
-            values: [[0u8; 32]; limits::PCR_COUNT],
+            sha256: [[0; 32]; limits::PCR_COUNT],
+            sha384: [[0; 48]; limits::PCR_COUNT],
             update_counter: 0,
         };
         p.set_initial();
@@ -103,8 +106,10 @@ impl Pcrs {
     /// Resets every PCR to its initial value; `pcrUpdateCounter` is cleared on TPM Reset
     /// (Part 3, clause 9.3) by the caller via [`Pcrs::clear_counter`].
     pub fn set_initial(&mut self) {
-        for (i, v) in self.values.iter_mut().enumerate() {
-            *v = [pcr_attr(i).initial; 32];
+        for (i, (slot256, slot384)) in self.sha256.iter_mut().zip(&mut self.sha384).enumerate() {
+            let initial = pcr_attr(i).initial;
+            slot256.fill(initial);
+            slot384.fill(initial);
         }
     }
 
@@ -116,31 +121,51 @@ impl Pcrs {
         self.update_counter
     }
 
-    pub fn value(&self, index: usize) -> Option<&[u8; 32]> {
-        self.values.get(index)
+    pub fn value(&self, hash: u16, index: usize) -> Option<&[u8]> {
+        match hash {
+            alg::SHA256 => self.sha256.get(index).map(|slot| &slot[..]),
+            alg::SHA384 => self.sha384.get(index).map(|slot| &slot[..]),
+            _ => None,
+        }
     }
 
-    /// `PCR.new = H(PCR.old || digest)` (Part 3, clause 22.2.1). The caller has checked the
-    /// locality attribute; returns false for an out-of-range index.
-    pub fn extend(&mut self, index: usize, digest: &[u8; 32]) -> bool {
-        let Some(slot) = self.values.get_mut(index) else {
+    /// `PCR.new = H(PCR.old || digest)` (Part 3 v185 §22.2.1), in wire order. Duplicates
+    /// extend the same bank again while the update counter counts each changed bank once.
+    fn extend(&mut self, index: usize, digests: &[TpmtHa]) -> bool {
+        if index >= limits::PCR_COUNT {
             return false;
-        };
-        let mut h = Sha256::new();
-        h.update(&slot[..]);
-        h.update(digest);
-        slot.copy_from_slice(&h.finalize());
-        self.bump(index);
-        true
+        }
+        let mut modified = 0u32;
+        for value in digests {
+            match value.hash {
+                alg::SHA256 => {
+                    extend_value::<Sha256>(&mut self.sha256[index], &value.digest);
+                    modified |= 1;
+                }
+                alg::SHA384 => {
+                    extend_value::<Sha384>(&mut self.sha384[index], &value.digest);
+                    modified |= 2;
+                }
+                _ => unreachable!("only decoded PCR digest algorithms reach an extend"),
+            }
+        }
+        if !pcr_attr(index).no_increment {
+            self.update_counter = self.update_counter.wrapping_add(modified.count_ones());
+        }
+        modified != 0
     }
 
-    /// Resets one PCR to its initial value (the caller has checked `reset_l0`).
+    /// Resets one PCR across both banks, accounting for the reset once (§22.1).
     pub fn reset(&mut self, index: usize) -> bool {
-        let Some(slot) = self.values.get_mut(index) else {
+        if index >= limits::PCR_COUNT {
             return false;
-        };
-        *slot = [pcr_attr(index).initial; 32];
-        self.bump(index);
+        }
+        let attr = pcr_attr(index);
+        self.sha256[index].fill(attr.initial);
+        self.sha384[index].fill(attr.initial);
+        if !attr.no_increment {
+            self.increment_update_counter();
+        }
         true
     }
 
@@ -149,16 +174,11 @@ impl Pcrs {
         self.update_counter = self.update_counter.wrapping_add(1);
     }
 
-    fn bump(&mut self, index: usize) {
-        if !pcr_attr(index).no_increment {
-            self.update_counter = self.update_counter.wrapping_add(1);
-        }
-    }
-
     /// PCR values that `Shutdown(STATE)` preserves (`TPM_PT_PCR_SAVE`) and the counter.
     pub(crate) fn save(&self) -> SavedPcrs {
         SavedPcrs {
-            values: self.values,
+            sha256: self.sha256,
+            sha384: self.sha384,
             update_counter: self.update_counter,
         }
     }
@@ -168,12 +188,14 @@ impl Pcrs {
     /// one generation for this Startup command (Part 3 v185, clauses 9.3 and 22.1).
     pub(crate) fn startup_from_saved(&mut self, saved: &SavedPcrs, resume: bool) {
         let mut counted_reset = false;
-        for (i, v) in self.values.iter_mut().enumerate() {
+        for (i, (slot256, slot384)) in self.sha256.iter_mut().zip(&mut self.sha384).enumerate() {
             let attr = pcr_attr(i);
             if resume && attr.save {
-                *v = saved.values[i];
+                *slot256 = saved.sha256[i];
+                *slot384 = saved.sha384[i];
             } else {
-                *v = [attr.initial; 32];
+                slot256.fill(attr.initial);
+                slot384.fill(attr.initial);
                 counted_reset |= !attr.no_increment;
             }
         }
@@ -182,6 +204,44 @@ impl Pcrs {
             self.increment_update_counter();
         }
     }
+
+    /// The two banks allocate every PCR in the default profile.
+    pub(crate) fn allocation(&self) -> TpmlPcrSelection {
+        TpmlPcrSelection {
+            selections: [alg::SHA256, alg::SHA384]
+                .into_iter()
+                .map(|hash| TpmsPcrSelection {
+                    hash,
+                    select: [0xff; limits::PCR_SELECT_SIZE],
+                })
+                .collect(),
+        }
+    }
+
+    /// SHA-256 over concatenated PCR values in selector order and PCR index order.
+    /// No values produces an absent creation digest.
+    pub(crate) fn selection_digest(&self, selection: &TpmlPcrSelection) -> Option<[u8; 32]> {
+        let mut hash = Sha256::new();
+        let mut any = false;
+        for bank in &selection.selections {
+            for index in 0..limits::PCR_COUNT {
+                if bank.selects(index)
+                    && let Some(value) = self.value(bank.hash, index)
+                {
+                    hash.update(value);
+                    any = true;
+                }
+            }
+        }
+        any.then(|| hash.finalize().into())
+    }
+}
+
+fn extend_value<H: Digest>(slot: &mut [u8], value: &[u8]) {
+    let mut hash = H::new();
+    hash.update(&*slot);
+    hash.update(value);
+    slot.copy_from_slice(&hash.finalize());
 }
 
 impl Default for Pcrs {
@@ -193,7 +253,8 @@ impl Default for Pcrs {
 /// State kept by `TPM2_Shutdown(STATE)` for PCR.
 #[derive(Clone, Debug)]
 pub(crate) struct SavedPcrs {
-    values: [[u8; 32]; limits::PCR_COUNT],
+    sha256: [[u8; 32]; limits::PCR_COUNT],
+    sha384: [[u8; 48]; limits::PCR_COUNT],
     update_counter: u32,
 }
 
@@ -220,18 +281,49 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// PCR_Event and event sequences calculate the same list over the same bytes.
+#[derive(Clone, Default)]
+pub(crate) struct EventHash {
+    sha256: Sha256,
+    sha384: Sha384,
+}
+
+impl EventHash {
+    pub(crate) fn update(&mut self, data: &[u8]) {
+        self.sha256.update(data);
+        self.sha384.update(data);
+    }
+
+    pub(crate) fn finish(self) -> TpmlDigestValues {
+        TpmlDigestValues {
+            digests: vec![
+                TpmtHa {
+                    hash: alg::SHA256,
+                    digest: self.sha256.finalize().to_vec(),
+                },
+                TpmtHa {
+                    hash: alg::SHA384,
+                    digest: self.sha384.finalize().to_vec(),
+                },
+            ],
+        }
+    }
+}
+
 impl Tpm {
     /// Extends PCR `index` after the locality check; used by `PCR_Extend`, `PCR_Event` and
     /// `EventSequenceComplete`. Changing a PCR voids a state saved by `Shutdown(STATE)`
     /// (Part 3, clause 9.4.1: the saved state is nullified by a later command that changes it).
-    pub(crate) fn extend_pcr(&mut self, index: usize, digest: &[u8; 32]) -> Result<(), Rc> {
+    fn extend_pcr(&mut self, index: usize, digests: &TpmlDigestValues) -> Result<(), Rc> {
+        if digests.digests.is_empty() {
+            return Ok(());
+        }
         if !pcr_attr(index).extend_l0 {
             return Err(Rc::LOCALITY);
         }
-        if !self.pcrs.extend(index, digest) {
-            return Err(Rc::VALUE);
+        if self.pcrs.extend(index, &digests.digests) {
+            self.saved = None;
         }
-        self.saved = None;
         Ok(())
     }
 
@@ -246,12 +338,7 @@ impl Tpm {
         let digests = TpmlDigestValues::unmarshal(p)?;
         p.finish()?;
         if let Some(i) = pcr {
-            for d in &digests.digests {
-                // `unmarshal` guarantees SHA-256 and 32 octets.
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&d.digest);
-                self.extend_pcr(i, &a)?;
-            }
+            self.extend_pcr(i, &digests)?;
         }
         Ok(Output::default())
     }
@@ -266,18 +353,21 @@ impl Tpm {
         p.set_param(1);
         let event = p.tpm2b(limits::MAX_EVENT_SIZE)?;
         p.finish()?;
-        let digest = sha256(event);
-        if let Some(i) = pcr {
-            self.extend_pcr(i, &digest)?;
+        let mut hash = EventHash::default();
+        hash.update(event);
+        self.complete_pcr_event(pcr, hash.finish())
+    }
+
+    pub(crate) fn complete_pcr_event(
+        &mut self,
+        index: Option<usize>,
+        digests: TpmlDigestValues,
+    ) -> Result<Output, Rc> {
+        if let Some(i) = index {
+            self.extend_pcr(i, &digests)?;
         }
         let mut w = Writer::new();
-        TpmlDigestValues {
-            digests: vec![TpmtHa {
-                hash: alg::SHA256,
-                digest: digest.to_vec(),
-            }],
-        }
-        .marshal(&mut w);
+        digests.marshal(&mut w);
         Ok(Output {
             handles: Vec::new(),
             params: w.finish(),
@@ -320,7 +410,7 @@ impl Tpm {
                 // (Part 3, clause 22.4.1: "until pcrValues would be too large").
                 if s.selects(i)
                     && values.digests.len() < limits::MAX_DIGEST_LIST
-                    && let Some(v) = self.pcrs.value(i)
+                    && let Some(v) = self.pcrs.value(s.hash, i)
                 {
                     values.digests.push(v.to_vec());
                     returned.select[i / 8] |= 1 << (i % 8);
@@ -385,7 +475,8 @@ mod tests {
         let p = Pcrs::new();
         for i in 0..24 {
             let expect = if (17..=22).contains(&i) { 0xFF } else { 0x00 };
-            assert_eq!(p.value(i).unwrap(), &[expect; 32], "PCR {i}");
+            assert_eq!(p.value(alg::SHA256, i).unwrap(), &[expect; 32], "PCR {i}");
+            assert_eq!(p.value(alg::SHA384, i).unwrap(), &[expect; 48], "PCR {i}");
         }
         assert_eq!(p.update_counter(), 0);
     }
@@ -395,21 +486,24 @@ mod tests {
         // Computed independently with Python hashlib (2026-11-07):
         //   d = sha256(b"abc"); n1 = sha256(32 x 0x00 || d); n2 = sha256(n1 || d)
         //   f = sha256(32 x 0xFF || d)
-        let d = sha256(b"abc");
+        let d = [TpmtHa {
+            hash: alg::SHA256,
+            digest: sha256(b"abc").to_vec(),
+        }];
         let mut p = Pcrs::new();
         assert!(p.extend(0, &d));
         assert_eq!(
-            p.value(0).unwrap().to_vec(),
+            p.value(alg::SHA256, 0).unwrap(),
             hex("589f9ffed4c477966bfb8d41f37895b08c69047df8f911d6f3b57fbe08faee8d")
         );
         assert!(p.extend(0, &d));
         assert_eq!(
-            p.value(0).unwrap().to_vec(),
+            p.value(alg::SHA256, 0).unwrap(),
             hex("bdeb6c6dc63852834c89f67066194207ce7d3806ea40ca58dc079246ef58a926")
         );
         assert!(p.extend(17, &d));
         assert_eq!(
-            p.value(17).unwrap().to_vec(),
+            p.value(alg::SHA256, 17).unwrap(),
             hex("ded4cee9953bb84c83278424b1e8256ee3483023f4ae5730affa51aad0063efb")
         );
         assert!(!p.extend(24, &d));
@@ -417,7 +511,10 @@ mod tests {
 
     #[test]
     fn update_counter_skips_no_increment_pcrs() {
-        let d = [1u8; 32];
+        let d = [TpmtHa {
+            hash: alg::SHA256,
+            digest: vec![1; 32],
+        }];
         let mut p = Pcrs::new();
         p.extend(0, &d);
         assert_eq!(p.update_counter(), 1);

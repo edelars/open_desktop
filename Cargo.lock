@@ -396,6 +396,7 @@ dependencies = [
  "od-tpm",
  "od-uefi-security",
  "serde_json",
+ "sha2 0.11.1",
  "zeroize",
 ]
 

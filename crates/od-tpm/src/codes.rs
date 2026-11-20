@@ -206,6 +206,7 @@ pub mod alg {
     pub const HMAC: u16 = 0x0005;
     pub const KEYEDHASH: u16 = 0x0008;
     pub const SHA256: u16 = 0x000B;
+    pub const SHA384: u16 = 0x000C;
     pub const NULL: u16 = 0x0010;
     pub const RSASSA: u16 = 0x0014;
     /// RSA encryption padding schemes (`TPM2_RSA_Encrypt/Decrypt`) and the ECDH key exchange.

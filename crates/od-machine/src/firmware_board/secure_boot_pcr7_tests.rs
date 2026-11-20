@@ -2,13 +2,14 @@
 
 use super::*;
 use crate::{InMemoryBackend, acpi_blob::sha256};
+use sha2::{Digest, Sha384};
 use std::path::{Path, PathBuf};
 
 const CONFIG: u32 = 0x8000_0001;
 const AUTHORITY: u32 = 0x8000_00e0;
 const SEPARATOR: u32 = 4;
-const HEADER_BYTES: usize = 65;
-const EVENT_HEADER_BYTES: usize = 50;
+const HEADER_BYTES: usize = 69;
+const EVENT_HEADER_BYTES: usize = 100;
 const LOG_CAPACITY: usize = 256 * 1024;
 const SCAN_BYTES: usize = 4 * 1024 * 1024;
 const TPM_TEST_ENTROPY: [u8; 48] = [0x55; 48];
@@ -27,6 +28,8 @@ struct Event<'a> {
     name: String,
     value: &'a [u8],
 }
+
+type PcrDigests = ([u8; 32], [u8; 48]);
 
 #[test]
 #[ignore = "requires a local ROM and fixtures from firmware_secure_boot_smoke.py --work"]
@@ -140,7 +143,7 @@ fn run(
     snapshot: &str,
     disk: &str,
     marker: &[u8],
-) -> (Vec<u8>, [u8; 32]) {
+) -> (Vec<u8>, PcrDigests) {
     let config = FirmwareBoardConfig {
         acpi_pm: true,
         acpi_tables: true,
@@ -161,7 +164,7 @@ fn run(
         .unwrap()
         .attach_backend(Box::new(InMemoryBackend::from_bytes(bytes).unwrap()))
         .unwrap();
-    let report = board.run_boot(300_000_000).unwrap();
+    let report = board.run_boot(500_000_000).unwrap();
     assert_eq!(report.exit, PagedProbeExit::Halted, "{disk}");
     assert!(
         report.com1.ends_with(&[marker, STOP].concat()),
@@ -180,7 +183,7 @@ fn run(
 
 fn locate_event_log(bus: &mut MachineBus, ram_bytes: u64) -> Vec<u8> {
     // The fixture board's boot pools allocate from the top of RAM. Identify
-    // the unique primary log by its complete one-bank Spec ID header.
+    // the unique primary log by its complete two-bank Spec ID header.
     let mut memory = vec![0u8; SCAN_BYTES];
     bus.read_flat_bytes(
         GuestPhysicalAddress::new(ram_bytes - SCAN_BYTES as u64),
@@ -193,9 +196,9 @@ fn locate_event_log(bus: &mut MachineBus, ram_bytes: u64) -> Vec<u8> {
         .filter_map(|(offset, header)| {
             (header[..8] == [0, 0, 0, 0, 3, 0, 0, 0]
                 && header[8..28] == [0; 20]
-                && le32(header, 28) == 33
+                && le32(header, 28) == 37
                 && &header[32..48] == b"Spec ID Event03\0"
-                && header[52..] == [0, 2, 106, 2, 1, 0, 0, 0, 11, 0, 32, 0, 0])
+                && header[52..] == [0, 2, 106, 2, 2, 0, 0, 0, 11, 0, 32, 0, 12, 0, 48, 0, 0])
             .then_some(offset)
         });
     let start = starts.next().expect("primary TCG2 log");
@@ -203,14 +206,15 @@ fn locate_event_log(bus: &mut MachineBus, ram_bytes: u64) -> Vec<u8> {
     memory[start..start + LOG_CAPACITY].to_vec()
 }
 
-fn read_pcr7(bus: &mut MachineBus) -> [u8; 32] {
+fn read_pcr7(bus: &mut MachineBus) -> PcrDigests {
     let addr = |offset| GuestPhysicalAddress::new(TPM_CRB_BASE + offset);
     for (offset, value) in [(8, 1), (0x40, 2), (0x40, 1)] {
         bus.write_physical(addr(offset), AccessWidth::Dword, value, |_| {})
             .unwrap();
     }
-    let command: [u8; 20] = [
-        0x80, 1, 0, 0, 0, 20, 0, 0, 1, 0x7e, 0, 0, 0, 1, 0, 0x0b, 3, 0x80, 0, 0,
+    let command: [u8; 26] = [
+        0x80, 1, 0, 0, 0, 26, 0, 0, 1, 0x7e, 0, 0, 0, 2, 0, 0x0b, 3, 0x80, 0, 0, 0, 0x0c, 3, 0x80,
+        0, 0,
     ];
     for (index, byte) in command.into_iter().enumerate() {
         bus.write_physical(
@@ -223,21 +227,23 @@ fn read_pcr7(bus: &mut MachineBus) -> [u8; 32] {
     }
     bus.write_physical(addr(0x4c), AccessWidth::Dword, 1, |_| {})
         .unwrap();
-    let response: [u8; 62] = std::array::from_fn(|index| {
+    let response: [u8; 118] = std::array::from_fn(|index| {
         bus.read_physical(addr(0x80 + index as u64), AccessWidth::Byte)
             .unwrap() as u8
     });
-    assert_eq!(response[..10], [0x80, 1, 0, 0, 0, 62, 0, 0, 0, 0]);
-    assert_eq!(
-        response[14..30],
-        [0, 0, 0, 1, 0, 0x0b, 3, 0x80, 0, 0, 0, 0, 0, 1, 0, 32]
-    );
-    response[30..].try_into().unwrap()
+    assert_eq!(response[..10], [0x80, 1, 0, 0, 0, 118, 0, 0, 0, 0]);
+    assert_eq!(response[14..30], command[10..]);
+    assert_eq!(response[30..36], [0, 0, 0, 2, 0, 32]);
+    assert_eq!(response[68..70], [0, 48]);
+    (
+        response[36..68].try_into().unwrap(),
+        response[70..].try_into().unwrap(),
+    )
 }
 
-fn replay_pcr7(log: &[u8], actual: [u8; 32]) -> Vec<Event<'_>> {
+fn replay_pcr7(log: &[u8], actual: PcrDigests) -> Vec<Event<'_>> {
     let mut offset = HEADER_BYTES;
-    let mut pcr = [0; 32];
+    let mut pcr = ([0; 32], [0; 48]);
     let mut events = Vec::new();
     loop {
         let start = offset + EVENT_HEADER_BYTES;
@@ -245,19 +251,26 @@ fn replay_pcr7(log: &[u8], actual: [u8; 32]) -> Vec<Event<'_>> {
         if header == [0; EVENT_HEADER_BYTES] {
             break;
         }
-        assert_eq!(le32(header, 8), 1);
+        assert_eq!(le32(header, 8), 2);
         assert_eq!(header[12..14], [11, 0]);
-        offset = start + le32(header, 46) as usize;
+        assert_eq!(header[46..48], [12, 0]);
+        offset = start + le32(header, 96) as usize;
         if le32(header, 0) != 7 {
             continue;
         }
         let payload = &log[start..offset];
-        let digest = sha256(payload);
-        assert_eq!(header[14..46], digest);
+        let digest256 = sha256(payload);
+        let digest384 = Sha384::digest(payload);
+        assert_eq!(header[14..46], digest256);
+        assert_eq!(header[48..96], digest384[..]);
         let mut pair = [0; 64];
-        pair[..32].copy_from_slice(&pcr);
-        pair[32..].copy_from_slice(&digest);
-        pcr = sha256(&pair);
+        pair[..32].copy_from_slice(&pcr.0);
+        pair[32..].copy_from_slice(&digest256);
+        pcr.0 = sha256(&pair);
+        let mut hash = Sha384::new();
+        hash.update(pcr.1);
+        hash.update(digest384);
+        pcr.1 = hash.finalize().into();
         let kind = le32(header, 4);
         if kind == SEPARATOR {
             events.push(Event {

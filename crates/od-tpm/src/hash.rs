@@ -1,4 +1,4 @@
-//! SHA-256 hashing, HMAC, and hash, HMAC and event sequences.
+//! SHA-256 and SHA-384 hashing, SHA-256 HMAC, and their sequences.
 //!
 //! Sequence objects are transient objects (handle type `TPM_HT_TRANSIENT`), at most
 //! [`MAX_SEQUENCES`] at a time; `TPM_RC_OBJECT_MEMORY` when no slot is free.
@@ -24,17 +24,15 @@
 //!   protection (a wrong password is answered `TPM_RC_BAD_AUTH`, there is no DA in phase A).
 
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 use zeroize::Zeroize;
 
 use crate::codes::{alg, handle, object_attr};
-use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_state};
+use crate::crypto::{hmac_sha256, hmac_sha256_state};
 use crate::dispatch::Invocation;
-use crate::marshal::{
-    PublicParams, Reader, TpmlDigestValues, TpmtHa, TpmtTkHashcheck, Writer, limits,
-};
+use crate::marshal::{PublicParams, Reader, TpmtTkHashcheck, Writer, digest_size, limits};
 use crate::object::Secret;
-use crate::pcr::resolve_pcr_handle;
+use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
@@ -126,10 +124,12 @@ pub(crate) fn password_matches(given: &[u8], auth: &[u8]) -> bool {
 pub(crate) enum SequenceKind {
     /// Hash sequence of one algorithm (SHA-256).
     Hash(Sha256),
+    /// Hash sequence of one algorithm (SHA-384).
+    Hash384(Sha384),
     /// Incremental HMAC-SHA-256 state, independent of the original key handle.
     Hmac(Hmac<Sha256>),
-    /// Event sequence: one hash context per PCR bank (a single bank).
-    Event(Sha256),
+    /// Event sequence with both PCR bank algorithms.
+    Event(EventHash),
 }
 
 pub(crate) struct Sequence {
@@ -218,7 +218,7 @@ impl Tpm {
         let data = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
         p.set_param(2);
         let hash_alg = p.u16()?;
-        if hash_alg != alg::SHA256 {
+        if digest_size(hash_alg).is_none() {
             // NULL is not allowed for TPM2_Hash and is answered like any unimplemented hash.
             return Err(p.err(Rc::HASH));
         }
@@ -226,9 +226,12 @@ impl Tpm {
         let hierarchy = p.u32()?;
         check_hierarchy(p, hierarchy)?;
         p.finish()?;
-        let digest = Sha256::digest(data);
         let mut w = Writer::new();
-        w.tpm2b(&digest);
+        match hash_alg {
+            alg::SHA256 => w.tpm2b(&Sha256::digest(data)),
+            alg::SHA384 => w.tpm2b(&Sha384::digest(data)),
+            _ => unreachable!("hash algorithm has already been checked"),
+        }
         null_ticket().marshal(&mut w);
         Ok(Output {
             handles: Vec::new(),
@@ -245,7 +248,8 @@ impl Tpm {
         let hash_alg = p.u16()?;
         let kind = match hash_alg {
             alg::SHA256 => SequenceKind::Hash(Sha256::new()),
-            alg::NULL => SequenceKind::Event(Sha256::new()),
+            alg::SHA384 => SequenceKind::Hash384(Sha384::new()),
+            alg::NULL => SequenceKind::Event(EventHash::default()),
             _ => return Err(p.err(Rc::HASH)),
         };
         p.finish()?;
@@ -326,7 +330,9 @@ impl Tpm {
         p.finish()?;
         if let Some(sequence) = self.sequences.slots[slot].as_mut() {
             match &mut sequence.kind {
-                SequenceKind::Hash(hash) | SequenceKind::Event(hash) => hash.update(data),
+                SequenceKind::Hash(hash) => hash.update(data),
+                SequenceKind::Hash384(hash) => hash.update(data),
+                SequenceKind::Event(hash) => hash.update(data),
                 SequenceKind::Hmac(mac) => mac.update(data),
             }
         }
@@ -350,22 +356,25 @@ impl Tpm {
         let sequence = self.sequences.slots[slot]
             .take()
             .expect("the sequence slot was validated");
-        let digest: [u8; DIGEST] = match sequence.kind {
+        let mut w = Writer::new();
+        match sequence.kind {
             SequenceKind::Hash(mut hash) => {
                 hash.update(data);
-                hash.finalize().into()
+                w.tpm2b(&hash.finalize());
+            }
+            SequenceKind::Hash384(mut hash) => {
+                hash.update(data);
+                w.tpm2b(&hash.finalize());
             }
             SequenceKind::Hmac(mut mac) => {
                 mac.update(data);
-                mac.finalize().into_bytes().into()
+                w.tpm2b(&mac.finalize().into_bytes());
             }
             SequenceKind::Event(_) => {
                 self.sequences.slots[slot] = Some(sequence);
                 return Err(Rc::MODE.in_handle(1));
             }
-        };
-        let mut w = Writer::new();
-        w.tpm2b(&digest);
+        }
         null_ticket().marshal(&mut w);
         Ok(Output {
             handles: Vec::new(),
@@ -395,24 +404,9 @@ impl Tpm {
         };
         let mut h = h.clone();
         h.update(data);
-        let mut digest = [0u8; 32];
-        digest.copy_from_slice(&h.finalize());
-        if let Some(i) = pcr {
-            self.extend_pcr(i, &digest)?;
-        }
+        let response = self.complete_pcr_event(pcr, h.finish())?;
         self.sequences.slots[slot] = None;
-        let mut w = Writer::new();
-        TpmlDigestValues {
-            digests: vec![TpmtHa {
-                hash: alg::SHA256,
-                digest: digest.to_vec(),
-            }],
-        }
-        .marshal(&mut w);
-        Ok(Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        })
+        Ok(response)
     }
 }
 

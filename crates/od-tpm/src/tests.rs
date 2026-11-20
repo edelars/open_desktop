@@ -30,6 +30,8 @@ const ENTROPY: [u8; 48] = [5; 48];
 
 // Computed independently (Python hashlib).
 const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const SHA384_ABC: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
+const SHA384_EXTEND_ABC_ON_ZERO: &str = "93732e3733514a841c982cfa75ea76ab55fe011acb9cd980ef4523913c65be1b0998e04d77f8c174f81a82151619ca40";
 const SHA256_EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 /// sha256(32 x 0x00 || sha256("abc"))
 const EXTEND_ABC_ON_ZERO: &str = "589f9ffed4c477966bfb8d41f37895b08c69047df8f911d6f3b57fbe08faee8d";
@@ -173,6 +175,10 @@ fn extend(t: &mut Tpm, pcr: u32, digest: &[u8]) -> Vec<u8> {
 }
 
 fn read_pcr(t: &mut Tpm, pcr: usize) -> Vec<u8> {
+    read_pcr_bank(t, pcr, alg::SHA256)
+}
+
+fn read_pcr_bank(t: &mut Tpm, pcr: usize, hash: u16) -> Vec<u8> {
     let mut sel = [0u8; 3];
     sel[pcr / 8] |= 1 << (pcr % 8);
     let r = run(
@@ -180,7 +186,7 @@ fn read_pcr(t: &mut Tpm, pcr: usize) -> Vec<u8> {
         plain(
             cc::PCR_READ,
             &[],
-            &cat(&[&u32b(1), &u16b(alg::SHA256), &[3], &sel]),
+            &cat(&[&u32b(1), &u16b(hash), &[3], &sel]),
         ),
     );
     let mut rd = Reader::new(params(&r, 0));
@@ -399,10 +405,14 @@ fn startup_flushes_sequences_and_resets_pcr() {
 #[test]
 fn shutdown_state_then_startup_state_resumes_saved_pcr() {
     let mut t = started();
-    ok(&extend(&mut t, 0, &[1; 32]));
+    let event = |pcr| with_pw(cc::PCR_EVENT, &[pcr], &[b""], &tpm2b(b"save both banks"));
+    ok(&run(&mut t, event(0)));
     let counter = pcr_counter(&mut t);
-    ok(&extend(&mut t, 16, &[2; 32]));
+    assert_eq!(counter, 2);
+    ok(&run(&mut t, event(16)));
     let pcr0 = read_pcr(&mut t, 0);
+    let pcr0_sha384 = read_pcr_bank(&mut t, 0, alg::SHA384);
+    assert_ne!(read_pcr_bank(&mut t, 16, alg::SHA384), vec![0; 48]);
     assert_eq!(
         pcr_counter(&mut t),
         counter,
@@ -415,6 +425,9 @@ fn shutdown_state_then_startup_state_resumes_saved_pcr() {
     assert_eq!(read_pcr(&mut t, 0), pcr0);
     assert_eq!(read_pcr(&mut t, 16), vec![0u8; 32]);
     assert_eq!(read_pcr(&mut t, 17), vec![0xFFu8; 32]);
+    assert_eq!(read_pcr_bank(&mut t, 0, alg::SHA384), pcr0_sha384);
+    assert_eq!(read_pcr_bank(&mut t, 16, alg::SHA384), vec![0; 48]);
+    assert_eq!(read_pcr_bank(&mut t, 17, alg::SHA384), vec![0xff; 48]);
     assert_eq!(
         pcr_counter(&mut t),
         counter + 1,
@@ -431,12 +444,17 @@ fn shutdown_state_then_startup_state_resumes_saved_pcr() {
 #[test]
 fn shutdown_state_then_startup_clear_is_restart() {
     let mut t = started();
-    ok(&extend(&mut t, 0, &[1; 32]));
+    ok(&run(
+        &mut t,
+        with_pw(cc::PCR_EVENT, &[0], &[b""], &tpm2b(b"reset both banks")),
+    ));
     let counter = pcr_counter(&mut t);
+    assert_eq!(counter, 2);
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 1])));
     t.init();
     ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
     assert_eq!(read_pcr(&mut t, 0), vec![0u8; 32]);
+    assert_eq!(read_pcr_bank(&mut t, 0, alg::SHA384), vec![0; 48]);
     assert_eq!(
         pcr_counter(&mut t),
         counter + 1,
@@ -823,7 +841,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 13);
+    assert!(!more && c == cap::ALGS && count == 14);
     // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
@@ -839,6 +857,7 @@ fn capability_algs_pcrs_and_handles() {
             // XOR "H S" (slice C3).
             &[0x00, 0x0A, 0, 0, 0, 6],
             &[0x00, 0x0B, 0, 0, 0, 4],
+            &[0x00, 0x0C, 0, 0, 0, 4],
             &[0x00, 0x14, 0, 0, 1, 1],
             &[0x00, 0x15, 0, 0, 2, 1],
             &[0x00, 0x17, 0, 0, 2, 5],
@@ -850,7 +869,7 @@ fn capability_algs_pcrs_and_handles() {
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 7);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 8);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 1);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 0);
 
@@ -858,9 +877,11 @@ fn capability_algs_pcrs_and_handles() {
     let p = params(&r, 0);
     assert_eq!(p[0], 0);
     let sel = TpmlPcrSelection::unmarshal(&mut Reader::new(&p[5..])).unwrap();
-    assert_eq!(sel.selections.len(), 1);
+    assert_eq!(sel.selections.len(), 2);
     assert_eq!(sel.selections[0].hash, alg::SHA256);
     assert_eq!(sel.selections[0].select, [0xFF; 3]);
+    assert_eq!(sel.selections[1].hash, alg::SHA384);
+    assert_eq!(sel.selections[1].select, [0xFF; 3]);
     err(&get_cap(&mut t, cap::PCRS, 1, 1), Rc::VALUE.in_param(2));
 
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::HANDLES, 0, 1000));
@@ -1153,15 +1174,8 @@ fn pcr_read_errors() {
         Rc::VALUE.in_param(1),
     );
     // More selections than banks: TPM_RC_SIZE.
-    let two = cat(&[
-        &u32b(2),
-        &u16b(alg::SHA256),
-        &[3, 1, 0, 0],
-        &u16b(alg::SHA256),
-        &[3, 1, 0, 0],
-    ]);
     err(
-        &run(&mut t, plain(cc::PCR_READ, &[], &two)),
+        &run(&mut t, plain(cc::PCR_READ, &[], &u32b(3))),
         Rc::SIZE.in_param(1),
     );
     // Truncated.
@@ -1221,6 +1235,47 @@ fn pcr_extend_matches_independent_vector() {
     ok(&extend(&mut t, 23, &digest));
     assert_eq!(read_pcr(&mut t, 16), hex(EXTEND_ABC_ON_ZERO));
     assert_eq!(pcr_counter(&mut t), 2);
+}
+
+#[test]
+fn pcr_read_follows_bank_order_and_counts_each_extended_bank_once() {
+    let mut t = started();
+    let data256 = hex(SHA256_ABC);
+    let data384 = hex(SHA384_ABC);
+    let extend = |t: &mut Tpm, pcr, digests: &[u8]| {
+        ok(&run(t, with_pw(cc::PCR_EXTEND, &[pcr], &[b""], digests)));
+    };
+    let mixed = cat(&[&u32b(2), &u16b(12), &data384, &u16b(11), &data256]);
+    extend(&mut t, 0, &mixed);
+    extend(&mut t, 16, &mixed); // The non-counting PCR attribute covers both banks.
+    assert_eq!(pcr_counter(&mut t), 2);
+    let selection = hex("00000002000c03010001000b03010001");
+    let response = run(&mut t, plain(cc::PCR_READ, &[], &selection));
+    assert_eq!(
+        params(&response, 0),
+        cat(&[
+            &u32b(2),
+            &selection,
+            &u32b(4),
+            &tpm2b(&hex(SHA384_EXTEND_ABC_ON_ZERO)),
+            &tpm2b(&hex(SHA384_EXTEND_ABC_ON_ZERO)),
+            &tpm2b(&hex(EXTEND_ABC_ON_ZERO)),
+            &tpm2b(&hex(EXTEND_ABC_ON_ZERO)),
+        ]),
+    );
+    let repeated = cat(&[&u32b(2), &u16b(12), &data384, &u16b(12), &data384]);
+    extend(&mut t, 1, &repeated);
+    assert_eq!(
+        read_pcr_bank(&mut t, 1, alg::SHA384),
+        hex(
+            "0b815adb5c2824360b25f9c2ca667eee481dc15676327e8c56be97a3275d8f114d89b198e39f5f49e89657ea2a8adb6a"
+        )
+    );
+    assert_eq!(pcr_counter(&mut t), 3);
+    ok(&run(&mut t, with_pw(cc::PCR_RESET, &[16], &[b""], &[])));
+    assert_eq!(read_pcr_bank(&mut t, 16, alg::SHA384), vec![0; 48]);
+    assert_eq!(read_pcr(&mut t, 16), vec![0; 32]);
+    assert_eq!(pcr_counter(&mut t), 3);
 }
 
 #[test]
@@ -1295,10 +1350,9 @@ fn pcr_extend_handle_and_parameter_errors() {
         &run(&mut t, with_pw(cc::PCR_EXTEND, &[3], &[b""], &sha1)),
         Rc::HASH.in_param(1),
     );
-    // Two digests (HASH_COUNT is 1): TPM_RC_SIZE.
-    let two = cat(&[&u32b(2), &u16b(alg::SHA256), &d, &u16b(alg::SHA256), &d]);
+    // More digests than implemented banks: TPM_RC_SIZE.
     err(
-        &run(&mut t, with_pw(cc::PCR_EXTEND, &[3], &[b""], &two)),
+        &run(&mut t, with_pw(cc::PCR_EXTEND, &[3], &[b""], &u32b(3))),
         Rc::SIZE.in_param(1),
     );
     // Short digest and trailing octets.
@@ -1360,10 +1414,16 @@ fn pcr_event_hashes_and_extends() {
     let mut t = started();
     let r = run(&mut t, with_pw(cc::PCR_EVENT, &[0], &[b""], &tpm2b(b"abc")));
     let list = TpmlDigestValues::unmarshal(&mut Reader::new(params(&r, 0))).unwrap();
-    assert_eq!(list.digests.len(), 1);
+    assert_eq!(list.digests.len(), 2);
     assert_eq!(list.digests[0].hash, alg::SHA256);
     assert_eq!(list.digests[0].digest, hex(SHA256_ABC));
+    assert_eq!(list.digests[1].hash, alg::SHA384);
+    assert_eq!(list.digests[1].digest, hex(SHA384_ABC));
     assert_eq!(read_pcr(&mut t, 0), hex(EXTEND_ABC_ON_ZERO));
+    assert_eq!(
+        read_pcr_bank(&mut t, 0, alg::SHA384),
+        hex(SHA384_EXTEND_ABC_ON_ZERO)
+    );
     // Empty event data is hashed too (size 0 is valid); 1024 is the maximum.
     let r = run(&mut t, with_pw(cc::PCR_EVENT, &[1], &[b""], &tpm2b(&[])));
     let list = TpmlDigestValues::unmarshal(&mut Reader::new(params(&r, 0))).unwrap();
@@ -1383,7 +1443,7 @@ fn pcr_event_hashes_and_extends() {
             .unwrap()
             .digests
             .len(),
-        1
+        2
     );
     assert_eq!(pcr_counter(&mut t), before);
 }
@@ -1487,7 +1547,7 @@ fn hash_cmd(data: &[u8], hash: u16, hierarchy: u32) -> Vec<u8> {
 
 fn digest_and_ticket(resp: &[u8]) -> (Vec<u8>, TpmtTkHashcheck) {
     let mut rd = Reader::new(params(resp, 0));
-    let d = rd.tpm2b(32).unwrap().to_vec();
+    let d = rd.tpm2b(limits::MAX_PCR_DIGEST_SIZE).unwrap().to_vec();
     let t = TpmtTkHashcheck::unmarshal(&mut rd).unwrap();
     rd.finish().unwrap();
     (d, t)
@@ -1519,6 +1579,17 @@ fn hash_returns_sha256_and_a_null_ticket() {
         &mut t,
         hash_cmd(&[0; 1024], alg::SHA256, handle::RH_NULL),
     ));
+}
+
+#[test]
+fn hash_and_hash_sequence_accept_sha384() {
+    let mut t = started();
+    let direct = run(&mut t, hash_cmd(b"abc", alg::SHA384, handle::RH_NULL));
+    assert_eq!(digest_and_ticket(&direct).0, hex(SHA384_ABC));
+    let seq = seq_handle(&start_seq(&mut t, b"pw", alg::SHA384));
+    ok(&seq_update(&mut t, seq, b"pw", b"a"));
+    let streamed = seq_complete(&mut t, seq, b"pw", b"bc", handle::RH_NULL);
+    assert_eq!(params(&streamed, 0), params(&direct, 0));
 }
 
 #[test]
@@ -1713,7 +1784,7 @@ fn hash_sequence_start_errors_and_slot_limit() {
         Rc::SIZE.in_param(1),
     );
     err(&start_seq(&mut t, b"", 0x0004), Rc::HASH.in_param(2));
-    err(&start_seq(&mut t, b"", 0x000C), Rc::HASH.in_param(2));
+    err(&start_seq(&mut t, b"", 0x000D), Rc::HASH.in_param(2));
     err(
         &run(&mut t, plain(cc::HASH_SEQUENCE_START, &[], &tpm2b(b""))),
         Rc::INSUFFICIENT.in_param(2),
@@ -1785,12 +1856,18 @@ fn event_sequence_extends_the_pcr_with_the_digest() {
         ),
     );
     let list = TpmlDigestValues::unmarshal(&mut Reader::new(params(&r, 0))).unwrap();
-    assert_eq!(list.digests.len(), 1);
+    assert_eq!(list.digests.len(), 2);
     assert_eq!(list.digests[0].hash, alg::SHA256);
     // The digest of "abc" is extended into PCR 8 (computed independently: EXTEND_ABC_ON_ZERO).
     assert_eq!(list.digests[0].digest, hex(SHA256_ABC));
+    assert_eq!(list.digests[1].hash, alg::SHA384);
+    assert_eq!(list.digests[1].digest, hex(SHA384_ABC));
     assert_eq!(read_pcr(&mut t, 8), hex(EXTEND_ABC_ON_ZERO));
-    assert_eq!(pcr_counter(&mut t), 1);
+    assert_eq!(
+        read_pcr_bank(&mut t, 8, alg::SHA384),
+        hex(SHA384_EXTEND_ABC_ON_ZERO)
+    );
+    assert_eq!(pcr_counter(&mut t), 2);
     // Flushed.
     err(
         &seq_update(&mut t, seq, b"evt", b"x"),
@@ -1860,7 +1937,7 @@ fn event_sequence_complete_failures_keep_the_sequence() {
             .unwrap()
             .digests
             .len(),
-        1
+        2
     );
     assert_eq!(pcr_counter(&mut t), 0);
     err(&seq_update(&mut t, seq, b"", b"x"), Rc::reference_handle(0));

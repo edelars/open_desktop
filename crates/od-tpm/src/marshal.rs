@@ -17,10 +17,12 @@ pub mod limits {
     pub const PCR_COUNT: usize = 24;
     /// `PCR_SELECT_MIN` = `PCR_SELECT_MAX` = (24 + 7) / 8 (Part 2, formula 2; PTP Table 2: min 3).
     pub const PCR_SELECT_SIZE: usize = 3;
-    /// `HASH_COUNT`: implemented hash algorithms (SHA-256 only in phase A).
-    pub const HASH_COUNT: usize = 1;
-    /// Digest size of the largest implemented hash (SHA-256).
+    /// `HASH_COUNT`: implemented hash algorithms.
+    pub const HASH_COUNT: usize = 2;
+    /// Digest limit for the current SHA-256 authorization and object profile.
     pub const MAX_DIGEST_SIZE: usize = 32;
+    /// Largest implemented PCR digest (SHA-384).
+    pub const MAX_PCR_DIGEST_SIZE: usize = 48;
     /// `MAX_2B_BUFFER_SIZE` for `TPM2B_MAX_BUFFER` (Part 2, clause 10.4.8: at least 1024).
     pub const MAX_2B_BUFFER_SIZE: usize = 1024;
     /// `TPM2B_EVENT` limit (Part 2, Table 97).
@@ -167,7 +169,11 @@ impl Writer {
 
 /// Digest size implied by a hash algorithm identifier; `None` if the algorithm is not implemented.
 pub fn digest_size(hash: u16) -> Option<usize> {
-    (hash == alg::SHA256).then_some(32)
+    match hash {
+        alg::SHA256 => Some(32),
+        alg::SHA384 => Some(limits::MAX_PCR_DIGEST_SIZE),
+        _ => None,
+    }
 }
 
 /// `TPMS_PCR_SELECTION` (Table 106).
@@ -304,13 +310,20 @@ impl TpmlDigest {
     }
 
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_with_limit(r, limits::MAX_PCR_DIGEST_SIZE)
+    }
+
+    pub(crate) fn unmarshal_with_limit(
+        r: &mut Reader<'_>,
+        digest_limit: usize,
+    ) -> Result<Self, Rc> {
         let count = r.u32()? as usize;
         if count > limits::MAX_DIGEST_LIST {
             return Err(r.err(Rc::SIZE));
         }
         let mut digests = Vec::with_capacity(count);
         for _ in 0..count {
-            digests.push(r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec());
+            digests.push(r.tpm2b(digest_limit)?.to_vec());
         }
         Ok(TpmlDigest { digests })
     }
@@ -1118,7 +1131,7 @@ mod tests {
             Err(Rc::INSUFFICIENT)
         );
         // count above HASH_COUNT: TPM_RC_SIZE.
-        let bytes = [0, 0, 0, 2];
+        let bytes = [0, 0, 0, 3];
         assert_eq!(
             TpmlPcrSelection::unmarshal(&mut Reader::new(&bytes)),
             Err(Rc::SIZE)
@@ -1160,7 +1173,7 @@ mod tests {
     #[test]
     fn digest_list_and_tpm2b_limits() {
         let l = TpmlDigest {
-            digests: vec![vec![1; 32], vec![2; 32]],
+            digests: vec![vec![1; 32], vec![2; 48]],
         };
         rt(&l, TpmlDigest::marshal, TpmlDigest::unmarshal);
         let mut w = Writer::new();

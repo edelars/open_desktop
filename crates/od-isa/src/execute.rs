@@ -20664,7 +20664,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 } => match (instruction.opcode.byte, instruction.operand_size) {
                     (0x32, OperandSize::Byte) | (0x33, OperandSize::Dword) => true,
                     (0x33, OperandSize::Qword) => {
-                        // The FS and TCG2 probes compare fixed-size fields in their buffers.
+                        // The FS and TCG2 probes compare fixed-size fields. The firmware
+                        // SHA-384 compressor also XORs spilled message-schedule words.
                         memory.address_size == OperandSize::Qword
                             && memory.index.is_none()
                             && memory.scale == 1
@@ -20682,6 +20683,20 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                         || (destination
                                             == RegisterView::low(Register::Rdx, OperandSize::Qword)
                                             && matches!(memory.displacement, 0xce | 0xee))
+                                        || (destination
+                                            == RegisterView::low(Register::Rax, OperandSize::Qword)
+                                            && matches!(memory.displacement, 0x98 | 0x100))
+                                }
+                                (Some(0x4c), AddressBase::Register(Register::Rsp)) => {
+                                    (memory.displacement == 0x108
+                                        && destination
+                                            == RegisterView::low(Register::R12, OperandSize::Qword))
+                                        || (memory.displacement == 0x128
+                                            && destination
+                                                == RegisterView::low(
+                                                    Register::R8,
+                                                    OperandSize::Qword,
+                                                ))
                                 }
                                 (Some(0x49), AddressBase::Register(Register::R14)) => {
                                     (destination
@@ -20958,6 +20973,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     matches!(count_source, Operand::Immediate(_))
                         && (instruction.operand_size != OperandSize::Word || kind == ShiftKind::Ror)
                 }
+                (Operand::Register(_), ShiftKind::Ror, 0xd1) => {
+                    // The firmware SHA-384 compression rotates qword registers by one bit.
+                    instruction.operand_size == OperandSize::Qword
+                        && count_source == Operand::Immediate(1)
+                }
                 (Operand::Memory(_), ShiftKind::Shr, 0xc1) => {
                     instruction.operand_size == OperandSize::Qword
                         && instruction.address_size == OperandSize::Qword
@@ -21175,8 +21195,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     OperandSize::Dword | OperandSize::Qword,
                 ) => instruction.opcode.byte == 0x01,
                 (ArithmeticKind::Adc, Operand::Immediate(0), OperandSize::Qword) => {
-                    // Partition enumeration counts entries with a carry into a stack slot.
+                    // Partition enumeration and firmware SHA-384 count with carry.
                     instruction.opcode.byte == 0x83
+                }
+                (ArithmeticKind::Add, Operand::Immediate(1), OperandSize::Qword) => {
+                    // SHA-384 increments the low word of its block count for a buffered block.
+                    instruction.opcode.byte == 0x83
+                        && instruction.length == 9
+                        && instruction.prefixes.rex == Some(0x48)
+                        && destination.base == AddressBase::Register(Register::Rsp)
+                        && destination.index.is_none()
+                        && destination.scale == 1
+                        && matches!(destination.displacement, 0xf0 | 0x1c0)
                 }
                 (ArithmeticKind::Add, Operand::Immediate(9), OperandSize::Qword) => {
                     // Current firmware advances its default-variable iterator in a stack slot.

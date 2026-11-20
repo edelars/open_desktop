@@ -827,23 +827,8 @@ pub(crate) fn creation_pcr_digest(
     pcrs: &Pcrs,
     selection: &crate::marshal::TpmlPcrSelection,
 ) -> Vec<u8> {
-    let mut h = Sha256::new();
-    let mut any = false;
-    for sel in &selection.selections {
-        for i in 0..limits::PCR_COUNT {
-            if sel.selects(i)
-                && let Some(v) = pcrs.value(i)
-            {
-                h.update(v);
-                any = true;
-            }
-        }
-    }
-    if any {
-        h.finalize().to_vec()
-    } else {
-        Vec::new()
-    }
+    pcrs.selection_digest(selection)
+        .map_or_else(Vec::new, |digest| digest.to_vec())
 }
 
 /// Handle types a hierarchy value may take for objects (`TPMI_RH_HIERARCHY+`).

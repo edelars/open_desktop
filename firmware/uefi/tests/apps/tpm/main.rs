@@ -22,6 +22,9 @@ use od_firmware_test_apps::{ascii_to_char16, output};
 
 const LOG_CAPACITY: usize = 32 * 1024;
 const PCRS: [u32; 4] = [0, 1, 4, 5];
+const SPEC_ID_BYTES: usize = 69;
+const EVENT_HEADER_BYTES: usize = 100;
+const EVENT_SIZE_AT: usize = 96;
 
 #[unsafe(no_mangle)]
 unsafe extern "efiapi" fn efi_main(handle: Handle, system: *mut SystemTable) -> Status {
@@ -64,17 +67,17 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
     let mut banks = 0;
     check(unsafe { (tpm.get_active_pcr_banks)(tpm, &mut banks) })?;
     if caps[..5] != [36, 1, 1, 1, 1]
-        || le32(&caps, 8) != 2
+        || le32(&caps, 8) != 6
         || le32(&caps, 12) != 2
         || caps[16] != 1
         || caps[18..22] != [0x80, 0x0f, 0x80, 0x0f]
-        || le32(&caps, 28) != 1
+        || le32(&caps, 28) != 2
         || le32(&caps, 32) != banks
-        || banks != 2
+        || banks != 6
     {
         return Err(Status::DEVICE_ERROR);
     }
-    line!("OD-UEFI TCG2: SHA-256 bank");
+    line!("OD-UEFI TCG2: SHA-256 and SHA-384 banks");
 
     let mut start = 0;
     let mut last = 0;
@@ -85,11 +88,11 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
     }
     let before = usize::try_from(last.checked_sub(start).ok_or(Status::VOLUME_CORRUPTED)?)
         .map_err(|_| Status::VOLUME_CORRUPTED)?;
-    if !(65..=LOG_CAPACITY - 50).contains(&before) {
+    if !(SPEC_ID_BYTES..=LOG_CAPACITY - EVENT_HEADER_BYTES).contains(&before) {
         return Err(Status::VOLUME_CORRUPTED);
     }
-    let last_header = unsafe { slice::from_raw_parts(last as *const u8, 50) };
-    let extent = before + 50 + le32(last_header, 46) as usize;
+    let last_header = unsafe { slice::from_raw_parts(last as *const u8, EVENT_HEADER_BYTES) };
+    let extent = before + EVENT_HEADER_BYTES + le32(last_header, EVENT_SIZE_AT) as usize;
     if extent > LOG_CAPACITY {
         return Err(Status::VOLUME_CORRUPTED);
     }
@@ -129,16 +132,24 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
     check(unsafe {
         (tpm.get_event_log)(tpm, 2, &mut second_start, &mut second_last, &mut truncated)
     })?;
-    let final_entry = unsafe { slice::from_raw_parts(final_events.cast_const(), 66 + NOTE.len()) };
+    let final_entry = unsafe {
+        slice::from_raw_parts(
+            final_events.cast_const(),
+            16 + EVENT_HEADER_BYTES + NOTE.len(),
+        )
+    };
+    let final_event = &final_entry[16..];
     if second_start != start
         || truncated != 0
         || second_last <= last
         || le64(final_entry, 8) != 1
-        || le32(final_entry, 16) != 0
-        || le32(final_entry, 20) != 3
-        || final_entry[30..62] != [0; 32]
-        || le32(final_entry, 62) as usize != NOTE.len()
-        || &final_entry[66..] != NOTE
+        || le32(final_event, 0) != 0
+        || le32(final_event, 4) != 3
+        || !dual_bank_header(final_event)
+        || final_event[14..46] != [0; 32]
+        || final_event[48..96] != [0; 48]
+        || le32(final_event, EVENT_SIZE_AT) as usize != NOTE.len()
+        || &final_event[EVENT_HEADER_BYTES..] != NOTE
     {
         return Err(Status::VOLUME_CORRUPTED);
     }
@@ -289,7 +300,7 @@ unsafe fn verify_exit_events(events: *const u8) -> bool {
     if count != 5 && count != 7 {
         return false;
     }
-    let mut offset = 16 + 50 + b"Open Desktop diagnostic".len();
+    let mut offset = 16 + EVENT_HEADER_BYTES + b"Open Desktop diagnostic".len();
     for i in 1..count {
         let expected = if i == count - 1 {
             SUCCESS
@@ -298,57 +309,66 @@ unsafe fn verify_exit_events(events: *const u8) -> bool {
         } else {
             INVOCATION
         };
-        let header = unsafe { slice::from_raw_parts(events.add(offset), 50) };
+        let header = unsafe { slice::from_raw_parts(events.add(offset), EVENT_HEADER_BYTES) };
         if le32(header, 0) != 5
             || le32(header, 4) != 0x8000_0007
-            || le32(header, 8) != 1
-            || le32(header, 46) as usize != expected.len()
+            || !dual_bank_header(header)
+            || le32(header, EVENT_SIZE_AT) as usize != expected.len()
         {
             return false;
         }
-        let data = unsafe { slice::from_raw_parts(events.add(offset + 50), expected.len()) };
+        let data = unsafe {
+            slice::from_raw_parts(events.add(offset + EVENT_HEADER_BYTES), expected.len())
+        };
         if data != expected || header[14..46] != sha256(expected) {
             return false;
         }
-        offset += 50 + expected.len();
+        offset += EVENT_HEADER_BYTES + expected.len();
     }
     true
 }
 
 fn replay(log: &[u8], last: usize, esp: bool) -> Option<[[u8; 32]; 4]> {
+    // Keep signature reads byte-sized on the firmware interpreter.
+    let signature_matches = log[32..48]
+        .iter()
+        .zip(b"Spec ID Event03\0")
+        .all(|(actual, &expected)| unsafe { ptr::from_ref(actual).read_volatile() == expected });
     if log[..8] != [0, 0, 0, 0, 3, 0, 0, 0]
         || log[8..28] != [0; 20]
-        || le32(log, 28) != 33
-        || &log[32..48] != b"Spec ID Event03\0"
-        || log[52..65] != [0, 2, 106, 2, 1, 0, 0, 0, 0x0b, 0, 32, 0, 0]
+        || le32(log, 28) != 37
+        || !signature_matches
+        || log[52..SPEC_ID_BYTES] != [0, 2, 106, 2, 2, 0, 0, 0, 0x0b, 0, 32, 0, 0x0c, 0, 48, 0, 0]
     {
         return None;
     }
-    let mut offset = 65usize;
+    let mut offset = SPEC_ID_BYTES;
     let mut banks = [[0u8; 32]; 4];
     let mut seen = 0u8;
     let mut required_events = 0u16;
     loop {
-        let header = log.get(offset..offset.checked_add(50)?)?;
-        if le32(header, 8) != 1 || header[12..14] != [0x0b, 0] {
+        let header = log.get(offset..offset.checked_add(EVENT_HEADER_BYTES)?)?;
+        if !dual_bank_header(header) {
             return None;
         }
         let next = offset
-            .checked_add(50)?
-            .checked_add(le32(header, 46) as usize)?;
-        let payload = log.get(offset + 50..next)?;
+            .checked_add(EVENT_HEADER_BYTES)?
+            .checked_add(le32(header, EVENT_SIZE_AT) as usize)?;
+        let payload = log.get(offset + EVENT_HEADER_BYTES..next)?;
         let pcr = le32(header, 0);
         let kind = le32(header, 4);
-        match (pcr, kind) {
-            (0, 8) => required_events |= 1,
-            (0, 0x8000_000a) if required_events & 1 == 1 => required_events |= 2,
-            (1, 0x8000_000b) => required_events |= 4,
-            (4, 0x8000_0007) if payload == b"Calling EFI Application from Boot Option" => {
+        // A sparse key avoids a jump table over the PCR indices.
+        let key = (u64::from(pcr) << 32) | u64::from(kind);
+        match key {
+            0x0_0000_0008 => required_events |= 1,
+            0x0_8000_000a if required_events & 1 == 1 => required_events |= 2,
+            0x1_8000_000b => required_events |= 4,
+            0x4_8000_0007 if payload == b"Calling EFI Application from Boot Option" => {
                 required_events |= 8;
             }
-            (4, 4) if required_events & 8 == 8 => required_events |= 16,
-            (4, 0x8000_0003) if required_events & 16 == 16 => required_events |= 32,
-            (1, 0x8000_000c) if required_events & 16 == 0 => {
+            0x4_0000_0004 if required_events & 8 == 8 => required_events |= 16,
+            0x4_8000_0003 if required_events & 16 == 16 => required_events |= 32,
+            0x1_8000_000c if required_events & 16 == 0 => {
                 let name_len = le64(payload.get(..32)?, 16);
                 let name = payload.get(32..32 + usize::try_from(name_len).ok()?.checked_mul(2)?)?;
                 if name == b"B\0o\0o\0t\0O\0r\0d\0e\0r\0" {
@@ -357,7 +377,7 @@ fn replay(log: &[u8], last: usize, esp: bool) -> Option<[[u8; 32]; 4]> {
                     required_events |= 128;
                 }
             }
-            (5, 0x8000_000d) if required_events & 16 == 16 => {
+            0x5_8000_000d if required_events & 16 == 16 => {
                 let gpt = payload.get(..100)?;
                 let slots = usize::try_from(le64(gpt, 92)).ok()?;
                 if !gpt.starts_with(b"EFI PART")
@@ -369,7 +389,7 @@ fn replay(log: &[u8], last: usize, esp: bool) -> Option<[[u8; 32]; 4]> {
                 }
                 required_events |= 256;
             }
-            (4, 0x8000_0007) if payload == b"Booting to Boot0000 Option" => {
+            0x4_8000_0007 if payload == b"Booting to Boot0000 Option" => {
                 required_events |= 512;
             }
             _ => (),
@@ -392,6 +412,10 @@ fn replay(log: &[u8], last: usize, esp: bool) -> Option<[[u8; 32]; 4]> {
         }
         offset = next;
     }
+}
+
+fn dual_bank_header(header: &[u8]) -> bool {
+    le32(header, 8) == 2 && header[12..14] == [0x0b, 0] && header[46..48] == [0x0c, 0]
 }
 
 unsafe fn verify_acpi(system: *mut SystemTable) -> Option<()> {

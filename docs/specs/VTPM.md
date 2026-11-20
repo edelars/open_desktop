@@ -23,7 +23,7 @@ measured boot и журнала событий относится к S7-22. Гр
 |---|---|---|
 | §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
-| §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
+| §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Включены оба банка с PCR 0–23. Изменение выделения и его сохранение в snapshot остаются за `PCR_Allocate`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
 | §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 89 кодов из списка, 12 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
@@ -514,7 +514,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 `IncrementalSelfTest` проверяет входной список по тем же идентификаторам, что
 перечисляет `TPM_CAP_ALGS`. У прошедшего `Startup` TPM список `toDoList` пуст.
 
-Самопроверка использует известные открытые значения для SHA-256, HMAC, HMAC_DRBG,
+Самопроверка использует известные открытые значения для SHA-256, SHA-384, HMAC, HMAC_DRBG,
 KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяются
 подписи и их верификация, обе операции RSAES/OAEP и оба направления защиты
 параметров. Случайные входы тестов берутся из отдельных детерминированных
@@ -534,25 +534,39 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 | `TPM2_SelfTest` | `0x143` | — | `fullTest` YES повторяет тесты, NO — нечего проверять (всё проверено на `Startup`); `TPM_RC_TESTING` не возвращается |
 | `TPM2_IncrementalSelfTest` | `0x142` | — | `TPML_ALG` из 0–64 идентификаторов, повторы разрешены. Успех возвращает пустой `toDoList`. Необъявленный алгоритм даёт `VALUE.p1`, превышение лимита `SIZE.p1`. Поддерживается аудит сессии. |
 | `TPM2_GetTestResult` | `0x17C` | — | `outData` пуст, `testResult` `TPM_RC_SUCCESS` или `TPM_RC_FAILURE` (режим отказа) |
-| `TPM2_GetCapability` | `0x17A` | — | `TPM_CAP_ALGS` (SHA-256), `TPM_CAP_HANDLES` (PCR 0–23, загруженные sequence-объекты; остальные определённые типы — пустой список), `TPM_CAP_COMMANDS`, `TPM_CAP_PP_COMMANDS` и `TPM_CAP_AUDIT_COMMANDS` (пустые), `TPM_CAP_PCRS`, `TPM_CAP_TPM_PROPERTIES`; прочие — `TPM_RC_VALUE` (параметр 1). Данные одного ответа не больше 1024 октетов, `moreData` по `propertyCount` |
+| `TPM2_GetCapability` | `0x17A` | — | `TPM_CAP_ALGS` включает SHA-256 и SHA-384. `TPM_CAP_PCRS` возвращает полное выделение PCR с `moreData=NO`. Остальные текущие возможности описаны ниже. |
 | `TPM2_GetRandom` | `0x17B` | — | не более одного дайджеста (32 октета) за вызов, больший запрос — без ошибки, 32 октета (Part 3, 16.1) |
 | `TPM2_StirRandom` | `0x146` | — | до 128 октетов (`TPM_RC_SIZE` выше); данные подмешиваются в DRBG через `Update`, как «additional information», энтропией не считаются |
-| `TPM2_PCR_Read` | `0x17E` | — | банк SHA-256; в ответе не больше 8 значений (`TPML_DIGEST`), `pcrSelectionOut` показывает возвращённые PCR, остальные читаются следующим вызовом |
-| `TPM2_PCR_Extend` | `0x182` | password, handle 1 | PCR 0–16 и 23 на locality 0; PCR 17–22 — `TPM_RC_LOCALITY`; `TPM_RH_NULL` — разбор без действия; не более одного дайджеста (SHA-256) |
-| `TPM2_PCR_Event` | `0x13C` | password, handle 1 | `eventData` 0…1024 октетов; в ответе дайджест SHA-256 (и для `TPM_RH_NULL`); остальное как у `PCR_Extend` |
+| `TPM2_PCR_Read` | `0x17E` | — | SHA-256 и SHA-384 в порядке селекторов, внутри по возрастанию PCR. В ответе до 8 значений, `pcrSelectionOut` показывает возвращённые PCR. |
+| `TPM2_PCR_Extend` | `0x182` | password, handle 1 | PCR 0–16 и 23 на locality 0. Для PCR 17–22 — `TPM_RC_LOCALITY`. `TPM_RH_NULL` разбирает запрос без изменения. До двух дайджестов SHA-256/SHA-384. Повтор одного тега повторно расширяет банк в порядке запроса. |
+| `TPM2_PCR_Event` | `0x13C` | password, handle 1 | `eventData` 0…1024 октетов. Ответ содержит оба дайджеста, включая вызов для `TPM_RH_NULL`. |
 | `TPM2_PCR_Reset` | `0x13D` | password, handle 1 | только PCR 16 и 23; остальные — `TPM_RC_LOCALITY` (Part 3, 22.8); `TPM_RH_NULL` — `TPM_RC_VALUE` |
-| `TPM2_Hash` | `0x17D` | — | только SHA-256, до 1024 октетов, `hierarchy` ∈ owner/platform/endorsement/null; `validation` — всегда NULL-ticket (см. ниже) |
-| `TPM2_HashSequenceStart` | `0x186` | — | `hashAlg` SHA-256 (hash sequence) или `TPM_ALG_NULL` (event sequence); до 3 sequence-объектов одновременно, четвёртый — `TPM_RC_OBJECT_MEMORY`; `auth` до 32 октетов; handle `0x8000000n` |
+| `TPM2_Hash` | `0x17D` | — | SHA-256 или SHA-384, до 1024 октетов, `hierarchy` ∈ owner/platform/endorsement/null. `validation` — NULL-ticket (см. ниже). |
+| `TPM2_HashSequenceStart` | `0x186` | — | `hashAlg` SHA-256 или SHA-384 для hash sequence, `TPM_ALG_NULL` для event sequence. До 3 sequence-объектов одновременно. Четвёртый — `TPM_RC_OBJECT_MEMORY`. `auth` до 32 октетов, handle `0x8000000n`. |
 | `TPM2_SequenceUpdate` | `0x15C` | password, handle 1 | работает на hash и event sequence, до 1024 октетов за вызов |
 | `TPM2_SequenceComplete` | `0x13E` | password, handle 1 | только hash sequence (`TPM_RC_MODE` на event); sequence уничтожается при успехе (`{F}`); `validation` — NULL-ticket |
-| `TPM2_EventSequenceComplete` | `0x185` | password, handles 1 и 2 | только event sequence (`TPM_RC_MODE` на hash); PCR расширяется дайджестом; sequence уничтожается только при успехе |
+| `TPM2_EventSequenceComplete` | `0x185` | password, handles 1 и 2 | только event sequence (`TPM_RC_MODE` на hash). Оба банка расширяются своими дайджестами. Sequence уничтожается при успехе. |
 | `TPM2_ReadClock` | `0x181` | — | `TPMS_TIME_INFO` (25 октетов): `time`, `clock`, `resetCount`, `restartCount`, `safe` |
 
 **Не реализовано и отвечает `TPM_RC_COMMAND_CODE`:**
 
-- `TPM2_PCR_Allocate` (`0x12B`) — **отказ**. Команда требует platform authorization (иерархии — фаза B) и переносит выбор банков на следующий `_TPM_Init`; единственный банк SHA-256 из 24 PCR фиксирован. PTP 1.07 (Table 16) помечает её обязательной (`M`): отклонение от PTP записано ниже; решение — S7-30/S7-23. Для Windows TCG2 `SetActivePcrBanks` и так `EFI_UNSUPPORTED` (ADR-0009).
+- `TPM2_PCR_Allocate` (`0x12B`) — **отказ**. В текущем срезе оба банка фиксированы. Команда требует авторизации Platform и применяет выделение при следующем `_TPM_Init`. PTP 1.07 относит её к обязательным (таблица 16).
 - `TPM2_PCR_SetAuthPolicy` (`0x12C`), `TPM2_PCR_SetAuthValue` (`0x183`) — не поддерживаются (ADR-0009, открытый вопрос 6). PTP 1.07 (clause 4.7, item 7) допускает их отсутствие, а реализованные обязаны вернуть `TPM_RC_VALUE`.
 - Реализация расширений фазы B и оставшиеся коды перечислены в [инвентаре PTP 1.07](#целевой-профиль-pc-client-ptp-107).
+
+Оба банка используют общие атрибуты PCR. `Extend`, `Event` и
+`EventSequenceComplete` увеличивают счётчик по одному разу на банк,
+который был расширен. `PCR_Reset` и повторная инициализация PCR при
+Startup увеличивают его один раз за операцию. Атрибут `NO_INCREMENT`
+исключает соответствующий PCR. `Shutdown(STATE)` сохраняет оба банка
+для Resume, а Restart переинициализирует их. Снимок постоянного
+состояния сохраняет прежний формат.
+
+`Quote`, `PolicyPCR` и хеш PCR в данных создания используют внешний
+SHA-256 и конкатенацию полных значений 32/48 байт в порядке селекторов.
+Размеры digest в политике, nameAlg, подписи и авторизация сессий
+остаются в текущем профиле SHA-256.
+[TPM Library v185, Part 3 §§17, 22 и 23.7](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Кадрирование и коды ответа
 
@@ -705,7 +719,7 @@ KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяют
 | Команда | Код | Авторизация | Границы среза C2 |
 |---|---|---|---|
 | `TPM2_PolicyRestart` | `0x180` | — (handle: policy-сессия) | digest в нули, `commandCode`, `cpHash`, `pcrUpdateCounter` и признаки `isAuthValueNeeded`/`isPasswordNeeded` в начальное состояние; `nonceTPM` сохраняется; параметров нет (`TPM_RC_SIZE`) |
-| `TPM2_PolicyPCR` | `0x17F` | — | параметры `pcrDigest` (до 32 октетов), `pcrs` (банк SHA-256, `sizeofSelect` 3); digest PCR — SHA-256 по значениям выбранных PCR в порядке индексов; несовпадение `pcrDigest` — `TPM_RC_VALUE` (параметр 1), digest сессии не меняется; пустой `pcrDigest` берёт значение TPM; запоминается `pcrUpdateCounter`, изменение любого PCR → `TPM_RC_PCR_CHANGED`; extend: `H(policyDigest ‖ 0000017F ‖ pcrs ‖ digestTPM)` |
+| `TPM2_PolicyPCR` | `0x17F` | — | параметры `pcrDigest` (до 32 октетов), `pcrs` (один или оба банка SHA-256 и SHA-384, `sizeofSelect` 3); digest PCR — SHA-256 по полным значениям в порядке селекторов и затем индексов; несовпадение `pcrDigest` — `TPM_RC_VALUE` (параметр 1), digest сессии не меняется; пустой `pcrDigest` берёт значение TPM; запоминается `pcrUpdateCounter`, изменение любого PCR → `TPM_RC_PCR_CHANGED`; extend: `H(policyDigest ‖ 0000017F ‖ pcrs ‖ digestTPM)` |
 | `TPM2_PolicyOR` | `0x171` | — | `TPML_DIGEST` от 2 до 8 записей (`TPM_RC_SIZE`, параметр 1); текущий digest должен быть в списке (`TPM_RC_VALUE`); новый digest `H(0…0 ‖ 00000171 ‖ digests)` |
 | `TPM2_PolicyAuthValue` | `0x16B` | — | extend `H(policyDigest ‖ 0000016B)`, `isAuthValueNeeded` SET, `isPasswordNeeded` CLEAR |
 | `TPM2_PolicyCommandCode` | `0x16C` | — | команда вне таблицы — `TPM_RC_POLICY_CC` (параметр 1), другой код после установленного — `TPM_RC_VALUE`; extend `H(policyDigest ‖ 0000016C ‖ code)` |
@@ -805,7 +819,7 @@ PTP требует вместить поддерживаемый максима�
 
 ## Measured boot
 
-`Startup(CLEAR)`, `SelfTest` и `GetCapability` проходят через гостевой MMIO, прежде чем публикуется `EFI_TCG2_PROTOCOL`. Прошивка принимает полное выделение PCR 0–23 в одном или обоих банках SHA-256 и SHA-384. Она определяет поддерживаемые банки через `TPM_CAP_ALGS`, а активные через `TPM_CAP_PCRS`. Текущая модель `od-tpm` пока объявляет один банк SHA-256. `TPM_CAP_PCR_PROPERTIES` выдаёт свойства SAVE, RESET_L0, NO_INCREMENT и нулевую карту DRTM_RESET с пагинацией. Теги отсутствующих локальностей и неподдержанных PCR policy/auth отсутствуют. [TPM Library Part 2 v185, §6.14, Table 29](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
+`Startup(CLEAR)`, `SelfTest` и `GetCapability` проходят через гостевой MMIO, прежде чем публикуется `EFI_TCG2_PROTOCOL`. Прошивка принимает полное выделение PCR 0–23 в одном или обоих банках SHA-256 и SHA-384. Она определяет поддерживаемые банки через `TPM_CAP_ALGS`, а активные через `TPM_CAP_PCRS`. Текущая модель `od-tpm` активирует оба банка при запуске. `TPM_CAP_PCR_PROPERTIES` выдаёт свойства SAVE, RESET_L0, NO_INCREMENT и нулевую карту DRTM_RESET с пагинацией. Теги отсутствующих локальностей и неподдержанных PCR policy/auth отсутствуют. [TPM Library Part 2 v185, §6.14, Table 29](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
 
 | PCR | События |
 |---|---|

@@ -311,13 +311,19 @@ unsafe fn hash_log_extend(tpm: &Tcg2Protocol, buffer: u64) -> Result<(), Status>
     if start == 0 || last < start || truncated != 0 {
         return Err(Status::VOLUME_CORRUPTED);
     }
-    let record = unsafe { slice::from_raw_parts(last as *const u8, 50 + EVENT.len()) };
+    const EVENT2_HEADER_BYTES: usize = 100;
+    let record =
+        unsafe { slice::from_raw_parts(last as *const u8, EVENT2_HEADER_BYTES + EVENT.len()) };
     if !verify_bytes(
         &record[..14],
-        &[PCR, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 0x0b, 0],
+        &[PCR, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0, 0x0b, 0],
     ) || !verify_bytes(&record[14..46], &MEASUREMENT[..32])
-        || !verify_bytes(&record[46..50], &(EVENT.len() as u32).to_le_bytes())
-        || !verify_bytes(&record[50..], EVENT)
+        || !verify_bytes(&record[46..48], &[0x0c, 0])
+        || !verify_bytes(
+            &record[96..EVENT2_HEADER_BYTES],
+            &(EVENT.len() as u32).to_le_bytes(),
+        )
+        || !verify_bytes(&record[EVENT2_HEADER_BYTES..], EVENT)
     {
         return Err(Status::VOLUME_CORRUPTED);
     }

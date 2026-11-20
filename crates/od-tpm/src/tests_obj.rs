@@ -803,10 +803,10 @@ fn create_primary_framing_errors() {
         ),
         Rc::SIZE.in_param(3),
     );
-    // creationPCR with two selections (one bank is implemented).
-    let two = creation_params(b"", b"", &ecc_sign(), b"", &[0, 0, 0, 2]);
+    // creationPCR with more selections than the implemented banks.
+    let too_many = creation_params(b"", b"", &ecc_sign(), b"", &[0, 0, 0, 3]);
     err(
-        &create_primary_raw(&mut t, OWNER, b"", &two),
+        &create_primary_raw(&mut t, OWNER, b"", &too_many),
         Rc::SIZE.in_param(4),
     );
     // TPM2B_SENSITIVE_CREATE whose size does not match its content.

@@ -40,8 +40,7 @@ use crate::dispatch::COMMANDS;
 use crate::marshal::{
     PublicParams, Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING,
     TPMA_ALGORITHM_HASH, TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING,
-    TPMA_ALGORITHM_SYMMETRIC, TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection,
-    TpmsTaggedProperty, Writer, limits,
+    TPMA_ALGORITHM_SYMMETRIC, TpmaCc, TpmsAlgProperty, TpmsTaggedProperty, Writer, limits,
 };
 use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
@@ -90,7 +89,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 13] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 14] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -100,6 +99,7 @@ pub(crate) const ALGORITHMS: [(u16, u32); 13] = [
     // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
     (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
     (alg::SHA256, TPMA_ALGORITHM_HASH),
+    (alg::SHA384, TPMA_ALGORITHM_HASH),
     (
         alg::RSASSA,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
@@ -300,13 +300,7 @@ impl Tpm {
                 let mut w = Writer::new();
                 w.u8(0);
                 w.u32(capability);
-                TpmlPcrSelection {
-                    selections: vec![TpmsPcrSelection {
-                        hash: alg::SHA256,
-                        select: [0xFF; limits::PCR_SELECT_SIZE],
-                    }],
-                }
-                .marshal(&mut w);
+                self.pcrs.allocation().marshal(&mut w);
                 return Ok(Output {
                     handles: Vec::new(),
                     params: w.finish(),

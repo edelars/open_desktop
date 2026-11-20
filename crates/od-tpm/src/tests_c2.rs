@@ -4354,7 +4354,7 @@ fn quote_errors() {
         Rc::SIZE.in_param(1),
     );
     err(
-        &q(&mut t, key, b"kpw", &u16b(alg::NULL), &hex("00000002")),
+        &q(&mut t, key, b"kpw", &u16b(alg::NULL), &hex("00000003")),
         Rc::SIZE.in_param(3),
     );
     let mut long = cat(&[&tpm2b(b"n"), &u16b(alg::NULL), &sel04()]);
