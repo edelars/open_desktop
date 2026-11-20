@@ -46,7 +46,7 @@ use crate::marshal::{
 use crate::object::{
     MAX_PRIVATE, Object, Secret, check_creation, check_external_public, check_public,
     creation_pcr_digest, derive_object, find_object, is_object_hierarchy, open_private,
-    primary_drbg, private_blob,
+    primary_drbg, private_blob, qualified_name_of,
 };
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -353,7 +353,14 @@ impl Tpm {
             &parent.qualified_name,
         );
         let sensitive = obj.sensitive.as_ref().ok_or(Rc::FAILURE)?;
-        let blob = private_blob(&obj.public, &obj.name, sensitive, &parent.seed, &iv)?;
+        let blob = private_blob(
+            &obj.public,
+            &obj.name,
+            sensitive,
+            &sensitive.auth,
+            &parent.seed,
+            &iv,
+        )?;
         let (creation, creation_hash, ticket) = self.creation_artifacts(
             &obj,
             &selection,
@@ -402,6 +409,50 @@ impl Tpm {
         handles.u32(h);
         Ok(Output {
             handles: handles.finish(),
+            params: params.finish(),
+        })
+    }
+
+    /// Rewraps a loaded child with a new authValue. The current object and its authorization
+    /// stay available until the caller unloads or replaces it (Part 3 v185, §12.8).
+    pub(crate) fn cmd_object_change_auth(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let auth = AuthValue::from_slice_trimmed(p.tpm2b(limits::MAX_DIGEST_SIZE)?)
+            .ok_or_else(|| p.err(Rc::SIZE))?;
+        p.finish()?;
+
+        let object = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
+            .ok_or(Rc::reference_handle(0))?;
+        let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+        let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
+            .ok_or(Rc::reference_handle(1))?;
+        let parent_sensitive = parent
+            .sensitive
+            .as_ref()
+            .filter(|_| parent.is_storage())
+            .ok_or(Rc::TYPE.in_handle(2))?;
+        if object.qualified_name != qualified_name_of(&parent.qualified_name, &object.name) {
+            return Err(Rc::PARENT);
+        }
+
+        let mut iv = [0u8; 16];
+        self.drbg.generate(&mut iv).ok_or(Rc::FAILURE)?;
+        let blob = private_blob(
+            &object.public,
+            &object.name,
+            sensitive,
+            &auth,
+            &parent_sensitive.seed,
+            &iv,
+        )?;
+        let mut params = Writer::new();
+        params.tpm2b(&blob);
+        Ok(Output {
+            handles: Vec::new(),
             params: params.finish(),
         })
     }

@@ -39,6 +39,7 @@ impl Rc {
     pub const NV_UNINITIALIZED: Rc = Rc(RC_VER1 + 0x04A);
     pub const NV_SPACE: Rc = Rc(RC_VER1 + 0x04B);
     pub const NV_DEFINED: Rc = Rc(RC_VER1 + 0x04C);
+    pub const PARENT: Rc = Rc(RC_VER1 + 0x052);
     pub const SENSITIVE: Rc = Rc(RC_VER1 + 0x055);
     pub const NEEDS_TEST: Rc = Rc(RC_VER1 + 0x053);
 

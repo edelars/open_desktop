@@ -66,6 +66,7 @@ pub mod cc {
     pub const ACTIVATE_CREDENTIAL: u32 = 0x0000_0147;
     pub const NV_READ: u32 = 0x0000_014E;
     pub const NV_READ_LOCK: u32 = 0x0000_014F;
+    pub const OBJECT_CHANGE_AUTH: u32 = 0x0000_0150;
     pub const CREATE: u32 = 0x0000_0153;
     pub const LOAD: u32 = 0x0000_0157;
     pub const SEQUENCE_UPDATE: u32 = 0x0000_015C;

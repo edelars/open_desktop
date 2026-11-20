@@ -134,7 +134,7 @@ pub(crate) fn name_of(public: &TpmtPublic) -> Vec<u8> {
 }
 
 /// `nameAlg || H(parentQN || Name)` (Part 1, clause 24.5).
-fn qualified_name_of(parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
+pub(crate) fn qualified_name_of(parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
     let mut qn = alg::SHA256.to_be_bytes().to_vec();
     let mut h = Sha256::new();
     h.update(parent_qn);
@@ -574,6 +574,14 @@ fn padded_auth(a: &AuthValue) -> [u8; limits::MAX_DIGEST_SIZE] {
 /// `TPM2B_SENSITIVE` of the object (Table 225): `size || sensitiveType || authValue || seedValue
 /// || sensitive`.
 pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>, Rc> {
+    sensitive_with_auth(s, type_alg, &s.auth)
+}
+
+fn sensitive_with_auth(
+    s: &Sensitive,
+    type_alg: u16,
+    auth: &AuthValue,
+) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let secret: Zeroizing<Vec<u8>> = match &s.secret {
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
         Secret::Ecc(k) => ecc_scalar(k),
@@ -587,7 +595,7 @@ pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizi
         buf: Vec::with_capacity(2 + 34 + 34 + 2 + MAX_RSA_BYTES + 16),
     };
     body.u16(type_alg);
-    let auth = Zeroizing::new(padded_auth(&s.auth));
+    let auth = Zeroizing::new(padded_auth(auth));
     body.tpm2b(&auth[..]);
     body.tpm2b(&s.seed);
     body.tpm2b(&secret);
@@ -738,10 +746,11 @@ pub(crate) fn private_blob(
     obj_public: &TpmtPublic,
     name: &[u8],
     sensitive: &Sensitive,
+    auth: &AuthValue,
     parent_seed: &[u8],
     iv: &[u8; 16],
 ) -> Result<Vec<u8>, Rc> {
-    let bytes = sensitive_to_bytes(sensitive, obj_public.type_alg())?;
+    let bytes = sensitive_with_auth(sensitive, obj_public.type_alg(), auth)?;
     Ok(protect(parent_seed, name, &bytes, iv))
 }
 

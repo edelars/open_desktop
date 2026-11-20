@@ -16,7 +16,7 @@
 
 use sha2::{Digest, Sha256};
 
-use super::tests_b::{hc, run_hmac, start_hmac};
+use super::tests_b::{hc, pw_cmd, run_hmac, start_hmac};
 use super::*;
 use crate::codes::{curve, object_attr as oa};
 use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
@@ -1693,6 +1693,190 @@ fn a_sealed_primary_unseals_after_it_is_created_again() {
 }
 
 // ============================================================================ EvictControl
+
+#[test]
+fn object_change_auth_rewraps_a_persistent_child_without_changing_it() {
+    let mut t = started();
+    let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &ecc_storage()));
+    let parent_alias = 0x8100_0001;
+    ok(&evict(&mut t, OWNER, b"", parent.handle, parent_alias));
+    let mut template = sealed();
+    template.attributes |= oa::NO_DA;
+    let child = parse_child(&create_child(
+        &mut t,
+        parent.handle,
+        b"parent",
+        b"old",
+        b"secret",
+        &template,
+    ));
+    let (loaded, name) = parse_loaded(&load(
+        &mut t,
+        parent.handle,
+        b"parent",
+        &child.private,
+        &child.public,
+    ));
+    let target = 0x8100_0002;
+    ok(&evict(&mut t, OWNER, b"", loaded, target));
+    let before = t.persistent_snapshot();
+    let public = read_public(&mut t, target);
+    let change = |t: &mut Tpm, auth: &[u8]| {
+        pw_cmd(
+            t,
+            cc::OBJECT_CHANGE_AUTH,
+            &[target, parent_alias],
+            b"old",
+            &tpm2b(auth),
+        )
+    };
+    let result = change(&mut t, b"new\0\0");
+    let mut response = Reader::new(params(&result, 0));
+    let private = response.tpm2b(1024).unwrap();
+    response.finish().unwrap();
+    assert_ne!(private, child.private);
+    assert_ne!(params(&result, 0), params(&change(&mut t, b"new\0\0"), 0));
+    err(&change(&mut t, &[1; 33]), Rc::SIZE.in_param(1));
+    err(
+        &run(
+            &mut t,
+            plain(cc::OBJECT_CHANGE_AUTH, &[target, parent_alias], &[0; 2]),
+        ),
+        Rc::AUTH_MISSING,
+    );
+    assert_eq!(t.persistent_snapshot(), before);
+
+    ok(&flush(&mut t, loaded));
+    let (replacement, new_name) = parse_loaded(&load(
+        &mut t,
+        parent_alias,
+        b"parent",
+        private,
+        &child.public,
+    ));
+    assert_eq!(name, new_name);
+    assert_eq!(public, read_public(&mut t, replacement));
+    let unseal = |t: &mut Tpm, handle, auth: &[u8]| pw_cmd(t, cc::UNSEAL, &[handle], auth, &[]);
+    assert_eq!(params(&unseal(&mut t, target, b"old"), 0), tpm2b(b"secret"));
+    assert_eq!(
+        params(&unseal(&mut t, replacement, b"new"), 0),
+        tpm2b(b"secret")
+    );
+    err(&unseal(&mut t, target, b"new"), Rc::BAD_AUTH.in_session(1));
+    err(
+        &unseal(&mut t, replacement, b"old"),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    let mut damaged = private.to_vec();
+    damaged[3] ^= 1;
+    err(
+        &load(&mut t, parent_alias, b"parent", &damaged, &child.public),
+        Rc::INTEGRITY,
+    );
+}
+
+#[test]
+fn object_change_auth_requires_the_original_storage_parent() {
+    let mut t = started();
+    let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &ecc_storage()));
+    let wrong_parent = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &ecc_storage()));
+    let child = parse_child(&create_child(
+        &mut t,
+        parent.handle,
+        b"parent",
+        b"old",
+        b"",
+        &ecc_sign(),
+    ));
+    let (child, _) = parse_loaded(&load(
+        &mut t,
+        parent.handle,
+        b"parent",
+        &child.private,
+        &child.public,
+    ));
+    let change = |t: &mut Tpm, child, parent, auth: &[u8]| {
+        pw_cmd(
+            t,
+            cc::OBJECT_CHANGE_AUTH,
+            &[child, parent],
+            auth,
+            &tpm2b(b""),
+        )
+    };
+    err(
+        &change(&mut t, child, wrong_parent.handle, b"old"),
+        Rc::PARENT,
+    );
+    err(
+        &change(&mut t, wrong_parent.handle, parent.handle, b""),
+        Rc::PARENT,
+    );
+    err(&change(&mut t, child, child, b"old"), Rc::TYPE.in_handle(2));
+    err(&change(&mut t, child, NULL, b"old"), Rc::VALUE.in_handle(2));
+    ok(&flush(&mut t, wrong_parent.handle));
+    let mut public = unmarshal_public(&parent.public);
+    public.attributes = oa::RESTRICTED | oa::DECRYPT;
+    let (external, _) = parse_loaded(&load_external(&mut t, &public, NULL));
+    err(
+        &change(&mut t, child, external, b"old"),
+        Rc::TYPE.in_handle(2),
+    );
+    err(
+        &change(&mut t, external, parent.handle, b""),
+        Rc::AUTH_UNAVAILABLE,
+    );
+}
+
+#[test]
+fn object_change_auth_preserves_the_storage_seed_for_existing_descendants() {
+    let mut t = started();
+    let root = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_storage()));
+    let storage = parse_child(&create_child(
+        &mut t,
+        root.handle,
+        b"",
+        b"old",
+        b"",
+        &ecc_storage(),
+    ));
+    let (parent, _) = parse_loaded(&load(
+        &mut t,
+        root.handle,
+        b"",
+        &storage.private,
+        &storage.public,
+    ));
+    let sealed_child = parse_child(&create_child(
+        &mut t,
+        parent,
+        b"old",
+        b"",
+        b"leaf",
+        &sealed(),
+    ));
+    let changed = pw_cmd(
+        &mut t,
+        cc::OBJECT_CHANGE_AUTH,
+        &[parent, root.handle],
+        b"old",
+        &tpm2b(&[7; 32]),
+    );
+    let private = Reader::new(params(&changed, 0)).tpm2b(1024).unwrap();
+    ok(&flush(&mut t, parent));
+    let (parent, _) = parse_loaded(&load(&mut t, root.handle, b"", private, &storage.public));
+    let (leaf, _) = parse_loaded(&load(
+        &mut t,
+        parent,
+        &[7; 32],
+        &sealed_child.private,
+        &sealed_child.public,
+    ));
+    assert_eq!(
+        params(&pw_cmd(&mut t, cc::UNSEAL, &[leaf], b"", &[]), 0),
+        tpm2b(b"leaf")
+    );
+}
 
 #[test]
 fn evict_control_makes_objects_persistent_and_evicts_them() {
