@@ -36,17 +36,18 @@
 //! of a session that needs the authValue; the response HMAC of a policy session with
 //! `isPasswordNeeded` (keyed with `sessionKey`).
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 
 use crate::codes::{alg, cc, handle, object_attr, st};
 use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify};
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{
-    MAX_DATA, PublicParams, Reader, Scheme, TpmlDigest, TpmlPcrSelection, TpmtSignature,
-    TpmtTicket, Writer, limits,
+    PublicParams, Reader, Scheme, TpmlDigest, TpmlPcrSelection, TpmtSignature, TpmtTicket, Writer,
+    digest_size, limits,
 };
 use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
+use crate::object_cmd::VerifiedTicket;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::{Session, SessionKind};
@@ -54,6 +55,7 @@ use crate::state::{TimePoint, Tpm};
 
 /// The top bit of the private eight-octet timeout marks an assertion without nonceTPM.
 const RESET_BOUND_TIMEOUT: u64 = 1 << 63;
+const MAX_NAME_SIZE: usize = 2 + limits::MAX_PCR_DIGEST_SIZE;
 
 /// The policy context of a session (Part 1, clause 17.7.8) for the SHA-256 session hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -590,7 +592,6 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         // The Names can describe another TPM when calculating a trial policy.
-        const MAX_NAME_SIZE: usize = 2 + limits::MAX_PCR_DIGEST_SIZE;
         p.set_param(1);
         let object_name = p.tpm2b(MAX_NAME_SIZE)?;
         p.set_param(2);
@@ -1020,34 +1021,26 @@ impl Tpm {
         Ok(Some(cp_hash.try_into().map_err(|_| Rc::SIZE.in_param(2))?))
     }
 
-    /// `TPM2_PolicyAuthorize` with a legacy VerifySignature ticket (Part 3 §23.16).
+    /// `TPM2_PolicyAuthorize` with a legacy or digest verification ticket (Part 3 v185 §23.16).
     pub(crate) fn cmd_policy_authorize(
         &mut self,
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let approved = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let approved = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
         p.set_param(2);
-        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let policy_ref = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
         p.set_param(3);
-        let key_name = p.tpm2b(MAX_DATA)?;
+        let key_name = p.tpm2b(MAX_NAME_SIZE)?;
         p.set_param(4);
-        if p.u16()? != st::VERIFIED {
-            return Err(p.err(Rc::TAG));
-        }
-        let hierarchy = p.u32()?;
-        if !is_object_hierarchy(hierarchy) {
-            return Err(p.err(Rc::VALUE));
-        }
-        let ticket = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let ticket = VerifiedTicket::unmarshal(p)?;
         p.finish()?;
 
         let (name_alg, name_digest) = key_name.split_at_checked(2).ok_or(Rc::SIZE.in_param(3))?;
-        if name_alg != alg::SHA256.to_be_bytes() {
-            return Err(Rc::HASH.in_param(3));
-        }
-        if name_digest.len() != DIGEST {
+        let name_alg = u16::from_be_bytes([name_alg[0], name_alg[1]]);
+        let name_size = digest_size(name_alg).ok_or(Rc::HASH.in_param(3))?;
+        if name_digest.len() != name_size {
             return Err(Rc::SIZE.in_param(3));
         }
 
@@ -1057,10 +1050,24 @@ impl Tpm {
             if approved != session.policy.digest {
                 return Err(Rc::VALUE.in_param(1));
             }
-            let mut signed = Sha256::new();
-            signed.update(approved);
-            signed.update(policy_ref);
-            if !self.valid_verified_ticket(key_name, &signed.finalize(), hierarchy, ticket) {
+            let valid = match ticket.signed_hash_alg(name_alg) {
+                alg::SHA256 => {
+                    let signed = Sha256::new()
+                        .chain_update(approved)
+                        .chain_update(policy_ref)
+                        .finalize();
+                    self.valid_verified_ticket(key_name, &signed, &ticket)
+                }
+                alg::SHA384 => {
+                    let signed = Sha384::new()
+                        .chain_update(approved)
+                        .chain_update(policy_ref)
+                        .finalize();
+                    self.valid_verified_ticket(key_name, &signed, &ticket)
+                }
+                _ => return Err(Rc::HASH.in_param(4)),
+            };
+            if !valid {
                 return Err(Rc::POLICY);
             }
         }

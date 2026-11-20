@@ -1396,6 +1396,70 @@ fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn verify_digest_signature_uses_the_fixed_scheme_and_encodes_hash_metadata() {
+    let mut t = started();
+    let digest = hexb(MSG_DIGEST);
+    let rsa_sig = rsassa_signature(&hexb(RSA_SIG));
+    let ecc_sig = ecdsa_signature(&hexb(EC_R), &hexb(EC_S));
+    let verify = |t: &mut Tpm, key, context: &[u8], digest: &[u8], signature: &[u8]| {
+        run(
+            t,
+            plain(
+                cc::VERIFY_DIGEST_SIGNATURE,
+                &[key],
+                &cat(&[&tpm2b(context), &tpm2b(digest), signature]),
+            ),
+        )
+    };
+    let (rsa, _) = parse_loaded(&load_external(&mut t, &ext_rsa_public(), NULL));
+    let reply = verify(&mut t, rsa, &[], &digest, &rsa_sig);
+    assert_eq!(params(&reply, 0), hexb("802740000007000b0000"));
+
+    let (ecc, name) = parse_loaded(&load_external(&mut t, &ext_ecc_public(), OWNER));
+    let reply = verify(&mut t, ecc, &[], &digest, &ecc_sig);
+    let proof = crate::crypto::kdfa_sha256(
+        &t.persistent.owner_seed[..],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
+    let metadata = u16b(alg::SHA256);
+    let hmac = crate::crypto::hmac_sha256(&proof, &[&u16b(0x8027), &digest, &name, &metadata]);
+    assert_eq!(
+        params(&reply, 0),
+        cat(&[&hexb("802740000001000b"), &tpm2b(&hmac)])
+    );
+    err(
+        &verify(&mut t, ecc, &[], &digest, &rsa_sig),
+        Rc::SCHEME.in_param(3),
+    );
+    err(
+        &verify(&mut t, ecc, &[0], &digest, &ecc_sig),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &verify(&mut t, ecc, &[], &digest[..31], &ecc_sig),
+        Rc::SIZE.in_param(2),
+    );
+    err(
+        &verify(&mut t, ecc, &[], &Sha256::digest(&digest), &ecc_sig),
+        Rc::SIGNATURE,
+    );
+
+    let mut open = ext_ecc_public();
+    let PublicParams::Ecc { scheme, .. } = &mut open.params else {
+        unreachable!()
+    };
+    *scheme = Scheme::NULL;
+    let (open, _) = parse_loaded(&load_external(&mut t, &open, NULL));
+    err(
+        &verify(&mut t, open, &[], &digest, &ecc_sig),
+        Rc::SCHEME.in_handle(1),
+    );
+}
+
+#[test]
 fn load_external_ecc_public_key_verifies_an_openssl_signature() {
     let mut t = started();
     let (h, name) = parse_loaded(&load_external(&mut t, &ext_ecc_public(), NULL));

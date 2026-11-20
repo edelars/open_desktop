@@ -39,7 +39,8 @@ use crate::dispatch::{AuthRole, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsCreationData,
-    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer, limits,
+    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer,
+    digest_size, limits,
 };
 use crate::object::{
     MAX_PRIVATE, Object, Secret, check_creation, check_external_public, check_public,
@@ -52,14 +53,82 @@ use crate::state::Tpm;
 /// `TPMA_LOCALITY` of locality 0 (Part 2, Table 41, bit 0).
 const LOCALITY_ZERO: u8 = 1;
 const CREATION_TAG: [u8; 2] = st::CREATION.to_be_bytes();
-const VERIFIED_TAG: [u8; 2] = st::VERIFIED.to_be_bytes();
 
 fn creation_ticket_parts<'a>(name: &'a [u8], creation_hash: &'a [u8]) -> [&'a [u8]; 3] {
     [&CREATION_TAG, name, creation_hash]
 }
 
-fn verified_ticket_parts<'a>(signed_hash: &'a [u8], key_name: &'a [u8]) -> [&'a [u8]; 3] {
-    [&VERIFIED_TAG, signed_hash, key_name]
+/// The implemented selectors of `TPMT_TK_VERIFIED` (Part 2 v185, Table 113).
+#[derive(Clone, Copy)]
+enum VerifiedKind {
+    Legacy,
+    Digest { hash: u16 },
+}
+
+impl VerifiedKind {
+    fn tag(self) -> u16 {
+        match self {
+            Self::Legacy => st::VERIFIED,
+            Self::Digest { .. } => st::DIGEST_VERIFIED,
+        }
+    }
+
+    fn metadata(self) -> Option<[u8; 2]> {
+        match self {
+            Self::Legacy => None,
+            Self::Digest { hash } => Some(hash.to_be_bytes()),
+        }
+    }
+}
+
+pub(crate) struct VerifiedTicket<'a> {
+    kind: VerifiedKind,
+    hierarchy: u32,
+    hmac: &'a [u8],
+}
+
+impl<'a> VerifiedTicket<'a> {
+    pub(crate) fn signed_hash_alg(&self, key_name_alg: u16) -> u16 {
+        match self.kind {
+            VerifiedKind::Legacy => key_name_alg,
+            VerifiedKind::Digest { hash } => hash,
+        }
+    }
+
+    pub(crate) fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
+        let tag = p.u16()?;
+        if !matches!(tag, st::VERIFIED | st::DIGEST_VERIFIED) {
+            return Err(p.err(Rc::TAG));
+        }
+        let hierarchy = p.u32()?;
+        if !is_object_hierarchy(hierarchy) {
+            return Err(p.err(Rc::VALUE));
+        }
+        let kind = if tag == st::DIGEST_VERIFIED {
+            let hash = p.u16()?;
+            if digest_size(hash).is_none() {
+                return Err(p.err(Rc::HASH));
+            }
+            VerifiedKind::Digest { hash }
+        } else {
+            VerifiedKind::Legacy
+        };
+        let hmac = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
+        Ok(Self {
+            kind,
+            hierarchy,
+            hmac,
+        })
+    }
+
+    fn marshal(&self, w: &mut Writer) {
+        w.u16(self.kind.tag());
+        w.u32(self.hierarchy);
+        if let Some(meta) = self.kind.metadata() {
+            w.bytes(&meta);
+        }
+        w.tpm2b(self.hmac);
+    }
 }
 
 /// What a child needs from its parent, copied so that the parent is not borrowed while the TPM
@@ -220,14 +289,23 @@ impl Tpm {
         &self,
         key_name: &[u8],
         signed_hash: &[u8],
-        hierarchy: u32,
-        digest: &[u8],
+        ticket: &VerifiedTicket<'_>,
     ) -> bool {
-        self.proof(hierarchy).is_some_and(|proof| {
+        if !self.permanent_enabled(ticket.hierarchy) {
+            return false;
+        }
+        let tag = ticket.kind.tag().to_be_bytes();
+        let metadata = ticket.kind.metadata();
+        self.proof(ticket.hierarchy).is_some_and(|proof| {
             hmac_sha256_verify(
                 &proof,
-                &verified_ticket_parts(signed_hash, key_name),
-                digest,
+                &[
+                    &tag,
+                    signed_hash,
+                    key_name,
+                    metadata.as_slice().as_flattened(),
+                ],
+                ticket.hmac,
             )
         })
     }
@@ -746,16 +824,74 @@ impl Tpm {
         if !o.verify_signature(digest, &signature) {
             return Err(Rc::SIGNATURE);
         }
+        Ok(self.verified_signature_output(o, digest, VerifiedKind::Legacy))
+    }
+
+    /// `TPM2_VerifyDigestSignature` (Part 3 v185 §20.4) verifies the supplied prehash.
+    pub(crate) fn cmd_verify_digest_signature(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        // Neither RSASSA nor ECDSA accepts a signature context (Part 2 v185, Table 220).
+        p.tpm2b(0)?;
+        p.set_param(2);
+        let digest = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
+        p.set_param(3);
+        let signature = TpmtSignature::unmarshal(p)?;
+        p.finish()?;
+
+        let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        if !o.has(object_attr::SIGN) {
+            return Err(Rc::KEY.in_handle(1));
+        }
+        let key_scheme = match o.public.params {
+            PublicParams::Rsa { scheme, .. } if scheme.alg == alg::RSASSA => scheme,
+            PublicParams::Ecc { scheme, .. } if scheme.alg == alg::ECDSA => scheme,
+            _ => return Err(Rc::SCHEME.in_handle(1)),
+        };
+        let sig_scheme = match &signature {
+            TpmtSignature::Rsassa { hash, .. } => (alg::RSASSA, *hash),
+            TpmtSignature::Ecdsa { hash, .. } => (alg::ECDSA, *hash),
+            TpmtSignature::Null => return Err(Rc::SCHEME.in_param(3)),
+        };
+        if sig_scheme != (key_scheme.alg, key_scheme.hash) {
+            return Err(Rc::SCHEME.in_param(3));
+        }
+        if digest.len() != limits::MAX_DIGEST_SIZE {
+            return Err(Rc::SIZE.in_param(2));
+        }
+        if !o.verify_signature(digest, &signature) {
+            return Err(Rc::SIGNATURE);
+        }
+        Ok(self.verified_signature_output(
+            o,
+            digest,
+            VerifiedKind::Digest {
+                hash: key_scheme.hash,
+            },
+        ))
+    }
+
+    fn verified_signature_output(&self, o: &Object, digest: &[u8], kind: VerifiedKind) -> Output {
+        let tag = kind.tag().to_be_bytes();
+        let metadata = kind.metadata();
         let ticket = self.ticket(
-            st::VERIFIED,
+            kind.tag(),
             o.hierarchy,
-            &verified_ticket_parts(digest, &o.name),
+            &[&tag, digest, &o.name, metadata.as_slice().as_flattened()],
         );
         let mut w = Writer::new();
-        ticket.marshal(&mut w);
-        Ok(Output {
+        VerifiedTicket {
+            kind,
+            hierarchy: ticket.hierarchy,
+            hmac: &ticket.digest,
+        }
+        .marshal(&mut w);
+        Output {
             handles: Vec::new(),
             params: w.finish(),
-        })
+        }
     }
 }

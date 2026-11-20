@@ -1072,6 +1072,34 @@ fn policy_name_hash_has_one_shared_restriction_and_a_fixed_digest() {
 }
 
 #[test]
+fn trial_policy_authorize_accepts_sha384_ticket_fields_at_the_wire_limit() {
+    let mut t = started();
+    let trial = policy_session(&mut t, se::TRIAL);
+    let name = cat(&[&u16b(alg::SHA384), &[0x11; 48]]);
+    let policy_ref = [0x22; 48];
+    let args = cat(&[
+        &tpm2b(&[0x33; 48]),
+        &tpm2b(&policy_ref),
+        &tpm2b(&name),
+        &u16b(st::DIGEST_VERIFIED),
+        &u32b(OWNER),
+        &u16b(alg::SHA384),
+        &tpm2b(&[0x44; 48]),
+    ]);
+    ok(&pol(&mut t, cc::POLICY_AUTHORIZE, &trial, &args));
+    let intermediate = Sha256::new()
+        .chain_update([0; 32])
+        .chain_update(u32b(cc::POLICY_AUTHORIZE))
+        .chain_update(name)
+        .finalize();
+    let expected = Sha256::new()
+        .chain_update(intermediate)
+        .chain_update(policy_ref)
+        .finalize();
+    assert_eq!(digest(&mut t, &trial).as_slice(), &expected[..]);
+}
+
+#[test]
 fn policy_authorize_preserves_the_name_hash_across_context_save_and_authorization() {
     let (mut t, parent) = with_ecc_parent();
     let parent_name = unmarshal_name(&mut t, parent);

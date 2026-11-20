@@ -98,6 +98,7 @@ pub mod cc {
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const START_AUTH_SESSION: u32 = 0x0000_0176;
     pub const VERIFY_SIGNATURE: u32 = 0x0000_0177;
+    pub const VERIFY_DIGEST_SIGNATURE: u32 = 0x0000_01A5;
     pub const GET_CAPABILITY: u32 = 0x0000_017A;
     pub const GET_RANDOM: u32 = 0x0000_017B;
     pub const GET_TEST_RESULT: u32 = 0x0000_017C;
@@ -114,9 +115,10 @@ pub mod cc {
 pub mod st {
     pub const NO_SESSIONS: u16 = 0x8001;
     pub const SESSIONS: u16 = 0x8002;
-    /// Tickets (Table 23): creation and verified.
+    /// Tickets (Part 2 v185, Table 23).
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
+    pub const DIGEST_VERIFIED: u16 = 0x8027;
     pub const HASHCHECK: u16 = 0x8024;
     /// Attestation structure tags (Table 23).
     pub const ATTEST_NV: u16 = 0x8014;
