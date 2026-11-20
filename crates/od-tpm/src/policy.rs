@@ -41,10 +41,8 @@
 //! of a session that needs the authValue; the response HMAC of a policy session with
 //! `isPasswordNeeded` (keyed with `sessionKey`).
 
-use sha2::{Digest, Sha256};
-
 use crate::codes::{alg, cc, handle, object_attr, st};
-use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash, hmac_sha256, hmac_sha256_verify};
+use crate::crypto::{HashAlg, TpmDigest, hash, hmac_sha256, hmac_sha256_verify};
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
 use crate::marshal::{
     PublicParams, Reader, Scheme, TpmlDigest, TpmlPcrSelection, TpmtSignature, TpmtTicket, Writer,
@@ -292,12 +290,19 @@ impl PolicyState {
     }
 }
 
-/// SHA-256 over the values of the selected PCR in ascending index order (Part 1, "Selecting
-/// Multiple PCR"); the digest of the empty string when nothing is selected. A quote or a creation
-/// record always uses SHA-256; `TPM2_PolicyPCR` uses the hash of its session instead.
-pub(crate) fn pcr_selection_digest(pcrs: &Pcrs, selection: &TpmlPcrSelection) -> [u8; DIGEST] {
-    pcrs.selection_digest(selection)
-        .unwrap_or_else(|| Sha256::digest([]).into())
+/// The digest with `alg` over the values of the selected PCR in ascending index order (Part 1,
+/// "Selecting Multiple PCR"); the digest of the empty string when nothing is selected
+/// (`PCRComputeCurrentDigest` hashes whatever the selection holds, also nothing). `TPM2_Quote`
+/// passes the hash of the signing scheme (Part 3, clause 18.4.1; the reference takes
+/// `inScheme.details.any.hashAlg` after `CryptSelectSignScheme`); a creation record uses the
+/// `nameAlg` of the object instead (`creation_pcr_digest`).
+pub(crate) fn pcr_selection_digest_with(
+    alg: HashAlg,
+    pcrs: &Pcrs,
+    selection: &TpmlPcrSelection,
+) -> TpmDigest {
+    pcrs.selection_digest_with(alg, selection)
+        .unwrap_or_else(|| hash(alg, &[]))
 }
 
 /// The hash that digests the authorization message of `TPM2_PolicySigned` (the `sigHashAlg` of the

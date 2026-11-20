@@ -359,7 +359,7 @@ fn signing_schemes_accept_sha2_hashes_and_encryption_schemes_do_not() {
     }
 }
 
-// ------------------------------------------------- SHA-384 signatures stay refused (negative)
+// ---------------------------------------- SHA-384 signatures: size and scheme rules of the refusals
 
 const NULL_VALIDATION: [u8; 8] = [0x80, 0x24, 0x40, 0, 0, 7, 0, 0];
 const ECDSA_SHA384: Scheme = Scheme {
@@ -439,7 +439,7 @@ fn policy_signed_refuses_a_sha384_signature_with_hash_for_parameter_5() {
 }
 
 #[test]
-fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
+fn signing_commands_size_the_digest_by_the_sha384_scheme_of_the_key() {
     let mut t = started();
     let key = parse_primary(&create_primary(
         &mut t,
@@ -448,34 +448,31 @@ fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
         &ecc(base() | oa::SIGN, SymDef::Null, ECDSA_SHA384),
     ))
     .handle;
-    // TPM2_Sign: the key's scheme wins, so SHA-384 is TPM_RC_SCHEME for inScheme (parameter 2).
+    // Slice 1b: the key's scheme (SHA-384) now signs, so a SHA-256 digest of 32 octets is the wrong
+    // size (TPM2_Sign: digest is parameter 1; TPM2_SignDigest: digest is parameter 2) ...
     err(
         &sign(&mut t, key, b"pw", &[0x11; 32], &u16b(alg::NULL)),
-        Rc::SCHEME.in_param(2),
+        Rc::SIZE.in_param(1),
     );
-    // TPM2_SignDigest: the key scheme is rejected for handle 1 before the digest is looked at.
-    for digest in [vec![0x11; 32], vec![0x11; 48]] {
-        let params = cat(&[&tpm2b(b""), &tpm2b(&digest), &NULL_VALIDATION]);
-        err(
-            &run(&mut t, with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &params)),
-            Rc::SCHEME.in_handle(1),
-        );
-    }
-    // An attestation command (TPM2_GetTime, signHandle 2, inScheme parameter 2).
+    let params = cat(&[&tpm2b(b""), &tpm2b(&[0x11; 32]), &NULL_VALIDATION]);
     err(
-        &run(
-            &mut t,
-            with_pw(
-                cc::GET_TIME,
-                &[ENDORSEMENT, key],
-                &[b"", b"pw"],
-                &cat(&[&tpm2b(b"q"), &u16b(alg::NULL)]),
-            ),
-        ),
-        Rc::SCHEME.in_param(2),
+        &run(&mut t, with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &params)),
+        Rc::SIZE.in_param(2),
     );
-    // A key with a NULL scheme cannot be pushed to SHA-384 through inScheme either: the scheme
-    // structure of a signing command accepts SHA-256 only (TPM_RC_HASH).
+    // ... and a 48-octet digest is signed.
+    ok(&sign(&mut t, key, b"pw", &[0x11; 48], &u16b(alg::NULL)));
+    // An attestation command (TPM2_GetTime) signs with the key's SHA-384 scheme.
+    ok(&run(
+        &mut t,
+        with_pw(
+            cc::GET_TIME,
+            &[ENDORSEMENT, key],
+            &[b"", b"pw"],
+            &cat(&[&tpm2b(b"q"), &u16b(alg::NULL)]),
+        ),
+    ));
+    // A key with a NULL scheme takes SHA-384 from inScheme (slice 1b): a 32-octet digest is then
+    // the wrong size.
     let open = parse_primary(&create_primary(
         &mut t,
         OWNER,
@@ -491,26 +488,29 @@ fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
             &[0x11; 32],
             &cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA384)]),
         ),
-        Rc::HASH.in_param(2),
+        Rc::SIZE.in_param(1),
     );
 }
 
 #[test]
-fn verify_commands_refuse_a_sha384_signature_label_with_hash() {
+fn verify_commands_size_the_digest_by_a_sha384_signature_label() {
     let mut t = started();
     let key = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_sign())).handle;
     let signature = labelled_signature(false, alg::SHA384);
-    // TPM2_VerifySignature: signature is parameter 2.
+    // Slice 1b. TPM2_VerifySignature accepts the label (digest is parameter 1): a 32-octet digest
+    // is the wrong size, a 48-octet one reaches the check and the dummy signature fails it.
     err(
         &verify(&mut t, key, &[0x11; 32], &signature),
-        Rc::HASH.in_param(2),
+        Rc::SIZE.in_param(1),
     );
-    // TPM2_VerifyDigestSignature: signature is parameter 3.
+    err(&verify(&mut t, key, &[0x11; 48], &signature), Rc::SIGNATURE);
+    // TPM2_VerifyDigestSignature uses the fixed scheme of the key (ECDSA with SHA-256), so the
+    // SHA-384 label is a scheme mismatch (signature is parameter 3).
     for digest in [vec![0x11; 32], vec![0x11; 48]] {
         let params = cat(&[&tpm2b(b""), &tpm2b(&digest), &signature]);
         err(
             &run(&mut t, plain(cc::VERIFY_DIGEST_SIGNATURE, &[key], &params)),
-            Rc::HASH.in_param(3),
+            Rc::SCHEME.in_param(3),
         );
     }
 }

@@ -696,9 +696,12 @@ impl SymDef {
 }
 
 /// The hashes of an RSASSA or ECDSA scheme and of a signature (Part 2, Table 78 restricted to the
-/// implemented algorithms). Keys whose scheme names SHA-384/SHA-512 are declared for step 2: a
-/// signature with such a key is `TPM_RC_SCHEME` until support for those hashes appears.
+/// implemented algorithms). The signing, verification and attestation commands support all three.
 pub(crate) const SIGNING_HASHES: [u16; 3] = [alg::SHA256, alg::SHA384, alg::SHA512];
+
+/// [`SIGNING_HASHES`] and `TPM_ALG_NULL`: the `inScheme` of `TPM2_NV_Certify`, whose hash may be left
+/// to the key.
+const SIGNING_HASHES_OR_NULL: [u16; 4] = [alg::SHA256, alg::SHA384, alg::SHA512, alg::NULL];
 
 /// A signing or asymmetric scheme with its hash (`TPMT_SIG_SCHEME`, `TPMT_RSA_SCHEME`,
 /// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA`,
@@ -731,12 +734,20 @@ impl Scheme {
         Self::unmarshal_with_hashes(r, allowed, bad, &[alg::SHA256])
     }
 
+    /// The `inScheme` of a signing command (`TPM2_Sign`, the attestation commands): RSASSA or
+    /// ECDSA with SHA-256, SHA-384 or SHA-512 (`TPM_RC_HASH` for another hash; `bad` for another
+    /// scheme), or `TPM_ALG_NULL`.
+    pub(crate) fn unmarshal_signing(r: &mut Reader<'_>, bad: Rc) -> Result<Self, Rc> {
+        Self::unmarshal_with_hashes(r, &[alg::RSASSA, alg::ECDSA], bad, &SIGNING_HASHES)
+    }
+
+    /// [`Scheme::unmarshal_signing`] for `TPM2_NV_Certify`, where the hash may be `TPM_ALG_NULL`.
+    pub(crate) fn unmarshal_signing_or_null_hash(r: &mut Reader<'_>, bad: Rc) -> Result<Self, Rc> {
+        Self::unmarshal_with_hashes(r, &[alg::RSASSA, alg::ECDSA], bad, &SIGNING_HASHES_OR_NULL)
+    }
+
     /// Like [`Scheme::unmarshal`] for the scheme of a public area: RSASSA and ECDSA accept
     /// [`SIGNING_HASHES`], every other scheme (OAEP, ECDH) SHA-256 only (`TPM_RC_HASH`).
-    ///
-    /// RSASSA/ECDSA with SHA-384 or SHA-512 are declared for step 2 only: `TPM2_TestParms` and
-    /// `TPM2_Create` accept such keys, but signing with them is `TPM_RC_SCHEME` until the
-    /// signing commands support those hashes.
     pub(crate) fn unmarshal_public(
         r: &mut Reader<'_>,
         allowed: &[u16],

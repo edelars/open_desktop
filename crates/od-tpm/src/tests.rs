@@ -31,6 +31,8 @@ mod tests_sha2;
 mod tests_sha2_policy;
 #[path = "tests_sha2_sessions.rs"]
 mod tests_sha2_sessions;
+#[path = "tests_sha2_sign.rs"]
+mod tests_sha2_sign;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
