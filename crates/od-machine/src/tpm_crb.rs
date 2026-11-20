@@ -84,6 +84,8 @@ impl TpmCrb {
                     granted: false,
                     phase: Phase::Idle,
                     buffer: Zeroizing::new([0; BUFFER_LEN]),
+                    #[cfg(test)]
+                    fail_startup: false,
                 })),
             },
             clock,
@@ -96,6 +98,11 @@ impl TpmCrb {
 }
 
 impl TpmCrbHandle {
+    #[cfg(test)]
+    pub(crate) fn fail_startup(&self) {
+        lock(&self.state).fail_startup = true;
+    }
+
     /// Contains unencrypted TPM secrets. The host must protect the returned bytes.
     pub(crate) fn persistent_snapshot(&self, now_ns: u64) -> Vec<u8> {
         let mut state = lock(&self.state);
@@ -175,6 +182,8 @@ struct State {
     granted: bool,
     phase: Phase,
     buffer: Zeroizing<[u8; BUFFER_LEN]>,
+    #[cfg(test)]
+    fail_startup: bool,
 }
 
 impl State {
@@ -282,9 +291,20 @@ impl State {
         } else {
             written
         };
+        #[cfg(test)]
+        if self.fail_startup
+            && self.buffer[..received] == [0x80, 1, 0, 0, 0, 12, 0, 0, 1, 0x44, 0, 0]
+        {
+            self.complete(&[0x80, 1, 0, 0, 0, 10, 0, 0, 1, 1]);
+            return;
+        }
         let response = Zeroizing::new(self.tpm.execute(0, &self.buffer[..received], now_ms));
+        self.complete(&response);
+    }
+
+    fn complete(&mut self, response: &[u8]) {
         self.buffer.zeroize();
-        self.buffer[..response.len()].copy_from_slice(&response);
+        self.buffer[..response.len()].copy_from_slice(response);
         self.phase = Phase::Complete;
     }
 }

@@ -406,7 +406,7 @@ pub(super) const fn build_segments<const PACKAGE: bool>(
     })
 }
 
-const fn absent(device_type: u32) -> DeviceEntry {
+pub(super) const fn absent(device_type: u32) -> DeviceEntry {
     DeviceEntry {
         device_type,
         flags: 0,

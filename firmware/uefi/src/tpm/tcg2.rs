@@ -70,16 +70,29 @@ pub fn active() -> bool {
     unsafe { (*ptr::addr_of!(TCG2)).is_some() }
 }
 
-/// Initializes the handoff-validated CRB on the BSP before loading EFI images.
+pub struct InitializedTpm {
+    crb: Crb,
+    manufacturer: u32,
+}
+
+/// Initializes the handoff-validated CRB. A TPM in failure mode is unavailable.
 ///
 /// # Safety
-/// Boot Services are initialized and the aperture is mapped as device memory.
-pub unsafe fn install(base: u64, secure_boot_capable: bool) -> Result<(), Status> {
+/// Only the BSP uses the aperture, which is mapped as device memory.
+pub unsafe fn initialize(base: u64) -> Result<Option<InitializedTpm>, Status> {
+    let crb = unsafe { Crb::open(base)? };
+    Ok(initialize_tpm(crb)?.map(|manufacturer| InitializedTpm { crb, manufacturer }))
+}
+
+/// Publishes TCG2 for a successfully initialized TPM.
+///
+/// # Safety
+/// Boot Services are initialized on the BSP.
+pub unsafe fn install(tpm: InitializedTpm, secure_boot_capable: bool) -> Result<(), Status> {
     if active() {
         return Err(Status::ALREADY_STARTED);
     }
-    let crb = unsafe { Crb::open(base)? };
-    let manufacturer = initialize_tpm(crb)?;
+    let InitializedTpm { crb, manufacturer } = tpm;
     let capacity = if secure_boot_capable {
         SECURE_BOOT_CAPACITY
     } else {
@@ -154,8 +167,46 @@ fn checked_command(crb: Crb, cmd: &[u8], out: &mut [u8]) -> Result<usize, Status
     Ok(size)
 }
 
-fn initialize_tpm(crb: Crb) -> Result<u32, Status> {
+fn startup_succeeded(response: &[u8]) -> Result<bool, Status> {
+    match response {
+        [0x80, 1, 0, 0, 0, 10, 0, 0, 0, 0] => Ok(true),
+        [0x80, 1, 0, 0, 0, 10, 0, 0, 1, 1] => Ok(false), // TPM_RC_FAILURE
+        _ => Err(Status::DEVICE_ERROR),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn startup_distinguishes_tpm_failure_from_invalid_responses() {
+    let mut response = [0x80, 1, 0, 0, 0, 10, 0, 0, 0, 0];
+    assert_eq!(startup_succeeded(&response), Ok(true));
+    response[8..].copy_from_slice(&[1, 1]);
+    assert_eq!(startup_succeeded(&response), Ok(false));
+    assert_eq!(startup_succeeded(&response[..9]), Err(Status::DEVICE_ERROR));
+    response[1] = 2;
+    assert_eq!(startup_succeeded(&response), Err(Status::DEVICE_ERROR));
+    response[1] = 1;
+    response[9] = 0;
+    assert_eq!(startup_succeeded(&response), Err(Status::DEVICE_ERROR));
+}
+
+#[inline(never)]
+fn start_tpm(crb: Crb) -> Result<bool, Status> {
     const STARTUP: [u8; 12] = [0x80, 1, 0, 0, 0, 12, 0, 0, 1, 0x44, 0, 0];
+    let mut response = [0; 10];
+    let size = crb.submit(
+        STARTUP.as_ptr(),
+        STARTUP.len(),
+        response.as_mut_ptr(),
+        response.len(),
+    )?;
+    startup_succeeded(&response[..size])
+}
+
+fn initialize_tpm(crb: Crb) -> Result<Option<u32>, Status> {
+    if !start_tpm(crb)? {
+        return Ok(None);
+    }
     const SELF_TEST: [u8; 11] = [0x80, 1, 0, 0, 0, 11, 0, 0, 1, 0x43, 1];
     const GET_PCRS: [u8; 22] = [
         0x80, 1, 0, 0, 0, 22, 0, 0, 1, 0x7a, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 1,
@@ -164,18 +215,33 @@ fn initialize_tpm(crb: Crb) -> Result<u32, Status> {
         0x80, 1, 0, 0, 0, 22, 0, 0, 1, 0x7a, 0, 0, 0, 6, 0, 0, 1, 5, 0, 0, 0, 1,
     ];
     let mut response = [0; 32];
-    checked_command(crb, &STARTUP, &mut response)?;
     checked_command(crb, &SELF_TEST, &mut response)?;
     let size = checked_command(crb, &GET_PCRS, &mut response)?;
-    // No continuation, one SHA256 bank with all 24 PCRs implemented.
-    if size != 25 || response[10..25] != [0, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0x0b, 3, 0xff, 0xff, 0xff] {
+    // The capability describes one SHA256 bank with all 24 PCRs implemented.
+    let more_data = response[10];
+    let capability = u32::from_be_bytes(response[11..15].try_into().unwrap());
+    let bank_count = u32::from_be_bytes(response[15..19].try_into().unwrap());
+    let algorithm = u16::from_be_bytes(response[19..21].try_into().unwrap());
+    if size != 25
+        || more_data != 0
+        || capability != 5
+        || bank_count != 1
+        || algorithm != 0x000b
+        || response[21] != 3
+        || response[22..25] != [0xff; 3]
+    {
         return Err(Status::UNSUPPORTED);
     }
     let size = checked_command(crb, &GET_MANUFACTURER, &mut response)?;
-    if size != 27 || response[11..23] != [0, 0, 0, 6, 0, 0, 0, 1, 0, 0, 1, 5] {
+    let capability = u32::from_be_bytes(response[11..15].try_into().unwrap());
+    let property_count = u32::from_be_bytes(response[15..19].try_into().unwrap());
+    let property = u32::from_be_bytes(response[19..23].try_into().unwrap());
+    if size != 27 || capability != 6 || property_count != 1 || property != 0x0000_0105 {
         return Err(Status::DEVICE_ERROR);
     }
-    Ok(u32::from_be_bytes(response[23..27].try_into().unwrap()))
+    Ok(Some(u32::from_be_bytes(
+        response[23..27].try_into().unwrap(),
+    )))
 }
 
 pub(crate) fn hash(data: &[u8]) -> [u8; 32] {

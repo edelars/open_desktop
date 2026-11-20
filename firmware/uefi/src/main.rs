@@ -315,23 +315,38 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }
-    if unsafe { od_firmware::acpi::install::install(&handoff, system_pointer) } != Status::SUCCESS {
+    let tpm = if let Some(base) = handoff.tpm_crb_base() {
+        match unsafe { od_firmware::tpm::initialize(base) } {
+            Ok(Some(tpm)) => Some(tpm),
+            Ok(None) => {
+                com1_write(b"OD-FW TPM unavailable: TPM2_Startup returned TPM_RC_FAILURE\r\n");
+                None
+            }
+            Err(status) => stop(STOP_BOOT_SERVICES, status.raw() as u64),
+        }
+    } else {
+        None
+    };
+    if unsafe { od_firmware::acpi::install::install(&handoff, system_pointer, tpm.is_some()) }
+        != Status::SUCCESS
+    {
         stop(STOP_BOOT_SERVICES, 79);
     }
-    if let Some(base) = handoff.tpm_crb_base()
-        && let Err(status) = unsafe {
-            od_firmware::tpm::install(base, handoff.enforces_secure_boot())
-                .and_then(|()| od_firmware::tpm::measure::platform(&handoff))
+    if let Some(tpm) = tpm {
+        if let Err(status) = unsafe {
+            use od_firmware::tpm;
+            tpm::install(tpm, handoff.enforces_secure_boot())
+                .and_then(|()| tpm::measure::platform(&handoff))
                 .and_then(|()| {
                     if handoff.enforces_secure_boot() {
-                        od_firmware::tpm::secure_boot::initialize()
+                        tpm::secure_boot::initialize()
                     } else {
                         Ok(())
                     }
                 })
+        } {
+            stop(STOP_BOOT_SERVICES, status.raw() as u64);
         }
-    {
-        stop(STOP_BOOT_SERVICES, status.raw() as u64);
     }
     let processor_id = processor_id();
     if unsafe { od_firmware::smbios::install(&handoff, processor_id, system_pointer) }

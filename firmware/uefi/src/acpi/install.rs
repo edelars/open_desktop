@@ -8,9 +8,10 @@ use crate::{
 };
 
 use super::blob::{
-    ACPI_RECLAIM_END, ACPI_REGION_BASE, ACPI_REGION_END, BUILD_CAPACITY, FACS_ADDRESS,
+    ACPI_RECLAIM_END, ACPI_REGION_BASE, ACPI_REGION_END, BUILD_CAPACITY, FACS_ADDRESS, absent,
     build_segments,
 };
+use super::manifest::device_type;
 
 pub const EFI_ACPI_20_TABLE_GUID: Guid = Guid {
     data1: 0x8868_e871,
@@ -23,13 +24,25 @@ pub const EFI_ACPI_20_TABLE_GUID: Guid = Guid {
 /// Boot Services must be active, and `system` must point to their live table.
 /// `handoff` was parsed for boot and its ACPI reclaim/NVS pages, when present,
 /// are identity-mapped and writable. Only the BSP invokes this installer.
-pub unsafe fn install(handoff: &Handoff<'_>, system: *mut SystemTable) -> Status {
+pub unsafe fn install(
+    handoff: &Handoff<'_>,
+    system: *mut SystemTable,
+    tpm_available: bool,
+) -> Status {
     match handoff.acpi_fixed_hardware() {
         Ok(None) => return Status::SUCCESS,
         Ok(Some(_)) => {}
         Err(_) => return Status::LOAD_ERROR,
     }
-    let (entries, count) = handoff.device_entries();
+    let (mut entries, count) = handoff.device_entries();
+    if !tpm_available && handoff.tpm_crb_base().is_some() {
+        for entry in &mut entries[..count] {
+            if entry.device_type == device_type::TPM_CRB {
+                *entry = absent(device_type::TPM_CRB);
+                break;
+            }
+        }
+    }
     let mut blob = [0; BUILD_CAPACITY];
     let Ok(segments) = build_segments::<false>(&entries[..count], &mut blob) else {
         return Status::LOAD_ERROR;

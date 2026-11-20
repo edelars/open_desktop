@@ -238,6 +238,26 @@ target/release/od-runner prepare-secure-boot-nvram defaults --out defaults.nv
 
 `python3 tests/system/firmware_secure_boot_smoke.py` по умолчанию пять раз проверяет запуск неподписанного PE в SetupMode, зачисление `KEK`, `db`, `PK` с ESP, допуск подписанного PE после холодного старта, отказ неподписанному PE и отказ чужой подписи со штатным набором ключей. Скрипт сверяет записи зачисленного снимка и точные окончания COM1. `--work` принимает пустой каталог для сохранения открытых fixtures, сборок и логов. Готовые `--runner`, `--rom` и `--apps` передаются вместе. Каталог приложений содержит `hello.efi` и `enroll.efi`.
 
+### Отказ TPM при Startup
+
+При корректном CRB-ответе `TPM_RC_FAILURE` на `TPM2_Startup(CLEAR)` загрузка продолжается. Журнал COM1 содержит `OD-FW TPM unavailable: TPM2_Startup returned TPM_RC_FAILURE`. Прошивка скрывает TPM2 и устройство TPM из ACPI, не публикует TCG2 и таблицу финальных событий. При активном Secure Boot проверка образов остаётся включённой. Ошибки транспорта и прочие ответы Startup останавливают инициализацию прошивки. [TCG PFP 1.06 r52, §§3.3.2.1 и 7.1](https://medias.cdn.trustedcomputinggroup.org/production/TCG_PC_Client_Platform_Firmware_Profile_Version_1_06_Revision_52_pub_3_1184065dfc.pdf).
+
+```sh
+od_tpm_failure=$(mktemp -d)
+python3 tools/build/build_firmware.py --out "$od_tpm_failure/firmware.bin" \
+  --target-dir "$od_tpm_failure/firmware-target"
+cargo build --manifest-path firmware/uefi/tests/apps/Cargo.toml --bin tpm-absent \
+  --offline --release --target x86_64-unknown-uefi --target-dir "$od_tpm_failure/app-target"
+python3 tools/build/make_test_disk.py --esp-fat32 \
+  --bootx64 "$od_tpm_failure/app-target/x86_64-unknown-uefi/release/tpm-absent.efi" \
+  --out "$od_tpm_failure/esp.raw"
+OD_TPM_FAILURE_ROM="$od_tpm_failure/firmware.bin" OD_TPM_FAILURE_ESP="$od_tpm_failure/esp.raw" \
+  cargo test --offline --release -p od-machine --lib \
+  firmware_boot_continues_after_tpm_startup_failure -- --ignored --nocapture
+```
+
+Тестовая сборка `od-machine` подставляет ответ CRB для Startup. Гостевое приложение из ESP проверяет отсутствие протокола и таблицы событий. Host-тест сверяет COM1, ACPI и освобождение locality с возвратом CRB в idle.
+
 ## Что проверяет S7-12 (AML и DSDT)
 
 - `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` (77 тестов; из них AML 46, DSDT 13, manifest 4, таблица 3): эталонные байты ≥ 30 конструктов (PkgLength 1–4 байта и границы, NameString, Integer, String, EISAID, Name/Scope/Device/Method/Package/Buffer, дескрипторы ResourceTemplate), вычисленные вручную по спецификации и записанные в тесте с выкладкой; три побайтных эталона DSDT (PCI0 + COM1; только COM2 с level/active-low; без устройств), сгенерированные независимой Python-программой по ACPI 6.4 (скрипт не сохранён); отрицательные случаи — переполнение PkgLength, недопустимое имя, ссылка на неопределённое имя, повтор имени в одном Scope (при построении и в готовых байтах), порча контрольной суммы/длины/сигнатуры, неописуемые записи manifest. Это проверка формата на host: DSDT не загружалась в машину или ОС. Разбор `iasl -d` не выполнялся (`iasl` отсутствует).
