@@ -28417,16 +28417,13 @@ pub fn run_with_cpl3_profile_set(
                     rflags_defined,
                 });
             }
-            // This CPL3 slice intentionally supports only naturally aligned qword LOCK ADD.
-            // Refuse a valid but misaligned operand before the serial split RMW.
-            // Invalid ranges continue to the executor for normal architectural fault handling.
-            if config.context.privilege == PrivilegeLevel::Ring3
-                && cpl3_lock_add_qword_imm8_form(&instruction)
-                && let Operation::LockAddMem { destination, .. } = instruction.operation
-            {
+            // These CPL3 atomic memory forms are naturally aligned. Keep split accesses
+            // out of the backend fallback. Invalid ranges reach the shared architectural checks.
+            if let Some(destination) = cpl3_aligned_atomic_destination(&instruction) {
                 let next_rip = state.rip.wrapping_add(instruction.length as u64);
+                let alignment_mask = destination.size.bytes() as u64 - 1;
                 if let Ok(address) = destination.access_address_48(state, next_rip)
-                    && address & 7 != 0
+                    && address & alignment_mask != 0
                 {
                     return Ok(Cpl0ProfileSetResult {
                         exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
@@ -28751,8 +28748,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
-    // S6-38: the decoder admits only F3 0F 1E FA as Endbr64Nop. The set has no CET IBT.
-    if instruction.operation == Operation::Endbr64Nop {
+    // The decoder admits exact ENDBR64 and RDSSPQ forms. The set has no CET IBT or shadow stack.
+    if matches!(
+        instruction.operation,
+        Operation::Endbr64Nop | Operation::RdsspqRax
+    ) {
         return true;
     }
     let prefixes = instruction.prefixes;
@@ -28760,7 +28760,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     if cpl3_glibc_tls_fs_form(instruction) {
         return true;
     }
-    if cpl3_lock_add_qword_imm8_form(instruction) {
+    if cpl3_aligned_atomic_destination(instruction).is_some() {
+        return true;
+    }
+    if cpl3_notrack_register_jump(instruction) {
         return true;
     }
     // The owned S6-22 workload contains this exact read-only memory TEST form.
@@ -28788,6 +28791,49 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     {
         return true;
     }
+    // BusyBox uses the operand-size-overridden register TEST word form.
+    if instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x85
+        && instruction.prefixes
+            == (Prefixes {
+                operand_override: true,
+                ..Prefixes::default()
+            })
+        && instruction.operand_size == OperandSize::Word
+        && matches!(
+            instruction.operation,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                dst: Operand::Register(dst),
+                src: Operand::Register(src),
+            } if dst.size() == OperandSize::Word && src.size() == OperandSize::Word
+        )
+    {
+        return true;
+    }
+    // BusyBox compares a word memory operand with an imm8 under a lone 66 prefix.
+    if instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x83
+        && instruction.prefixes
+            == (Prefixes {
+                operand_override: true,
+                ..Prefixes::default()
+            })
+        && instruction.operand_size == OperandSize::Word
+        && matches!(
+            instruction.operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            } if dst.size == OperandSize::Word && dst.address_size == OperandSize::Qword
+                && dst.base == AddressBase::Register(Register::Rdx)
+                && dst.index.is_none() && dst.displacement == 6
+                && matches!(instruction.operation, Operation::Arithmetic { src: Operand::Immediate(0xfff1), .. })
+        )
+    {
+        return true;
+    }
     if instruction.opcode.map == OpcodeMap::Escape0f
         && instruction.opcode.byte == 0x1f
         && instruction.operation == Operation::NopModrm
@@ -28807,6 +28853,8 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::PunpcklbwRegister { .. }
             | Operation::PunpcklwdRegister { .. }
             | Operation::PshufdRegister { .. }
+            | Operation::PshuflwRegister { .. }
+            | Operation::PinsrwMemory { .. }
             | Operation::MovupsStoreMemory { .. }
             | Operation::MovupsLoadMemory { .. }
             | Operation::MovdquLoadMemory { .. }
@@ -28820,6 +28868,17 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::PsrlwImmediateRegister { .. }
             | Operation::PunpckhwdRegister { .. }
             | Operation::PackuswbRegister { .. }
+            | Operation::PcmpeqbRegister { .. }
+            | Operation::PcmpeqbMemory { .. }
+            | Operation::MovlpdLoadMemory { .. }
+            | Operation::MovhpdLoadMemory { .. }
+            | Operation::MovhpsLoadMemory { .. }
+            | Operation::PsubbRegister { .. }
+            | Operation::PmovmskbXmmToGpr { .. }
+            | Operation::PorRegister { .. }
+            | Operation::PslldqImmediateRegister { .. }
+            | Operation::PsrldqImmediateRegister { .. }
+            | Operation::PaddqRegister { .. }
     ) {
         return true;
     }
@@ -28844,6 +28903,11 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
             (OpcodeMap::Primary, 0x89,
                 Operation::Mov { dst: Operand::Memory(dst), src: Operand::Register(_) })
+            | (OpcodeMap::Primary, 0x83, Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(_),
+            })
                 if dst.size == OperandSize::Word && dst.address_size == OperandSize::Qword
         )
     {
@@ -28872,6 +28936,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Escape0f, 0xa2, Operation::Cpuid) => prefixes.rex.is_none(),
+        (OpcodeMap::Escape0f, 0x31, Operation::Rdtsc) => prefixes.rex.is_none(),
         (
             OpcodeMap::Primary,
             0xc7,
@@ -28884,7 +28949,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OpcodeMap::Primary,
             0x83,
             Operation::Logic {
-                kind: LogicKind::Or,
+                kind: LogicKind::Or | LogicKind::And,
                 dst: Operand::Memory(dst),
                 src: Operand::Immediate(_),
             },
@@ -28971,7 +29036,22 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
-            0x25 | 0x81 | 0x83,
+            0x25,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) if matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x81 | 0x83,
             Operation::Logic {
                 kind: LogicKind::And,
                 dst: Operand::Register(_),
@@ -28980,12 +29060,29 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) if instruction.operand_size == OperandSize::Dword => true,
         (
             OpcodeMap::Primary,
+            0x81,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(0xfff),
+            },
+        ) if instruction.operand_size == OperandSize::Qword
+            && (dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                || dst == RegisterView::low(Register::R10, OperandSize::Qword)) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
             0x09 | 0x0b,
             Operation::Logic {
                 kind: LogicKind::Or,
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Dword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0xa9 | 0xf7,
@@ -29081,7 +29178,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0x25,
@@ -29090,7 +29190,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0x05,
@@ -29163,7 +29266,16 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                || instruction.operand_size == OperandSize::Dword
+                    && matches!(instruction.operation, Operation::Logic {
+                    kind: LogicKind::Xor,
+                    dst: Operand::Register(dst),
+                    src: Operand::Immediate(1),
+                } if dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                    || dst == RegisterView::low(Register::Rsi, OperandSize::Dword))
+        }
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. })
             if instruction.operand_size == OperandSize::Dword =>
         {
@@ -29183,13 +29295,9 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             instruction.operand_size,
             OperandSize::Dword | OperandSize::Qword
         ),
-        (
-            OpcodeMap::Primary,
-            0x98,
-            Operation::SignExtendAccumulator {
-                double_width: false,
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
+        (OpcodeMap::Primary, 0x98 | 0x99, Operation::SignExtendAccumulator { .. }) => {
+            instruction.operand_size == OperandSize::Qword
+        }
         (
             OpcodeMap::Primary,
             0xf7,
@@ -29203,10 +29311,32 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OpcodeMap::Primary,
             0xf7,
             Operation::Divide {
-                signed: false,
+                signed,
                 divisor: Operand::Register(_),
             },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                || !signed && instruction.operand_size == OperandSize::Dword
+        }
+        (
+            OpcodeMap::Primary,
+            0xf7,
+            Operation::Mul {
+                signed: false,
+                operand: Operand::Register(_),
+            },
         ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0xd0,
+            Operation::Shift {
+                kind: ShiftKind::Shr,
+                dst: Operand::Register(_),
+                source: None,
+                count: Operand::Immediate(1),
+                ..
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
         (
             OpcodeMap::Primary,
             0x21,
@@ -29215,7 +29345,17 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                || matches!(instruction.operation, Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(dst),
+                src: Operand::Register(src),
+            } if (dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                && src == RegisterView::low(Register::Rcx, OperandSize::Dword))
+                || (dst == RegisterView::low(Register::R8, OperandSize::Dword)
+                    && src == RegisterView::low(Register::Rax, OperandSize::Dword)))
+        }
         (
             OpcodeMap::Primary,
             0x39,
@@ -29224,7 +29364,13 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
-        ) if instruction.operand_size == OperandSize::Dword => true,
+        ) if matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ) =>
+        {
+            true
+        }
         (
             OpcodeMap::Primary,
             0x39,
@@ -29242,7 +29388,19 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Memory(dst),
                 src: Operand::Immediate(_),
             },
-        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
+        )
+        | (
+            OpcodeMap::Primary,
+            0x01,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Memory(dst),
+                src: Operand::Register(_),
+            },
+        ) => {
+            matches!(dst.size, OperandSize::Dword | OperandSize::Qword)
+                && dst.address_size == OperandSize::Qword
+        }
         (
             OpcodeMap::Primary,
             0x83,
@@ -29307,7 +29465,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (
             OpcodeMap::Primary,
             0x38,
@@ -29488,7 +29649,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Immediate(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                || matches!(instruction.operation, Operation::Arithmetic {
+                kind: ArithmeticKind::Sub,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            } if instruction.operand_size == OperandSize::Dword
+                && dst.size() == OperandSize::Dword)
+        }
         (
             OpcodeMap::Primary,
             0x8a,
@@ -29546,7 +29715,14 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 ..
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                || matches!(instruction.operation, Operation::Arithmetic {
+                kind: ArithmeticKind::Inc,
+                dst: Operand::Register(dst), ..
+            } if dst == RegisterView::low(Register::Rbx, OperandSize::Dword))
+                    && prefixes.rex.is_none()
+        }
         // S4-39f15: `[REX] FF /1` (DEC r/m32) with a register destination only, no REX.W. The
         // memory form decodes to a memory destination and stays refused with `0xff`, as do
         // `FF /0` INC r/m32 (no REX.W), `REX.W FF /1` (DEC r/m64) and `FF /2..7`.
@@ -29777,10 +29953,11 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             },
         ) if instruction.operand_size == OperandSize::Qword => true,
         (OpcodeMap::Primary, 0x87, Operation::Xchg { left, right })
-            if prefixes.rex == Some(0x48)
-                && instruction.operand_size == OperandSize::Qword
-                && left == RegisterView::low(Register::Rbx, OperandSize::Qword)
-                && right == RegisterView::low(Register::Rbp, OperandSize::Qword) =>
+            if matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            ) && left.size() == instruction.operand_size
+                && right.size() == instruction.operand_size =>
         {
             true
         }
@@ -29799,25 +29976,358 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         {
             true
         }
+        (
+            OpcodeMap::Primary,
+            0x63,
+            Operation::Extend {
+                dst,
+                src: Operand::Memory(src),
+                signed: true,
+            },
+        ) if dst.size() == OperandSize::Qword
+            && src.size == OperandSize::Dword
+            && src.address_size == OperandSize::Qword
+            && (src.index.is_none() || src.scale == 4)
+            && matches!(src.base, AddressBase::Register(_)) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xb6,
+            Operation::Extend {
+                dst,
+                src: Operand::Register(src),
+                signed: false,
+            },
+        ) if instruction.operand_size == OperandSize::Dword
+            && ((prefixes.rex.is_none()
+                && ((dst == RegisterView::low(Register::Rcx, OperandSize::Dword)
+                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte))
+                    || (dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                        && src == RegisterView::low(Register::Rdx, OperandSize::Byte))
+                    || (dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                        && src == RegisterView::low(Register::Rcx, OperandSize::Byte))))
+                || (prefixes.rex == Some(0x41)
+                    && dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
+                    && (src == RegisterView::low(Register::R9, OperandSize::Byte)
+                        || src == RegisterView::low(Register::R14, OperandSize::Byte)))
+                || (prefixes.rex == Some(0x40)
+                    && dst == RegisterView::low(Register::Rsi, OperandSize::Dword)
+                    && src == RegisterView::low(Register::Rsi, OperandSize::Byte))) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x3b,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(dst),
+                src: Operand::Memory(src),
+            },
+        ) if instruction.operand_size == OperandSize::Qword
+            && dst.size() == OperandSize::Qword
+            && src.size == OperandSize::Qword
+            && src.address_size == OperandSize::Qword
+            && src.index.is_none()
+            && matches!(src.base, AddressBase::Register(_) | AddressBase::NextRip) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x81,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Immediate(0x821),
+            },
+        ) if instruction.operand_size == OperandSize::Qword
+            && dst.size == OperandSize::Qword
+            && dst.address_size == OperandSize::Qword
+            && dst.base == AddressBase::NextRip
+            && dst.index.is_none()
+            && dst.displacement == 0x209302 =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x83,
+            Operation::Logic {
+                kind: LogicKind::Or,
+                dst: Operand::Register(dst),
+                src: Operand::Immediate(_),
+            },
+        ) if matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ) && dst.size() == instruction.operand_size =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x88,
+            Operation::Mov {
+                dst: Operand::Memory(dst),
+                src: Operand::Register(src),
+            },
+        ) if instruction.operand_size == OperandSize::Byte
+            && dst.size == OperandSize::Byte
+            && dst.address_size == OperandSize::Qword
+            && dst.index.is_none()
+            && ((prefixes.rex.is_none()
+                && ((dst.base == AddressBase::Register(Register::Rdi)
+                    && dst.displacement == 0
+                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte))
+                    || (dst.base == AddressBase::NextRip
+                        && dst.displacement == 0xf464e
+                        && src == RegisterView::low(Register::Rax, OperandSize::Byte))
+                    || (dst.base == AddressBase::Register(Register::Rsp)
+                        && matches!(dst.displacement, 0x0e | 0x0f)
+                        && src == RegisterView::low(Register::Rax, OperandSize::Byte))
+                    || (dst.base == AddressBase::NextRip
+                        && dst.displacement == 0x11fed7
+                        && src == RegisterView::low(Register::Rbx, OperandSize::Byte))))
+                || (prefixes.rex == Some(0x44)
+                    && ((dst.base == AddressBase::Register(Register::Rbx)
+                        && dst.displacement == 0x354
+                        && src == RegisterView::low(Register::R13, OperandSize::Byte))
+                        || (dst.base == AddressBase::Register(Register::Rbp)
+                            && dst.displacement == -0x60
+                            && src == RegisterView::low(Register::R10, OperandSize::Byte))))
+                || (prefixes.rex == Some(0x41)
+                    && dst.base == AddressBase::Register(Register::R10)
+                    && dst.displacement == 0x356
+                    && src == RegisterView::low(Register::Rdx, OperandSize::Byte))) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x6b,
+            Operation::ImulImmediate {
+                dst,
+                src: Operand::Register(src),
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Qword
+            && dst.size() == OperandSize::Qword
+            && src.size() == OperandSize::Qword =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0xd1,
+            Operation::Shift {
+                kind: ShiftKind::Sar | ShiftKind::Shr,
+                dst: Operand::Register(dst),
+                source: None,
+                count: Operand::Immediate(1),
+                ..
+            },
+        ) if matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ) && dst.size() == instruction.operand_size =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0xd3,
+            Operation::Shift {
+                kind: ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar,
+                dst: Operand::Register(dst),
+                source: None,
+                count: Operand::Register(count),
+                ..
+            },
+        ) if matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ) && dst.size() == instruction.operand_size
+            && count == RegisterView::low(Register::Rcx, OperandSize::Byte) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0xc1,
+            Operation::Shift {
+                kind: ShiftKind::Rol | ShiftKind::Ror,
+                dst: Operand::Register(dst),
+                source: None,
+                count: Operand::Immediate(_),
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Qword && dst.size() == OperandSize::Qword => {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0xc0 | 0xd0,
+            Operation::Shift {
+                kind: ShiftKind::Shr,
+                dst: Operand::Register(dst),
+                source: None,
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Byte && dst.size() == OperandSize::Byte => {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x23,
+            Operation::Logic {
+                kind: LogicKind::And,
+                dst: Operand::Register(dst),
+                src: Operand::Memory(src),
+            },
+        ) if instruction.operand_size == OperandSize::Dword
+            && dst.size() == OperandSize::Dword
+            && src.size == OperandSize::Dword
+            && src.address_size == OperandSize::Qword =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0x33,
+            Operation::Logic {
+                kind: LogicKind::Xor,
+                dst: Operand::Register(_),
+                src: Operand::Memory(src),
+            },
+        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Escape0f,
+            0x94,
+            Operation::SetCondition {
+                condition: ConditionCode::Equal,
+                dst: Operand::Memory(dst),
+                ..
+            },
+        ) if dst.size == OperandSize::Byte
+            && dst.address_size == OperandSize::Qword
+            && dst.base == AddressBase::Register(Register::Rbp)
+            && dst.index.is_none()
+            && dst.displacement == -0x70 =>
+        {
+            true
+        }
+        (OpcodeMap::Primary, 0xff, Operation::PushMemory { source })
+            if instruction.operand_size == OperandSize::Qword
+                && source.size == OperandSize::Qword
+                && source.address_size == OperandSize::Qword =>
+        {
+            true
+        }
+        (OpcodeMap::Primary, 0x6a, Operation::PushImmediate { .. })
+            if instruction.operand_size == OperandSize::Qword =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectCall {
+                operand: Operand::Register(target),
+            },
+        ) if prefixes.rex.is_none()
+            && instruction.operand_size == OperandSize::Qword
+            && target == RegisterView::low(Register::Rax, OperandSize::Qword) =>
+        {
+            true
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xbc | 0xbd,
+            Operation::BitScan {
+                kind,
+                dst,
+                src: Operand::Register(src),
+            },
+        ) if ((instruction.opcode.byte == 0xbc && kind == BitScanKind::Forward)
+            || (instruction.opcode.byte == 0xbd && kind == BitScanKind::Reverse))
+            && ((prefixes.rex.is_none()
+                && instruction.operand_size == OperandSize::Dword
+                && ((dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                    && src == RegisterView::low(Register::Rdx, OperandSize::Dword))
+                    || (instruction.opcode.byte == 0xbd
+                        && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                        && src == RegisterView::low(Register::Rax, OperandSize::Dword))))
+                || (prefixes.rex == Some(0x48)
+                    && instruction.operand_size == OperandSize::Qword
+                    && instruction.opcode.byte == 0xbc
+                    && dst == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                    && src == RegisterView::low(Register::Rdx, OperandSize::Qword))) =>
+        {
+            true
+        }
+        (OpcodeMap::Primary, 0x87 | 0x91..=0x97, Operation::Xchg { left, right })
+            if matches!(
+                instruction.operand_size,
+                OperandSize::Dword | OperandSize::Qword
+            ) && left.size() == instruction.operand_size
+                && right.size() == instruction.operand_size =>
+        {
+            true
+        }
         _ => false,
     }
 }
 
-fn cpl3_lock_add_qword_imm8_form(instruction: &long_decode::Instruction) -> bool {
+fn cpl3_aligned_atomic_destination(
+    instruction: &long_decode::Instruction,
+) -> Option<MemoryOperand> {
     let prefixes = instruction.prefixes;
-    instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0x83
-        && instruction.operand_size == OperandSize::Qword
-        && prefixes.group1 == Some(0xf0)
-        && prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-        && prefixes.segment.is_none()
-        && !prefixes.address_override
-        && !prefixes.operand_override
+    if prefixes.segment.is_some() || prefixes.address_override || prefixes.operand_override {
+        return None;
+    }
+    let (operand, width) = match (
+        instruction.opcode.map,
+        instruction.opcode.byte,
+        instruction.operation,
+    ) {
+        (OpcodeMap::Primary, 0x83, Operation::LockAddMem { destination, .. })
+            if prefixes.group1 == Some(0xf0) =>
+        {
+            (destination, OperandSize::Qword)
+        }
+        (OpcodeMap::Escape0f, 0xb1, Operation::LockCmpxchgMem { destination, .. })
+            if prefixes.group1 == Some(0xf0)
+                && matches!(destination.size, OperandSize::Dword | OperandSize::Qword) =>
+        {
+            (destination, destination.size)
+        }
+        (OpcodeMap::Primary, 0x87, Operation::XchgMemory { memory, .. })
+            if prefixes.group1.is_none()
+                && matches!(memory.size, OperandSize::Dword | OperandSize::Qword) =>
+        {
+            (memory, memory.size)
+        }
+        _ => return None,
+    };
+    let rex_w = prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+    (instruction.operand_size == width
+        && operand.size == width
+        && operand.address_size == OperandSize::Qword
+        && rex_w == (width == OperandSize::Qword))
+        .then_some(operand)
+}
+
+fn cpl3_notrack_register_jump(instruction: &long_decode::Instruction) -> bool {
+    // The decoder checks the exact DS-prefixed register spellings. This profile has no CET.
+    instruction.prefixes.segment == Some(0x3e)
         && matches!(
             instruction.operation,
-            Operation::LockAddMem { destination, .. }
-                if destination.size == OperandSize::Qword
-                    && destination.address_size == OperandSize::Qword
+            Operation::IndirectJump {
+                operand: Operand::Register(_)
+            }
         )
 }
 
@@ -29869,6 +30379,21 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
                 && dst.size() == OperandSize::Qword
                 && absolute(src, OperandSize::Qword)
                 && src.displacement == 0x28
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x33, Operation::LogicFsLoad { kind: LogicKind::Xor, dst, src })
+            if observed_rex_w_only
+                && dst.size() == OperandSize::Qword
+                && absolute(src, OperandSize::Qword)
+                && src.displacement == 0x30
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x80, Operation::CmpFsMemImm { dst, .. })
+            if prefixes.rex.is_none() && absolute(dst, OperandSize::Byte)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x83, Operation::CmpFsMemImm { dst, .. })
+            if observed_rex_w_only && absolute(dst, OperandSize::Qword)
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0x8b, Operation::MovFsLoadD { dst, src })
@@ -42972,6 +43497,8 @@ fn step_configured(
                 | Operation::PunpckldqRegister { .. }
                 | Operation::PandRegister { .. }
                 | Operation::PunpcklqdqRegister { .. }
+                | Operation::PshuflwRegister { .. }
+                | Operation::PinsrwMemory { .. }
                 | Operation::MovupsStoreMemory { .. }
                 | Operation::MovupsLoadMemory { .. }
                 | Operation::MovdquLoadMemory { .. }
@@ -42985,6 +43512,17 @@ fn step_configured(
                 | Operation::PsrlwImmediateRegister { .. }
                 | Operation::PunpckhwdRegister { .. }
                 | Operation::PackuswbRegister { .. }
+                | Operation::PcmpeqbRegister { .. }
+                | Operation::PcmpeqbMemory { .. }
+                | Operation::MovlpdLoadMemory { .. }
+                | Operation::MovhpdLoadMemory { .. }
+                | Operation::MovhpsLoadMemory { .. }
+                | Operation::PsubbRegister { .. }
+                | Operation::PmovmskbXmmToGpr { .. }
+                | Operation::PorRegister { .. }
+                | Operation::PslldqImmediateRegister { .. }
+                | Operation::PsrldqImmediateRegister { .. }
+                | Operation::PaddqRegister { .. }
         )
     {
         return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
@@ -45608,6 +46146,8 @@ fn step_configured(
         | Operation::MovFsStore { .. }
         | Operation::MovFsMemImm { .. }
         | Operation::SubFsMem { .. }
+        | Operation::CmpFsMemImm { .. }
+        | Operation::LogicFsLoad { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
                 && cpl3_glibc_tls_fs_form(&instruction) =>
@@ -45622,9 +46162,11 @@ fn step_configured(
             true
         }
         Operation::LockAddMem { .. }
+        | Operation::LockCmpxchgMem { .. }
+        | Operation::XchgMemory { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
-                && cpl3_lock_add_qword_imm8_form(&instruction) =>
+                && cpl3_aligned_atomic_destination(&instruction).is_some() =>
         {
             true
         }
@@ -46419,6 +46961,10 @@ fn step_configured(
         | Operation::PaddqRegister { .. }
         | Operation::PsubqRegister { .. }
         | Operation::PcmpeqbRegister { .. }
+            | Operation::PcmpeqbMemory { .. }
+            | Operation::MovlpdLoadMemory { .. }
+            | Operation::MovhpdLoadMemory { .. }
+            | Operation::MovhpsLoadMemory { .. }
         | Operation::PcmpeqwRegister { .. }
         | Operation::PcmpeqdRegister { .. }
         | Operation::PcmpgtbRegister { .. }
@@ -46932,6 +47478,11 @@ fn step_configured(
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
+        Operation::RdsspqRax => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring3
+                && state.cr4.is_some_and(|cr4| cr4 & (1 << 23) == 0)
+        }
         // S4-38L9b: `F3 90` (PAUSE) is a NOP hint; admitted only inside the CPL0 profile set
         // (outside it the previous `Unsupported { opcode: 0x90 }` is kept).
         Operation::Pause => control_policy.is_some(),
@@ -47037,6 +47588,13 @@ fn step_configured(
                 && instruction.prefixes.group1.is_none()
                 && !instruction.prefixes.operand_override
                 && valid_operand_prefixes
+        }
+        Operation::IndirectJump {
+            operand: Operand::Register(_),
+        } if instruction.prefixes.segment == Some(0x3e) => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring3
+                && cpl3_notrack_register_jump(&instruction)
         }
         Operation::IndirectJump { .. } => {
             instruction.opcode
@@ -47495,7 +48053,9 @@ fn step_configured(
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
         | Operation::MovdquLoadMemory { .. }
-        | Operation::MovdqaLoadMemory { .. } => false,
+        | Operation::MovdqaLoadMemory { .. }
+        | Operation::PshuflwRegister { .. }
+        | Operation::PinsrwMemory { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -48271,6 +48831,7 @@ fn step_configured(
             unreachable!("PIO operations are rejected outside the explicit PIO entry")
         }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
+
         Operation::Int3 => unreachable!("INT3 commits in its profile-gated state path"),
         Operation::ReadCr0
         | Operation::WriteCr0
@@ -58986,7 +59547,11 @@ fn step_configured(
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
         | Operation::MovdquLoadMemory { .. }
-        | Operation::MovdqaLoadMemory { .. } => {
+        | Operation::MovdqaLoadMemory { .. }
+        | Operation::PcmpeqbMemory { .. }
+        | Operation::MovlpdLoadMemory { .. }
+        | Operation::MovhpdLoadMemory { .. }
+        | Operation::MovhpsLoadMemory { .. } => {
             return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
         }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
@@ -61174,17 +61739,27 @@ fn step_configured(
         }
         Operation::Arithmetic { kind, dst, src } => {
             let arithmetic = (|| {
-                let lhs = match (kind, dst, src) {
-                    (
-                        ArithmeticKind::Add | ArithmeticKind::Sub,
-                        Operand::Memory(mem),
-                        Operand::Immediate(_),
-                    ) if control_policy.is_some()
+                let lhs = match dst {
+                    Operand::Memory(mem)
+                        if control_policy.is_some()
                             && context.privilege == PrivilegeLevel::Ring3
                             && instruction.opcode.map == OpcodeMap::Primary
-                            && instruction.opcode.byte == 0x83
-                            && mem.size == OperandSize::Dword
-                            && mem.address_size == OperandSize::Qword =>
+                            && mem.address_size == OperandSize::Qword
+                            && matches!(
+                                (instruction.opcode.byte, kind, mem.size, src),
+                                (
+                                    0x83,
+                                    ArithmeticKind::Add,
+                                    OperandSize::Dword | OperandSize::Qword,
+                                    Operand::Immediate(_),
+                                ) | (0x83, ArithmeticKind::Sub, OperandSize::Dword, Operand::Immediate(_))
+                                    | (
+                                        0x01,
+                                        ArithmeticKind::Add,
+                                        OperandSize::Dword | OperandSize::Qword,
+                                        Operand::Register(_),
+                                    )
+                            ) =>
                     {
                         let address = mem.access_address_48(state, next_rip)?;
                         memory.read_integer_for_write(address, context, mem.size)?
@@ -61219,7 +61794,12 @@ fn step_configured(
                             && matches!(
                                 (instruction.opcode.byte, kind, mem.size, src),
                                 (0x80, LogicKind::And, OperandSize::Byte, Operand::Immediate(_))
-                                    | (0x83, LogicKind::Or, OperandSize::Qword, Operand::Immediate(_))
+                                    | (
+                                        0x83,
+                                        LogicKind::Or | LogicKind::And,
+                                        OperandSize::Qword,
+                                        Operand::Immediate(_),
+                                    )
                                     | (0x09, LogicKind::Or, OperandSize::Qword, Operand::Register(_))
                             ) =>
                     {
@@ -61453,7 +62033,11 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
+        Operation::Endbr64Nop
+        | Operation::RdsspqRax
+        | Operation::Pause
+        | Operation::NopModrm
+        | Operation::Invlpg => {}
         // S4-38L9o: the fences change nothing but RIP and the retired count. S6-32: each one
         // calls the memory's `fence` with its own kind (Load for LFENCE, Store for SFENCE; MFENCE
         // is the arm above) so a backend that shares RAM between host threads can place its host
@@ -61544,6 +62128,9 @@ fn step_configured(
             }
             state.rip = target;
             return Ok(StepOutcome::Branched);
+        }
+        Operation::PshuflwRegister { .. } | Operation::PinsrwMemory { .. } => {
+            unreachable!("CPL3 XMM operations commit before general dispatch")
         }
     }
     *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
@@ -65145,6 +65732,17 @@ fn pshufd_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8, control: u8
     xmm[usize::from(destination)] = shuffled;
 }
 
+fn pshuflw_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8, control: u8) {
+    let original = xmm[usize::from(source)];
+    let mut result = original;
+    for output_lane in 0..4 {
+        let selected = usize::from((control >> (output_lane * 2)) & 3);
+        result[output_lane * 2..output_lane * 2 + 2]
+            .copy_from_slice(&original[selected * 2..selected * 2 + 2]);
+    }
+    xmm[usize::from(destination)] = result;
+}
+
 fn step_cpl3_xmm(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -65328,6 +65926,136 @@ fn step_cpl3_xmm(
         } => {
             packuswb_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
         }
+        Operation::PcmpeqbRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = if *dst == src { 0xff } else { 0 };
+            }
+        }
+        Operation::PcmpeqbMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if address & 0xf != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            // A 16-byte aligned operand cannot straddle a canonical address boundary.
+            let mut rhs = [0; 16];
+            if let Err(error) = memory.read(address, context, &mut rhs) {
+                return report_memory_error(error);
+            }
+            let mut fp = fp.borrow_mut();
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = if *dst == src { 0xff } else { 0 };
+            }
+        }
+        Operation::MovlpdLoadMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.access_range_address_48(state, next_rip, 8) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut low = [0; 8];
+            if let Err(error) = memory.read(address, context, &mut low) {
+                return report_memory_error(error);
+            }
+            fp.borrow_mut().sse.xmm[usize::from(destination)][..8].copy_from_slice(&low);
+        }
+        Operation::MovhpdLoadMemory {
+            destination,
+            source,
+        }
+        | Operation::MovhpsLoadMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.access_range_address_48(state, next_rip, 8) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut high = [0; 8];
+            if let Err(error) = memory.read(address, context, &mut high) {
+                return report_memory_error(error);
+            }
+            fp.borrow_mut().sse.xmm[usize::from(destination)][8..].copy_from_slice(&high);
+        }
+        Operation::PsubbRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = dst.wrapping_sub(src);
+            }
+        }
+        Operation::PmovmskbXmmToGpr {
+            destination,
+            source,
+        } => {
+            let xmm = fp.borrow().sse.xmm[usize::from(source)];
+            let mask = xmm.iter().enumerate().fold(0u32, |mask, (lane, byte)| {
+                mask | (u32::from(byte >> 7) << lane)
+            });
+            state.gpr[usize::from(destination)] = u64::from(mask);
+        }
+        Operation::PorRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst |= src;
+            }
+        }
+        Operation::PslldqImmediateRegister { destination, count } => {
+            let mut fp = fp.borrow_mut();
+            let original = fp.sse.xmm[usize::from(destination)];
+            let mut shifted = [0; 16];
+            if count < 16 {
+                shifted[count as usize..].copy_from_slice(&original[..16 - count as usize]);
+            }
+            fp.sse.xmm[usize::from(destination)] = shifted;
+        }
+        Operation::PsrldqImmediateRegister { destination, count } => {
+            let mut fp = fp.borrow_mut();
+            let original = fp.sse.xmm[usize::from(destination)];
+            let mut shifted = [0; 16];
+            if count < 16 {
+                shifted[..16 - count as usize].copy_from_slice(&original[count as usize..]);
+            }
+            fp.sse.xmm[usize::from(destination)] = shifted;
+        }
+        Operation::PaddqRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)]
+                .chunks_exact_mut(8)
+                .zip(rhs.chunks_exact(8))
+            {
+                let lhs = u64::from_le_bytes(dst.try_into().expect("qword lane"));
+                let rhs = u64::from_le_bytes(src.try_into().expect("qword lane"));
+                dst.copy_from_slice(&lhs.wrapping_add(rhs).to_le_bytes());
+            }
+        }
         Operation::MovapsStoreMemory {
             destination,
             source,
@@ -65357,6 +66085,30 @@ fn step_cpl3_xmm(
             control,
         } => {
             pshufd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source, control);
+        }
+        Operation::PshuflwRegister {
+            destination,
+            source,
+            control,
+        } => {
+            pshuflw_xmm(&mut fp.borrow_mut().sse.xmm, destination, source, control);
+        }
+        Operation::PinsrwMemory {
+            destination,
+            source,
+            control,
+        } => {
+            let address = match source.access_range_address_48(state, next_rip, 2) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut raw = [0; 2];
+            if let Err(error) = memory.read(address, context, &mut raw) {
+                return report_memory_error(error);
+            }
+            let lane = usize::from(control & 7);
+            fp.borrow_mut().sse.xmm[usize::from(destination)][lane * 2..lane * 2 + 2]
+                .copy_from_slice(&raw);
         }
         Operation::MovupsStoreMemory {
             destination,

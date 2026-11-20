@@ -1413,6 +1413,18 @@ pub enum Operation {
         source: u8,
         control: u8,
     },
+    /// Local-only F2 0F 70 register PSHUFLW form.
+    PshuflwRegister {
+        destination: u8,
+        source: u8,
+        control: u8,
+    },
+    /// Local-only 66 0F C4 memory-source PINSRW with an imm8 lane selector.
+    PinsrwMemory {
+        destination: u8,
+        source: MemoryOperand,
+        control: u8,
+    },
     /// Local-only register PSLLW with an unmasked unsigned imm8 count.
     PsllwImmediateRegister {
         destination: u8,
@@ -1995,6 +2007,26 @@ pub enum Operation {
         destination: u8,
         source: MemoryOperand,
     },
+    /// Exact mandatory-66 `0F 74 /r` PCMPEQB load from m128 in the S6-22 profile.
+    PcmpeqbMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Exact mandatory-66 `0F 12 /r` MOVLPD load from m64 in the S6-22 profile.
+    MovlpdLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Exact mandatory-66 `0F 16 /r` MOVHPD load from m64 in the S6-22 profile.
+    MovhpdLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Exact legacy `0F 16 /r` MOVHPS load from m64 in the S6-22 profile.
+    MovhpsLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
     MovupsStoreMemory {
         destination: MemoryOperand,
         source: u8,
@@ -2464,6 +2496,8 @@ pub enum Operation {
     /// `F3 0F 1E FA` (ENDBR64) as an architectural NOP, because the CPU does not declare
     /// CET_IBT. Execution is admitted only inside the CPL0 profile set (S2-48).
     Endbr64Nop,
+    /// Exact `F3 48 0F 1E C8` RDSSPQ RAX for the live CPL3 profile without CET.
+    RdsspqRax,
     /// Bare `F3 90` (PAUSE, S4-38L9b): an architectural NOP hint of length 2 (no SMT or
     /// spin-wait delay is modeled). Only the exact two-byte form decodes to it; execution is
     /// admitted only inside the CPL0 profile set, unlike the bare `90` NOP.
@@ -3492,8 +3526,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 operation: Operation::NopModrm,
             });
         }
-        // S2-48: only the exact `F3 0F 1E FA` form (no other prefix, no REX) decodes as
-        // ENDBR64; every other `0F 1E` form stays unsupported.
+        if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x1e
+            && prefix_bytes[..prefix_count] == [0xf3, 0x48]
+        {
+            if self.byte()? == 0xc8 {
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::RdsspqRax,
+                });
+            }
+            return Err(self.unsupported(opcode));
+        }
+        // S2-48: only the exact `F3 0F 1E FA` form (no other prefix, no REX) decodes as ENDBR64.
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x1e
             && prefixes
@@ -3520,7 +3569,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             || (opcode.map == OpcodeMap::Escape0f
                 && matches!(
                     opcode.byte,
-                    0x2a | 0x2c
+                    0x12 | 0x16
+                        | 0x2a
+                        | 0x2c
                         | 0x2d
                         | 0x2e
                         | 0x2f
@@ -3534,7 +3585,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -4201,6 +4252,34 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.is_some()
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0));
+        let vector_66_memory_prefix = prefixes.operand_override
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
+        let vector_legacy_memory_prefix = !prefixes.operand_override
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_count == 0
+                || prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
+        let pcmpeqb_memory =
+            opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x74 && vector_66_memory_prefix;
+        let movlpd_memory =
+            opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x12 && vector_66_memory_prefix;
+        let movhpd_memory =
+            opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x16 && vector_66_memory_prefix;
+        let movhps_memory =
+            opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x16 && vector_legacy_memory_prefix;
         // PCMPEQW's mandatory 66 selects the XMM/SSE2 form; bare 0F 75 is MMX.
         let pcmpeqw_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x75
@@ -4381,6 +4460,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // the one local REX.R/B profile. Its control byte follows ModRM.
         let pshufd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x70
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let pshuflw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x70
+            && prefixes.group1 == Some(0xf2)
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.segment.is_none()
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0xf2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let pinsrw_memory = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xc4
             && prefixes.operand_override
             && prefix_count >= 1
             && prefix_bytes[0] == 0x66
@@ -5913,6 +6014,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !repne_cmps_wdq_addr32
                 && !rep_cmps
                 && !f3_xmm_load
+                && !pshuflw_register
+                && !pinsrw_memory
+                && !pcmpeqb_memory
+                && !movlpd_memory
+                && !movhpd_memory
+                && !movhps_memory
                 && !movss_register
                 && !rsqrtss_register
                 && !rcpss_register
@@ -5992,6 +6099,41 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovdquLoadMemory {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source,
+                }
+            }
+            (OpcodeMap::Escape0f, 0x12 | 0x16) => {
+                let movlpd = opcode.byte == 0x12 && movlpd_memory;
+                let movhpd = opcode.byte == 0x16 && movhpd_memory;
+                let movhps = opcode.byte == 0x16 && movhps_memory;
+                if !movlpd && !movhpd && !movhps {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 {
+                    // MOVHLPS/MOVLHPS register aliases and mandatory-66 register variants
+                    // remain outside the bounded memory-only profile.
+                    return Err(self.unsupported(opcode));
+                }
+                size = OperandSize::Qword;
+                let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                let destination = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+                if movlpd {
+                    Operation::MovlpdLoadMemory {
+                        destination,
+                        source,
+                    }
+                } else if movhpd {
+                    Operation::MovhpdLoadMemory {
+                        destination,
+                        source,
+                    }
+                } else {
+                    Operation::MovhpsLoadMemory {
+                        destination,
+                        source,
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x6f) => {
@@ -7437,17 +7579,48 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x70) => {
-                if !pshufd_register {
+                if pshuflw_register {
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let control = self.byte()?;
+                    Operation::PshuflwRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                        control,
+                    }
+                } else if pshufd_register {
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let control = self.byte()?;
+                    Operation::PshufdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                        control,
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0xc4) => {
+                if !pinsrw_memory {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm >> 6 == 3 {
                     return Err(self.unsupported(opcode));
                 }
+                let source = self.rm_operand(modrm, prefixes, OperandSize::Word)?;
+                let Operand::Memory(source) = source else {
+                    return Err(self.unsupported(opcode));
+                };
                 let control = self.byte()?;
-                Operation::PshufdRegister {
+                Operation::PinsrwMemory {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                    source,
                     control,
                 }
             }
@@ -7601,16 +7774,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x74) => {
-                if !pcmpeqb_register {
+                if !pcmpeqb_memory && !pcmpeqb_register {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if pcmpeqb_memory && modrm >> 6 != 3 {
+                    size = OperandSize::Qword;
+                    let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::PcmpeqbMemory {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source,
+                    }
+                } else if pcmpeqb_register && modrm >> 6 == 3 {
+                    Operation::PcmpeqbRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::PcmpeqbRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x75) => {
@@ -9935,11 +10118,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // The memory case uses only the existing ordinary flat EA
                     // profile; the other FF group extensions stay out.
                     size = OperandSize::Qword;
+                    let notrack_register = matches!(
+                        (&prefix_bytes[..prefix_count], modrm),
+                        ([0x3e], 0xe0 | 0xe2) | ([0x3e, 0x41], 0xe2)
+                    );
                     if prefixes.group1.is_some()
                         || matches!(prefixes.segment, Some(0x64 | 0x65))
                         || prefixes.operand_override
                         || (modrm >> 6 == 3
-                            && (prefixes.segment.is_some() || prefixes.address_override))
+                            && (prefixes.address_override
+                                || prefixes.segment.is_some() && !notrack_register))
                     {
                         return Err(self.unsupported(opcode));
                     }
@@ -11085,6 +11273,16 @@ mod tests {
         assert_eq!(decoded.length, 1);
         assert_eq!(memory.fetched, [0xfff]);
     }
+    #[test]
+    fn unsupported_mmx_pcmpeqb_does_not_fetch_modrm() {
+        let mut memory = Memory::new(&[0x0f, 0x74]);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Unsupported { opcode, .. })
+                if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x74
+        ));
+        assert_eq!(memory.fetched, [memory.base, memory.base + 1]);
+    }
 
     #[test]
     fn xorps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
@@ -12193,12 +12391,121 @@ mod tests {
             &[0x66, 0x48, 0x0f, 0x74, 0xc1],
             &[0x66, 0x42, 0x0f, 0x74, 0xc1],
             &[0x66, 0x40, 0x41, 0x0f, 0x74, 0xc1],
-            &[0x66, 0x0f, 0x74, 0x01],
             &[0x66, 0x0f, 0x74],
             &[0x66, 0x0f],
             &[0xc5, 0xf9, 0x74, 0xc1],
             &[0xc4, 0xe1, 0x79, 0x74, 0xc1],
             &[0x62, 0xf1, 0x7d, 0x08, 0x74, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn s6_22_vector_memory_loads_decode_only_the_confirmed_prefix_and_memory_forms() {
+        let cases: &[(&[u8], Operation)] = &[
+            (
+                &[0x66, 0x0f, 0x74, 0x0f],
+                Operation::PcmpeqbMemory {
+                    destination: 1,
+                    source: MemoryOperand {
+                        base: AddressBase::Register(Register::Rdi),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                    },
+                },
+            ),
+            (
+                &[0x66, 0x0f, 0x12, 0x0f],
+                Operation::MovlpdLoadMemory {
+                    destination: 1,
+                    source: MemoryOperand {
+                        base: AddressBase::Register(Register::Rdi),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                    },
+                },
+            ),
+            (
+                &[0x66, 0x0f, 0x16, 0x4f, 0x08],
+                Operation::MovhpdLoadMemory {
+                    destination: 1,
+                    source: MemoryOperand {
+                        base: AddressBase::Register(Register::Rdi),
+                        index: None,
+                        scale: 1,
+                        displacement: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                    },
+                },
+            ),
+            (
+                &[0x0f, 0x16, 0x40, 0x08],
+                Operation::MovhpsLoadMemory {
+                    destination: 0,
+                    source: MemoryOperand {
+                        base: AddressBase::Register(Register::Rax),
+                        index: None,
+                        scale: 1,
+                        displacement: 8,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                    },
+                },
+            ),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(Memory::new(bytes).decode().unwrap().operation, *expected);
+        }
+
+        let rex_r = Memory::new(&[0x66, 0x44, 0x0f, 0x12, 0x0f])
+            .decode()
+            .unwrap();
+        assert_eq!(
+            rex_r.operation,
+            Operation::MovlpdLoadMemory {
+                destination: 9,
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                },
+            }
+        );
+        let rex_b = Memory::new(&[0x66, 0x41, 0x0f, 0x74, 0x08])
+            .decode()
+            .unwrap();
+        assert!(matches!(
+            rex_b.operation,
+            Operation::PcmpeqbMemory {
+                destination: 1,
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::R8),
+                    ..
+                }
+            }
+        ));
+
+        for bytes in [
+            &[0x0f, 0x74, 0x0f][..],
+            &[0xf3, 0x66, 0x0f, 0x74, 0x0f][..],
+            &[0x66, 0x48, 0x0f, 0x74, 0x0f][..],
+            &[0x66, 0x42, 0x0f, 0x12, 0x0f][..],
+            &[0x66, 0x0f, 0x12, 0xc0][..], // MOVHLPS register alias stays unsupported.
+            &[0x0f, 0x16, 0xc0][..],       // MOVLHPS register alias stays unsupported.
+            &[0x66, 0x0f, 0x16, 0xc0][..],
+            &[0x0f, 0x12, 0x0f][..],
+            &[0x2e, 0x66, 0x0f, 0x12, 0x0f][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -34057,6 +34364,51 @@ mod tests {
                 Memory::new(bytes).decode().is_err(),
                 "unexpected decode for {bytes:02x?}"
             );
+        }
+    }
+
+    #[test]
+    fn s6_22_pinsrw_memory_and_pshuflw_decode_only_owned_prefix_forms() {
+        let pinsrw = Memory::new(&[0x66, 0x0f, 0xc4, 0x0d, 0x1e, 0x89, 0x20, 0x00, 0x00])
+            .decode()
+            .expect("BusyBox RIP-relative PINSRW m16, imm8");
+        assert_eq!(pinsrw.length, 9);
+        assert_eq!(
+            pinsrw.operation,
+            Operation::PinsrwMemory {
+                destination: 1,
+                source: MemoryOperand {
+                    base: AddressBase::NextRip,
+                    index: None,
+                    scale: 1,
+                    displacement: 0x20_89_1e,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Word,
+                },
+                control: 0,
+            }
+        );
+
+        let pshuflw = Memory::new(&[0xf2, 0x0f, 0x70, 0xc1, 0x00])
+            .decode()
+            .expect("BusyBox register PSHUFLW");
+        assert_eq!(pshuflw.length, 5);
+        assert_eq!(
+            pshuflw.operation,
+            Operation::PshuflwRegister {
+                destination: 0,
+                source: 1,
+                control: 0,
+            }
+        );
+
+        for bytes in [
+            &[0x0f, 0x70, 0xc1, 0x00][..], // MMX PSHUFW is outside this XMM slice
+            &[0xf3, 0x0f, 0x70, 0xc1, 0x00][..],
+            &[0x66, 0x0f, 0xc4, 0xc1, 0x00][..], // register PINSRW remains unsupported
+            &[0xf2, 0x0f, 0xc4, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
 }

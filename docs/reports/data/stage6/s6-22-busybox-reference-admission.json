@@ -1,0 +1,792 @@
+{
+  "base_commit": "331818839d8fdfdf7f62f9d8814a5a2c702414e5",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "reference": {
+    "tool": "Debian QEMU user mode 10.0.13",
+    "cpu": "qemu64",
+    "command": "qemu-x86_64 -cpu qemu64 -one-insn-per-tb -d in_asm /elf/busybox true",
+    "trace_sha256": "a97acd03ebd35fb7b78d1a65d5bd841bdf3869538eb020f8a86d9b0feb449afb",
+    "exit_status": 0,
+    "comparison": "Deduplicate instruction bytes by guest RIP and classify each sequence with the real Long64 decoder and CPL3 admission rules.",
+    "previous_linux_direct_diagnostic_rip": "0x4f68c2",
+    "previous_linux_direct_diagnostic_evidence": "s6-22-busybox-movdqa-replay.json",
+    "matching_reference_rip": "0x4f68c2",
+    "before": {
+      "admitted": 5519,
+      "profile": 214,
+      "decode": 15
+    },
+    "after": {
+      "admitted": 5748
+    },
+    "preflight_form_examples": [
+      {
+        "rip": "0x4d4c9e",
+        "bytes": "66 0f 74 e0",
+        "asm": "pcmpeqb  %xmm0, %xmm4",
+        "symbol": "",
+        "form": "pcmpeqb 66 0f74 PcmpeqbRegister Word",
+        "before": "profile",
+        "reference_sites": 18
+      },
+      {
+        "rip": "0x4932d0",
+        "bytes": "6a 00",
+        "asm": "pushq    $0",
+        "symbol": "",
+        "form": "pushq - 6a PushImmediate Qword",
+        "before": "profile",
+        "reference_sites": 16
+      },
+      {
+        "rip": "0x40bcc5",
+        "bytes": "48 3b 05 44 7a 20 00",
+        "asm": "cmpq     0x207a44(%rip), %rax",
+        "symbol": "",
+        "form": "cmpq W 3b Arithmetic Qword",
+        "before": "profile",
+        "reference_sites": 9
+      },
+      {
+        "rip": "0x473ca0",
+        "bytes": "48 63 04 b2",
+        "asm": "movslq   (%rdx, %rsi, 4), %rax",
+        "symbol": "",
+        "form": "movslq W 63 Extend Qword",
+        "before": "profile",
+        "reference_sites": 9
+      },
+      {
+        "rip": "0x4d2af9",
+        "bytes": "66 0f f8 d0",
+        "asm": "psubb    %xmm0, %xmm2",
+        "symbol": "",
+        "form": "psubb 66 0ff8 PsubbRegister Word",
+        "before": "profile",
+        "reference_sites": 8
+      },
+      {
+        "rip": "0x4f3714",
+        "bytes": "4d 6b e4 70",
+        "asm": "imulq    $0x70, %r12, %r12",
+        "symbol": "",
+        "form": "imulq W 6b ImulImmediate Qword",
+        "before": "profile",
+        "reference_sites": 7
+      },
+      {
+        "rip": "0x40a852",
+        "bytes": "48 83 c8 01",
+        "asm": "orq      $1, %rax",
+        "symbol": "",
+        "form": "orq W 83/1:reg Logic Qword",
+        "before": "profile",
+        "reference_sites": 6
+      },
+      {
+        "rip": "0x4d4ca2",
+        "bytes": "66 0f d7 d4",
+        "asm": "pmovmskb %xmm4, %edx",
+        "symbol": "",
+        "form": "pmovmskb 66 0fd7 PmovmskbXmmToGpr Word",
+        "before": "profile",
+        "reference_sites": 6
+      },
+      {
+        "rip": "0x4af2a1",
+        "bytes": "d3 ea",
+        "asm": "shrl     %cl, %edx",
+        "symbol": "",
+        "form": "shrl - d3/5:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 6
+      },
+      {
+        "rip": "0x473ca7",
+        "bytes": "3e ff e0",
+        "asm": "notrack jmpq *%rax",
+        "symbol": "",
+        "form": "notrack 3e ff/4:reg - -",
+        "before": "decode",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x4932f1",
+        "bytes": "66 83 7a 06 f1",
+        "asm": "cmpw     $-0xf, 6(%rdx)",
+        "symbol": "",
+        "form": "cmpw 66 83/7:mem Arithmetic Word",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x47700a",
+        "bytes": "f0 0f b1 15 36 e7 19 00",
+        "asm": "lock cmpxchgl %edx, 0x19e736(%rip)",
+        "symbol": "",
+        "form": "lock f0 0fb1 LockCmpxchgMem Dword",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x473e8e",
+        "bytes": "0f b6 c9",
+        "asm": "movzbl   %cl, %ecx",
+        "symbol": "",
+        "form": "movzbl - 0fb6 Extend Dword",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x4d2afd",
+        "bytes": "66 44 0f d7 ca",
+        "asm": "pmovmskb %xmm2, %r9d",
+        "symbol": "",
+        "form": "pmovmskb 66 R 0fd7 PmovmskbXmmToGpr Word",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x4d2af0",
+        "bytes": "66 0f 73 fa 02",
+        "asm": "pslldq   $2, %xmm2",
+        "symbol": "",
+        "form": "pslldq 66 0f73/7:reg PslldqImmediateRegister Word",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x4d2b04",
+        "bytes": "41 d3 e9",
+        "asm": "shrl     %cl, %r9d",
+        "symbol": "",
+        "form": "shrl R d3/5:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x473c8a",
+        "bytes": "81 ee bd 00 00 00",
+        "asm": "subl     $0xbd, %esi",
+        "symbol": "",
+        "form": "subl - 81/5:reg Arithmetic Dword",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x477037",
+        "bytes": "64 48 33 14 25 30 00 00 00",
+        "asm": "xorq     %fs:0x30, %rdx",
+        "symbol": "",
+        "form": "xorq 64 W 33 LogicFsLoad Qword",
+        "before": "profile",
+        "reference_sites": 5
+      },
+      {
+        "rip": "0x4afe91",
+        "bytes": "ff b5 70 ff ff ff",
+        "asm": "pushq    -0x90(%rbp)",
+        "symbol": "",
+        "form": "pushq - ff/6:mem PushMemory Qword",
+        "before": "profile",
+        "reference_sites": 4
+      },
+      {
+        "rip": "0x477040",
+        "bytes": "48 c1 c2 11",
+        "asm": "rolq     $0x11, %rdx",
+        "symbol": "",
+        "form": "rolq W c1/0:reg Shift Qword",
+        "before": "profile",
+        "reference_sites": 4
+      },
+      {
+        "rip": "0x47704a",
+        "bytes": "87 05 f8 e6 19 00",
+        "asm": "xchgl    %eax, 0x19e6f8(%rip)",
+        "symbol": "",
+        "form": "xchgl - 87 XchgMemory Dword",
+        "before": "profile",
+        "reference_sites": 4
+      },
+      {
+        "rip": "0x474165",
+        "bytes": "01 06",
+        "asm": "addl     %eax, (%rsi)",
+        "symbol": "",
+        "form": "addl - 01 Arithmetic Dword",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x4af2bd",
+        "bytes": "48 83 45 10 01",
+        "asm": "addq     $1, 0x10(%rbp)",
+        "symbol": "",
+        "form": "addq W 83/0:mem Arithmetic Qword",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x4f36fc",
+        "bytes": "44 88 ab 54 03 00 00",
+        "asm": "movb     %r13b, 0x354(%rbx)",
+        "symbol": "",
+        "form": "movb R 88 Mov Byte",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x473d0a",
+        "bytes": "41 0f b6 f9",
+        "asm": "movzbl   %r9b, %edi",
+        "symbol": "",
+        "form": "movzbl R 0fb6 Extend Dword",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x493057",
+        "bytes": "66 85 d2",
+        "asm": "testw    %dx, %dx",
+        "symbol": "",
+        "form": "testw 66 85 Logic Word",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x4709db",
+        "bytes": "48 87 07",
+        "asm": "xchgq    %rax, (%rdi)",
+        "symbol": "",
+        "form": "xchgq W 87 XchgMemory Qword",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x51a943",
+        "bytes": "48 93",
+        "asm": "xchgq    %rax, %rbx",
+        "symbol": "",
+        "form": "xchgq W 93 Xchg Qword",
+        "before": "profile",
+        "reference_sites": 3
+      },
+      {
+        "rip": "0x4d1982",
+        "bytes": "66 0f 16 4f 08",
+        "asm": "movhpd   8(%rdi), %xmm1",
+        "symbol": "",
+        "form": "movhpd 66 0f16 - -",
+        "before": "decode",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4d197a",
+        "bytes": "66 0f 12 0f",
+        "asm": "movlpd   (%rdi), %xmm1",
+        "symbol": "",
+        "form": "movlpd 66 0f12 - -",
+        "before": "decode",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4afdee",
+        "bytes": "41 01 c7",
+        "asm": "addl     %eax, %r15d",
+        "symbol": "",
+        "form": "addl R 01 Arithmetic Dword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4d4c8a",
+        "bytes": "48 81 e1 ff 0f 00 00",
+        "asm": "andq     $0xfff, %rcx",
+        "symbol": "",
+        "form": "andq W 81/4:reg Logic Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4704a1",
+        "bytes": "f0 48 0f b1 0f",
+        "asm": "lock cmpxchgq %rcx, (%rdi)",
+        "symbol": "",
+        "form": "lock f0 W 0fb1 LockCmpxchgMem Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x41174d",
+        "bytes": "88 0f",
+        "asm": "movb     %cl, (%rdi)",
+        "symbol": "",
+        "form": "movb - 88 Mov Byte",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4689c0",
+        "bytes": "83 c9 01",
+        "asm": "orl      $1, %ecx",
+        "symbol": "",
+        "form": "orl - 83/1:reg Logic Dword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x40a1d2",
+        "bytes": "4c 09 d1",
+        "asm": "orq      %r10, %rcx",
+        "symbol": "",
+        "form": "orq W 09 Logic Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x47569d",
+        "bytes": "48 d1 fa",
+        "asm": "sarq     $1, %rdx",
+        "symbol": "",
+        "form": "sarq W d1/7:reg Shift Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4af4bb",
+        "bytes": "c0 e8 04",
+        "asm": "shrb     $4, %al",
+        "symbol": "",
+        "form": "shrb - c0/5:reg Shift Byte",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4af2a8",
+        "bytes": "48 d3 ea",
+        "asm": "shrq     %cl, %rdx",
+        "symbol": "",
+        "form": "shrq W d3/5:reg Shift Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x520734",
+        "bytes": "97",
+        "asm": "xchgl    %eax, %edi",
+        "symbol": "",
+        "form": "xchgl - 97 Xchg Dword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4d19e0",
+        "bytes": "48 87 f7",
+        "asm": "xchgq    %rsi, %rdi",
+        "symbol": "",
+        "form": "xchgq W 87 Xchg Qword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x4930c2",
+        "bytes": "83 f2 01",
+        "asm": "xorl     $1, %edx",
+        "symbol": "",
+        "form": "xorl - 83/6:reg Logic Dword",
+        "before": "profile",
+        "reference_sites": 2
+      },
+      {
+        "rip": "0x468a50",
+        "bytes": "0f 16 40 08",
+        "asm": "movhps   8(%rax), %xmm0",
+        "symbol": "",
+        "form": "movhps - 0f16 - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d19f9",
+        "bytes": "3e 41 ff e2",
+        "asm": "notrack jmpq *%r10",
+        "symbol": "",
+        "form": "notrack 3e R ff/4:reg - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d1a0c",
+        "bytes": "66 0f 74 0f",
+        "asm": "pcmpeqb  (%rdi), %xmm1",
+        "symbol": "",
+        "form": "pcmpeqb 66 0f74 - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40adf1",
+        "bytes": "66 0f c4 0d 1e 89 20 00 00",
+        "asm": "pinsrw   $0, 0x20891e(%rip), %xmm1",
+        "symbol": "",
+        "form": "pinsrw 66 0fc4 - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40ae25",
+        "bytes": "f2 0f 70 c1 00",
+        "asm": "pshuflw  $0, %xmm1, %xmm0",
+        "symbol": "",
+        "form": "pshuflw f2 0f70 - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4c86d9",
+        "bytes": "f3 48 0f 1e c8",
+        "asm": "rdsspq   %rax",
+        "symbol": "",
+        "form": "rdsspq f3 W 0f1e - -",
+        "before": "decode",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40a85a",
+        "bytes": "48 01 0d 67 97 20 00",
+        "asm": "addq     %rcx, 0x209767(%rip)",
+        "symbol": "",
+        "form": "addq W 01 Arithmetic Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x50376c",
+        "bytes": "21 c8",
+        "asm": "andl     %ecx, %eax",
+        "symbol": "",
+        "form": "andl - 21 Logic Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af294",
+        "bytes": "23 83 30 03 00 00",
+        "asm": "andl     0x330(%rbx), %eax",
+        "symbol": "",
+        "form": "andl - 23 Logic Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af044",
+        "bytes": "41 21 c0",
+        "asm": "andl     %eax, %r8d",
+        "symbol": "",
+        "form": "andl R 21 Logic Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d4caa",
+        "bytes": "0f bc c2",
+        "asm": "bsfl     %edx, %eax",
+        "symbol": "",
+        "form": "bsfl - 0fbc BitScan Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d2d80",
+        "bytes": "48 0f bc d2",
+        "asm": "bsfq     %rdx, %rdx",
+        "symbol": "",
+        "form": "bsfq W 0fbc BitScan Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x503770",
+        "bytes": "0f bd c0",
+        "asm": "bsrl     %eax, %eax",
+        "symbol": "",
+        "form": "bsrl - 0fbd BitScan Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4c90ab",
+        "bytes": "ff d0",
+        "asm": "callq    *%rax",
+        "symbol": "",
+        "form": "callq - ff/2:reg IndirectCall Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40ad7c",
+        "bytes": "64 80 3c 25 c8 ff ff ff 00",
+        "asm": "cmpb     $0, %fs:0xffffffffffffffc8",
+        "symbol": "",
+        "form": "cmpb 64 80/7:mem CmpFsMemImm Byte",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4093e9",
+        "bytes": "64 48 83 3c 25 c0 ff ff ff 00",
+        "asm": "cmpq     $0, %fs:0xffffffffffffffc0",
+        "symbol": "",
+        "form": "cmpq 64 W 83/7:mem CmpFsMemImm Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40ad8b",
+        "bytes": "48 81 3d 02 93 20 00 21 08 00 00",
+        "asm": "cmpq     $0x821, 0x209302(%rip)",
+        "symbol": "",
+        "form": "cmpq W 81/7:mem Arithmetic Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x473d87",
+        "bytes": "48 99",
+        "asm": "cqto",
+        "symbol": "",
+        "form": "cqto W 99 SignExtendAccumulator Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af4fd",
+        "bytes": "f7 f7",
+        "asm": "divl     %edi",
+        "symbol": "",
+        "form": "divl - f7/6:reg Divide Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x473d89",
+        "bytes": "48 f7 f9",
+        "asm": "idivq    %rcx",
+        "symbol": "",
+        "form": "idivq W f7/7:reg Divide Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4afddc",
+        "bytes": "45 69 ff 41 04 00 00",
+        "asm": "imull    $0x441, %r15d, %r15d",
+        "symbol": "",
+        "form": "imull R 69 ImulImmediate Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x51a78f",
+        "bytes": "ff c3",
+        "asm": "incl     %ebx",
+        "symbol": "",
+        "form": "incl - ff/0:reg Arithmetic Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40ce77",
+        "bytes": "48 f7 e6",
+        "asm": "mulq     %rsi",
+        "symbol": "",
+        "form": "mulq W f7/4:reg Mul Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d2b62",
+        "bytes": "66 0f eb d3",
+        "asm": "por      %xmm3, %xmm2",
+        "symbol": "",
+        "form": "por 66 0feb PorRegister Word",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d2b58",
+        "bytes": "66 0f 73 db 0e",
+        "asm": "psrldq   $0xe, %xmm3",
+        "symbol": "",
+        "form": "psrldq 66 0f73/3:reg PsrldqImmediateRegister Word",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4c908d",
+        "bytes": "48 c1 c8 11",
+        "asm": "rorq     $0x11, %rax",
+        "symbol": "",
+        "form": "rorq W c1/1:reg Shift Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4cce9b",
+        "bytes": "d1 f8",
+        "asm": "sarl     $1, %eax",
+        "symbol": "",
+        "form": "sarl - d1/7:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af04c",
+        "bytes": "d3 f8",
+        "asm": "sarl     %cl, %eax",
+        "symbol": "",
+        "form": "sarl - d3/7:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4937d6",
+        "bytes": "41 d1 fb",
+        "asm": "sarl     $1, %r11d",
+        "symbol": "",
+        "form": "sarl R d1/7:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af1ea",
+        "bytes": "0f 94 45 90",
+        "asm": "sete     -0x70(%rbp)",
+        "symbol": "",
+        "form": "sete - 0f94 SetCondition Byte",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40990a",
+        "bytes": "d3 e0",
+        "asm": "shll     %cl, %eax",
+        "symbol": "",
+        "form": "shll - d3/4:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4930bd",
+        "bytes": "d0 ea",
+        "asm": "shrb     $1, %dl",
+        "symbol": "",
+        "form": "shrb - d0/5:reg Shift Byte",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4af577",
+        "bytes": "d1 e8",
+        "asm": "shrl     $1, %eax",
+        "symbol": "",
+        "form": "shrl - d1/5:reg Shift Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x516ab1",
+        "bytes": "48 d1 e8",
+        "asm": "shrq     $1, %rax",
+        "symbol": "",
+        "form": "shrq W d1/5:reg Shift Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x4d19df",
+        "bytes": "91",
+        "asm": "xchgl    %eax, %ecx",
+        "symbol": "",
+        "form": "xchgl - 91 Xchg Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x51a77a",
+        "bytes": "93",
+        "asm": "xchgl    %eax, %ebx",
+        "symbol": "",
+        "form": "xchgl - 93 Xchg Dword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x52113b",
+        "bytes": "49 94",
+        "asm": "xchgq    %rax, %r12",
+        "symbol": "",
+        "form": "xchgq W 94 Xchg Qword",
+        "before": "profile",
+        "reference_sites": 1
+      },
+      {
+        "rip": "0x40c355",
+        "bytes": "49 33 84 d0 98 00 00 00",
+        "asm": "xorq     0x98(%r8, %rdx, 8), %rax",
+        "symbol": "",
+        "form": "xorq W 33 Logic Qword",
+        "before": "profile",
+        "reference_sites": 1
+      }
+    ]
+  },
+  "pinned_workload_reachable_check": {
+    "admitted": 1430,
+    "profile": 1
+  },
+  "suite_before_replay": {
+    "cpl3": 212,
+    "d5_worktrees": 129,
+    "d5_overlaps": 0
+  },
+  "linux_direct": {
+    "started_utc": "2026-11-20T12:22:09Z",
+    "finished_utc": "2026-11-20T12:40:28Z",
+    "nonce": "s6-workloads20261119",
+    "cpu_profile": "X8664V1Stage4AApic",
+    "seed": 24301,
+    "vcpus": 2,
+    "terminal_vcpu": 1,
+    "ram_mib": 128,
+    "retired": 2401417690,
+    "retired_by_vcpu": [
+      1971201057,
+      430216633
+    ],
+    "raw_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+    "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "initramfs_sha256": "ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977",
+    "runner_sha256": "2e7083c738f725c388546037d4077c8c7a79686fa59e7d898a033f31cc02cf0e",
+    "build_patch_sha256": "4c0a740436b14b7ec8cb9e8467f6dc3b649118f54cc64eaa9614198b1aec2a60",
+    "report_sha256": "9b63cb7fe9b3292b8d401cb653ee3ecbe1a7ed85c1651f13a6abf936c721b164",
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "stop": {
+      "exit_kind": "user_mode_unsupported",
+      "rip": "0x40ba82",
+      "rip_bytes": "33 5d d8 48 8d 75 d0 89 d8 bf 01 00 00 00 c1 c8",
+      "unsupported_opcode": "0x33",
+      "cpl": 3,
+      "cpl3_retired": 3777
+    },
+    "stop_elf": "busybox",
+    "stop_elf_file_offset": "0xba82",
+    "stop_disassembly": "xor ebx, dword ptr [rbp - 0x28]",
+    "kernel_activated_two_processors": true,
+    "stage6_init_started": true,
+    "workload_markers": [],
+    "verifier_exit_status": 1,
+    "verifier_detail": "expected source, all five workloads, online CPUs and completion"
+  }
+}

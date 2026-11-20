@@ -468,7 +468,7 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lock xor eax, eax (register)", &[0xf0, 0x31, 0xc0], 0x31),
         // S4-39f4/S4-39f9: `85 /r` in the register form (with or without REX.W) is allowed; the
         // variants below stay outside. Prefixes keep the dword register form outside too.
-        ("66 test ax, ax (66 85 /r)", &[0x66, 0x85, 0xc0], 0x85),
+        ("66 test bl, cl (66 84 /r)", &[0x66, 0x84, 0xc1], 0x84),
         ("lock test eax, eax", &[0xf0, 0x85, 0xc0], 0x85),
         ("fs test eax, eax", &[0x64, 0x85, 0xc0], 0x85),
         ("gs test eax, eax", &[0x65, 0x85, 0xc0], 0x85),
@@ -2201,7 +2201,27 @@ fn cpl3_movsxd_extends_only_the_source_dword_to_a_qword_register() {
         assert_eq!(memory.reads, 0);
         assert!(memory.writes.is_empty());
     }
-    for code in [&[0x63, 0xc6][..], &[0x66, 0x63, 0xc6], &[0x48, 0x63, 0x06]] {
+    let code = [0x48, 0x63, 0x16]; // BusyBox MOVSXD RDX,[RSI]
+    let mut state = initial.clone();
+    state.gpr[Register::Rsi as usize] = DATA;
+    let mut expected = state.clone();
+    expected.rip += code.len() as u64;
+    expected.gpr[Register::Rdx as usize] = 0xffff_ffff_8000_0001;
+    let mut memory = DataMemory::new(&code);
+    for (i, byte) in 0x8000_0001u32.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + i as u64, byte);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state, expected);
+    assert_eq!(memory.read_widths, [(DATA, 4)]);
+    assert!(memory.writes.is_empty());
+
+    for code in [
+        &[0x63, 0xc6][..],
+        &[0x66, 0x63, 0xc6],
+        &[0x67, 0x48, 0x63, 0x06],
+    ] {
         let mut state = initial.clone();
         let mut memory = DataMemory::new(code);
         let result = run3_data(&mut state, &mut memory, 1).unwrap();
@@ -2327,7 +2347,7 @@ fn cpl3_and_imm8_aligns_qword_registers_without_accessing_data_memory() {
 
     for (code, opcode) in [
         (&[0x66, 0x83, 0xe4, 0xf0][..], 0x83),
-        (&[0x48, 0x83, 0x27, 0xf0][..], 0x83),
+        (&[0x66, 0x83, 0x27, 0xf0][..], 0x83),
         (&[0x48, 0x81, 0xe4, 0xf0, 0xff, 0xff, 0xff][..], 0x81),
     ] {
         let mut state = initial.clone();
@@ -3888,9 +3908,9 @@ fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
             0x81,
         ),
         (
-            "66 83 3b 01 cmpw $1, (%rbx)",
-            &[0x66, 0x83, 0x3b, 0x01],
-            0x83,
+            "66 81 3b 01 00 cmpw $1, (%rbx)",
+            &[0x66, 0x81, 0x3b, 0x01, 0x00],
+            0x81,
         ),
         (
             "67 48 39 03 cmpq %rax, (%ebx)",
@@ -4111,7 +4131,7 @@ fn ff_forms_outside_the_register_inc_r64_are_refused_without_change() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let forms: &[(&str, &[u8], u8)] = &[
         // Dword INC (no REX.W) and REX without W.
-        ("ff c3 incl %ebx", &[0xff, 0xc3], 0xff),
+        ("ff c2 incl %edx", &[0xff, 0xc2], 0xff),
         ("40 ff c3 REX incl %ebx", &[0x40, 0xff, 0xc3], 0xff),
         ("41 ff c3 REX.B incl %r11d", &[0x41, 0xff, 0xc3], 0xff),
         // Memory forms.
@@ -5306,7 +5326,11 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
         ),
         ("48 0f be 03 movsbq", &[0x48, 0x0f, 0xbe, 0x03], 0xbe),
         ("0f bf 03 movswl (%rbx), %eax", &[0x0f, 0xbf, 0x03], 0xbf),
-        ("48 63 03 movslq (%rbx), %rax", &[0x48, 0x63, 0x03], 0x63),
+        (
+            "67 48 63 03 movslq (%ebx), %rax",
+            &[0x67, 0x48, 0x63, 0x03],
+            0x63,
+        ),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = mov_byte_state();
@@ -7599,6 +7623,269 @@ fn cpl3_glibc_rseq_sse2_alias_ops_require_fp_state_and_controls() {
 }
 
 #[test]
+fn cpl3_issue575_reference_vector_register_subset_uses_guest_fp_state() {
+    let run = |code: &[u8], initial_fp: od_isa::GuestFpState| {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.rflags |= ARITH;
+        let original_state = state.clone();
+        let fp = std::cell::RefCell::new(initial_fp);
+        let mut memory = DataMemory::new(code);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, original_state.rip + code.len() as u64);
+        assert_eq!(state.rflags, original_state.rflags);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+        (state, fp.into_inner())
+    };
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[0] = std::array::from_fn(|i| i as u8);
+    initial.sse.xmm[1] = initial.sse.xmm[0];
+    initial.sse.xmm[1][5] ^= 0xff;
+    let (state, fp) = run(&[0x66, 0x0f, 0x74, 0xc1], initial); // PCMPEQB xmm0, xmm1
+    let expected = std::array::from_fn(|i| if i == 5 { 0 } else { 0xff });
+    assert_eq!(fp.sse.xmm[0], expected);
+    assert_eq!(state.gpr, user_state().gpr);
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[2] = [0; 16];
+    initial.sse.xmm[0] = [1; 16];
+    let (_, fp) = run(&[0x66, 0x0f, 0xf8, 0xd0], initial); // PSUBB xmm2, xmm0
+    assert_eq!(fp.sse.xmm[2], [0xff; 16]);
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[4] = std::array::from_fn(|i| if matches!(i, 0 | 2 | 15) { 0x80 } else { 0x7f });
+    let (state, _) = run(&[0x66, 0x0f, 0xd7, 0xd4], initial); // PMOVMSKB edx, xmm4
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x8005);
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[2] = std::array::from_fn(|i| i as u8);
+    initial.sse.xmm[3] = [0x80; 16];
+    let (_, fp) = run(&[0x66, 0x0f, 0xeb, 0xd3], initial); // POR xmm2, xmm3
+    assert_eq!(fp.sse.xmm[2], std::array::from_fn(|i| (i as u8) | 0x80));
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[2] = std::array::from_fn(|i| i as u8);
+    let (_, fp) = run(&[0x66, 0x0f, 0x73, 0xfa, 0x02], initial); // PSLLDQ xmm2, 2
+    assert_eq!(
+        fp.sse.xmm[2],
+        [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    );
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[3] = std::array::from_fn(|i| i as u8);
+    let (_, fp) = run(&[0x66, 0x0f, 0x73, 0xdb, 0x0e], initial); // PSRLDQ xmm3, 14
+    assert_eq!(
+        fp.sse.xmm[3],
+        [14, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[0] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 5, 5, 5, 5, 5, 5, 5, 5,
+    ];
+    initial.sse.xmm[1] = [1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0];
+    let (_, fp) = run(&[0x66, 0x0f, 0xd4, 0xc1], initial); // PADDQ xmm0, xmm1
+    assert_eq!(
+        fp.sse.xmm[0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 12, 5, 5, 5, 5, 5, 5, 5]
+    );
+
+    let mut initial = od_isa::GuestFpState::initial();
+    initial.sse.xmm[2] =
+        std::array::from_fn(|i| if matches!(i, 0 | 7 | 8 | 15) { 0x80 } else { 0 });
+    let (state, _) = run(&[0x66, 0x44, 0x0f, 0xd7, 0xca], initial); // PMOVMSKB r9d, xmm2
+    assert_eq!(state.gpr[Register::R9 as usize], 0x8181);
+}
+
+#[test]
+fn cpl3_s6_22_vector_memory_loads_preserve_lanes_and_validate_the_full_access_before_commit() {
+    for (code, width, offset, high, destination) in [
+        (&[0x66, 0x0f, 0x74, 0x0f][..], 16usize, 0u64, false, 1usize),
+        (&[0x66, 0x0f, 0x12, 0x0f][..], 8, 0, false, 1),
+        (&[0x66, 0x0f, 0x16, 0x4f, 0x08][..], 8, 8, true, 1),
+        (&[0x0f, 0x16, 0x40, 0x08][..], 8, 8, true, 0),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rdi as usize] = DATA;
+        state.gpr[Register::Rax as usize] = DATA;
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[destination] = [0xa5; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        for i in 0..24 {
+            memory = memory.with_user(DATA + i, (0x10 + i) as u8);
+        }
+        let mut expected = [0xa5; 16];
+        if code[2] == 0x74 {
+            for i in 0..16 {
+                expected[i] = if 0xa5 == (0x10 + i) as u8 { 0xff } else { 0 };
+            }
+        } else if high {
+            expected[8..].copy_from_slice(
+                &(0..8)
+                    .map(|i| (0x10 + offset + i) as u8)
+                    .collect::<Vec<_>>(),
+            );
+        } else {
+            expected[..8].copy_from_slice(
+                &(0..8)
+                    .map(|i| (0x10 + offset + i) as u8)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(fp.borrow().sse.xmm[destination], expected);
+        assert_eq!(memory.read_widths, vec![(DATA + offset, width)]);
+        assert!(memory.writes.is_empty());
+    }
+
+    // REX.R reaches XMM9, and REX.B reaches R8 as the memory base.
+    let code = [0x66, 0x45, 0x0f, 0x12, 0x08]; // MOVLPD xmm9, [r8]
+    let mut state = user_state();
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.gpr[Register::R8 as usize] = DATA;
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[9] = [0x5a; 16];
+    let fp = std::cell::RefCell::new(initial_fp);
+    let mut memory = DataMemory::new(&code);
+    for i in 0..8 {
+        memory = memory.with_user(DATA + i, (0xc0 + i) as u8);
+    }
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(
+        &fp.borrow().sse.xmm[9][..8],
+        &[0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7]
+    );
+    assert_eq!(&fp.borrow().sse.xmm[9][8..], &[0x5a; 8]);
+
+    // Legacy PCMPEQB requires m128 alignment before any paging or data access.
+    let code = [0x66, 0x0f, 0x74, 0x0f];
+    for (address, mapped, vector) in [
+        (DATA + 1, true, 13),
+        (DATA + 0xff8, false, 13),
+        (DATA + 0x1000, false, 14),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rdi as usize] = address;
+        let before = state.clone();
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[1] = [0x7c; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(&code).with_absent(DATA + 0x1000);
+        if mapped {
+            for offset in 0..16 {
+                memory = memory.with_user(address + offset, 0x7c);
+            }
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        let page_fault = vector == 14;
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(if page_fault { 4 } else { 0 }),
+                linear_address: page_fault.then_some(address),
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), initial_fp);
+        if page_fault {
+            assert_eq!(memory.read_widths, [(address, 16)]);
+        } else {
+            assert!(memory.read_widths.is_empty());
+        }
+    }
+
+    // Canonical48 validates every byte before the backend can observe a read.
+    let code = [0x66, 0x0f, 0x12, 0x0f]; // MOVLPD permits an unaligned m64.
+    let mut state = user_state();
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.gpr[Register::Rdi as usize] = 0x0000_7fff_ffff_fffc;
+    let before = state.clone();
+    let fp = std::cell::RefCell::new(od_isa::GuestFpState::initial());
+    let mut memory = DataMemory::new(&code);
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 0);
+}
+
+#[test]
+fn cpl3_issue575_vector_gates_and_neighboring_prefixes_stay_bounded() {
+    let code = [0x66, 0x0f, 0x74, 0xc1]; // PCMPEQB register
+    for (cr0, cr4, vector) in [
+        (0x8005_0033 | (1 << 2), 0x6b0, 6),
+        (0x8005_0033 | (1 << 3), 0x6b0, 7),
+        (0x8005_0033, 0x6b0 & !(1 << 9), 6),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(cr0);
+        state.cr4 = Some(cr4);
+        let before = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(&code);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+    }
+
+    for (bytes, opcode) in [
+        (&[0x0f, 0x74, 0xc1][..], 0x74),
+        (&[0xf3, 0x66, 0x0f, 0x74, 0xc1][..], 0x74),
+        (&[0x0f, 0xd7, 0xd4][..], 0xd7),
+        (&[0xf3, 0x66, 0x0f, 0xd4, 0xc1][..], 0xd4),
+        (&[0x66, 0x0f, 0x73, 0xea, 0x02][..], 0x73),
+    ] {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        let before = state.clone();
+        let initial_fp = od_isa::GuestFpState::initial();
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(bytes);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), initial_fp);
+        assert_eq!(memory.reads, 0);
+    }
+}
+
+#[test]
 fn cpl3_tunables_imul_uses_r10_and_flags_signed_overflow() {
     for value in [-3i64, i64::MAX] {
         let mut state = user_state();
@@ -8372,6 +8659,66 @@ fn cpl3_issue573_tls_tail_adds_imm32_to_qword_accumulator() {
 }
 
 #[test]
+fn cpl3_busybox_and_library_rmw_forms_validate_the_write_first() {
+    const RIP_ADD_ADDRESS: u64 = RIP + 7 + 0x20_9767;
+    for (code, address, width, rax, expected) in [
+        (&[0x01, 0x06][..], DATA, 4, 3, 8),
+        (
+            &[0x48, 0x01, 0x0d, 0x67, 0x97, 0x20, 0x00][..],
+            RIP_ADD_ADDRESS,
+            8,
+            0,
+            0x1_0000_0008u64,
+        ),
+        (&[0x48, 0x83, 0x45, 0x10, 0x01][..], DATA + 0x10, 8, 0, 6),
+        (&[0x48, 0x83, 0x20, 0x00][..], DATA, 8, DATA, 0),
+    ] {
+        for protected in [false, true] {
+            let mut state = user_state();
+            state.gpr[Register::Rax as usize] = rax;
+            state.gpr[Register::Rcx as usize] = 0x1_0000_0003;
+            state.gpr[Register::Rsi as usize] = DATA;
+            state.gpr[Register::Rbp as usize] = DATA;
+            let before = state.clone();
+            let mut memory = DataMemory::new(code);
+            for (offset, &byte) in 5u64.to_le_bytes()[..width].iter().enumerate() {
+                let at = address + offset as u64;
+                memory = if protected {
+                    memory.with_supervisor(at, byte)
+                } else {
+                    memory.with_user(at, byte)
+                };
+            }
+            let result = run3_data(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(memory.read_widths, [(address, width)]);
+            if protected {
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Fault(ArchitecturalFault {
+                        vector: 14,
+                        error_code: Some(7),
+                        linear_address: Some(address),
+                    })
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert!(memory.writes.is_empty());
+            } else {
+                assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+                assert_eq!(state.rip, RIP + code.len() as u64);
+                assert_eq!(state.gpr, before.gpr);
+                let writes: Vec<_> = expected.to_le_bytes()[..width]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &byte)| (address + i as u64, byte))
+                    .collect();
+                assert_eq!(memory.writes, writes);
+            }
+        }
+    }
+}
+
+#[test]
 fn cpl3_workload_qword_or_forms_keep_write_intent_for_stack_and_indexed_memory() {
     for (code, address, expected) in [
         (&[0x48, 0x83, 0x0c, 0x24, 0x00][..], DATA, 0x10u64),
@@ -8425,6 +8772,271 @@ fn cpl3_workload_qword_or_forms_keep_write_intent_for_stack_and_indexed_memory()
                 );
             }
         }
+    }
+}
+
+#[test]
+fn cpl3_busybox_push_imm8_and_sete_use_the_right_stack_widths() {
+    let code = [0x6a, 0xfd, 0x0f, 0x94, 0x45, 0x90];
+    let mut state = user_state();
+    let push_address = DATA;
+    let byte_address = DATA + 0x80;
+    state.gpr[Register::Rsp as usize] = push_address + 8;
+    state.gpr[Register::Rbp as usize] = byte_address + 0x70;
+    state.rflags |= ZF;
+    let flags = state.rflags;
+    let mut memory = DataMemory::new(&code).with_user(byte_address, 0xcc);
+    for offset in 0..8 {
+        memory = memory.with_user(push_address + offset, 0);
+    }
+    let done = run3_data(&mut state, &mut memory, 2).unwrap();
+    assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rsp as usize], push_address);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.rflags, flags);
+    let mut expected = Vec::new();
+    for (offset, byte) in (-3i64).to_le_bytes().into_iter().enumerate() {
+        expected.push((push_address + offset as u64, byte));
+    }
+    expected.push((byte_address, 1));
+    assert_eq!(memory.writes, expected);
+    assert!(memory.read_widths.is_empty());
+}
+
+#[test]
+fn cpl3_busybox_cqo_and_idiv_use_a_signed_double_width_dividend() {
+    let code = [0x48, 0x99, 0x48, 0xf7, 0xf9];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = -13i64 as u64;
+    state.gpr[Register::Rcx as usize] = 5;
+    let mut memory = DataMemory::new(&code);
+    let done = run3_data(&mut state, &mut memory, 2).unwrap();
+    assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.gpr[Register::Rax as usize], -2i64 as u64);
+    assert_eq!(state.gpr[Register::Rdx as usize], -3i64 as u64);
+    assert!(memory.read_widths.is_empty());
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_reference_implicit_multiply_and_divide_keep_full_results() {
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    state.gpr[Register::Rsi as usize] = 2;
+    let mut memory = DataMemory::new(&[0x48, 0xf7, 0xe6]); // MUL RSI
+    let done = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], u64::MAX - 1);
+    assert_eq!(state.gpr[Register::Rdx as usize], 1);
+    assert_eq!(state.rflags & (CF | OF), CF | OF);
+
+    for divisor in [0, 5] {
+        let mut state = user_state();
+        state.gpr[Register::Rax as usize] = 0x1111_0000_0000_000d;
+        state.gpr[Register::Rdx as usize] = 0x2222_0000_0000_0000;
+        state.gpr[Register::Rdi as usize] = divisor;
+        let before = state.clone();
+        let mut memory = DataMemory::new(&[0xf7, 0xf7]); // DIV EDI
+        let done = run3_data(&mut state, &mut memory, 1).unwrap();
+        if divisor == 0 {
+            assert_eq!(
+                exit(&done),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 0,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+            assert_eq!(state.gpr[Register::Rax as usize], 2);
+            assert_eq!(state.gpr[Register::Rdx as usize], 3);
+        }
+        assert!(memory.read_widths.is_empty());
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_reference_word_compare_and_fs_xor_read_without_writing() {
+    let mut state = user_state();
+    state.fs_base = DATA;
+    state.gpr[Register::Rdx as usize] = DATA;
+    let code = [
+        0x66, 0x83, 0x7a, 0x06, 0xf1, // CMP word [RDX+6], -15
+        0x64, 0x48, 0x33, 0x14, 0x25, 0x30, 0, 0, 0, // XOR RDX, FS:[0x30]
+    ];
+    let value = 0x1122_3344_5566_7788u64;
+    let mut memory = DataMemory::new(&code)
+        .with_user(DATA + 6, 0xf1)
+        .with_user(DATA + 7, 0xff);
+    for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
+        memory = memory.with_user(DATA + 0x30 + i as u64, byte);
+    }
+    let compare = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&compare), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rflags & ARITH, ZF | PF);
+    assert_eq!(state.gpr[Register::Rdx as usize], DATA);
+
+    let xor = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&xor), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rdx as usize], DATA ^ value);
+    assert_eq!(memory.read_widths, [(DATA + 6, 2), (DATA + 0x30, 8)]);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_reference_fs_compares_use_the_exact_memory_width() {
+    for (code, address, width) in [
+        (
+            &[0x64, 0x80, 0x3c, 0x25, 0xc8, 0xff, 0xff, 0xff, 0][..],
+            DATA + 8,
+            1,
+        ),
+        (
+            &[0x64, 0x48, 0x83, 0x3c, 0x25, 0xc0, 0xff, 0xff, 0xff, 0][..],
+            DATA,
+            8,
+        ),
+    ] {
+        let mut state = user_state();
+        state.fs_base = DATA + 0x40;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..width {
+            memory = memory.with_user(address + offset as u64, 0);
+        }
+        let done = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.rflags & ARITH, ZF | PF);
+        assert_eq!(memory.read_widths, [(address, width)]);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_reference_rdsspq_preserves_rax_without_shadow_stack() {
+    let code = [0xf3, 0x48, 0x0f, 0x1e, 0xc8];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0xfedc_ba98_7654_3210;
+    state.rflags |= ARITH;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    let done = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(done.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    state.rip = before.rip;
+    assert_eq!(state, before);
+    assert!(memory.read_widths.is_empty());
+    assert!(memory.writes.is_empty());
+
+    for code in [
+        &[0xf3, 0x0f, 0x1e, 0xc8][..],
+        &[0xf3, 0x48, 0x0f, 0x1e, 0xc9][..],
+        &[0x48, 0xf3, 0x0f, 0x1e, 0xc8][..],
+    ] {
+        let mut state = before.clone();
+        let mut memory = DataMemory::new(code);
+        let done = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&done), &RunExit::Unsupported { opcode: 0x1e });
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn cpl3_reference_rdtsc_uses_the_injected_clock() {
+    let code = [0x0f, 0x31];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    state.gpr[Register::Rdx as usize] = u64::MAX;
+    let before = state.clone();
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_rdtsc();
+    let mut memory = DataMemory::new(&code);
+    let mut ticks = 0;
+    let done = run_with_cpl3_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        Some(&mut || {
+            ticks += 1;
+            0x1234_5678_9abc_def0
+        }),
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(ticks, 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x9abc_def0);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x1234_5678);
+    assert!(memory.read_widths.is_empty());
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_busybox_notrack_jump_uses_the_full_register_target() {
+    for (code, register) in [
+        (&[0x3e, 0xff, 0xe0][..], Register::Rax),
+        (&[0x3e, 0xff, 0xe2][..], Register::Rdx),
+        (&[0x3e, 0x41, 0xff, 0xe2][..], Register::R10),
+    ] {
+        for target in [0x6000_0000_0010, 0x8000_0000_0010] {
+            let mut state = user_state();
+            state.gpr[register as usize] = target;
+            let before = state.clone();
+            let mut memory = DataMemory::new(code);
+            let done = run3_data(&mut state, &mut memory, 1).unwrap();
+            if target == 0x6000_0000_0010 {
+                assert_eq!(exit(&done), &RunExit::InstructionBudgetExhausted);
+                assert_eq!(state.rip, target);
+                state.rip = before.rip;
+            } else {
+                assert_eq!(
+                    exit(&done),
+                    &RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    })
+                );
+            }
+            assert_eq!(state, before);
+            assert!(memory.read_widths.is_empty());
+            assert!(memory.writes.is_empty());
+        }
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        let bare = od_isa::execute::run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            || false,
+        );
+        assert!(matches!(bare.exit, RunExit::Unsupported { .. }));
+        assert_eq!(bare.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+
+    for code in [
+        &[0x2e, 0xff, 0xe0][..],
+        &[0x3e, 0x3e, 0xff, 0xe0][..],
+        &[0x41, 0x3e, 0xff, 0xe2][..],
+        &[0x3e, 0x67, 0xff, 0xe0][..],
+        &[0x3e, 0xff, 0xe1][..],
+    ] {
+        let mut state = user_state();
+        let mut memory = DataMemory::new(code);
+        let done = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&done), &RunExit::Unsupported { opcode: 0xff });
     }
 }
 
@@ -8878,4 +9490,195 @@ fn cpl3_s622_tls_return_rip_byte_store_and_movzx_use_observed_registers() {
     assert_eq!(state.gpr[Register::Rbx as usize], 0x1234_5678_0000_005a);
     assert_eq!(memory.writes, [(target, byte)]);
     assert!(memory.read_widths.is_empty());
+}
+
+#[test]
+fn cpl3_s622_observed_register_bitscan_forms_reuse_live_semantics() {
+    let code = [
+        0x0f, 0xbc, 0xc2, // bsf eax, edx
+        0x0f, 0xbd, 0xc0, // bsr eax, eax
+        0x48, 0x0f, 0xbc, 0xd2, // bsf rdx, rdx
+    ];
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    state.gpr[Register::Rdx as usize] = 0x10;
+    state.rflags |= ARITH;
+    let arithmetic = CF | PF | AF | ZF | SF | OF;
+    let non_arithmetic_flags = state.rflags & !arithmetic;
+    let mut memory = DataMemory::new(&code);
+    let result = run3_data(&mut state, &mut memory, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.gpr[Register::Rax as usize], 2);
+    assert_eq!(state.gpr[Register::Rdx as usize], 4);
+    assert_eq!(state.rflags & !arithmetic, non_arithmetic_flags);
+    assert_eq!(state.rflags & ZF, 0);
+    assert!(memory.read_widths.is_empty());
+    assert!(memory.writes.is_empty());
+
+    // A zero source leaves the destination unchanged and sets ZF.
+    let mut zero_state = user_state();
+    zero_state.gpr[Register::Rax as usize] = 0xfeed_beef;
+    zero_state.gpr[Register::Rdx as usize] = 0;
+    let mut zero_memory = DataMemory::new(&[0x0f, 0xbc, 0xc2]);
+    let zero_result = run3_data(&mut zero_state, &mut zero_memory, 1).unwrap();
+    assert_eq!(exit(&zero_result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(zero_state.gpr[Register::Rax as usize], 0xfeed_beef);
+    assert_ne!(zero_state.rflags & ZF, 0);
+    assert!(zero_memory.read_widths.is_empty());
+}
+
+#[test]
+fn cpl3_s622_busybox_register_form_samples_execute_exactly() {
+    let samples: &[&[u8]] = &[
+        &[0x01, 0xc2],                         // add edx, eax
+        &[0x81, 0xee, 0xbd, 0, 0, 0],          // sub esi, 0xbd
+        &[0x45, 0x01, 0xc7],                   // add r15d, r8d
+        &[0x48, 0x83, 0xc8, 0x01],             // or rax, 1
+        &[0x4c, 0x09, 0xd1],                   // or rcx, r10
+        &[0x48, 0x81, 0xe1, 0xff, 0x0f, 0, 0], // and rcx, 0xfff
+        &[0x83, 0xf2, 0x01],                   // xor edx, 1
+        &[0x4d, 0x6b, 0xe4, 0x70],             // imul r12, r12, 0x70
+        &[0x66, 0x85, 0xd2],                   // test dx, dx
+        &[0x48, 0xd1, 0xfa],                   // sar rdx, 1
+        &[0x48, 0xd1, 0xe8],                   // shr rax, 1
+        &[0xd3, 0xe0],                         // shl eax, cl
+        &[0x41, 0xd3, 0xe9],                   // shr r9d, cl
+        &[0x48, 0xd3, 0xea],                   // shr rdx, cl
+        &[0x41, 0xd1, 0xfb],                   // sar r11d, 1
+        &[0xd1, 0xf8],                         // sar eax, 1
+        &[0x48, 0xc1, 0xc2, 0x11],             // rol rdx, 0x11
+        &[0x48, 0xc1, 0xc8, 0x11],             // ror rax, 0x11
+        &[0x48, 0x87, 0xf7],                   // xchg rdi, rsi
+        &[0x48, 0x93],                         // xchg rax, rbx
+        &[0x49, 0x94],                         // xchg rax, r12
+        &[0x93],                               // xchg eax, ebx
+        &[0x97],                               // xchg eax, edi
+        &[0xff, 0xc3],                         // inc ebx
+    ];
+    for code in samples {
+        let mut state = user_state();
+        state.gpr[Register::Rax as usize] = 0x1234_5678;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rdx as usize] = 0x80;
+        state.gpr[Register::Rsi as usize] = 0x12;
+        state.gpr[Register::Rdi as usize] = 0x21;
+        state.gpr[Register::R8 as usize] = 4;
+        state.gpr[Register::R9 as usize] = 0x80;
+        state.gpr[Register::R10 as usize] = 0x40;
+        state.gpr[Register::R11 as usize] = 0x80;
+        state.gpr[Register::R12 as usize] = 5;
+        state.gpr[Register::R15 as usize] = 7;
+        let mut memory = DataMemory::new(code);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert!(memory.read_widths.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn cpl3_s622_observed_call_rax_pushes_before_target_rip_commit() {
+    let code = [0xff, 0xd0]; // call rax
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = RIP + 0x1000;
+    state.gpr[Register::Rsp as usize] = DATA + 0x100;
+    let return_rip = RIP + code.len() as u64;
+    let mut memory = DataMemory::new(&code);
+    for byte in 0..8 {
+        memory = memory.with_user(DATA + 0xf8 + byte, 0);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 0x1000);
+    assert_eq!(state.gpr[Register::Rsp as usize], DATA + 0xf8);
+    assert_eq!(memory.writes.len(), 8);
+    assert_eq!(memory.writes[0], (DATA + 0xf8, return_rip as u8));
+    assert_eq!(memory.writes[7], (DATA + 0xff, (return_rip >> 56) as u8));
+}
+
+#[test]
+fn cpl3_issue575_pinsrw_and_pshuflw_use_two_byte_read_and_prestate_high_words() {
+    let code = [
+        0x66, 0x0f, 0xc4, 0x0d, 0x1e, 0x89, 0x20, 0x00,
+        0x00, // PINSRW xmm1, [RIP+0x20891e], 0
+        0xf2, 0x0f, 0x70, 0xc1, 0x00, // PSHUFLW xmm0, xmm1, 0 (BusyBox)
+        0xf2, 0x0f, 0x70, 0xc9, 0x00, // PSHUFLW xmm1, xmm1, 0 (self-alias)
+    ];
+    let mut state = user_state();
+    state.rip = 0x0040_adf1;
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.rflags |= ARITH;
+    let target = state.rip + 9 + 0x20_891e;
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[1] = std::array::from_fn(|index| 0x20 + index as u8);
+    let fp = std::cell::RefCell::new(initial_fp);
+    let mut memory = DataMemory::new(&code);
+    memory.code_base = state.rip;
+    memory = memory.with_user(target, 0xaa).with_user(target + 1, 0x99);
+
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 3);
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, 0x0040_adf1 + code.len() as u64);
+    assert_eq!(state.rflags & ARITH, ARITH);
+    assert_eq!(
+        memory.read_widths,
+        [(target, 2)],
+        "PINSRW reads exactly its m16 source"
+    );
+    assert_eq!(memory.writes, []);
+    assert_eq!(
+        fp.borrow().sse.xmm[1],
+        [
+            0xaa, 0x99, 0xaa, 0x99, 0xaa, 0x99, 0xaa, 0x99, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d,
+            0x2e, 0x2f
+        ],
+        "PSHUFLW duplicates low words and preserves high64 from its source prestate"
+    );
+}
+
+#[test]
+fn cpl3_issue575_pinsrw_read_fault_preserves_xmm_and_rip() {
+    let code = [0x66, 0x0f, 0xc4, 0x0d, 0x1e, 0x89, 0x20, 0x00, 0x00];
+    let mut state = user_state();
+    state.rip = 0x0040_adf1;
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    let before_state = state.clone();
+    let address = state.rip + code.len() as u64 + 0x20_891e;
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[1] = [0xa5; 16];
+    let fp = std::cell::RefCell::new(initial_fp.clone());
+    let mut memory = DataMemory::new(&code);
+    memory.code_base = state.rip;
+    for offset in 0..2 {
+        memory = memory.with_supervisor(address + offset, 0xff);
+    }
+
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(address),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before_state);
+    assert_eq!(*fp.borrow(), initial_fp);
+    assert_eq!(memory.read_widths, [(address, 2)]);
+    assert!(memory.writes.is_empty());
 }

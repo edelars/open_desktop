@@ -12548,25 +12548,30 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_cpl3_rdtsc_does_not_increment_read_counts() {
-        let (mut boot, file) = user_mode_board(&[0x0f, 0x31, 0x0f, 0x05], true);
-        let members = LinuxCpl0SetMembers {
-            rdtsc: true,
-            ..LinuxCpl0SetMembers::minimal()
-        };
-        let record = run_linux_direct_board_set_user_mode(
-            &mut boot,
-            &input(&file, &[], BLOB, board_hash()),
-            8,
-            members,
-        )
-        .expect("runs");
-
-        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
-        assert_eq!(record.cpl, 3);
-        assert_eq!(record.cpl3_retired, 0);
-        assert_eq!(record.rdtsc_reads, Some(0));
-        assert_eq!(record.rdtsc_reads_by_cpl, Some([0, 0, 0, 0]));
+    fn cpl3_rdtsc_counts_only_the_admitted_form() {
+        for (code, reads, opcode) in [
+            (&[0x0f, 0x31, 0x0f, 0x05][..], 1, 0x05),
+            (&[0x48, 0x0f, 0x31, 0x0f, 0x05][..], 0, 0x31),
+        ] {
+            let (mut boot, file) = user_mode_board(code, true);
+            let members = LinuxCpl0SetMembers {
+                rdtsc: true,
+                ..LinuxCpl0SetMembers::minimal()
+            };
+            let record = run_linux_direct_board_set_user_mode(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                8,
+                members,
+            )
+            .expect("runs");
+            assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+            assert_eq!(record.unsupported_opcode, Some(opcode), "{record:?}");
+            assert_eq!(record.cpl, 3);
+            assert_eq!(record.cpl3_retired, reads);
+            assert_eq!(record.rdtsc_reads, Some(reads));
+            assert_eq!(record.rdtsc_reads_by_cpl, Some([0, 0, 0, reads]));
+        }
     }
 
     const SYSCALL_KERNEL_AT: u64 = ENTRY + 0x600;

@@ -9887,22 +9887,10 @@ mod tests {
         assert_eq!(two_mib_entries(&memory)[3] & 0x40, 0);
     }
 
-    #[test]
-    fn cpl3_lock_add_bytes_execute_through_the_paged_memory_adapter() {
-        use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSetExit};
+    fn active_cpl3_lock_state() -> LongModeState {
         use od_isa::{CpuActivity, StiShadow};
-        let code = [0xf0, 0x48, 0x83, 0x03, 0x01]; // lock add qword [rbx], 1
-        let initial = 0x7fff_ffff_ffff_ffffu64;
-        let memory = lock_memory(0, 0x7007);
-        memory
-            .store_bytes(GuestPhysicalAddress::new(0x7000), &code, |_| {})
-            .unwrap();
-        memory
-            .store_u64(GuestPhysicalAddress::new(0x7040), initial, |_| {})
-            .unwrap();
         let mut state = LongModeState::default();
         state.rip = 0x0040_0000;
-        state.gpr[od_isa::Register::Rbx as usize] = DATA_LINEAR + 0x40;
         state.cr0 = Some(CR0);
         state.cr4 = Some(CR4);
         state.activity = Some(CpuActivity::Running);
@@ -9922,6 +9910,127 @@ mod tests {
             access: 0xf3,
             flags: 0xc,
         });
+        state
+    }
+
+    #[test]
+    fn aligned_cpl3_glibc_dword_atomics_use_the_live_write_walk() {
+        use od_isa::Register::{Rax, Rcx, Rdx, Rsi};
+        use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSetExit};
+        use od_isa::memory::ArchitecturalFault;
+
+        for (code, accumulator, expected_data, expected_rax) in [
+            (
+                &[0xf0, 0x0f, 0xb1, 0x11][..],
+                0xdead_0000_0000_0005,
+                9,
+                0xdead_0000_0000_0005,
+            ),
+            (&[0xf0, 0x0f, 0xb1, 0x11][..], 0xdead_0000_0000_000a, 5, 5),
+            (&[0x87, 0x06][..], 0xdead_0000_0000_0008, 8, 5),
+        ] {
+            for (data_pte, offset, expected_error) in [
+                (0x7007, 0x40, None),
+                (0x7006, 0x40, Some(0x06)),
+                (0x7005, 0x40, Some(0x07)),
+                (0x7007, 0x41, None),
+            ] {
+                let memory = lock_memory(0, data_pte);
+                memory
+                    .store_bytes(GuestPhysicalAddress::new(0x7000), code, |_| {})
+                    .unwrap();
+                memory
+                    .store_u64(
+                        GuestPhysicalAddress::new(0x7040),
+                        0xaabb_ccdd_0000_0005,
+                        |_| {},
+                    )
+                    .unwrap();
+                let address = DATA_LINEAR + offset;
+                let mut state = active_cpl3_lock_state();
+                state.gpr[Rax as usize] = accumulator;
+                state.gpr[Rcx as usize] = address;
+                state.gpr[Rdx as usize] = 9;
+                state.gpr[Rsi as usize] = address;
+                let before = state.clone();
+                let mut writes = Vec::new();
+                let result = {
+                    let mut note = |range| writes.push(range);
+                    let mut adapter = lock_adapter(&memory, &mut note);
+                    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+                    run_with_cpl3_profile_set(
+                        &mut state,
+                        &mut adapter,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: None,
+                            context: user_context(),
+                        },
+                        od_isa::INTEGER_FLAGS,
+                        &set,
+                        None,
+                        || false,
+                    )
+                    .unwrap()
+                };
+                let operand = GuestPhysicalAddress::new(0x7040);
+                if expected_error.is_none() && offset == 0x40 {
+                    assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+                    assert_eq!(
+                        result.exit,
+                        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                    );
+                    assert_eq!(state.gpr[Rax as usize], expected_rax);
+                    assert_eq!(state.rip, before.rip + code.len() as u64);
+                    if code[0] == 0x87 {
+                        assert_eq!(state.rflags, before.rflags);
+                    } else {
+                        assert_eq!(state.rflags & 0x40 != 0, accumulator as u32 == 5);
+                    }
+                    assert_eq!(
+                        memory.load_u64(operand).unwrap(),
+                        0xaabb_ccdd_0000_0000 | expected_data
+                    );
+                    assert_ne!(table_entries(&memory)[5] & 0x40, 0);
+                    assert!(writes.contains(&GuestPhysicalRange::new(operand, 4).unwrap()));
+                } else {
+                    assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+                    assert_eq!(state.gpr, before.gpr);
+                    assert_eq!(state.rip, before.rip);
+                    assert_eq!(state.rflags, before.rflags);
+                    let expected = match expected_error {
+                        Some(error_code) => RunExit::Fault(ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(error_code),
+                            linear_address: Some(address),
+                        }),
+                        None => RunExit::Unsupported {
+                            opcode: if code[0] == 0x87 { 0x87 } else { 0xb1 },
+                        },
+                    };
+                    assert_eq!(result.exit, Cpl0ProfileSetExit::Run(expected));
+                    assert_eq!(memory.load_u64(operand).unwrap(), 0xaabb_ccdd_0000_0005);
+                    assert_eq!(table_entries(&memory)[5] & 0x40, 0);
+                    assert!(writes.iter().all(|range| range.start() != operand));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpl3_lock_add_bytes_execute_through_the_paged_memory_adapter() {
+        use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSetExit};
+        let code = [0xf0, 0x48, 0x83, 0x03, 0x01]; // lock add qword [rbx], 1
+        let initial = 0x7fff_ffff_ffff_ffffu64;
+        let memory = lock_memory(0, 0x7007);
+        memory
+            .store_bytes(GuestPhysicalAddress::new(0x7000), &code, |_| {})
+            .unwrap();
+        memory
+            .store_u64(GuestPhysicalAddress::new(0x7040), initial, |_| {})
+            .unwrap();
+        let mut state = active_cpl3_lock_state();
+        state.gpr[od_isa::Register::Rbx as usize] = DATA_LINEAR + 0x40;
         let mut log = Vec::new();
         let result = {
             let mut note = |range| log.push(range);
