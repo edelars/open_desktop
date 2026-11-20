@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "comment": "Тестовый пример манифеста диска полезной нагрузки (S8-27): вместо дистрибутивов приложений — собственные небольшие входы из tests/fixtures/guest/stage0/. Пути source считаются от каталога манифеста; path всегда внутри OD8/; sha256 проверяется до записи диска. Дистрибутивы приложений в Git не кладутся: их манифесты хранят только путь вне репозитория и SHA-256 из docs/specs/SUPPORT_MATRIX.md.",
+  "spare_mib": 64,
+  "files": [
+    {
+      "path": "OD8/stage0/node_workload.mjs",
+      "source": "../../fixtures/guest/stage0/node_workload.mjs",
+      "sha256": "5610cb9abd28ba9bd357e4e9c6359133184c5d11b8fb0146cf8654c210e8c335",
+      "origin": "tests/fixtures/guest/stage0/node_workload.mjs (собственный сценарий)"
+    },
+    {
+      "path": "OD8/stage0/node_workload.expected.json",
+      "source": "../../fixtures/guest/stage0/node_workload.expected.json",
+      "sha256": "3bbfe607e2362500ca3a7050db80a6a5f87171b8bb5dd43b77249f76395bd78e",
+      "origin": "tests/fixtures/guest/stage0/node_workload.expected.json"
+    },
+    {
+      "path": "OD8/stage0/writer-source.txt",
+      "source": "../../fixtures/guest/stage0/writer-source.txt",
+      "sha256": "6352c55f36a888195fa98c861f3747aef72f76ce2becfb1f9f2a40999b9c55ba",
+      "origin": "tests/fixtures/guest/stage0/writer-source.txt"
+    }
+  ]
+}

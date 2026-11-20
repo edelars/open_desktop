@@ -8,9 +8,37 @@ const TABLE_ENTRIES: u32 = 128;
 const ENTRY_BYTES: u32 = 128;
 const HEADER_BYTES: u32 = 92;
 const SECTOR: u64 = 512;
-const ESP_TYPE: [u8; 16] = [
-    0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
-];
+
+/// Partition type and name written to the single GPT entry.
+#[derive(Clone, Copy)]
+pub(super) struct Partition {
+    type_guid: [u8; 16],
+    name: &'static str,
+}
+
+impl Partition {
+    pub(super) fn type_guid(self) -> [u8; 16] {
+        self.type_guid
+    }
+}
+
+/// EFI System Partition, C12A7328-F81F-11D2-BA4B-00A0C93EC93B.
+pub(super) const ESP: Partition = Partition {
+    type_guid: [
+        0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+    ],
+    name: "OD Install Media",
+};
+
+/// Microsoft Basic Data, EBD0A0A2-B9E5-4433-87C0-68B6B72699C7; Windows assigns
+/// a drive letter to such a volume, unlike to an ESP.
+pub(super) const BASIC_DATA: Partition = Partition {
+    type_guid: [
+        0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44, 0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99,
+        0xc7,
+    ],
+    name: "OD8 Payload",
+};
 
 pub(super) fn disk_sectors(partition_sectors: u32) -> Option<u32> {
     PARTITION_START
@@ -21,6 +49,7 @@ pub(super) fn disk_sectors(partition_sectors: u32) -> Option<u32> {
 pub(super) fn emit(
     disk_sectors: u32,
     identity: u64,
+    partition: Partition,
     mut put: impl FnMut(u64, &[u8]) -> Result<(), ImportError>,
 ) -> Result<(), ImportError> {
     let last = disk_sectors - 1;
@@ -33,13 +62,13 @@ pub(super) fn emit(
     record[12..16].copy_from_slice(&last.to_le_bytes());
     mbr[510..].copy_from_slice(&[0x55, 0xaa]);
     let mut entries = [0; (TABLE_ENTRIES * ENTRY_BYTES) as usize];
-    entries[..16].copy_from_slice(&ESP_TYPE);
+    entries[..16].copy_from_slice(&partition.type_guid);
     entries[16..32].copy_from_slice(&guid(identity, 2));
     entries[32..40].copy_from_slice(&u64::from(PARTITION_START).to_le_bytes());
     entries[40..48].copy_from_slice(&u64::from(backup_table - 1).to_le_bytes());
     for (field, unit) in entries[56..128]
         .chunks_exact_mut(2)
-        .zip("OD Install Media".encode_utf16())
+        .zip(partition.name.encode_utf16())
     {
         field.copy_from_slice(&unit.to_le_bytes());
     }
