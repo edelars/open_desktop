@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use crate::io::{CheckedStorage, StorageBackend};
 
 use super::ImportError;
+use super::tree::{Contents, Entry, Extent as SourceExtent, File, Name};
 
 const SECTOR: u64 = 2048;
 const FIRST_DESCRIPTOR: u64 = 16;
@@ -12,25 +13,15 @@ const MAX_ENTRIES: usize = 65_536;
 const MIN_RECORD: usize = 34;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Extent {
+struct Extent {
     lba: u32,
-    pub(super) length: u32,
+    length: u32,
 }
 
 impl Extent {
-    pub(super) fn offset(self) -> u64 {
+    fn offset(self) -> u64 {
         u64::from(self.lba) * SECTOR
     }
-}
-
-pub(super) enum Contents {
-    Directory(Vec<Entry>),
-    File(Extent),
-}
-
-pub(super) struct Entry {
-    pub(super) name: [u8; 11],
-    pub(super) contents: Contents,
 }
 
 struct Record<'a> {
@@ -160,9 +151,15 @@ impl<B: StorageBackend> Reader<'_, B> {
                 let contents = if child.directory {
                     Contents::Directory(self.directory(child.extent, extent, depth + 1)?)
                 } else {
-                    Contents::File(child.extent)
+                    Contents::File(File::contiguous(SourceExtent {
+                        offset: child.extent.offset(),
+                        length: u64::from(child.extent.length),
+                    }))
                 };
-                entries.push(Entry { name, contents });
+                entries.push(Entry {
+                    name: Name::Short(name),
+                    contents,
+                });
             }
         }
         if dot_entries != 2 {

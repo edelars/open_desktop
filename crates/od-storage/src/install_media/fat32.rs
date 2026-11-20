@@ -1,8 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::io::{CheckedStorage, StorageBackend};
 
 use super::ImportError;
 use super::gpt::PARTITION_START;
-use super::iso9660::{Contents, Entry, Extent};
+use super::tree::{Contents, Entry, File, Name};
 
 const SECTOR: u32 = 512;
 const RESERVED: u32 = 32;
@@ -12,11 +14,12 @@ const FAT_EOF: u32 = 0x0fff_ffff;
 const MIN_CLUSTERS: u32 = 65_525;
 const MAX_CLUSTERS: u32 = 0x0fff_ffed;
 const ENTRY_BYTES: usize = 32;
+const LFN_CHARS: usize = 13;
 const DATA_CHUNK: usize = 128 * 1024;
 
 enum Data {
     Directory(Vec<u8>),
-    File(Extent),
+    File(File),
 }
 
 struct Allocation {
@@ -133,11 +136,11 @@ impl Volume {
             let out = data_base + u64::from(run.first - 2) * cluster_bytes;
             match &run.data {
                 Data::Directory(bytes) => put(out, bytes)?,
-                Data::File(extent) => {
-                    let len = u64::from(extent.length);
+                Data::File(file) => {
+                    let len = file.length;
                     for at in (0..len).step_by(DATA_CHUNK) {
                         let count = (len - at).min(DATA_CHUNK as u64) as usize;
-                        source.read_exact_at(extent.offset() + at, &mut buf[..count])?;
+                        file.read_exact_at(source, at, &mut buf[..count])?;
                         put(out + at, &buf[..count])?;
                     }
                 }
@@ -186,8 +189,46 @@ impl Allocator {
     }
 
     fn directory(&mut self, entries: Vec<Entry>, parent: Option<u32>) -> Result<u32, ImportError> {
+        let mut occupied = BTreeSet::new();
+        for entry in &entries {
+            let short = match &entry.name {
+                Name::Short(short) => Some(*short),
+                Name::Long(long) => canonical_short(long),
+            };
+            if short.is_some_and(|short| !occupied.insert(short)) {
+                return Err(ImportError::Unsupported("fat_name_collision"));
+            }
+        }
+        let mut alias_cursors = BTreeMap::new();
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                let (short, long) = match entry.name {
+                    Name::Short(short) => (short, None),
+                    Name::Long(long) => {
+                        let canonical = canonical_short(&long);
+                        let short = match canonical {
+                            Some(short) => short,
+                            None => allocate_alias(&long, &mut occupied, &mut alias_cursors)?,
+                        };
+                        let needs_lfn =
+                            canonical.is_none() || long.bytes().any(|b| b.is_ascii_lowercase());
+                        (short, needs_lfn.then_some(long))
+                    }
+                };
+                Ok((short, long, entry.contents))
+            })
+            .collect::<Result<Vec<_>, ImportError>>()?;
+        let slots: usize = entries
+            .iter()
+            .map(|(_, long, _)| {
+                1 + long
+                    .as_ref()
+                    .map_or(0, |name| name.len().div_ceil(LFN_CHARS))
+            })
+            .sum();
         let prefix_entries = if parent.is_some() { 2 } else { 1 };
-        let bytes = (prefix_entries + entries.len() + 1) * ENTRY_BYTES;
+        let bytes = (prefix_entries + slots + 1) * ENTRY_BYTES;
         let (first, count) = self.reserve(bytes as u64)?;
         let mut directory = Vec::with_capacity(bytes);
         if let Some(parent) = parent {
@@ -196,15 +237,16 @@ impl Allocator {
         } else {
             directory.extend_from_slice(&dir_entry(b"OD INSTALL ", 0x08, 0, 0));
         }
-        for entry in entries {
-            let (attributes, cluster, len) = match entry.contents {
+        for (short, long, contents) in entries {
+            let (attributes, cluster, len) = match contents {
                 Contents::Directory(children) => {
                     let parent_cluster = if parent.is_none() { 0 } else { first };
                     (0x10, self.directory(children, Some(parent_cluster))?, 0)
                 }
-                Contents::File(extent) => {
+                Contents::File(file) => {
                     self.files += 1;
-                    let len = extent.length;
+                    let len = u32::try_from(file.length)
+                        .map_err(|_| ImportError::Unsupported("fat_file_size"))?;
                     let cluster = if len == 0 {
                         0
                     } else {
@@ -212,14 +254,17 @@ impl Allocator {
                         self.allocations.push(Allocation {
                             first,
                             count,
-                            data: Data::File(extent),
+                            data: Data::File(file),
                         });
                         first
                     };
                     (0x20, cluster, len)
                 }
             };
-            directory.extend_from_slice(&dir_entry(&entry.name, attributes, cluster, len));
+            if let Some(long) = long {
+                write_long_name(&mut directory, long.as_bytes(), &short);
+            }
+            directory.extend_from_slice(&dir_entry(&short, attributes, cluster, len));
         }
         directory.resize(bytes, 0);
         self.allocations.push(Allocation {
@@ -228,6 +273,98 @@ impl Allocator {
             data: Data::Directory(directory),
         });
         Ok(first)
+    }
+}
+
+fn short_character(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"$%'-_@~`!(){}^#&".contains(&byte)
+}
+
+fn split_name(name: &str) -> (&str, &str) {
+    name.rsplit_once('.').unwrap_or((name, ""))
+}
+
+fn canonical_short(name: &str) -> Option<[u8; 11]> {
+    let (base, extension) = split_name(name);
+    if base.is_empty()
+        || base.len() > 8
+        || extension.len() > 3
+        || !base.bytes().chain(extension.bytes()).all(short_character)
+    {
+        return None;
+    }
+    let mut out = [b' '; 11];
+    for (dest, src) in out[..8].iter_mut().zip(base.bytes()) {
+        *dest = src.to_ascii_uppercase();
+    }
+    for (dest, src) in out[8..].iter_mut().zip(extension.bytes()) {
+        *dest = src.to_ascii_uppercase();
+    }
+    Some(out)
+}
+
+fn allocate_alias(
+    name: &str,
+    occupied: &mut BTreeSet<[u8; 11]>,
+    cursors: &mut BTreeMap<[u8; 11], u32>,
+) -> Result<[u8; 11], ImportError> {
+    let (base, extension) = split_name(name);
+    let mut stem: Vec<u8> = base
+        .bytes()
+        .filter(|&byte| short_character(byte))
+        .map(|byte| byte.to_ascii_uppercase())
+        .take(6)
+        .collect();
+    if stem.is_empty() {
+        stem.extend_from_slice(b"FILE");
+    }
+    let mut out = [b' '; 11];
+    for (dest, src) in out[8..]
+        .iter_mut()
+        .zip(extension.bytes().filter(|&byte| short_character(byte)))
+    {
+        *dest = src.to_ascii_uppercase();
+    }
+    out[..stem.len()].copy_from_slice(&stem);
+    let cursor = cursors.entry(out).or_insert(1);
+    for index in *cursor..=999_999 {
+        let suffix = index.to_string();
+        let prefix = stem.len().min(7 - suffix.len());
+        out[..8].fill(b' ');
+        out[..prefix].copy_from_slice(&stem[..prefix]);
+        out[prefix] = b'~';
+        out[prefix + 1..prefix + 1 + suffix.len()].copy_from_slice(suffix.as_bytes());
+        if occupied.insert(out) {
+            *cursor = index + 1;
+            return Ok(out);
+        }
+    }
+    Err(ImportError::Unsupported("fat_alias_limit"))
+}
+
+fn write_long_name(directory: &mut Vec<u8>, name: &[u8], short: &[u8; 11]) {
+    const CHAR_OFFSETS: [usize; LFN_CHARS] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+    let checksum = short
+        .iter()
+        .fold(0u8, |sum, &byte| sum.rotate_right(1).wrapping_add(byte));
+    let slots = name.len().div_ceil(LFN_CHARS);
+    for (index, characters) in name.chunks(LFN_CHARS).enumerate().rev() {
+        let mut entry = [0; ENTRY_BYTES];
+        entry[0] = (index + 1) as u8;
+        if index + 1 == slots {
+            entry[0] |= 0x40;
+        }
+        entry[11] = 0x0f;
+        entry[13] = checksum;
+        for (index, offset) in CHAR_OFFSETS.into_iter().enumerate() {
+            let code = match characters.get(index) {
+                Some(&character) => u16::from(character),
+                None if index == characters.len() => 0,
+                None => 0xffff,
+            };
+            entry[offset..offset + 2].copy_from_slice(&code.to_le_bytes());
+        }
+        directory.extend_from_slice(&entry);
     }
 }
 
