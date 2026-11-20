@@ -1473,6 +1473,12 @@ with observation. The paired median ratio was 1.0315. Emission and
 finalization took 2.303 µs per event by the median sample mean.
 [S3-35j phase timings and evidence](STAGE_3_S3-35j_2026-11-19.md)
 
+S3-36l measured the warmed FIFO on the five S3-14 branch/helper
+inputs on the M1 Pro. The medians were 5.675 µs for FIFO and 3.089 µs
+for the interpreter. All 60 paired intervals favored the interpreter.
+Each timed FIFO sweep recorded five hits and zero publications or evictions.
+[S3-36l warm measurements and evidence](STAGE_3_S3-36l_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
