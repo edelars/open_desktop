@@ -625,11 +625,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         // Slice C3: NV_Increment, NV_SetBits, NV_Extend, GetTime.
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
-        0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149,
+        0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 81);
+    assert_eq!(expected.len(), 82);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -651,6 +651,8 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(body, 0x18Au32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18C, 1));
     assert_eq!(body, 0x0200_018Cu32.to_be_bytes());
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18F, 1));
+    assert_eq!(body, 0x0200_018Fu32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x184, 1));
     assert_eq!(body, 0x0600_0184u32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x128, 1));
@@ -681,7 +683,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(81)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(82)[..]].concat()
     );
 }
 
@@ -691,11 +693,16 @@ fn capability_commands_paging_and_more_data() {
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0, 5));
     assert!(more && count == 5 && body.len() == 20);
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
-    assert!(
-        !more && count == 13,
-        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x184, 0x185, 0x186, 0x189, 0x18A, 0x18C, 0x190, 0x19C"
-    );
-    assert_eq!(body.len(), 52);
+    let expected = [
+        0x17E, 0x17F, 0x180, 0x181, 0x182, 0x184, 0x185, 0x186, 0x189, 0x18A, 0x18C, 0x18F, 0x190,
+        0x19C,
+    ];
+    assert!(!more);
+    assert_eq!(count as usize, expected.len());
+    assert_eq!(body.len(), 4 * expected.len());
+    for (entry, code) in body.chunks_exact(4).zip(expected) {
+        assert_eq!(u16::from_be_bytes([entry[2], entry[3]]), code);
+    }
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x19D, 100));
     assert!(!more && count == 0);
     // propertyCount 0: empty list, moreData YES because entries remain.

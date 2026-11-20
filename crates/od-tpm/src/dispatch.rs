@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 81] = [
+pub(crate) static COMMANDS: [CommandSpec; 82] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -191,6 +191,7 @@ pub(crate) static COMMANDS: [CommandSpec; 81] = [
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
     spec(cc::TEST_PARMS, 0, 0, false, false, false),
     spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
+    spec(cc::POLICY_NV_WRITTEN, 1, 0, false, false, false),
     spec(cc::POLICY_TEMPLATE, 1, 0, false, false, false),
     spec(cc::POLICY_PARAMETERS, 1, 0, false, false, false),
 ];
@@ -633,7 +634,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     let policy = handle_auth_policy(tpm, handles[i]);
                     let (need_auth, need_password) = tpm.policy_use_check(
                         pslot,
-                        spec.code,
+                        (spec.code, handles[i]),
                         |restriction| match restriction {
                             PolicyHashRestriction::CpHash(expected) => cp == expected,
                             PolicyHashRestriction::NameHash(expected) => {
@@ -809,6 +810,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_COUNTER_TIMER => tpm.cmd_policy_counter_timer(&inv, &mut p)?,
         cc::POLICY_NV => tpm.cmd_policy_nv(&inv, &mut p)?,
+        cc::POLICY_NV_WRITTEN => tpm.cmd_policy_nv_written(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
         cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
             tpm.cmd_policy_hash_restriction(&inv, &mut p, spec.code)?
@@ -1032,6 +1034,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
         | cc::POLICY_COUNTER_TIMER
+        | cc::POLICY_NV_WRITTEN
         | cc::POLICY_CP_HASH
         | cc::POLICY_NAME_HASH
         | cc::POLICY_TEMPLATE
@@ -1129,6 +1132,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 81);
+        assert_eq!(COMMANDS.len(), 82);
     }
 }

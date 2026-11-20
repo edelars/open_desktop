@@ -759,7 +759,7 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
     assert_eq!(
         t.policy_use_check(
             slot,
-            cc::SIGN,
+            (cc::SIGN, NULL),
             |rule| rule == PolicyHashRestriction::CpHash(cp_hash),
             &second,
             false,
@@ -770,7 +770,7 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
     assert_eq!(
         t.policy_use_check(
             slot,
-            cc::SIGN,
+            (cc::SIGN, NULL),
             |rule| rule == PolicyHashRestriction::CpHash([0x43; 32]),
             &second,
             false,
@@ -1300,7 +1300,7 @@ fn counter_timer_deadline_uses_nonce_time_and_keeps_the_earliest_limit() {
     );
     let slot = t.sessions.slot_of(after_limit.handle).unwrap();
     assert_eq!(
-        t.policy_use_check(slot, cc::CERTIFY, |_| true, &authorized, true, 1),
+        t.policy_use_check(slot, (cc::CERTIFY, NULL), |_| true, &authorized, true, 1),
         Err(Rc::POLICY_FAIL.in_session(1))
     );
     err(
@@ -1640,6 +1640,118 @@ fn nv_policy_access_selects_the_session_mode_and_survives_snapshot_restore() {
         )),
         b"abc"
     );
+}
+
+#[test]
+fn policy_nv_written_gates_writes_for_the_actual_authorized_handle() {
+    let mut t = started();
+    let unwritten = hex("3c326323670e28ad37bd57f63b4cc34d26ab205ef22f275c58d47fab2485466e");
+    let written = hex("f7887d158ae8d38be0ac5319f37a9e07618bf54885453c7a54ddb0c6a6193beb");
+    let attrs = nv_attr::POLICYREAD | nv_attr::POLICYWRITE | nv_attr::OWNERWRITE;
+    for (index, digest) in [(NV0, &unwritten), (NV0 + 1, &written)] {
+        ok(&define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            b"",
+            &nv_public(index, alg::SHA256, attrs, digest, 2),
+        ));
+    }
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &unwritten,
+        alg::SHA256,
+    ));
+    let mut policy = policy_session(&mut t, se::POLICY);
+    let write = |index, auth| {
+        hc(
+            cc::NV_WRITE,
+            &[auth, index],
+            cat(&[&tpm2b(b"ab"), &u16b(0)]),
+            (auth, b""),
+        )
+    };
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[0]));
+    assert_eq!(digest(&mut t, &policy), unwritten);
+    err(
+        &use_session(&mut t, &mut policy, &write(NV0, OWNER), 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+    ok(&use_session(
+        &mut t,
+        &mut policy,
+        &write(NV0, NV0),
+        0,
+        true,
+        false,
+    ));
+    assert_eq!(digest(&mut t, &policy), [0; 32]);
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[0]));
+    err(
+        &use_session(&mut t, &mut policy, &write(NV0, NV0), 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &policy), unwritten);
+
+    ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[1]));
+    assert_eq!(digest(&mut t, &policy), written);
+    err(
+        &use_session(
+            &mut t,
+            &mut policy,
+            &write(NV0 + 1, NV0 + 1),
+            0,
+            true,
+            false,
+        ),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&nv_write(&mut t, OWNER, NV0 + 1, b"", b"cd", 0));
+    ok(&use_session(
+        &mut t,
+        &mut policy,
+        &write(NV0 + 1, NV0 + 1),
+        0,
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn policy_nv_written_repeats_the_same_assertion_and_rejects_real_conflicts() {
+    let mut t = started();
+    let policy = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    for session in [&policy, &trial] {
+        err(
+            &pol(&mut t, cc::POLICY_NV_WRITTEN, session, &[]),
+            Rc::INSUFFICIENT.in_param(1),
+        );
+        err(
+            &pol(&mut t, cc::POLICY_NV_WRITTEN, session, &[2]),
+            Rc::VALUE.in_param(1),
+        );
+        err(
+            &pol(&mut t, cc::POLICY_NV_WRITTEN, session, &[1, 0]),
+            Rc::SIZE,
+        );
+        ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, session, &[0]));
+    }
+    let first = hex("3c326323670e28ad37bd57f63b4cc34d26ab205ef22f275c58d47fab2485466e");
+    err(
+        &pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[1]),
+        Rc::VALUE.in_param(1),
+    );
+    assert_eq!(digest(&mut t, &policy), first);
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &policy, &[0]));
+    assert_eq!(digest(&mut t, &policy), h256(&[&first, &u32b(0x18f), &[0]]));
+    ok(&pol(&mut t, cc::POLICY_NV_WRITTEN, &trial, &[1]));
+    assert_eq!(digest(&mut t, &trial), h256(&[&first, &u32b(0x18f), &[1]]));
 }
 
 #[test]
@@ -3854,7 +3966,7 @@ fn saved_pcr_assertions_are_stale_after_counted_startup_resets() {
         assert_eq!(
             t.policy_use_check(
                 slot,
-                cc::SIGN,
+                (cc::SIGN, NULL),
                 |rule| rule == PolicyHashRestriction::CpHash([0; 32]),
                 &previous_digest,
                 false,

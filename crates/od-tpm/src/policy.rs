@@ -72,6 +72,7 @@ pub(crate) struct PolicyState {
     pub command_locality: u8,
     pub pcr_update_counter: Option<u32>,
     pub deadline: Option<TimePoint>,
+    pub nv_written: Option<bool>,
     pub auth_value_needed: bool,
     pub password_needed: bool,
 }
@@ -188,6 +189,7 @@ impl PolicyState {
             command_locality: 0,
             pcr_update_counter: None,
             deadline: None,
+            nv_written: None,
             auth_value_needed: false,
             password_needed: false,
         }
@@ -352,6 +354,32 @@ impl Tpm {
         let name = index.name();
         let (state, _) = self.policy_mut(slot)?;
         state.extend(&[&cc::POLICY_NV.to_be_bytes(), &args.digest(), &name]);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyNvWritten` (Part 3 v185, §23.20) defers the comparison until authorization.
+    pub(crate) fn cmd_policy_nv_written(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let value = p.u8()?;
+        let written = match value {
+            0 => false,
+            1 => true,
+            _ => return Err(Rc::VALUE.in_param(1)),
+        };
+        p.finish()?;
+        let slot = self.policy_slot(inv.handles[0])?;
+        let (state, kind) = self.policy_mut(slot)?;
+        if kind != SessionKind::Trial {
+            if state.nv_written.is_some_and(|old| old != written) {
+                return Err(Rc::VALUE.in_param(1));
+            }
+            state.nv_written = Some(written);
+        }
+        state.extend(&[&cc::POLICY_NV_WRITTEN.to_be_bytes(), &[value]]);
         Ok(Output::default())
     }
 
@@ -666,13 +694,14 @@ impl Tpm {
     }
 
     /// The checks of Part 3, clause 5.6, step 8, for a policy session in `slot` that authorizes
-    /// command `code` on an entity with `auth_policy`. `matches_hash` checks a restriction
+    /// a `(command code, authorized handle)` pair with `auth_policy`.
+    /// `matches_hash` checks a restriction
     /// against the authorized command's actual content. `admin` is the ADMIN role,
     /// `n` the one-based session number. Returns `(isAuthValueNeeded, isPasswordNeeded)`.
     pub(crate) fn policy_use_check(
         &self,
         slot: usize,
-        code: u32,
+        (code, entity): (u32, u32),
         matches_hash: impl Fn(PolicyHashRestriction) -> bool,
         auth_policy: &[u8],
         admin: bool,
@@ -719,6 +748,15 @@ impl Tpm {
         }
         if let Some(hash @ PolicyHashRestriction::TemplateHash(_)) = st.hash_restriction
             && !matches_hash(hash)
+        {
+            return Err(Rc::POLICY_FAIL.in_session(n));
+        }
+        if let Some(written) = st.nv_written
+            && self
+                .persistent
+                .nv
+                .get(entity)
+                .is_none_or(|index| (index.attributes & nv_attr::WRITTEN != 0) != written)
         {
             return Err(Rc::POLICY_FAIL.in_session(n));
         }

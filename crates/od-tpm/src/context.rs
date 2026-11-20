@@ -378,7 +378,15 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
         DaClass::Protected => 1,
         DaClass::Lockout => 2,
     };
-    w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1) | (bind_da << 2));
+    let nv_written = match p.nv_written {
+        None => 0x00,
+        Some(false) => 0x10,
+        Some(true) => 0x30,
+    };
+    w.u8(u8::from(p.auth_value_needed)
+        | (u8::from(p.password_needed) << 1)
+        | (bind_da << 2)
+        | nv_written);
     w.u8(s.symmetric.to_octet());
     if let Some(digest) = s.audit_digest {
         w.u8(1); // Version of the optional audit tail.
@@ -444,7 +452,10 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         _ => return Err(Rc::VALUE),
     };
     let flags = r.u8()?;
-    let bind_da = match flags >> 2 {
+    if flags & 0xc0 != 0 {
+        return Err(Rc::VALUE);
+    }
+    let bind_da = match (flags >> 2) & 3 {
         // Legacy HMAC bodies retain the bound handle. Policy and audit
         // bodies from that format do not record bind provenance.
         0 if bound
@@ -463,6 +474,12 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     }
     policy.auth_value_needed = flags & 1 != 0;
     policy.password_needed = flags & 2 != 0;
+    policy.nv_written = match flags & 0x30 {
+        0x00 => None,
+        0x10 if kind == SessionKind::Policy => Some(false),
+        0x30 if kind == SessionKind::Policy => Some(true),
+        _ => return Err(Rc::VALUE),
+    };
     let symmetric = SessionSym::from_octet(r.u8()?).ok_or(Rc::VALUE)?;
     let mut audit_digest = None;
     let mut nonce_time = None;
@@ -711,8 +728,20 @@ mod tests {
                 assert_eq!(&encode_session(&session)[..], legacy);
             }
             let flags = legacy.len() - 2;
-            legacy[flags] = 0x0c;
-            assert!(matches!(decode_session(&legacy), Err(Rc::VALUE)));
+            for invalid in [0x0c, 0x20, 0x40, 0x80] {
+                legacy[flags] = invalid;
+                assert!(matches!(decode_session(&legacy), Err(Rc::VALUE)));
+            }
+            for (bits, written) in [(0x10, false), (0x30, true)] {
+                legacy[flags] = bits;
+                if kind == 1 {
+                    let session = decode_session(&legacy).unwrap();
+                    assert_eq!(session.policy.nv_written, Some(written));
+                    assert_eq!(&encode_session(&session)[..], legacy);
+                } else {
+                    assert!(matches!(decode_session(&legacy), Err(Rc::VALUE)));
+                }
+            }
         }
     }
 
