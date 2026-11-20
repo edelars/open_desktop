@@ -7008,6 +7008,233 @@ fn cpl3_glibc_tls_fs_load_and_store_fault_before_cpu_or_memory_mutation() {
 }
 
 #[test]
+fn cpl3_glibc_rseq_add_qword_from_fs_uses_live_base_flags_and_user_permissions() {
+    let code = [0x64, 0x48, 0x03, 0x3c, 0x25, 0x00, 0x00, 0x00, 0x00];
+    let fs = DATA + 0x200;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::Rdi as usize] = 2;
+    state.rflags |= ARITH;
+    let mut memory = DataMemory::new(&code).with_user(fs, 1);
+    for offset in 1..8 {
+        memory = memory.with_user(fs + offset, 0);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[Register::Rdi as usize], 3);
+    assert_eq!(state.rflags & ARITH, PF);
+    assert_eq!(state.fs_base, fs);
+    assert_eq!(memory.reads, 1);
+
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::Rdi as usize] = 2;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..8 {
+        memory = memory.with_supervisor(fs + offset, 1);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(fs),
+        })
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.reads, 1);
+}
+
+#[test]
+fn cpl3_glibc_rseq_fs_add_and_imm_store_keep_forms_bounded() {
+    let invalid = [
+        &[0x65, 0x48, 0x03, 0x3c, 0x25, 0, 0, 0, 0][..], // GS instead of FS
+        &[0x64, 0x48, 0x03, 0x3c, 0x0d, 0, 0, 0, 0][..], // indexed SIB
+        &[0x64, 0x49, 0xc7, 0x40, 0x04, 0xff, 0xff, 0xff, 0xff][..], // REX.W changes width
+    ];
+    for code in invalid {
+        let mut state = user_state();
+        state.fs_base = DATA;
+        state.gpr[Register::Rdi as usize] = 0;
+        state.gpr[Register::R8 as usize] = 0x100;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_user(DATA + offset, 1);
+            memory = memory.with_user(DATA + 0x104 + offset, 1);
+        }
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(result.instructions_executed, 0);
+        assert!(matches!(exit(&result), RunExit::Unsupported { .. }));
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_glibc_rseq_fs_dword_immediate_store_uses_register_base() {
+    let code = [0x64, 0x41, 0xc7, 0x40, 0x04, 0xff, 0xff, 0xff, 0xff];
+    let fs = DATA + 0x200;
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::R8 as usize] = 0x40;
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..4 {
+        memory = memory.with_user(fs + 0x44 + offset, 0);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(memory.reads, 0);
+    assert_eq!(
+        memory.writes,
+        (0..4)
+            .map(|offset| (fs + 0x44 + offset, 0xff))
+            .collect::<Vec<_>>()
+    );
+
+    let mut state = user_state();
+    state.fs_base = fs;
+    state.gpr[Register::R8 as usize] = 0x40;
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    for offset in 0..4 {
+        memory = memory.with_supervisor(fs + 0x44 + offset, 0x55);
+    }
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(7),
+            linear_address: Some(fs + 0x44),
+        })
+    );
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn bare_ring3_run_still_refuses_rseq_fs_add_and_imm_store() {
+    let cases = [
+        &[0x64, 0x48, 0x03, 0x3c, 0x25, 0, 0, 0, 0][..],
+        &[0x64, 0x41, 0xc7, 0x40, 0x04, 0xff, 0xff, 0xff, 0xff][..],
+    ];
+    for code in cases {
+        let mut state = user_state();
+        state.fs_base = DATA;
+        state.gpr[Register::Rdi as usize] = 1;
+        state.gpr[Register::R8 as usize] = 0x40;
+        let before = state.clone();
+        let mut memory = DataMemory::new(code);
+        for offset in 0..8 {
+            memory = memory.with_user(DATA + offset, 1);
+            memory = memory.with_user(DATA + 0x44 + offset, 0);
+        }
+
+        let result = od_isa::execute::run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            || false,
+        );
+
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.reads, 0);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_glibc_rseq_sse2_alias_ops_use_the_vcpu_fp_cell() {
+    let code = [
+        0x66, 0x0f, 0x60, 0xc0, // punpcklbw xmm0, xmm0
+        0x66, 0x0f, 0x61, 0xc0, // punpcklwd xmm0, xmm0
+        0x66, 0x0f, 0x70, 0xc0, 0x00, // pshufd xmm0, xmm0, 0
+    ];
+    let mut state = user_state();
+    state.cr0 = Some(0x8005_0033);
+    state.cr4 = Some(0x6b0);
+    state.rflags |= ARITH;
+    let mut initial_fp = od_isa::GuestFpState::initial();
+    initial_fp.sse.xmm[0] = std::array::from_fn(|index| 0x10 + index as u8);
+    let fp = std::cell::RefCell::new(initial_fp);
+    let mut memory = DataMemory::new(&code);
+
+    let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 3);
+
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(fp.borrow().sse.xmm[0], [0x10; 16]);
+    assert_eq!(state.rflags & ARITH, ARITH);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(memory.reads, 0);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cpl3_glibc_rseq_sse2_alias_ops_require_fp_state_and_controls() {
+    let code = [0x66, 0x0f, 0x60, 0xc0];
+    let mut state = user_state();
+    let before = state.clone();
+    let mut memory = DataMemory::new(&code);
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 0);
+    assert!(matches!(
+        exit(&result),
+        RunExit::Unsupported { opcode: 0x60 }
+    ));
+    assert_eq!(state, before);
+
+    let mut bare_state = user_state();
+    let bare_before = bare_state.clone();
+    let mut bare_memory = DataMemory::new(&code);
+    let bare_result = od_isa::execute::run(
+        &mut bare_state,
+        &mut bare_memory,
+        config(PrivilegeLevel::Ring3, 1),
+        || false,
+    );
+    assert!(matches!(bare_result.exit, RunExit::Unsupported { .. }));
+    assert_eq!(bare_result.instructions_executed, 0);
+    assert_eq!(bare_state, bare_before);
+    assert_eq!(bare_memory.reads, 0);
+    assert_eq!(bare_memory.reads, 0);
+
+    for (cr0, cr4, vector) in [(0x8005_0033, 0x20, 6), (0x8005_003b, 0x6b0, 7)] {
+        let mut state = user_state();
+        state.cr0 = Some(cr0);
+        state.cr4 = Some(cr4);
+        let before = state.clone();
+        let fp = std::cell::RefCell::new(od_isa::GuestFpState::initial());
+        let mut memory = DataMemory::new(&code);
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(*fp.borrow(), od_isa::GuestFpState::initial());
+    }
+}
+
+#[test]
 fn cpl3_tunables_imul_uses_r10_and_flags_signed_overflow() {
     for value in [-3i64, i64::MAX] {
         let mut state = user_state();

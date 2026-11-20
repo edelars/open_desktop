@@ -1,0 +1,197 @@
+{
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "raw_namespace_sectors": 4194304,
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "guest_kernel_markers": [
+    "[    1.745883] smpboot: Total of 2 processors activated (4002.55 BogoMIPS)",
+    "[    2.535573] Run /s6-smp-init as init process"
+  ],
+  "base_commit": "bf253558d92737f7c22559a8ff297818cabd1301",
+  "previous_run_evidence": "s6-22-busybox-tls-fs-replay.json",
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "before": {
+    "report_sha256": "c2056072384490285683305a379537c1ceb3d46f8fc799ffca17cad778fb5930",
+    "runner_sha256": "65b3689573bd208ea21ca0ac041090e1efed1bf38841385172d1b025740a277e",
+    "retired": 2400166981,
+    "retired_by_vcpu": [
+      1998649281,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 3158,
+    "rip": "0x4f3b61",
+    "rip_gpa": "0x7da1b61",
+    "rip_bytes": "64 48 03 3c 25 00 00 00 00 89 ca 89 4d ec e8 2c",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 3 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 5,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x3529a000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x3529ad80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        }
+      ],
+      "returned": 5
+    },
+    "busybox_elf_file_offset": "0xf3b61"
+  },
+  "after": {
+    "report_sha256": "04d26010e3ac4a84741c4b429f46cf16b531ecaaea6e19bb1cbbbd7b093b3de9",
+    "runner_sha256": "6f4da1beceebc29d7706f699262ddc1c12768e429a9a02401187e1b300fa8ba6",
+    "retired": 2400178118,
+    "retired_by_vcpu": [
+      1998660418,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 3188,
+    "rip": "0x4f3b96",
+    "rip_gpa": "0x7da1b96",
+    "rip_bytes": "3d 00 f0 ff ff 77 81 eb 92 90 f3 0f 1e fa 53 48",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 61 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x3529a000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x3529ad80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "busybox_elf_file_offset": "0xf3b96"
+  },
+  "same_com1": true,
+  "same_cpu1": true,
+  "candidate_patch_sha256": "65e0f2ee78fef2485e6c76f88578bd5f44f40bf45cf0259b57d2ca7dbd2ef14c",
+  "sources_sha256": {
+    "crates/od-isa/src/execute.rs": "b64c9f57f68c1daa25ea209f17c6fded1fbba878070fdd6eaacc29f6844dab76",
+    "crates/od-isa/src/long_decode.rs": "1f9075728fa2ec54ae2bf9a2f903ad633210d4718c1bbc9f5361753db40d548d",
+    "crates/od-isa/tests/cpl3_profile_set.rs": "115f7cc9c4565e345977994377d8e07433f32f8fac3ddf0cc110b0c85d6a9d5e",
+    "crates/od-machine/src/paged_memory_adapter.rs": "552984f8a26c95fdbdcf4272b0e9e1085b406ce2e8bc68265c9fef1431a5c78d",
+    "crates/od-machine/src/page_walk.rs": "908b2e6dfa10a72a6c4be146a923ef8fd482d90298d6fc92a447c0f382bbf6a5"
+  },
+  "diagnostic": {
+    "source": "Pinned BusyBox with reported GPRs and locally reconstructed TLS/caller stack",
+    "start_rip": "0x4f3b61",
+    "stop_rip": "0x4f3b94",
+    "cpl3_retired": 29
+  },
+  "early_trial": {
+    "candidate_patch_sha256": "6077bae565cfc751a512ae5075ec15d1a25f3642f95fc8467f9e33c0e961a2e7",
+    "report_sha256": "792e5d2966296cf5882a9083b67e455b65afe65e39a499cad7dd505f924fcdbd",
+    "runner_sha256": "792ff264e273e8dd7e9e5ccb6a6c11ce5133c3984073ceffd90bf7b98c8071d8",
+    "same_stop_and_execution": true
+  },
+  "prebuilt_pilot": {
+    "report_sha256": "dbfe5e75a5affc370945e67b0c86d5509f6e74ac65f3df19030164eb29bc89ac",
+    "runner_sha256": "6f4da1beceebc29d7706f699262ddc1c12768e429a9a02401187e1b300fa8ba6",
+    "initramfs_sha256": "ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977",
+    "cpl3_retired": 3188,
+    "rip": "0x4f3b96",
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x1b08e000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x1b08ed80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "guest_verifier": "expected source, all five workloads, online CPUs and completion"
+  }
+}

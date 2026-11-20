@@ -28756,6 +28756,9 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::PunpckldqRegister { .. }
             | Operation::PandRegister { .. }
             | Operation::PunpcklqdqRegister { .. }
+            | Operation::PunpcklbwRegister { .. }
+            | Operation::PunpcklwdRegister { .. }
+            | Operation::PshufdRegister { .. }
             | Operation::MovupsStoreMemory { .. }
             | Operation::MovupsLoadMemory { .. }
             | Operation::MovdquLoadMemory { .. }
@@ -29423,6 +29426,11 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
     };
     matches!(
         (instruction.opcode.byte, instruction.operation),
+        (0x03, Operation::AddFsLoad { dst, src })
+            if dst.size() == OperandSize::Qword
+                && absolute(src, OperandSize::Qword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
         (0x8b, Operation::MovFsLoadQ { dst, src })
             if dst.size() == OperandSize::Qword
                 && absolute(src, OperandSize::Qword)
@@ -29434,7 +29442,10 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0xc7, Operation::MovFsMemImm { dst, .. })
-            if absolute(dst, OperandSize::Dword)
+            if dst.size == OperandSize::Dword
+                && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && matches!(dst.base, AddressBase::None | AddressBase::Register(_))
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0x88, Operation::MovFsStore { dst, src })
@@ -42514,6 +42525,9 @@ fn step_configured(
             instruction.operation,
             Operation::MoveIntegerToXmm { .. }
                 | Operation::MovqFromXmm { .. }
+                | Operation::PunpcklbwRegister { .. }
+                | Operation::PunpcklwdRegister { .. }
+                | Operation::PshufdRegister { .. }
                 | Operation::PunpckldqRegister { .. }
                 | Operation::PandRegister { .. }
                 | Operation::PunpcklqdqRegister { .. }
@@ -45141,6 +45155,13 @@ fn step_configured(
         Operation::MovFsLoadQ { .. }
         | Operation::MovFsStore { .. }
         | Operation::MovFsMemImm { .. }
+            if context.privilege == PrivilegeLevel::Ring3
+                && control_policy.is_some()
+                && cpl3_glibc_tls_fs_form(&instruction) =>
+        {
+            true
+        }
+        Operation::AddFsLoad { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
                 && cpl3_glibc_tls_fs_form(&instruction) =>
@@ -48567,21 +48588,11 @@ fn step_configured(
             destination,
             source,
         } => {
-            let source = state
-                .sse
-                .as_ref()
-                .expect("PUNPCKLBW state was prevalidated")
-                .xmm[usize::from(source)];
             let sse = state
                 .sse
                 .as_mut()
                 .expect("PUNPCKLBW state was prevalidated");
-            let destination = &mut sse.xmm[usize::from(destination)];
-            let original = *destination;
-            for lane in 0..8 {
-                destination[lane * 2] = original[lane];
-                destination[lane * 2 + 1] = source[lane];
-            }
+            punpcklbw_xmm(&mut sse.xmm, destination, source);
         }
         Operation::PunpckhbwRegister {
             destination,
@@ -48607,23 +48618,11 @@ fn step_configured(
             destination,
             source,
         } => {
-            let source = state
-                .sse
-                .as_ref()
-                .expect("PUNPCKLWD state was prevalidated")
-                .xmm[usize::from(source)];
             let sse = state
                 .sse
                 .as_mut()
                 .expect("PUNPCKLWD state was prevalidated");
-            let destination = &mut sse.xmm[usize::from(destination)];
-            let original = *destination;
-            for lane in 0..4 {
-                let dest_word = u16::from_le_bytes([original[lane * 2], original[lane * 2 + 1]]);
-                let src_word = u16::from_le_bytes([source[lane * 2], source[lane * 2 + 1]]);
-                destination[lane * 4..lane * 4 + 2].copy_from_slice(&dest_word.to_le_bytes());
-                destination[lane * 4 + 2..lane * 4 + 4].copy_from_slice(&src_word.to_le_bytes());
-            }
+            punpcklwd_xmm(&mut sse.xmm, destination, source);
         }
         Operation::PunpckhwdRegister {
             destination,
@@ -48799,19 +48798,8 @@ fn step_configured(
             source,
             control,
         } => {
-            let original_source = state
-                .sse
-                .as_ref()
-                .expect("PSHUFD state was prevalidated")
-                .xmm[usize::from(source)];
             let sse = state.sse.as_mut().expect("PSHUFD state was prevalidated");
-            let mut shuffled = [0; 16];
-            for output_lane in 0..4 {
-                let selected = usize::from((control >> (output_lane * 2)) & 3);
-                shuffled[output_lane * 4..output_lane * 4 + 4]
-                    .copy_from_slice(&original_source[selected * 4..selected * 4 + 4]);
-            }
-            sse.xmm[usize::from(destination)] = shuffled;
+            pshufd_xmm(&mut sse.xmm, destination, source, control);
         }
         Operation::PsllwImmediateRegister { destination, count } => {
             let original = state
@@ -64578,6 +64566,39 @@ enum FxsaveLayout {
     Long64,
 }
 
+fn punpcklbw_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8) {
+    let source = xmm[usize::from(source)];
+    let original = xmm[usize::from(destination)];
+    let target = &mut xmm[usize::from(destination)];
+    for lane in 0..8 {
+        target[lane * 2] = original[lane];
+        target[lane * 2 + 1] = source[lane];
+    }
+}
+
+fn punpcklwd_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8) {
+    let source = xmm[usize::from(source)];
+    let original = xmm[usize::from(destination)];
+    let target = &mut xmm[usize::from(destination)];
+    for lane in 0..4 {
+        let dest_word = u16::from_le_bytes([original[lane * 2], original[lane * 2 + 1]]);
+        let src_word = u16::from_le_bytes([source[lane * 2], source[lane * 2 + 1]]);
+        target[lane * 4..lane * 4 + 2].copy_from_slice(&dest_word.to_le_bytes());
+        target[lane * 4 + 2..lane * 4 + 4].copy_from_slice(&src_word.to_le_bytes());
+    }
+}
+
+fn pshufd_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8, control: u8) {
+    let original_source = xmm[usize::from(source)];
+    let mut shuffled = [0; 16];
+    for output_lane in 0..4 {
+        let selected = usize::from((control >> (output_lane * 2)) & 3);
+        shuffled[output_lane * 4..output_lane * 4 + 4]
+            .copy_from_slice(&original_source[selected * 4..selected * 4 + 4]);
+    }
+    xmm[usize::from(destination)] = shuffled;
+}
+
 fn step_cpl3_xmm(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -64665,6 +64686,25 @@ fn step_cpl3_xmm(
             let mut fp = fp.borrow_mut();
             let rhs = fp.sse.xmm[usize::from(source)];
             fp.sse.xmm[usize::from(destination)][8..].copy_from_slice(&rhs[..8]);
+        }
+        Operation::PunpcklbwRegister {
+            destination,
+            source,
+        } => {
+            punpcklbw_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+        }
+        Operation::PunpcklwdRegister {
+            destination,
+            source,
+        } => {
+            punpcklwd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+        }
+        Operation::PshufdRegister {
+            destination,
+            source,
+            control,
+        } => {
+            pshufd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source, control);
         }
         Operation::MovupsStoreMemory {
             destination,
