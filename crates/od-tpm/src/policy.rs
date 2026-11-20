@@ -38,10 +38,13 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::codes::{alg, cc, handle, st};
+use crate::codes::{alg, cc, handle, object_attr, st};
 use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify};
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
-use crate::marshal::{MAX_DATA, Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
+use crate::marshal::{
+    MAX_DATA, PublicParams, Reader, Scheme, TpmlDigest, TpmlPcrSelection, TpmtSignature,
+    TpmtTicket, Writer, limits,
+};
 use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
@@ -167,6 +170,37 @@ impl<'a> ComparisonArgs<'a> {
         args.update(self.operation.to_be_bytes());
         args.finalize().into()
     }
+}
+
+struct AuthorizationParameters<'a> {
+    nonce: &'a [u8],
+    cp_hash: &'a [u8],
+    policy_ref: &'a [u8],
+    expiration: i32,
+}
+
+impl<'a> AuthorizationParameters<'a> {
+    fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
+        p.set_param(1);
+        let nonce = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(2);
+        let cp_hash = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(3);
+        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(4);
+        let expiration = p.u32()? as i32;
+        Ok(Self {
+            nonce,
+            cp_hash,
+            policy_ref,
+            expiration,
+        })
+    }
+}
+
+struct AuthorizationRestrictions {
+    deadline: Option<TimePoint>,
+    cp_hash: Option<[u8; DIGEST]>,
 }
 
 impl PolicyState {
@@ -646,51 +680,157 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
-        p.set_param(1);
-        let nonce_tpm = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        p.set_param(2);
-        let cp_hash_a = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        p.set_param(3);
-        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        p.set_param(4);
-        let expiration = p.u32()? as i32;
+        let parameters = AuthorizationParameters::unmarshal(p)?;
         p.finish()?;
         let slot = self.policy_slot(inv.handles[1])?;
         let name = handle_name(self, inv.handles[0]);
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(1))?;
-        let (deadline, cp_hash) = if session.kind == SessionKind::Trial {
-            (None, None)
+        let restrictions = self.policy_authorization_restrictions(session, &parameters)?;
+        let hierarchy = if parameters.expiration < 0 && restrictions.deadline.is_some() {
+            self.secret_ticket_hierarchy(inv.handles[0])?
         } else {
-            if !nonce_tpm.is_empty() && nonce_tpm != session.nonce_tpm {
-                return Err(Rc::VALUE.in_param(1));
-            }
-            let deadline =
-                self.policy_assertion_deadline(session, nonce_tpm, expiration.unsigned_abs())?;
-            let cp_hash = Self::policy_assertion_cp_hash(&session.policy, cp_hash_a)?;
-            (deadline, cp_hash)
+            handle::RH_NULL
         };
+        let response = self.policy_authorization_response(
+            st::AUTH_SECRET,
+            hierarchy,
+            &name,
+            &parameters,
+            restrictions.deadline,
+        )?;
+        let (state, _) = self.policy_mut(slot)?;
+        state.apply_authorization(
+            cc::POLICY_SECRET,
+            &name,
+            parameters.policy_ref,
+            restrictions.deadline,
+            restrictions.cp_hash,
+        );
+        Ok(response)
+    }
+
+    /// `TPM2_PolicySigned` (Part 3 v185, §23.3) uses a public key as the policy authority.
+    pub(crate) fn cmd_policy_signed(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        let parameters = AuthorizationParameters::unmarshal(p)?;
+        p.set_param(5);
+        let signature = TpmtSignature::unmarshal_optional(p)?;
+        p.finish()?;
+
+        let slot = self.policy_slot(inv.handles[1])?;
+        let session = self.sessions.get(slot).ok_or(Rc::reference_handle(1))?;
+        let restrictions = self.policy_authorization_restrictions(session, &parameters)?;
+        let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        if session.kind != SessionKind::Trial {
+            let (fixed, supplied) = match (&key.public.params, &signature) {
+                (PublicParams::Rsa { scheme, .. }, TpmtSignature::Rsassa { hash, .. }) => (
+                    *scheme,
+                    Scheme {
+                        alg: alg::RSASSA,
+                        hash: *hash,
+                    },
+                ),
+                (PublicParams::Ecc { scheme, .. }, TpmtSignature::Ecdsa { hash, .. }) => (
+                    *scheme,
+                    Scheme {
+                        alg: alg::ECDSA,
+                        hash: *hash,
+                    },
+                ),
+                _ => return Err(Rc::POLICY_FAIL),
+            };
+            if !key.has(object_attr::SIGN) || (fixed != Scheme::NULL && fixed != supplied) {
+                return Err(Rc::POLICY_FAIL);
+            }
+            // All accepted signature schemes use SHA-256; the message uses no TPM2B lengths.
+            let mut h = Sha256::new();
+            h.update(parameters.nonce);
+            h.update(parameters.expiration.to_be_bytes());
+            h.update(parameters.cp_hash);
+            h.update(parameters.policy_ref);
+            if !key.verify_signature(&h.finalize(), &signature) {
+                return Err(Rc::POLICY_FAIL);
+            }
+        }
+        let name = key.name.clone();
+        let response = self.policy_authorization_response(
+            st::AUTH_SIGNED,
+            key.hierarchy,
+            &name,
+            &parameters,
+            restrictions.deadline,
+        )?;
+        let (state, _) = self.policy_mut(slot)?;
+        state.apply_authorization(
+            cc::POLICY_SIGNED,
+            &name,
+            parameters.policy_ref,
+            restrictions.deadline,
+            restrictions.cp_hash,
+        );
+        Ok(response)
+    }
+
+    fn policy_authorization_restrictions(
+        &self,
+        session: &Session,
+        parameters: &AuthorizationParameters<'_>,
+    ) -> Result<AuthorizationRestrictions, Rc> {
+        if session.kind == SessionKind::Trial {
+            return Ok(AuthorizationRestrictions {
+                deadline: None,
+                cp_hash: None,
+            });
+        }
+        if !parameters.nonce.is_empty() && parameters.nonce != session.nonce_tpm {
+            return Err(Rc::VALUE.in_param(1));
+        }
+        let deadline = self.policy_assertion_deadline(
+            session,
+            parameters.nonce,
+            parameters.expiration.unsigned_abs(),
+        )?;
+        let cp_hash = Self::policy_assertion_cp_hash(&session.policy, parameters.cp_hash)?;
+        Ok(AuthorizationRestrictions { deadline, cp_hash })
+    }
+
+    fn policy_authorization_response(
+        &self,
+        tag: u16,
+        hierarchy: u32,
+        name: &[u8],
+        parameters: &AuthorizationParameters<'_>,
+        deadline: Option<TimePoint>,
+    ) -> Result<Output, Rc> {
         let mut ticket = TpmtTicket {
-            tag: st::AUTH_SECRET,
+            tag,
             hierarchy: handle::RH_NULL,
             digest: Vec::new(),
         };
         let mut w = Writer::new();
         if let Some(limit) = deadline
-            && expiration < 0
+            && parameters.expiration < 0
         {
             if limit.ms >= RESET_BOUND_TIMEOUT {
                 return Err(Rc::VALUE.in_param(4));
             }
             let timeout = limit.ms
-                | if nonce_tpm.is_empty() {
+                | if parameters.nonce.is_empty() {
                     RESET_BOUND_TIMEOUT
                 } else {
                     0
                 };
-            let hierarchy = self.secret_ticket_hierarchy(inv.handles[0])?;
             let proof = self.hierarchy_proof(hierarchy).ok_or(Rc::FAILURE)?;
-            let transcript =
-                self.auth_ticket_transcript(st::AUTH_SECRET, timeout, cp_hash_a, policy_ref, &name);
+            let transcript = self.auth_ticket_transcript(
+                tag,
+                timeout,
+                parameters.cp_hash,
+                parameters.policy_ref,
+                name,
+            );
             ticket.hierarchy = hierarchy;
             ticket.digest = hmac_sha256(&proof, &[&transcript]).to_vec();
             w.tpm2b(&timeout.to_be_bytes());
@@ -698,8 +838,6 @@ impl Tpm {
             w.tpm2b(&[]);
         }
         ticket.marshal(&mut w);
-        let (state, _) = self.policy_mut(slot)?;
-        state.apply_authorization(cc::POLICY_SECRET, &name, policy_ref, deadline, cp_hash);
         Ok(Output {
             handles: Vec::new(),
             params: w.finish(),

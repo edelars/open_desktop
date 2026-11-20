@@ -33,16 +33,13 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr, st};
-use crate::crypto::{
-    ecc_sign, ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign, rsa_verify,
-};
+use crate::crypto::{ecc_sign, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign};
 use crate::da::DaProtection;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsCreationData,
-    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Unique, Writer,
-    limits,
+    TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer, limits,
 };
 use crate::object::{
     MAX_PRIVATE, Object, Secret, check_creation, check_external_public, check_public,
@@ -740,14 +737,7 @@ impl Tpm {
         if digest.len() != limits::MAX_DIGEST_SIZE {
             return Err(Rc::SIZE.in_param(1));
         }
-        let valid = match (&o.public.unique, &signature) {
-            (Unique::Rsa(n), TpmtSignature::Rsassa { sig, .. }) => rsa_verify(n, digest, sig),
-            (Unique::Ecc { x, y }, TpmtSignature::Ecdsa { r, s, .. }) => {
-                ecc_verify(x, y, digest, r, s)
-            }
-            _ => false,
-        };
-        if !valid {
+        if !o.verify_signature(digest, &signature) {
             return Err(Rc::SIGNATURE);
         }
         let ticket = self.ticket(

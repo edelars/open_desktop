@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 87 кодов из списка, 14 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 88 кодов из списка, 13 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -37,7 +37,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Инициализация и PCR | `IncrementalSelfTest`, `PCR_Allocate` |
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
-| Политики | `PolicySigned`, `PolicyDuplicationSelect` |
+| Политики | `PolicyDuplicationSelect` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -256,6 +256,29 @@ proof своей иерархии. Для Lockout это Owner proof. Для NV 
 дают `EXPIRED`. `Clear` меняет Owner и Endorsement proof.
 Билет Platform сохраняет силу до истечения срока или смены
 эпохи. Первый параметр `PolicyTicket` поддерживает шифрование.
+
+### Подписанное утверждение политики
+
+`TPM2_PolicySigned` (`0x160`) принимает загруженный публичный
+объект и целевую policy-сессию. Доступны RSA-2048/RSASSA/SHA-256
+и NIST P-256/ECDSA/SHA-256. Ключ должен допускать подпись.
+Фиксированная схема ключа должна совпадать со схемой подписи.
+Для схемы ключа `NULL` подходит поддержанная схема его семейства.
+Секрет ключа для авторизации не требуется.
+
+Подписываются октеты `nonceTPM`, big-endian `expiration` типа
+INT32, `cpHashA` и `policyRef`. Размеры TPM2B в подписанные
+данные не входят. После проверки nonce, срока и `cpHashA` невалидная
+подпись выдаёт `POLICY_FAIL` без изменений политики. Целевая
+trial-сессия принимает структурно допустимую подпись `NULL` и
+выполняет только расширение дайджеста с Name ключа и `policyRef`.
+
+При отрицательном `expiration` реальная сессия выдаёт билет
+`AUTH_SIGNED`. Он использует тот же формат срока и HMAC,
+что и `AUTH_SECRET`. `PolicyTicket` может применить его после
+выгрузки авторизующего ключа. Первый входной `nonceTPM` и
+выходной `timeout` допускают шифрование параметров.
+[TPM Library v185 Part 3 §23.3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=214).
 
 ### Сравнение значения NV в политике
 

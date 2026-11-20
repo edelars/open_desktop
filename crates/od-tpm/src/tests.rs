@@ -626,10 +626,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
         0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F, 0x192, 0x13B, 0x130, 0x172,
+        0x160,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 87);
+    assert_eq!(expected.len(), 88);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -667,6 +668,8 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(body, 0x0400_0150u32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x16A, 1));
     assert_eq!(body, 0x0200_016Au32.to_be_bytes());
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x160, 1));
+    assert_eq!(body, 0x0400_0160u32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x16D, 1));
     assert_eq!(body, 0x0200_016Du32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x172, 1));
@@ -693,7 +696,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(87)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(88)[..]].concat()
     );
 }
 

@@ -984,7 +984,18 @@ impl TpmtSignature {
     /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA and ECDSA, including `TPM_ALG_NULL`
     /// (Table 84), `TPM_RC_HASH` for a hash other than SHA-256.
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_inner(r, false)
+    }
+
+    pub(crate) fn unmarshal_optional(r: &mut Reader<'_>) -> Result<Self, Rc> {
+        Self::unmarshal_inner(r, true)
+    }
+
+    fn unmarshal_inner(r: &mut Reader<'_>, allow_null: bool) -> Result<Self, Rc> {
         let a = r.u16()?;
+        if allow_null && a == alg::NULL {
+            return Ok(Self::Null);
+        }
         if a != alg::RSASSA && a != alg::ECDSA {
             return Err(r.err(Rc::SCHEME));
         }

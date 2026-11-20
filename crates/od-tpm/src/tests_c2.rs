@@ -2463,6 +2463,157 @@ fn policy_ticket_depends_on_the_issuing_epoch_and_persistent_hierarchy_proof() {
 }
 
 #[test]
+fn policy_signed_accepts_public_rsa_and_ecc_keys_and_replays_tickets_after_flush() {
+    let mut t = started();
+    t.advance_power_time(2000);
+    for (template, scheme) in [
+        (ecc_sign(), ecc_sig_scheme()),
+        (rsa_sign(), rsa_sig_scheme()),
+    ] {
+        let signing_key =
+            parse_primary(&create_primary(&mut t, OWNER, b"signing secret", &template));
+        let public = unmarshal_public(&signing_key.public);
+        let (auth_object, name) = parse_loaded(&load_external(&mut t, &public, NULL));
+        assert_eq!(name, signing_key.name);
+        let issuer = policy_session(&mut t, se::POLICY);
+        let replay = policy_session(&mut t, se::POLICY);
+        let reference = b"policy ref";
+        let expiration = (-4i32).to_be_bytes();
+        let command_hash = [0x83; 32];
+        let signed = h256(&[&issuer.nonce_tpm, &expiration, &command_hash, reference]);
+        let signing = sign(
+            &mut t,
+            signing_key.handle,
+            b"signing secret",
+            &signed,
+            &scheme,
+        );
+        ok(&signing);
+        let signature = params(&signing, 0);
+        let request = |policy_ref: &[u8]| {
+            cat(&[
+                &secret_params(
+                    &issuer.nonce_tpm,
+                    &command_hash,
+                    policy_ref,
+                    u32::from_be_bytes(expiration),
+                ),
+                signature,
+            ])
+        };
+        let handles = [auth_object, issuer.handle];
+        err(
+            &run(
+                &mut t,
+                plain(cc::POLICY_SIGNED, &handles, &request(b"altered ref")),
+            ),
+            Rc::POLICY_FAIL,
+        );
+        assert_eq!(digest(&mut t, &issuer), [0; 32]);
+        assert_eq!(t.persistent.da.failed_tries, 0);
+        let response = run(
+            &mut t,
+            plain(cc::POLICY_SIGNED, &handles, &request(reference)),
+        );
+        ok(&response);
+        let ticket = params(&response, 0);
+        assert_eq!(&ticket[..10], &tpm2b(&6000u64.to_be_bytes()));
+        assert_eq!(&ticket[10..18], &hex("8025400000070020"));
+        let first = h256(&[&[0; 32], &u32b(0x160), &name]);
+        let expected = h256(&[&first, reference]);
+        assert_eq!(digest(&mut t, &issuer), expected);
+
+        ok(&flush(&mut t, auth_object));
+        ok(&flush(&mut t, signing_key.handle));
+        err(
+            &run(
+                &mut t,
+                plain(cc::POLICY_SIGNED, &handles, &request(reference)),
+            ),
+            Rc::reference_handle(0),
+        );
+        let replay_parameters = cat(&[
+            &ticket[..10],
+            &tpm2b(&command_hash),
+            &tpm2b(reference),
+            &tpm2b(&name),
+            &ticket[10..],
+        ]);
+        ok(&pol(&mut t, cc::POLICY_TICKET, &replay, &replay_parameters));
+        assert_eq!(digest(&mut t, &replay), expected);
+    }
+}
+
+#[test]
+fn policy_signed_checks_real_parameters_and_signature_usage_but_allows_a_null_trial_signature() {
+    let mut t = started();
+    let signer = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_sign()));
+    let real = policy_session(&mut t, se::POLICY);
+    let trial = policy_session(&mut t, se::TRIAL);
+    let null = u16b(alg::NULL);
+    let null_params = cat(&[&secret_params(b"", b"", b"ref", 0), &null]);
+    err(
+        &run(
+            &mut t,
+            plain(
+                cc::POLICY_SIGNED,
+                &[signer.handle, real.handle],
+                &null_params,
+            ),
+        ),
+        Rc::POLICY_FAIL,
+    );
+    let wrong_nonce = cat(&[
+        &secret_params(b"wrong nonce", b"short", b"ref", u32::MAX),
+        &null,
+    ]);
+    err(
+        &run(
+            &mut t,
+            plain(
+                cc::POLICY_SIGNED,
+                &[signer.handle, real.handle],
+                &wrong_nonce,
+            ),
+        ),
+        Rc::VALUE.in_param(1),
+    );
+    let answer = run(
+        &mut t,
+        plain(
+            cc::POLICY_SIGNED,
+            &[signer.handle, trial.handle],
+            &wrong_nonce,
+        ),
+    );
+    ok(&answer);
+    assert_eq!(params(&answer, 0), hex("00008025400000070000"));
+    let first = h256(&[&[0; 32], &u32b(0x160), &signer.name]);
+    assert_eq!(digest(&mut t, &trial), h256(&[&first, b"ref"]));
+    assert_eq!(digest(&mut t, &real), [0; 32]);
+
+    let signed = h256(&[&[0; 4], b"ref"]);
+    let signed_response = sign(&mut t, signer.handle, b"", &signed, &ecc_sig_scheme());
+    let signature = params(&signed_response, 0);
+    let params = cat(&[&secret_params(b"", b"", b"ref", 0), signature]);
+    let mut nonsigning = unmarshal_public(&signer.public);
+    nonsigning.attributes &= !oa::SIGN;
+    let (object, _) = parse_loaded(&load_external(&mut t, &nonsigning, NULL));
+    err(
+        &run(
+            &mut t,
+            plain(cc::POLICY_SIGNED, &[object, real.handle], &params),
+        ),
+        Rc::POLICY_FAIL,
+    );
+    ok(&run(
+        &mut t,
+        plain(cc::POLICY_SIGNED, &[signer.handle, real.handle], &params),
+    ));
+    assert_eq!(digest(&mut t, &real), digest(&mut t, &trial));
+}
+
+#[test]
 fn policy_secret_checks_authorization_and_parameters() {
     let mut t = started();
     ok(&set_auth(&mut t, OWNER, b"", b"owner-pw"));

@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 87] = [
+pub(crate) static COMMANDS: [CommandSpec; 88] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -159,6 +159,7 @@ pub(crate) static COMMANDS: [CommandSpec; 87] = [
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
     spec(cc::SIGN, 1, 1, false, false, false),
     spec(cc::UNSEAL, 1, 1, false, false, false),
+    spec(cc::POLICY_SIGNED, 2, 0, false, false, false),
     spec(cc::CONTEXT_LOAD, 0, 0, true, false, false),
     spec(cc::CONTEXT_SAVE, 1, 0, false, false, false),
     spec(cc::ECDH_KEY_GEN, 1, 0, false, false, false),
@@ -831,6 +832,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::POLICY_AUTHORIZE => tpm.cmd_policy_authorize(&inv, &mut p)?,
         cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
         cc::POLICY_SECRET => tpm.cmd_policy_secret(&inv, &mut p)?,
+        cc::POLICY_SIGNED => tpm.cmd_policy_signed(&inv, &mut p)?,
         cc::POLICY_TICKET => tpm.cmd_policy_ticket(&inv, &mut p)?,
         cc::POLICY_GET_DIGEST => tpm.cmd_policy_get_digest(&inv, &mut p)?,
         cc::CONTEXT_SAVE => tpm.cmd_context_save(&inv, &mut p)?,
@@ -1065,6 +1067,10 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             }
             tpm.check_policy_session(handles[1], 1)?;
         }
+        cc::POLICY_SIGNED => {
+            tpm.check_object_handle(handles[0], 0, false)?;
+            tpm.check_policy_session(handles[1], 1)?;
+        }
         cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {
             // `TPMI_RH_LOCKOUT` (Part 3, Tables 193 and 195): `TPM_RH_LOCKOUT` only.
             if handles[0] != handle::RH_LOCKOUT {
@@ -1149,6 +1155,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 87);
+        assert_eq!(COMMANDS.len(), 88);
     }
 }

@@ -9543,6 +9543,20 @@ Sol High одобрил срез после уточнения trial. Объяв
 обязательного кода.
 [Политики](../specs/VTPM.md#срок-действия-policysecret-и-policyticket), [snapshot](../specs/VTPM.md#формат-snapshot-odtpmsta-версия-5).
 
+## S7-23 — PolicySigned
+
+Нативный CRB-клиент загрузил публичные ключи OpenSSL P-256 и RSA-2048.
+Обе подписи проверены по самостоятельно собранным октетам утверждения.
+Изменённый `policyRef` отклонён. Независимый клиент сверил XOR-защиту
+nonce и срока ответа и HMAC аудита. Trial с `NULL` подписью вычислил
+совпадающий дайджест. После выгрузки ключей новые вызовы с прежними
+handle отклонены. Билеты авторизовали настоящие команды `ClockSet`
+на границе срока, а повтор после неё получил `EXPIRED`.
+
+Прошли 343 теста `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Объявлены 88 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#подписанное-утверждение-политики).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).
