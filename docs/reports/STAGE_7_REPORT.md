@@ -9512,6 +9512,20 @@ Platform во втором HMAC и отдельное аудирование. П
 Sol High одобрил срез. Объявлены 86 из 101 обязательного кода.
 [Контракт](../specs/VTPM.md#калибровка-time-и-clock).
 
+## S7-23 — Положительный expiration в PolicySecret
+
+Нативный CRB-клиент независимо зашифровал nonce, сверил HMAC ответа
+и пустой NULL билет. Сессии с nonce от 2000 мс получили несколько
+относительных и абсолютных сроков. Авторизация на самом раннем сроке
+6000 мс прошла, а восстановленная сессия отклонена на 6001 мс.
+Проверены обязательная авторизация источника для trial и приоритет
+ошибок срока и `cpHashA`.
+
+Прошли 339 тестов `od-tpm` и проверка рабочего пространства Rust.
+Sol High одобрил срез. Отрицательный `expiration` ждёт общего
+формата билета и `PolicyTicket`.
+[Контракт](../specs/VTPM.md#срок-действия-policysecret).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

@@ -213,6 +213,24 @@ nonce. Формат persistent snapshot v4 сохраняется.
 [TPM Library v185 Part 1 §16.7.12](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf),
 [Part 3 §§5.6 и 23.10](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=233).
 
+### Срок действия PolicySecret
+
+`TPM2_PolicySecret` (`0x151`) поддерживает нулевой и положительный
+`expiration` в секундах. Положительное значение без `nonceTPM` задаёт
+абсолютное TPM `Time`. С совпадающим `nonceTPM` срок отсчитывается
+от формирования этого nonce. Сохраняется самый ранний срок политики.
+На границе срока авторизация ещё допустима. Ранее сохранённая сессия
+после смены эпохи `Time` получает `TPM_RC_EXPIRED`.
+
+Нулевой и положительный варианты возвращают пустой `timeout` и NULL
+билет. Отрицательный `expiration` в реальной сессии пока возвращает
+`TPM_RC_VALUE` для параметра 4. Trial проверяет авторизацию источника
+секрета, затем вычисляет дайджест без проверок срока, значения nonce
+и ограничений `cpHashA`. Для реальной сессии проверка срока
+предшествует конфликту `cpHashA`, а конфликт предшествует проверке
+его длины.
+[TPM Library v185 Part 3 §§23.2 и 23.4](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=209).
+
 ### Сравнение значения NV в политике
 
 `TPM2_PolicyNV` (`0x149`) принимает Owner, Platform или тот же индекс
@@ -684,9 +702,9 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 Проверка связи RSA-ключа при декодировании `TPM2B_SENSITIVE` принимает публичный `exponent`, закодированный как `0` (значение по умолчанию) или `65537`. Обе кодировки сохраняют исходные public bytes и соответствующие Name и Qualified Name при восстановлении snapshot v3. Несовместимое значение даёт `TPM_RC_BINDING` при декодировании и `StateError::BadField` при `Tpm::restore`. [ISSUE-517](../KNOWN_ISSUES.md#issue-517).
 
-**PolicySecret с ненулевым `expiration` — оставлено ограничение `expiration = 0`** (`TPM_RC_VALUE`, параметр 4). Правила таймаута (Part 3, 23.2.2, 23.2.4) и вход HMAC билета (23.2.5) в тексте есть, но значение `timeout`, `timeEpoch` и `resetCount` названы «implementation-specific», а отрицательный `expiration` (билет) осмыслен только вместе с `TPM2_PolicyTicket`, которой нет; нужны время старта сессии, `timeEpoch` и билеты разом. Не сверено, какое представление ждёт Windows (S7-30/S7-32). Запись — NOT VERIFIED, `policy.rs`.
+**Исторический статус C3.** В исходном срезе оставалось ограничение `PolicySecret expiration = 0` (`TPM_RC_VALUE`, параметр 4). Правила таймаута (Part 3, 23.2.2, 23.2.4) и вход HMAC билета (23.2.5) в тексте есть, но значение `timeout`, `timeEpoch` и `resetCount` названы «implementation-specific», а отрицательный `expiration` (билет) осмыслен только вместе с `TPM2_PolicyTicket`, которой нет; нужны время старта сессии, `timeEpoch` и билеты разом. Не сверено, какое представление ждёт Windows (S7-30/S7-32). Запись — NOT VERIFIED, `policy.rs`.
 
-**Ограничения после C3.** Профиль поддерживает `PolicySecret` с нулевым `expiration`, шифрование параметров на авторизующей сессии и подпись нерестриктированными RSA/ECC-ключами. Потребность Windows в `PolicySecret` с таймаутом, `PolicyTicket`, `PolicySigned`, `PolicyNV`, `PolicyLocality`, `PolicyPassword`, `PolicyCpHash`, `PolicyAuthorize`, `SetPrimaryPolicy`, `ChangePPS/EPS`, `ObjectChangeAuth`, `CreateLoaded`, `ActivateCredential`/`MakeCredential`, подписи с тикетами для restricted-ключей, HMAC-подписи через `Sign`, `NV_Certify`, `NV_UndefineSpaceSpecial`, `NV_GlobalWriteLock`, PIN-индексах, `TPMA_NV_ORDERLY`, salted-сессиях, сессиях только для шифрования и аудите проверяется по трассе S7-32. [ISSUE-528](../KNOWN_ISSUES.md#issue-528).
+**Исходные ограничения C3.** На момент завершения среза профиль поддерживал `PolicySecret` с нулевым `expiration`, шифрование параметров на авторизующей сессии и подпись нерестриктированными RSA/ECC-ключами. Потребность Windows в `PolicySecret` с таймаутом, `PolicyTicket`, `PolicySigned`, `PolicyNV`, `PolicyLocality`, `PolicyPassword`, `PolicyCpHash`, `PolicyAuthorize`, `SetPrimaryPolicy`, `ChangePPS/EPS`, `ObjectChangeAuth`, `CreateLoaded`, `ActivateCredential`/`MakeCredential`, подписи с тикетами для restricted-ключей, HMAC-подписи через `Sign`, `NV_Certify`, `NV_UndefineSpaceSpecial`, `NV_GlobalWriteLock`, PIN-индексах, `TPMA_NV_ORDERLY`, salted-сессиях, сессиях только для шифрования и аудите проверяется по трассе S7-32. [ISSUE-528](../KNOWN_ISSUES.md#issue-528).
 
 **Зависимости среза C3.** Новых пакетов нет, `Cargo.toml` и `Cargo.lock` не менялись: AES-128-CFB (`aes`, `cfb-mode`) и KDFa/HMAC (`hmac`, `sha2`) подключены срезами A–C1; SHA-256 для `NV_Extend` — `sha2`.
 

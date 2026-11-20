@@ -2233,6 +2233,87 @@ fn policy_restart_resets_everything_but_the_nonce() {
 }
 
 #[test]
+fn policy_secret_keeps_the_earliest_absolute_or_nonce_relative_expiration() {
+    let mut t = started();
+    t.advance_power_time(2000);
+    let mut at_limit = policy_session(&mut t, se::POLICY);
+    let mut after_limit = policy_session(&mut t, se::POLICY);
+    let empty_ticket = hex("00008023400000070000");
+    for session in [&at_limit, &after_limit] {
+        for (nonce, expiration) in [
+            (&session.nonce_tpm[..], 5),
+            (&[][..], 6),
+            (&session.nonce_tpm[..], 8),
+        ] {
+            let response = secret_pw(
+                &mut t,
+                OWNER,
+                b"",
+                session,
+                &secret_params(nonce, &[], b"ref", expiration),
+            );
+            ok(&response);
+            assert_eq!(params(&response, 0), empty_ticket);
+        }
+    }
+    let authorized = digest(&mut t, &at_limit);
+    assert_eq!(digest(&mut t, &after_limit), authorized);
+    ok(&set_primary_policy(
+        &mut t,
+        OWNER,
+        b"",
+        &authorized,
+        alg::SHA256,
+    ));
+    let saved = params(&save(&mut t, after_limit.handle), 0).to_vec();
+    t.advance_power_time(6000);
+    let clock = hc(
+        cc::CLOCK_SET,
+        &[OWNER],
+        99_999u64.to_be_bytes().to_vec(),
+        (OWNER, b""),
+    );
+    ok(&use_session(&mut t, &mut at_limit, &clock, 0, true, false));
+    t.advance_power_time(6001);
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), after_limit.handle);
+    err(
+        &use_session(&mut t, &mut after_limit, &clock, 0, true, false),
+        Rc::EXPIRED.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &after_limit), authorized);
+}
+
+#[test]
+fn policy_secret_validation_order_and_trial_do_not_install_restrictions_on_failure() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", b"pw"));
+    t.advance_power_time(1500);
+    let real = policy_session(&mut t, se::POLICY);
+    ok(&pol(&mut t, cc::POLICY_NAME_HASH, &real, &tpm2b(&[5; 32])));
+    let before = digest(&mut t, &real);
+    let expired = secret_params(&[], b"short", b"ref", 1);
+    err(
+        &secret_pw(&mut t, OWNER, b"pw", &real, &expired),
+        Rc::EXPIRED,
+    );
+    let conflict = secret_params(&[], b"short", b"ref", 10);
+    err(
+        &secret_pw(&mut t, OWNER, b"pw", &real, &conflict),
+        Rc::CPHASH,
+    );
+    assert_eq!(digest(&mut t, &real), before);
+
+    let trial = policy_session(&mut t, se::TRIAL);
+    let unusual = secret_params(b"bad nonce", b"short", b"ref", u32::MAX);
+    err(
+        &secret_pw(&mut t, OWNER, b"wrong", &trial, &unusual),
+        Rc::BAD_AUTH.in_session(1),
+    );
+    ok(&secret_pw(&mut t, OWNER, b"pw", &trial, &unusual));
+    assert_eq!(digest(&mut t, &trial), hex(V_SECRET_OWNER));
+}
+
+#[test]
 fn policy_secret_checks_authorization_and_parameters() {
     let mut t = started();
     ok(&set_auth(&mut t, OWNER, b"", b"owner-pw"));
@@ -2268,14 +2349,14 @@ fn policy_secret_checks_authorization_and_parameters() {
         &s,
         &secret_params(&own, &[], b"ref", 0),
     ));
-    // expiration needs the session timeout: not supported (TPM_RC_VALUE, parameter 4).
+    // Negative expiration asks for a reusable ticket, which is unavailable.
     err(
         &secret_pw(
             &mut t,
             OWNER,
             b"owner-pw",
             &s,
-            &secret_params(&[], &[], b"ref", 30),
+            &secret_params(&[], &[], b"ref", u32::MAX),
         ),
         Rc::VALUE.in_param(4),
     );

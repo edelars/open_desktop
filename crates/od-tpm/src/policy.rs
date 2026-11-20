@@ -21,21 +21,8 @@
 //! failure is not a dictionary-attack failure (Part 1, clause 17.8.3). An ADMIN-role authorization
 //! with a policy session needs `TPM2_PolicyCommandCode` in the policy (Part 3, clause 5.6, step 6).
 //!
-//! Not implemented (answered `TPM_RC_COMMAND_CODE`): `PolicySigned`, `PolicyTicket`,
-//! `PolicyNV`, `PolicyCounterTimer`, `PolicyPhysicalPresence`, `PolicyDuplicationSelect`,
-//! `PolicyNvWritten`, `PolicyAuthorizeNV`, `PolicyCapability`.
-//! `TPM2_PolicySecret` takes `expiration` 0 only (a non-zero value needs the
-//! session timeout and the tickets: `TPM_RC_VALUE`, parameter 4) and always returns a NULL ticket
-//! and an empty `timeout`. Slice C3 re-read Part 3 v184, clauses 23.2.2, 23.2.4, 23.2.5 and 23.4
-//! and kept the restriction: the text fixes the timeout rule (`|expiration|` seconds after the
-//! session start, or from the current `Time` for an empty `nonceTPM`; a timeout can only
-//! shrink; `TPM_RC_EXPIRED` when it passed or the `timeEpoch` changed) and the ticket HMAC input
-//! (`tag || cpHash || policyRef || authName || timeout || [timeEpoch] || [resetCount]`), but
-//! leaves the `timeout` value, `timeEpoch` and `resetCount` encodings "implementation-specific",
-//! and a negative `expiration` (ticket) is useful only with `TPM2_PolicyTicket`, which is not
-//! implemented. Implementing it needs session start time, `timeEpoch` state and the ticket path
-//! together; NOT VERIFIED against TPM 2.0 Library v185/v184 which of these encodings Windows
-//! relies on (not before S7-30/S7-32).
+//! `PolicySecret` supports session expiration and returns a NULL ticket and an empty
+//! timeout. Negative expiration needs the reusable ticket path (`PolicyTicket`).
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the numbers of the
 //! handle and parameter modifiers of the codes below; `TPM_RC_VALUE` (handle 1/2) for a session
@@ -59,7 +46,7 @@ use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
-use crate::session::SessionKind;
+use crate::session::{Session, SessionKind};
 use crate::state::{TimePoint, Tpm};
 
 /// The policy context of a session (Part 1, clause 17.7.8) for the SHA-256 session hash.
@@ -205,6 +192,17 @@ impl PolicyState {
         self.digest = h.finalize().into();
     }
 
+    fn restrict_deadline(&mut self, limit: Option<TimePoint>) {
+        if let Some(limit) = limit
+            && self
+                .deadline
+                .is_none_or(|old| old.epoch == limit.epoch && old.ms > limit.ms)
+        {
+            // A restriction from an older epoch remains expired even after a nonce roll.
+            self.deadline = Some(limit);
+        }
+    }
+
     fn restrict_cp_hash(&mut self, hash: [u8; DIGEST]) -> Result<(), Rc> {
         let restriction = PolicyHashRestriction::CpHash(hash);
         if self.hash_restriction.is_some_and(|old| old != restriction) {
@@ -282,7 +280,7 @@ impl Tpm {
 
         let slot = self.policy_slot(inv.handles[0])?;
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
-        let mut deadline = session.policy.deadline;
+        let mut deadline = None;
         if session.kind != SessionKind::Trial {
             if args.comparison == Comparison::UnsignedLt
                 && args.offset == 0
@@ -300,10 +298,7 @@ impl Tpm {
                 if limit.has_passed(self.time_point()) {
                     return Err(Rc::EXPIRED);
                 }
-                // An older epoch stays expired even if an auxiliary session use rolled the nonce.
-                if deadline.is_none_or(|old| old.epoch == limit.epoch && old.ms > limit.ms) {
-                    deadline = Some(limit);
-                }
+                deadline = Some(limit);
             } else {
                 let mut time = Writer::new();
                 self.time_info().marshal(&mut time);
@@ -320,7 +315,7 @@ impl Tpm {
             }
         }
         let (state, _) = self.policy_mut(slot)?;
-        state.deadline = deadline;
+        state.restrict_deadline(deadline);
         state.extend(&[&cc::POLICY_COUNTER_TIMER.to_be_bytes(), &args.digest()]);
         Ok(Output::default())
     }
@@ -638,27 +633,30 @@ impl Tpm {
         p.set_param(3);
         let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
         p.set_param(4);
-        let expiration = p.u32()?;
+        let expiration = p.u32()? as i32;
         p.finish()?;
         let slot = self.policy_slot(inv.handles[1])?;
         let name = handle_name(self, inv.handles[0]);
         let session = self.sessions.get(slot).ok_or(Rc::reference_handle(1))?;
-        if !nonce_tpm.is_empty() && nonce_tpm != session.nonce_tpm {
-            return Err(Rc::VALUE.in_param(1));
-        }
-        if expiration != 0 {
-            // Needs the session timeout and the tickets (module comment).
-            return Err(Rc::VALUE.in_param(4));
-        }
-        let cp: Option<[u8; DIGEST]> = if cp_hash_a.is_empty() {
-            None
+        let (deadline, cp_hash) = if session.kind == SessionKind::Trial {
+            (None, None)
         } else {
-            Some(cp_hash_a.try_into().map_err(|_| Rc::SIZE.in_param(2))?)
+            if !nonce_tpm.is_empty() && nonce_tpm != session.nonce_tpm {
+                return Err(Rc::VALUE.in_param(1));
+            }
+            if expiration < 0 {
+                // Negative expiration also requires issuing a reusable authorization ticket.
+                return Err(Rc::VALUE.in_param(4));
+            }
+            let deadline = self.policy_assertion_deadline(session, nonce_tpm, expiration as u32)?;
+            let cp_hash = Self::policy_assertion_cp_hash(&session.policy, cp_hash_a)?;
+            (deadline, cp_hash)
         };
         let (state, _) = self.policy_mut(slot)?;
-        if let Some(hash) = cp {
-            state.restrict_cp_hash(hash)?;
+        if let Some(hash) = cp_hash {
+            state.hash_restriction = Some(PolicyHashRestriction::CpHash(hash));
         }
+        state.restrict_deadline(deadline);
         // PolicyUpdate: two extensions (clause 23.2.3).
         state.extend(&[&cc::POLICY_SECRET.to_be_bytes(), &name]);
         state.extend(&[policy_ref]);
@@ -674,6 +672,43 @@ impl Tpm {
             handles: Vec::new(),
             params: w.finish(),
         })
+    }
+
+    /// Part 3 v185 §23.2.2. An empty nonce makes the expiration an absolute TPM Time.
+    fn policy_assertion_deadline(
+        &self,
+        session: &Session,
+        nonce_tpm: &[u8],
+        seconds: u32,
+    ) -> Result<Option<TimePoint>, Rc> {
+        if seconds == 0 {
+            return Ok(None);
+        }
+        let origin = session.nonce_time.ok_or(Rc::EXPIRED)?;
+        let base_ms = if nonce_tpm.is_empty() { 0 } else { origin.ms };
+        let limit = TimePoint {
+            epoch: origin.epoch,
+            ms: base_ms.saturating_add(u64::from(seconds) * 1000),
+        };
+        if limit.has_passed(self.time_point()) {
+            return Err(Rc::EXPIRED);
+        }
+        Ok(Some(limit))
+    }
+
+    fn policy_assertion_cp_hash(
+        state: &PolicyState,
+        cp_hash: &[u8],
+    ) -> Result<Option<[u8; DIGEST]>, Rc> {
+        if cp_hash.is_empty() {
+            return Ok(None);
+        }
+        if state.hash_restriction.is_some_and(
+            |restriction| !matches!(restriction, PolicyHashRestriction::CpHash(old) if old == cp_hash),
+        ) {
+            return Err(Rc::CPHASH);
+        }
+        Ok(Some(cp_hash.try_into().map_err(|_| Rc::SIZE.in_param(2))?))
     }
 
     /// `TPM2_PolicyAuthorize` with a legacy VerifySignature ticket (Part 3 §23.16).
